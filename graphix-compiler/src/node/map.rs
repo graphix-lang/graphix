@@ -210,12 +210,13 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
             vts.push(v.typ());
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
+        ktype.require_discernible();
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         self.typ.check_contains(&ctx.env, &rtype)?;
-        let judgment = crate::PendingSettle::SameForm {
+        let judgment = crate::PendingSettle::Discernible {
             typ: self.typ.clone(),
-            what: crate::SameForm::Keys,
+            what: crate::Discerned::Keys,
             spec: Arc::new(self.spec.clone()),
         };
         super::defer_judgment(ctx, judgment);

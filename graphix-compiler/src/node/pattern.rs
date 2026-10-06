@@ -1340,7 +1340,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             // (x-typecheck-generics-F5)
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
-            Type::Concrete | Type::Function | Type::Singleton | Type::OneNumber => {
+            Type::Concrete
+            | Type::Function
+            | Type::Singleton
+            | Type::OneNumber
+            | Type::Discernible => {
                 bail!("can't match on a constraint")
             }
             Type::Bottom
@@ -1470,6 +1474,12 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     // (PendingSettle::SameForm: Type::rep_ambiguity over a compared type,
     // Type::map_key_ambiguity over a map literal's type and every call's return type).
     // Pinned by lang::select::same_form_compare_refused and same_form_map_key_refused.
+    // 2026-10-06 claude: the rule is now the `Discernible` bound
+    // (PendingSettle::SameForm became PendingSettle::Discernible): comparisons, map
+    // literals and the stdlib functions that compare or hash carry it, a generic
+    // definition's variable takes it from its body and each call checks it, and a
+    // call's member left open is judged at the settle. Pins:
+    // lang::types::discernible_refuses_one_runtime_form, discernible_accepts.
     pub(super) fn shape_matches(
         &self,
         env: &Env,

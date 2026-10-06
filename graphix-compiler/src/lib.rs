@@ -44,7 +44,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Type},
+    typ::{FnType, Open, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1744,15 +1744,17 @@ pub(crate) enum PendingSettle {
     /// `outer ⊇ inner`, judged once the frame's cells have settled.
     Contains { outer: Type, inner: Type, spec: Arc<Expr> },
     /// A compared type, or a map's type, that must hold no union of two
-    /// members with one runtime form (only map keys for `Keys`).
-    SameForm { typ: Type, what: SameForm, spec: Arc<Expr> },
+    /// members with one runtime form (only map keys for `Keys`), open
+    /// cells read as any type they may yet bind.
+    Discernible { typ: Type, what: Discerned, spec: Arc<Expr> },
 }
 
-/// What a [`PendingSettle::SameForm`] judges.
-#[derive(Clone, Copy)]
-pub(crate) enum SameForm {
+/// What a [`PendingSettle::Discernible`] judges.
+pub(crate) enum Discerned {
     Compared,
     Keys,
+    /// A call's cell with the `Discernible` bound.
+    Bound(typ::TVar),
 }
 
 impl PendingSettle {
@@ -1807,11 +1809,11 @@ impl PendingSettle {
                 PendingSettle::Contains { outer, inner, spec } => {
                     (outer.check_contains(env, inner), spec)
                 }
-                PendingSettle::SameForm { typ, what, spec } => {
-                    (same_form(env, typ, *what), spec)
+                PendingSettle::Discernible { typ, what, spec } => {
+                    (discernible(env, typ, what), spec)
                 }
                 PendingSettle::Site { ftype, spec, .. } => {
-                    (same_form(env, &ftype.rtype, SameForm::Keys), spec)
+                    (site_bounds(env, ftype), spec)
                 }
                 _ => continue,
             };
@@ -1823,23 +1825,56 @@ impl PendingSettle {
     }
 }
 
-fn same_form(env: &Env, typ: &Type, what: SameForm) -> Result<()> {
+/// The bounds a call's settled cells must meet beyond their check: a
+/// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
+/// map read from data).
+fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
+    let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
+    ftype.collect_tvars(&mut tvs);
+    for tv in tvs.values() {
+        let Some(t) = tv.binding() else { continue };
+        for c in tv.cell_constraints().iter() {
+            match c {
+                Type::Discernible => discernible(env, &t, &Discerned::Bound(tv.clone()))?,
+                Type::Concrete => discernible(env, &t, &Discerned::Keys)?,
+                _ => (),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     let found = match what {
-        SameForm::Compared => typ.rep_ambiguity(env),
-        SameForm::Keys => typ.map_key_ambiguity(env),
+        Discerned::Compared | Discerned::Bound(_) => {
+            typ.rep_ambiguity(env, Open::Unknown)
+        }
+        Discerned::Keys => typ.map_key_ambiguity(env, Open::Unknown),
     };
     let Some((a, b)) = found else { return Ok(()) };
-    let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
-    format_with_flags(PrintFlag::DerefTVars, || match what {
-        SameForm::Compared => bail!(
-            "can't compare values of {}: {a} and {b} have the same runtime form; \
-             wrap them in distinct variants",
-            typ.resolve_tvars()
-        ),
-        SameForm::Keys => bail!(
-            "{a} and {b} can't share a map key type: they have the same runtime \
-             form; wrap them in distinct variants"
-        ),
+    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
+    if open(&a) || open(&b) {
+        let known = if open(&a) { b } else { a };
+        let typ = typ.resolve_tvars();
+        bail!(
+            "the members of {typ} must have distinct runtime forms, but a type variable \
+             in it isn't known here and may share {known}'s: annotate it"
+        )
+    }
+    format_with_flags(PrintFlag::DerefTVars, || {
+        let typ = typ.resolve_tvars();
+        let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
+        match what {
+            Discerned::Compared => bail!(
+                "can't compare values of {typ}: {a} and {b} have the same runtime \
+                 form; wrap them in distinct variants"
+            ),
+            Discerned::Keys => bail!(
+                "{a} and {b} can't share a map key type: they have the same runtime \
+                 form; wrap them in distinct variants"
+            ),
+            Discerned::Bound(tv) => Err(typ.not_discernible(&tv.name, &a, &b)),
+        }
     })
 }
 

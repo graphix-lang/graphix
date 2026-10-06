@@ -680,10 +680,15 @@ cycle, across workers; the compiler never pins threads.
   reference and a number or another reference, two function types.
   Checked per arm, after its narrowing, in the definition's check;
   members that share a constructor are told apart by their parts. A
-  compared type (`==` and the orderings) and a map key type may hold no
-  such pair anywhere (`Type::rep_ambiguity`, judged at the settle as
-  `PendingSettle::SameForm`). `flat_map`'s callback returns the
-  collection (`fn(x: 'a) -> Array<'b>`), so nothing splices by shape.
+  compared type (`==` and the orderings), a map key type and what the
+  stdlib compares or hashes (`uniq`, `min`/`max`, the sorts, `dedup`,
+  `map::` keys) may hold no such pair anywhere: the `'a: Discernible`
+  bound (`Type::rep_ambiguity`), which a generic definition's variable
+  takes from its body, so each call checks it; a member still open at
+  the statement's settle reads as any type it may yet bind
+  (`PendingSettle::Discernible`, `design/tvar_constraints.md`).
+  `flat_map`'s callback returns the collection (`fn(x: 'a) ->
+  Array<'b>`), so nothing splices by shape.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_captures` binds, after the select narrows the arm,
@@ -780,8 +785,9 @@ cycle, across workers; the compiler never pins threads.
   like `Concrete`: whatever binds the variable is no union, a primitive
   set of two or more included, so arithmetic over a type holding two
   numeric types is refused even against itself, and a generic
-  definition's at the call, by the check. Comparison takes any one
-  type, unions and mixed numerics included. `OneNumber`, a written
+  definition's at the call, by the check; the open members of a union
+  under it merge into one cell. Comparison takes any one type, unions
+  and mixed numerics included, if it is `Discernible`. `OneNumber`, a written
   bound only, holds a type to at most one numeric type (`'a: [Number,
   null] + OneNumber`). An interface declares every bound its
   implementation's variables carry, a typedef parameter's bound counting

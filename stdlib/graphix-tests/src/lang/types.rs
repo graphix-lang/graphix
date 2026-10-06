@@ -1572,7 +1572,7 @@ const PRINTED_BOUNDS: &str = r#"{
 async fn declared_bounds_print_in_the_header() -> Result<()> {
     for (src, header) in [
         (PRINTED_BOUND, "fn<'a: Number + Singleton>("),
-        (PRINTED_BOUNDS, "fn<'a: Eq + Ord>("),
+        (PRINTED_BOUNDS, "fn<'a: Eq + Ord + Discernible>("),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),
@@ -1749,4 +1749,137 @@ const BOTTOM_FED_OPERANDS: &str = r#"{
 
 run!(bottom_fed_operands, BOTTOM_FED_OPERANDS, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(5.0)))
+});
+
+// `Discernible`: no union anywhere in the type holds two members with one
+// runtime form. A comparison, a map key and the stdlib functions that
+// compare or hash (`uniq`, `min`, `max`, `array::sort`, `array::dedup`,
+// `list::sort`, the `map::` functions that take or make keys) carry it,
+// and a generic definition's variable takes it from its body, so each call
+// checks it; a member a call leaves open is judged once it binds.
+#[tokio::test(flavor = "current_thread")]
+async fn discernible_refuses_one_runtime_form() -> Result<()> {
+    for (src, says) in [
+        (
+            r#"{ let f = |x, y| x == y; let v: [string, `A] = "A"; f(v, v) }"#,
+            "same runtime form",
+        ),
+        (
+            r#"{
+              let f = |x, y| x == y;
+              let x = never();
+              let r = f([x, "a"], [x, "a"]);
+              x <- `A;
+              r
+            }"#,
+            "same runtime form",
+        ),
+        (
+            r#"{ let s: Array<[string, `A]> = ["b", `A]; array::len(array::sort(s)) }"#,
+            "same runtime form",
+        ),
+        (
+            r#"{ let s: Array<[string, `A]> = ["b", `A]; array::len(array::dedup(s)) }"#,
+            "same runtime form",
+        ),
+        (r#"{ let x: [string, `A] = "a"; uniq(x) }"#, "same runtime form"),
+        (r#"{ let x: [string, `A] = "a"; min(x, x) }"#, "same runtime form"),
+        (
+            r#"{ let f = 'a: Discernible |x: 'a| x; let v: [string, `A] = "A"; f(v) }"#,
+            "must be Discernible",
+        ),
+        (
+            r#"{
+              let g = |c, a| { let v = select c { true => a, false => "s" }; v == v };
+              g(true, "t")
+            }"#,
+            "annotate it",
+        ),
+    ] {
+        match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(msg.contains(says), "{src}: {msg}")
+            }
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+const DISCERNIBLE_ACCEPTS: &str = r#"{
+  let f = |x, y| x == y;
+  let g = |o: Option<'a>| o == o;
+  let h = |c, a: i64| { let v = select c { true => a, false => 0 }; v == v };
+  let k = 'a: Discernible |x: 'a| x;
+  [f(1, 1), g(null), g(2), h(true, 3), k("x") == "x", array::sort([3, 1]) == [1, 3]]
+}"#;
+
+run!(discernible_accepts, DISCERNIBLE_ACCEPTS, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => a.iter().all(|v| *v == Value::Bool(true)) && a.len() == 6,
+    _ => false,
+});
+
+// Under `Singleton` the open members of a union must be one type: they
+// merge into one cell, and two declared variables, which can't merge,
+// are refused.
+#[tokio::test(flavor = "current_thread")]
+async fn singleton_open_members_merge() -> Result<()> {
+    for (src, says) in [
+        (
+            r#"{
+              let g = |c, a, b| {
+                let s = select c { true => a, false => b };
+                let t = select c { true => b, false => a };
+                s + t
+              };
+              g(true, 1, 2.5)
+            }"#,
+            "does not contain",
+        ),
+        (
+            r#"{
+              let f = |s| s + s;
+              let p = never();
+              let q = never();
+              let r = f(select true { true => p, false => q });
+              p <- 1;
+              q <- 2.0;
+              r
+            }"#,
+            "cannot hold f64",
+        ),
+        (
+            r#"{
+              let f = 'a: Number, 'b: Number |c, a: 'a, b: 'b| {
+                let s = select c { true => a, false => b };
+                s + s
+              };
+              0
+            }"#,
+            "must be one type",
+        ),
+    ] {
+        match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(msg.contains(says), "{src}: {msg}")
+            }
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+const SINGLETON_MERGED_MEMBERS_RUN: &str = r#"{
+  let g = |c, a, b| {
+    let s = select c { true => a, false => b };
+    let t = select c { true => b, false => a };
+    s + t
+  };
+  g(true, 1, 2)
+}"#;
+
+run!(singleton_merged_members_run, SINGLETON_MERGED_MEMBERS_RUN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
 });

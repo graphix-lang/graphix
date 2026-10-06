@@ -5,8 +5,8 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, CoreTrait, Lazy, Mutability, NormKey, RefHist, RefPair, TVar, TraitId,
-        Type, TypeRef, node_addr, probe_key, setops::union_identical,
+        AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
+        TraitId, Type, TypeRef, node_addr, probe_key, setops::union_identical,
         tvar::would_cycle_inner,
     },
 };
@@ -430,6 +430,30 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// An open cell in `t` with the `Discernible` conjunct.
+fn discernible_cell(t: &Type) -> Option<TVar> {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => discernible_cell(&b),
+            None => tv
+                .cell_constraints()
+                .iter()
+                .any(|c| matches!(c, Type::Discernible))
+                .then(|| tv.clone()),
+        },
+        Type::Fn(_) => None,
+        t => {
+            let mut found = None;
+            t.for_each_child(&mut |c| {
+                if found.is_none() {
+                    found = discernible_cell(c)
+                }
+            });
+            found
+        }
+    })
+}
+
 /// The deref/expansion steps [`Type::set_covers_by_distribution`] takes
 /// to reach a head constructor before giving up on a chain of aliases.
 const HEAD_CHAIN_LIMIT: usize = 64;
@@ -445,7 +469,7 @@ impl Type {
         if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
     // CR claude for eric: [readability] When a trait bound refuses a type, the error is
@@ -460,7 +484,7 @@ impl Type {
     // the module context also shows the script's synthetic block scope ("compiling
     // module #do4611686018427394750::b", node/module.rs:771), where --check prints
     // "compiling module b". (x-typecheck-patterns-14)
-    fn contains_mismatch(&self, t: &Self) -> anyhow::Error {
+    fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
         if type_has_refused_open_cell(self)
@@ -470,7 +494,18 @@ impl Type {
         {
             return anyhow::anyhow!("{INFINITE_TYPE_MSG}");
         }
+        if let Some(e) = self.discernible_refusal(env, t) {
+            return e;
+        }
         anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
+    }
+
+    /// Why `self ⊇ t` fails when `self` holds an open `Discernible` cell
+    /// and `t` is not discernible.
+    pub fn discernible_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
+        let (a, b) = t.rep_ambiguity(env, Open::Benign)?;
+        let tv = discernible_cell(self)?;
+        Some(t.not_discernible(&tv.name, &a, &b))
     }
 
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
@@ -478,7 +513,7 @@ impl Type {
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
         let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
         let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
+        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
     pub(super) fn contains_int(
@@ -580,6 +615,8 @@ impl Type {
             (_, Self::Singleton) => Ok(false),
             (Self::OneNumber, t) => t.one_number_holds(env, commit),
             (_, Self::OneNumber) => Ok(false),
+            (Self::Discernible, t) => Ok(t.rep_ambiguity(env, Open::Benign).is_none()),
+            (_, Self::Discernible) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

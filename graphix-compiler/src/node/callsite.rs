@@ -497,7 +497,10 @@ impl Widening {
         }
         let (open, opened) = Self::open(formal, cells);
         if !open.contains(env, n.typ())? {
-            return check();
+            return match open.discernible_refusal(env, n.typ()) {
+                Some(e) => wrap!(n, Err(e)),
+                None => check(),
+            };
         }
         let probe = ContainsFlags::RigidCheck.into();
         let mut wider: LPooled<Vec<(TVar, Type)>> = LPooled::take();

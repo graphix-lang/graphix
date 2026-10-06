@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
+            window.path_to_searchindex_js = "../searchindex-695417b4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -191,7 +191,7 @@ val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -304,7 +304,7 @@ type TxnTree&lt;'k, 'v&gt;;
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-val tree: fn(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;

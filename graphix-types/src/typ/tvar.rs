@@ -565,6 +565,19 @@ impl Hash for TVar {
     }
 }
 
+/// Hand a cell's bounds to the open cells of its binding `t`.
+fn require_bounds(cons: &[Type], t: &Type) {
+    for c in cons {
+        match c {
+            Type::Concrete => t.require_concrete(),
+            Type::Singleton => t.require_singleton(),
+            Type::OneNumber => t.require_one_number(),
+            Type::Discernible => t.require_discernible(),
+            _ => (),
+        }
+    }
+}
+
 /// How a merge treats the var being merged away.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Merge {
@@ -726,15 +739,11 @@ impl TVar {
         // bind where one would do. Read the cell's predicates once as a set, and give
         // bind and copy one shared routine that applies them to the binding.
         // (t-tvar-10)
-        if self.requires_concrete() {
-            t.require_concrete();
-        }
-        if self.requires_singleton() {
-            t.require_singleton();
-        }
-        if self.requires_one_number() {
-            t.require_one_number();
-        }
+        // 2026-10-06 claude: bind and copy now read the cell's conjuncts once and
+        // apply them through one routine, `require_bounds`; the Discernible bound
+        // joined there. The other lists this CR names (settle.rs, contains.rs,
+        // lambda.rs, normalize.rs) are still `matches!` lists.
+        require_bounds(&self.cell_constraints(), &t);
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
@@ -953,16 +962,6 @@ impl TVar {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Function))
     }
 
-    /// Whether the cell holds the `Singleton` conjunct.
-    fn requires_singleton(&self) -> bool {
-        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Singleton))
-    }
-
-    /// Whether the cell holds the `OneNumber` conjunct.
-    fn requires_one_number(&self) -> bool {
-        self.cell().read().constraints.iter().any(|c| matches!(c, Type::OneNumber))
-    }
-
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -1002,29 +1001,16 @@ impl TVar {
         for c in to_add.iter() {
             lower(c, level)
         }
-        let (concrete, singleton, one_number) = {
+        let cons = {
             let mut sc = s_cell.write();
             if !decided(&sc) {
                 return;
             }
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
-            let has = |p: fn(&Type) -> bool| sc.constraints.iter().any(p);
-            (
-                has(|c| matches!(c, Type::Concrete)),
-                has(|c| matches!(c, Type::Singleton)),
-                has(|c| matches!(c, Type::OneNumber)),
-            )
+            sc.constraints.clone()
         };
-        if concrete {
-            binding.require_concrete();
-        }
-        if singleton {
-            binding.require_singleton();
-        }
-        if one_number {
-            binding.require_one_number();
-        }
+        require_bounds(&cons, &binding);
     }
 
     pub fn normalize(&self) -> Self {
@@ -1211,11 +1197,12 @@ impl Type {
     /// cells judged by their bindings, type references by their
     /// expansions. An open cell, alone or a member of a union, is
     /// admitted: a bind of a `Singleton` cell narrows the open members of
-    /// its binding ([`Self::require_singleton`]).
+    /// its binding ([`Self::require_singleton`]); two rigid ones are not,
+    /// since they can't be made one.
     pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, commit)), &mut parts)?;
-        Ok(parts.known <= 1)
+        Ok(parts.known <= 1 && !parts.rigid_pair())
     }
 
     /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
@@ -1259,6 +1246,7 @@ impl Type {
         if self.union_parts(None, &mut parts).is_err() {
             return;
         }
+        parts.merge_open();
         if let Some(narrow) = parts.narrowing() {
             for tv in parts.open.drain(..) {
                 tv.add_cell_constraint(narrow.clone())
@@ -1285,6 +1273,13 @@ impl Type {
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
         let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
+        if parts.rigid_pair() {
+            bail!(
+                "{} must be one type, but its type variables may differ",
+                self.resolve_tvars()
+            )
+        }
+        parts.merge_open();
         match parts.narrowing() {
             None => Ok(()),
             Some(narrow) => parts
@@ -1782,12 +1777,34 @@ impl UnionParts {
         Self { measure, known: 0, first: None, open: SmallVec::new() }
     }
 
+    /// Whether two different rigid cells are open members beside no
+    /// known one: nothing can make them one type.
+    fn rigid_pair(&self) -> bool {
+        let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
+        self.known == 0
+            && rigid.next().is_some_and(|a| rigid.any(|b| b.cell_addr() != a.cell_addr()))
+    }
+
+    /// Beside no known member, the open members must be one type: merge
+    /// them into one cell.
+    fn merge_open(&self) {
+        if self.known == 0
+            && let Some((first, rest)) = self.open.split_first()
+        {
+            for tv in rest {
+                if tv.cell_addr() != first.cell_addr() {
+                    tv.alias_cells(first)
+                }
+            }
+        }
+    }
+
     /// What each open member is narrowed to for the union to be one
     /// type: `None` when it has several known members already.
     fn narrowing(&self) -> Option<Type> {
         match (&self.first, self.known) {
             (Some(k), 1) => Some(k.clone()),
-            // CR claude for eric: [bug] With no known member, each open member gets a
+            // XCR claude for eric: [bug] With no known member, each open member gets a
             // Singleton conjunct of its own, and that does not make the union one type.
             // `['a, 'b]` passes as an arithmetic operand and its members later bind i64
             // and f64; this is the design doc's "two open members may still differ".
@@ -1801,6 +1818,13 @@ impl UnionParts {
             // compiler-bug path: "an instance at fn(s: [i64, f64]) ... of a definition
             // typed ...". The open members must be one type, not each a singleton.
             // probe: design/review-2026-10-05/repro/t-tvar-06.gx (t-tvar-06)
+            // 2026-10-06 claude: the open members are merged into one cell before
+            // this narrowing (UnionParts::merge_open, from require_singleton and
+            // narrow_singleton), and two rigid ones are refused (rigid_pair, in
+            // singleton_holds and narrow_singleton). This arm then gives the one
+            // merged cell its Singleton conjunct. Pins:
+            // lang::types::singleton_open_members_merge (both shapes of the probe,
+            // and two declared variables) and singleton_merged_members_run.
             (_, 0) => Some(Type::Singleton),
             _ => None,
         }

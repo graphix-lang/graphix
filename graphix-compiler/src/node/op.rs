@@ -319,13 +319,20 @@ macro_rules! compare_op {
             // references needs the same refusal at the call (a bound, as `Singleton`
             // is), and `array::sort` and map keys over references flip in the same way.
             // probe: design/review-2026-10-05/repro/c-error-op-04.gx (c-error-op-04)
+            // 2026-10-06 claude: comparisons now carry the `Discernible` bound, which
+            // a generic definition takes from its body and each call checks, but it
+            // does not cover this: a lone reference type has no two members to mix
+            // up, so `&i64 < &i64` is still Discernible. Refusing ordering over
+            // references could ride the same machinery (a second bound, or
+            // Discernible refusing references under the orderings only).
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => {
-                        let judgment = crate::PendingSettle::SameForm {
+                        t.require_discernible();
+                        let judgment = crate::PendingSettle::Discernible {
                             typ: t.clone(),
-                            what: crate::SameForm::Compared,
+                            what: crate::Discerned::Compared,
                             spec: Arc::new(self.spec.clone()),
                         };
                         super::defer_judgment(ctx, judgment);

@@ -76,7 +76,7 @@ val find_map: fn(l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Option<'b
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, l: List<'a>) -> List<'a>;
+val sort: fn<'a: Discernible>(?#dir: Direction, ?#numeric: bool, l: List<'a>) -> List<'a>;
 
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List<'a>) -> List<(i64, 'a)>;

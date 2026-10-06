@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
+            window.path_to_searchindex_js = "../searchindex-695417b4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -243,13 +243,13 @@ val is_err: fn(v: Any) -&gt; bool;
 val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Discernible&gt;(x: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Discernible&gt;(x: 'a, @args:'a) -&gt; 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing
@@ -275,7 +275,7 @@ val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; N
 
 /// when v updates return v if the new value is different from the previous value,
 /// otherwise return nothing.
-val uniq: fn(x: 'a) -&gt; 'a;
+val uniq: fn&lt;'a: Discernible&gt;(x: 'a) -&gt; 'a;
 
 /// when v updates place it's value in an internal fifo queue. when clock updates
 /// return the oldest value from the fifo queue. If clock updates and the queue is

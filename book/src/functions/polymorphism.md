@@ -107,6 +107,29 @@ caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.
 
+A third bound, `Discernible`, says the values of a type can be told
+apart at run time the way the type tells them apart. At run time a
+variant without arguments is a string, and a tuple, a struct, a list or
+a variant with arguments is an array, so in `[string, `A]` the string
+`"A"` and the variant `` `A `` are the same value. Comparing such
+values, sorting them, or using them as map keys would mix the two up,
+so `==` and the other comparisons, map keys, `uniq`, `min`, `max`,
+`array::sort` and the other functions that compare or hash need
+`Discernible`. A function whose body compares takes the bound on its
+type variable, as arithmetic adds `Singleton`, and a call refuses a type
+that isn't `Discernible`,
+
+```graphix
+〉let eq = |x, y| x == y
+〉let v: [string, `A] = "A"
+〉eq(v, v)
+error: ... [string, `A] must be Discernible here, but it holds string and `A,
+which have the same runtime form; wrap them in distinct variants
+```
+
+Wrapping the members in variants of their own, `` [`S(string), `A] ``,
+tells them apart.
+
 ## Higher Order Functions
 
 Since functions are first class, they can take other functions as arguments, and

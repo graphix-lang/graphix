@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-68ef8cf7.js";
+            window.path_to_searchindex_js = "searchindex-695417b4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2783,6 +2783,24 @@ equal, which is exactly what the signature said they need not be. A
 caller may still pass two values of the same type to a two-variable
 function; the promise is about what the body may assume, not about what
 callers may do.</p>
+<p>A third bound, <code>Discernible</code>, says the values of a type can be told
+apart at run time the way the type tells them apart. At run time a
+variant without arguments is a string, and a tuple, a struct, a list or
+a variant with arguments is an array, so in <code>[string, </code>A]<code>the string</code>“A”<code>and the variant ``</code>A `` are the same value. Comparing such
+values, sorting them, or using them as map keys would mix the two up,
+so <code>==</code> and the other comparisons, map keys, <code>uniq</code>, <code>min</code>, <code>max</code>,
+<code>array::sort</code> and the other functions that compare or hash need
+<code>Discernible</code>. A function whose body compares takes the bound on its
+type variable, as arithmetic adds <code>Singleton</code>, and a call refuses a type
+that isn’t <code>Discernible</code>,</p>
+<pre><code class="language-graphix">〉let eq = |x, y| x == y
+〉let v: [string, `A] = "A"
+〉eq(v, v)
+error: ... [string, `A] must be Discernible here, but it holds string and `A,
+which have the same runtime form; wrap them in distinct variants
+</code></pre>
+<p>Wrapping the members in variants of their own, <code>[`S(string), `A]</code>,
+tells them apart.</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically
@@ -5019,13 +5037,13 @@ val is_err: fn(v: Any) -&gt; bool;
 val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Discernible&gt;(x: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Discernible&gt;(x: 'a, @args:'a) -&gt; 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing
@@ -5051,7 +5069,7 @@ val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; N
 
 /// when v updates return v if the new value is different from the previous value,
 /// otherwise return nothing.
-val uniq: fn(x: 'a) -&gt; 'a;
+val uniq: fn&lt;'a: Discernible&gt;(x: 'a) -&gt; 'a;
 
 /// when v updates place it's value in an internal fifo queue. when clock updates
 /// return the oldest value from the fifo queue. If clock updates and the queue is
@@ -5444,10 +5462,8 @@ val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throw
 /// corresponding element in a
 val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
-/// return a new array where each element is the output of f applied to the
-/// corresponding element in a, except that if f returns an array then it's
-/// elements will be concatenated to the end of the output instead of nesting.
-val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// return the arrays f returns for each element of a, concatenated in order.
+val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Array&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)
@@ -5498,7 +5514,7 @@ val flatten: fn(a: Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
 /// return a new array with duplicate elements removed, preserving the order of
 /// first occurrence. Uses a hash set internally so the input does not need to
 /// be sorted. O(N) expected.
-val dedup: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val dedup: fn&lt;'a: Discernible&gt;(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
@@ -5515,7 +5531,7 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val sort: fn&lt;'a: Discernible&gt;(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.
@@ -5548,7 +5564,7 @@ val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 <h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
 <pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map
-val map: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val map: fn&lt;'k2: Discernible&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return a new map containing only the key-value pairs where f applied to
 /// (key, value) returns true
@@ -5556,7 +5572,7 @@ val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -
 
 /// filter_map returns a new map containing the outputs of f
 /// that were not null
-val filter_map: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val filter_map: fn&lt;'k2: Discernible&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
@@ -5566,22 +5582,22 @@ val fold: fn(m: Map&lt;'k, 'v&gt;, init: 'acc, f: fn(acc: 'acc, kv: ('k, 'v)) -&
 val len: fn(m: Map&lt;'k, 'v&gt;) -&gt; i64;
 
 /// get the value associated with the key k in the map m, or null if not present
-val get: fn(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Option&lt;'v&gt;;
+val get: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Option&lt;'v&gt;;
 
 /// get the value associated with the key k in the map m, or return the
 /// default value if k is not present in m
-val get_or: fn(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v) -&gt; 'v;
+val get_or: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v) -&gt; 'v;
 
 /// insert a new value into the map
-val insert: fn(m: Map&lt;'k, 'v&gt;, k: 'k, v: 'v) -&gt; Map&lt;'k, 'v&gt;;
+val insert: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, v: 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// update the value at k by applying f to the current value at k, or
 /// to the provided default if k is not present. returns the new map
 /// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
-val change: fn(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v, f: fn(v: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
+val change: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v, f: fn(v: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// remove the value associated with the specified key from the map
-val remove: fn(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Map&lt;'k, 'v&gt;;
+val remove: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Map&lt;'k, 'v&gt;;
 
 /// iter produces an update for every key-value pair in the map m.
 /// updates are produced in the order they appear in m.
@@ -6849,7 +6865,7 @@ val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -6962,7 +6978,7 @@ type TxnTree&lt;'k, 'v&gt;;
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-val tree: fn(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -7068,9 +7084,8 @@ val filter: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&
 /// Return a new list containing the non-null outputs of f.
 val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
-/// Return a new list where f is applied to each element. If f returns a
-/// list, its elements are inlined; otherwise the single value is kept.
-val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+/// Return the lists f returns for each element, concatenated in order.
+val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; List&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Fold the list from left to right: f(f(f(init, a0), a1), ...).
 val fold: fn(l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
@@ -7084,7 +7099,7 @@ val find_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws '
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn&lt;'a: Discernible&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;

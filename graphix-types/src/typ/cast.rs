@@ -1,9 +1,9 @@
 use crate::{
-    AbstractTypeRegistry, CAST_ERR_TAG,
+    AbstractTypeRegistry, CAST_ERR_TAG, PrintFlag,
     env::Env,
     errf,
     expr::WrittenAt,
-    list,
+    format_with_flags, list,
     stack::ensure_sufficient,
     typ::{Type, TypeRef, tval::NakedPrefix},
 };
@@ -11,7 +11,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
-use enumflags2::{BitFlags, bitflags};
+use enumflags2::{BitFlags, bitflags, make_bitflags};
 use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
@@ -315,9 +315,11 @@ impl Type {
                 None => Ok(None),
             },
             Type::Hole => Err(self.cast_fail("a type constructor", v)),
-            Type::Concrete | Type::Function | Type::Singleton | Type::OneNumber => {
-                Err(self.cast_fail("a constraint", v))
-            }
+            Type::Concrete
+            | Type::Function
+            | Type::Singleton
+            | Type::OneNumber
+            | Type::Discernible => Err(self.cast_fail("a constraint", v)),
             Type::Bottom | Type::Any => Ok(None),
             Type::Fn(_) => match v {
                 Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
@@ -766,6 +768,7 @@ impl Type {
             | Type::Concrete
             | Type::Function
             | Type::Singleton
+            | Type::Discernible
             | Type::OneNumber => false,
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
@@ -1076,6 +1079,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::Concrete
         | Type::Singleton
         | Type::OneNumber
+        | Type::Discernible
         | Type::Function => MemberFacts::EXACT,
     }
 }
@@ -1171,9 +1175,51 @@ fn rep_head(env: &Env, t: &Type) -> Option<Type> {
         | Type::Concrete
         | Type::Function
         | Type::Singleton
+        | Type::Discernible
         | Type::OneNumber => None,
         t => Some(t.clone()),
     })
+}
+
+/// The primitive tags a value of another type may share.
+const SHARED_PRIMS: BitFlags<Typ> =
+    make_bitflags!(Typ::{String | U64 | V64 | Map | Error | Array});
+
+/// Whether a value of `t` may also be a value of a type `t` doesn't hold.
+fn shares_form(env: &Env, t: &Type) -> bool {
+    ensure_sufficient(|| match &rep_head(env, t) {
+        None | Some(Type::Bottom | Type::Abstract { .. }) => false,
+        Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
+        Some(Type::Set(ts)) => ts.iter().any(|t| shares_form(env, t)),
+        Some(_) => true,
+    })
+}
+
+/// How a runtime-form judgment reads an open cell.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Open {
+    /// As no type yet: nothing collides with it. Inference may still
+    /// fill it.
+    Benign,
+    /// As any type it may yet bind: it collides with another open cell
+    /// and with every type whose form another type shares.
+    Unknown,
+}
+
+/// The pair `(a, b)` when one is an open cell [`Open::Unknown`] reads as
+/// colliding with the other.
+fn open_collision(env: &Env, a: &Type, b: &Type) -> Option<(Type, Type)> {
+    let open = |t: &Type| match t {
+        Type::TVar(tv) => tv.open_cell(),
+        _ => None,
+    };
+    let collides = match (open(a), open(b)) {
+        (Some(x), Some(y)) => x.cell_addr() != y.cell_addr(),
+        (Some(_), None) => shares_form(env, b),
+        (None, Some(_)) => shares_form(env, a),
+        (None, None) => false,
+    };
+    collides.then(|| (a.clone(), b.clone()))
 }
 
 /// The primitive tags a value of the (non-primitive) head `t` has.
@@ -1282,6 +1328,7 @@ fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
+    open: Open,
     a: &Type,
     b: &Type,
 ) -> Option<(Type, Type)> {
@@ -1289,11 +1336,15 @@ fn rep_collision(
         if revisits(seen, a, b) {
             return None;
         }
-        let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
-            return None;
+        let (Some(ha), Some(hb)) = (rep_head(env, a), rep_head(env, b)) else {
+            return match open {
+                Open::Benign => None,
+                Open::Unknown => open_collision(env, a, b),
+            };
         };
+        let (a, b) = (ha, hb);
         let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-            xs.map(|(x, y)| rep_collision(env, seen, x, y))
+            xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
                 .find(Option::is_some)
                 .flatten()
         };
@@ -1343,13 +1394,14 @@ impl Type {
     /// reference; two function types). A test that tells them apart can't
     /// tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
-        rep_collision(env, &mut RepSeen::default(), self, t)
+        rep_collision(env, &mut RepSeen::default(), Open::Benign, self, t)
     }
 }
 
 fn rep_ambiguity(
     env: &Env,
     seen: &mut AHashSet<Type>,
+    open: Open,
     keys_only: bool,
     t: &Type,
 ) -> Option<(Type, Type)> {
@@ -1359,7 +1411,7 @@ fn rep_ambiguity(
         }
         let t = rep_head(env, t)?;
         let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
-            ts.map(|t| rep_ambiguity(env, seen, keys_only, t))
+            ts.map(|t| rep_ambiguity(env, seen, open, keys_only, t))
                 .find(Option::is_some)
                 .flatten()
         };
@@ -1368,8 +1420,10 @@ fn rep_ambiguity(
                 if !keys_only {
                     for (i, a) in ts.iter().enumerate() {
                         for b in &ts[i + 1..] {
-                            if let Some(c) = a.rep_collision(env, b) {
-                                return Some(c);
+                            let c =
+                                rep_collision(env, &mut RepSeen::default(), open, a, b);
+                            if c.is_some() {
+                                return c;
                             }
                         }
                     }
@@ -1378,7 +1432,9 @@ fn rep_ambiguity(
             }
             Type::Map { key, value } => {
                 let keys = match keys_only {
-                    true => rep_ambiguity(env, &mut AHashSet::default(), false, key),
+                    true => {
+                        rep_ambiguity(env, &mut AHashSet::default(), open, false, key)
+                    }
                     false => None,
                 };
                 keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
@@ -1396,14 +1452,44 @@ fn rep_ambiguity(
 impl Type {
     /// Two members of one union anywhere in this type (not under a
     /// reference, a function or an abstract type) with one runtime form:
-    /// comparing values of this type can't tell them apart.
-    pub fn rep_ambiguity(&self, env: &Env) -> Option<(Type, Type)> {
-        rep_ambiguity(env, &mut AHashSet::default(), false, self)
+    /// comparing values of this type can't tell them apart. `Discernible`
+    /// holds of a type without one.
+    pub fn rep_ambiguity(&self, env: &Env, open: Open) -> Option<(Type, Type)> {
+        rep_ambiguity(env, &mut AHashSet::default(), open, false, self)
     }
 
     /// [`Self::rep_ambiguity`] of every map key type this type holds:
     /// a map can't tell such keys apart.
-    pub fn map_key_ambiguity(&self, env: &Env) -> Option<(Type, Type)> {
-        rep_ambiguity(env, &mut AHashSet::default(), true, self)
+    pub fn map_key_ambiguity(&self, env: &Env, open: Open) -> Option<(Type, Type)> {
+        rep_ambiguity(env, &mut AHashSet::default(), open, true, self)
+    }
+
+    /// The refusal of `self` as a binding of `'name: Discernible`, where
+    /// [`Self::rep_ambiguity`] found `a` and `b`.
+    pub fn not_discernible(&self, name: &str, a: &Type, b: &Type) -> anyhow::Error {
+        format_with_flags(PrintFlag::DerefTVars, || {
+            let (t, a, b) = (self.resolve_tvars(), a.resolve_tvars(), b.resolve_tvars());
+            let what = match name.starts_with('_') {
+                true => format_compact!("{t} must be Discernible here, but it"),
+                false => format_compact!("'{name} must be Discernible, but {t}"),
+            };
+            anyhow::anyhow!(
+                "{what} holds {a} and {b}, which have the same runtime form; wrap them \
+                 in distinct variants"
+            )
+        })
+    }
+
+    /// Hand the `Discernible` conjunct to every open cell a comparison
+    /// of this type reaches.
+    pub fn require_discernible(&self) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => b.require_discernible(),
+                None => tv.add_cell_constraint(Type::Discernible),
+            },
+            Type::ByRef(..) | Type::Fn(_) | Type::Abstract { .. } => (),
+            t => t.for_each_child(&mut |c| c.require_discernible()),
+        })
     }
 }

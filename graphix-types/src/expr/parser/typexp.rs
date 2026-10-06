@@ -93,8 +93,10 @@ where
         .map(|_| Type::Singleton);
     let one_number = attempt(spaces().with(string("OneNumber")).skip(not_prefix()))
         .map(|_| Type::OneNumber);
+    let discernible = attempt(spaces().with(string("Discernible")).skip(not_prefix()))
+        .map(|_| Type::Discernible);
     sep_by1(
-        choice((concrete, function, singleton, one_number, typ())),
+        choice((concrete, function, singleton, one_number, discernible, typ())),
         attempt(spaces().with(token('+'))),
     )
 }

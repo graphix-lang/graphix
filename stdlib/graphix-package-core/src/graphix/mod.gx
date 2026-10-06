@@ -17,9 +17,9 @@ let filter_err = |e: Result<'a, 'b>| -> Error<'b> 'core_filter_err;
 let filter = |v: 'a, f: fn(v: 'a) -> bool throws 'e| -> 'a throws 'e 'core_filter;
 let is_err = |e: Any| -> bool 'core_is_err;
 let error = |e: 'a| -> Error<'a> 'core_error;
-let max = |a: 'a, @args: 'a| -> 'a 'core_max;
+let max = 'a: Discernible |a: 'a, @args: 'a| -> 'a 'core_max;
 let mean = |v: [Number, Array<Number>], @args: [Number, Array<Number>]| -> Result<f64, `MeanError(string)> 'core_mean;
-let min = |a: 'a, @args: 'a| -> 'a 'core_min;
+let min = 'a: Discernible |a: 'a, @args: 'a| -> 'a 'core_min;
 let once = |v: 'a| -> 'a 'core_once;
 // CR claude for eric: [risk] #n is typed Any and the builtins read it with
 // cast_to::<usize>, so any value type-checks and nothing is reported: a value that does
@@ -41,7 +41,7 @@ let shl = 'a: Int |a: 'a, b: 'a| -> 'a 'core_shl;
 let shr = 'a: Int |a: 'a, b: 'a| -> 'a 'core_shr;
 let product = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_product;
 let sum = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_sum;
-let uniq = |v: 'a| -> 'a 'core_uniq;
+let uniq = 'a: Discernible |v: 'a| -> 'a 'core_uniq;
 let queue = |#clock: Any, #flush: Any = null, v: 'a| -> 'a 'core_queue;
 let queuefn = 'a: Function |#count: [&mut i64, null] = null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 let hold = |#clock: Any, v: 'a| -> 'a 'core_hold;

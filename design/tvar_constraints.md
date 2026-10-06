@@ -287,14 +287,16 @@ instance's own re-check refused it, at elaboration.
   several. An open cell, alone or a member of a union, is admitted.
 - A bind of a `Singleton` cell narrows the open members of its binding
   (`Type::require_singleton`): beside one known member each must lie
-  within it, so `[i64, 'x]` cannot become `[i64, f64]`; with none, each
-  is a `Singleton` (two open members may still differ).
+  within it, so `[i64, 'x]` cannot become `[i64, f64]`; with none, they
+  merge into one cell, which takes the conjunct (`UnionParts::
+  merge_open`). Two rigid cells can't merge, so a union of two declared
+  variables is not a `Singleton` (`UnionParts::rigid_pair`).
 - Like `Concrete`, it is never a witness and travels as a conjunct. It
   refuses no open or ⊥ cell at the terminal settle: an operand cell
   left open there has `Number` for its only witness, which the
   conjunct refuses.
 - Comparison carries no such bound: it takes any one type, unions and
-  mixed numerics included (Eric, 2026-10-04).
+  mixed numerics included (Eric, 2026-10-04). It carries `Discernible`.
 
 ### `OneNumber`: a conjunct that is a predicate
 
@@ -312,6 +314,42 @@ adds it; it is written, for a nullable number of one numeric type:
   (`Type::require_one_number`). Beside a numeric member an open one may
   still bind another numeric type: no upper bound says "not a number,
   or this one".
+- Like `Singleton`, it is never a witness and refuses no open or ⊥ cell
+  at the terminal settle.
+
+### `Discernible`: a conjunct that is a predicate
+
+`'a: Discernible` (`Type::Discernible`, parsed only as a bound) says no
+union anywhere in whatever binds the cell holds two members with one
+runtime form (`Type::rep_ambiguity`): a tuple, struct, list or payload
+variant and an array, a bare variant and a string, a reference and a
+number or another reference, two function types. Members that share a
+constructor are told apart by their parts; a union under a reference,
+a function or an abstract type is not looked at. Values of such a type
+compare and hash as their types do. Comparison (`==` and the
+orderings), a map literal's key type and the stdlib functions that
+compare or hash (`uniq`, `min`, `max`, `array::sort`, `array::dedup`,
+`list::sort`, the `map::` functions that take or make keys, `db`'s tree
+keys) carry it; a generic definition's variable takes it from its body,
+as arithmetic hands it `Singleton`, so each call checks it.
+
+- `Discernible ⊇ t` reads an open cell as no type yet: nothing collides
+  with it (`Open::Benign`).
+- A bind of a `Discernible` cell hands the conjunct to every open cell
+  its binding holds where a comparison looks (`Type::
+  require_discernible`): not under a reference, a function or an
+  abstract type.
+- A conjunct on each open cell can't say that two members of one union
+  must differ from each other, so the rest is judged at the statement's
+  settle (`PendingSettle::Discernible` for a comparison and a map
+  literal; each `Discernible` cell of a call's signature, from the
+  site's settle): the cells filled by then are read as they stand, and
+  one still open reads as any type it may yet bind (`Open::Unknown`):
+  it collides with another open member and with a member whose form
+  another type shares. In a generic definition that refuses `['a,
+  string]` and `['a, 'b]` as compared or key types; annotate them.
+- A `Concrete` cell's binding is judged at the same settle for its map
+  keys (a map read from data).
 - Like `Singleton`, it is never a witness and refuses no open or ⊥ cell
   at the terminal settle.
 

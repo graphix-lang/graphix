@@ -173,6 +173,7 @@ impl<'a> TVal<'a> {
                 | Type::Function
                 | Type::Singleton
                 | Type::OneNumber
+                | Type::Discernible
                 | Type::Bottom
                 | Type::Any
                 | Type::Error(_),

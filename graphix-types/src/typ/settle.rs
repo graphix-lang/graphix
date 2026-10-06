@@ -44,7 +44,11 @@ impl TVar {
             // conjunct reaching this cell has no finite witness.
             if matches!(
                 c,
-                Type::Concrete | Type::Function | Type::Singleton | Type::OneNumber
+                Type::Concrete
+                    | Type::Function
+                    | Type::Singleton
+                    | Type::OneNumber
+                    | Type::Discernible
             ) || c.is_trait_ref(env)
                 || would_cycle_inner(addr, c)
             {

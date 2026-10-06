@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
+            window.path_to_searchindex_js = "../searchindex-695417b4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -186,10 +186,8 @@ val filter_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throw
 /// corresponding element in a
 val map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
-/// return a new array where each element is the output of f applied to the
-/// corresponding element in a, except that if f returns an array then it's
-/// elements will be concatenated to the end of the output instead of nesting.
-val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, Array&lt;'b&gt;] throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
+/// return the arrays f returns for each element of a, concatenated in order.
+val flat_map: fn(a: Array&lt;'a&gt;, f: fn(x: 'a) -&gt; Array&lt;'b&gt; throws 'e) -&gt; Array&lt;'b&gt; throws 'e;
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)
@@ -240,7 +238,7 @@ val flatten: fn(a: Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
 /// return a new array with duplicate elements removed, preserving the order of
 /// first occurrence. Uses a hash set internally so the input does not need to
 /// be sorted. O(N) expected.
-val dedup: fn(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val dedup: fn&lt;'a: Discernible&gt;(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
@@ -257,7 +255,7 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val sort: fn&lt;'a: Discernible&gt;(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.

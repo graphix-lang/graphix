@@ -12,7 +12,7 @@ val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 /// Open a tree within the transaction. Pass null for the default tree.
 /// All trees must be opened before any data operations on any tree in
 /// the transaction.
-val tree: fn<'k: Concrete, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
+val tree: fn<'k: Concrete + Discernible, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;

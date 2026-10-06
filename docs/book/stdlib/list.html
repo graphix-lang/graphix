@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
+            window.path_to_searchindex_js = "../searchindex-695417b4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -245,9 +245,8 @@ val filter: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; List&
 /// Return a new list containing the non-null outputs of f.
 val filter_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
-/// Return a new list where f is applied to each element. If f returns a
-/// list, its elements are inlined; otherwise the single value is kept.
-val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; ['b, List&lt;'b&gt;] throws 'e) -&gt; List&lt;'b&gt; throws 'e;
+/// Return the lists f returns for each element, concatenated in order.
+val flat_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; List&lt;'b&gt; throws 'e) -&gt; List&lt;'b&gt; throws 'e;
 
 /// Fold the list from left to right: f(f(f(init, a0), a1), ...).
 val fold: fn(l: List&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
@@ -261,7 +260,7 @@ val find_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws '
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn&lt;'a: Discernible&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;
