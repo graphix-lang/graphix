@@ -834,9 +834,10 @@ test is a result.
 
 ## Working conventions
 
-- Code review uses `// CR <name> for <name>: text` near the code; when
-  addressed it becomes `// XCR ...`; XCRs are deleted when resolved or
-  turned back into CRs with an explanation.
+- Code review uses `// CR <name> for <name>: [tag] text (id)` near the
+  code; a live CR's text is never edited: it is X'd, noted
+  (`// <date> claude: ..`) or deleted. Load `/cr-discipline` before
+  touching one.
 - PRs carry a concise summary, testing notes and related issues. Rebuild
   the book when docs or examples change.
 - Examples in `book/src/examples/` are documentation and test corpus at
