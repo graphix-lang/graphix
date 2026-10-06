@@ -34,6 +34,16 @@ where
 {
     (
         spaces().with(path_root()),
+        // CR claude for eric: [bug] typath reads its segments with fname(), which notes
+        // "`true` is a reserved word and cannot be used as a name" for any reserved
+        // word (mod.rs:411-424). Pattern heads run typath as a probe (pattern()'s
+        // type-predicate attempt in a select arm, abstract_pattern in every structure
+        // pattern). So a correct literal `true`, `false` or `null` leaves the note
+        // behind, and the report blames the literal for the next failure on it: `select
+        // b { true, false => 1 }` (a `,` where `|` was meant) prints the note at
+        // `true`. A type path never binds a name: read its segments with a parser that
+        // refuses reserved words without noting a reason, and keep the note in name().
+        // probe: design/review-2026-10-05/repro/t-parser-b-04.gx (t-parser-b-04)
         sep_by1(spaces().with(choice((fname(), typname()))), string("::")),
     )
         .then(
@@ -429,6 +439,18 @@ parser! {
             attempt(string("Abstract").skip(not_prefix())).then(|_| {
                 unexpected_any("Abstract<..> is legal only as the whole body of a type definition")
             }),
+            // CR claude for eric: [bug] typeprim takes any lowercase name Typ::from_str
+            // knows (array, error, string, decimal, bool, i64, ...) without looking at
+            // what follows. So in every type position `array::Direction` parses as the
+            // primitive `array` and leaves `::Direction` unparsed: `let d:
+            // array::Direction = ..` fails with "Unexpected `:`", while
+            // `list::Direction`, `use array::Direction` and value paths like
+            // `array::sort` all work. The same refuses a type path through a user
+            // module named error, string, decimal and the like (`let y: error::E =
+            // ..`). The `self` alternative below already has the guard this one needs:
+            // not_followed_by(string("::")). probe:
+            // design/review-2026-10-05/repro/t-parser-b-01.gx (graphix --check)
+            // (t-parser-b-01)
             attempt(typeprim()).map(|typ| Type::Primitive(typ.into())),
             attempt(string("self").skip(not_prefix()).skip(not_followed_by(string("::"))))
                 .with(optional(attempt(between(sptoken('<'), sptoken('>'), typ()))))

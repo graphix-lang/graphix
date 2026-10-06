@@ -1,0 +1,13 @@
+// x-builtin-effects-19 (found while vetting the thread_local scratch buffer
+// in fc_join): str::join drops the separators after leading empty parts.
+//
+// fc_join (stdlib/graphix-package-str/src/lib.rs:315) tests `buf.is_empty()`
+// to mean "this is the first part", so while every part so far was "" the
+// next part is pushed without a separator.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-19.gx
+//
+// expected: (",a", ",,b", "a,,b")
+// observed: ("a", "b", "a,,b")
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(str::join(#sep: ",", "", "a"), str::join(#sep: ",", ["", "", "b"]), str::join(#sep: ",", "a", "", "b"))

@@ -1,0 +1,31 @@
+// x-builtin-effects-09: under a restored registration image the check skips
+// the defaults a call through a package interface val omits.
+//
+// The image writes a function type's own lambda id only, so `val rand`'s type
+// comes back with no lambda ids; CallSite::check_omitted_defaults finds no
+// definition and leaves rand's `#start: 'a = 0.0` / `#end: 'a = 1.0` to the
+// bind, after the check has decided the cells. A cold compile checks them.
+//
+// commands (fresh cache; the first --check compiles cold and writes the
+// registration entry, every later command restores it):
+//   export XDG_CACHE_HOME=$(mktemp -d)
+//   graphix --check design/review-2026-10-05/repro/x-builtin-effects-09.gx
+//   graphix design/review-2026-10-05/repro/x-builtin-effects-09.gx
+//   graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-09.gx
+//   graphix-fuzz check design/review-2026-10-05/repro/x-builtin-effects-09.gx
+//
+// expected: the program is well typed (x: f64); every run prints a number.
+// observed: --check exit 0; the run with the registration restored is refused,
+//   "in: rand::rand(#clock: null) | in: 0.0 | type mismatch 'a: _ does not
+//   contain f64", exit 1; --no-cache prints a number, exit 0; graphix-fuzz
+//   check: "DIVERGENCE — the check accepted what the build refused", exit 1.
+//
+// The same skip makes a warm --check accept an ill-typed call. With the
+// registration entry present, `graphix --check` on the one-line program
+//   rand::rand(#clock: null) + 1
+// exits 0, while `graphix --no-cache --check` refuses it ("cannot compute
+// ..: f64 + i64"), as design/parallel_compile.md says the check must.
+let x = never();
+x <- rand::rand(#clock: null);
+println(x);
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

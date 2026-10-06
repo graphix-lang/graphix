@@ -1,0 +1,62 @@
+// t-contains-07: abstract type parameters are covariant whatever the
+// representation does with them.
+//
+// contains (graphix-types/src/typ/contains.rs:629) holds
+// Abstract{id, p0} ⊇ Abstract{id, p1} when each p0[i] ⊇ p1[i]. Sink's
+// representation takes 'a as a function argument, so widening Sink<i64> to
+// Sink<[i64, string]> lets `q.0("hello")` pass a string to `|x: i64|`.
+// The transparent typedef `type Sink<'a> = fn(x: 'a) -> i64` with the same
+// annotation is refused ("Sink<[i64, string]> does not contain fn(x: i64)
+// -> i64"): function arguments are contravariant, abstract parameters are not.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-contains-07.gx
+//          timeout 5 graphix --no-cache design/review-2026-10-05/repro/t-contains-07.gx
+//          timeout 5 graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-contains-07.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/t-contains-07.gx
+//
+// expected: --check refuses `let q: Sink<[i64, string]> = p`.
+//
+// observed (HEAD c722befe, debug build): --check exits 0.
+//   JIT run: prints a heap address plus one (e.g. 140341957385841): the
+//     kernel reads the pointer of the string "hello" stored in `y` as an i64.
+//   --no-fusion: logs "arith error ... Unexpected `h`": `y` holds "hello".
+//   graphix-fuzz check: DIVERGENCE, interp Trace([]) vs jit
+//     Trace([1:i64:139664217246833]); its log also shows the run-time bind
+//     refusing what the check accepted: "a run-time bind at q.0("hello")
+//     did not type: an instance at fn(x: [i64, string]) -> i64 of a
+//     definition typed fn(x: i64) -> ..", after which the call runs anyway.
+//   With `let y = 0;` and a last line `y + 1` the JIT run panics instead and
+//   the runtime dies: fusion/kernel.rs:243 "kernel param `y`: runtime
+//   String("hello") does not match the compiled Scalar(I64) slot".
+//
+// A Rust-backed stdlib abstract has the same hole with no function in its
+// representation (dir is any fresh path):
+//   let d = db::open("<dir>")$;
+//   let t: db::Tree<i64, i64> = db::tree(d, "nums")$;
+//   let put = |t: db::Tree<i64, [i64, string]>, v: [i64, string]| db::insert(t, 1, v)$;
+//   let ins = put(t, "hello");
+//   let w = db::get(t, ins ~ 1)$$;
+//   w + 1
+// passes --check, stores "hello" in the on-disk tree whose recorded types
+// are (i64, i64), and the JIT run panics at kernel.rs:243 (runtime
+// String("hello") in `w`). A plain `let wide: db::Tree<i64, [i64, string]>
+// = t` followed by `db::insert(wide, 1, "hello")` is accepted the same way;
+// reading back with `let v = db::get(t, ins ~ 1)$; let w = v$; w + 1` the
+// JIT prints the string's address plus one.
+//
+// The open-constructor arm (contains.rs:1302-1303, 'c<a0> ⊇ 'c<a1> by
+// a0 ⊇ a1) is the same rule at a second site, and it does not go through
+// the Abstract arm: with Sink, y and p as below,
+//   trait Feed { val feed: fn(self<'a>, x: 'a) -> i64 };
+//   impl Feed for Sink<'_> { let feed = |s, x| s.0(x) };
+//   let widen = 'c: Feed |s: 'c<i64>| -> 'c<[i64, string]> s;
+//   Feed::feed(widen(p), "hello");
+//   y$ + 1
+// passes --check (widen's return check is App ⊇ App), and the JIT run
+// prints the string's address plus one as well.
+type Sink<'a> = Abstract<fn(x: 'a) -> i64>;
+let y: [i64, null] = null;
+let p: Sink<i64> = Sink(|x: i64| { y <- x; 0 });
+let q: Sink<[i64, string]> = p;
+q.0("hello");
+y$ + 1

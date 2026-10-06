@@ -1,0 +1,35 @@
+// x-expr-walks-06: a union member that is a variable bound to a function
+// type is accepted as identical to a direct function type without welding
+// their open cells, so the checker accepts an ill-typed program.
+//
+// identical_linked (graphix-types/src/typ/contains.rs:350) is
+// union_identical && link_equal. union_identical compares a bound variable
+// through its binding against any type (typ/setops.rs:80), and Fn equality
+// treats distinct open cells as equal; link_equal_inner has no
+// (TVar, non-TVar) arm, so that pair falls to `_ => true` (contains.rs:345)
+// and nothing is welded. Here `r` is [null, 'h] with 'h bound to f's type
+// (fn('a) -> <y's cell>) and the connect brings [null, fn('c) -> <z's cell>]:
+// the set check takes the identity shortcut, y's and z's cells stay apart,
+// y settles to string (through str::len) and z to i64.
+//
+// command: graphix --no-cache x-expr-walks-06.gx
+//          graphix --no-cache --no-fusion x-expr-walks-06.gx
+// expected: refused at `z <- 42` (z is string, as it is when `r` holds the
+//           function directly instead of through `g`)
+// observed: --check accepts it; the node-walk prints 42 for `raw`, a
+//           string-typed binding; the JIT panics the runtime with
+//           "kernel param `raw`: runtime I64(42) does not match the compiled
+//           String slot" (fusion/kernel.rs:243), "graphix runtime is dead"
+let y = never();
+let z = never();
+let f = |x| x ~ y;
+let k = |x| x ~ z;
+let g = |h, c| select c { true => h, false => null };
+let r = g(f, true);
+let t = sys::time::timer(duration:50.ms, false);
+r <- t ~ select true { true => k, false => null };
+let raw = select r { null as _ => "none", h => h("str") };
+let n = str::len(raw);
+z <- 42;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+raw

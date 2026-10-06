@@ -55,6 +55,14 @@ best() {
 
 printf '%-18s %14s %14s %12s\n' "bench" "jit(s)" "node-walk(s)" "speedup"
 printf '%-18s %14s %14s %12s\n' "-----" "------" "------------" "-------"
+# CR claude for eric: [bug] This glob also picks up the par_*.gx benches written for
+# par.sh, and the loop runs each of them under --no-fusion as well. par_mandel's
+# node-walk holds 22.8M retained `iterate` activations in its first cycle at about 27 KB
+# each (~620 GB), so that pass can never finish. Under a 6 GB cap it is OOM-killed after
+# 5 s; with no cap it grows at over 1 GB/s and exhausts a 62 GB box well before the 120
+# s timeout. Leave par_* to par.sh: skip them here, or move them to their own directory.
+# Separately, the default binary target/release/graphix never exists, because builds go
+# to ~/tmp/target. probe: design/review-2026-10-05/repro/examples-02.sh (examples-02)
 for prog in "$dir"/*.gx; do
     name=$(basename "$prog" .gx)
     jit=$(best "$prog")

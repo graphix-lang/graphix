@@ -1,0 +1,31 @@
+// t-seq-08: attributes on a seq let/connect statement are silently dropped
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-seq-08.gx
+//
+// expected: a compile error. Each attribute below is refused when the same
+//   statement stands outside a seq:
+//     #[sync] let f = |x| sys::time::after_idle(..)
+//       -> "#[sync]: this function is async — its body reaches an async
+//          builtin or an async callee"
+//     #[native] let y = ..
+//       -> "#[native] annotates a computation; a declaration or a bare
+//          variable read has nothing to fuse — put it on the initializer"
+//     #[bogus] b <- ..
+//       -> "unknown attribute #[bogus]" (also under --check)
+// observed: no error; the program prints 42 and exits 0. `--expand` shows
+//   no attribute on steps S0..S2 of the lowered machine. An expression
+//   statement keeps its attribute (`#[native] f(41) + 1` as the last
+//   statement is refused: "did not fully fuse"), so only let, connect,
+//   until and try-let statements lose theirs.
+let b = 0;
+let r = seq {
+  #[sync]
+  let f = |x| sys::time::after_idle(duration:1.ms, x);
+  #[native]
+  let y = f(41) + 1;
+  #[bogus]
+  b <- y;
+  y
+};
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0));
+r

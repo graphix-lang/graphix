@@ -1,0 +1,45 @@
+// db2-01: an open db::txn holds sled's process-wide write lock across cycles:
+// any other db op, on any database, blocks until the txn ends; deadlocks.
+//
+// run_transaction (stdlib/graphix-package-db/src/txn.rs:244) runs the whole
+// interactive transaction inside sled's Transactional::transaction closure,
+// where TxnCtx::run (txn.rs:187-194) waits in rx.recv() for the program's
+// next command. sled 0.34.7 holds TransactionalTrees::stage() =
+// concurrency_control::write() for the whole closure (transaction.rs:385,
+// 466-481): one static RwLock shared by every sled Db in the process. Every
+// plain Tree op (get/insert/remove/cas, Iter::next), generate_id, flush and
+// sled's background log flusher take its read side (tree.rs:160/418/466/542,
+// iter.rs:155, context.rs:88, iobuf.rs:1012, flusher.rs:67).
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/db2-01.gx
+//   (same with --no-fusion)
+// expected: txn insert done / plain get done 1 / committed / 7, exit 0
+// observed: txn insert done, then nothing until SIGKILL (exit 137). The get
+//   never returns, so the commit sampled on it is never sent.
+// gdb at the hang: thread graphix-db-txn parked in mpsc recv under
+//   TxnCtx::run under [Tree]::transaction; the DbGetEv blocking thread and
+//   sled's "log flusher" parked in concurrency_control::read ->
+//   RawRwLock::lock_shared_slow.
+// control: commit before the plain get (`commit(ins ~ txn)`, then
+//   `db::get(t, c ~ "x")`) prints every line and exits 0.
+// variants that hang the same way: the plain get on a second database file;
+//   two txns on two databases sequenced write A, write B, commit A, commit B
+//   (B's first write waits in stage() for A, A's commit waits for B's write);
+//   a read-only txn that is never committed blocks a later unrelated
+//   db::insert forever.
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/x.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "a")$;
+let pre = db::insert(t, "x", 1)$;
+let txn = db::txn::begin(pre ~ db)$;
+let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+let ins = db::txn::insert(tt, "k", 7)$;
+println(ins ~ "txn insert done");
+let v = db::get(t, ins ~ "x")$;
+println("plain get done [v]");
+let c = db::txn::commit(v ~ txn)$;
+println(c ~ "committed");
+let r = db::get(t, c ~ "k")$;
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0));
+r

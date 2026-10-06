@@ -1,0 +1,41 @@
+// c-pattern-09: an abstract-type pattern `Box(x)` over a union is accepted
+// where only an irrefutable pattern is allowed, and never binds on a
+// non-Box value.
+//
+// The Abstract arm of StructPatternNode::compile_int_inner
+// (graphix-compiler/src/node/pattern.rs:623) only checks that the predicate
+// CONTAINS Box; the tuple, variant and struct arms also require the predicate
+// to BE their constructor ("variant patterns can't match [`A(i64), `B]").
+// is_refutable (pattern.rs:975) ignores the nominal tag test. So a let
+// (bind.rs:218) and a lambda argument (lambda.rs:969) accept `Box(x)` over
+// [Box, i64], bind_inner (pattern.rs:774-783) skips x when the value is 5,
+// and x keeps its previous value. A select arm `[Box, i64] as Box(z)` counts
+// as covering [Box, i64]: the select below is accepted as exhaustive although
+// no arm matches 5, and adding the needed `_ => -1` arm is refused with
+// "unreachable arm: the earlier arms already cover the whole scrutinee".
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-pattern-09.gx
+//          (the same with --no-fusion, and cold/warm image; graphix-fuzz run
+//          on the program without the exit line: every mode agrees)
+//
+// expected: refused at compile time, as the variant analogs are
+//   (`let `A(x): [`A(i64), `B] = v` -> "variant patterns can't match ..."),
+//   e.g. "abstract patterns can't match [i64, Box]".
+// observed (HEAD c722befe, debug build): `--check` exits 0; running prints
+//   select at n=0: 0
+//   select at n=1: 0
+//   select at n=2: 20
+//   (0, Box(0), 0, 0)
+//   (1, 5, 0, 0)
+//   (2, Box(20), 20, 20)
+//   At n=1 v is 5, yet x, f(v) and the select all report the stale 0.
+//   `|Box(x): [Box, null]| x + 1` applied to null produces nothing at all.
+type Box = Abstract<i64>;
+let n = array::iter([0, 1, 2]);
+let v: [Box, i64] = select n { 1 => 5, k => Box(k * 10) };
+let Box(x): [Box, i64] = v;
+let f = |Box(y): [Box, i64]| y;
+let s = select v { [Box, i64] as Box(z) => z };
+println("select at n=[n]: [s]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(n, v, x, f(v))

@@ -1,0 +1,27 @@
+// tests-types-04: an overflowing float literal parses to inf, which the
+// printer writes as text the parser refuses, so `graphix fmt` calls a valid
+// program a formatter bug.
+//
+// The literal parser (graphix-types/src/expr/parser/mod.rs:662, and
+// literal_pattern, patternexp.rs:257) takes netidx's parse_value, whose flt
+// (../netidx/netidx-value/src/parser.rs:388) turns `1e400` into inf with
+// str::parse. Literal (graphix-types/src/expr/print.rs:353) prints only a
+// finite f64 bare; inf goes through fmt_ext as `f64:inf`, which flt does not
+// accept. An out-of-range integer (`u8:300`, `99999999999999999999`) is
+// refused at parse instead. The round-trip proptest never draws a non-finite
+// float: proptest 1.11's any::<f64>() covers only the finite classes.
+//
+// command: graphix fmt --stdout design/review-2026-10-05/repro/tests-types-04.gx
+//          (graphix --no-cache on this file prints "inf inf" and exits 0)
+// expected: the parse refuses `1e400` as it refuses `u8:300`, or fmt prints
+//           the file back unchanged
+// observed (HEAD c722befe, debug build): exit 1,
+//   design/review-2026-10-05/repro/tests-types-04.gx: formatter bug: the
+//   formatted text does not parse: parse error at line: 24, column: 13 ...
+//       let x = f64:inf;
+//   Error: 1 file(s) could not be formatted
+// The same for `-1e400`, `f64:1e309` and `f32:1e40` alone.
+let x = 1e400;
+let y = f32:1e40;
+println("[x] [y]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

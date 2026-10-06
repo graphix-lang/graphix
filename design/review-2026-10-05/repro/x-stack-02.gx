@@ -1,0 +1,32 @@
+// x-stack-02: GxAbstract eq/cmp/Pack/drop recurse once per abstract nesting
+// level with no stack guard; comparing two 1000-deep nominal lists aborts.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-stack-02.gx
+//
+// expected: prints true and exits 0 (depth 100 does).
+//
+// observed: "thread 'tokio-rt-worker' has overflowed its stack / fatal
+// runtime error: stack overflow, aborting", exit 134, with or without
+// --no-fusion. The backtrace alternates Value::eq and the GxAbstract vtable
+// eq closure (graphix-types/src/abstract_value.rs:130): ~188 levels fill
+// the 2 MiB runtime thread on the dev build (300 aborts), ~500 on quick.
+//
+// Same abort at depth 1000 with the comparison replaced by `a < b`,
+// array::sort([a, b]), map::insert(map::insert({}, a, 1), b, 2) or
+// pack::write_bytes(a). Drop: with type W = Abstract<[W, i64]>, rebuilding
+// a = build(100000 + c, W(1)) on a 20ms timer aborts in
+// Arc<AbstractInner>::drop_slow recursion when the old value drops (30000
+// works). Decode: 3000 nested W headers (1b <len> <GxAbstract uuid> <id>
+// 01 57 00 ... 06 <i64>, 92 KB) read by pack::read after the program built
+// any abstract value abort in GxAbstract::decode recursion under a
+// bytes::Take chain one level per nesting.
+type N = Abstract<[`Nil, `Cons(i64, N)]>;
+let rec build = |n: i64, acc: N| -> N select n {
+    0 => acc,
+    n => build(n - 1, N(`Cons(n, acc)))
+};
+let a = build(1000, N(`Nil));
+let b = build(1000, N(`Nil));
+let r = a == b;
+sys::exit(sys::time::after_idle(duration:100.ms, r ~ 0));
+r

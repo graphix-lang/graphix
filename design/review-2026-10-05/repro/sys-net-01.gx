@@ -1,0 +1,42 @@
+// sys-net-01: subscribe/call cast error deliveries to the success type:
+// unsubscribe and rpc failures become success values (0, null, ..).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/sys-net-01.gx
+//          (same with --no-fusion, and through a cold or warm image)
+//
+// Subscribe::update and RpcCall::update (stdlib/graphix-package-sys/src/
+// net.rs) pass every delivered value through the success-type cast,
+// errors included; Type::cast_inner casts an Error to a primitive with
+// netidx's Value::cast, which treats it as Bool(false): 0 for i64, null
+// for null, false for bool, the text error:".." for string.
+//
+// expected: the publisher going away (300 ms in), the rpc handler that
+// returns an error and the call with a misspelled argument each yield an
+// error (`SubscribeError(..) / `RpcError(..)):
+//   sub: value 42
+//   sub: error ..
+//   rpc-err-handler: error ..
+//   rpc-bad-arg: error ..
+//
+// observed (the order between lines may vary):
+//   sub: value 42
+//   rpc-bad-arg: value null
+//   rpc-err-handler: value 0
+//   sub: value 0
+//
+// Raw deliveries (GXDBG_RPC=1): error:["Boom", "bad"] and
+// error:"no such argument vall". A call to a path nobody publishes gives
+// "value 0" after netidx's 10 s subscribe timeout.
+let up = true;
+let t = sys::time::timer(duration:300.ms, false);
+up <- t ~ false;
+select up { true => sys::net::publish("/local/un", i64:42), false => null };
+let s: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> = sys::net::subscribe("/local/un");
+println(select s { error as e => "sub: error [e]", v => "sub: value [v]" });
+sys::net::rpc(#path: "/local/rpcerr", #doc: "d", #spec: null, #f: |a: null| a ~ error(`Boom("bad")));
+sys::net::rpc(#path: "/local/setter", #doc: "d", #spec: {val: {default: i64:0, doc: "v"}}, #f: |a: {val: i64}| a ~ null);
+let r1: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/rpcerr", null);
+let r2: Result<null, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/setter", {vall: 42});
+println(select r1 { error as e => "rpc-err-handler: error [e]", v => "rpc-err-handler: value [v]" });
+println(select r2 { error as e => "rpc-bad-arg: error [e]", v => "rpc-bad-arg: value [v]" });
+sys::exit(sys::time::after_idle(duration:2.s, 0))

@@ -1,0 +1,48 @@
+// t-typ-mod-02: the pattern compiler's alias chase fills a typedef body's
+// write-once resolution cell mid-compile, so a name a later sibling
+// declares resolves to the outer definition it shadows, for every use of
+// the alias.
+//
+// StructPatternNode::compile_int_inner (graphix-compiler/src/node/pattern.rs:436)
+// expands a Ref predicate with lookup_ref until it is no Ref. For `u`, typed
+// A1, the second step resolves the B in A1's BODY, a cell every expansion of
+// A1 shares, in the env being compiled: the block's `type B = i64` is not
+// registered yet, so TypeRef::resolve_in (graphix-types/src/typ/mod.rs:627)
+// fills the cell with the outer B for good. A2, the same text in the same
+// scope, is first expanded at typecheck under the full env and means the
+// block's B. design/env_independent_typerefs.md: "A fill is correct iff the
+// resolving env already holds the name's FINAL target"; a typedef body may
+// name a later sibling (types.rs typedef_body_names_a_later_sibling).
+// `let u: (A1, i64) = never()` (no destructuring, so no chase on A1) prints
+// ("A1", "A2").
+//
+// A definition's check under its captured env (GXLambda body check and
+// DefTable::record's seed_refs_seen over the def's env) fills the same way:
+// replace the `let (u, n)` line with `let g = |x: i64| { let q: [A1, null] =
+// never(); x };` and both arms with `[A1, null] as _` / `[A2, null] as _`
+// (probe `[i64, string, null]`): ("not A1", "A2").
+// File level, core prelude: `type C = Pos; let (o, n): (C, i64) = never();
+// type Pos = {x: i64, y: i64}; let c: C = {x: 3, y: 4}; c.x` is refused
+// ("C does not contain {x: i64, y: i64}"); with `let o: [C, null] = null` in
+// place of the destructuring let it prints 3.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-typ-mod-02.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=force, a cold and a warm
+//          image; graphix-fuzz check: AGREE, every engine gives the same answer)
+//
+// expected: ("A1", "A2") (A1 and A2 are one definition text in one scope, and
+//           the block's own B is their final target)
+// observed (HEAD c722befe, debug build): ("not A1", "A2")
+type B = string;
+let r = {
+  type A1 = B;
+  type A2 = B;
+  let (u, n): (A1, i64) = never();
+  type B = i64;
+  let probe: [i64, string] = 1;
+  let t1 = select probe { A1 as _ => "A1", _ => "not A1" };
+  let t2 = select probe { A2 as _ => "A2", _ => "not A2" };
+  (t1, t2)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

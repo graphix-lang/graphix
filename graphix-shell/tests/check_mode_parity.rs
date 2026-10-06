@@ -8,6 +8,17 @@ use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use std::path::Path;
 
+// CR claude for eric: [test-gap] This comparison cannot fail. Mode::Check runs
+// GXRt::check with CFlag::CheckOnly, which returns after typecheck0
+// (graphix-compiler/src/lib.rs:1958) before anything reads ctx.fusion.enabled, and the
+// package root always compiles with fusion off, so both sides run the same code:
+// witness 00 prints the same `i64` diagnostic with and without --no-fusion. That leaves
+// 'a pass the fusion gate owns must never change what the typechecker sees' unpinned.
+// Instead, drive each witness as separate per-statement compiles inside
+// ctx.rt.with_ctx, the REPL's shape where fusion runs between statements
+// (kernel_outlives_jit_reset in stdlib/graphix-tests/src/lib_tests/lsp_fusion.rs does
+// this). Compile once with FusionDisabled and once without, and compare the later
+// statement's error. (tests-shell-compiler-03)
 async fn check_err(file: &Path, no_fusion: bool) -> String {
     let mut b = ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Source::File(file.to_path_buf())));

@@ -1,0 +1,22 @@
+// sys-io-12: timer(d, false) never fires when its repeat arg arrives after
+// its timeout.
+//
+// The timeout fires at init while `r` is still bottom, so Timer::update takes
+// the `(Some(s), None, _)` arm (stdlib/graphix-package-sys/src/time.rs:333-336)
+// and only stores it. When `r` arrives the `(None, Some(r), true)` arm
+// schedules only if `repeat.will_repeat()` (time.rs:327), which is false for
+// Repeat::No, so the one-shot is never armed. `~ 1` in place of `~ false`
+// (documented the same: "do this 1 time") fires once, `~ true` or `~ 2`
+// start the timer, and `let r = false` (present at init) fires once.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/sys-io-12.gx
+// expected: "count 0" then "count 1" (repeat false = fire once)
+// observed: "count 0" only; the timer never fires
+let r = never();
+r <- sys::time::timer(duration:50.ms, false) ~ false;
+let t = sys::time::timer(duration:100.ms, r);
+let n = 0;
+n <- t ~ n + 1;
+println("count [n]");
+sys::exit(sys::time::timer(duration:1.5s, false) ~ 0)

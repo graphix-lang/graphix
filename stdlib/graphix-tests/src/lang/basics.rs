@@ -21,6 +21,14 @@ async fn bind_ref_arith() -> Result<()> {
 "#;
     let e = gx.compile(ArcStr::from(e)).await?;
     let eid = e.exprs[0].id;
+    // CR claude for eric: [test-gap] This reads exactly one batch, and that batch comes
+    // from the root's init cycle. GX::new leaves the root's expressions in `updated`
+    // (graphix-rt/src/gx.rs:694), so the run loop's first pass runs a cycle and sends
+    // its batch before init returns (the log prints 'first cycle time' before 'runtime
+    // start wait'). That batch has no Updated event, so neither assert runs, and the
+    // test passes whatever the expression evaluates to. Make it a run! fixture like
+    // mod0 below (SCOPE already evaluates the same expression), or loop until
+    // Updated(eid, _) arrives. (tests-lang-d-06)
     match rx.recv().await {
         None => bail!("runtime died"),
         Some(mut ev) => {

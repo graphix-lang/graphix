@@ -189,6 +189,17 @@ pub fn compute_3d_ranges<X: GXExt>(
     (pad_range(x_min, x_max), pad_range(y_min, y_max), pad_range(z_min, z_max))
 }
 
+// CR claude for eric: [bug] The range code lets ±inf through. The extent loops here and
+// in draw.rs's Bar arm skip NaN but keep inf, and pad_range turns an infinite end or a
+// span wider than f64::MAX into (-inf, inf) and an all-inf series into (NaN, NaN). User
+// x/y/z ranges and the drag/zoom views also reach build_cartesian_2d/3d unchecked; on a
+// small chart handle_drag divides by a 0 px plot rect. Over an infinite span plotters'
+// compute_f64_key_points never leaves its tick loop, so one `1.0 / 0.0` sample freezes
+// the GUI thread at 100% CPU for good (line, bar and 3D alike), and a NaN range trips
+// plotters' NaN assert and panics the draw. Skip non-finite samples in the extents,
+// make pad_range total (finite, no overflow), and check every range handed to plotters
+// (finite, min < max) before building the chart. probe:
+// design/review-2026-10-05/repro/gui-chart-01.rs (gui-chart-01)
 pub fn pad_range(min: f64, max: f64) -> (f64, f64) {
     if min > max {
         return (-1.0, 1.0);
@@ -212,6 +223,13 @@ pub fn tick_precision(range: f64) -> usize {
     }
 }
 
+// CR claude for eric: [bug] chrono implements DateTime ± TimeDelta with expect(), so a
+// time series whose padded x range leaves chrono's range panics the draw and takes the
+// window down. One point at datetime:"+262142-12-31T23:59:59Z" overflows `max + 1h`
+// (224), and points at 2026-01-01 and that date overflow `max + pad` (228). Graphix
+// builds such a datetime and a netidx publisher can send one. Use
+// checked_add_signed/checked_sub_signed and clamp to MIN_UTC/MAX_UTC. probe:
+// design/review-2026-10-05/repro/gui-chart-14.rs (gui-chart-14)
 pub fn pad_time_range(
     min: DateTime<Utc>,
     max: DateTime<Utc>,

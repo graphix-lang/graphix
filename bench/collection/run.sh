@@ -13,10 +13,24 @@
 #   graphix     path to the graphix binary (default: target/release/graphix
 #               or $GRAPHIX if set)
 
+# CR claude for eric: [structure] This script is bench/run.sh minus the fork-mode note
+# that only bench/run.sh got (its usage line still says bench/run.sh), so the next
+# change to timing or parsing will land in one copy only. Let bench/run.sh take the
+# corpus directory, and delete this copy. Both copies and bench/par.sh default to
+# target/release/graphix, and the copies advise `cargo build --release`. This workspace
+# builds into ~/tmp/target, so that default never exists here. Default to cargo's target
+# directory under the quick profile instead. (ide-tooling.r2-15)
 set -u
 iters=${1:-3}
 graphix=${2:-${GRAPHIX:-target/release/graphix}}
 timeout_s=120
+# CR claude for eric: [structure] This script is bench/run.sh minus the fork-mode note
+# in its header: every other line is the same, including the usage line that names
+# bench/run.sh. Only this line ties it to its corpus, so each change to the runs, flags
+# or result parsing (as --no-netidx was) must be made in both, and the header has
+# already drifted. Let bench/run.sh take the corpus directory as an argument and delete
+# this copy, or reduce it to an exec of ../run.sh with its own directory.
+# (ide-tooling-14)
 dir="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ ! -x "$graphix" ]]; then

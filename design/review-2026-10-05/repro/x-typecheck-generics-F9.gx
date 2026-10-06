@@ -1,0 +1,35 @@
+// x-typecheck-generics-F9: a rank-2 formal whose quantifier name also names
+// an outer signature variable shares its cell.
+//
+// `fn<'a: Number>` on `f` declares its own quantifier, but the signature's
+// name aliasing (tvar.rs Type::alias_tvars, Fn arm, reached from
+// Lambda::compile) merges it with `x`'s 'a. h's body still calls f as
+// rank-2, while at the call `x: 1` binds the shared cell to i64 before f's
+// argument is checked, so the "rigid" check of `g: fn(y: i64) -> i64`
+// passes. g then runs on 2.5 and writes it into the i64 `st`.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F9.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F9.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-typecheck-generics-F9.gx
+//
+// expected: the check refuses h(1, gs[0]$) as it does when the quantifier is
+// renamed (`fn<'b: Number>(y: 'b) -> 'b`) or when `f` comes before `x`:
+//   type mismatch fn<'b: Number>(y: 'b) -> 'b does not contain fn(y: i64) -> i64
+//
+// observed: --check exits 0. The fused run panics and the runtime dies:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `st`: runtime F64(2.5) does not match the compiled Scalar(I64) slot
+//   Error: runtime did not respond
+// --no-fusion prints 0 then 7.5 for the i64 expression `st * 3`, and logs
+//   a run-time bind at f(2.5) did not type: an instance at fn(y: f64) -> f64
+//   of a definition typed fn(y: i64) -> ..
+// With the static callee `h(1, g)` the check accepts and elaboration refuses
+// with that same message. The same hole opens through a .gxi
+// `val h: fn(x: 'a, f: fn<'a: Number>(y: 'a) -> 'a) -> f64`.
+let h = |x: 'a, f: fn<'a: Number>(y: 'a) -> 'a| f(f64:2.5);
+let st: i64 = 0;
+let g = |y: i64| { st <- y; y };
+let gs = [g];
+let b = h(1, gs[0]$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+st * 3

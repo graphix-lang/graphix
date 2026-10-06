@@ -220,6 +220,18 @@ struct Params {
     #[arg(long = "expand")]
     expand: bool,
     /// run the program in the specified file instead of starting the REPL
+    // CR claude for eric: [bug] A standalone binary (graphix package build-standalone)
+    // is this main with a package whose main_program() is Some, and lib.rs:245 runs the
+    // embedded program only in Mode::Repl, so this positional takes the app's first
+    // argument as a script: `myapp input.csv` compiles the CSV as Graphix, `myapp
+    // hello` fails with 'No such file or directory', and `myapp --verbose` is a clap
+    // error. program_args only collects what follows a file, so the embedded program
+    // can never receive a command-line argument through sys::args() or args::parse.
+    // Separately, lib.rs:229 adds argv[0] only for Source::File, so a Source::Internal
+    // program's sys::args() has no argv[0], against its doc, and args::parse takes its
+    // first real argument as the binary name; netidx-tools/src/admin/tui.gx reads
+    // sys::args()[0] as its server and depends on that shape. probe:
+    // design/review-2026-10-05/repro/shell-08.sh (shell-08)
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
     /// - unhandled, no-unhandled: warn about unhandled ? operators (default)
@@ -418,6 +430,29 @@ fn tokio_main(
                 #[cfg(not(feature = "sys"))]
                 Some(_) => bail!("netidx: sources require the sys feature"),
                 None => {
+                    // CR claude for eric: [readability] canonicalize()? has no context,
+                    // so `graphix nosuchfile.gx` (and --check) prints only 'Error: No
+                    // such file or directory (os error 2)'; name the path with
+                    // `.with_context(..)`. The netidx: error at line 405 carries 34
+                    // spaces from a lost line continuation. Stale text elsewhere:
+                    // lib.rs:352 logs 'runtime exited' when the program failed to
+                    // compile, and graphix-rt/src/gx.rs:357 calls a failed program
+                    // entry 'the registration image'. lsp_backend.rs:61 credits
+                    // lsp_mode with turning fusion off, but CheckOnly does that
+                    // (gx.rs:837-841). design/program_image.md:3-4 calls the built
+                    // program image a proposal, line 58 leaves registration/ out of the
+                    // store path, and line 262 says fusion-on programs are not imaged.
+                    // graphix-shell/src/AGENTS.md is a hand-written note from the
+                    // initial commit sitting beside the generated root AGENTS.md.
+                    // (shell-18)
+                    // CR claude for eric: [readability] canonicalize's io error carries
+                    // no path, so `graphix nosuch.gx` and `graphix --check nosuch.gx`
+                    // print only "Error: No such file or directory (os error 2)".
+                    // `graphix somedir` with no main.gx inside prints the same thing,
+                    // from RootFile::load's bare `tokio::fs::canonicalize(file).await?`
+                    // (graphix-types/src/expr/resolver.rs:531), and never mentions
+                    // main.gx. `graphix fmt` and module resolution already name the
+                    // path; add it as context at both canonicalize calls. (x-errors-20)
                     let path = PathBuf::from(&**f).canonicalize()?;
                     let path = if path.is_dir() { path.join("main.gx") } else { path };
                     match path.parent() {
@@ -469,6 +504,21 @@ fn main() -> Result<()> {
         }
         None => (),
     }
+    // CR claude for eric: [bug] This loads the netidx config before any flag is read,
+    // so every run resolves it, --check and --no-netidx included. With no netidx
+    // config, Config::local_only daemonizes a machine-local resolver (a re-exec of this
+    // binary on 127.0.0.1:59200) that outlives the run, and without --no-netidx
+    // tokio_main then builds a Publisher and Subscriber up front (line 360) whether or
+    // not the program touches sys::net. design/netidx_extraction.md says a runtime that
+    // never touches sys::net has no network and that --check constructs nothing. Probe:
+    // NETIDX_LOCAL_ONLY_RESOLVER_PORT=59291 graphix --no-netidx --check
+    // design/review-2026-10-05/repro/sys-net-16.gx exits 0 and leaves a graphix process
+    // listening on 127.0.0.1:59291. Resolve the config only when NetHandles
+    // materializes, and never under --no-netidx. Two doc errors nearby:
+    // stdlib/graphix-package-core/src/testing.rs:275 says tests share one
+    // process-internal netidx (each context builds its own), and
+    // book/src/stdlib/sys/net.md omits the 'a: Concrete and 'b: Concrete bounds that
+    // net.gxi declares on subscribe and call. (sys-net-16)
     let cfg = match &p.config {
         None => Config::load_default_or_local_only(),
         Some(p) => Config::load(p),

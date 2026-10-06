@@ -186,12 +186,33 @@ fn compile_inner<R: Rt, E: UserEvent>(
             }
         }
     }
+    // CR claude for eric: [bug] A fork attribute stops the other attributes on its
+    // expression from being checked. This branch returns before `def_asserts` are
+    // registered, so `let rec f = #[serial] #[tail_recursive] |n: i64, acc: i64| ..`
+    // compiles even with a non-tail self-call. A fix here also needs annotated_lambda
+    // to see through ForkControl. On a decorated `let`, fork_on_body (:116-127) strips
+    // the parens around the lambda and their decorations with them, so `#[serial] let f
+    // = #[tail_recursive] (|x| x + 1)` runs and `#[serial] let f = #[bogus] (|x| x +
+    // 1)` passes even --check. probe: design/review-2026-10-05/repro/c-data-map-03.gx
+    // (prints 4; deleting #[serial] from either line makes that line be refused).
+    // (c-data-map-03)
     if let Some(kind) = fork {
         // on a definition it applies to the body of every instance
         if let Some(spec) = fork_on_body(&spec) {
             return compile_inner(ctx, flags, spec, scope, top_id, statement);
         }
         let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
+        // CR claude for eric: [bug] The wrapper gets the decorated spec itself, so it
+        // shares the child's id and carries the child's other attributes. #[native] is
+        // then dispatched on the ForkControl, which never emits, and is refused ("fork
+        // control runs its child under flags of its own") even though the child fused.
+        // `#[parallel] let f = |xs: Array<i64>| -> Array<i64> #[native] array::map(xs,
+        // |x| x * 2)` and `|x: i64| -> i64 #[serial] #[native] (x * 2 + 1)` are
+        // refused, while `#[parallel] (#[native] array::map(..))` passes. The shared id
+        // also makes DefTable::record drop both nodes' rows (lambda.rs:161), so every
+        // instance checks that node itself instead of substituting. Give the wrapper a
+        // spec of its own that carries only the fork attribute. probe:
+        // design/review-2026-10-05/repro/c-data-map-06.gx (c-data-map-06)
         return Ok(ForkControl::new(spec, kind, node));
     }
     if !def_asserts.is_empty() {
@@ -199,6 +220,16 @@ fn compile_inner<R: Rt, E: UserEvent>(
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
+        // CR claude for eric: [bug] This records the assertion under CFlag::CheckOnly
+        // too. A check returns before analysis::analyze (lib.rs:1958), and
+        // check_def_assertions is the only thing that removes an entry, so a checked
+        // assertion is never retired. The language server checks every edit with
+        // CheckOnly on one runtime, so each check leaves one entry per
+        // #[sync]/#[async]/#[tail_recursive] definition, and its spec pins that check's
+        // AST and its Arc<Origin>, the whole source text. A 500 KB file with one tiny
+        // #[sync] function grows the server by about 500 KB per edit, without bound.
+        // Skip recording under CheckOnly and keep the "annotates a function definition"
+        // error. probe: design/review-2026-10-05/repro/c-lib-03.py (c-lib-03)
         let mut pending = ctx.def_assertions.lock();
         for kind in def_asserts.drain(..) {
             if !pending.iter().any(|a| a.id == id && a.kind == kind) {
@@ -328,6 +359,17 @@ fn compile_kind<R: Rt, E: UserEvent>(
             scope,
             top_id,
         ),
+        // CR claude for eric: [bug] Every Constant is typed
+        // Type::Primitive(Typ::get(v)), but the literal parser (netidx's parse_value,
+        // graphix-types/src/expr/parser/mod.rs:660) also yields `error:<v>` and
+        // `abstract:<base64>` values. So `error:"boom"`, exactly how the shell prints
+        // an Error<string>, is typed bare `error`, which no Error<T> contains except
+        // Error<Any>. `let f = |e: Error<string>| e.0; f(error:"boom")` is refused
+        // ("Error<string> does not contain error"), and `.0` on the literal gives
+        // "expected tuple not error". Type an error constant as Error<type of its
+        // payload>, or refuse the non-primitive forms in the parser and point at
+        // error(..). probe: design/review-2026-10-05/repro/c-data-map-09.gx
+        // (c-data-map-09)
         ExprKind::Constant(v) => Ok(Constant::new(
             v.clone(),
             Type::Primitive(Typ::get(v).into()),

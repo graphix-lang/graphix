@@ -4,6 +4,13 @@
 // tail-recursive kernel called from the init callback: the loop's
 // chunks fork across the pool. Prints the first cycle and the 9 that
 // follow separately.
+// CR claude for eric: [doc-drift] k runs 0..10. `first` is stamped after the k=0
+// computation and t1 after the k=10 one, so steady_s times 10 recomputations, not 'the
+// 9 that follow' (11 computations in all). par_wide.gx:6-7 says 59 where it is 60, and
+// bench/README.md:185 and 189 repeat 59 and 9. README:200's '4-thread cycle's 50' ms is
+// 0.45 s / 9; over 10 cycles it is 45 ms. Say 10 and 60, or stop the loops at k == 9
+// and k == 59. probe: `count(r)` sampled at `done` reads 11 here (at 40x30) and 61 in
+// par_wide (at depth 3). (examples-06)
 let t0 = sys::time::now(0);
 let w = 800;
 let h = 600;

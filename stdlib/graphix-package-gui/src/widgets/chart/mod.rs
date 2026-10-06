@@ -42,6 +42,19 @@ pub(crate) struct ChartW<X: GXExt> {
     height: TRef<X, LengthV>,
     style: TRef<X, OptChartStyle>,
     /// Set to true when data changes; draw() clears the cache and resets.
+    // CR claude for eric: [bug] `dirty` resets only the geometry cache. The rest of
+    // `ChartState` is iced tree state that iced keeps by position: x_view/y_view, the
+    // 3D yaw/pitch/scale offsets, the snap point and the drag. So a chart compiled into
+    // the slot of a panned chart is drawn through the old chart's view
+    // (draw.rs:477-478, 548-549), and so is a chart whose datasets switch between
+    // numeric and datetime. On a time-series chart a numeric view is read as ms since
+    // 1970, which puts 2026 data about 1e12 px off the plot. A debug build then panics
+    // with "attempt to add with overflow" in plotters (datetime.rs:38), a release build
+    // clamps every point onto the plot's left edge, and only a double-click clears it.
+    // Drop the view state when the chart it was taken on, or that chart's mode,
+    // changes. probe: design/review-2026-10-05/repro/gui-chart-05.rs (pan, then a
+    // select swaps in a time-series chart; the same swap without the pan draws fine).
+    // (gui-chart-05)
     dirty: Cell<bool>,
 }
 

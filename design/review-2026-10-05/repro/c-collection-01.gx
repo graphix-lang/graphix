@@ -1,0 +1,29 @@
+// c-collection-01: flat_map splices any callback result whose runtime value
+// is an array, so a tuple, struct, payload-variant or List 'b is mistyped.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/c-collection-01.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/c-collection-01.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-collection-01.gx
+//
+// The check types r as Array<(i64, i64)> (`let r: Array<i64> = ..` is
+// refused: "Array<i64> does not contain Array<(i64, i64)>"), but
+// Flavor::extend (graphix-compiler/src/node/collection.rs:1639) splices
+// every Value::Array, and a tuple is one, so r is [1, 10, 2, 20] in both
+// engines (make the last line `r`).
+//
+// expected: [11, 22] in every mode.
+// observed: graphix-fuzz check exits 1, "DIVERGENCE — fusion/JIT bug
+// (interp != jit)", interp Trace([]), jit Trace([0:[i64:0, i64:0, i64:0,
+// i64:0]]); graphix prints [0, 0, 0, 0] fused and nothing with --no-fusion
+// (the node-walk's field read of an i64 bottoms).
+//
+// Same class, both engines:
+// `array::flat_map([1, 2, 3], |x| select x { 2 => [], n => {id: n, sq: n * n} })`
+// is [["id", 1], ["sq", 1], ["id", 3], ["sq", 9]], not two structs;
+// `array::flat_map([1, 2], |x| `A(x))` is ["A", 1, "A", 2];
+// `array::flat_map([1, 2], |x| [<x, x>])` is [1, [1, []], 2, [2, []]];
+// `list::flat_map([<1, 2, 3>], |x| (x, x * 10))`, typed List<(i64, i64)>,
+// is [<1, 2, 3>]: a 2-slot array passes list::is_list, and the JIT's
+// graphix_value_buf_extend_from_list makes the same value test.
+let r: Array<(i64, i64)> = array::flat_map([1, 2], |x| (x, x * 10));
+array::map(r, |p| p.0 + p.1)

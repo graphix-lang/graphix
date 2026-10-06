@@ -1,0 +1,35 @@
+// f-select-01: a pure guard's fire is never folded into the select's
+// consulted accumulator, so the JIT drops the select fire that a guard
+// constant makes at an init or wake view.
+//
+// `guard_is_pure_of_binds` (graphix-compiler/src/fusion/emit/select.rs:880)
+// admits constants. Such a guard is emitted lazily in the chain
+// (select.rs:824-830) and its STALE bit never reaches `acc`; the prologue
+// path (select.rs:807-810) folds it. A constant fires at an init view and
+// at an arm's wake, so the consulted guard `n > 0` fires there and the
+// node-walk's select emits (node/select.rs EmissionPlanes::new;
+// design/organic_firing.md delta 2). The arm `_` is first selected at
+// epoch 2 while in0 stands (arm 0 consumed its fire), so `f(in0)` sees a
+// stale scrutinee: the node-walk writes y <- 1, the JIT does not.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-select-01.gx
+//
+// expected (both engines, as the node-walk):
+//   Trace([0:i64:-1]; []; [1:i64:1]; [1:i64:2])
+// observed:
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([0:i64:-1]; []; [1:i64:1]; [1:i64:2])
+//     jit: Trace([0:i64:-1]; []; []; [1:i64:2])
+//
+// Controls: the same guard through a let (`let zero = i64:0; n > zero`,
+// the prologue path) and an arm body `n + i64:0` both write in both
+// engines; with no guard neither writes. `_ if true => v` diverges the
+// same way; so does the wake schedule (in1=1; in1=0; in0=3; in1=2), and a
+// self-recursive `g` whose tail select carries the guard.
+// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:1; in0=i64:2
+{
+  let f = |v: i64| select v { n if n > i64:0 => n, _ => i64:0 };
+  let y = i64:-1;
+  select in1 { i64:0 => in0 * i64:0, _ => { y <- f(in0); i64:5 } };
+  y
+}

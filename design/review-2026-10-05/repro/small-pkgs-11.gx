@@ -1,0 +1,43 @@
+// small-pkgs-11: json/toml/hbs writers choose object vs array by the value's
+// shape, not its type
+//
+// value_to_json and value_to_toml (stdlib/graphix-package-json/src/lib.rs:99,
+// stdlib/graphix-package-toml/src/lib.rs:89), and hbs::render's data (it
+// converts through value_to_json), write an array as an object whenever
+// is_struct (stdlib/graphix-package-core/src/lib.rs:262) holds: non-empty,
+// every element a 2-array with a string first, keys strictly ascending. A
+// struct, a (string, T) tuple and a one-payload variant share that encoding,
+// so one type writes as an object or as an array depending on its values. A
+// List writes its cons cells (design/list_native.md records that).
+// Both engines agree (graphix-fuzz check: AGREE).
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/small-pkgs-11.gx
+// expected: one shape per type, e.g.
+//   [["a",1],["b",2]] and [["b",1],["a",2]]
+//   [["Add",1],["Remove",2]] and [["Remove",1],["Add",2]]
+//   toml: a and b both refused (an array is not a TOML document)
+//   hbs: a=1;b=2; and b=1;a=2;
+//   list: ["a","b","c"]
+// observed (also with --no-fusion):
+//   ["{\"a\":1,\"b\":2}", "[[\"b\",1],[\"a\",2]]",
+//    "{\"Add\":1,\"Remove\":2}", "[[\"Remove\",1],[\"Add\",2]]",
+//    "OK a = 1\nb = 2\n", "ERR error:[\"TomlErr\", \"unsupported array type\"]",
+//    "=;=;", "b=1;a=2;", "[\"a\",[\"b\",[\"c\",[]]]]"]
+let a: Array<(string, i64)> = [("a", 1), ("b", 2)];
+let b: Array<(string, i64)> = [("b", 1), ("a", 2)];
+let e1: Array<[`Add(i64), `Remove(i64)]> = [`Add(1), `Remove(2)];
+let e2: Array<[`Add(i64), `Remove(i64)]> = [`Remove(1), `Add(2)];
+let t = "{{#each p}}{{this.[0]}}={{this.[1]}};{{/each}}";
+let r = [
+  json::write_str(a)$,
+  json::write_str(b)$,
+  json::write_str(e1)$,
+  json::write_str(e2)$,
+  select toml::write_str(a) { error as e => "ERR [e]", s => "OK [s]" },
+  select toml::write_str(b) { error as e => "ERR [e]", s => "OK [s]" },
+  hbs::render(t, {p: a})$,
+  hbs::render(t, {p: b})$,
+  json::write_str([<"a", "b", "c">])$
+];
+sys::exit(sys::time::after_idle(duration:100.ms, r ~ 0));
+r

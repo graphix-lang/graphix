@@ -1,0 +1,22 @@
+// f-mod-lowering-12: a call that fuses with its arguments fed loses the
+// arguments' fork point, even under #[parallel].
+//
+// command: GRAPHIX_PAR=force graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-12.gx
+//          (also GRAPHIX_PAR=off and auto; time each run)
+// contrast: replace `f` with `|x: i64, y: i64| x + y + count(x) * 0`, so the
+//          call stays a node-walked CallSite and its arguments fork.
+//
+// expected: the two heavy arguments run in parallel, as they do in the
+// contrast (wall ~1.9 s under auto/force vs ~3.4 s under off), since
+// #[parallel] passed its check (a call's arguments are a fork point) and
+// design/parallel_eval.md 3.1 and 10 list a kernel's feeders as a fork point.
+//
+// observed (HEAD c722befe, debug build, 16 cores): 3.0-3.5 s under off, auto
+// and force alike. GRAPHIX_DBG_REGION=1 shows the call f(..) fused with two fed
+// `arg` inputs; FusedKernel::update (fusion/kernel.rs:311) polls them in turn.
+let tick = sys::time::timer(duration:10.ms, 4);
+let heavy = |t: i64| -> i64 array::fold(array::init(4000, |i| i), 0, |acc, i| acc + array::fold(array::init(4000, |j| j * t + i), 0, |a, j| a + j));
+let f = |x: i64, y: i64| x + y;
+let r = #[parallel] f(heavy(count(tick)), heavy(count(tick) + 1));
+println("[r]");
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0))

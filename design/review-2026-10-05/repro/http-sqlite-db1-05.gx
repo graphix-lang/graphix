@@ -1,0 +1,30 @@
+// http-sqlite-db1-05: restarting http::serve on a fixed port fails with
+// EADDRINUSE; the old listener is still open and the server stays down.
+//
+// stdlib/graphix-package-http/src/lib.rs:773-774 aborts the old serve_loop
+// and line 805 binds the new listener in the same update. AbortHandle::abort
+// only schedules the task; its future (which owns the old TcpListener) is
+// dropped later on a worker, so the bind meets a listening socket.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-05.gx
+//
+// expected: SERVE OK twice (max=100, then max=200) and REQUEST OK hi GET.
+// observed (23 of 24 runs, GRAPHIX_PAR auto/off/force):
+//   SERVE OK 127.0.0.1:47619 max=100
+//   0
+//   SERVE ERR error:["HTTPError", "bind to 127.0.0.1:47619 failed: Address already in use (os error 98)"]
+//   REQUEST ERR error:["HTTPError", "request failed: error sending request for url (http://127.0.0.1:47619/)"]
+// The same happens when #addr re-fires an equal value, e.g.
+// #addr: "127.0.0.1:[cfg.port]" after an unrelated field of cfg changes
+// (3 of 3 runs), and on an arm's sleep and wake one cycle apart (1 of 3).
+let handler = |req: http::Request| { body: "hi [req.method]", headers: [], status: u16:200, url: "" };
+let maxc = 100;
+maxc <- sys::time::timer(duration:300.ms, false) ~ 200;
+let srv = http::serve(#addr: "127.0.0.1:47619", #max_connections: maxc, #handler: handler);
+println(select srv { error as e => "SERVE ERR [e]", s => "SERVE OK [http::server_addr(s)] max=[maxc]" });
+let client = http::default_client(null)$;
+let probe = sys::time::timer(duration:800.ms, false);
+let resp = http::request(client, probe ~ "http://127.0.0.1:47619/");
+println(select resp { error as e => "REQUEST ERR [e]", r => "REQUEST OK [r.body]" });
+sys::exit(sys::time::after_idle(duration:1500.ms, 0));
+0

@@ -1,0 +1,36 @@
+// gui-widgets-a.r2-16: ImageW rebuilds its iced handle on every delivery of its source,
+// so a `Bytes` image whose source re-fires with the same bytes is decoded again and
+// stays blank.
+//
+// command: graphix design/review-2026-10-05/repro/gui-widgets-a.r2-16.gx
+//          (opens a window: run it by hand; `graphix --check` passes)
+//
+// expected: the 48x48 red/blue checkerboard under "tick N" while the counter runs.
+//   Only `state.n` changes; the image source is the same bytes on every tick.
+// observed: not run here (it needs a window). Predicted from the code: no
+//   checkerboard while the counter runs; moving the mouse over the window makes it
+//   flicker in. Each tick re-fires the source (a derived reference publishes its cell
+//   whenever the expression fires), ImageW::handle_update calls make_handle
+//   (widgets/image.rs:69-71), and iced_core's Handle::from_bytes takes a fresh
+//   Id::unique(), so iced_wgpu's id-keyed raster cache misses: measure_image is None
+//   (0x0 under `Shrink`) and nothing is drawn until its worker thread has decoded
+//   the bytes again. The worker then signals the Shell::headless() that render.rs:58
+//   builds the renderer with, so no redraw follows, and the next tick mints another
+//   id. A `string` path source is unaffected (its id hashes the path).
+use gui::{window, column::column, image::image, text::text};
+
+let state = {
+    logo: bytes:iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAWklEQVR42u3XsQ0AIAgEQMZh/3nYRTfAgkITr6D8hKs+H5W5usus9m7nAwAAAABgBHj9wVMeAAAAAGAG0MQAAAAA9oAmBgAAALAHNDEAAACAPaCJAQAAAL4DbO/6hB4LukgOAAAAAElFTkSuQmCC,
+    n: 0
+};
+let clock = sys::time::timer(duration:100.ms, true);
+state <- clock ~ {state with n: state.n + 1};
+
+[&window(
+    #title: &"image re-fire",
+    &column(
+        #spacing: &10.0,
+        #padding: &`All(30.0),
+        &[text(&"tick [state.n]"), image(&`Bytes(state.logo))]
+    )
+)]

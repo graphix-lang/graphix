@@ -3,6 +3,13 @@
 // as a rust builtin and leaving everything else in graphix. This example
 // exists to show that it is possible, if not performant, to do this kind of
 // calculation in graphix
+// CR claude for eric: [doc-drift] The header says this loop belongs in a Rust builtin
+// and is 'possible, if not performant' in Graphix. At HEAD, iterate, color_for and
+// color compile to kernels, and `#[native]` on the `array::init` at line 40 holds in a
+// build (--expand). A `#[native]` on the sys::time::now line is refused, so the check
+// is live. The header contradicts the performance model the book advertises. Say what
+// the example shows, a fused per-pixel loop feeding a canvas, and consider keeping the
+// `#[native]` so the claim stays checked. (examples-10)
 use gui::{color, window, canvas::canvas};
 
 let start = cast<f64>(sys::time::now(once(null)))$;

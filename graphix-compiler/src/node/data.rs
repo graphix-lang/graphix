@@ -225,6 +225,18 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
         let n = decode_varint(buf)? as usize;
+        // CR claude for eric: [risk] n comes straight from the image. A corrupt count
+        // of 2^63-1 panics with capacity overflow, and one of 2^40 aborts on the failed
+        // allocation, so the process dies on every start while the entry stays instead
+        // of failing the read and starting cold. callsite.rs:1868 (also reached when an
+        // instance is decoded lazily at its first dispatch), traits.rs:594, bind.rs:908
+        // and stdlib/graphix-package-map/src/lib.rs:218 size their allocations from an
+        // unchecked count the same way. Every other image count that sizes an
+        // allocation is guarded, in several spellings: pattern.rs:1379 decode_count,
+        // lambda.rs:263 len, map.rs:62, and n.min(buf.len()) in image/nodes.rs,
+        // select.rs and seq_machine.rs. One count reader in image, used at every count,
+        // fixes these and replaces the copies. probe:
+        // design/review-2026-10-05/repro/c-image-08.gx (c-image-08)
         let mut replace = Vec::with_capacity(n);
         for _ in 0..n {
             replace.push(Replace::image_decode(ctx, buf)?);
@@ -996,6 +1008,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        // CR claude for eric: [perf] with_deref does not expand a Type::Ref. So an
+        // abstract source typed by its typedef name (a field declared `c: Counter`,
+        // read as `w.c.0`) takes the tuple read, emit_accessor_source_node refuses it,
+        // and the whole region node-walks, although the node-walk and tuple_field_type
+        // both handle this source. `|w: W| -> i64 #[native] (w.c.0 + w.n)` with `type W
+        // = {c: Counter, n: i64}` is refused. The refusal prints the TypeRef with {:?},
+        // including the program's whole source text (fusion/emit/nodes.rs:915). Decide
+        // between the two reads on the expanded type (expand_refs, as
+        // emit_tuple_ref_node does for its element type), and print that reason's type
+        // with Display. probe: design/review-2026-10-05/repro/c-data-map-05.gx
+        // (c-data-map-05)
         let abstract_source =
             self.source.typ().with_deref(|t| matches!(t, Some(Type::Abstract { .. })));
         if abstract_source {
@@ -1049,6 +1072,18 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
+        // CR claude for eric: [bug] deref_cloned looks through bound cells only. A
+        // source typed by a typedef name (a field or tuple element declared `p: Point`
+        // is Type::Ref) or by a union that collapses only when normalized therefore
+        // hits `expected a struct`, while `(w.p).x` on the same source passes through
+        // struct_field_type's deref_typ!. `{(w.p) with x: 3.0}` and the nested update
+        // `{s with cursor: {(s.cursor) with row: ..}}` are refused. A let-bound copy
+        // works only because a pattern bind expands a top-level ref. Look each
+        // replacement up with struct_field_type, which returns clones so no guard is
+        // held across the child check, and give emit_struct_with_node
+        // (fusion/emit/nodes.rs:788) the same expansion so the newly accepted sources
+        // still fuse. probe: design/review-2026-10-05/repro/c-data-map-02.gx
+        // (c-data-map-02)
         let styp = self.source.typ().deref_cloned();
         let mut fields = || -> Result<()> {
             match &styp {

@@ -1,0 +1,38 @@
+// db2-05: a db subscription and its accessors go permanently deaf after
+// their select arm sleeps.
+//
+// DbSubscribe::sleep (stdlib/graphix-package-db/src/subscribe.rs:225) aborts
+// the watch task and forgets tree_val; the accessors' sleep (340) unrefs the
+// event bind id and clears `cached`. At the wake the arm's arguments are read
+// STALE (wake catch-up), and both re-establish only on a FIRED argument
+// (169-179, 320), so nothing is ever delivered again. sys::net::subscribe
+// keeps a `slept` bit and resubscribes from the present path at the wake.
+//
+// command: cd "$(mktemp -d)" && timeout -s KILL 30 graphix --no-cache \
+//            /home/eric/proj/graphix/design/review-2026-10-05/repro/db2-05.gx
+//   (same with --no-fusion)
+// expected: a line [{key: "b", value: 2}] once the arm is back (the insert
+//   of "b" lands while mode is `On); the control without the `Off write prints
+//   it, beside "insert b done, mode On".
+// observed (every mode: fusion on/off, GRAPHIX_PAR=off, cold/warm image):
+//   [{key: "a", value: 1}]
+//   []
+//   insert b done, mode On
+// The same deafness with `db::subscription::on_insert(db::subscription::new(t))?`
+// as the `On arm (the subscription itself in the arm), and with
+// sys::fs::watch::path(w)? in the arm (sys/watch.rs WatchStream).
+type Mode = [`On, `Off];
+let db = db::open("db2-05.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "a")?;
+let sub = db::subscription::new(t);
+let mode: Mode = `On;
+mode <- sys::time::timer(duration:600.ms, false) ~ `Off;
+mode <- sys::time::timer(duration:900.ms, false) ~ `On;
+let i1 = db::insert(t, sys::time::timer(duration:300.ms, false) ~ "a", 1)$;
+let i2 = db::insert(t, sys::time::timer(duration:1200.ms, false) ~ "b", 2)$;
+println(i2 ~ "insert b done, mode [mode]");
+sys::exit(sys::time::after_idle(duration:600.ms, i2 ~ 0));
+select mode {
+  `On => db::subscription::on_insert(sub)?,
+  `Off => []
+}

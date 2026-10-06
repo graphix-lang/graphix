@@ -150,6 +150,14 @@ fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
 
 fn is_output_kind(kind: &ExprKind) -> bool {
     match kind {
+        // CR claude for eric: [bug] Trait and Impl are missing from the non-output
+        // kinds, so a REPL `trait`/`impl` line compiles as output. The shell prints `-:
+        // _`, moves the CompExp into its output and waits for Ctrl-C, swallowing
+        // whatever is typed. The Ctrl-C that ends the wait drops the CompExp, which
+        // deletes the declaration, and a following `impl Shw for i64 {..}` fails with
+        // 'no trait `Shw` in scope'. A trait or impl on its own line therefore cannot
+        // be declared at the REPL (probe: design/review-2026-10-05/repro/rt-09.py). Add
+        // ExprKind::Trait(_) and ExprKind::Impl(_) to the false arm. (rt-09)
         ExprKind::Bind { .. }
         | ExprKind::Lambda { .. }
         | ExprKind::Use { .. }
@@ -165,6 +173,13 @@ fn is_output_kind(kind: &ExprKind) -> bool {
 /// compiler produces one Node and fusion sees the whole file at once.
 /// `Do` rather than `Module` because the last expression's value must
 /// propagate out as the runtime output.
+// CR claude for eric: [doc-drift] ExprKind::Do no longer exists: this builds an
+// ExprKind::Block, but its name and the doc above (`Do` rather than `Module`) still say
+// Do. Rename it wrap_file_in_block and say Block in the doc. The same dead term is in
+// graphix-fuzz/src/typemorph.rs:601, graphix-fuzz/src/mutate.rs:459 and 467, and
+// stdlib/graphix-tests/src/lib_tests/module_stmt.rs:12, and StepKind::Do
+// (graphix-fuzz/src/generate/reactive.rs:59) generates a `{ .. }` block.
+// (x-expr-walks-08)
 fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
     Expr {
         id: ExprId::new(),
@@ -258,6 +273,21 @@ impl<X: GXExt> GX<X> {
                 match parse_modpath(&cfg.resolver_factories, &mut cfg.ctx.libstate, &mp) {
                     Ok(r) => cfg.resolvers.extend(r),
                     Err(e) => {
+                        // CR claude for eric: [bug] When parse_modpath refuses one
+                        // entry (graphix-types/src/expr/resolver.rs:170: no scheme, an
+                        // unknown scheme, or the empty entry a trailing comma leaves),
+                        // this replaces the whole list with the data dir and logs where
+                        // the shell shows nothing, so every valid entry is lost and
+                        // `mod x;` says only 'could not be found'. The book documents
+                        // such entries: book/src/shell.md:383
+                        // `GRAPHIX_MODPATH=/opt/graphix-libs`, and
+                        // book/src/modules/implementation.md says an entry without
+                        // `netidx:` is a file path. Skip empty entries and report a
+                        // refused one to the user, or accept a bare path as a file as
+                        // the book says. Separately, a list that parses drops the data
+                        // dir, while both book pages keep it in the search path. probe:
+                        // design/review-2026-10-05/repro/t-format-resolver-12.sh
+                        // (t-format-resolver-12)
                         error!("failed to parse GRAPHIX_MODPATH, using default {e:?}");
                         resolvers_default(&mut cfg.resolvers)
                     }
@@ -307,6 +337,17 @@ impl<X: GXExt> GX<X> {
             if let Some(root) = cfg.root {
                 // The root declares packages; fusing their constants
                 // buys nothing and would put kernels in the image.
+                // CR claude for eric: [risk] The package root compiles under the
+                // session's flags, and every definition in it keeps them for its
+                // instances (DefOrigin::Source { flags }, imaged). The registration
+                // key, however, is format + root only (graphix-shell/src/cache.rs:135).
+                // So a registration written by the REPL (ReplaceImports), by --expand
+                // (ExpandSeq) or under -W error serves every later run, whatever that
+                // run's flags. A package whose root warns would then fail `-W error`
+                // cold and pass it warm. Nothing diverges today only because the stdlib
+                // root emits no warning and has no seq block. Compile the root with one
+                // fixed flag set (FusionDisabled, plus WarnUnhandled if wanted) so the
+                // image is a function of its key. (shell-12)
                 t.compile_root(cfg.flags | CFlag::FusionDisabled, root).await?;
             }
             if let Some(tx) = save {
@@ -452,6 +493,25 @@ impl<X: GXExt> GX<X> {
                         },
                     };
                     if let Some(v) = v {
+                        // CR claude for eric: [bug] Every task and watch delivery is
+                        // stored here even when no node references its id any more, and
+                        // nothing removes it later. CachedArgsAsync::sleep/delete
+                        // (graphix-package-core/src/lib.rs:930-943) remint or unref the
+                        // reply id without store_remove, and a timer task that
+                        // Timer::sleep released still completes and lands here; GXRt
+                        // keeps no task handle and Rt has no cancel, so that task also
+                        // runs its full duration. A passed seq step sleeps, so every
+                        // seq run with an async step leaks the step's result and every
+                        // wake of an arm holding an async call leaks one; after_idle
+                        // and timer also re-arm without releasing the previous id
+                        // (graphix-package-sys/src/time.rs:111, 306), which leaves its
+                        // by_ref entry behind too. Effects still complete when their
+                        // arm sleeps, so fix the store side: drop a task or watch
+                        // delivery whose id has no by_ref entry, store_remove the old
+                        // id on sleep/delete, and abort a released timer's task. probe:
+                        // design/review-2026-10-05/repro/rt-01.sh (a seq reading a 100
+                        // KB file every 10 ms grows ~100 KB per run; the same read
+                        // outside a seq stays flat). (rt-01)
                         self.ctx.rt.store_insert(
                             $id,
                             graphix_compiler::TagValue::fired(v.clone()),
@@ -467,10 +527,31 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
+        // CR claude for eric: [perf] Each cycle this loop pops every queued write and
+        // pushes back each one whose variable was already delivered this cycle, so N
+        // writes queued to one variable cost O(N) per cycle for N cycles. range and
+        // array::iter queue all their elements at once, so their delivery is O(N^2): in
+        // a debug build range(0, 40000) takes 15.4 s, about 4x per doubling, against
+        // 0.38 s for 40000 cycles of a self-loop counter, and every cycle of the
+        // program pays the scan until the queue drains. A FIFO per variable (BindId to
+        // VecDeque, plus the ids with pending writes) makes a cycle cost the number of
+        // distinct pending variables and keeps the per-variable order patches rely on;
+        // the custom_updates loop at line 477 has the same shape. probe:
+        // design/review-2026-10-05/repro/core-lib-04.gx (core-lib-04)
         for _ in 0..self.ctx.rt.var_updates.len() {
             let (id, v) = self.ctx.rt.var_updates.pop_front().unwrap();
             push_var_event!(id, v)
         }
+        // CR claude for eric: [bug] Task entries are delivered one at a time, and an
+        // entry whose variable already has a delivery this cycle is re-queued on its
+        // own. A set_many entry that meets another write to its variable (a program
+        // write queued from the last cycle, or a set in the same input batch) therefore
+        // lands a cycle after the rest of its set. That breaks set_many's contract
+        // (lib.rs:982-984, every update in the same cycle), which the fuzzer's
+        // schedules rely on (graphix-fuzz/src/lib.rs:597-599). For example, set(sx, 5)
+        // then set_many([(sx, 1), (sy, 2)]) gives (sx, sy) = [5, 2] then [1, 2] (probe:
+        // design/review-2026-10-05/repro/rt-15.rs). Deliver a SetMany as a unit: if any
+        // entry collides, re-queue the whole set. (rt-15)
         for (id, v) in tasks.drain(..) {
             push_var_event!(id, VarUpdate::Set(v))
         }
@@ -529,6 +610,16 @@ impl<X: GXExt> GX<X> {
                 }
             }
         }
+        // CR claude for eric: [bug] While the subscriber is full, the send loop above
+        // handles input every 100 ms. A Compile or Load handled there puts its roots
+        // into `updated` with init = true, and these two clears then erase them. The
+        // reply reports success, but the new roots never get their init update:
+        // constants never fire and lets never publish. Clearing `event` and `updated`
+        // right after `update_nodes`, before the loop, leaves whatever the loop
+        // compiled scheduled for the next cycle. probe:
+        // design/review-2026-10-05/repro/rt-05.rs (copy it to
+        // graphix-rt/tests/review_rt_05.rs; with a full one-slot channel, `40 + 2` and
+        // `let k = 7` never deliver). (rt-05)
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();
     }
@@ -709,6 +800,18 @@ impl<X: GXExt> GX<X> {
         self.ctx.batch_connect_targets.clear();
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
+            // CR claude for eric: [bug] When a later statement fails, this `?` returns
+            // after the earlier statements of the same input passed their checks. Their
+            // names stay in the env, their lambdas in lambda_defs and bind_to_lambda,
+            // their refs in by_ref and a top-level catch in self.scope, while `nodes`
+            // drops them without `delete`. In the REPL, after `let x = 41; let y =
+            // nosuch`, `x + 1` has type i64 and never produces a value. After `let f =
+            // |a| a + 1; let z = nosuch`, `f(1)` prints 2 but `f` has no value. After
+            // `catch(e) println(e); let w = nosuch`, every later `error(`E)?` is lost,
+            // and the unhandled warning is not printed either. On error, delete the
+            // compiled nodes and restore the env, the other registries and self.scope,
+            // or install the statements that succeeded; probe:
+            // design/review-2026-10-05/repro/c-lib-04.py (c-lib-04)
             let (n, advanced) = graphix_compiler::compile_stmt(
                 &mut self.ctx.view(),
                 self.flags,
@@ -743,6 +846,18 @@ impl<X: GXExt> GX<X> {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref()).await?;
+                // CR claude for eric: [bug] A script root's .gxi is only half applied.
+                // RootFile::load splices its types, uses, mods and traits into the
+                // script, but this line drops root.sig, so the vals are never checked.
+                // `graphix --check foo.gx` and the LSP check a lone module (one that no
+                // file's `mod` reaches) this way. An implementation that does not match
+                // its interface therefore passes. A valid module is refused when its
+                // .gxi puts a type, use or trait after the val of its last binding,
+                // because the splice puts that declaration in the file block's value
+                // slot ("a type definition is not an expression", reported at the
+                // .gxi); through `mod foo;` the same pair checks correctly. probe:
+                // design/review-2026-10-05/repro/t-format-resolver-03.sh
+                // (t-format-resolver-03)
                 (root.ori, root.exprs)
             }
             source @ Source::Netidx(_) => {
@@ -792,7 +907,35 @@ impl<X: GXExt> GX<X> {
         // executes a kernel; without a reset each file's kernels accumulate
         // in the persistent JIT module until finalize fails.
         let env = self.ctx.env.clone();
+        // CR claude for eric: [doc-drift] A check runs CheckOnly, which never fuses, so
+        // the comment above is stale and reset_jit_for_check here only clears
+        // fusion.stats. Line 804 logs a 'parse time' measured from an Instant created
+        // on the line before. Other runtime docs are stale too: rt.rs:31 says the cycle
+        // is bumped at the top of do_cycle, but gx.rs:514 bumps it after the nodes ran.
+        // trace_start's doc (lib.rs:870) calls max_events a total, but record() counts
+        // the current segment, which resolve() replaces, and the Compiled anchors that
+        // 'count against neither budget' (gx.rs:102) fill that same vector.
+        // wrap_file_in_do and its comment (gx.rs:164-168) name ExprKind::Do, which is
+        // now Block, and Control::interrupt's doc (graphix-types/src/stack.rs:331) says
+        // the bit is cleared at the end of the cycle, while gx.rs:495 clears it at the
+        // start of the next. GXExt's doc (lib.rs:57-67) offers setting variables from
+        // do_cycle, but ext.do_cycle runs after delivery (gx.rs:484), so a write to
+        // event.variables reaches neither the store nor rt.updated, and no reader is
+        // scheduled. (rt-18)
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
+            // CR claude for eric: [dead] This reset clears nothing. Every check here
+            // runs CFlag::CheckOnly (lines 837-841; the LSP never sets ExpandSeq),
+            // which returns before typecheck1 and fusion
+            // (graphix-compiler/src/lib.rs:1958), and the LSP's root compiles with
+            // fusion off, so the LSP runtime never builds a JIT module. The comment
+            // above describes checks that fused.
+            // lsp_fusion.rs::lsp_mode_checks_without_fusion_and_survives_ill_typed pins
+            // that a check attempts no fusion. Delete the reset and its comment.
+            // reset_jit_for_check then has no caller except kernel_outlives_jit_reset,
+            // whose property graphix-shell/tests/jit_arena_rotation.rs also exercises,
+            // so remove it or say in its doc what needs it. lsp_backend.rs:61
+            // ('lsp_mode forces fusion off in compile()') is stale for the same reason:
+            // nothing in compile reads lsp_mode. (tests-lib-b2-16)
             self.ctx.cx.fusion.reset_jit_for_check()?;
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }
@@ -855,6 +998,19 @@ impl<X: GXExt> GX<X> {
                 None => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
+                    // CR claude for eric: [bug] The check compiles a script with its
+                    // names at `/` (compile_script at Scope::root()). load_program, the
+                    // run, compiles the same file as a Block that compile() scopes at
+                    // `/#do<id>`, so any verdict that depends on the scope can differ.
+                    // `self::` anchors at mod_root, which strips the `#do` level back
+                    // to `/`. As a result, `self::a`, `self::T` and `use self::m::x`
+                    // over a script's own top-level names pass `--check` and the LSP
+                    // but the run refuses them, and the check refuses `mod str;`
+                    // (duplicate module at `/str`) while the run accepts it. probe:
+                    // design/review-2026-10-05/repro/t-typ-mod-04.sh. Compile both at
+                    // one scope, or anchor `self::` at a script's `#do` level as
+                    // Env::package_root does for `package::`, then correct CLAUDE.md's
+                    // "as it runs, with its names at the root". (t-typ-mod-04)
                     graphix_compiler::compile_script(
                         &mut self.ctx.view(),
                         flags,
@@ -926,6 +1082,19 @@ impl<X: GXExt> GX<X> {
         let args = lb.typ.args.iter();
         let args = args
             .map(|a| {
+                // CR claude for eric: [bug] This refuses every lambda with a defaulted
+                // labeled argument. The checker accepts such a lambda wherever a
+                // callback type like `fn(e: null) -> Any` is expected (fntyp.rs::align
+                // lets the default be omitted), and an in-language call through that
+                // value fills the default. So a well-typed GUI or TUI handler such as
+                // `|#x = 1, e: null| ..` fails at run time. At construction the error
+                // propagates through every ancestor widget and reconcile_windows stops:
+                // that window and every later one are never created, and the error only
+                // reaches the log. When the handler changes later, update_callable! has
+                // already stored `last`, and the old Callable stays installed. probe:
+                // design/review-2026-10-05/repro/gui-widgets-a-03.gx (`graphix-fuzz
+                // check` reports a route DIVERGENCE: in-language 107 then 109, dispatch
+                // RuntimeErr). (gui-widgets-a-03)
                 if a.has_default() {
                     bail!("can't call lambda with an optional argument from rust")
                 } else {
@@ -937,6 +1106,20 @@ impl<X: GXExt> GX<X> {
         let argn = lb.typ.args.iter().zip(args.iter());
         let argn = argn
             .map(|(arg, id)| {
+                // CR claude for eric: [bug] The argument references are typed with the
+                // definition's own cells (arg.typ from lb.typ), while genn::apply
+                // checks the call against an instantiated copy. This site's check
+                // therefore merges the copy into the definition's cells, and its settle
+                // binds them. After one compile_callable, every later-compiled call of
+                // the definition is refused. For `g = |x| x` (also when first passed as
+                // `&fn(x: i64) -> i64`, like a widget handler), `g(2)` and `g("t")`
+                // fail with '_ does not contain i64'. For `h = 'a: Number |x: 'a| -> 'a
+                // x`, `h(2) + 2` fails with 'Number + i64'. All of these compiled
+                // before the callable (probe: design/review-2026-10-05/repro/rt-10.rs).
+                // Running instances are unaffected, but REPL lines and embedder
+                // compiles after a GUI/TUI handler is built are not. Instantiate the
+                // signature once and type both the argument references and the apply
+                // from that instance. (rt-10)
                 genn::reference(&mut self.ctx.view(), *id, arg.typ.clone(), eid)
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
@@ -944,6 +1127,18 @@ impl<X: GXExt> GX<X> {
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.ctx.view().begin_runtime_node(eid);
         graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)?;
+        // CR claude for eric: [bug] The callable's init runs here, between cycles. The
+        // cycle counter was already advanced at the end of the last do_cycle (line
+        // 514), so every let the body publishes is stamped with the next cycle, and its
+        // notify_set leaves this root in rt.updated. That next cycle updates the root
+        // again and read_var takes the stamps as deliveries, so init-time work driven
+        // by a body let runs twice: a handler's `let k = 10; a <- k ~ a + 1` adds 2
+        // where `a <- 10 ~ a + 1` adds 1, in both engines. The update also runs outside
+        // InterruptScope, so a fused kernel here cannot see an interrupt and the stack
+        // budget cannot abort a runaway init. Schedule the init the way compile and
+        // load do (`self.ctx.rt.updated.insert(eid, true)`) instead of updating here.
+        // probe: design/review-2026-10-05/repro/rt-03.gx (`graphix-fuzz run`: every
+        // Dispatch line ends at [i64:3, i64:2], expected [i64:2, i64:2]). (rt-03)
         self.ctx.event.init = true;
         n.update(&mut self.ctx.view());
         self.ctx.event.clear();
@@ -1002,6 +1197,16 @@ impl<X: GXExt> GX<X> {
 
     fn delete_callable(&mut self, id: CallableId) {
         if let Some(c) = self.callables.remove(&id) {
+            // CR claude for eric: [bug] Call delivers each argument through
+            // push_var_event, which stores it under the callable's argument id, and
+            // nothing removes those entries when the callable goes. Twenty rounds of
+            // compile_callable + call + drop raise store_len by 20; the same rounds
+            // without the call raise it by 0 (probe:
+            // design/review-2026-10-05/repro/rt-11.rs). Every GUI/TUI callable that was
+            // called and then rebuilt or dropped keeps its last arguments for the rest
+            // of the run. Call store_remove on each of c.args here, as
+            // SynthCall::delete (graphix-compiler/src/node/genn.rs:164) does for its
+            // argument ids. (rt-11)
             if let Some(mut n) = self.nodes.shift_remove(&c.expr) {
                 n.delete(&mut self.ctx.view())
             }
@@ -1073,6 +1278,16 @@ impl<X: GXExt> GX<X> {
                 let waiter = self.result_watch.is_some()
                     || self.trace.is_some()
                     || !self.idle_waiters.is_empty();
+                // CR claude for eric: [risk] idle_passes returns to 0 only when a pass
+                // finds work ready at the top of the loop. Suppose a pass arms the
+                // grace, but a task completion or a message wakes the select first. The
+                // cycle that handles it can spawn the next task, and the very next idle
+                // pass resolves every waiter with no grace at all. wait_idle,
+                // wait_result_or_idle and trace_wait_idle can then resolve between the
+                // links of a chain of fast async operations (a read whose completion
+                // issues another read), contrary to 'confirmed on a second pass'. Reset
+                // idle_passes whenever the select woke for anything but the grace
+                // timer. (rt-13)
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
@@ -1138,6 +1353,18 @@ impl<X: GXExt> GX<X> {
                     peek!(watches, tasks, var_watches, custom_tasks, input);
                 },
             }
+            // CR claude for eric: [bug] The loop checks control.aborted() only at its
+            // top. An abort that lands while select! waits or a cycle runs still runs
+            // process_input_batch and do_cycle, and the send to a receiver the embedder
+            // already dropped logs "could not send batch" at ERROR (line 519);
+            // Control::abort promises the loop returns before the next cycle.
+            // graphix-fuzz shuts its registration-image runtime down right after taking
+            // the image, so every `graphix-fuzz check` logs 1-5 spurious ERRORs.
+            // TestCtx::shutdown only drops the handle without waiting, so the five
+            // `tokio::time::timeout(.., ctx.shutdown())` calls in
+            // graphix-fuzz/src/lib.rs can never time out. Re-check aborted() here and
+            // before the send, and treat a closed subscriber after an abort as normal.
+            // probe: design/review-2026-10-05/repro/x-errors-13.gx (x-errors-13)
             let mut batch = self.batch_pool.take();
             self.process_input_batch(&mut tasks, &mut input, &mut batch).await;
             let st = Instant::now();

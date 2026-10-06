@@ -229,6 +229,18 @@ impl<X: GXExt> TrackedWindow<X> {
         }
     }
 
+    // CR claude for eric: [bug] cursor() always returns Cursor::Available.
+    // cursor_position starts at Point::ORIGIN (line 105) and only a CursorMoved writes
+    // it (event_loop.rs:191-196), while iced_winit returns Unavailable until the
+    // pointer enters and again after CursorLeft. Effects: a mouse_area covering (0,0)
+    // fires #on_enter on the first frame while the pointer is still outside the window.
+    // One the pointer leaves through a window edge never fires #on_exit, nor #on_enter
+    // when the pointer comes back inside it, and a tooltip left that way stays open.
+    // Store the position as an Option<Point> that is None until the first CursorMoved
+    // and again after CursorLeft. The InteractionHarness (src/test/mod.rs:415-445) uses
+    // the same always-Available model, so no interaction test can catch this. probe:
+    // design/review-2026-10-05/repro/gui-core-08.rs (full-window mouse_area; (entered,
+    // exited) ends at (1,0) where iced_winit's model gives (2,1)). (gui-core-08)
     pub fn cursor(&self) -> mouse::Cursor {
         mouse::Cursor::Available(self.cursor_position)
     }

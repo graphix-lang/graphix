@@ -1,0 +1,34 @@
+// x-typecheck-generics-F14: type-directed reads accept a reference target,
+// so str::parse makes a live reference out of a number.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F14.gx
+//
+// expected: refused by the check, as `cast<&string>(id)` is ("can't cast a
+// reference"): a reference is not a number, and no read should make one.
+//
+// observed: `--check` exits 0. str::parse's `'b: Concrete` admits `&string`
+// (Type::concrete_holds), and the runtime cast (Type::cast_inner, ByRef arm)
+// takes any u64/v64 as a reference. The write lands "boom" in `x: i64`:
+//   default (JIT): thread 'tokio-rt-worker' panicked at
+//     graphix-compiler/src/fusion/kernel.rs:243:13: kernel param `x`:
+//     runtime String("boom") does not match the compiled Scalar(I64) slot
+//     Error: runtime did not respond / runtime is dead  (exit 1, nothing
+//     printed)
+//   --no-fusion: prints 82, then arith error .. at line: 34 "Parse error at
+//     line: 1, column: 1\nUnexpected `o`" (x holds "boom")
+//   graphix-fuzz check: the same panic, core dumped (exit 134)
+// The same forge goes through pack::read (a struct with a `&string` field,
+// read back from pack::write_bytes({target: id, v: "boom"})) and through
+// sys::net::subscribe (the id published at a path, subscribed as
+// `&string`): the same panic. `Any` only supplies a valid id here. A guessed
+// id needs none: `let r: [&string, Error<`ParseError(string)>] =
+// str::parse("u64:<x's bind id>"); let rr = r$; let s = *rr; "[s]!"`
+// reads `x: i64` as a string, and the JIT panics "kernel param `s`:
+// runtime I64(41) does not match the compiled String slot".
+let x = 41;
+let a: Any = &x;
+let id = cast<u64>(a)$;
+let r: [&string, Error<`ParseError(string)>] = str::parse("u64:[id]");
+let rr = r$;
+*rr <- "boom";
+x * 2

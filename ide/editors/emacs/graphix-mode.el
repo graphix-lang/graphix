@@ -326,6 +326,18 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
                                   "tuple" "reference" "number" "string"
                                   "boolean" "null"))))))
 
+    ;; CR claude for eric: [bug] Nothing in graphix-ts-mode calls (treesit-parser-create
+    ;; 'graphix), and treesit-major-mode-setup does not create a parser. So once the
+    ;; grammar is installed (line 332 then remaps every .gx buffer here), Emacs 31.1
+    ;; shows no highlighting: font-lock signals (wrong-type-argument treesit-parser-p
+    ;; nil). TAB signals (wrong-type-argument treesit-node-p nil). Create the parser
+    ;; right after the treesit-ready-p check. That fix exposes two more problems. First,
+    ;; the defun/sentence/sexp regexps above are unanchored: "module" matches
+    ;; module_path, so C-M-a from the end of `y + h(x)` stops at the `y` reference
+    ;; instead of `let y`; anchor them with (rx bos (or ...) eos), and drop try_catch
+    ;; and if, which are not node types. Second, the indent rules have no seq_block,
+    ;; try_with or list entry, so a seq body stays at column 0. probe:
+    ;; design/review-2026-10-05/repro/ide-tooling.r2-02.sh (ide-tooling.r2-02)
     (treesit-major-mode-setup))
 
   ;; Auto-remap to tree-sitter mode when grammar is available

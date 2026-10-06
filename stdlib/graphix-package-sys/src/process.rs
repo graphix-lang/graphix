@@ -298,6 +298,16 @@ pub(crate) struct ProcessWaitEv;
 
 impl EvalCachedAsync for ProcessWaitEv {
     const NAME: &str = "sys_process_wait";
+    // CR claude for eric: [bug] The wait future owns the ProcValue. While a wait is
+    // pending, `ctl` stays open and own_child never sees the last handle drop, so a
+    // kill_on_drop child that is being waited on is not killed when the program drops
+    // it (process.gxi:69-71). For example, a respawn's old child runs until it exits on
+    // its own. CachedArgsAsync also queues the new proc's wait behind the old one, so
+    // `st` reports the dropped child's exit and the current child's exit only arrives
+    // after the old child ends. Holding a clone of `status_rx` instead of the ProcValue
+    // makes the kill happen. own_child should then publish a status after the kill, or
+    // the pending wait ends in "status channel closed". probe:
+    // design/review-2026-10-05/repro/sys-io-07.gx (sys-io-07)
     type Args = ProcValue;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

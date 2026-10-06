@@ -77,6 +77,16 @@ pub(super) struct SharedCellsInner {
     pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history per `(row_path, col_name)`; keyed by identity
     /// so it survives row reordering.
+    // CR claude for eric: [bug] Nothing ever removes an entry or ages one against now.
+    // The history_seconds cutoff runs only when that cell gets a new point, yet
+    // compute_sparkline_bounds (render.rs:565) unions every history ever kept. So a row
+    // that left the table, or scrolled out of the subscription window with a spike in
+    // its history, keeps every line of an auto-scaled column squashed for the widget's
+    // lifetime. Memory and the per-frame bounds walk also grow with every row ever
+    // seen. Separately, push_defaults_to_sparklines (line 645) pushes a column's
+    // numeric fallback (e.g. `Netidx({"r0" => 0.0})`) into live rows too, whenever any
+    // column's source or the table fires, so live lines dip to the fallback. probe:
+    // design/review-2026-10-05/repro/gui-datatable-10.rs (gui-datatable-10)
     pub(super) sparklines: AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
     /// Latest `on_update` callable id, read by the dispatch task at
     /// the start of each batch.
@@ -204,6 +214,24 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                                             .entry(key)
                                             .or_insert_with(LPooled::take);
                                         history.push_back((now, f));
+                                        // CR claude for eric: [risk] parse_column_type
+                                        // (types.rs:235) accepts any finite positive
+                                        // history_seconds, but this subtraction panics
+                                        // from about 9.2e18 s (Instant underflow), and
+                                        // Duration::from_secs_f64 panics from 1.8e19 s.
+                                        // Here the panic kills the dispatch task, so
+                                        // the table stops updating. The copy of this
+                                        // push/evict/decimate block at 663-671 panics
+                                        // push_defaults_to_sparklines on the GUI
+                                        // thread. Compute the cutoff in one helper
+                                        // shared by both blocks, using now.checked_sub
+                                        // over Duration::try_from_secs_f64, and keep
+                                        // every point when either fails. Probe:
+                                        // Instant::now() -
+                                        // Duration::from_secs_f64(1e19) panics with
+                                        // 'overflow when subtracting duration from
+                                        // instant' (rustc, Linux); 9.2e18 does not.
+                                        // (gui-datatable-16)
                                         let cutoff = now - Duration::from_secs_f64(*hs);
                                         while history
                                             .front()
@@ -274,6 +302,18 @@ impl<X: GXExt> DataTableW<X> {
     /// task panics on an immediately-ready future.
     pub(super) fn apply_table_sync(&mut self) -> LPooled<Vec<ArcStr>> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
+        // CR claude for eric: [bug] Every #table update drops every subscription here,
+        // even an identical table or one with one more row. Lines 282-284 then zero
+        // first_row/first_col and clear `editing`. data_table.md promises the update is
+        // "reconciled against the current subscription set". As a result, every visible
+        // cell goes blank until netidx resubscribes, on_update fires again for every
+        // subscribed cell with its unchanged value, and sparklines get a duplicate
+        // point. The view also jumps to row 0 while the overlay scrollbar stays put,
+        // and an open edit is lost, so Enter commits nothing; the dashboard example
+        // triggers all of this on every filter keystroke. Keep the subscriptions of
+        // (row, col) cells that survive, clamp first_row/first_col, and keep `editing`
+        // while its row and column still exist. probe:
+        // design/review-2026-10-05/repro/gui-datatable-07.rs (gui-datatable-07)
         self.cells.inner.lock().clear_subs();
         self.row_paths.clear();
         self.cached_col_widths.lock().clear();
@@ -482,6 +522,22 @@ impl<X: GXExt> DataTableW<X> {
             if !Path::is_absolute(row_path) {
                 continue;
             }
+            // CR claude for eric: [bug] A sort column subscribes <row>/<col> for every
+            // absolute row whatever the column's source is, and render, sort_value_for,
+            // raw_value_for and auto-fit all read that `cells` entry before the source.
+            // So a column with a string or Map source shows, sorts by and passes to
+            // on_click the netidx value at <row>/<col> as soon as it is in #sort_by,
+            // although the book says such a source subscribes to nothing. Where the
+            // path does not exist, each row keeps a durable subscription that retries,
+            // with a warning each time, for as long as the column stays in sort_by.
+            // Subscribe only Netidx-sourced columns. At first build this runs before
+            // compile_pending_columns, while is_subscribed() is still true, so the
+            // check must come after the sources are compiled. Also decide what sorting
+            // by a column the table lacks means. probe:
+            // design/review-2026-10-05/repro/gui-datatable-05.rs (copy to
+            // stdlib/graphix-package-gui/tests/; the sorted table shows
+            // a-raw/b-raw/c-raw in rows r1, r2, r0 instead of the Map labels in r0, r2,
+            // r1). (gui-datatable-05)
             let dval = self.subscriber.subscribe(row_path.append(sort_col));
             let id = dval.id();
             // Routing must exist before `updates`: `BEGIN_WITH_LAST` can
@@ -562,6 +618,18 @@ impl<X: GXExt> DataTableW<X> {
                 if !Path::is_absolute(row_path) {
                     continue;
                 }
+                // CR claude for eric: [bug] already_subbed counts a row as
+                // grid-subscribed when `cells` has an entry for each subscribed
+                // displayed column, but subscribe_sort_column, which apply_table_sync
+                // runs first, also fills `cells`, with a SortMarker role only. When
+                // every subscribed displayed column is in sort_by, subscribe_row never
+                // runs and no Grid role exists, from compile and after every table
+                // update. on_update then never fires and a sparkline column records no
+                // history, while the cell still displays and sorts. Decide this from a
+                // Grid role on the cell's SubId instead. probe:
+                // design/review-2026-10-05/repro/gui-datatable-06.rs (copy to
+                // stdlib/graphix-package-gui/tests/review_gui_datatable_06.rs; cases b
+                // and d fail, controls a and c pass). (gui-datatable-06)
                 let already_subbed = match self.mode {
                     DisplayMode::Table => self
                         .displayed_columns()
@@ -703,10 +771,37 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         let mut indices: LPooled<Vec<usize>> = (0..n).collect();
+        // CR claude for eric: [bug] This comparator is not a total order. A NaN cell
+        // displays as "NaN", which parses, and it then compares Equal to every number.
+        // A digit-leading string such as "5 KB" sorts lexically between numbers whose
+        // numeric order disagrees ("10" < "5 KB" < "9" < "10"). On 21 or more rows
+        // Rust's stable sort detects this and panics ("user-provided comparison
+        // function does not correctly implement a total order") inside
+        // DataTableW::compile, before_view or handle_update on the GUI main thread,
+        // which takes the program down. Build one key per row, with numbers in a total
+        // order (Graphix's rule: NaN below every number), numbers before text and text
+        // by Ord, and sort by those keys; that also stops parsing both strings on every
+        // comparison. probe: design/review-2026-10-05/repro/gui-datatable-02.rs (a
+        // 30-row calculated column with one 0.0/0.0 panics at compile).
+        // (gui-datatable-02)
         indices.sort_by(|&a, &b| {
             for (idx, sb) in self.sort_by.iter().enumerate() {
                 let va = keys[a * n_keys + idx].as_str();
                 let vb = keys[b * n_keys + idx].as_str();
+                // CR claude for eric: [bug] This comparator is not a total order, so
+                // sort_by on more than 20 rows panics with "user-provided comparison
+                // function does not correctly implement a total order". An f64 NaN cell
+                // displays as "NaN", parses back to NaN and compares Equal to every
+                // number. A text cell that sorts between two numbers whose text and
+                // numeric orders disagree closes a cycle ("9" < "10" by number, "10" <
+                // "10.0.1" < "9" by text). The resort runs in compile, handle_update
+                // and before_view on the GUI's main thread, so a single publisher
+                // sending 0.0 / 0.0 to a sorted column kills the program. Put NaN below
+                // every number and use f64::total_cmp (Graphix's own float order), and
+                // rank numeric keys apart from text keys instead of comparing mixed
+                // pairs as text. probe:
+                // design/review-2026-10-05/repro/tests-ui.r2-01.rs (3 of its 5 cases
+                // panic, the 2 controls pass). (tests-ui.r2-01)
                 let cmp = match (numeric_key(va), numeric_key(vb)) {
                     (Some(na), Some(nb)) => {
                         na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)

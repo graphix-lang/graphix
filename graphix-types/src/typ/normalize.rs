@@ -117,6 +117,21 @@ impl Type {
                         // element (or its merge result) can enable a new
                         // merge.
                         let mut incoming = t;
+                        // CR claude for eric: [perf] Each incoming member is tried
+                        // against every kept one, so normalizing an N-member union
+                        // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
+                        // union that its idle select normalizes in check_dead_arms, so
+                        // --check of `seq { 1; ..; 1 }` is quadratic (16k steps 2.2 s,
+                        // 32k 7.9 s, 64k 32 s with the debug binary), and
+                        // deep_nesting's seqarm@100000 child takes about 80 s. A
+                        // hand-written select over N tags is worse (4000 tags 3.3 s,
+                        // 16000 52.8 s), because check_coverage and check_dead_arms
+                        // also rebuild the union per arm. Most members can merge only
+                        // with one of their own shape (a variant only with the same tag
+                        // and arity), so keying the kept members by shape would avoid
+                        // the N² scan. Separately, seqarm needs no more than about 10k
+                        // statements to exercise the lowering's stack.
+                        // (tests-shell-compiler-18)
                         'merge: loop {
                             for j in 0..acc.len() {
                                 if let Some(m) = incoming.merge(&acc[j]) {
@@ -133,6 +148,20 @@ impl Type {
                 }
                 true
             };
+        // CR claude for eric: [bug] The merge is greedy in arrival order and the sort
+        // comes after it, so one member set has several normal forms. [(i64, bool),
+        // (string, bool), (i64, f64)] gives [(i64, f64), ([i64, string], bool)], the
+        // same members in another order give [(i64, [f64, bool]), (string, bool)], and
+        // contains holds both ways. The interface checks compare normal forms by
+        // position (the Set arm of sig_matches, matches.rs:287, and the typedef `!=` at
+        // module.rs:477), so an implementation that writes or infers the union in
+        // another order is refused. For example, `val x: [(i64, bool), (string, bool),
+        // (i64, f64)]` over `let x = select c { 0 => (1, 2.0), 1 => (1, true), _ =>
+        // ("a", true) }` is a signature mismatch. Sorting before the merge would not
+        // make the form canonical, because a union written already merged, like [([i64,
+        // string], bool), (i64, f64)], cannot merge further; those checks want mutual
+        // containment, as find_impl uses. probe:
+        // design/review-2026-10-05/repro/t-fntyp-09.sh (t-fntyp-09)
         for t in set {
             if !absorb(t, &mut nested, &mut acc) {
                 return (Type::Any, true);
@@ -423,6 +452,19 @@ impl Type {
 
     fn merge_inner(&self, t: &Self) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
+        // CR claude for eric: [bug] flat_eq compares with `==`, and TVar equality
+        // treats two distinct unbound cells as equal. So merge_one_differing and the
+        // Array/List/Map/Error arms fold `Array<'a> ∪ Array<'b>` into `Array<'b>` and
+        // `(i64, 'a) ∪ (string, 'b)` into `([i64, string], 'b)`, dropping a cell that
+        // union_inner had kept apart. The Ref, Abstract and Fn arms below, and
+        // union_identical's own Fn arm in setops.rs, have the same hole. As a result
+        // `|a, b| [(1, a), (2, b)]` is typed `-> Array<(i64, 'b)>`, and `pick(true,
+        // "x", 41)[0]$ + 1` over `|c: bool, a, b| select c { true => [a], false => [b]
+        // }` passes --check and then panics the JIT at kernel.rs:243 (the struct twin
+        // is a silent interp/JIT divergence). A written `[(i64, 'a), (string, 'b)]`
+        // also parses as `([i64, string], 'b)`, so valid calls are refused and invalid
+        // ones accepted. Compare with union_identical here and in those arms. probe:
+        // design/review-2026-10-05/repro/t-fntyp-02.gx (t-fntyp-02)
         fn flat_eq(t0: &Type, t1: &Type) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
@@ -511,6 +553,19 @@ impl Type {
                     None
                 }
             }
+            // CR claude for eric: [bug] Two fn types merge only when `==`, and `==`
+            // never equates a bound cell with its binding, though the TVar arms below
+            // look through it. So `|x: i64| x * 2` and `|x: i64| -> i64 x + 1`, both
+            // fn(x: i64) -> i64, stay two union members, and a call through `select b {
+            // true => g, false => h }` is refused with "expected fn not [..]"
+            // (deref_typ!, graphix-compiler/src/node/mod.rs:143); with both annotated,
+            // or both unannotated, it is accepted. A generic member beside a
+            // monomorphic one (`|x| x` beside `|x: i64| x + 1`) is refused the same
+            // way, since nothing instantiates it to meet the other. So whether a select
+            // of functions can be called depends on which annotations were written;
+            // `let f: fn(x: i64) -> i64 = select ..` is accepted. probe:
+            // design/review-2026-10-05/repro/x-typecheck-generics-F12.gx
+            // (x-typecheck-generics-F12)
             (Type::Fn(f0), Type::Fn(f1)) => {
                 if f0 == f1 {
                     Some(Type::Fn(f0.clone()))
@@ -554,6 +609,18 @@ impl Type {
                     None
                 }
             }
+            // CR claude for eric: [bug] Merging two references' targets types `select c
+            // { true => &x, false => &y }` (x: i64, y: string) as `&[i64, string]`, a
+            // reference to a variable that exists nowhere. So `*r <- "s"` passes the
+            // check and stores a string in the i64 `x`. The fused read of `x` then
+            // panics at fusion/kernel.rs:243 and the runtime dies. A reference is
+            // written through, so its target must not widen, here or in
+            // contains.rs:717. Not merging is not enough on its own:
+            // ConnectDeref::typecheck0_with (node/mod.rs:2361) accepts a write when any
+            // member of r's type contains `&typeof(v)`, so the unmerged `[&i64,
+            // &Array<i64>]` lets `*r <- [2, 3]` write into `x` too; a write has to fit
+            // every referent. probe: design/review-2026-10-05/repro/t-fntyp-01.gx
+            // (t-fntyp-01)
             (Type::ByRef(t0), Type::ByRef(t1)) => {
                 t0.merge(t1).map(|t| Type::ByRef(Arc::new(t)))
             }

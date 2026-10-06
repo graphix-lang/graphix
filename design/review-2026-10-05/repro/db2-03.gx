@@ -1,0 +1,31 @@
+// db2-03: the same tree opened twice in one transaction gets two overlays:
+// lost read-your-writes, wrong commit.
+//
+// BeginTxnCtx::open_tree (stdlib/graphix-package-db/src/txn.rs:331-337)
+// pushes a new sled::Tree slot on every db::txn::tree call, also for a name
+// this transaction already opened. sled's [Tree]::make_overlay gives each
+// slot its own TransactionalTree (own writes map and read cache), and
+// TransactionalTrees::commit applies the slots in slot order. So tt2 does
+// not see tt1's write, and at commit the later-opened handle's write wins
+// over a later write made through the earlier handle.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/db2-03.gx
+//   (same output with --no-fusion; same with `null` for both tree names)
+// expected: (1, 3)    tt2 reads tt1's write; the commit keeps the last write
+// observed: (null, 2)
+// control: `let tt2 = tt1;` (one handle) prints (1, 3).
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/x.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "a")$;
+let txn = db::txn::begin(t ~ db)$;
+let tt1: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+let tt2: db::txn::TxnTree<string, i64> = db::txn::tree(txn, tt1 ~ "a")$;
+let w1 = db::txn::insert(tt1, tt2 ~ "k", 1)$;
+let r2 = db::txn::get(tt2, w1 ~ "k")$;
+let w2 = db::txn::insert(tt2, r2 ~ "k", 2)$;
+let w3 = db::txn::insert(tt1, w2 ~ "k", 3)$;
+let c = db::txn::commit(w3 ~ txn)$;
+let fin = db::get(t, c ~ "k")$;
+sys::exit(sys::time::after_idle(duration:200.ms, fin ~ 0));
+(r2, fin)

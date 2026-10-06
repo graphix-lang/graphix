@@ -151,6 +151,15 @@ impl<X: GXExt> MenuBarW<X> {
 }
 
 /// Convert a compiled `MenuItemKind` into the descriptor needed by the iced widget.
+// CR claude for eric: [perf] Both menu views call this on every frame, and a frame
+// follows every window event, mouse moves included. Each call copies the label into a
+// new String and clones the ShortcutV with its display String, and MenuBarW::view
+// copies each group label too (line 235). Descriptors that borrow from the widget (`&'a
+// str`, `&'a ShortcutV`) would allocate only their Vecs. text_editor.rs:170-174 copies
+// the whole document three times per keystroke: `text()`, the clone kept in
+// last_set_text, and the ArcStr conversion. The `TRef<X, String>` labels and contents
+// across the package copy the ArcStr payload on every update, where `TRef<X, ArcStr>`
+// would not. (gui-widgets-b-15)
 pub(crate) fn menu_item_desc<X: GXExt>(item: &MenuItemKind<X>) -> MenuItemDesc {
     match item {
         MenuItemKind::Action { label, shortcut, on_click_callable, disabled, .. } => {
@@ -191,6 +200,15 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
                     .context("menu group items recompile")?;
                 changed = true;
             }
+            // CR claude for eric: [structure] This per-item update (the label, shortcut
+            // and disabled TRefs and the on_click recompile) is a copy of
+            // context_menu.rs:83-114, and the items_ref recompile just above it is a
+            // copy of context_menu.rs:76-82. A method on MenuItemKind, and one for a
+            // list of items, would serve both widgets. In menu_bar_widget.rs the
+            // enabled-shortcut search is written twice (MenuOverlay::update 247-269,
+            // OwnedMenuBar::update 485-508), and MenuOverlay::open is an `Option<&mut
+            // bool>` that both constructors fill with Some, so it can be `&'a mut
+            // bool`. (gui-widgets-b-13)
             for item in &mut group.items {
                 match item {
                     MenuItemKind::Action {

@@ -326,6 +326,15 @@ refused `f("s")` at elaboration.
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every
 former consumer derives from the cells:
 
+<!-- CR claude for eric: [doc-drift] Two statements in this doc disagree with the code.
+First, the contains bound check does not make 'a variable with one bound meet it (an
+open one binds to it)'. FnType::bounds_hold checks only variables that are already
+bound, whatever the bound count, as the 'Quantified function formals' section says:
+`apply(|x| x * x)` over `type F = fn<'b: Number>(x: 'b) -> 'b` checks because 'b stays
+open. Second, under 'Things deliberately left as they are',
+`FnType::freeze_shared_tvars` does not exist and reset_tvars freezes nothing;
+FnType::instantiate freezes the fresh cells that repeat. Delete the one-bound clause and
+point that sentence at FnType::instantiate. (t-fntyp-12) -->
 - `constraint_view()` — `(tvar, conjunct)` pairs, one per conjunct of
   each declared quantifier's cell, normalized, sorted by name then
   conjunct and deduped; a `+` bound prints as `fn<'a: A + B>`. Feeds

@@ -100,6 +100,10 @@ pub fn char_col_to_position(
 
 /// `position_to_char_col` over the full document text; `None` if the
 /// line index is out of range.
+// CR claude for eric: [dead] position_to_char_col_in_text has no caller in this repo or
+// ../netidx, while ServerState::decode repeats its body; decode should call it. The
+// Utf8 variant and its arms are reachable only from tests: select_position_encoding
+// picks UTF-32 or the UTF-16 default, never UTF-8. (lsp-14)
 pub fn position_to_char_col_in_text(
     text: &str,
     position: Position,

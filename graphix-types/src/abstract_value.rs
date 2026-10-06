@@ -119,6 +119,18 @@ impl fmt::Debug for GxAbstract {
     }
 }
 
+// CR claude for eric: [bug] eq here, cmp below, the derived Pack above and the drop of
+// a GxAbstract each re-enter netidx's Value walk once per abstract nesting level with
+// no ensure_sufficient, so a nested nominal value recurses on the thread stack. `a ==
+// b` over two 1000-deep `type N = Abstract<[`Nil, `Cons(i64, N)]>` lists aborts the
+// process. About 190 levels fill the 2 MiB runtime thread on the dev build and about
+// 500 on quick. `<`, array::sort, map keys and pack::write_bytes abort the same way at
+// 1000, and so does dropping a 100k-deep `type W = Abstract<[W, i64]>`: no ValArray
+// sits between its levels, so the deferred-drop guard never runs. Decode recurses the
+// same way under one bytes::Take per level, so 92 KB of crafted bytes through
+// pack::read or a netidx peer aborts any program that has built an abstract value; a
+// guard alone does not cover decode, which needs a depth bound. probe:
+// design/review-2026-10-05/repro/x-stack-02.gx (x-stack-02)
 impl PartialEq for GxAbstract {
     fn eq(&self, other: &Self) -> bool {
         if self.id != other.id {
@@ -154,6 +166,16 @@ impl Ord for GxAbstract {
 
 // Only the id: `eq` may consult a user `Eq` impl, which no hash of the
 // payload can agree with.
+// CR claude for eric: [perf] Every value of one abstract type hashes to its id alone,
+// so a hash container of them is one bucket: array::dedup's AHashSet<Value>
+// (stdlib/graphix-package-array/src/lib.rs:198) makes n²/2 eq calls over them, each a
+// Graphix call under a user Eq, where array/mod.gxi:65 promises O(N). In a debug build,
+// dedup of 8000 values of T = Abstract<i64> with no Eq impl takes about 3.5 s against
+// 1.2 ms for 8000 i64, x4 per doubling, and the runtime is held for all of it. Only a
+// user Eq needs the id-only hash: hashing the payload whenever eq would be structural
+// (no loan, or no Eq impl for this id) keeps Hash consistent with eq and makes dedup
+// linear for every abstract type without one. probe:
+// design/review-2026-10-05/repro/collections-str-09.gx (collections-str-09)
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);

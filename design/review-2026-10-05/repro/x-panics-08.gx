@@ -1,0 +1,26 @@
+// x-panics-08: hbs::render with recursive partials aborts the process
+// (stack overflow) instead of returning `HbsErr.
+//
+// handlebars 6.4 (6.4.4 too) refuses only a partial that includes itself
+// while it is the current template (partial.rs:58 `is_current_template`).
+// A cycle through two partials passes that check and recurses until the
+// worker's stack overflows; hbs_render (stdlib/graphix-package-hbs/src/
+// lib.rs) calls Handlebars::render with no depth bound, in both engines.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/x-panics-08.gx
+// expected: r = err error:["HbsErr", ...] then exit 0 (what the direct
+//   self-include `#partials: {p: "x{{> p}}"}` already prints)
+// observed (also with --no-fusion): exit 134,
+//   thread 'tokio-rt-worker' has overflowed its stack
+//   fatal runtime error: stack overflow, aborting
+//
+// The template string alone suffices, no #partials needed, and the same
+// abort follows from either of these in place of the call below:
+//   hbs::render("{{#*inline \"a\"}}x{{> a}}{{/inline}}{{> a}}", {n: 1})
+//   hbs::render(#partials: {p: "{{#if n}}x{{/if}}{{> p}}"}, "{{> p}}", {n: 1})
+// (an inline partial's template has no name, and a block resets the current
+// template name to none, so the self-include check never fires).
+let r = hbs::render(#partials: {p: "x{{> q}}", q: "y{{> p}}"}, "{{> p}}", {n: 1});
+println("r = [select r { error as e => "err [e]", s => s }]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

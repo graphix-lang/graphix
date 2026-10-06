@@ -37,6 +37,16 @@ pub struct FormatConfig {
     /// the line width to fit
     pub width: usize,
     /// the spaces one level of nesting indents by
+    // CR claude for eric: [bug] `indent` accepts any usize, from graphixfmt.json and
+    // from `graphix fmt --indent`. `PrettyBuf::push_indent` (print.rs:390) writes
+    // indent times depth spaces at the start of every nested line. An indent of 2^64-1
+    // panics with capacity overflow, 2^40 aborts on a failed allocation, and 1e9 takes
+    // a five-line file past 6 GB. The language server reads a repository's
+    // graphixfmt.json and dies the same way on a formatting request; catching panics
+    // there would not stop the abort or the memory growth. Bound the indent in its
+    // type, or refuse it when the file and the flag are read, so it is an error like a
+    // malformed file (width is harmless at any value). probe:
+    // design/review-2026-10-05/repro/x-panics-13.sh (x-panics-13)
     pub indent: usize,
 }
 
@@ -129,6 +139,20 @@ fn merge_uses<T: Clone>(
     fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
         names.iter().any(|n| {
             run.iter().any(|(_, m)| {
+                // CR claude for eric: [bug] A glob is treated as independent of every
+                // item with its own root. But compile_use_item resolves each item's
+                // prefix through the imports and globs made before it, and the merged
+                // statement's sort reorders the two: when module a holds a module a, `{
+                // use a::*; use a::w; w }` prints 2 and its formatted `{ use a::{w, *};
+                // w }` prints 1. It also happens the other way round: `use a::z; use
+                // a::b::*` becomes `use a::{b::*, z}`, and a::z then resolves through
+                // b's glob. reads() also skips the second segment of a self::/package::
+                // path, which reads the imports of the level it anchors at, so at a
+                // module's root `use self::q as m; use self::m::x` formats to `use
+                // self::{m::x, q as m}`, which no longer compiles. The reparse guard
+                // compares merged with merged, so each of these is written with exit 0.
+                // probe: design/review-2026-10-05/repro/t-format-resolver-02.sh (seven
+                // cases, before and after `graphix fmt`). (t-format-resolver-02)
                 if m.is_glob() || n.is_glob() {
                     return root(m) != root(n);
                 }
@@ -351,6 +375,17 @@ enum Ornament<'a> {
     Delimiters(StrForm),
 }
 
+// CR claude for eric: [bug] The guard compares ornaments as one flat preorder list and
+// Expr equality ignores `dec`, so a decoration that moves to the neighbouring node
+// passes. The parser keeps no ExplicitParens around a postfix base
+// (graphix-types/src/expr/parser/arithexp.rs:200-206) and the printer writes a
+// decorated base bare, so `let y = (#[native] f)(1)`, refused ('annotates a computation
+// or a call, not a function'), formats with exit 0 to `#[native]` on the call `f(1)`,
+// which runs and prints 2; formatting that output changes it again. A comment above `a`
+// inside `( .. )[0]` moves to `a[0]` the same way. Pair each ornament with its node's
+// preorder ordinal so a move is refused, and keep the parentheses around a decorated
+// postfix base. probe: design/review-2026-10-05/repro/t-format-resolver-14.gx
+// (t-format-resolver-14)
 fn expr_ornaments<'a>(e: &'a Expr, acc: &mut Vec<Ornament<'a>>) {
     ensure_sufficient(|| {
         if let Some(d) = &e.dec {
@@ -410,6 +445,13 @@ pub fn format_source_unchecked(
 
 /// `text` laid out canonically. The result is reparsed and refused unless
 /// it says exactly what `text` said, comments and attributes included.
+// CR claude for eric: [bug] RootFile::load strips a leading `#!` line
+// (graphix-types/src/expr/resolver.rs:537-540) but this parses the raw text, so
+// `graphix fmt` fails with 'Unexpected `#`' at 1:1 on every script with a shebang that
+// `graphix` runs and `--check` accepts, and the LSP formatting handler returns no edit
+// for it. One helper that splits off the shebang line, used by both, with the formatter
+// writing the line back unchanged. probe:
+// design/review-2026-10-05/repro/t-format-resolver-09.gx (t-format-resolver-09)
 pub fn format_source(
     kind: SourceKind,
     text: &str,

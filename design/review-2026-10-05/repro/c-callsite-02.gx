@@ -1,0 +1,35 @@
+// c-callsite-02: a labeled default runs twice at a fresh bind
+// (prebound collection slots under Auto/Force; recursive self-calls).
+//
+// graphix = a debug build of HEAD c722befe. From the repo root:
+//   graphix --no-cache design/review-2026-10-05/repro/c-callsite-02.gx
+//   GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/c-callsite-02.gx
+//
+// expected, every mode: one "default ran" (only the activation g(0)
+// omits #tag), then ([(1, 1), (2, 1), (3, 1)], 0)
+// observed, default mode (Auto) and GRAPHIX_PAR=force:
+//   default ran
+//   default ran
+//   ([(1, 2), (2, 2), (3, 2)], 0)
+// observed, GRAPHIX_PAR=off:
+//   default ran
+//   default ran
+//   ([(1, 1), (2, 1), (3, 1)], 0)
+//
+// The map's fresh slots are prebound, so update_call's update_args runs
+// each slot's `count(trig)` default and rebind's prime_bound runs the same
+// node again (the 100 ms timer lets Auto calibrate; at cycle 1 it runs
+// serially). The self-call g(x - 1) holds a default compiled at
+// elaboration: update_args runs it, bind discards it and prime_bound runs
+// a fresh copy. Without sys::, `graphix-fuzz check` reports the map half
+// as "DIVERGENCE: forked node-walk != serial node-walk".
+let trig = sys::time::timer(duration:100.ms, false);
+let f = |#n = count(trig), x: i64| (x, n);
+let m = array::map(trig ~ [1, 2, 3], f);
+let rec g = |#tag = println("default ran"), x: i64| select x {
+  0 => 0,
+  x => g(x - 1)
+};
+let r = g(#tag: null, trig ~ 1);
+sys::exit(sys::time::after_idle(duration:100.ms, trig ~ 0));
+(m, r)

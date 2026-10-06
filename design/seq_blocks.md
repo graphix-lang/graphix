@@ -10,6 +10,18 @@ Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
 `graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
+<!-- CR claude for eric: [doc-drift] `seq_do_statement_list_is_capped` was deleted along
+with `do` (4e254894), so this pin points at nothing. Two other pins are dead.
+env_independent_typerefs.md pins `check_mode_parity` in graphix-fuzz/src/lib.rs, which
+never existed; the gate is graphix-shell/tests/check_mode_parity.rs
+(`check_diagnostics_mode_identical`). recursive_activations.md files
+`jit_deep_nontail_probe` under lang/functions.rs, but it is at
+graphix-fuzz/src/lib.rs:5968. Ten pins still cite graphix-compiler/src for files now
+under graphix-types/src: expr/parser/test.rs (here, list_native, module_system,
+or_patterns), env.rs, expr/test.rs, expr/seq.rs, expr/resolver.rs, abstract_value.rs and
+shared_map.rs. list_native.md also puts the List rep in `node/list.rs`, which is now
+graphix-types/src/list.rs. Following one of these pins to verify a rule lands on a
+missing file or test. (x-doc-drift-10) -->
 `seq_do_statement_list_is_capped`), `expr/seq.rs` unit tests
 (`a_long_seq_lowers_flat`).
 Supersedes: pure_select, pure_dataflow_plan, levels_and_events,
@@ -446,6 +458,18 @@ double delivery because the try consumed the original. No `finally`:
 success cleanup is the next statement, failure cleanup is the with
 body. `with(_)` is accepted.
 
+<!-- CR claude for eric: [doc-drift] This sentence is stale: the join cell takes the try
+body's type, so `seq { let v = try { x? } with(e) { "s" }; v }` over an i64 `x` is
+refused at the generated `seqj.. <- seqv..`, and only a single-name `let v: [i64,
+string] = try ..` annotation widens it, as §6.1 (line 297) says. The §6.1 skeleton's
+`let x_c = never(); // one cell per let read across arms` (line 279) shows per-let
+carried cells that no longer exist; the prelude's cells are the trigger snapshot, each
+try's `e` and its join cell. The pins at lines 12-13 name
+graphix-compiler/src/expr/parser/test.rs (now graphix-types/src/expr/parser/test.rs) and
+a test seq_do_statement_list_is_capped that no longer exists, and
+dependency_summaries.md:9 names graphix-compiler/src/expr/seq.rs (now under
+graphix-types). The same stale graphix-compiler/src/expr/ prefix is in list_native.md,
+or_patterns.md, tvar_constraints.md and netidx_extraction.md. (t-seq-13) -->
 The statement's value is the union of the two bodies' last values; a
 with body ending in `e?` has an uninhabited residual and types Bottom,
 so the union is the try body's type. `e` is typed as a `catch` bind is

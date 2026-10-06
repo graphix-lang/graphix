@@ -1,0 +1,21 @@
+// db2-14: a DbErr string carries a stack backtrace when RUST_BACKTRACE is set.
+//
+// DbTreeEv::eval (stdlib/graphix-package-db/src/tree.rs:533) formats the
+// anyhow::Error with {e:?}; anyhow's Debug appends "Stack backtrace:" when
+// RUST_BACKTRACE or RUST_LIB_BACKTRACE is set. Also tree.rs:241 and txn.rs
+// 183, 223, 355, 362.
+//
+// command: RUST_BACKTRACE=1 graphix --no-cache design/review-2026-10-05/repro/db2-14.gx
+// The second db::tree opens "people" with other types.
+// expected: error:["DbErr", "tree 'people' has type Tree<string, i64> but was
+//   opened as Tree<string, string>"], what the program gets without the variable
+// observed (HEAD c722befe, debug build): the same message followed by
+//   "\n\nStack backtrace:\n   0: <anyhow::Error>::msg::<alloc::string::String>\n ..."
+//   through frame 14, inside the program-visible string
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/p.db")$;
+let t1: db::Tree<string, i64> = db::tree(db, "people")$;
+let t2: Result<db::Tree<string, string>, `DbErr(string)> = db::tree(db, t1 ~ "people");
+println("t2: [t2]");
+sys::exit(sys::time::after_idle(duration:300.ms, t2 ~ 0));
+t2

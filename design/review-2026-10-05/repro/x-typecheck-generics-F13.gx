@@ -1,0 +1,54 @@
+// x-typecheck-generics-F13: a declared type variable written once in its
+// signature loses its rigidity when it unifies with another open cell, so the
+// body binds it to a concrete type.
+//
+// OpenPair::of (graphix-types/src/typ/contains.rs:245) answers Distinct only
+// when BOTH cells are rigid; with one rigid side it picks a name alias by the
+// `frozen` flags alone. A var written once is unfrozen, and the Merge::Name
+// path of TVar::merge_into (tvar.rs:777) has no rigid-survivor rule (only
+// Merge::Cells has one), so the rigid var is re-pointed at the other cell and
+// reads as free for the rest of the body check. GRAPHIX_DBG_BIND=1 on the
+// first minimal form below prints `RALIAS 'a(..) -> 'x(..)`, then
+// `BIND lhs 'x(..) := Primitive(.. I64)`.
+// Here the trait's 'a (rigid in the impl's check) aliases the fresh frozen 'x
+// of id's instantiation, and `st <- id(x)` binds it to i64.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F13.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F13.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-typecheck-generics-F13.gx
+//
+// expected: the check refuses the impl, as it does with `st <- x` written
+// directly:
+//   st is i64 and cannot hold 'a: unbound; declare st: [i64, 'a: unbound] ..
+//
+// observed: --check exits 0. At run time the dynamic call's bind logs
+//   a run-time bind at ws[0]$(1, 2.5) did not elaborate: .. an instance at
+//   fn(self: i64, x: f64) -> bool of a definition typed fn(s: i64, x: 'a) -> bool
+// and runs the impl on 2.5 anyway (x-typecheck-generics-F10), which writes
+// it into the i64 `st`:
+//   fused: panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//     kernel param `st`: runtime F64(2.5) does not match the compiled Scalar(I64) slot
+//     Error: runtime did not respond   (exit 1)
+//   --no-fusion: prints 0, then 7.5 for the i64 expression `st * 3`
+//   graphix-fuzz check: the same panic, core dumped (exit 134)
+// A static call, `Probe::p(1, "s")`, passes --check and the build refuses it
+// at the call site (GRAPHIX_ELAB_AUDIT=1 reports it).
+//
+// Minimal forms, each accepted by --check:
+//   let eq = |a: 'x, b: 'x| a == b; let f = |x: 'a| eq(x, 1)
+//     f is fn(x: i64); `|x: 'a| x == 1` and `eq(1, x)` are refused
+//   let eq = |a: 'x, b: 'x| a == b; let f = |x: 'a, y: 'b| eq(x, y)
+//     f is fn(x: 'a, y: 'a); `|x: 'a, y: 'b| x == y` is refused
+//   let id = |a: 'x| a; let f = |x: 'a| id(x) == 1
+//   let f = |g: fn(y: 'a) -> bool| { let z = never(); let r = g(z); z == 1 }
+//     the rigid side on the left: LALIAS 'a -> z's cell; `g(1)` is refused
+// A var written twice is frozen and keeps its rigidity:
+// `|x: 'a, y: 'a| eq(x, 1)` is refused.
+let id = |a: 'x| a;
+let st: i64 = 0;
+trait Probe { val p: fn(self, x: 'a) -> bool };
+impl Probe for i64 { let p = |s, x| { st <- id(x); true } };
+let ws = [|s: i64, x: f64| Probe::p(s, x)];
+let r = ws[0]$(1, f64:2.5);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+st * 3

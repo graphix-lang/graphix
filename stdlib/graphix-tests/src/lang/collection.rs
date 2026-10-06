@@ -303,6 +303,15 @@ run!(
     "#
 );
 
+// CR claude for eric: [test-gap] map::fold and the Map impl of Collection::fold both
+// run the 'map_fold intrinsic (map mod.gx:13; core mod.gx:38 and 52), so a == b checks
+// only the trait's wrapper callback, not the fold itself.
+// collection_bodies_filter_array likewise compares two MapOps of one MapQ node. These
+// two have no independent side: fold_array, map_array and fold_list compare against a
+// hand-written recursion, and find_array and flat_map_array against array::fold. A slot
+// or assembly bug the two sides share gives both the same wrong answer, and the literal
+// pins in lib_tests use only 3 to 5 elements. Add the expected value: a == 39800 here,
+// and array::len(a) == 32 in filter_array. (tests-lang-d-10)
 run!(
     collection_bodies_fold_map,
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),

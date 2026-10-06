@@ -1,0 +1,41 @@
+// small-pkgs-16: re's error text carries a Rust backtrace under RUST_BACKTRACE,
+// and re::splitn reads a negative #limit as no limit.
+//
+// with_regex (stdlib/graphix-package-re/src/lib.rs:25) formats the
+// anyhow::Error with {e:?}. anyhow's Debug appends the backtrace it captured
+// whenever RUST_BACKTRACE or RUST_LIB_BACKTRACE is set, so the ReError string
+// a program reads depends on the environment and, since the frames differ, on
+// the engine. str::parse and str's escape functions build their errors the
+// same way (graphix-package-str/src/lib.rs:817, 451). fc_splitn (re lib.rs:77)
+// casts #limit with `as usize`: -1 wraps to usize::MAX (no limit) and 0 gives
+// [], where str::splitn refuses n <= 0; and #limit counts parts, not splits,
+// so the gxi's "split at most #limit times" is one off.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/small-pkgs-16.gx
+//   then the same under RUST_BACKTRACE=1, with and without --no-fusion
+// expected: one ReError text (76 chars) in every environment and engine;
+//   re::splitn with #limit -1 or 0 an error, as str::splitn gives.
+// observed (HEAD c722befe, debug build):
+//   plain, both engines: len 76
+//   RUST_BACKTRACE=1: len 973 (JIT) and 5957 (--no-fusion), the text ending in
+//     "Stack backtrace:\n   0: <anyhow::Error as core::convert::From<regex::error::Error>>::from ..."
+//   re -1: ["a", "b", "c"]   re 0: []   re 2: ["a", "b,c"]
+//   str -1 and str 0: error:["StringSplitError", "splitn: i64:-1 must be a number > 0"]
+//   graphix-fuzz check on `select re::is_match(#pat: "(", "x") { error as e =>
+//     str::len("[e]"), v => 0 }` is AGREE, and under RUST_BACKTRACE=1 a false
+//     DIVERGENCE (interp 7153, jit 973).
+let r = re::is_match(#pat: "(", "x");
+let s = select r {
+  error as e => "[e]",
+  v => "ok [v]"
+};
+println("len [str::len(s)]: [s]");
+let re_neg = re::splitn(#pat: ",", #limit: -1, "a,b,c");
+let re_zero = re::splitn(#pat: ",", #limit: 0, "a,b,c");
+let re_two = re::splitn(#pat: ",", #limit: 2, "a,b,c");
+let str_neg = str::splitn(#pat: ",", #n: -1, "a,b,c");
+let str_zero = str::splitn(#pat: ",", #n: 0, "a,b,c");
+let str_two = str::splitn(#pat: ",", #n: 2, "a,b,c");
+println("re -1: [re_neg]   re 0: [re_zero]   re 2: [re_two]");
+println("str -1: [str_neg]   str 0: [str_zero]   str 2: [str_two]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -69,6 +69,16 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         (16 * args.len().max(1)) as u32,
         3,
     ));
+    // CR claude for eric: [structure] Which helper releases an owned value of each kind
+    // is decided in four places: these helper-name tuples, CallArgDrop with
+    // marshal_args and emit_call_arg_drops (call.rs:308-315, 692-707, 909-934),
+    // emit_discard_result (flow.rs:414-447) and emit_drop_local (call.rs:938-964). The
+    // ownership rule that goes with it (a string is always owned, a borrowed composite
+    // or value is not dropped) is repeated in the first three, and a tuple here can
+    // pair a helper with the wrong number of words. One `emit_owned_drop(b, ctx, kind:
+    // LocalKind, disc, payload)` and one `owned_drop_kind(AbiKind, CompositeSource) ->
+    // Option<LocalKind>` would serve all four and replace CallArgDrop and the tuples.
+    // (f-call-flow-06)
     let mut drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
         smallvec::SmallVec::new();
     let mut arg_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
@@ -337,12 +347,37 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
+        // CR claude for eric: [bug] In a callee body claim_state_word is None, so a
+        // self-call hands the new activation this activation's own init flag. A
+        // recursion depth first reached after init (by growth, or by regrowth after a
+        // shrink) therefore runs with no init view, and the native tail loop does the
+        // same for its new iterations. The node-walk builds that activation fresh, so
+        // its constants fire and a constant-derived error under a handler-ful `?`
+        // raises once per new depth; the JIT never raises it. probe:
+        // design/review-2026-10-05/repro/f-call-flow-05.gx (interp counts 5 errors, JIT
+        // 3). The hand-inlined chain agrees only because arm_raise_blocker
+        // (lowering.rs:163) de-fuses it, and that walk does not follow the self edge,
+        // whose callee is unbound at fusion time. A first-call word in this body's site
+        // block would still miss a regrown depth because it survives the shrink, while
+        // the zeroed block that graphix_site_child_block allocates marks exactly the
+        // fresh activations. (f-call-flow-05)
         0 => cx.claim_state_word().map(|off| {
             let sp = cx.state_ptr();
             SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
         }),
         _ => cx.slot_select_word(site),
     };
+    // CR claude for eric: [bug] The callee's context word carries only bit 0 (init |
+    // first call), never bit 1 (wake), so inside every cross-kernel callee `genuine =
+    // init & !wake` (line 151) is just `init`. Under an arm wake init is forced to 1,
+    // the fastcall stale mask is zeroed, and a builtin over standing args returns
+    // FIRED. The node-walk keeps `event.wake_init` through the dispatch and returns
+    // STALE. So a re-entered impure arm that calls a fused lambda writes its connects
+    // again and ticks `count` or `~` on every re-entry, and a site's first dispatch
+    // under a wake does the same. Forward the caller's wake bit here, as outline.rs:91
+    // does for chunks: `bor(first_use(word), ishl_imm(wake_flag, 1))`. probe:
+    // design/review-2026-10-05/repro/f-kernel-01.gx (graphix-fuzz check: DIVERGENCE).
+    // (f-kernel-01)
     cx.first_use(word)
 }
 

@@ -118,6 +118,18 @@ pub(super) struct BlockW<X: GXExt> {
     last_size: SizeV,
 }
 
+// CR claude for eric: [structure] Each property is written out about ten times: its id
+// in `Fields`, the destructure, the `try_join!` call and its result tuple,
+// `TRef::new(..).context(..)`, the `Self` literal, a destructure and
+// `update(..).context(..)` in `handle_update`, and a destructure and `if let
+// Some(Some(..))` in `draw`. Block spends about 230 of its 349 lines on its 14
+// properties, and every widget repeats the scheme. The size report is the same five
+// lines in block (340-344), layout (257-261), overlay (124-128), tabs (200-204) and
+// scrollbar (351-355). `set_children` (layout.rs:167), `set_layers` (overlay.rs:83) and
+// `set_tabs` (tabs.rs:102) are one function over different element types. Three changes
+// would remove the repetition: a props macro that generates the ids, the joined
+// compile, the TRefs and one update over all of them; a `SizeReport { size_ref, last }`
+// with `report(rect)`; and one helper that compiles a child array. (tui-core-11)
 impl<X: GXExt> BlockW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         #[derive(FromValue)]

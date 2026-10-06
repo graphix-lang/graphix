@@ -1,0 +1,20 @@
+// x-errors-13: an aborted runtime still runs a cycle and logs
+// "could not send batch" at ERROR (graphix-rt/src/gx.rs:1141, 519).
+//
+// The run loop checks control.aborted() only at the top of its loop;
+// after select! it always runs process_input_batch and do_cycle, and
+// do_cycle sends its batch (empty or not) to the subscriber. graphix-fuzz
+// shuts its registration-image runtime down right after taking the image
+// (TestCtx::shutdown only drops the handle, it does not wait) and drops
+// the receiver, so that runtime's first cycle finds the channel closed.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/x-errors-13.gx 2>&1 | grep -c 'could not send batch'
+// timeline: RUST_LOG=graphix_rt=debug GRAPHIX_FUZZ_SESSIONS=0 graphix-fuzz check <this file>
+//
+// expected: 0 (a runtime shut down by its embedder logs nothing at ERROR)
+// observed (HEAD c722befe, debug build): 2, 5, 1 in three runs, verdict
+//   AGREE each time; the debug log shows the ERROR right after the
+//   registration runtime's "runtime start wait", before its
+//   "first cycle time".
+let f = |x: i64| x + 1;
+f(41)

@@ -12,6 +12,13 @@ use graphix_package_core::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
+// CR claude for eric: [style] The connection's lock is a std::sync::Mutex taken with
+// lock().unwrap() (lines 75 and 349), where parking_lot::Mutex is the house default. A
+// panic under the lock would poison the connection for good, and every later call would
+// fail as "spawn_blocking failed". The comment's reason for std (concurrent
+// spawn_blocking calls serialize on it) holds for parking_lot as well. Use
+// parking_lot::Mutex and drop the comment; the Arc stays std for impl_abstract_arc!.
+// (x-alloc-15)
 use std::sync::{Arc, Mutex};
 
 // std::sync::Mutex: concurrent spawn_blocking calls serialize on it.
@@ -44,6 +51,17 @@ fn sqlite_to_value(v: rusqlite::types::ValueRef<'_>) -> Value {
         rusqlite::types::ValueRef::Integer(i) => Value::I64(i),
         rusqlite::types::ValueRef::Real(f) => Value::F64(f),
         rusqlite::types::ValueRef::Text(s) => {
+            // CR claude for eric: [bug] A TEXT value that is not valid UTF-8 (another
+            // writer's Latin-1, CAST(blob AS TEXT), char() of a surrogate) reads as ""
+            // with no error. The program gets a wrong value, and writing the row back
+            // erases the stored bytes. Core's bytes_to_string answers `EncodingError`
+            // and rusqlite's own FromSql for String answers Utf8Error, so either fail
+            // the query and name the column, or keep the valid content with
+            // from_utf8_lossy. map_value also casts error values, so today an error
+            // returned from eval reaches the program as `InvalidCast` wrapping the
+            // `SqliteError` (try `SELEC 1`). probe:
+            // design/review-2026-10-05/repro/http-sqlite-db1-11.gx prints ([{name: "",
+            // stored: "436166E9"}], [{stored: ""}]). (http-sqlite-db1-11)
             Value::String(ArcStr::from(std::str::from_utf8(s).unwrap_or("")))
         }
         rusqlite::types::ValueRef::Blob(b) => {
@@ -248,6 +266,21 @@ impl EvalCachedAsync for SqliteQueryEv {
                     Ok(s) => s,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
+                // CR claude for eric: [bug] column_count and column_name are read from
+                // the cached statement before it steps, and SQLite re-prepares a cached
+                // statement on its first step after a schema change, so rows come back
+                // with the new columns under the old labels: after DROP COLUMN b; ADD
+                // COLUMN d, the same SELECT * returns {a: 1, b: 3, c: 4} for the row
+                // (a, c, d) = (1, 3, 4). When the column count shrank,
+                // row.get_ref(*idx).unwrap() (278) panics while with_conn holds the
+                // std::sync::Mutex (15, 75), and the poisoned mutex fails every later
+                // call on the connection, close (349) included, with spawn_blocking
+                // failed: ... PoisonError. Take the columns from the stepped statement
+                // (the first row's row.as_ref()), return an error instead of
+                // unwrapping, and use parking_lot::Mutex as the db cursor does (the
+                // comment at 17 holds for any mutex). probe:
+                // design/review-2026-10-05/repro/http-sqlite-db1-18.gx
+                // (http-sqlite-db1-18)
                 let col_count = stmt.column_count();
                 let col_names: LPooled<Vec<ArcStr>> = (0..col_count)
                     .map(|i| ArcStr::from(stmt.column_name(i).unwrap_or("")))

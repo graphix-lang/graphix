@@ -146,6 +146,12 @@ impl fmt::Display for ArgKey {
 /// The call's argument nodes, keyed for signature lookups but iterating
 /// in source order. Order is load-bearing: args form a sequential scope
 /// chain, so `update` must evaluate them left to right.
+// CR claude for eric: [doc-drift] The doc above is stale. A let is no longer legal in
+// argument position (`f(#n: let y = 1, y)` is refused: "a let binding is not an
+// expression"), compile_apply_args compiles every argument in one scope, and
+// update_args forks the arguments under Plan::Fork, merging the parts in order. Say
+// what holds: iteration is in source order, written arguments first and then the
+// defaults a bind added, and a forked update merges in that order. (c-callsite-10)
 pub(crate) type ArgMap<R, E> = IndexMap<ArgKey, Arg<R, E>, ahash::RandomState>;
 
 #[derive(Debug)]
@@ -185,6 +191,9 @@ fn printed_deref(t: &Type) -> String {
     crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
 }
 
+// CR claude for eric: [readability] This function's doc sits at lines 178-181, directly
+// above printed_deref's own doc. rustdoc and editor hovers therefore give printed_deref
+// both paragraphs and this function none. Move those four lines here. (c-callsite-09)
 fn recheck_builtin<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     id: LambdaId,
@@ -248,6 +257,21 @@ fn quantified_formal(
     let deref = typ.with_deref(|t| t.cloned());
     let expanded = match &deref {
         Some(Type::Fn(_)) => deref.clone(),
+        // CR claude for eric: [bug] This expands the formal one typedef level only, so
+        // an alias of an alias is missed. With `type G = F`, where F is the pinned
+        // `fn<'b: Number>(x: 'b) -> 'b`, G expands to the Ref F, quantified_formal
+        // returns None, and the argument is checked with 'b open, while each call in
+        // the body still picks a new 'b. With the formal written `|f: G|`,
+        // NESTED_QUANTIFIER_MONO and NESTED_QUANTIFIER_CONCRETE
+        // (stdlib/graphix-tests/src/lang/types.rs) both pass --check. `|f: G| f(1.5)`
+        // runs `|x: i64| -> i64 x + 1` on 1.5, and when its i64 result feeds a kernel
+        // the runtime panics at fusion/kernel.rs:243. Expand the whole alias chain
+        // before matching `Type::Fn`, pin the alias form in that table, and pin there
+        // too the typedef'd struct form (`type T = { f: fn<'c: Number>(c: 'c) -> 'c }`,
+        // used as `|t: T|` or `let t: T = ..`; the hole at typ/fntyp.rs:946,
+        // t-fntyp-03) and the free-variable form `{ f: fn(c: 'c) -> 'c }` (env.rs:1451,
+        // gx-ui-01). probe: design/review-2026-10-05/repro/tests-lang-b-02.gx
+        // (tests-lang-b-02)
         Some(t @ Type::Ref(_)) => t.lookup_ref_with(env, false)?,
         _ => None,
     };
@@ -323,6 +347,18 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
+        // CR claude for eric: [bug] This branch lets the argument alias the rigid
+        // quantifier 'b to a cell the argument does not own. The pre-unify and
+        // check_contains_rigid alias any open non-rigid cell to 'b, including an
+        // environment cell: a top-level `let st = never()` that the callback writes, or
+        // an enclosing definition's parameter. The quantifier then escapes into that
+        // variable's type, so a callback that holds for one type passes as polymorphic.
+        // With a let-bound callback, the check and elaboration both accept and the run
+        // breaks the types: `a: i64` holds "s" and the JIT panics at
+        // fusion/kernel.rs:243, killing the runtime. With an inline callback,
+        // elaboration refuses what the check accepted. probe:
+        // design/review-2026-10-05/repro/x-typecheck-generics-F6.gx
+        // (x-typecheck-generics-F6)
         Some((formal, _rigid)) => {
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
@@ -476,6 +512,19 @@ impl Widening {
             }
             if !new.contains_with_flags(probe, env, &old)? {
                 self.deferred.push((key.clone(), formal.clone()));
+                // CR claude for eric: [bug] When one variable the argument holds is
+                // neither wider nor narrower, this return throws away the variables
+                // already pushed to `wider`. The argument then waits with them still at
+                // their old binding, and the deferred re-check fails even after a later
+                // argument widens the incomparable one. So for a formal holding two or
+                // more variables, the verdict depends on argument order. Take `|a: ('x,
+                // 'y), b: ('x, 'y), c: ('x, 'y)|` with `i: [i64, f64]`: `g((1, 1), (i,
+                // 2.0), (3, i))` is refused, but the other five orders of the same
+                // arguments are accepted. That breaks the rule that a variable settles
+                // to the widest argument whatever the order. Fix: keep looping, bind
+                // what is wider, and defer the argument when any variable was
+                // incomparable. probe: design/review-2026-10-05/repro/c-callsite-05.gx
+                // (c-callsite-05)
                 return Ok(());
             }
             wider.push((cell.clone(), new));
@@ -595,6 +644,15 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
+    // CR claude for eric: [perf] A CallSite holds two FnTypes inline, this one and
+    // static_target's, 240 bytes each beside rtype's 64. So every call site, and every
+    // collection slot's synthesized one, is about 890 bytes: 5.3 MB of the 69 MB peak
+    // for 6000 trivial array::init/array::map slots (massif, --no-fusion). Both are set
+    // at a check or a bind and read afterwards, and the instance already holds its type
+    // as an Arc<FnType>, so Arc<FnType> in both places halves the site. Each bind also
+    // copies Expr specs: arg_ref's TArc::new(n.spec().clone()) per argument (0.9 MB
+    // here) and genn::apply_inner's synthesized ApplyExpr per slot (2 x 0.96 MB).
+    // (x-alloc-06)
     pub(super) ftype: Option<FnType>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
@@ -604,6 +662,14 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) static_target: Option<StaticCallTarget>,
     /// A trait call over a union self type lowered to a select, one
     /// static call per member; once set every `Update` method delegates.
+    // CR claude for eric: [structure] A lowered site keeps its dead call beside the
+    // lowered node (a Nop fnode, args whose nodes are gone, callee, static_target,
+    // ftype), so each Update method must check `lowered` before touching the call, and
+    // so must code that downcasts to CallSite (fusion/mod.rs:1004). image_encode does
+    // not delegate: it writes the whole dead call before the lowered node. A method or
+    // downcast that misses the check acts on the dead call. Hold the two states in one
+    // field, e.g. `enum CallBody { Call(..), Lowered(Node) }`, so a lowered site has no
+    // call parts to reach. (x-invalid-states-06)
     pub(crate) lowered: Option<Node<R, E>>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
@@ -715,6 +781,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Signature-order `Ref` Nodes, one per formal, with labeled defaults
     /// resolved. `None` until bound. [`Self::arg_positional`] /
     /// [`Self::arg_named`] give the source-order view.
+    // CR claude for eric: [dead] arg_refs() has no caller in the workspace or in
+    // ../netidx; callers read arguments through arg_positional, arg_named and
+    // resolved_apply. Delete it and its doc. (c-callsite-12)
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
         if self.callee.is_bound() { Some(&self.arg_refs) } else { None }
     }
@@ -766,6 +835,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Build the site's argument references for `f`, compiling the
     /// defaults it omits; `defaults` collects what those read.
+    // CR claude for eric: [structure] A default's life is spread over fill_omitted (a
+    // Nop placeholder), check_omitted_defaults and checked_default (compiled, checked,
+    // discarded), prepare_bind (compiled again at the static bind and at every run-time
+    // bind), typecheck_static_defaults, prime_bound, update_args and
+    // clear_prepared_bind. Which stage an Arg is in is implicit in is_default plus the
+    // Callee variant. The two binds disagree exactly where three bugs sit. Only the
+    // static bind elaborates its defaults
+    // (design/review-2026-10-05/repro/c-callsite-03.gx). A prebound or self-call
+    // default gets its first update from both update_args and prime_bound
+    // (c-callsite-02.gx). checked_default typechecks outside f.env (c-callsite-04.gx).
+    // One builder used by both binds (compile, typecheck, check against the callee's
+    // parameter and elaborate, all under f's env), plus an explicit Arg stage that
+    // update_args skips until the bind promotes it, would make all three
+    // unrepresentable. (c-callsite-06)
     fn prepare_bind(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -831,13 +914,59 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             compile(ctx, flags, expr.clone(), &local_scope, self.top_id)
         })?;
         node.refs(defaults);
+        // CR claude for eric: [bug] The default is compiled under
+        // `with_restored(f.env)`, but this `typecheck0` and the `check_contains` below
+        // run after the closure returns, in the call site's lexical env. Its
+        // `typecheck1` in `typecheck_static_defaults` also runs in the site's env. A
+        // trait reference never fills its cell and resolves only through `env.traits`,
+        // so a default that calls a trait method is refused wherever the site's env
+        // lacks the trait. Passing such an `f` to `array::map`, or to a HOF declared
+        // before the trait, makes the run refuse a program `--check` passed
+        // (GRAPHIX_ELAB_AUDIT and graphix-fuzz both report it). A trait kept out of a
+        // module's .gxi makes `--check` itself refuse `m::f(1)`. Run the default's
+        // typecheck0 and this site check inside the same `with_restored(f.env.clone(),
+        // ..)`, and its typecheck1 under that env too (lambda.rs `check_defaults` has
+        // the same shape, though no probe reached it); probe:
+        // design/review-2026-10-05/repro/c-callsite-04.gx (c-callsite-04)
         let res = node.typecheck0(ctx).and_then(|()| {
             let site_arg = self
                 .ftype
                 .as_ref()
                 .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)));
             match site_arg {
+                // CR claude for eric: [bug] The omitted default is checked against the
+                // site's view of the labeled parameter, but its value only ever reaches
+                // the callee's own parameter, and behind a fn-typed parameter the check
+                // cannot see the callee at all. `let h = |f: fn(?#n: i64, x: i64) ->
+                // i64| f(1)` applied to `let g = |#n: [i64, string] = "hello", x: i64|
+                // -> i64 x + 1` passes --check, and the build refuses "hello"
+                // (graphix-fuzz check: the check accepted what the build refused).
+                // Through a fn-typed let, the same valid call is refused outright. With
+                // a generic g (`'a: Number |#n: 'a = 3, x: 'a|` behind `fn(?#n: f64, x:
+                // f64)`) the build is right to refuse, but --check still passes. Check
+                // the default against the callee's parameter as this site instantiates
+                // it, and judge a function value's defaults where the check meets it
+                // (the `h(g)` argument), so the check and the build agree. probe:
+                // design/review-2026-10-05/repro/c-callsite-07.gx (c-callsite-07)
                 Some(sarg) => sarg.typ.check_contains(&ctx.env, node.typ()),
+                // CR claude for eric: [bug] When the site's fn type does not name this
+                // label (a value passed as `fn(y: string) -> bool`), the default is
+                // checked against nothing. prepare_bind then types the argument by the
+                // default, and the instance, typed by substitution, runs x: string
+                // holding an i64. The check misses it too: FnType::contains_int lets
+                // the fn type hide or re-type a value's defaulted label without
+                // checking the default under that instantiation, and
+                // check_omitted_defaults returns early when the site hides the label
+                // and defers (known = false) when the callee is a fn-typed parameter.
+                // `let g = |#x = 4096, y| x == y; let apply = |h: fn(y: string) ->
+                // bool| h("seven"); apply(g)` passes --check and the JIT segfaults
+                // using 4096 as a string pointer; `let scale = |#by = 2, x| x * by;
+                // array::map([1.5, 2.5], scale)` panics at kernel.rs:243 and the
+                // node-walk prints [3, 5]. A re-typed label (`fn(?#x: f64, y: f64) ->
+                // f64`) makes elaboration refuse what the check passed, or, through a
+                // run-time value, leaves the call bottom forever with only a log line.
+                // probe: design/review-2026-10-05/repro/x-typecheck-generics-F7.gx
+                // (x-typecheck-generics-F7)
                 None => Ok(()),
             }
         });
@@ -858,6 +987,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
+        // CR claude for eric: [bug] This returns early when the callee's `throws` is an
+        // open cell. In a definition's check that is always true for a call through a
+        // `fn(..) throws 'e` parameter, and for `array::map(xs, f)` over one. So
+        // nothing joins the enclosing catch or the gate's inferred throws: a catch
+        // inside such a function types its variable as bottom, and the function's
+        // signature has no throws, yet at run time the callback's error still reaches
+        // those catches. A `bool` or `i64` binding then holds an Error, and a fused
+        // kernel reading it panics at fusion/kernel.rs:243 (runtime did not respond;
+        // graphix-fuzz check aborts). Join the open cell too (`join_raised` already
+        // handles an unbound type). With 'e rigid in the def check, the bad handler
+        // writes are then refused and the signature carries `throws 'e`. probe:
+        // design/review-2026-10-05/repro/c-callsite-01.gx (c-callsite-01)
         let Some(t) = ftype.throws.deref_cloned() else { return Ok(()) };
         match self.scope.dynamic.catch() {
             Some((id, _)) => join_raised(&ctx.env, id, &t),
@@ -888,6 +1029,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut flags = self.flags;
         flags.remove(CFlag::WarnUnhandled);
+        // CR claude for eric: [bug] Under a restored registration image an interface
+        // `val`'s type has no lambda ids. The image writes only a function type's own
+        // id (graphix-types/src/typ/fntyp.rs:1501), and a `val` gets its ids only from
+        // the links check_sig's `contains` makes. So for a call through any package
+        // interface this finds no definition, and `known` is false. The omitted
+        // defaults are then left to the bind, after the check has decided the cells,
+        // even though the restored `bind_to_lambda` names the definition. A warm
+        // `graphix --check` accepts `rand::rand(#clock: null) + 1`, which `--no-cache
+        // --check` refuses. A warm build refuses the well-typed `let x = never(); x <-
+        // rand::rand(#clock: null); x` ("'a: _ does not contain f64"), which
+        // `--no-cache` runs. probe:
+        // design/review-2026-10-05/repro/x-builtin-effects-09.gx (x-builtin-effects-09)
         let ids = ftype.lambda_ids.ids();
         let mut known = !ids.is_empty();
         for id in ids.iter() {
@@ -948,6 +1101,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
+        // CR claude for eric: [bug] A failed typecheck0 here, and a failed typecheck1
+        // at 1196, is only logged: the instance is installed and dispatched anyway,
+        // though design/parallel_compile.md says an instance whose signature its
+        // definition's does not hold is refused. Any checker gap that lets a mistyped
+        // function value reach a dynamic site then runs the callee on values of the
+        // wrong type. In the probe an i64 function reaches an f64 site: the fused run
+        // dies at fusion/kernel.rs:243 (`runtime I64(7) does not match the compiled
+        // Scalar(F64) slot`), and --no-fusion puts an i64 in an f64 tuple slot. Refuse
+        // it the way the site's other bind errors are refused (discard the apply,
+        // return the error, Callee::Failed). The rebind refusal branch (1722-1726) then
+        // has to apply its discards in the same cycle: today it leaves them to the next
+        // one, and a debug build panics with 'compiled references left unreplayed'.
+        // probe: design/review-2026-10-05/repro/x-typecheck-generics-F10.gx
+        // (x-typecheck-generics-F10)
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             log::error!("a run-time bind at {} did not type: {e:#}", self.spec);
         }
@@ -1149,6 +1316,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `fv`) as a run-time bind, a compile task of its own, leaving it
     /// `DynamicBound`: the outer variables its compiled defaults read,
     /// for [`Self::prime_bound`].
+    // CR claude for eric: [perf] The node-walk keeps about 21 KB per instance of a
+    // 22-node body (about 1 KB per node) and still holds it after the cycle. Since
+    // every call is a retained activation, this footprint sets how far a node-walked
+    // program can go. Probe: design/review-2026-10-05/repro/c-cost-misc-06.gx under
+    // --no-fusion, 1000 slots of a depth-6 binary recursion (127k activations): 2.79 GB
+    // peak against 69 MB fused. Depths 0, 1, 3 and 4 give 106, 147, 409 and 754 MB, or
+    // 20.4-21.6 KB per activation, so a 20000-slot map at depth 6 would need about 53
+    // GB. Small callbacks cost the same way: map(init(n, |i| i), |x| x * 2 + 1) with
+    // its fold takes about 25 KB per slot node-walked. The first step is to measure
+    // what one instance holds: its nodes, its per-instance types and env entries, and
+    // its call-site state. (c-cost-misc-06)
     fn build_bound(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1164,6 +1342,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // boundary will drain.
         let defaults = super::with_runtime_settles(ctx, |ctx| {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
+            // CR claude for eric: [bug] The defaults setup_dynamic_bind compiles for
+            // the omitted labeled arguments get only typecheck0. Unlike the static
+            // binds (typecheck_static_defaults), this run-time bind never runs
+            // typecheck1 on them. Trait dispatch happens only in typecheck1
+            // (Show::show(5), Display::fmt(5), Eq::eq, a union self), so a trait call
+            // in a default keeps the trait's dispatcher as its function, which never
+            // holds a value, and the default stays bottom forever. Every recursive
+            // activation past the first, every collection slot and every call through a
+            // function value that omits such an argument yields nothing, silently and
+            // in both engines, while a direct call works. Elaborate the is_default arg
+            // nodes here, as the static path does. probe:
+            // design/review-2026-10-05/repro/c-callsite-03.gx (c-callsite-03)
             let (apply, defaults) = self.setup_dynamic_bind(ctx, &scope, flags, f)?;
             drop(setup_span);
             // A def whose defining Lambda node was deleted has no
@@ -1401,6 +1591,21 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let fv = match target {
             Some(fv) => fv,
             None => {
+                // CR claude for eric: [bug] Only two calls are resolved here: one whose
+                // function node is the dispatcher Ref itself, and one through a HOF
+                // parameter that register_fn_params mapped. A Ref to a binding that
+                // only holds a dispatcher falls through to `return Ok(())`. An impl
+                // method bound to a dispatcher (`let show = Desc::desc`) is retargeted
+                // by resolve_trait_call to a binding with no lambda behind it. Both
+                // stay dynamic calls, and a dispatcher binding never holds a runtime
+                // value. So `let d = Desc::desc; d(x)`, `(ops.f)(x)` with `ops = {f:
+                // Desc::desc}`, `array::map(xs, d)` and that impl all pass --check and
+                // never produce in either engine, with nothing logged, while the same
+                // calls written with `Desc::desc` in place work. Either make a
+                // dispatcher's value occurrence a real function (eta-expand it to a
+                // generic lambda) or refuse these uses at the check. probe:
+                // design/review-2026-10-05/repro/x-engine-seq-errors-02.gx
+                // (x-engine-seq-errors-02)
                 if let NodeView::Ref(r) = self.fnode.view()
                     && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
                 {
@@ -1599,6 +1804,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         let mut out = ArgsOut::default();
+        // CR claude for eric: [bug] update_args runs every entry of self.args, compiled
+        // defaults included, before rebind decides whether this dispatch binds. A
+        // Prebound callee's prime_bound then updates the same default nodes again, and
+        // a DynamicUnbound self-call's bind throws away the defaults compiled at
+        // elaboration and runs fresh copies. So a fresh bind runs each omitted default
+        // twice. A `count` default in an `array::map` callback reads 2 under the
+        // default Auto mode and under Force, but 1 under GRAPHIX_PAR=off (forked !=
+        // serial). A recursive function's effectful default (println, a publish) acts
+        // twice per activation in every mode, and again after a shrink-delete. The bind
+        // should own a default's first update: skip is_default args here while the
+        // callee is Prebound or DynamicUnbound. probe:
+        // design/review-2026-10-05/repro/c-callsite-02.gx (c-callsite-02)
         update_args(
             ctx,
             self.args.as_mut_slice(),
@@ -1616,6 +1833,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let tag = tv.tag();
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
+        // CR claude for eric: [bug] While a dynamic callee is bottom, this branch
+        // returns without updating or sleeping the bound instance. The instance
+        // therefore misses every argument fire and every `<-` that lands in the window.
+        // When the same function value returns, rebind sees the same def, the formals
+        // are not republished, and the body rides its pre-window residents, which
+        // breaks R1. `(cb$(x), t)` shows g(0) while x = 7 until x fires again, and a
+        // counter written in the window loses that increment for good. The select-arm
+        // twin of the same program catches up through the wake path, so the instance
+        // likely needs that path too: sleep it when the callee goes bottom, and wake it
+        // with the args stood when the same def returns. probe:
+        // design/review-2026-10-05/repro/x-engine-firing-03.gx (x-engine-firing-03)
         if fnode_tag.is_bottom() && !static_callee {
             for id in set.drain(..) {
                 ctx.event.variables.remove(&id);
@@ -1845,6 +2073,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         drop(dec);
+        // CR claude for eric: [bug] apply_deferred runs before `decoded?`, so a decode
+        // that fails part-way registers the references its dropped nodes recorded.
+        // Those nodes are never deleted, so the registrations are never released, and
+        // the fallback's fresh instance registers its own beside them. The rule in
+        // CLAUDE.md, which read_registration follows (image/registration.rs:300), is
+        // drop_deferred on a failed compile: apply on Ok, drop on Err. probe:
+        // design/review-2026-10-05/repro/x-image-12.gx (last heap byte flipped: 17
+        // root-statement REF_VARs instead of 14, the dead body's a and y plus a second
+        // x). (x-image-12)
         ctx.apply_deferred();
         let apply: Box<dyn Apply<R, E>> = Box::new(decoded?);
         let Callee::Imaged { first_update, .. } =
@@ -1883,6 +2120,21 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             Box::new(GXLambda::image_decode(ctx, buf)?);
                         Callee::Static { apply, first_update: bool::decode(buf)? }
                     }
+                    // CR claude for eric: [bug] An imaged callee registers none of its
+                    // body's reads with the runtime. They are registered only when
+                    // `materialize` decodes the body at the site's first dispatch,
+                    // while a cold compile registers them before the first cycle. So a
+                    // variable that only such a body reads, in a sleeping select arm or
+                    // a seq step not yet entered, schedules nothing when it is written
+                    // alone in its cycle. `TrackedFires::observe` never sees the fire
+                    // and the arm wakes without its catch-up, on warm starts only: a
+                    // seq waiting on `until` whose next step calls a function that
+                    // samples a reply never completes. Register the summary's `refed`
+                    // minus `bound` for `top_id` here, and release them when the site
+                    // materializes or is deleted while still imaged; the fuzzer cannot
+                    // see this, so the pin is a shell cold-vs-warm run. probe:
+                    // design/review-2026-10-05/repro/x-image-02.sh (select: cold "A" "1
+                    // 1", warm "A"; seq: cold "got: pong", warm nothing). (x-image-02)
                     true => Callee::Imaged {
                         instance: LambdaInstanceId::decode(buf)?,
                         first_update: bool::decode(buf)?,
@@ -2171,6 +2423,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // a lambda argument learns its parameters' types from the formal
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+                // CR claude for eric: [risk] The formals taken from the table row can
+                // hold cells nothing here decides: for `filter(v, |zz| zz > 0)` the
+                // callback formal is `fn(zz: '_N) -> '_M`, pre_unify_arg fixes only the
+                // lambda's parameters, and the full check's `formal.contains(arg)`
+                // (typecheck_arg) does not run. BuiltInLambda::typecheck0's
+                // check_contains_rigid then binds them during elaboration, inside the
+                // statement task typecheck1_statements forked, so statement elaboration
+                // writes a cell an earlier task created: GRAPHIX_TASK_AUDIT reports one
+                // such write per instance of any function whose block passes a lambda
+                // to a builtin, every seq in a function body included (its lowering
+                // calls `filter(trigger, |x| x ~ idle)`), and none under
+                // GRAPHIX_NO_SUBST=1. No wrong value seen; probe:
+                // design/review-2026-10-05/repro/x-diff-types-07.gx. (x-diff-types-07)
                 Type::pre_unify_arg(&ctx.env, &farg.typ, n.typ())?;
                 wrap!(n, n.typecheck0_instance(ctx, types))?;
             }
@@ -2263,6 +2528,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             .iter_mut()
             .filter_map(|(k, a)| a.node.as_mut().map(|n| (k, n)))
             .collect();
+        // CR claude for eric: [doc-drift] ArgMap is an IndexMap, so the comment's 'the
+        // map is hash-ordered' is false. The arguments already iterate in a fixed
+        // order: written arguments in source order, then defaults in formal order. The
+        // collect and sort only move positional arguments ahead of labeled ones. Drop
+        // them and pass `self.args.values_mut().filter_map(|a| a.node.as_mut())` to
+        // fuse_parts (then re-run fusecheck), or say what needs ArgKey order.
+        // (c-callsite-11)
         args.sort_by(|(a, _), (b, _)| a.cmp(b));
         fusion::fuse_parts(args.drain(..).map(|(_, n)| n), ctx)?;
         if let Some(apply) = self.callee.apply_mut() {
@@ -2364,6 +2636,13 @@ pub(crate) enum Feeds<'a> {
 struct ArgsOut {
     fired: bool,
     prods: SmallVec<[(BindId, TagValue); 4]>,
+    // CR claude for eric: [perf] update_call (line 1601) builds an ArgsOut on every
+    // update, and this LPooled field costs a pool take and a return each time. The take
+    // is a TLS access, a RefCell borrow, a pool map probe and a Vec pop; the return is
+    // the same with a clear and a push. This happens in every cycle of the walk,
+    // although `set` stays empty unless an argument's production reached the overlay.
+    // ArgsOut is a stack temporary, so a `SmallVec<[BindId; 4]>`, which is what `prods`
+    // beside it already is, costs nothing when empty. (x-alloc-07)
     set: LPooled<Vec<BindId>>,
 }
 
@@ -2426,6 +2705,15 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         let tv = timed(&mut meter, i, || node.update(ctx));
         let fired = tv.tag().triggers();
         out.fired |= fired;
+        // CR claude for eric: [perf] may_bind is true on every update of a callee that
+        // is not Static, so every quiet argument's TagValue is cloned into prods, which
+        // only a fresh bind reads (line 1630). Every collection slot's call is
+        // DynamicBound after its first dispatch, so each slot update pays a Value clone
+        // and drop per quiet argument. A call with more than four quiet arguments
+        // spills the SmallVec to the heap every cycle. A DynamicBound site rebinds only
+        // when fnode produces another definition, and a Constant fnode never does. Read
+        // the quiet arguments' standing values from the store at the bind instead of
+        // cloning them on speculation. (c-callsite-08)
         if may_bind && !fired {
             out.prods.push((arg.id, tv.clone()));
         }

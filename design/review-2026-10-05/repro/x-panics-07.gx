@@ -1,0 +1,28 @@
+// x-panics-07: json::write / toml::write / hbs::render abort the process
+// (stack overflow) on a deep value, and a native List is one nesting level
+// per element.
+//
+// value_to_json (stdlib/graphix-package-json/src/lib.rs:58) and
+// value_to_toml (stdlib/graphix-package-toml/src/lib.rs:59) recurse once per
+// nesting level with no depth bound and no ensure_sufficient; hbs::render
+// (stdlib/graphix-package-hbs/src/lib.rs:88) runs value_to_json on its data.
+// A List cell is the 2-slot array [head, tail], so writing a List recurses
+// once per element (about 4.7KB of stack per level in the dev build).
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/x-panics-07.gx
+// expected: "ok len ..." or "err ..." (a catchable `JsonErr), then exit 0
+// observed (also --no-fusion, GRAPHIX_PAR=off|force): exit 134,
+//   thread 'tokio-rt-worker' has overflowed its stack
+//   fatal runtime error: stack overflow, aborting
+// The dev build dies from 400 elements (300 passes); a quick-profile build
+// from 1000 (700 passes). The same abort, in place of the write below:
+//   toml::write_str({a: list::init(3000, |i| i)})
+//   hbs::render("{{a}}", {a: list::init(1000, |i| i)})
+let l = list::init(1000, |i| i);
+let r = select json::write_str(l) {
+  error as e => "err [e]",
+  s => "ok len [str::len(s)]"
+};
+println(r);
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0));
+r

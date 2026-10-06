@@ -1,0 +1,26 @@
+// c-data-map-05: `w.c.0`, an abstract payload read through a field declared
+// by the abstract type's name, never fuses.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-data-map-05.gx
+//
+// expected: prints 3; the region fuses, as `|c: Counter, n: i64| -> i64
+// #[native] (c.0 + n)` does (prints 3).
+//
+// observed (HEAD c722befe, debug build): refused at #[native] (w.c.0 + w.n):
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: accessor source of type Ref(TypeRef { scope: ..., name:
+//       ModPath(Path("/Counter")), ..., ori: Some(Origin { ..., text: "<the
+//       whole program source>" }), resolved: Mutex { .. } }) isn't Tuple
+//
+// TupleRef::emit_clif (graphix-compiler/src/node/data.rs:999) tests the
+// source type for Abstract with with_deref, which does not expand a
+// Type::Ref, so it takes the tuple read; emit_accessor_source_node
+// (fusion/emit/nodes.rs:913) refuses the Ref and prints it with {:?}.
+// Without #[native] the region silently node-walks (graphix-fuzz run: 3
+// failed regions); both engines give the same values. An inline field
+// type `|w: {c: Counter, n: i64}|` fails the same way.
+type Counter = Abstract<i64>;
+type W = {c: Counter, n: i64};
+let f = |w: W| -> i64 #[native] (w.c.0 + w.n);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f({c: Counter(1), n: 2})

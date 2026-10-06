@@ -1,0 +1,19 @@
+// fuzz-mutate-09: typemorph's let-extract hoists callbacks that call or
+// dereference an unannotated parameter, which a `let` refuses by language rule.
+//
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-09.gx
+//          (base: graphix --check design/review-2026-10-05/repro/fuzz-mutate-09.gx accepts)
+//
+// expected: typemorph: no flips. `let f = |g| g(2)` and `let f = |r| *r` are
+// refused at the definition like `let f = |s| s.x`, which reads_param_type
+// already keeps out of let-extract.
+//
+// observed (each mutant moves one callback into a `let` above its statement):
+//   TYPEFLIP fuzz-mutate-09.gx let-extract#11: N: type must be known, annotations needed
+//   TYPEFLIP fuzz-mutate-09.gx let-extract#21: N: expected reference
+{
+    let k = 1;
+    let a = array::map([|y: i64| -> i64 y + k], |g| g(2));
+    let b = array::map([&k], |r| *r + 1);
+    (a, b)
+}

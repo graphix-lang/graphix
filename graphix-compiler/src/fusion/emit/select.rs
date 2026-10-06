@@ -66,6 +66,14 @@ impl SelectMerge {
 /// and pattern bind reuses these SSA values. `Opaque` (string) supports
 /// only Ignore / guard arms. `disc` carries the scrutinee's taint,
 /// OR-ed into every arm's result so a bottom scrutinee bottoms the select.
+// CR claude for eric: [structure] SelectScrut::Value does not say whether it holds a
+// variant, an option or a primitive union, so classify_select_scrutinee returns the
+// AbiKind beside it and five functions take (scrut, scrut_kind, scrut_typ). Every test
+// of scrut_kind refines a SelectScrut::Value, and pairs that cannot occur still need
+// handling (the let-else bail at :941). Put the kind in the variant (`Value { kind,
+// disc, payload }`) so each test is one pattern. emit_or_chain likewise derives `ph_bl`
+// from `nomatch` and then needs `(None, None) => unreachable!()` at :1820; choose the
+// last alternative's fail block once, as one Block. (f-select-12)
 #[derive(Clone, Copy)]
 pub(super) enum SelectScrut {
     Scalar {
@@ -368,6 +376,17 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// test and every leaf's own test, in one block. `@` bindings, rest
 /// bindings, non-scalar leaves and nested variant leaves refuse (the
 /// select de-fuses).
+// CR claude for eric: [doc-drift] Stale docs in this file. This doc says `@` bindings,
+// rest bindings and non-scalar leaves refuse, but array `@` and rest binds lower as
+// Subslice and non-scalar leaves as ElemValue; only tuple and struct `@` and nested
+// variant, or- and abstract leaves refuse. The or-leaf error at :619 cites
+// `design/or_patterns.md P3`, a section that no longer exists. SelectScrut's doc
+// (:66-68) says the scrutinee's taint is OR-ed into every arm so a bottom scrutinee
+// bottoms the select, but a tainted scrutinee branches to miss_bl (:761) before any
+// arm, which makes the scrutinee term of the OR at :1420 a no-op. payload_local_kind's
+// doc (:1172) names variant payloads only, yet leaves, list heads and nullable binds
+// use it, and design/distributed_jit.md:202 lists a tainted-take drop edge that no
+// longer exists. (f-select-10)
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -779,6 +798,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
             .then(|| cx.b.create_block());
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+        // CR claude for eric: [perf] For an arm whose guard is not pure of its binds,
+        // the prologue (:740-751) already emitted this pattern condition and cloned the
+        // arm's owned binds. This emits both again, so the arm pays two tag tests or
+        // list walks and two clones per invocation (a Subslice bind takes a pooled Arc
+        // each time). The prologue dominates the chain, so its pcond and bind specs can
+        // be kept per arm and reused here. probe:
+        // design/review-2026-10-05/repro/f-select-13.gx (GRAPHIX_DUMP_CLIF=1: 4 tag
+        // tests and 3 payload clones for 3 arms; 3 and 2 with a pure guard).
+        // (f-select-13)
         let pcond = emit_arm_condition(
             cx, pat, scrut, scrut_kind, scrut_typ, or_fail, &mut binds,
         )?;
@@ -823,6 +851,19 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
                 // Schedule-free: pure and never bottom, so no
                 // undetermined case and no fold.
+                // CR claude for eric: [bug] A lazily emitted guard's STALE bit never
+                // reaches `acc`, yet a constant in it fires at an init or wake view on
+                // its own, so a consulted guard such as `n if n > 0` or `_ if true`
+                // fires while the scrutinee is stale. The node-walk emits the select
+                // there (EmissionPlanes::new; organic_firing.md delta 2), and the
+                // prologue path folds the same guard when it is written as `n > zero`.
+                // Only this path drops the fire: `y <- f(in0)` never writes in an arm
+                // that is entered or woken while `in0` stands, in value and tail
+                // position alike. Fold `band_imm(gcv.disc, STALE)` into `acc` before
+                // the brif and drop the "no fold" claim above. Outside init and wake
+                // that fold equals the scrutinee's, so the guard stays lazy at no cost.
+                // probe: design/review-2026-10-05/repro/f-select-01.gx (graphix-fuzz
+                // check: DIVERGENCE). (f-select-01)
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
                     let valid = is_untainted(cx.b, gcv.disc);
@@ -921,6 +962,22 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
     // The node-walk tests the type predicate only when it is explicit.
+    // CR claude for eric: [doc-drift] The comment above is false: the node-walk checks
+    // the type predicate whether written or inferred (PatternNode::shape_matches,
+    // node/pattern.rs:1316-1325). Skipping an inferred one here is sound only because
+    // an inferred predicate rejects nothing beyond what the arm's own structure rejects
+    // and what earlier unguarded arms took, and the chain decides both before it
+    // reaches this arm. State that invariant instead, since it is what a new narrowing
+    // source must keep. (f-select-09)
+    // CR claude for eric: [doc-drift] The comment above is false: the node-walk also
+    // tests an inferred predicate (PatternNode::shape_matches, node/pattern.rs:1310),
+    // shallowly through Type::shallow_discriminant and deeply where two scrutinee
+    // members share a runtime shape. Someone who trusts it will take the kernel and the
+    // node-walk to test the same thing here, and fix inferred-predicate matching in one
+    // engine only. design/or_patterns.md:107-109 is stale the same way: it says the
+    // shallow discriminator treats an or-arm as deep, but each alternative is shallowed
+    // (GXDBG_SHALLOW=1 on `A(x) | `B(x) prints [`A(i64), `B(i64)] => [`A(Any),
+    // `B(Any)]). Rewrite both to say what each engine tests. (c-pattern-11)
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
@@ -1003,6 +1060,22 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     {
                         None
                     }
+                    // CR claude for eric: [bug] This guard compares
+                    // `scalar_prim(inner)` with `PrimType::from_typ(pt)`. Both are None
+                    // whenever neither the tested type nor the option's inner type is a
+                    // register scalar, so `string as s` over `[Array<i64>, null]` or
+                    // `[datetime, null]` gets through, and the `Some(false)` arm below
+                    // lowers "is a string" to "is not null". The bind then reads with
+                    // the predicate's kind (graphix_nullable_string yields ""), so the
+                    // fused select takes an arm the node-walk's `is_a` refuses: a wrong
+                    // answer, not a lost fusion. In a monomorphic program the dead-arm
+                    // check hides this, but an instance of a generic definition (`|x:
+                    // ['a, null]| select x { string as s => .. }`) takes its
+                    // definition's check and reaches here. Test the value's tag against
+                    // the predicate's own (`clean_disc == Typ(pt)`) instead of
+                    // inferring it from non-null. probe:
+                    // design/review-2026-10-05/repro/f-select-03.gx (--no-fusion prints
+                    // (7, 7, 102), fusion prints (100, 100, 102)). (f-select-03)
                     SelectScrut::Value { disc, .. }
                         if matches!(scrut_kind, AbiKind::Nullable)
                             && kernel_abi::nullable_inner(&scrut_typ)
@@ -1032,6 +1105,24 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                                         value_disc::STRING,
                                     ))
                                 }
+                                // CR claude for eric: [perf] Over a result union this
+                                // Error test is reached only when the success type has
+                                // no register form: the gate at :1006-1011 compares
+                                // scalar_prim(nullable_inner) with
+                                // PrimType::from_typ(Error), which is None. So the
+                                // canonical split `select r { error as e => .., v => ..
+                                // }` over `[i64, Error<E>]` refuses ("type predicate ..
+                                // not lowerable") and its whole select node-walks,
+                                // while the same select over `[string, Error<E>]`
+                                // fuses. Test `clean_disc == value_disc::ERROR` for an
+                                // Error predicate over any error-marked Nullable,
+                                // whatever the success type. The
+                                // abandoned_kernel_closure fixture
+                                // (stdlib/graphix-tests/src/lang/functions.rs:810)
+                                // de-fuses only through this refusal and needs another
+                                // trigger once this is fixed. probe:
+                                // design/review-2026-10-05/repro/f-select-04.gx
+                                // (graphix-fuzz run). (f-select-04)
                                 None if pt == netidx_value::Typ::Error => {
                                     Some(cx.b.ins().icmp_imm(
                                         IntCC::Equal,
@@ -1180,6 +1271,15 @@ fn payload_local_kind(t: &Type) -> Option<LocalKind> {
 /// `mask` is the arm's pattern condition when the caller has NOT
 /// branched on it (the guard prologue); the take chain installs
 /// inside the matched block and passes `None`.
+// CR claude for eric: [structure] NullableValue, PayloadValue, ListHead and ElemValue
+// (:1212-1338) each repeat one mapping from LocalKind to helper and (disc, payload):
+// Composite gives (ARRAY, r0), String (STRING, r0), Value (r0, r1); scaffold.rs:125
+// (read_elem) is another copy. One function from (kind, helper family) to the owned
+// (disc, payload) would replace them, so a new owned-local class is added in one place.
+// The `LocalKind::Scalar(_) => bail!` arms in three of them guard a state their kind
+// should not be able to hold. The borrowed nested read at :635-648 re-implements
+// elem_index (:135): call it and map its ElementRead to the `_borrowed` helper.
+// (f-select-08)
 fn install_arm_binds(
     cx: &mut BodyCx,
     binds: &[SelectArmBind],
@@ -1550,6 +1650,17 @@ fn emit_structure_cond(
                 binds.push(bind);
                 None
             }
+            // CR claude for eric: [perf] A whole-value bind refuses here for a variant
+            // or other Value-kind scrutinee (list, map), any composite and a string. So
+            // `` `A => 0, other => f(other) `` and `[] => 0, all => array::len(all)`
+            // node-walk their whole select, and `x@` refuses the same way on a tuple
+            // (:405), a struct (:517), a variant (:1592) and a list (:1133, :1139). The
+            // pieces exist: graphix_value_clone (what NullableValue{Value} calls)
+            // clones a whole Value, and Subslice{0, 0} already binds the `all` of `all@
+            // [x, ..]` as an owned clone of the whole array. A string scrutinee also
+            // needs its ArcStr kept, not dropped at classification (:349-353). probe:
+            // design/review-2026-10-05/repro/f-select-05.gx (graphix-fuzz run).
+            // (f-select-05)
             SelectScrut::Value { .. }
             | SelectScrut::Composite { .. }
             | SelectScrut::Opaque { .. } => {
@@ -1559,6 +1670,15 @@ fn emit_structure_cond(
                 ));
             }
         },
+        // CR claude for eric: [perf] String literal patterns never lower: this path and
+        // the variant payload literal (:1702) require a register scalar, and a string
+        // scrutinee classifies Opaque (:347-353), which keeps only `_` and guard arms.
+        // So `select s { "a" => .., _ => .. }` and `` `Char("q") => .. `` node-walk
+        // their whole select. A tag test against STRING plus an equality helper against
+        // the interned literal (`cx.interned_str`) would lower both, with the string
+        // scrutinee's ArcStr kept until the merge. probe:
+        // design/review-2026-10-05/repro/f-select-06.gx (graphix-fuzz run).
+        // (f-select-06)
         StructPatternNode::Literal(v) => {
             let lit_prim = kernel_abi::scalar_prim_of_value(v)
                 .ok_or_else(|| anyhow!("emit_clif: non-scalar literal pattern {v:?}"))?;
@@ -1795,6 +1915,14 @@ fn emit_or_chain(
 ) -> Result<ClifValue> {
     // Each alternative tests against its own member of the arm's
     // inferred Set; a non-Set predicate applies whole.
+    // CR claude for eric: [structure] This is node::pattern::alt_types
+    // (node/pattern.rs:174) copied: the rule pairing each or-alternative with one
+    // member of the inferred Set, which the node-walk binds by. Make that pub(crate)
+    // and call it, so the engines cannot drift apart. Two names in this file also
+    // mislead: SelectArmBind::NullableScalar and NullableValue also bind
+    // primitive-union payloads (:1516-1531), and the STALE fold handed to emit_arm is
+    // called `fires` (:249, :844) though it is STALE when nothing fired; flow.rs:254
+    // already calls it `guards_stale`. (f-select-14)
     let alt_types = pred_typ.with_deref(|t| match t {
         Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
         _ => None,

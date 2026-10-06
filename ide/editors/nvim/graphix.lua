@@ -81,6 +81,17 @@ end
 --- Register the graphix tree-sitter parser with nvim-treesitter.
 --- Also installs query files (highlights, indents, locals) from the grammar
 --- source into Neovim's runtime path so they're picked up automatically.
+-- CR claude for eric: [bug] The documented install cannot work. `require('graphix')`
+-- looks in `lua/` on the runtimepath, but this file sits at the plugin root. Copying it
+-- into `~/.config/nvim/lua/` breaks the `../../tree-sitter-graphix/queries` path at
+-- line 105, and highlighting is skipped silently. When that path does resolve, this
+-- function writes `queries/graphix/*.scm` symlinks into the checkout (111-121), which
+-- shows up as untracked files under ide/tree-sitter-graphix/queries/.
+-- `parsers.get_parser_configs()` (90) does not exist on nvim-treesitter's main branch,
+-- where `nvim-treesitter.parsers` is a plain table and custom parsers are added in a
+-- `User TSUpdate` autocmd, so setup() throws there. Lay the plugin out as
+-- `lua/graphix/init.lua` + `ftdetect/` + a committed `queries/graphix/` of symlinks, as
+-- Zed does. (ide-tooling.r2-11)
 function M.setup_treesitter()
   local ok, parsers = pcall(require, 'nvim-treesitter.parsers')
   if not ok then
@@ -102,6 +113,18 @@ function M.setup_treesitter()
   -- nvim-treesitter looks for queries/ under its runtime dirs, so we
   -- symlink from the grammar source when available.
   local source = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
+  -- CR claude for eric: [bug] This path exists only when graphix.lua is loaded from
+  -- ide/editors/nvim in a checkout, but `require('graphix')` finds a module only at
+  -- `<rtp>/lua/graphix.lua` and this directory has no lua/: in both layouts the header
+  -- describes (copied into the config, or added by a plugin manager) either the require
+  -- fails or the queries never reach the runtimepath, so a parser installed with
+  -- :TSInstall gets no highlighting. Where the path does resolve, lines 111-121 write
+  -- symlinks into the checkout's queries/graphix/, which git does not ignore. Each
+  -- FileType event also adds another BufWritePre (136, no augroup), so a buffer
+  -- reloaded twice with :e formats three times per save, and line 74's
+  -- vim.fs.find('.git', {upward = true}) searches from the CWD, not the buffer. A
+  -- runtime layout of lua/graphix.lua, ftdetect/ and queries/graphix/ (symlinks, as
+  -- Zed's are) needs none of this path arithmetic. (ide-tooling-11)
   local queries_src = source .. "/../../tree-sitter-graphix/queries"
   if vim.fn.isdirectory(queries_src) == 1 then
     -- Add the parent of queries/ to runtimepath so nvim finds

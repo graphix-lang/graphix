@@ -9,6 +9,18 @@ val filter_map: fn(a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Array<
 /// corresponding element in a
 val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e;
 
+// CR claude for eric: [bug] flat_map's `['b, Array<'b>]` callback type is not
+// parametric. The runtime splices every array the callback returns, but a generic
+// definition's check binds this 'b to the definition's own type variable (no splice),
+// and every instance takes those types by substitution. So `let g = |f: fn(x: i64) ->
+// 'b| -> Array<'b> array::flat_map([1, 2], |x| f(x))` called with a callback returning
+// `[Array<i64>, null]` passes --check, builds, and yields [1, 10, 2, 20] typed
+// `Array<[Array<i64>, null]>`; a typed consumer of it bottoms in the node-walk and
+// reads zeros in the JIT (graphix-fuzz check: DIVERGENCE). At 'b := Array<X> only the
+// set-coverage refusal in InstanceTypes::new stops the build, so fixing that alone
+// widens the hole. Have the definition's check decide the splice, or give flat_map the
+// parametric `fn(x: 'a) -> Array<'b>`; list::flat_map has the same hole. probe:
+// design/review-2026-10-05/repro/x-engine-collections-03.gx (x-engine-collections-03)
 /// return a new array where each element is the output of f applied to the
 /// corresponding element in a, except that if f returns an array then it's
 /// elements will be concatanated to the end of the output instead of nesting.

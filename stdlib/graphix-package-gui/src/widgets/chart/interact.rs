@@ -37,6 +37,15 @@ pub struct ChartState {
     pub cursor: Option<Point>,
     pub x_view: Option<(f64, f64)>,
     pub y_view: Option<(f64, f64)>,
+    // CR claude for eric: [structure] drag_origin, drag_x_view, drag_y_view, drag_yaw
+    // and drag_pitch are set and cleared together, which the types do not say.
+    // handle_drag therefore re-checks `(Some(base_yaw), Some(base_pitch))`, a state
+    // that cannot arise. One `drag: Option<Drag { origin, x_view, y_view, yaw, pitch
+    // }>` would make the half-set states unrepresentable. `cursor` (37) is written at
+    // 92 and 171 and never read. The Bar arms of handle_drag and handle_scroll repeat
+    // the y half of the general arms, and the copies already differ: the Bar zoom does
+    // not clamp t_y (231), so a wheel over the x-axis labels zooms about a point below
+    // the plot. (gui-chart-19)
     pub drag_origin: Option<Point>,
     drag_x_view: Option<(f64, f64)>,
     drag_y_view: Option<(f64, f64)>,
@@ -144,6 +153,18 @@ impl ChartState {
                         return Some(Action::capture());
                     }
                 }
+                // CR claude for eric: [bug] Every press is recorded as a click, and any
+                // press within 400 ms of the previous one counts as a double-click
+                // wherever it lands. So a second quick pan resets the view and starts
+                // no drag. WheelScrolled (111-127) also clears the cache and captures
+                // the event in Pie and Empty modes, where handle_scroll does nothing,
+                // so a pie inside a scrollable swallows the page's scrolling.
+                // handle_scroll uses only the sign of the delta, so a 0.5 px trackpad
+                // event zooms by the same 1.1 as a ten-line wheel event. Count a click
+                // only on a release that barely moved and compare positions, return
+                // None for the wheel in Pie and Empty modes, and scale the zoom by the
+                // delta. probe: design/review-2026-10-05/repro/gui-chart-17.rs
+                // (gui-chart-17)
                 self.last_click = Some(now);
                 self.drag_origin = Some(pos);
                 self.drag_x_view =
@@ -304,6 +325,13 @@ fn data_to_pixel(x: f64, y: f64, info: &PlotInfo) -> Point {
 }
 
 /// Try to improve the current best snap with a candidate point.
+// CR claude for eric: [perf] try_snap takes the tooltip value as a String that is
+// already formatted. So find_nearest_point formats one for every data point, plus a
+// "Series N" label for every dataset, on every CursorMoved, and throws away all but the
+// winner. On a 100k-point series that is about 50 ms of formatting per mouse move: a
+// rustc -O3 micro-benchmark of this loop took 50-60 ms eager and 0.12 ms when distances
+// are compared first. Keep (distance, dataset, point) while scanning and build the one
+// SnapPoint at the end. (gui-chart-10)
 fn try_snap(
     best: &mut Option<(f32, SnapPoint)>,
     cursor: Point,
@@ -459,6 +487,18 @@ fn find_nearest_point<X: GXExt>(
                     if idx >= bd.0.len() {
                         continue;
                     }
+                    // CR claude for eric: [bug] idx is a slot in the merged category
+                    // list draw.rs builds (all series, first-seen order, repeats
+                    // merged), but this reads each series' own idx-th entry. Histogram
+                    // draws a series' bar at its category's slot and sums repeated
+                    // categories. So when series differ in categories or order, or one
+                    // repeats a category, the tooltip shows another category's value or
+                    // nothing over a drawn bar. With A=[("a",4.0)] then
+                    // B=[("b",2.0),("a",3.0)], hovering B's 'b' bar shows "B: a: 3.00";
+                    // with A=[("a",1.0),("a",2.0),("b",5.0)], the 'b' bar shows "A: a:
+                    // 2.00". Look the slot's category up in each series (summing
+                    // repeats) from the same list draw.rs uses. probe:
+                    // design/review-2026-10-05/repro/gui-chart-07.rs (gui-chart-07)
                     let (cat, val) = &bd.0[idx];
                     let label = style.label.as_deref().unwrap_or(cat.as_str());
                     let pixel = data_to_pixel(idx as f64 + 0.5, *val, info);

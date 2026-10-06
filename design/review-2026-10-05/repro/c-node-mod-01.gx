@@ -1,0 +1,36 @@
+// c-node-mod-01: `&T` is covariant though writable: `*r <- v` stores a
+// value outside the referent's type.
+//
+// contains.rs:717 accepts `&[i64, string] ⊇ &i64` (a reference is
+// covariant in its referent), and ConnectDeref::typecheck0_with
+// (node/mod.rs:2361) checks `*r <- "s"` only against r's own type, so the
+// write puts a string into `a: i64`.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-node-mod-01.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-node-mod-01.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-node-mod-01.gx
+//
+// expected: the check refuses the program: `r` can write `a`, so a
+// reference of type `&[i64, string]` must not hold `&a`.
+//
+// observed: --check exits 0. The fused run panics and the runtime dies:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `a`: runtime String("s") does not match the compiled Scalar(I64) slot
+//   Error: runtime did not respond  (exit 1)
+// --no-fusion prints 2, then `a` (typed i64) holds "s":
+//   arith error ... at line: 36, column: 1 "Parse error ... Unexpected `s` ..."
+//
+// No annotation on the reference is needed. This passes the check and
+// panics the same way (runtime Null in `x`):
+//   let set = |v: 'a, r: &'a| *r <- v; let x = 1;
+//   let n: [i64, null] = null; set(n, &x); x + 1
+// while `set(&x, n)`, the same call with the reference first, is refused
+// ("'a: i64 does not contain [i64, null]"): callsite.rs::Widening keeps a
+// variable a reference holds at the first argument's type because a callee
+// could write the wider type through it, and the covariant arm undoes that
+// protection whenever the wider argument comes first.
+let a: i64 = 1;
+let r: &[i64, string] = &a;
+*r <- "s";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+a + 1

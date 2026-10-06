@@ -1,0 +1,36 @@
+// gx-stdlib-02: typed reads and string casts silently wrap out-of-range integers.
+//
+// Type::cast_inner's Primitive arm (graphix-types/src/typ/cast.rs:312) converts a
+// value outside the target set with netidx's lenient Value::cast
+// (netidx-value/src/lib.rs:732): a string is parsed as a netidx literal (a bare
+// integer is an i64) and a number converts with Rust `as`. str::parse, the
+// json/toml/pack readers, sys::net subscribe/call, rpc arguments and
+// sqlite::query all convert through it (Type::cast_value). Their contracts
+// promise an error when the value does not fit (str.gxi: "an error on
+// failure"; sys::net: "InvalidCast if the conversion fails"), and netidx's own
+// parser already refuses "u16:70000". A union target takes the first member in
+// Typ order that converts, lossy or not. Number-to-number cast<T> saturation is
+// pinned (types::cast_narrow_saturates); this probe is about strings and reads.
+// id is netidx-admin's parse_id (tui/services.gx:146): uid "4294967296" is 0.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-02.gx
+//          (the same with --no-fusion; the program does not exit)
+// expected: ("error", "error", "error", "error", "error",
+//            "u64:18446744073709551615", "i64:300")
+// observed (HEAD c722befe, debug build, both engines):
+//           ("u16:4464", "error", "u8:44", "uid 0", "u64:18446744073709551615",
+//            "error", "u8:44")
+let p16 = |r: Result<u16, `ParseError(string)>| select r { error as _ => "error", v => "u16:[v]" };
+let id = |s: string| select cast<u32>(s) { error as _ => "error", n => "uid [n]" };
+let u64s = |s: string| select cast<u64>(s) { error as _ => "error", n => "u64:[n]" };
+let which = |x: [u8, i64]| select x { u8 as n => "u8:[n]", i64 as n => "i64:[n]" };
+let j: Result<u8, [`JsonErr(string), `InvalidCast(string)]> = json::read("300");
+(
+  p16(str::parse("70000")),
+  p16(str::parse("u16:70000")),
+  select j { error as _ => "error", v => "u8:[v]" },
+  id("4294967296"),
+  u64s("-1"),
+  u64s("18446744073709551615"),
+  which(cast<[u8, i64]>("300")$)
+)

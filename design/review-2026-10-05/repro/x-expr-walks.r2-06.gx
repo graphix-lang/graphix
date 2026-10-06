@@ -1,0 +1,33 @@
+// x-expr-walks.r2-06: a declaration inside a seq body is compiled as a
+// value and refused with a message that contradicts the source.
+//
+// Machine::lower_block (graphix-types/src/expr/seq.rs:782) and
+// Machine::lower_stmt (seq.rs:635) send every statement that is not a NoOp,
+// a let or a connect through stmt_value, which binds it as a value
+// (--expand shows `let seqv<id> = use str::len` under `let seqb<id>_0`).
+// The compiler then refuses the `use` in value position
+// (node/compiler.rs:390). The same happens to `type`, `trait`, `impl` and
+// a static `mod`, at the seq level,
+// in a `{ .. }` statement, in a let's or a connect's right-hand block, and
+// in a try or with body. The book (core/seq.md, Statements) says that inside
+// a block "you are back in ordinary Graphix" and that only `until` and `try`
+// are refused there.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/x-expr-walks.r2-06.gx
+//          (--check is enough; the refusal is at compile time)
+//
+// expected: accepted, prints 3, exits (the same block outside the seq,
+//   `let n = { use str::len; len("abc") }; n`, prints 3). If declarations
+//   are not to be seq statements, a refusal that says so.
+//
+// observed:
+//   0: at: line: 31, column: 25 .., in: use str::len
+//   1: a use declaration is not an expression — it may only appear as a
+//      statement in a block or module body, not where a value is expected
+// with `type Q = i64; let z: Q = 3; z` as the block: "a type definition is
+// not an expression — ..."; with `trait`: "a trait definition is not an
+// expression — ..."; with `mod m;` at the seq level: "a module definition is
+// not an expression — ...".
+let r = seq { let n = { use str::len; len("abc") }; n };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

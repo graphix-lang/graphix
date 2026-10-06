@@ -413,6 +413,16 @@ async fn program_image_restores_fork_control() -> Result<()> {
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
+    // CR claude for eric: [test-gap] This pin cannot fail: fork control never changes a
+    // value, and it checks only the output flag and that cold and warm values agree, so
+    // a restore that drops every ForkControl still passes. Every decorated `let` here
+    // is at top level, which restores; a `#[serial]`/`#[parallel]` let inside a
+    // function, whose instances bind at run time, comes back without its attribute
+    // (design/review-2026-10-05/repro/t-image-01.sh), and `graphix-fuzz check` prints
+    // AGREE on that program because it compares values too. Read `control().forks()` on
+    // both runtimes as par_attrs.rs does, equal under Force for `#[serial]` and above
+    // zero under Auto for `#[parallel]`, over such a nested let whose collection grows
+    // after start. (t-image-04)
     assert_eq!(cold_values, warm_values);
     Ok(())
 }
@@ -621,6 +631,15 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
         b.advance(8);
         b.get_u64() as usize
     };
+    // CR claude for eric: [test-gap] The splice grows the image by 8 bytes but leaves
+    // the header's counts_at, so the decoder reads the 20 id-count varints 8 bytes
+    // early. It refuses at registration.rs:336 (19 bytes left over) before it reaches
+    // the instance table. The `n.min(table.len() / 2)` guard at registration.rs:353,
+    // which this case exists for, never runs, and removing it would still pass. Move
+    // counts_at by the growth as with_first_instance_at (line 354) does, sharing that
+    // header rewrite instead of parsing the header again at 618-623. Assert
+    // `!warm.rt.env_stats().await?.restored` for both bad images, since a working
+    // array::len does not show the image was refused. (tests-lang-c-05)
     let mut huge = BytesMut::from(&image[..table_at]);
     netidx_core::pack::encode_varint(1 << 62, &mut huge);
     huge.put_slice(&image[table_at + 1..]);

@@ -1,6 +1,17 @@
 let all = |@args: Any| -> Any 'core_all;
 let and = |@args: bool| -> bool 'core_and;
 let count = |x: Any| -> i64 'core_count;
+// CR claude for eric: [bug] divide, product and sum (lines 23-24, mod.gxi:123/181/184)
+// are typed `-> Number`, but their builtins (lib.rs DivideEv/ProductEv/SumEv) return
+// netidx's `Value::Error` when the arithmetic fails. `divide(1, 0)` gives
+// `error:"arithmetic error"`, and a decimal overflow in sum or product gives
+// `error:"decimal arithmetic error"`. The checker treats the result as error-free, so
+// `divide(1, z)?` and an `error as e` arm are refused, and an exhaustive `select n {
+// Int as _ => .., Real as _ => .. }` bottoms with no message. A caller has to cast a
+// `Number` before any arithmetic (`sum(1, 2) + 1` is refused), and the cast turns the
+// error into 0: `cast<i64>(divide(10, z))$ + 1` is 1. Either log and bottom like the
+// `/` operator does (node/op.rs:784), or declare the error in the type. probe:
+// design/review-2026-10-05/repro/x-builtin-effects-10.gx (x-builtin-effects-10)
 let divide = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_divide;
 let filter_err = |e: Result<'a, 'b>| -> Error<'b> 'core_filter_err;
 let filter = |v: 'a, f: fn(v: 'a) -> bool throws 'e| -> 'a throws 'e 'core_filter;
@@ -10,6 +21,14 @@ let max = |a: 'a, @args: 'a| -> 'a 'core_max;
 let mean = |v: [Number, Array<Number>], @args: [Number, Array<Number>]| -> Result<f64, `MeanError(string)> 'core_mean;
 let min = |a: 'a, @args: 'a| -> 'a 'core_min;
 let once = |v: 'a| -> 'a 'core_once;
+// CR claude for eric: [risk] #n is typed Any and the builtins read it with
+// cast_to::<usize>, so any value type-checks and nothing is reported: a value that does
+// not cast ("x", null) leaves n None, so take never emits and skip passes everything; a
+// negative i64 wraps to a huge count, so take(#n: -1, x) passes everything and skip(#n:
+// -3, x) swallows everything; [1, 2], "2" and 2.7 pass as counts through netidx's
+// casts. Type #n as an integer here and in mod.gxi (i64, or 'n: Int) and give a
+// negative count a rule in Take/Skip (0). probe:
+// design/review-2026-10-05/repro/core-lib-15.gx (core-lib-15)
 let take = |#n: Any, e: 'a| -> 'a 'core_take;
 let skip = |#n: Any, e: 'a| -> 'a 'core_skip;
 let range = |i: i64, j: i64| -> Result<i64, `RangeError(string)> 'core_seq;

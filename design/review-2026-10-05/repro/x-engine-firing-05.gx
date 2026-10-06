@@ -1,0 +1,26 @@
+// x-engine-firing-05: take/skip lose #n in sleep and reseed only on a fired #n:
+// after its arm sleeps, take with a level #n passes nothing ever again and skip
+// passes everything; with the same count written as a literal both restart.
+// Command: graphix-fuzz run design/review-2026-10-05/repro/x-engine-firing-05.gx
+// The tuple is (take #n: k, take #n: 1, skip #n: k, skip #n: 1) with k = 1 a level.
+// Epoch 2 (in0=true) sleeps every arm, epoch 3 wakes them, epoch 4 sends in1=7.
+// Expected epoch 4: [7, 7, 5, 5] (both takes pass 7, both skips drop it and ride 5)
+// Observed epoch 4, every engine and session: [0, 7, 7, 5]
+// Observed trace: []; [0,0,5,5]; [-1,-1,-1,-1]; [0,0,5,5]; [0,7,7,5]; [0,7,8,8]
+// Birth variant, no sleep needed (a sibling arm consumed k's fire first):
+// {let k = 1; select in0 { false => k, true => take(#n: k, in1) }} under
+// schedule in0=bool:true; in1=i64:5; in1=i64:6 gives Trace([1]; []; []; []);
+// with take(#n: 1, in1) it gives Trace([1]; [0]; []; []).
+// Throttle::sleep zeroes its wait the same way (plain graphix, t driven by a
+// 20 ms timer, the arm asleep for t in 10..12): with `let r = duration:300.ms`,
+// `select on { true => throttle(#rate: r, t), false => -1 }` (on a uniq'd bool) prints
+// 0 -1 13 14 15 .. 40 after the wake; `#rate: duration:300.ms` prints 0 -1 13 27 40.
+// schedule-v1: cap=64 events=512; in1=i64:5; in0=bool:true; in0=bool:false; in1=i64:7; in1=i64:8
+{
+let k = 1;
+let tk = select in0 { true => -1, false => take(#n: k, in1) };
+let tl = select in0 { true => -1, false => take(#n: 1, in1) };
+let sk = select in0 { true => -1, false => skip(#n: k, in1) };
+let sl = select in0 { true => -1, false => skip(#n: 1, in1) };
+(tk, tl, sk, sl)
+}

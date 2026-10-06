@@ -1,0 +1,17 @@
+// shell-10: CFlag::WarnUnused is never read; `-W unused` (the default) warns about nothing
+//
+// The shell sets WarnUnused for scripts and --check
+// (graphix-shell/src/lib.rs:260), the LSP sets it (lsp_backend.rs:62) and
+// `-W unused`/`-W no-unused` toggle it (graphix-shell/src/main.rs:58-59), but
+// nothing in graphix-compiler, graphix-types, graphix-rt or ../netidx reads it.
+//
+// command: graphix --check -W unused -W error design/review-2026-10-05/repro/shell-10.gx
+//
+// expected: a warning for `unused_local` and one for `never_read`
+//   (book/src/shell.md:45: "Warnings are enabled by default (unused
+//   variables, unhandled errors)"), so with -W error a failure.
+// observed (HEAD c722befe, debug build): no output, exit 0.
+let f = |x: i64| { let unused_local = 42; x + 1 };
+
+let never_read = "hello";
+f(1)

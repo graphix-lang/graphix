@@ -1,0 +1,31 @@
+// f-mod-lowering-07: `#[native]` on a call to a lambda that has no kernel
+// reports the generic emission error, not the callee's recorded blocker.
+//
+// build_region (graphix-compiler/src/fusion/mod.rs:1294) records each
+// `lambdas.refused` reason, then `refuse` records the emission error for the
+// same call-site spec; FusionStats::failure_for_source (mod.rs:161) returns
+// the LAST failure for a spec, so Native::check (lib.rs:838) shows only the
+// generic one.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-07.gx
+//   (GXDBG_NATIVE_ALL=1 lists both records under one ExprId, cause first)
+//
+// expected: the #[native] error names the cause:
+//   - lambda `g` has no kernel: its body: builtin `print` has no fast-call entry
+// observed (HEAD c722befe, debug build):
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: lambda call site `#[native]
+//   g(a)` not discovered — subtree node-walks
+//
+// related: one call deeper (`let h = |x: i64| g(x) * 3; #[native] h(a)`) both
+// records land on `g(x)` in h's body, outside the subtree Native::check walks,
+// and the error lists no reason at all:
+//   #[native] expression did not fully fuse to native code
+let a = i64:5;
+let g = |x: i64| {
+  print(x);
+  x + 1
+};
+let r = #[native] g(a);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

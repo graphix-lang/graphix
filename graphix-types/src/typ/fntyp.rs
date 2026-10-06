@@ -274,6 +274,16 @@ pub struct FnType {
     /// order. Syntax only (the constraint types live in the cells), but
     /// the declaration site is what stops a self-referential constraint
     /// from regressing. Excluded from Eq/Ord/Hash.
+    // CR claude for eric: [doc-drift] This doc is wrong: the list is not just syntax,
+    // and it is not outside identity. constraint_view keeps only the conjuncts of the
+    // cells it names, so Eq and Ord depend on it. fresh_quantifiers, inner_quantifiers,
+    // has_open_quantifier and callsite.rs quantified_formal read it to decide which
+    // cells a call freshens or holds rigid. content_key skips it (`quantifiers: _`), so
+    // two FnTypes that share cells and lambda_ids and differ only here would get one
+    // image object and decode with the first one's list. Nothing builds such a pair
+    // with an effect today. Add the names to content_key, and say what the list decides
+    // here and in design/tvar_constraints.md ('Names only, excluded from identity').
+    // (t-fntyp-10)
     pub quantifiers: Arc<[ArcStr]>,
     /// Every LambdaId this type might represent.
     pub lambda_ids: LambdaIds,
@@ -523,6 +533,11 @@ impl FnType {
     /// Read-only walk over args, vargs, rtype, throws in that order.
     /// Cell constraints are not visited; see
     /// [`Self::for_each_sig_constraint`].
+    // CR claude for eric: [doc-drift] The doc links [`Self::for_each_sig_constraint`],
+    // which does not exist; the walk that visits the signature cells' conjuncts is
+    // for_each_part (line 564). Point the link there: the choice between this walk and
+    // for_each_part is what decides whether a new walk sees quantifier bounds.
+    // (x-expr-walks-09)
     pub(crate) fn try_for_each_type<B>(
         &self,
         f: &mut impl FnMut(&Type) -> ControlFlow<B>,
@@ -943,6 +958,19 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
+        // CR claude for eric: [bug] An open quantifier of `self` (`fn<'b: Number>`)
+        // binds here like any cell. Only `quantified_formal` (node/callsite.rs:244)
+        // holds it rigid, and only for a formal whose whole type is the quantified
+        // function. Every other position accepts a monomorphic function, yet each call
+        // through the value picks `'b` afresh. That covers an annotation through a
+        // typedef (`let h: F = g`, `Array<F>`: the check runs on a fresh expansion, so
+        // `'b := i64` is lost) and a struct field, tuple element, union member or array
+        // element of a formal (a call copies `'b` generic). `--check` passes, `h(1.5)`
+        // runs `g = |x: i64| ..` on 1.5, and the JIT panics at fusion/kernel.rs:243 (a
+        // runtime I64 in a compiled F64 slot); the inline `let h: fn<'b: Number>(x: 'b)
+        // -> 'b = g` instead binds `'b` to i64 for good, so the same type means two
+        // things depending on how it is written. probe:
+        // design/review-2026-10-05/repro/t-fntyp-03.gx (t-fntyp-03)
         let (pairs, ok) = self.align(t);
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
             return Ok(false);
@@ -1041,6 +1069,16 @@ impl FnType {
                 impl_args.len()
             );
         }
+        // CR claude for eric: [bug] This pairs the signature's arguments with the
+        // implementation's by index, so an interface `val` refuses an implementation
+        // that writes its labeled arguments in another order ("argument 0 kind
+        // mismatch"). Labels bind by name everywhere else: `align` (contains,
+        // could_match) and the trait impl check accept the same pair, and calls through
+        // it work. The trait re-declaration check in node/module.rs (the
+        // `method(b).sig_matches` agreement) inherits the same order sensitivity. Pair
+        // the arguments with `self.align(impl_fn)`, require its flag, and compare kinds
+        // per pair, or keep FnType's labeled prefix in one canonical order. probe:
+        // design/review-2026-10-05/repro/t-fntyp-08.gx (t-fntyp-08)
         for (i, (sig_arg, impl_arg)) in sig_args.iter().zip(impl_args.iter()).enumerate()
         {
             if sig_arg.kind != impl_arg.kind {
@@ -1079,6 +1117,18 @@ impl FnType {
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
+        // CR claude for eric: [bug] impl_tvs holds only the tvars written at the top of
+        // the implementation's type: sig_tvars collects by name and never enters a
+        // binding. An unannotated parameter's cell is bound (`x: '_1 := Array<'_3>`)
+        // and tvar_map keys '_3, so neither loop below sees the Number + Singleton
+        // conjuncts on '_3. `val f: fn(x: Array<'a>) -> Array<'a>` over `|x| { let y =
+        // x[0]$; [y + y] }` passes --check, and then the build refuses `f(["a", "b"])`
+        // at elaboration; a dynamic module loads it and adds the strings at run time.
+        // The correct `fn<'a: Number + Singleton>(..)` is refused with "missing
+        // constraint 'a: Number in implementation". Both loops need the cells the walk
+        // mapped, reached through bindings and keyed by cell (as settle::position_cells
+        // collects them). probe: design/review-2026-10-05/repro/t-fntyp-05.gx
+        // (t-fntyp-05)
         let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
         let probe = BitFlags::empty();
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
@@ -1163,6 +1213,13 @@ impl FnType {
         Ok(())
     }
 
+    // CR claude for eric: [structure] This is cow_walk written out by hand. It rebuilds
+    // every field, in a different order from the canonical args, vargs, rtype, throws,
+    // and allocates a new args slice even when nothing changes. `let mut copies =
+    // LPooled::take(); self.cow_walk(|t| t.scope_refs_int(scope, &mut
+    // copies)).unwrap_or_else(|| self.clone())` does the same; Type::scope_refs_int
+    // already reaches nested fn types this way, since cow_children calls cow_walk. A
+    // new type-position field would then need no edit here. (t-fntyp-13)
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let vargs = self.vargs.as_ref().map(|t| t.scope_refs_with(scope, &mut copies));
@@ -1432,6 +1489,17 @@ mod tests {
 impl FnType {
     // The constraints wire slot is a derived view of the cells: decode
     // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
+    // CR claude for eric: [dead] The constraints slot carries nothing either decoder
+    // needs. Under an image, each cell is a shared object whose definition already
+    // holds its conjuncts (image/mod.rs cell_encode). Under the syntax codec, each TVar
+    // occurrence writes its cell's conjuncts inline, and the slot's own TVars decode to
+    // fresh cells nothing references, so shape_decode's add_cell_constraint only
+    // touches orphans. The slot costs a cell_constraint_pairs walk (normalize, sort and
+    // dedup over every reachable cell) in shape_encode, a second one in shape_len under
+    // the syntax codec, and on an image decode a re-add of each conjunct to a cell that
+    // already holds it. Drop the slot and cell_constraint_pairs (bump the image and AST
+    // pack formats), and the sentence in design/tvar_constraints.md that calls it the
+    // Pack wire slot. (t-fntyp-11)
     fn shape_len(&self) -> usize {
         // The full cell pairs, not the declared-quantifier view: anonymous
         // cells carry inference facts that must cross the wire.

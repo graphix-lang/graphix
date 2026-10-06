@@ -1,0 +1,46 @@
+// c-bind-06: Bind::input_fired counts fresh bottoms and inputs that cannot
+// reach the initializer's production this cycle, so a wake's constant
+// overwrites a connect target's last write.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-bind-06.gx
+//          (the same with --no-fusion; `graphix-fuzz check` says AGREE, the
+//          engines share Bind)
+//
+// The three columns differ only in the untaken arm of y's initializer
+// `select c { true => 5, false => _ }` (c is always true). Each outer arm
+// sleeps at n = 2 and wakes at n = 4; y's last write is 50 (ev at n = 1,
+// landed at n = 2). At the wake the constant 5 fires, and Bind::update
+// (bind.rs:332) holds the target back unless input_fired (bind.rs:140)
+// says an input of the initializer fired. input_fired walks every
+// triggering ref of the initializer, untaken arms included, and accepts
+// any tag that triggers():
+//   bot:  w fires a FRESH bottom at every n (it never has a value), so
+//         input_fired is true and y republishes 5 over 50.
+//   live: v fires 7 at n = 4, in the untaken arm, so input_fired is true
+//         and y republishes 5 over 50.
+//   ctl:  a constant there; input_fired is false and y keeps 50.
+// GXDBG_LETBIND=1 at n = 4: bot's y shows tag=Tag(0) val=I64(5)
+// keep_connect_target_value=false publishing=true, ctl's y shows
+// keep_connect_target_value=true publishing=false.
+// Never-slept control: the same `let y = select c {..}; y <- ev` outside
+// any select keeps 50 at n = 4 and 5 with w or v in the untaken arm.
+// The same reset happens with `let y = { let u = v; 5 }` (a block
+// statement whose fire never reaches the value), and with a stale
+// initializer (`true => c ~ 5`), which input_fired lets wake_refresh
+// republish quietly over the target.
+//
+// expected: (50, 50, 50): a wake's constants never overwrite a connect
+//   target's value (CLAUDE.md "Sleep is pause"; design/wake_catchup.md:
+//   the target republishes "as the never-slept arm would").
+// observed (HEAD c722befe, both engines): (5, 5, 50).
+let n = array::iter([0, 1, 2, 3, 4, 5]);
+let o = uniq(select n { 2 => false, 3 => false, _ => true });
+let c = true;
+let ev = select n { 1 => 50, _ => never() };
+let w = select n { 9 => 7, _ => never() };
+let v = select n { 4 => 7, _ => never() };
+let bot = select o { true => { let y = select c { true => 5, false => w }; y <- ev; y }, false => -1 };
+let live = select o { true => { let y = select c { true => 5, false => v }; y <- ev; y }, false => -1 };
+let ctl = select o { true => { let y = select c { true => 5, false => 6 }; y <- ev; y }, false => -1 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select n { 5 => (bot, live, ctl), _ => never() }

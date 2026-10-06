@@ -1,0 +1,29 @@
+// t-parser-b-05: a parse error inside an impl method body loses its
+// Unexpected/Expected lines.
+//
+// impl_decl wraps the whole method block in attempt
+// (graphix-types/src/expr/parser/traitexp.rs:129-133) so that
+// `select impl T for X { arms }` parses, a form the compiler then refuses
+// ("an impl is not an expression"); the print round-trip proptest
+// generates it (expr/test.rs:1398, select! takes any leaf as scrutinee).
+// Any error inside a method backtracks the block, the impl ends at its
+// target, and only the furthest-point report survives.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-parser-b-05.gx
+//
+// expected: what the same body reports in a plain `let`:
+//   Parse error at line: 26, column: 15
+//   Unexpected `)`
+//   Expected whitespace, `}`, mod, pub, use, ...
+// observed (HEAD c722befe, debug build):
+//   Parse error at line: 26, column: 15
+//   the parser could not continue past this point
+trait Show { val show: fn(self) -> string };
+type C = Abstract<i64>;
+impl Show for C {
+    let show = |c| {
+        let x = c.0;
+        "[x]" )
+    }
+};
+Show::show(C(1))

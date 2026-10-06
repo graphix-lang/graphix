@@ -1,0 +1,28 @@
+// tests-ui.r2-17: sparkline_accumulates races wall-clock timers against
+// harness setup (stdlib/graphix-package-gui/src/test/data_table_test.rs:1337).
+//
+// The test publishes c, set to 1, 2, 3 by one-shot timers at 300, 450
+// and 600 ms after program start, and needs all three in the sparkline
+// history. The data table subscribes only after the widget compiles, with
+// BEGIN_WITH_LAST, which delivers just the value current when the
+// subscription lands. This program makes the same publish and subscribes
+// at 500 ms, as a setup slower than 450 ms would.
+//
+// command: graphix --no-cache tests-ui.r2-17.gx
+// expected (what the test needs): [0, 1, 2, 3], or at least 1, 2 and 3
+// observed: [2, 3]; value 1 is never seen. With the subscribe timer at
+// 100 ms the same program prints [0, 1, 2, 3].
+let c = 0;
+let t1 = sys::time::timer(duration:300.ms, false);
+let t2 = sys::time::timer(duration:450.ms, false);
+let t3 = sys::time::timer(duration:600.ms, false);
+c <- t1 ~ 1;
+c <- t2 ~ 2;
+c <- t3 ~ 3;
+sys::net::publish("/local/r2_17/load", c);
+let p = sys::time::timer(duration:500.ms, false) ~ "/local/r2_17/load";
+let v: i64 = sys::net::subscribe(p)$;
+let seen: Array<i64> = [];
+seen <- v ~ array::push(seen, v);
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0);
+seen

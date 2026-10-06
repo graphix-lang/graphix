@@ -1,11 +1,33 @@
 let state = |initial: string| -> State {
     value: initial,
+    // CR claude for eric: [bug] The cursor is a char position (one step per `Char,
+    // sliced with str::sub's char indexes), but it is set and bounded by str::len,
+    // which counts bytes. The same mistake is in step's Backspace, Delete, Right and
+    // End arms and in view's mask and cursor cell. On text holding a non-ASCII char the
+    // cursor starts and ends past the last char, so Backspace after End deletes nothing
+    // once per extra byte, the cursor cell renders empty, and a mask shows one glyph
+    // per byte. The str package has no char count; today it is spelled
+    // array::len(str::split(#pat: "", s)) - 2. A char-count builtin is needed here, in
+    // netidx-admin's tui/remote.gx:39, and in the browser_commands example's backspace
+    // (a no-op on any command holding a non-ASCII char) and text_editor's "characters"
+    // label. probe: design/review-2026-10-05/repro/collections-str-07.gx
+    // (collections-str-07)
     cursor: str::len(initial)
 };
 
 let step = |st: State, e: input_handler::Event| -> [State, null] select e {
     `Key(k) => select k.kind {
         `Press => select k.code {
+            // CR claude for eric: [bug] This arm inserts every Char key, whatever
+            // k.modifiers holds. crossterm reports Ctrl+U as Char("u") with [`Control]
+            // and Alt+B as Char("b") with [`Alt], and only Ctrl+C is taken in Rust
+            // (tui/src/lib.rs:676). So a chord types its letter into the field: form.gx
+            // sends every key it does not take to the focused editor, and
+            // netidx-admin's line prompts do the same. Insert only when the modifiers
+            // hold nothing but `Shift, and return null otherwise so handle answers
+            // `Continue. Windows reports an AltGr character with Control+Alt, so handle
+            // that pair deliberately. probe: design/review-2026-10-05/repro/gx-ui-10.gx
+            // (gx-ui-10)
             `Char(ch) => {
                 let n = str::len(st.value);
                 {

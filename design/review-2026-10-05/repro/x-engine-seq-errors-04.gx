@@ -1,0 +1,43 @@
+// x-engine-seq-errors-04: a trait call whose self type is a union of
+// primitives passes the check, then elaboration refuses it.
+// `[i64, string]` normalizes to one multi-flag Type::Primitive, not a
+// Type::Set. trait_contains (graphix-types/src/typ/contains.rs:1407)
+// accepts it because every flag has an impl, but resolve_trait_call
+// (graphix-compiler/src/node/traits.rs:746) lowers only a Type::Set to
+// the dispatch select, so find_impl is asked for the whole union.
+//
+// commands:
+//   graphix --check design/review-2026-10-05/repro/x-engine-seq-errors-04.gx
+//   graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-04.gx
+//   graphix-fuzz check design/review-2026-10-05/repro/x-engine-seq-errors-04.gx
+//
+// expected: "sq", the value of the select the call lowers to
+// (design/traits.md §3; book/src/udt/traits.md "Dispatch over a union");
+// the hand-written `select one { i64 as t => Show::show(t), string as t =>
+// Show::show(t) }` prints "sq".
+//
+// observed: `--check` exits 0; the run fails with
+//   no implementation of Show for [i64, string]   (exit 1)
+// and graphix-fuzz check reports
+//   DIVERGENCE — the check accepted what the build refused
+// The same refusal: `[i64, null]` with impls for i64 and null; a member of
+// a union self (`[i64, string, Counter]`: "no implementation of Show for
+// [i64, string], a member of the self type"); a bounded generic
+// `'a: Show |x: 'a| Show::show(x)` called with `one`; `impl<'a: Show> Show
+// for Array<'a>` over `Array<[i64, string]>`; `Show::show` in an
+// array::fold callback.
+// Silent shape: when the call sits in a lambda reached only by a dynamic
+// call, the check and the build pass and the run prints nothing in every
+// mode (graphix-fuzz run: Trace([]); check: AGREE). Replace the last line
+// with
+//   let b = true;
+//   let f = select b { true => |x: [i64, string]| Show::show(x), false => |x: [i64, string]| "z" };
+//   f(one)
+// and only `--log-dir` shows: a run-time bind at f(one) did not elaborate:
+// .. no implementation of Show for [i64, string]
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |a| "i[a]" };
+impl Show for string { let show = |b| "s[b]" };
+let one: [i64, string] = "q";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+Show::show(one)

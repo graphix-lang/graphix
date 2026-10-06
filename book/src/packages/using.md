@@ -127,6 +127,20 @@ directory:
 | macOS | `~/Library/Application Support/graphix/packages.toml` |
 | Windows | `%APPDATA%\graphix\packages.toml` |
 
+<!-- CR claude for eric: [doc-drift] This section shows the pre-v2 format (a bare
+[packages] table), but parse_packages reads any file without [stdlib] as legacy and
+migrate_old marks every stdlib package the file does not name as removed, so a file
+written from this example rebuilds a binary with core alone (probe: put this example in
+$XDG_DATA_HOME/graphix/packages.toml and run `graphix package list`; it rewrites the
+file with installed = ["core"] and the other 18 stdlib packages under removed). Updating
+(101-117) is stale too: update proposes external package updates (applied by --yes),
+prompts Y/e/n, refuses a non-terminal stdin without --yes, and queries no per-package
+stdlib version. Removing (71-79) omits the stdlib cascade prompt, step 3 of How the
+Rebuild Works (151) still generates deps.rs, and standalone.md:37 names the binary
+`graphix` where it is named after the package's short name. The doc comments at
+graphix-package/src/lib.rs:572 (the version comes from `graphix` on PATH, not the
+running binary), 1184 (deps.rs) and 1482 (package_dir/graphix) carry the same drift.
+(package-06) -->
 The file is a simple TOML map of package names to versions:
 
 ```toml

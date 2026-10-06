@@ -1,0 +1,26 @@
+// ide-tooling.r2-10: valid code the tree-sitter grammar marks ERROR.
+//
+// Four gaps against the real parser: `_field_name` (grammar.js:1307-1318)
+// lacks seqq, trait, impl, pub, self, super and package; `identifier` and
+// `type_identifier` (1285, 1320) are ASCII-only where the parser takes any
+// non-uppercase letter for a value name and any uppercase one for a type
+// name (parser/mod.rs:136, 389-403); `do_block` (971-977) needs two
+// expressions where `{ a; }` is a block; and `flush` lexes as a keyword in a
+// seq head where the parser reads it as a name.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/ide-tooling.r2-10.gx
+//          cd ide/tree-sitter-graphix && npx tree-sitter parse ../../design/review-2026-10-05/repro/ide-tooling.r2-10.gx
+// expected: the program runs and prints "1 2 1 2"; tree-sitter parses it
+//           without ERROR.
+// observed: it runs and prints "1 2 1 2"; tree-sitter reports ERROR nodes at
+//           `seq flush`, the `seqq` field, `café` and `Ñame`, and a MISSING
+//           identifier inside `{ a; }`.
+let flush = 1;
+let r = seq flush { flush };
+let s = {seqq: 1, b: 2};
+let café = 2;
+type Ñame = i64;
+let n: Ñame = 1;
+let f = |a: i64| { a; };
+println("[r] [café] [s.seqq] [n + 1]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

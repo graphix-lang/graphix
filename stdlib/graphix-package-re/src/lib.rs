@@ -22,6 +22,20 @@ fn with_regex(pat: &ArcStr, f: impl FnOnce(&Regex) -> Value) -> Value {
     PATTERNS.with(|c| {
         c.borrow_mut()
             .with(pat, || Ok(Regex::new(pat)?), f)
+            // CR claude for eric: [bug] The ReError text is `{e:?}` of an
+            // anyhow::Error. anyhow's Debug appends the backtrace it captured whenever
+            // RUST_BACKTRACE or RUST_LIB_BACKTRACE is set, so the string a program
+            // reads depends on the environment and on the engine: under
+            // RUST_BACKTRACE=1 the error of `re::is_match(#pat: "(", "x")` is 973
+            // characters in the JIT and 5957 in the node-walk, and graphix-fuzz check
+            // reports a divergence. `{e:#}` gives the same message and its causes
+            // without the trace; str::parse and str's escape functions build their
+            // errors the same way (graphix-package-str/src/lib.rs:817, 451).
+            // Separately, fc_splitn (line 77) casts #limit with `as usize`, so -1 means
+            // no limit and 0 gives [] where str::splitn returns an error for n <= 0,
+            // and the gxi's "split at most #limit times" is one off: #limit 2 gives two
+            // parts. probe: design/review-2026-10-05/repro/small-pkgs-16.gx
+            // (small-pkgs-16)
             .unwrap_or_else(|e| errf!(TAG, "{e:?}"))
     })
 }

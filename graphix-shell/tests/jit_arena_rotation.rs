@@ -57,6 +57,14 @@ fn exhausted_arena_rotates() {
         log.contains("JIT code arena exhausted: retired generation"),
         "a 192KB arena never rotated:\n{log}"
     );
+    // CR claude for eric: [test-gap] No code writes 'rebuilt without fusion' any more,
+    // so this assertion cannot fail; a link that outgrows a fresh arena now panics,
+    // which the status assertion above catches. The pin also covers only the cold link.
+    // The warm start's rotation has none, although Jit::load_wrapped takes a page of
+    // arena per restored region and rotates where the cold run does not
+    // (design/review-2026-10-05/repro/f-jit-05.sh). Replace this with a second, warm
+    // run of the same program (no --no-cache, a private XDG_CACHE_HOME, an arena the
+    // warm start overflows) that must still compute its total. (f-jit-13)
     assert!(
         !log.contains("rebuilt without fusion"),
         "a link outgrew a fresh arena:\n{log}"

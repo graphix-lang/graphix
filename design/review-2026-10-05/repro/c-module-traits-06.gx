@@ -1,0 +1,54 @@
+// c-module-traits-06: a whitelist sandbox hides the host's types and
+// values but not its traits.
+//
+// Env::apply_sandbox's whitelist branch (graphix-types/src/env.rs:632-634)
+// filters typedefs, modules and binds by `kept` and leaves the lexical
+// `traits` map whole, while the blacklist branch (unbind_lexical_under)
+// drops traits. A `whitelist [core]` module can therefore name any trait
+// declared in its enclosing scope (`super::T`, `package::T`) and register a
+// global impl of it for any type the program's package may implement. Code
+// compiled after the load (here a trusted `unrestricted` module) dispatches
+// into the sandboxed body and hands it its arguments, and a trusted impl
+// for the same type is refused as a conflict.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-module-traits-06.gx
+//          (the same with --no-fusion)
+//
+// expected (the host trait hidden like the host type):
+//   A (whitelist [core]) refused: ... no trait `super::Secret` in scope
+//   TY (whitelist [core]) refused: ... undefined type super::HostT ...
+//   T refused: ... type mismatch 'self: unbound within Secret does not contain string
+//   U (unrestricted) loaded
+// observed (HEAD c722befe):
+//   A (whitelist [core]) loaded
+//   TY (whitelist [core]) refused: ... undefined type super::HostT ...
+//   T (unrestricted) loaded: sandboxed impl got TOP-SECRET
+//   U refused: ... conflicting implementation: Secret is already implemented for string ...
+let hidden = "TOP-SECRET";
+type HostT = {a: i64};
+trait Secret { val leak: fn(self) -> string };
+let a = mod a dynamic {
+  sandbox whitelist [core];
+  sig { val s: string };
+  source r#"impl super::Secret for string { let leak = |x| "sandboxed impl got [x]" }; let s = "loaded""#
+};
+let ty = mod ty dynamic {
+  sandbox whitelist [core];
+  sig { val s: string };
+  source r#"let v: super::HostT = {a: 1}; let s = "loaded""#
+};
+let t = mod t dynamic {
+  sandbox unrestricted;
+  sig { val s: string };
+  source select a { null as _ => r#"let s = super::Secret::leak(super::hidden)"#, error as _ => never() }
+};
+let u = mod u dynamic {
+  sandbox unrestricted;
+  sig { val s: string };
+  source select a { null as _ => r#"impl super::Secret for string { let leak = |x| "trusted [x]" }; let s = "loaded""#, error as _ => never() }
+};
+println(select a { error as e => "A (whitelist \[core\]) refused: [e]", null as _ => "A (whitelist \[core\]) loaded" });
+println(select ty { error as e => "TY (whitelist \[core\]) refused: [e]", null as _ => "TY (whitelist \[core\]) loaded" });
+println(select t { error as e => "T refused: [e]", null as _ => "T (unrestricted) loaded: [t::s]" });
+println(select u { error as e => "U refused: [e]", null as _ => "U (unrestricted) loaded" });
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

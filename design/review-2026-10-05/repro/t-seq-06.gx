@@ -1,0 +1,22 @@
+// t-seq-06: until's condition is never constrained to bool; a non-bool
+// condition passes the check and stalls the run silently.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-seq-06.gx
+//          graphix --no-cache design/review-2026-10-05/repro/t-seq-06.gx
+//          (the same with --no-fusion; graphix-fuzz run: every mode agrees)
+//
+// An until step's value is `let seqv = guard(any(pc ~! cond, cond))` with
+// no type (graphix-types/src/expr/seq.rs:590 via Machine::step, 524), and
+// the machine completes an until step only on a fired Value::Bool(true)
+// (graphix-compiler/src/node/seq_machine.rs:312-314). `n + 1` is an i64.
+//
+// expected: --check refuses `until n + 1`: the book says until "waits until
+//   the boolean cond is true", design/seq_blocks.md §4 "a bool level".
+// observed: --check exits 0; the run prints nothing and exits on the idle
+//   timer. Control: `until n + 1 > 0` prints "r = 42".
+// The same hole: `until "ready"`, `seqq go { until 1; 42 }`, and
+//   `let f = |x| seq { until x; 42 }; f(7)` (x is never typed bool).
+let n = 0;
+let r = seq { until n + 1; 42 };
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0))

@@ -166,6 +166,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
+        // CR claude for eric: [bug] The prefix is read with seam_tick and never kept. A
+        // prefix that fires before the tree is thrown away by the early return below,
+        // and a tree that fires without the prefix firing subscribes with the empty
+        // prefix. A constant #prefix fires only at init, while db::open and db::tree
+        // are async, so the ordinary call `db::subscription::new(#prefix: "aa", t)`
+        // sees every key in the tree. Read the prefix on the value plane (seam_value)
+        // so its current value is used whenever the tree fires, and add a test with a
+        // constant #prefix: today no test covers #prefix. probe:
+        // design/review-2026-10-05/repro/db2-04.gx (on_insert delivers key "bb" under
+        // prefix "aa"). (db2-04)
         let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx))
             .map(|tv| tv.value_cloned());
         let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx))
@@ -174,6 +184,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);
         }
+        // CR claude for eric: [bug] seam_tick reads a bottomed tree or prefix as no
+        // event, so when the tree goes bottom the old watch keeps running and the last
+        // Subscription rides; the accessors below keep their bind id when `sub` goes
+        // bottom (CachedVals keeps the value) and never consult any_bottom. Both keep
+        // reporting inserts while their argument is bottom, against dense_delivery.md's
+        // rule 13 (a builtin bottoms on any bottomed argument): the output should be
+        // bottom and the watch stopped until the argument returns. sys's net subscribe
+        // and fs watch read bottoms the same way. probe:
+        // design/review-2026-10-05/repro/db2-13.gx (db2-13)
         if self.tree_val.is_none() || (prefix_val.is_none() && !tree_is_new) {
             return self.out.ride();
         }
@@ -196,12 +215,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 abort.abort();
             }
             let jh = tokio::task::spawn(async move {
+                // CR claude for eric: [bug] The sled subscriber is registered only when
+                // a tokio worker first polls this task, but the Subscription value
+                // fires in this cycle (line 218). A write the program issues on that
+                // fire can reach sled first, and its event never arrives. In the shell,
+                // `db::insert(t, sub ~ "k", 1)` misses on_insert in about 7% of runs,
+                // and the tests' `key <- sub ~ "k"` form in about 5%. lib_tests/db.rs
+                // passes only because its current_thread runtime polls this task before
+                // the insert's. Registration is an in-memory map insert in sled, so
+                // call watch_prefix in update and move the Subscriber into the task.
+                // probe: design/review-2026-10-05/repro/db2-08.sh (db2-08)
                 let mut subscriber = tree_inner.tree.watch_prefix(&*prefix_bytes);
                 while let Some(first) = (&mut subscriber).await {
                     let mut events = EVENT_POOL.take();
                     if let Some(ev) = decode_sled_event(key_typ, first) {
                         events.push(ev);
                     }
+                    // CR claude for eric: [bug] A chunk is whatever sled had ready when
+                    // this task woke, and the runtime delivers one chunk per bind id
+                    // per cycle. So one atomic db::batch or txn::commit reaches
+                    // on_insert spread over many cycles: a 2000-insert commit took 51
+                    // to 770 cycles, and the commit's reply arrived midway. A
+                    // subscriber that derives state from the events sees states the db
+                    // never held, such as a debit without its credit. on_insert and
+                    // on_remove also split each chunk into two arrays, so when an
+                    // insert and a remove of one key arrive in one cycle their order is
+                    // lost and a mirror cannot tell whether the key survived. sled's
+                    // watch events carry no commit boundary, so delivering a write as
+                    // one unit needs this package's own write paths to publish their
+                    // write sets. probe: design/review-2026-10-05/repro/db2-07.gx
+                    // (db2-07)
                     drain_ready(&mut subscriber, key_typ, &mut events);
                     if events.is_empty() {
                         continue;
@@ -222,6 +265,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.out.ride()
     }
 
+    // CR claude for eric: [bug] sleep aborts the watch task and forgets tree_val, and
+    // the accessors' sleep below drops their bind id. Both re-establish only on a FIRED
+    // argument, but at a wake the arm's arguments arrive stale. So a subscription, or
+    // an on_insert/on_remove accessor, in a select arm that sleeps once never delivers
+    // again: inserts after the arm comes back are silently lost. sys::net::subscribe
+    // keeps a slept bit and resubscribes from the present path on the first update
+    // after sleep. This needs the same: keep tree_val and the prefix and resubscribe
+    // after a sleep, and have the accessor re-ref the bind id from its stale slot.
+    // sys/watch.rs WatchStream has the same shape and goes deaf the same way. probe:
+    // design/review-2026-10-05/repro/db2-05.gx (db2-05)
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();

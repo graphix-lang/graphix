@@ -661,6 +661,20 @@ where
     // it waits a cycle, queued where serial evaluation would queue it
     let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
     let mut out = Vec::with_capacity(branches.len());
+    // CR claude for eric: [bug] Every id that a later sibling also delivered is
+    // requeued as a SetVar for the next cycle, and fork_join does the same at line 770.
+    // That matches serial evaluation only for error-handler ids, which is
+    // deliver_error's occupied case. Module::update primes a loaded body's external
+    // refs with try_insert and never removes them (node/module.rs:986-990). So when two
+    // dynamic modules load in one cycle in sibling branches, both own the prime, and
+    // the merge writes the variable again next cycle: a phantom fire that serial
+    // evaluation never makes. The same leftover primes also fire readers later in the
+    // cycle under serial evaluation: with the repro's counter moved below the modules,
+    // serial n becomes 2. Removing the primes after the module's update, as CallSite
+    // does with `set`, fixes both, and a debug_assert here that a duplicate is a
+    // handler id would catch the next such source. probe:
+    // design/review-2026-10-05/repro/x-diff-par-05.gx (graphix-fuzz check: forked
+    // node-walk != serial node-walk). (x-diff-par-05)
     for Part { cx, mut rt, mut event, part: _, out: o } in branches.drain(..) {
         let again: LPooled<Vec<BindId>> =
             event.variables.own_ids().filter(|id| delivered.contains(id)).collect();
@@ -714,6 +728,17 @@ pub(crate) fn compile_each<R, E, P, F>(
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
 /// `a`'s first: neither sees what the other did, and `ctx` ends as the
 /// serial evaluation of `a` then `b` would leave it.
+// CR claude for eric: [structure] fork_join is fork_each for two parts written again.
+// It repeats the per-branch ForkCx/ForkRt/Event and ExecCtx, forked() and Live, the
+// stolen side's InterruptScope and tokio enter, the audit, and the in-order merge. The
+// merge's rule (a later part's delivery of an id an earlier part delivered waits a
+// cycle) now exists twice, as fork_each's `delivered` set and as `delivered_in_both`.
+// compile_each and par_loop::run repeat the worker prologue (Live, on_pool,
+// InterruptScope, tokio) once more. Live::done is called by hand in five places, so a
+// part that unwinds leaves LIVE_PARTS raised. One branch type (views plus event, a
+// ctx() builder, one merge over branches in order, allocation-free for two) and one
+// worker helper that owns a Live drop guard would leave one copy of each rule.
+// (x-parallel-09)
 pub fn fork_join<R, E, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R, E>, a: A, b: B) -> (RA, RB)
 where
     R: Rt,
@@ -806,6 +831,20 @@ fn audit<R: Rt, E: UserEvent>(
 /// one per core), shared by every runtime in the process.
 pub fn eval_pool() -> &'static rayon::ThreadPool {
     static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+        // CR claude for eric: [bug] When GRAPHIX_EVAL_THREADS is unset this passes
+        // num_threads(0), and rayon resolves 0 through RAYON_NUM_THREADS. The
+        // evaluation pool therefore follows the compile pool's setting, so "one per
+        // core" above and design/parallel_eval.md §9 ("does not govern evaluation") are
+        // false. graphix-fuzz's child_command sets RAYON_NUM_THREADS=2, so every
+        // campaign child runs its Par/JitPar oracle on 2 eval workers (16 on a 16-core
+        // box without it). `graphix-fuzz check` and `regress` run in-process on one
+        // worker per core. An embedder that sets RAYON_NUM_THREADS for its own rayon
+        // work narrows evaluation the same way. Resolve the default here
+        // (GRAPHIX_EVAL_THREADS, else available_parallelism). If the fuzz children
+        // should evaluate on fewer workers, set GRAPHIX_EVAL_THREADS in child_command
+        // and say so in the docs. probe:
+        // design/review-2026-10-05/repro/c-cost-misc-04.gx (GRAPHIX_DBG_PAR=1, without
+        // and with RAYON_NUM_THREADS=2: 16 ranges vs 2). (c-cost-misc-04)
         let threads = std::env::var("GRAPHIX_EVAL_THREADS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -832,6 +871,15 @@ pub(crate) fn saturated() -> bool {
 }
 
 /// `n` parts forked: each calls [`Live::done`] when it finishes.
+// CR claude for eric: [risk] Live::start adds every part to the process-wide LIVE_PARTS
+// before the parts run. Each part calls done() only after its closure returns (lines
+// 649, 706, 752, 760; fusion/par_loop.rs:210), so a part that panics never gives its
+// count back. The panic ends only its runtime's tokio task, while the pool and the
+// process go on (a test binary, an embedder hosting several runtimes). Each such panic
+// therefore permanently lowers, for every runtime in the process, the number of live
+// parts at which saturated() reports a full pool, and after one per worker Auto never
+// forks there again. A guard per part whose Drop decrements ties the count to the part.
+// (c-analysis-branch-08)
 pub(crate) struct Live;
 
 impl Live {

@@ -332,6 +332,19 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 self.sort_by.iter().map(|s| s.column.clone()).collect();
             self.sort_by = parse_sort_by(v);
             self.apply_sort_by_change(&old_cols);
+            // CR claude for eric: [bug] resort_by_column permutes row_paths in place,
+            // and the Table's own row order lives only in table_ref.last, so nothing
+            // restores it when sort_by becomes []. The third header click of the book's
+            // absent/ascending/descending cycle leaves the rows in descending order
+            // until the table ref fires, although the gxi says an empty list preserves
+            // the Table's row order. Each resort also stable-sorts from the previous
+            // order, so ties fall in sort-history order and one (table, sort_by) pair
+            // can show different rows. Keep the table's row order beside row_paths,
+            // sort a copy of it, and restore it when sort_by is empty. probe:
+            // design/review-2026-10-05/repro/gui-datatable-04.rs (copy it to
+            // stdlib/graphix-package-gui/tests/review_gui_datatable_04.rs and run cargo
+            // test -p graphix-package-gui --test review_gui_datatable_04).
+            // (gui-datatable-04)
             if !self.sort_by.is_empty() {
                 self.resort_by_column();
             }
@@ -430,6 +443,16 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             self.resort_by_column();
             changed = true;
         }
+        // CR claude for eric: [test-gap] No test reaches this branch: every data_table
+        // test builds `tbl` once and none flips a column's source between `Netidx` and
+        // a stored value, so apply_table_sync's column reuse by name,
+        // compile_pending_columns for a new column and the teardown of removed rows'
+        // subscriptions run only at compile. A test that changes `tbl` must be
+        // multi_thread, because under current_thread the harness's update_widget
+        // (src/test/mod.rs:120) calls handle_update outside block_in_place and the
+        // block_on below panics. Add tests that set test::tbl to add a row, remove one
+        // (checking its subscriptions are dropped), add a column with a source and an
+        // on_edit, and swap a column's on_edit. (tests-ui.r2-07)
         if needs_resolve {
             let pending = self.apply_table_sync();
             if !pending.is_empty() {
@@ -440,6 +463,18 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 self.resort_by_column();
             }
         }
+        // CR claude for eric: [perf] Every ToGui::Update reaches every widget of every
+        // window (event_loop.rs:280-284), and this call reconciles subscriptions for
+        // each one, whatever its id. A clock label's tick or a keystroke elsewhere in
+        // the UI costs a walk of every routing entry (one per absolute row once a sort
+        // column is set) plus a (Path, ArcStr) clone and hash per windowed cell.
+        // Reconcile only when the rows, the viewport, sort_by or the table changed. Per
+        // frame, render_with_size runs at every layout (iced's responsive calls its
+        // closure each time) and shapes each auto-width text cell at least twice
+        // through a fresh Paragraph: col_min_width, then truncate_to_width's full
+        // measure and binary search, on top of iced's own shaping. auto_fit_all_columns
+        // shapes every cell of every row on the GUI thread. Cache measured widths by
+        // text and size. Not measured. (gui-datatable-18)
         self.update_subscriptions();
         Ok(changed)
     }

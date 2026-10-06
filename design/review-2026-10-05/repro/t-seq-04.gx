@@ -1,0 +1,57 @@
+// t-seq-04: seqq trigger names are not always the run's request
+// (destructured let, &x, writes)
+//
+// desugar_queued (graphix-types/src/expr/seq.rs:841) knows the trigger by
+// one simple name. `seqq let (a, b) = t` lowers (desugar_let, seq.rs:139-146)
+// to a synthetic trigger `seqbindN` the body never reads, so
+// Rewrite::Captures (seq.rs:1304-1312) exempts nothing in an `until` (a and
+// b read live: the latest t), and a and b become SeqCaptures
+// (seq.rs:981-990) that any opaque call turns live in every read. And the
+// trigger's own bind can enter live_ids (seq.rs:892-895): one `&x` or
+// `x <- ..` in the body makes every read of `x` live, the until and the
+// result included. Under `seq`, and under `seqq let p = t`, each run reads
+// its own value (book/src/core/seq.md "Live state and waits": "The one name
+// it does not read live is the trigger's"; design/dependency_summaries.md
+// §4: "The trigger's own capture is always the queued request").
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-seq-04.gx
+//          (the same with --no-fusion; graphix-fuzz check: AGREE)
+//
+// t is (1, 0) then (100, 0); x and y are 1 then 50. Each `_named`/`_destr`
+// and `plain_`/`ref_` pair differs only in destructuring or the `&x`.
+// expected (any line order):
+//   until_named 1       until_destr 1
+//   opaque_named 1      opaque_named 100     opaque_destr 1     opaque_destr 100
+//   plain_trigger 1     plain_trigger 50     ref_trigger 1      ref_trigger 50
+// observed (HEAD c722befe, debug build, both engines):
+//   until_named 1       (no until_destr: run 1's until reads a = 100 and
+//                        stalls; every later request queues behind it)
+//   opaque_named 1      opaque_named 100     opaque_destr 100   opaque_destr 100
+//   plain_trigger 1     plain_trigger 50     ref_trigger 50     ref_trigger 50
+// A direct write behaves like the `&x`: `seqq t { t <- 10; wait(1); t + 1 }`
+// over `let t = 0` answers its first run 11, where `seq` (pinned by
+// lang::seq_let::trigger_writes_reach_the_variable) and the same write
+// through a callee (`let w = |v: i64| { t <- v; v }`, `w(10)`) answer 1.
+let step = 0;
+step <- select step { n if n < 40 => n + 1, _ => never() };
+let t = never();
+t <- select step { 1 => (1, 0), 3 => (100, 0), _ => never() };
+let x = never<i64>();
+x <- select step { 1 => 1, 3 => 50, _ => never() };
+let y = never<i64>();
+y <- select step { 1 => 1, 3 => 50, _ => never() };
+let g = select step { 0 => |v: i64| v + 1, _ => |v: i64| v + 2 };
+let wait = |v| sys::time::after_idle(duration:20.ms, v);
+let until_named = seqq let p = t { until step > p.0 + 5; p.0 + p.1 };
+let until_destr = seqq let (a, b) = t { until step > a + 5; a + b };
+let opaque_named = seqq let p = t { wait(0); g(1); p.0 + p.1 };
+let opaque_destr = seqq let (a, b) = t { wait(0); g(1); a + b };
+let plain_trigger = seqq y { wait(0); y };
+let ref_trigger = seqq x { let r = &x; wait(0); x };
+println("until_named [until_named]");
+println("until_destr [until_destr]");
+println("opaque_named [opaque_named]");
+println("opaque_destr [opaque_destr]");
+println("plain_trigger [plain_trigger]");
+println("ref_trigger [ref_trigger]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

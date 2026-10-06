@@ -8,6 +8,14 @@ use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use tokio::try_join;
 
+// CR claude for eric: [structure] make_handle picks a branch with is_svg() and then
+// calls to_handle or to_svg_handle (types.rs:355-382). This dispatch never reaches
+// to_handle's Svg arm or to_svg_handle's Bytes and Rgba arms, and each of those builds
+// an empty Handle::from_path(""). view() also builds a from_path("") image on every
+// frame while there is no source. One exhaustive match on ImageSourceV here can replace
+// the three functions, and view() can render Space when handle is None.
+// book/src/ui/gui/image.md still documents a separate svg widget that does not exist,
+// and its ImageSource omits the Svg(string) variant. (gui-widgets-a-16)
 fn make_handle(source: &ImageSourceV) -> ImageHandle {
     if source.is_svg() {
         ImageHandle::Svg(source.to_svg_handle())
@@ -66,6 +74,22 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
+        // CR claude for eric: [bug] Every delivery of the source rebuilds the handle,
+        // and iced gives each Bytes or Rgba handle a fresh unique id, so its id-keyed
+        // raster cache misses even when the value is unchanged:
+        // ``image(&`Bytes(state.logo))`` delivers the same bytes again on every change
+        // to another field of `state`, and so does a source variable re-set to equal
+        // bytes. For Bytes, iced_wgpu then lays the new handle out at 0x0 under
+        // `Shrink` and draws nothing until its worker thread has decoded it again. The
+        // worker reports completion to the `Shell::headless()` the renderer is built
+        // with (render.rs:58), so nothing redraws: the image stays blank until an
+        // unrelated event redraws the window, and it never shows while the source keeps
+        // re-firing. An Rgba source under 2 MB is re-uploaded on the GUI thread on
+        // every delivery instead. Keep the handle, and report no change, when the new
+        // source equals the one it was made from (Bytes by pointer and length first,
+        // then by content). probe:
+        // design/review-2026-10-05/repro/gui-widgets-a.r2-16.gx (opens a window;
+        // typechecked, not run). (gui-widgets-a.r2-16)
         if self.source.update(id, v).context("image update source")?.is_some() {
             self.handle = self.source.t.as_ref().map(make_handle);
             changed = true;

@@ -1,0 +1,33 @@
+// t-env-06: an abstract type's parameter bounds are not enforced at
+// construction.
+//
+// deftype keeps only the formals in AbstractRep::params
+// (graphix-types/src/env.rs:1465) and AbstractRep::instantiate (env.rs:96)
+// types `T(v)` and the pattern `T(p)` over fresh variables with no bound,
+// so `T("hello")` is a T<string> although T declares 'a: Number. Writing
+// the type is refused: `let t: T<string> = T("hello")` fails with
+//   type mismatch Number does not contain string
+// A public newtype (the same typedef in a module's .gxi) lets a client of
+// the module write `m::T("hello")` too.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-env-06.gx
+//          (--check exits 0; --no-fusion prints the same;
+//          graphix-fuzz check: AGREE)
+//
+// expected: refused at `T("hello")` and at `mk("ab")`: string is not a
+//   Number.
+//
+// observed: "T(\"hello\") T# ab"
+//   T("hello") and the unannotated wrapper's mk("ab") check and run; the
+//   impl of Display for every T<'a> is skipped for the T<string> (it
+//   prints structurally) while T(5) prints through the impl.
+type T<'a: Number> = Abstract<'a>;
+impl<'a> Display for T<'a> {
+  let fmt = |t| "T#"
+};
+let mk = |x| T(x);
+let a = T("hello");
+let b = T(5);
+let c = mk("ab");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+"[a] [b] [c.0]"

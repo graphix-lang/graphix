@@ -93,6 +93,17 @@ pub struct AbstractRep {
 impl AbstractRep {
     /// A fresh instance of the type: `(T<'a..>, rep['a..])` with the
     /// formals replaced by fresh type variables shared between the two.
+    // CR claude for eric: [bug] `instantiate` types `T(v)` and the pattern `T(p)` over
+    // fresh variables with no bound, and deftype (line 1465) drops each parameter's
+    // constraint from `AbstractRep::params`. So `type T<'a: Number> = Abstract<'a>;
+    // T("hello")` checks and runs as a `T<string>`, while `let t: T<string> =
+    // T("hello")` is refused (Number does not contain string). A public newtype lets a
+    // client of the module do the same (`m::T("hello")`). An `impl<'a> Display for
+    // T<'a>` is skipped for such a value, which prints structurally, and static trait
+    // dispatch on it fails at the use with an error that names the trait, not the
+    // bound. Keep each constraint in `AbstractRep` and add it, with the formals
+    // replaced, to its fresh cell here, as `lookup_ref_with` does for an open argument.
+    // probe: design/review-2026-10-05/repro/t-env-06.gx (t-env-06)
     pub fn instantiate(&self, id: AbstractId) -> (Type, Type) {
         let fresh: LPooled<Vec<Type>> =
             self.params.iter().map(|_| Type::empty_tvar()).collect();
@@ -227,6 +238,12 @@ pub struct TraitMethodDef {
     pub self_index: usize,
     /// The declaration supplies a default body (an implementor may
     /// omit the method).
+    // CR claude for eric: [dead] `has_default` is written here and never read, in this
+    // workspace or in ../netidx: every decision reads `default` (traits.rs:520, 770,
+    // 895; module.rs:527; coretraits.rs:58). It rides Pack and the image, and it can
+    // disagree with `default` (an interface's declaration sets it while `default` is
+    // still None). Delete it, with the bool both deftrait callers compute for it
+    // (traits.rs:156, module.rs:258). (x-invalid-states-09)
     pub has_default: bool,
     /// The dispatcher binding at `path::name`, resolved to an
     /// implementation by the self argument's type.
@@ -627,8 +644,33 @@ impl Env {
                         names.entry(dir).or_default().insert(n);
                     }
                 }
+                // CR claude for eric: [bug] `kept` keeps a scope only when it is
+                // exactly a listed module, so a whitelisted module loses its submodules
+                // and trait scopes, while the blacklist arm removes a listed module's
+                // whole subtree. Under `whitelist [core]` a loaded source cannot call
+                // `opt::is_some`, `math::sqrt`, `buffer::..` or `Collection::len` (nor
+                // `use Collection::*`), and under `whitelist [core, sys]`
+                // `sys::time::now` fails with "no module `time` in `sys`"; a trait
+                // scope cannot even be listed, since `core::Collection` does not parse
+                // as a whitelist item. Keep every scope under a listed module
+                // (`scope_is_under(k, m)`), and use the same test in the per-name
+                // narrowing loop below, or `whitelist [sys, sys::net::subscribe]` would
+                // cut `/sys/net` down to `subscribe`. probe:
+                // design/review-2026-10-05/repro/t-env-05.gx (t-env-05)
                 let kept = |k: &ModPath| modules.contains(k) || names.contains_key(k);
                 let mut t = self.clone();
+                // CR claude for eric: [bug] The whitelist filters typedefs, modules and
+                // binds but leaves `t.traits` whole, unlike the blacklist
+                // (unbind_lexical_under drops traits). A `whitelist [core]` module can
+                // name any trait in its enclosing scope (`super::Secret`,
+                // `package::Secret`) and register a global impl of it for any type the
+                // program's package may implement, while the host's types and values
+                // stay hidden. Code compiled after the load then dispatches into the
+                // sandboxed impl and passes it its arguments, and a trusted impl for
+                // the same type is refused as a conflict. Filter `t.traits` by `kept`
+                // like the typedefs. probe:
+                // design/review-2026-10-05/repro/c-module-traits-06.gx
+                // (c-module-traits-06)
                 t.typedefs = retain(&self.typedefs, |k, _| kept(k));
                 t.modules = retain_set(&self.modules, kept);
                 t.binds = retain(&self.binds, |k, _| kept(k));
@@ -648,6 +690,22 @@ impl Env {
     /// component is one; else `/` (the program is the package).
     pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
         match Path::parts(scope).next() {
+            // CR claude for eric: [bug] This takes any first-level `#do` component for
+            // a loaded script's top level. That holds for the build (load_program
+            // compiles the script as a block, its names under `/#doN`) but not for
+            // --check and the LSP: compile_script (graphix-compiler/src/lib.rs:2087)
+            // compiles the script's names at `/`, so a top-level block `{ .. }`, scoped
+            // `/#doM`, becomes a package of its own. The orphan rule then refuses `type
+            // Key = Abstract<i64>; let out = { impl Eq for Key { .. }; Key(1) ==
+            // Key(11) }` under --check ('must live in the type's package (/)') while
+            // the build prints true. Also, `package::x` inside such a block names the
+            // block's own `x` in the check and the script's in the build: for `let x =
+            // 1; let y = { let x = "s"; package::x + 1 }; y`, --check refuses string +
+            // i64 and the build prints 2. The check and the build should name a
+            // script's top level the same way, or the package root should come from
+            // where the script was compiled, not from the shape of the first component.
+            // probe: design/review-2026-10-05/repro/c-analysis-branch-11.gx
+            // (c-analysis-branch-11)
             Some(first) if self.package_roots.contains(first) || is_do_block(first) => {
                 &scope[..1 + first.len()]
             }
@@ -909,6 +967,19 @@ impl Env {
         if tr.resolved().is_some() {
             return None;
         }
+        // CR claude for eric: [bug] trait_of_ref searches the trait tables alone and
+        // TypeRef::resolve_pure searches the typedef tables alone, so a closer type
+        // never shadows a farther trait of the same name, and a closer trait never
+        // shadows a farther type. Parameter, return and typedef-body types named Ord,
+        // Eq, Display or Collection resolve to the core trait even when the user
+        // declared or imported that type: `type Ord = [`Asc, `Desc]; let f = |o: Ord|
+        // -> Ord o` is refused with "trait Ord used as a type". A let annotation does
+        // the reverse and takes an outer typedef over a block's own trait. Resolve the
+        // name once over both tables, with the first hit along the chain winning, and
+        // return a trait only when that hit is a trait. bind.rs:159 and mod.rs:1896
+        // also call rewrite_trait_args before scope_refs, so their trait test looks up
+        // from `/`: the run reports "undefined type T" where --check reports "trait T
+        // used as a type". probe: design/review-2026-10-05/repro/t-env-01.sh (t-env-01)
         self.lookup_trait(&tr.scope, &tr.name).ok().flatten()
     }
 
@@ -948,6 +1019,19 @@ impl Env {
                      way throughout"
                 )
             }
+            // CR claude for eric: [bug] Every method's dispatcher is bound at `pos`,
+            // the trait's name (graphix-compiler/src/node/traits.rs:166 passes
+            // t.name.pos_or(spec.pos)), not at its own `val` name, and
+            // graphix-lsp/src/query.rs has no target for a trait name. So
+            // go-to-definition on `Show::show(c)` lands on `trait Show`. Hover,
+            // definition and references return null at `trait Show`, at `val show` and
+            // at `Show` in `impl Show for`, because the bind there is named `show`
+            // while the word under the cursor is `Show`. References at an impl's `let
+            // show` find only itself. Bind each method at its own name, give a trait
+            // name a query target, and add a trait case to
+            // graphix-shell/tests/lsp/main.rs, which has none. probe:
+            // design/review-2026-10-05/repro/tests-shell-compiler-07.gx (queries in its
+            // header). (tests-shell-compiler-07)
             let bind = self.bind_variable(
                 &path,
                 &mname,
@@ -1448,6 +1532,22 @@ impl Env {
                 t.check_tvars_declared(&mut declared)?;
             }
         }
+        // CR claude for eric: [bug] A typedef body (or abstract rep) may use a type
+        // variable it never declares. This loop refuses declared-but-unused only, and
+        // lookup_ref_with's replace_tvars gives the stray variable a fresh cell at
+        // every expansion, so a value stored at one type reads back at any other.
+        // Example: `type R = { value: &'a }; let w: R = { value: &"y" }; let v: i64 =
+        // *w.value; v + 1` passes --check, then panics the runtime at
+        // fusion/kernel.rs:243 (a String in an i64 kernel slot); the plain `{ value: 'a
+        // }` form makes the engines diverge; probe:
+        // design/review-2026-10-05/repro/gx-ui-01.gx. Refuse any variable that is
+        // neither a parameter nor declared by an enclosing `fn<..>` header. Do not just
+        // compare against `used`: it also holds those header quantifiers, and `type F =
+        // fn<'b: Number>(x: 'b) -> 'b` is legal (lang/types.rs NESTED_QUANTIFIER pins).
+        // An unquantified `type G = fn(x: 'a) -> 'a` must be refused too (the check
+        // passes it, elaboration refuses it). gui's radio.gxi:2 `type Radio` is the one
+        // such typedef in the tree: rewrite it in the same change, or gui stops
+        // registering. (gx-ui-01)
         for dec in declared.iter() {
             if !used.contains_key(dec) {
                 bail!("unused type parameter {dec} in definition of {name}")
@@ -1588,6 +1688,15 @@ impl Env {
     /// there (bindings the lexical maps no longer name included).
     /// Returns the number of bind, typedef and trait names removed.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
+        // CR claude for eric: [structure] This function reaches each registry by field
+        // access, so a registry added to Env compiles without being cleared here,
+        // although CLAUDE.md requires it for the LSP's package-root recheck. join,
+        // swap_lexical and the image codec list every field of Self, so a new field is
+        // a compile error in those places. Destructure self exhaustively here too,
+        // naming the exempt fields (package_roots, ide, hidden_impls) as `_`. The unit
+        // pins below check only by_id, poly_binds and abstract_reps. Extend them to
+        // register a trait with a default, an impl of an outside trait, an import and a
+        // by-ref chain under the package, and assert that each is gone. (t-env-09)
         let under = |s: &ModPath| scope_is_under(s, scope);
         let removed = self.unbind_lexical_under(scope);
         self.clear_names_under(scope);

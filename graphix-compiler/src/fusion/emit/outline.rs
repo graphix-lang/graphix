@@ -75,6 +75,14 @@ pub(super) fn emit_outlined(
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // The loop's slot tables are made here, where every chunk finds them.
+    // CR claude for eric: [structure] open_slot_tables is called here only for its
+    // claims. It pushes a frame whose index variable is this never-defined `unused`,
+    // the next line pops that frame, and emit_range pushes the real frame by hand
+    // (outline.rs:330-337). Nothing reads `unused` today; if something did, cranelift
+    // would silently give it 0, so every slot would read as slot 0. Split the claiming
+    // (sites, len, src_disc -> tables, pending) out of open_slot_tables, call only that
+    // here, and push each frame where its index variable exists (open_loop,
+    // emit_range). (f-call-flow-11)
     let unused = cx.b.declare_var(types::I64);
     cx.open_slot_tables(lp.sel_sites, lp.len, lp.src_disc, unused)?;
     let frame = cx.ctx.slot_tables.borrow_mut().pop().expect("opened above");
@@ -231,6 +239,14 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
+    // CR claude for eric: [structure] The context word's layout (bit 0 init, bit 1
+    // wake) is written out by hand at every site. It is decoded here and at
+    // lower.rs:72-79, encoded at outline.rs:91-92 and kernel.rs:349, and built at
+    // call.rs:338-347 from the init view alone, which is how callees lost the wake bit
+    // (probe: design/review-2026-10-05/repro/f-kernel-01.gx). Two bit constants beside
+    // CTX_WIRE_SLOTS (which kernel.rs:349 would also use) and a `CtxWord { init, wake
+    // }` in lower.rs with `decode(b, word)` and `encode(b)`, used at the four emit
+    // sites, would make the layout one definition. (f-call-flow-07)
     let init_flag = b.ins().band_imm(ctx_word, 1);
     let wake_flag = {
         let w = b.ins().band_imm(ctx_word, 2);

@@ -14,6 +14,11 @@ run!(float_add_inexact, FLOAT_ADD_INEXACT, |v: Result<&Value>| {
 });
 
 // No fused-multiply-add contraction: a*b+c rounds twice.
+// CR claude for eric: [test-gap] These inputs cannot detect contraction: fma(0.1, 0.2,
+// 0.3) and 0.1 * 0.2 + 0.3 are the same double, 0.32, so a kernel that emitted fma
+// would still pass. Use inputs where the two roundings differ: f64:0.1 * f64:10.0 +
+// f64:-1.0 is 0.0 rounded twice and 5.551115123125783e-17 as an fma (both engines give
+// 0.0 today). (tests-lib-b1-05)
 const FLOAT_FMA_NO_CONTRACT: &str = "f64:0.1 * f64:0.2 + f64:0.3";
 run!(float_fma_no_contract, FLOAT_FMA_NO_CONTRACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 0.1_f64 * 0.2 + 0.3)
@@ -78,6 +83,11 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
 
 // Float modulo has no cranelift lowering, so the program node-walks;
 // the value must still be right.
+// CR claude for eric: [doc-drift] The comment above says float % has no cranelift
+// lowering and node-walks, and the one at line 92 says the checked operators node-walk.
+// Both fuse: float % calls graphix_f64_rem (fusion/emit/nodes.rs:246) and the checked
+// operators call graphix_value_checked_* (nodes.rs:304). That is what these fixtures'
+// FuseExpect::Jit asserts. Delete both node-walk claims. (tests-lib-b1-07)
 const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
 run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 1.0)
@@ -135,6 +145,14 @@ run!(unchecked_overflow_wraps, UNCHECKED_OVERFLOW_WRAPS, |v: Result<&Value>| {
 
 // Integer div/rem by zero and MIN/-1 bottom without crashing; a valid
 // division still fuses.
+// CR claude for eric: [test-gap] The comment above says MIN/-1 bottoms without
+// crashing, but no fixture in this crate divides a signed MIN by -1. So cargo test
+// never drives the JIT's MIN/-1 guard (fusion/emit/nodes.rs:262) with those values;
+// only the fuzz corpus pins it (findings/source-e-jun2026/06-08), at soak launch. Add
+// is_err(i64:-9223372036854775808 /? i64:-1) and a sink fixture over
+// i64:-9223372036854775808 / i64:-1 (true and 99 in both engines today). CLAUDE.md's
+// "unchecked wraps, integer div0 bottoms" should also say MIN/-1 bottoms.
+// (tests-lib-b1-10)
 const DIV_VALID: &str = "i64:10 / i64:2";
 run!(div_valid, DIV_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))));
 

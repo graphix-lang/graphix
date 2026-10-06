@@ -12,6 +12,25 @@ use tokio::sync::mpsc;
 /// Run `code` (wrapped as `let result = {code}`) to quiescence in one
 /// mode, collecting every update of the result expression and the
 /// captured print output. Quiescence = no events for 700ms.
+// CR claude for eric: [structure] run_delta sets no ParMode, so every cadence test
+// built on it (dense_deltas, organic_deltas, printing, byref, async_restart and the
+// seq_* files) runs only under Auto, where programs this small never fork. None of them
+// runs with forks forced, as run!'s par and jit_par do, so a fork/merge bug that drops
+// or repeats a fire across cycles passes the gate. The callers also hand-write 15
+// _interp/_jit pairs, async_restart.rs:207 and eight seq_* files each define their own
+// modes!, and par_attrs::run_with (par_attrs.rs:35) and testing::eval_converged repeat
+// this quiescence loop. Give run_delta a ParMode and a quiet-window parameter, put one
+// modes! beside it that generates interp, jit, par and jit_par, and have
+// par_attrs::run_with call run_delta. (tests-lang-d-13)
+// CR claude for eric: [test-gap] run_delta never sets a par mode, so every test that
+// runs through it only ever runs under Auto, where these small programs never fork. The
+// seq suites alone are about 80 of them; run! fixtures also run par and jit_par under
+// ParMode::Force. Nine files (seq_abort, seq_calls, seq_errors, seq_let, seq_shadow,
+// seq_steps, seq_try, seqq, async_restart) each define their own `modes!` macro, in one
+// of two shapes, emitting interp and jit only, and seq.rs hand-writes three more pairs.
+// Take a ParMode here (set it with ctx.control.set_par_mode in the setup closure, as
+// run! does). Define one macro beside it that emits interp, jit, par and jit_par, and
+// delete the copies. (tests-lang-c-07)
 pub(super) async fn run_delta(
     code: &str,
     fusion_disabled: bool,

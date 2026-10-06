@@ -1,0 +1,46 @@
+// f-mod-lowering-03: `#fed` env bindings are never unbound; memory grows
+// with collection slot churn.
+//
+// try_fuse_feeding_args (graphix-compiler/src/fusion/mod.rs:1016) binds a
+// `#fed` variable in ctx.env for every argument that does not fuse, and
+// nothing unbinds it: not when free_var_input refuses, not when the attempt
+// fails and the originals go back, not after FusedKernel::feed replaces the
+// read, not when the kernel is deleted. A collection slot's instance repeats
+// the walk at every bind (share::fuse_slot), so env.by_id gains an entry per
+// fed argument per slot created.
+//
+// Below, `len` toggles 50/0 every cycle: 1M slot creations by cycle 40000.
+// The program reads its own VmRSS at cycles 2000, 20000 and 40000.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-03.gx
+//
+// expected: RSS levels off once the allocator warms up, as it does for the
+//   same slot churn without a fed argument.
+// observed (HEAD c722befe, debug build, ~70 s):
+//   "cycle 2003: [\"VmRSS:\\t   94224 kB\"]"
+//   "cycle 20003: [\"VmRSS:\\t  225280 kB\"]"
+//   "cycle 40003: [\"VmRSS:\\t  392924 kB\"]"
+// controls, same command:
+//   callback `|x| { let y = x ~ x; g(y) }` (the same slots, fused through
+//     the share table, no fed argument): 77700, 96964, 99148 kB
+//   --no-fusion: 74232, 88916, 89480 kB
+//   callback `|x| g2(x ~ x, x ~ x)` (two fed arguments): about 2.5x the
+//     growth (RSS sampled from outside)
+//   a fed call that does not fuse leaks too: `let h = |v: i64| count(v)`
+//     and callback `|x| { let a = h(x ~ x); g(x) + a }` grow by about
+//     300 MB by cycle 40000; with `h(x)` they stay near 90 MB
+let n = 0;
+n <- n + 1;
+let len = select n % 2 { 0 => 50, _ => 0 };
+let g = |v: i64| v * 2 + 1;
+let ys = array::map(array::init(len, |i| i), |x| g(x ~ x));
+let path: string = never();
+path <- select n {
+  2000 => "/proc/self/status",
+  20000 => "/proc/self/status",
+  40000 => "/proc/self/status",
+  _ => never()
+};
+let rss = re::find(#pat: r"VmRSS:\s+\d+ kB", sys::fs::read_all(path)$)$;
+sys::exit(select (n, array::len(ys)) { (40500, _) => 0, _ => never() });
+"cycle [rss ~ n]: [rss]"

@@ -107,6 +107,16 @@ impl<X: GXExt> Output<X> {
             Self::Custom(cdc) => cdc.custom.process_update(env, id, v).await,
             Self::Text(e) => {
                 if e.id == id {
+                    // CR claude for eric: [bug] println! panics on EPIPE, so piping a
+                    // program whose value keeps updating into `head -2` ends in "thread
+                    // 'graphix-tokio' panicked … failed printing to stdout: Broken
+                    // pipe" and "Error: tokio thread panicked", exit 1. The print
+                    // builtins' print! (stdlib/graphix-package-core/src/lib.rs:2489)
+                    // panics the same way inside a node update and kills the runtime
+                    // ("graphix runtime is dead"). Write with writeln! to a locked
+                    // stdout and end the shell quietly on BrokenPipe; the builtins
+                    // should drop or log a failed write. probe:
+                    // design/review-2026-10-05/repro/x-errors-16.gx (x-errors-16)
                     println!("{}", TVal { env: &env, typ: &e.typ, v: &v })
                 }
             }
@@ -153,6 +163,15 @@ pub struct Shell<X: GXExt> {
     no_init: bool,
     /// Neither read nor write the registration image cache.
     #[builder(default = "false")]
+    // CR claude for eric: [structure] `no_cache` and `warm` are independent bools, so
+    // `--warm --no-cache` is accepted: init builds no cache and run returns Ok at line
+    // 444, exiting 0 with nothing written (probe: `XDG_CACHE_HOME=$tmp graphix --warm
+    // --no-cache warm.gx; find $tmp -type f` prints nothing, while `--warm` alone
+    // writes two .img files). One cache mode (off, on, warm-and-exit) makes the pair
+    // unrepresentable, and clap's `conflicts_with` refuses the flags together. Under
+    // warm-and-exit an image that cannot be written should fail the run too; today that
+    // is only a log warning and the exit is 0 (XDG_CACHE_HOME pointing at a file).
+    // (x-invalid-states-10)
     no_cache: bool,
     /// Write the registration image and exit, for an installer that
     /// wants the first real run to be warm.
@@ -284,6 +303,20 @@ impl<X: GXExt> Shell<X> {
         let registration = match cache.as_ref() {
             None => None,
             Some(c) => {
+                // CR claude for eric: [bug] An entry that fails to read is never
+                // replaced. A loaded entry arms no save, and `program_loaded` keeps
+                // `program_image` unarmed, so when the restore fails
+                // (graphix-rt/src/gx.rs:296) the runtime compiles cold and never
+                // rewrites the entry it was given. A bad program entry also skips the
+                // intact registration entry. A zero-length file left by a crash after
+                // the un-fsynced write (cache.rs:198), or an entry written by a host
+                // with other CPU features (refused by the header's ISA check), makes
+                // every later start of that program cold until the build id changes; a
+                // bad registration entry does the same to every --check and REPL start.
+                // `--warm` exits 0 without replacing it, and the only sign is a
+                // --log-dir warning that says "registration image" for either entry and
+                // names no path. probe: design/review-2026-10-05/repro/x-image-07.sh
+                // (x-image-07)
                 let loaded = c
                     .load(Entry::Program)
                     .map(|b| (b, true))
@@ -375,6 +408,16 @@ impl<X: GXExt> Shell<X> {
                     .program()
                     .await?
                     .ok_or_else(|| anyhow!("the runtime has no program"))?;
+                // CR claude for eric: [bug] --fusion-stats prints the fusion counters
+                // of this process's own compile. A warm start restores the program
+                // entry and fuses nothing, so the second run of a program prints
+                // 'fusion: 0 of 0 attempted regions fused' where the cold run printed
+                // '1 of 2'. --check never fuses either (CheckOnly,
+                // graphix-rt/src/gx.rs:837-841), so `--check --fusion-stats` always
+                // prints 0 of 0; only --expand builds. Skip the program entry when
+                // fusion_stats is set (or carry the profile in the image), and refuse
+                // the flag under --check without --expand. probe:
+                // design/review-2026-10-05/repro/shell-09.gx (shell-09)
                 if self.fusion_stats {
                     print_fusion_stats(
                         &FusionStats::default(),
@@ -441,6 +484,16 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
+        // CR claude for eric: [bug] --warm returns here without asking for the
+        // program's result. GX::new keeps a program compile error in `program`, and
+        // only load_env's gx.program() reports it. So `graphix --warm broken.gx` writes
+        // only the registration entry, prints nothing and exits 0. With --log-dir the
+        // log says only "Program image not taken: runtime exited". Check mode compiles
+        // no program in init, so `--warm --check` and `--warm --expand` exit 0 without
+        // checking, and `--warm --no-cache` does nothing; await gx.program() under
+        // --warm and return its error, and refuse --warm together with --check,
+        // --expand or --no-cache in main.rs. probe: GRAPHIX=<bin> bash
+        // design/review-2026-10-05/repro/shell-07.sh (shell-07)
         if self.warm {
             return Ok(());
         }
@@ -487,6 +540,19 @@ impl<X: GXExt> Shell<X> {
                 input = input.read_line(&mut output, &mut newenv) => {
                     match input {
                         Err(e) if script => break Err(e),
+                        // CR claude for eric: [bug] In REPL mode this arm prints any
+                        // error from read_line and goes round again. It was written for
+                        // a failed display, but reedline's errors land here too. With
+                        // no controlling terminal (ssh without -t, CI, cron, a systemd
+                        // unit), reedline's read_line fails at once on every call:
+                        // crossterm opens /dev/tty and gets ENXIO. So `graphix` with no
+                        // file spins at about 140% CPU, printing `error: No such device
+                        // or address (os error 6)` tens of thousands of times a second.
+                        // It never exits, even with stdin at EOF, and piped input is
+                        // never read. A dead reader task (`input stream ended`) loops
+                        // the same way. An input error with no display up should end
+                        // the REPL, or a non-tty stdin should be read line by line.
+                        // probe: design/review-2026-10-05/repro/c-lib-05.sh (c-lib-05)
                         Err(e) => {
                             eprintln!("error: {e:?}");
                             // A display that failed is still the output.

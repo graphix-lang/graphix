@@ -295,6 +295,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for eric: [bug] The config args are read through seam_value (fired
+        // or stale) and checked on every update. An invalid poll_interval or
+        // poll_batch_size returns TagValue::fired(error) whether or not any input
+        // fired, so the error re-fires on every cycle of the enclosing statement:
+        // count(w) reaches 12 under 5 timer ticks, and a `$` on it logs 12 times. A
+        // consumer that writes state on the result schedules the next cycle and spins
+        // at 100% CPU: `status <- select w { error as _ => "watch failed", _ =>
+        // "watching" }` writes about 70,000 times in 500 ms. Validate only on a fired
+        // delivery, as Timer does, and ride the resident otherwise. probe:
+        // design/review-2026-10-05/repro/sys-io-06.gx (sys-io-06)
         let poll_interval = seam_value(from[0].update(ctx))
             .and_then(|v| v.value_cloned().cast_to::<Option<Duration>>().ok().flatten());
         let batch_size = seam_value(from[1].update(ctx))
@@ -632,6 +642,16 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
             }
         }
         for bid in &self.bind_ids {
+            // CR claude for eric: [bug] take_custom removes the Watch's event from the
+            // cycle's shared custom map, but every path()/events() over one Watch refs
+            // this same bind id, so the first reader to update takes each event and the
+            // rest never fire. With `let p = path(h); let e = events(h)`, `e` never
+            // fires, and a second `path(h)` reader is silent too. Under
+            // GRAPHIX_PAR=force each event reaches exactly one reader, decided by the
+            // race, so a forked cycle differs from the serial one. Read the delivery
+            // without removing it (with_custom, as graphix-package-db's accessors do at
+            // subscribe.rs:253), converting from the borrowed event instead of draining
+            // its paths. probe: design/review-2026-10-05/repro/sys-io-04.gx (sys-io-04)
             let Some(mut cbt) = ctx.event.take_custom(bid) else { continue };
             let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<WEvent>() else {
                 continue;

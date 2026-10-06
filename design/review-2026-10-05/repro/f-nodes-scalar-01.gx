@@ -1,0 +1,29 @@
+// f-nodes-scalar-01: a fused abstract constructor keeps type variables in the
+// value's params, so a user Eq impl is skipped when a kernel-built value meets
+// a node-walked one.
+//
+// emit_construct_node (graphix-compiler/src/fusion/emit/nodes.rs:1023)
+// interns resolve_node_typ(typ), which leaves Abstract params alone, so
+// graphix_abstract_wrap stores [TVar _N -> string]; Construct::update
+// (node/data.rs:762) stores typ.resolve_tvars(), [string]. `a` is a fused let,
+// Box(("y", 2)) stays node-walked (the tuple does not fuse whole: "[a]"), and
+// coretraits::take_site sees two instantiations and takes the structural case.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-nodes-scalar-01.gx
+//
+// expected (the impl compares .0.1; the node-walk):
+//   1:["Box([\"x\", 1])", false] 2:["Box([\"x\", 2])", true] 3:["Box([\"x\", 3])", false]
+// observed: DIVERGENCE (interp != jit), the jit trace has
+//   2:["Box([\"x\", 2])", false]
+//
+// Same root, serialized: `type Box<'a> = Abstract<'a>; let mk = |x: f64|
+// Box(x * 2.0); let b = pack::write_bytes(mk(1.5))$; b[1]$` is u8:48 in the
+// node-walk and u8:72 in the JIT; the JIT bytes carry the cell's name
+// (`_4611686018427394600`), and cast<string> of the value differs the same way.
+{
+  type Box<'a> = Abstract<('a, i64)>;
+  impl<'a> Eq for Box<'a> { let eq = |a, b| a.0.1 == b.0.1 };
+  let i = array::iter([1, 2, 3]);
+  let a = Box(("x", i));
+  ("[a]", a == Box(("y", 2)))
+}

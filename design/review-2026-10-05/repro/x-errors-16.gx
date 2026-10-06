@@ -1,0 +1,23 @@
+// x-errors-16: `graphix prog.gx | head` panics on the broken pipe.
+//
+// The shell prints each value of the last expression with println!
+// (graphix-shell/src/lib.rs:110), which panics on EPIPE; the panic
+// unwinds the shell's block_on thread.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-errors-16.gx | head -2
+//
+// expected: "0", "1", then a quiet exit once head closes the pipe
+// observed (HEAD c722befe, debug build):
+//   thread 'graphix-tokio' panicked at .../library/std/src/io/stdio.rs:1166:9:
+//   failed printing to stdout: Broken pipe (os error 32)
+//   Error: tokio thread panicked            (exit 1)
+//
+// variant, the print builtins (stdlib/graphix-package-core/src/lib.rs:2489,
+// print! inside a node update): replace the last line `n` with
+// `println(n);` followed by `null`; observed:
+//   thread 'tokio-rt-worker' panicked ... Broken pipe (os error 32)
+//   Error: graphix runtime is dead
+let clock = sys::time::timer(duration:5.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+n

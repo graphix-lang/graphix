@@ -1,0 +1,9 @@
+// t-print-09: write_str_constant sends an empty template to the quoted
+// form, so the formatter's delimiter guard refuses an empty """template""".
+// command: graphix fmt --stdout design/review-2026-10-05/repro/t-print-09.gx
+// expected: exit 0, the literal printed back as """"""
+// observed (HEAD c722befe, debug build): graphix --check exits 0; fmt exits 1
+//   with "formatter bug: the formatted text changed a string's delimiters";
+//   the same for a template holding only the newline after its opener
+let i = """""";
+i

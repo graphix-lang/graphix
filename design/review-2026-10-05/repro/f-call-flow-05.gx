@@ -1,0 +1,39 @@
+// f-call-flow-05: JIT: a recursion depth first reached after init runs
+// without an init view.
+//
+// A self-call's context word is the calling activation's own init flag
+// (emit_callee_context_word, fusion/emit/call.rs:338: no first-call word in
+// a callee body), so when `depth` grows from 2 to 4 the two new activations
+// run with init = 0 and the constant error in their body never raises. The
+// node-walk builds each new activation fresh (shrink = delete, re-reaching
+// is fresh), so it raises once per new depth.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-call-flow-05.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/f-call-flow-05.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/f-call-flow-05.gx
+//
+// expected (both engines): errors counts to 5: 3 raises at init (depths
+// 2, 1, 0), then 2 for the new depths 3 and 4. The hand-inlined chain
+// (five distinct functions h0..h4) gives 5 in both engines.
+// observed: DIVERGENCE — fusion/JIT bug (interp != jit)
+//           interp: Trace([0:i64:0 1:i64:1 2:i64:2 3:i64:3 4:i64:4 5:i64:5])
+//           jit:    Trace([0:i64:0 1:i64:1 2:i64:2 3:i64:3])
+//           (graphix prints 0..3 fused, 0..5 with --no-fusion; same with
+//           GRAPHIX_PAR=off.)
+//
+// The same divergence, 5 vs 3:
+// - the native tail loop: `let rec f = |n: i64, acc: i64| -> i64 {
+//   cast<i64>("x")?; select n { 0 => acc, n => f(n - 1, acc + 1) } }`
+//   called as f(depth, 0);
+// - shrink then regrow, depth 2 -> 0 -> 2 (the regrown depths are fresh in
+//   the node-walk; a first-call word kept in the calling activation's block
+//   would survive the shrink and still miss them).
+let errors = 0;
+let depth = 2;
+depth <- 4;
+let rec f = |n: i64| -> i64 {
+  cast<i64>("x")?;
+  select n { 0 => 0, n => f(n - 1) + 1 }
+};
+let r = { catch(e) errors <- e ~ errors + 1; f(depth) };
+errors

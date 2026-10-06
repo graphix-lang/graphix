@@ -1,0 +1,16 @@
+// fuzz-mutate-08: stmt-permute's open-cell guard sees only a bare `never()`;
+// a let over a wrapped bottom (or `[]`) still has its two readers swapped
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-08.gx
+// (or the program alone on stdin: graphix-fuzz typemorph-one <outfile>)
+// expected: typemorph: no flips, as with `let g = never()`, where the `open`
+// set (typemorph.rs:297) keeps stmt-permute from swapping the two readers
+// observed: exit 1,
+// TYPEFLIP ... stmt-permute#1: N: type mismatch Array<fn(?#x: iN) -> iN> does
+// not contain Array<'_N: fn(#x: iN) -> iN>
+//   mutant: { let g = (never()); let b: ..fn(#x..) = [g]; let a: ..fn(?#x..) = [g]; .. }
+// The refusal is the language rule (an unannotated let over bottom takes its
+// type from its first use): `graphix --check` accepts this program and
+// refuses the swapped one at `let a`. The same flip with the initializer
+// `select 0 { _ => never() }`, `{ let z = 1; never() }`, and with
+// `let xs = []` read as `= xs` (its element cell is decided the same way).
+{ let g = (never()); let a: Array<fn(?#x: i64) -> i64> = [g]; let b: Array<fn(#x: i64) -> i64> = [g]; array::len(a) + array::len(b) }

@@ -1,0 +1,16 @@
+#!/usr/bin/env graphix
+// t-format-resolver-09: `graphix fmt` refuses a script with a shebang that
+// graphix runs and checks. RootFile::load (graphix-types/src/expr/resolver.rs:537)
+// strips a leading `#!` line; format_source (graphix-types/src/expr/format.rs:413)
+// parses the raw text, so the CLI fails and the LSP formatting handler
+// returns no edit for the file.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-format-resolver-09.gx
+//          graphix fmt --stdout design/review-2026-10-05/repro/t-format-resolver-09.gx
+// expected: the run prints 1; fmt prints the file with `let x = 1;` and the
+//   shebang line kept.
+// observed (HEAD c722befe, debug build): the run prints 1 (and --check passes);
+//   fmt fails, exit 1: "parse error at line: 1, column: 1 ... Unexpected `#`".
+let x  =  1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+x

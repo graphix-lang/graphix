@@ -26,6 +26,14 @@ let handle = |tag: string| -> null poke(&ed, tag);
 let result = ed.value
 "#;
 
+// CR claude for eric: [structure] find_bind_id is copied byte for byte in
+// stdlib/graphix-package-gui/src/test/mod.rs:317 and
+// stdlib/graphix-package-tui/src/testing.rs:368. All three crates depend on
+// graphix-package-core, and its pub `testing` module can hold the one copy. This file
+// also repeats the channel/Vfs/init/compile/compile_callable setup in every test, and
+// the same 'bail on 2, wait for 1, sleep 500 ms, drain' loop four times (lines 156,
+// 388, 474, 686). A setup helper and one settle helper built on wait_idle would replace
+// them. (tests-lib-a-14)
 pub(super) fn find_bind_id(env: &Env, name: &str) -> Result<graphix_compiler::BindId> {
     let parts: Vec<&str> = name.split("::").collect();
     let (module, var) = match parts.as_slice() {
@@ -144,6 +152,18 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
     set_active.call(ValArray::from_iter_exact([Value::Bool(false)].into_iter())).await?;
     handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
     set_active.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
+    // CR claude for eric: [test-gap] This settle (three `compile("i64:0")` round trips)
+    // does not guarantee that the `B arm's wake ran before the legitimate event, and
+    // nothing asserts the count was still 0 before that event. So a final 1 is accepted
+    // even when it came from a phantom fire at the wake, either in the same cycle as
+    // the legitimate event or with the legitimate event lost. The same holds in
+    // arm_wake_does_not_redeliver_the_key_to_the_woken_callee,
+    // alias_read_consumes_the_formals_fire and
+    // arm_wake_switch_binds_the_standing_key_stale. After the wake, call
+    // `gx.wait_idle().await`, drain, and assert the count is still 0; after the
+    // legitimate event, call wait_idle again and assert exactly 1. These tests also run
+    // in one mode only (fusion on, ParMode from the environment), never under
+    // FusionDisabled or ParMode::Force as run! fixtures do. (tests-lib-a-11)
     for _ in 0..3 {
         let _e = gx.compile(arcstr::literal!("i64:0")).await?;
     }
@@ -340,6 +360,13 @@ async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
 /// the callee the move woke. The woken callee reads its formal stale
 /// (`opened <- e ~ ..` stays quiet), but a select arm that binds that
 /// stale formal delivers the binding fresh, and `kk ~ ..` fires.
+// CR claude for eric: [doc-drift] The doc's last sentence ('but a select arm that binds
+// that stale formal delivers the binding fresh, and `kk ~ ..` fires') says the opposite
+// of what the test below asserts:
+// arm_wake_does_not_redeliver_the_key_to_the_woken_callee fails if pan_handle's `kk ~
+// ..` counts the Enter that woke it. WAKE_SWITCH's doc (line 632) states the rule: the
+// woken arm binds the standing key stale, and `kk ~ ..` stays quiet. Replace the
+// sentence with that rule. (tests-lib-a-10)
 const DISPATCH: &str = r#"
 let screen: [`Landing, `Panels] = `Landing;
 let opened = 0;

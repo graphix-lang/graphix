@@ -1,0 +1,23 @@
+// c-error-op-03: each raise walks the whole cause chain (wrap_error's is_a,
+// graphix-compiler/src/node/error.rs:54), so N rethrows of one chain cost
+// O(N^2) in a single cycle.
+//
+// command: time graphix --no-cache design/review-2026-10-05/repro/c-error-op-03.gx
+//
+// expected: time linear in N, as when each level raises a fresh error
+//   (replace `catch(e) e?` with `catch(e) error(`Boom)?`).
+// observed (HEAD c722befe, debug build): prints `caught` after
+//   N = 1000: 1.3 s, 2000: 3.9-5.5 s, 4000: 19.2 s (this file is N = 2000);
+//   the fresh-error twin: 0.24 s, 0.35 s, 0.58 s.
+// Isolation: 2000 raises (`error(deep)?` in an array::map callback) of a
+//   chain built by `array::fold(.., |acc, i| {acc with cause: acc})` take
+//   0.23 s at depth 1, 6.75 s at depth 1000, 13.4 s at 2000, 24 s at 4000;
+//   the same raises of `W(deep) (is_a fails at the top) take 0.26 s at
+//   every depth.
+let rec f = |n: i64| -> i64 throws Error<ErrChain<`Boom>> select n {
+  0 => error(`Boom)?,
+  _ => { catch(e) e?; f(n - 1) + 1 }
+};
+let r = { catch(e) println("caught"); f(2000) };
+sys::exit(sys::time::after_idle(duration:50.ms, 0));
+r

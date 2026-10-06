@@ -170,6 +170,16 @@ pub fn module(path: &ModPath) -> Option<ModuleSpan> {
         return None;
     }
     PROFILE.with_borrow_mut(|p| {
+        // CR claude for eric: [bug] Compile tasks run on rayon workers with no open
+        // span, so module() returns None here and the task's first span opens a root of
+        // its own (line 137). Each interface module of a parallel run
+        // (graphix-compiler/src/node/mod.rs:996-1037) prints as an anonymous
+        // root=ModuleCheck on a worker, and the enclosing module's mphase=ModuleCheck
+        // holds the wait, so bench/profile.py --modules misreports exactly the parallel
+        // checks. Instances elaborated in statement tasks are split over per-span roots
+        // with parent=0 and elaboration_ns=0, the fields bench/instances.py builds its
+        // elaboration tree from. probe: design/review-2026-10-05/repro/t-misc-08.gx
+        // under GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1 --no-cache (t-misc-08)
         p.current?;
         p.switch(p.current, Instant::now());
         let i = match p.modules.iter().position(|(m, _)| m == path) {

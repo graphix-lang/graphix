@@ -1,0 +1,47 @@
+// x-engine-firing-04: timer, after_idle and CachedArgsAsync never restart in a
+// re-selected arm when their arguments are bindings (levels), not literals.
+//
+// run: graphix --no-cache design/review-2026-10-05/repro/x-engine-firing-04.gx
+//      (and the same with --no-fusion: identical)
+//
+// expected: Live -> Paused -> Live resumes every arm. After the
+// "step 1 mode Paused" line both "json literal 3" and "json level 3" print
+// again, and "timer level" counts on beside "timer literal".
+//
+// observed (both engines; counts vary with timer resolution):
+//   json literal 3
+//   json level 3
+//   "step 0 mode Live timer literal 9 timer level 9"
+//   json literal -1
+//   json level -1
+//   "step 1 mode Paused timer literal -1 timer level -1"
+//   json literal 3
+//   "step 2 mode Live timer literal 9 timer level 9"
+//   "step 3 mode Live timer literal 19 timer level 9"
+//   "step 4 mode Live timer literal 29 timer level 9"
+// "json level" never prints again and "timer level" is stuck: sleep()
+// dropped the builtin's arguments and output, and the bindings arrive
+// stale at the wake, so nothing restarts it. The literal twins restart
+// because constants fire at the wake. sys::fs::read_all(p) and
+// sys::time::after_idle(d, v) over bindings behave like json::read(doc).
+let mode: [`Live, `Paused] = `Live;
+let interval = duration:3.ms;
+let doc = r"[1, 2, 3]";
+let clk = sys::time::timer(duration:40.ms, true);
+let step = 0;
+step <- clk ~ step + 1;
+mode <- select step { 1 => `Paused, 2 => `Live, _ => never() };
+let lit = select mode { `Live => count(sys::time::timer(duration:3.ms, true)), `Paused => -1 };
+let lvl = select mode { `Live => count(sys::time::timer(interval, true)), `Paused => -1 };
+let jlit = select mode {
+    `Live => { let a: Array<i64> = json::read(r"[1, 2, 3]")$; array::len(a) },
+    `Paused => -1
+};
+let jlvl = select mode {
+    `Live => { let a: Array<i64> = json::read(doc)$; array::len(a) },
+    `Paused => -1
+};
+println("json literal [jlit]");
+println("json level [jlvl]");
+sys::exit(select step { 5 => 0, _ => never() });
+clk ~ "step [step] mode [mode] timer literal [lit] timer level [lvl]"

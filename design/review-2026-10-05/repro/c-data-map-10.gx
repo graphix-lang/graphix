@@ -1,0 +1,27 @@
+// c-data-map-10: a script whose block fuses whole loses its `type`
+// definitions, and the shell prints its result raw.
+//
+// command: timeout -s KILL 5 graphix --no-cache design/review-2026-10-05/repro/c-data-map-10.gx
+//          (it never exits: an exit statement is an effect, keeps the block
+//          from fusing whole, and the result then prints correctly)
+//
+// expected: {inner: {col: 1}, n: 2}, as --no-fusion prints.
+//
+// observed (HEAD c722befe, debug build; no cache, cold and warm alike):
+//   [["inner", [["col", 1]]], ["n", 2]]
+// and with --log-dir and RUST_LOG=warn the log says
+//   error, type { inner: C, n: i64 } does not match value ...
+//
+// The whole file block fuses into one kernel; fusion::fuse
+// (graphix-compiler/src/fusion/mod.rs:978) discards the replaced block, and
+// deleting it runs TypeDef::delete (node/mod.rs:570), which undefines C and
+// S. The root type the shell captured (graphix-rt/src/gx.rs:916) still names
+// C through a resolution cell that holds its definition weakly, so TVal's
+// is_a_with fails and Display falls back to the naked form
+// (graphix-types/src/typ/tval.rs:277). The same types declared in a module
+// (`mod m;`, `let s: m::S = ..`), a flat `type P = {x: i64, y: i64}`, or a
+// `println("x");` statement in the file all print correctly.
+type C = {col: i64};
+type S = {inner: C, n: i64};
+let s: S = {inner: {col: 1}, n: 2};
+s

@@ -8,6 +8,12 @@ use tokio::{fs, sync::mpsc, time::Duration};
 
 /// Build an fs::write_* test: an error expectation, a success case with
 /// verification, or a custom expectation.
+// CR claude for eric: [structure] write_test! repeats run_with_tempdir!
+// (graphix-package-core/src/testing.rs:720) arm for arm: the expect_error and verify
+// arms, the runtime init, the 2 s timeout and the event loop. Only the program text is
+// built differently, so a fix to one runner must be made twice. Delete it and write the
+// eight tests with run_with_tempdir!, as read.rs does: code:
+// r#"sys::fs::write_all(#path: "{}", "Hello, World!")"#. (tests-lib-b1-09)
 macro_rules! write_test {
     (
         name: $test_name:ident,

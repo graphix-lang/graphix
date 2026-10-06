@@ -1,0 +1,22 @@
+// examples-05: browser_commands.gx "clears" its status with error:"", which
+// the status line then shows as a literal red `error:""`.
+//
+// book/src/examples/tui/browser_commands.gx:55 writes
+//   command_error <- error:""
+// when ':' is pressed, and line 34 renders "  [any(" ", command_error)]".
+// An error value interpolates as `error:"..."`, so once command mode has been
+// entered, normal mode's bottom title reads `/ (/...)  error:""` where it
+// read blank before. ../netidx/netidx-tools/src/browser/browser.gx:55 is the
+// same line. Lines below are the example's status pipeline, with a timer in
+// place of the ':' key.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/examples-05.gx
+// expected: s=<   > both times (the status cleared)
+// observed (HEAD c722befe, debug build):
+//   s=<   >
+//   s=<  error:"">
+let command_error: error = never();
+let s = "  [any(" ", command_error)]";
+command_error <- sys::time::after_idle(duration:50.ms, error:"");
+println("s=<[s]>");
+sys::exit(sys::time::after_idle(duration:200.ms, 0))

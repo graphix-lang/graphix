@@ -1,0 +1,56 @@
+// t-env-05: the sandbox whitelist keeps only the exact listed scopes, so
+// `whitelist [core]` loses core::opt, core::math, core::buffer and the core
+// trait scopes (Collection::len, use Collection::*).
+//
+// Env::apply_sandbox's whitelist arm (graphix-types/src/env.rs:630) keeps a
+// scope only when it IS a listed module; the blacklist arm removes a listed
+// module's whole subtree. A trait scope cannot even be listed:
+// `whitelist [core, core::Collection]` is a parse error.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-env-05.gx
+//          (the same with --no-fusion)
+//
+// expected (a whitelisted module comes with its submodules, as a
+// blacklisted one goes with them):
+//   A whitelist [core], opt::is_some: OK true
+//   B whitelist [core], Collection::len: OK 3
+//   C whitelist [core, sys], sys::time::now: OK
+//   D whitelist [core, core::opt], opt::is_some: OK true
+//   E unrestricted, opt::is_some: OK true
+// observed (HEAD c722befe):
+//   A whitelist [core], opt::is_some: ERR ... opt::is_some not defined
+//   B whitelist [core], Collection::len: ERR ... Collection::len not defined
+//   C whitelist [core, sys], sys::time::now: ERR ... no module `time` in `sys`
+//   D whitelist [core, core::opt], opt::is_some: OK true
+//   E unrestricted, opt::is_some: OK true
+let a = mod a dynamic {
+  sandbox whitelist [core];
+  sig { val x: bool };
+  source "let x = opt::is_some(1)"
+};
+let b = mod b dynamic {
+  sandbox whitelist [core];
+  sig { val x: i64 };
+  source "let x = Collection::len(\[1, 2, 3\])"
+};
+let c = mod c dynamic {
+  sandbox whitelist [core, sys];
+  sig { val x: datetime };
+  source "let x = sys::time::now(null)"
+};
+let d = mod d dynamic {
+  sandbox whitelist [core, core::opt];
+  sig { val x: bool };
+  source "let x = opt::is_some(1)"
+};
+let e = mod e dynamic {
+  sandbox unrestricted;
+  sig { val x: bool };
+  source "let x = opt::is_some(1)"
+};
+println(select a { error as e => "A whitelist \[core\], opt::is_some: ERR [e]", null as _ => "A whitelist \[core\], opt::is_some: OK [a::x]" });
+println(select b { error as e => "B whitelist \[core\], Collection::len: ERR [e]", null as _ => "B whitelist \[core\], Collection::len: OK [b::x]" });
+println(select c { error as e => "C whitelist \[core, sys\], sys::time::now: ERR [e]", null as _ => "C whitelist \[core, sys\], sys::time::now: OK" });
+println(select d { error as e => "D whitelist \[core, core::opt\], opt::is_some: ERR [e]", null as _ => "D whitelist \[core, core::opt\], opt::is_some: OK [d::x]" });
+println(select e { error as e => "E unrestricted, opt::is_some: ERR [e]", null as _ => "E unrestricted, opt::is_some: OK [e::x]" });
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

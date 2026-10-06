@@ -1,0 +1,32 @@
+// f-jit-01: a cached lambda signature is re-emitted from another instance:
+// #[native] refused, fusion lost.
+//
+// Arm 1's region caches g's signature (build_lambda_kernel keys it by the
+// definition, lowering.rs:933) and g's body under layout [g, h]. Arm 2's
+// region [k, g, h] gets the same signature, but g calls h, so its body keys on
+// this region's layout, misses by_kernel (jit.rs:1500) and is emitted from
+// arm 2's own instance of g against the cached params, which bind arm 1's
+// formal BindIds: every read of `a` misses.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/f-jit-01.gx
+//   expected: 12 (what --no-fusion prints; either arm alone under #[native] compiles)
+//   observed: #[native] expression did not fully fuse to native code:
+//     - emit_clif: undefined local `a` (BindId(...))
+//   With the arms swapped the other arm is refused. GRAPHIX_DBG_KERNELS=1
+//   GXDBG_REFMISS=1 shows the second region building only k, then
+//   REFMISS `a` id=..935 locals=[(a, ..930)] on each of its three attempts.
+// Without #[native] the arm silently node-walks (graphix-fuzz check: AGREE).
+// The same pair as two top-level statements, `let r1 = #[native] (g(x) + 1);
+// let r2 = #[native] (k(x) + 2)`, prints (12, 35) by default and is refused
+// under GRAPHIX_FUSE_SERIAL=1; as two statements of a module with a .gxi it is
+// refused by default.
+let x = sys::time::after_idle(duration:1.ms, 3);
+let h = |a: i64| a * 3 + 1;
+let g = |a: i64| h(a) + 1;
+let k = |c: i64| g(c) * 3;
+let r = select count(x) {
+  1 => #[native] (g(x) + 1),
+  _ => #[native] (k(x) + 2)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

@@ -68,6 +68,20 @@ def resolve_deps(deps, ws_deps, crate_dir):
             if ws_val is None:
                 print(f"  warning: {name} not in workspace deps", file=sys.stderr)
                 continue
+            # CR claude for eric: [bug] This replaces a member's `{ workspace = true,
+            # ... }` with the workspace entry and drops the member's own keys. Cargo
+            # adds the member's `features` to the workspace's and takes `optional` from
+            # the member. As a result, the vendored netidx-tpm loses
+            # `Win32_System_TpmBaseServices` on `windows`, which
+            # netidx-tpm/src/lib.rs:598 imports, so every Windows build from vendor/
+            # fails to compile netidx-tpm (the graphix-package slow tests included). The
+            # same function resolves an inherited version-less `path` against the member
+            # directory instead of the workspace root (lines 75-76, FileNotFoundError),
+            # and format_toml_value (line 41) writes strings unescaped, so a `"` or `\`
+            # yields invalid TOML. Step 4 of the docstring, and the comment at
+            # graphix-package/src/test.rs:228, still say the script writes
+            # .cargo/config.toml, but it only prints it. probe:
+            # design/review-2026-10-05/repro/ide-tooling-06.py (ide-tooling-06)
             dep = dict(ws_val) if isinstance(ws_val, dict) else ws_val
         if isinstance(dep, dict):
             # If stripping `path` would leave us with no version, recover

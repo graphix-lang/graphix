@@ -29,6 +29,15 @@ fn merged_keys<K: Hash + Eq + Clone>(
 pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
+    // CR claude for eric: [perf] Each fork's touched log is a plain Vec. It allocates
+    // at the fork's first write and grows by one entry per write, repeats included
+    // (TrackedSet's at line 175 does the same), and compile tasks fork per statement
+    // and per static bind. remove_many, clear and retain (lines 93-130, 229-248) also
+    // collect their keys into plain Vecs, where env.rs:371-387 uses LPooled<Vec<K>> for
+    // the same collect-then-remove_many. Pool them: LPooled for the scratch lists and
+    // GPooled for touched, since a branch's fork is made on a pool worker
+    // (graphix-compiler/src/branch.rs:541) and joined on the parent's thread.
+    // (t-misc-11)
     touched: Option<Vec<K>>,
     /// Bumped by every write.
     generation: u64,
@@ -141,6 +150,15 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 
     /// Write back what `fork` wrote. A map written nowhere since the
     /// fork takes the fork's whole.
+    // CR claude for eric: [risk] join writes back the fork's value of every key it
+    // touched, so it matches serial order only while sibling forks touch disjoint keys.
+    // A breach is silent: two siblings calling register_impl on one trait keep only the
+    // later impl, because impls holds the whole list per key. design/parallel_eval.md
+    // ("Joins touch disjoint keys") says GRAPHIX_PAR_AUDIT asserts the rule here, but
+    // no code does; that audit (graphix-compiler/src/branch.rs:783) checks only
+    // variable reads. get_mut (line 98) also touches a key it does not find, and a
+    // slow-path join turns that into a removal of whatever an earlier sibling put
+    // there. (t-misc-06)
     pub fn join(&mut self, fork: Self) {
         let Self { map, touched, generation, forked_at } = fork;
         if self.generation == forked_at {

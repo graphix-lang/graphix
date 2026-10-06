@@ -1,0 +1,29 @@
+// t-parser-b-01: a type path through a module named like a primitive
+// (array::Direction) does not parse.
+//
+// typ() (graphix-types/src/expr/parser/typexp.rs:432) tries
+// attempt(typeprim()) before typref(). typeprim (typexp.rs:56-68) takes any
+// lowercase name Typ::from_str knows (array, error, string, decimal, bool,
+// i64, ...) and does not look at what follows, so `array::Direction` parses
+// as the primitive `array` and `::Direction` is left over. The `self`
+// alternative on the next line has the guard typeprim lacks:
+// not_followed_by(string("::")).
+//
+// command: graphix --check design/review-2026-10-05/repro/t-parser-b-01.gx
+//
+// expected: exit 0. The same line with `list::Direction` (list package,
+//   same shape) checks, and so does `use array::Direction;` followed by
+//   `let d: Direction = ...`: the package prelude makes `array` a path root
+//   anywhere (design/module_system.md, Preludes).
+// observed (HEAD c722befe, debug build):
+//   Parse error at line: 28, column: 13
+//   Unexpected `:`
+//   Expected whitespaces or `=`
+// Every type position fails the same way: [array::Direction, null],
+// cast<array::Direction>(x), `array::Direction as d =>`, |x: array::Direction|,
+// fn(x: array::Direction) -> .., Array<array::Direction>,
+// `type D = array::Direction`, a .gxi `val`; and a user module `mod error;`
+// or `mod decimal;` holding a type (`let y: error::E = error::x` fails, while
+// `error::x`, `use error::E` and `self::error::E` work).
+let d: array::Direction = `Ascending;
+array::sort(#dir: d, [3, 1, 2])

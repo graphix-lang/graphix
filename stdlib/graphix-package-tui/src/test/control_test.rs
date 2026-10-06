@@ -28,6 +28,13 @@ let result = paragraph(&status)
     loop {
         h.drain().await?;
         let lines = h.render_lines()?;
+        // CR claude for eric: [test-gap] This check also accepts the regression the
+        // module doc describes. If suspend(false) asked for a display (say the
+        // suspend_rx check in SuspendEv::eval, lib.rs:540, moved above `if
+        // !suspended`), status becomes `idle errored: error:["TerminalError", "no
+        // terminal display is running"]`, which contains this substring, and the test
+        // returns Ok. Bail when a line contains "idle errored", and require the
+        // matching line to start with "error: ". (tests-ui-14)
         if lines.iter().any(|l| l.contains("no terminal display is running")) {
             return Ok(());
         }

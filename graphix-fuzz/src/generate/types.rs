@@ -140,6 +140,14 @@ impl NumTy {
                 ["0", "1", "-1", "42", "100000", "-100000", "2147483647", "-2147483648"]
                     [rng.below(8)]
             }
+            // CR claude for eric: [doc-drift] The doc on `literal` says every pool
+            // includes the boundary values. This i64 pool has no MIN/MAX, and neither
+            // do the f32, f64, v64, z32 and z64 pools, which also have no infinities or
+            // -0.0. The mutation lane's try_perturb_literal does put i64 and float
+            // extremes into mutants. What is missing is the generator lane's own draws
+            // and any v64, z32 or z64 extreme, which nothing produces. Add the extremes
+            // to these pools at modest weight, or narrow the doc to the pools that have
+            // them. (fuzz-gen-b-09)
             NumTy::I64 => ["0", "1", "-1", "2", "42", "100", "-100", "7"][rng.below(8)],
             NumTy::U8 => ["0", "1", "2", "100", "255"][rng.below(5)],
             NumTy::U16 => ["0", "1", "2", "1000", "65535"][rng.below(5)],
@@ -204,6 +212,15 @@ pub enum GenType {
     },
     /// An explicitly-polymorphic numeric lambda, callable with all args
     /// at any one numeric type; the result type follows the argument type.
+    // CR claude for eric: [structure] PolyFn and Opaque are vocabulary entries, never
+    // value types: nothing renders one, generates one, or nests one in a composite. So
+    // render (line 281), literal (line 517) and gen_typed (exprs.rs:684) carry
+    // unreachable arms for them, and contains_nullable, infers_exact, try_accessor and
+    // map_abstract carry dead ones. A producer that hands a vocabulary entry's type to
+    // gen_typed panics at run time instead of failing to compile. Have GenCtx.vars hold
+    // an entry enum (`Val(GenType)`, `Poly { arity }`, `Opaque`) and drop both variants
+    // from GenType. Fn stays, since fn types are rendered for params and interfaces.
+    // (fuzz-gen-a-10)
     PolyFn {
         arity: usize,
     },
@@ -413,6 +430,16 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
+// CR claude for eric: [test-gap] random_type draws only scalars, tuples, structs,
+// Map<string, _>, List, Array and `[scalar, null]`. random_variant feeds slot lets and
+// interface types, never a field, an element or a payload. So no generated program has
+// a primitive union (`[i64, string]`), an option of a composite, a variant inside a
+// struct or collection, a recursive typedef, a Result held in a binding, or a decimal,
+// datetime, duration or bytes value. Primitive unions and recursive types cross kernels
+// as opaque two-word values, and tag tests over a primitive union are fused, so engine
+// agreement on them is checked only through mutated fixtures. Add a primitive union
+// consumed by a type-test select, Nullable over composites, a nested Variant, and a
+// module-level recursive typedef with a `let rec` builder and consumer. (fuzz-gen-b-06)
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);

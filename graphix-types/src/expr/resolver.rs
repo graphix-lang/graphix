@@ -235,6 +235,19 @@ fn resolve_from_vfs(
         },
         packed: e.packed.clone(),
     };
+    // CR claude for eric: [bug] A script's top-level `mod str;` is looked up here at
+    // scope `/`, because resolve_modules_in_scope gives a root file's own statements no
+    // prepend and the shell and the LSP put this VFS first. Every package root sits
+    // here as `/<pkg>/mod.gx`, so the stdlib str source is compiled as the user's
+    // module and the str.gx beside the script is never read. This happens for every
+    // registered package name (db, args, list, map, json, http, core, sys, ...): a
+    // local db.gx defining `connect` gives "db::connect not defined", a str.gx whose
+    // `len` returns 1000 silently runs the stdlib's `len`, a str.gx that does not parse
+    // is never reported, and `mod str;` with no file at all still loads. `--check` and
+    // the LSP compile the file's statements at the root, where `/str` is the registered
+    // package, and refuse the same script with "duplicate module definition str" (a
+    // dynamic `mod str` too), while the run accepts it inside its `#do` block. probe:
+    // design/review-2026-10-05/repro/t-format-resolver-01.sh (t-format-resolver-01)
     let at = |file: &str| vfs.get(&scope.append(&format_compact!("{name}{file}")));
     // an interface pairs with the implementation beside it, as on disk
     for (imp, intf) in [(".gx", ".gxi"), ("/mod.gx", "/mod.gxi")] {
@@ -276,6 +289,19 @@ async fn resolve_from_files(
     let dir = file.clone();
     file.set_extension("gx");
     let mod_file = dir.join("mod.gx");
+    // CR claude for eric: [risk] An interface pairs only with the implementation beside
+    // it, and nothing reports an interface left beside the other layout. With foo.gxi
+    // next to foo/mod.gx, or foo/mod.gxi next to foo.gx, the interface is dropped
+    // without a word and every item it leaves out is public: `mod foo; foo::secret`
+    // prints 2, where the paired layout refuses it. When foo.gx and foo/mod.gx both
+    // exist, foo.gx wins and foo/mod.gx is dead, since no submodule can be named `mod`.
+    // The LSP's scan (graphix-lsp/src/workspace.rs:296) does resolve `mod foo` to the
+    // stray foo.gxi, so it leaves foo/mod.gx out of main.gx's project and checks it as
+    // a root of its own, with false errors such as "`super` goes above the package
+    // root". Refuse these layouts with Resolution::Broken naming both files, here and
+    // in resolve_from_vfs (line 240), whose pin at line 919 would then expect the
+    // refusal. probe: design/review-2026-10-05/repro/t-format-resolver.r2-10.sh
+    // (t-format-resolver.r2-10)
     for imp in [file, mod_file] {
         let intf = imp.with_extension("gxi");
         match read(overrides, &imp).await {
@@ -415,6 +441,19 @@ pub fn add_interface_modules(
     let mut last: Option<&SigItem> = None;
     for si in sig.items.iter() {
         if let Some(key) = SpliceKey::of_sig(&si.kind) {
+            // CR claude for eric: [bug] A gxi-only `type` or `trait` is anchored after
+            // the .gx statement that binds the `val` listed before it in the .gxi. The
+            // body compiles under an env cloned before `bind_sig`, so only statements
+            // below that point can name it. If the .gx binds its vals in a different
+            // order than the .gxi, a valid module is refused with "undefined type T in
+            // m" or "no trait `Show` in scope". With `val f: fn(x: T) -> i64; type T =
+            // i64`, no order of the .gx can name T in `let f = |x: T| ..`, and `graphix
+            // fmt m.gxi` can move an anchor when it sorts uses. A type never needs a
+            // value before it (typedef bodies resolve lazily), so types can be placed
+            // first. A `mod` whose body does `use super::x`, or a trait whose default
+            // body calls a module value, does need a value before it. probe:
+            // design/review-2026-10-05/repro/t-format-resolver.r2-04.sh
+            // (t-format-resolver.r2-04)
             match last {
                 None => first = Some(key.clone()),
                 Some(prev) => {
@@ -534,6 +573,16 @@ impl RootFile {
             Some(text) => text,
             None => read_to_arcstr(&file).await?,
         };
+        // CR claude for eric: [bug] Only this reader strips a leading `#!` line.
+        // workspace::extract_mod_decls (graphix-lsp/src/workspace.rs:106),
+        // symbols::declared (graphix-lsp/src/symbols.rs:53) and format_source (`graphix
+        // fmt`, LSP formatting) parse the raw text and fail at the `#`, while running
+        // the script and `--check` accept it. So in the LSP a shebang script has no
+        // `mod` edges, no document symbols and no formatting. Its modules become roots
+        // of their own: they show spurious errors ("`super` goes above the package
+        // root"), and their real errors are never reported. Strip the line in one place
+        // that every program reader shares, keeping the newline so line numbers stay
+        // put. probe: design/review-2026-10-05/repro/lsp-09.py (lsp-09)
         let text = match text.find('\n') {
             Some(i) if text.starts_with("#!") => ArcStr::from(&text[i..]),
             Some(_) | None => text,
@@ -570,6 +619,13 @@ impl RootFile {
 }
 
 /// `e` with `kind` in place of its own.
+// CR claude for eric: [structure] This is Expr::with_kind
+// (graphix-types/src/expr/mod.rs:1364) with the old id kept, and
+// graphix-types/src/expr/format.rs:217-219 spells it a third way (Expr::new, then id
+// and ori by hand). One Expr method beside with_kind that keeps the id, with with_kind
+// as that plus a fresh id, serves both. holds_unresolved's Resolved arm (lines 649-651)
+// repeats its `_` arm: for_each_child already visits a resolved module's exprs.
+// (t-format-resolver-15)
 fn rekind(e: &Expr, kind: ExprKind) -> Expr {
     Expr {
         id: e.id,
@@ -595,6 +651,19 @@ async fn resolve(
     let ts = Instant::now();
     let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
+    // CR claude for eric: [bug] When a nested `mod x;` has no file beside its parent,
+    // resolution falls through to the global chain. Those FilesResolvers ignore
+    // `scope`, so `x.gx` is loaded by its leaf name from the script's directory, the
+    // data dir or GRAPHIX_MODPATH. That contradicts the rule at line 728 and the LSP's
+    // model of it (graphix-lsp/src/workspace.rs:188 looks only at <base>/<rel>/x.gx). A
+    // missing or misplaced `a/x.gx` is never reported. Instead `a::x` silently becomes
+    // a second instance of the top-level `x`, whose abstract types are different
+    // nominal types (`type mismatch T does not contain '_N: T`), and two sibling
+    // modules that each `mod` the other report an import cycle, which is the only way
+    // graphix-shell/tests/import_cycle.rs forms one. A body with a file source should
+    // resolve its submodules only through its prepend and report that resolver's error.
+    // probe: design/review-2026-10-05/repro/t-format-resolver-05.sh
+    // (t-format-resolver-05)
     for r in prepend.iter().chain(resolvers.iter()) {
         let (interface, implementation) =
             match r.resolve(&scope, &stmt.ori, &name, &mut errors).await {
@@ -678,6 +747,19 @@ impl Expr {
 
     /// `Some` iff a module under `self` was resolved: the tree with it
     /// resolved; an unchanged subtree is neither rebuilt nor cloned.
+    // CR claude for eric: [bug] Module resolution recurses through these boxed futures
+    // with no stack guard. Every nested `mod`, and every expression level above one,
+    // adds four or five poll frames (resolve_children -> TryJoinAll -> TryMaybeDone ->
+    // here) on the tokio worker's 2 MiB stack. Each file is parsed on its own, so the
+    // parser's nesting limit does not bound the depth across files. A chain of 500
+    // nested module files (550 in an opt-level 3 build), or three files that each nest
+    // 330 blocks around their `mod m`, aborts `graphix --check`, a run and `graphix
+    // lsp` with a stack overflow. Poll the returned future under
+    // crate::stack::ensure_sufficient (or resolve through a worklist), and add a
+    // module-file chain to graphix-shell/tests/deep_nesting.rs. probe:
+    // design/review-2026-10-05/repro/x-stack-04.sh (`GRAPHIX=<graphix> bash
+    // x-stack-04.sh 600` and `... 3 330` exit 134; 200 and `2 330` exit 0).
+    // (x-stack-04)
     fn resolve_modules_int<'a>(
         &'a self,
         scope: &'a ModPath,
@@ -699,6 +781,31 @@ impl Expr {
                     *from_interface,
                 )
                 .await
+                // CR claude for eric: [bug] This marks every failure of `resolve` as
+                // CouldNotResolve, not just "could not be found": a parse error in the
+                // module file and a Broken read get the marker too, and through line
+                // 704 a failing nested `mod` carries its own. The REPL
+                // (graphix-shell/src/lib.rs:399) treats `e.is::<CouldNotResolve>()` as
+                // "there is no init module", and anyhow matches that anywhere in the
+                // chain. So an init.gx that does not parse, cannot be read, or loads a
+                // broken module is dropped with no message, while a type error in it is
+                // reported. The book's own example init.gx (book/src/shell.md:406) does
+                // not parse and is dropped this way. Mark only the not-found bail in
+                // `resolve`, with the module's path, and have the shell skip only a
+                // missing root `init`; --check then stops headlining a submodule's
+                // parse error as "could not resolve module bad". probe:
+                // design/review-2026-10-05/repro/x-errors-03.py (x-errors-03)
+                // CR claude for eric: [bug] An unresolvable module (none found, or a
+                // Broken read at 602) and an import cycle (LoadChain::push at 720)
+                // leave with no `.at()`. The only context is the positionless
+                // CouldNotResolve, though the `mod` statement is `self`. So `graphix
+                // --check` prints no line or file, and the LSP's error_location finds
+                // no site: the diagnostic lands at (0,0) of the root, over its first
+                // word, even when the `mod` is in another file, and that file shows
+                // nothing. Parse and type errors in the same submodule are placed
+                // correctly. Adding `.at(self)` to this result and to the
+                // LoadChain::push error puts each one on its `mod` statement. probe:
+                // design/review-2026-10-05/repro/lsp-08.py (lsp-08)
                 .with_context(|| CouldNotResolve(name.name.clone()))?;
                 let scope = ModPath(scope.append(&**name));
                 let r = e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
@@ -708,6 +815,20 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
+                // CR claude for eric: [bug] The body's source is taken from its first
+                // expression, but add_interface_modules puts a .gxi's leading use,
+                // type, mod or trait that the .gx does not repeat ahead of every
+                // implementation statement, with the interface's origin. Then the load
+                // chain records a.gxi, a netidx module's submodule base (for_source)
+                // becomes the .gxi's path, and compile_module_inner's def_ori
+                // (graphix-compiler/src/node/compiler.rs:249) sends go-to-definition on
+                // `mod a` to a.gxi, while the same .gxi with its `val` first sends it
+                // to a.gx. The import-cycle message also prints the source with Debug,
+                // `(File(".../a.gxi"))`. Record the implementation's origin where
+                // resolve() and RootFile::into_module build ModuleKind::Resolved, and
+                // read it at both sites. probe:
+                // design/review-2026-10-05/repro/t-format-resolver-08.py
+                // (t-format-resolver-08)
                 let source = exprs.iter().find_map(|e| match &e.ori.source {
                     Source::Unspecified => None,
                     s => Some(s),
@@ -847,6 +968,13 @@ pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<A
     let path = path.as_ref();
     let mut f = match tokio::fs::File::open(path).await {
         Ok(f) => f,
+        // CR claude for eric: [bug] Only NotFound reads as absent. For `mod util;`
+        // beside a regular file `util` (a script or a binary), opening `util/mod.gx`
+        // fails with NotADirectory, resolve_from_files returns Broken, and the `util`
+        // module in GRAPHIX_MODPATH or the data dir is never tried, although that path
+        // holds no module. NotADirectory also means the path names no file, so it
+        // belongs with NotFound. probe:
+        // design/review-2026-10-05/repro/t-format-resolver-07.sh (t-format-resolver-07)
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
     };

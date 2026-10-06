@@ -1,0 +1,35 @@
+// x-typecheck-generics-F10: a run-time bind that fails its typecheck is
+// logged and run anyway.
+//
+// CallSite::setup_dynamic_bind (graphix-compiler/src/node/callsite.rs:951)
+// only logs a failed typecheck0 of the instance it built, and build_bound
+// (callsite.rs:1196) only logs a failed typecheck1: the instance is
+// installed and dispatched either way. Here a checker gap
+// (x-typecheck-generics-F9: the rank-2 formal's 'a shares x's cell) lets
+// the i64 function g reach the dynamic site f(f64:2.5), typed
+// fn(y: f64) -> f64. The bind sees the mismatch, logs it, then runs g,
+// whose i64 7 leaves a call typed f64.
+//
+// command: RUST_LOG=error graphix --no-cache --log-dir <dir> design/review-2026-10-05/repro/x-typecheck-generics-F10.gx
+//          RUST_LOG=error graphix --no-cache --no-fusion --log-dir <dir> design/review-2026-10-05/repro/x-typecheck-generics-F10.gx
+//
+// expected (design/parallel_compile.md, "Every instance": an instance whose
+// signature the definition's does not hold is refused): the bind fails as
+// the site's other bind errors do (Callee::Failed), b is bottom, nothing is
+// printed, exit 0.
+//
+// observed: both runs log
+//   a run-time bind at f(2.5) did not type: an instance at fn(y: f64) -> f64
+//   of a definition typed fn(y: i64) -> '_..
+// and run g anyway. Fused, the runtime dies:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `b`: runtime I64(7) does not match the compiled Scalar(F64) slot
+//   Error: runtime did not respond   (exit 1)
+// --no-fusion prints [7, "7", 3.5]: the (f64, string, f64) tuple holds an
+// i64, so the typed printer falls back to the raw array form.
+let h = |x: 'a, f: fn<'a: Number>(y: 'a) -> 'a| (f(x), f(f64:2.5));
+let g = |y: i64| y ~ 7;
+let gs = [g];
+let (a, b) = h(1, gs[0]$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(b, "[b]", b / f64:2.0)

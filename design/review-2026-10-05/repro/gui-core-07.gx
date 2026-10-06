@@ -1,0 +1,34 @@
+// gui-core-07: an array whose element type is still open is claimed as a GUI.
+//
+// The gui package's is_custom (stdlib/graphix-package-gui/src/lib.rs:139)
+// asks GUITYP.contains(env, &typ), a COMMITTING contains. The root type
+// here is Array<'_N> with '_N unbound (not Array<_|_>), so the check binds
+// '_N := &gui::Window and answers true (GRAPHIX_DBG_BIND=1 prints
+// "BIND rhs '_N := ByRef(Ref(.. /gui/Window ..))" then
+// "CONTAINS Array<&gui::Window> >= Array<'_N> -> Ok(true)").
+// array::map([], |x| x) and `let f = |n| []; f(1)` are claimed the same way.
+//
+// command: env -u WAYLAND_DISPLAY -u DISPLAY \
+//            graphix --no-cache design/review-2026-10-05/repro/gui-core-07.gx
+//
+// expected: `[]` printed, as `let a: Array<i64> = []; a` prints it.
+// observed (HEAD c722befe, debug build):
+//   Error: initializing custom display
+//   Caused by:
+//       0: creating the event loop
+//       1: os error at .../winit-0.30.13/src/platform_impl/linux/mod.rs:765:
+//          neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.
+//   exit 1. With a display the GUI starts with zero windows: the event loop
+//   exits only on a window's CloseRequested or ToGui::Stop
+//   (event_loop.rs:209-233), and the shell waits on the display's stop
+//   (graphix-shell/src/input.rs:74), so nothing prints and nothing ends it
+//   (Ctrl-C only interrupts the runtime).
+//
+// REPL (no display), the binding outlives the claim:
+//   > let z = []
+//   > z
+//   error: initializing custom display ...
+//   > let w: Array<i64> = z
+//   type mismatch Array<i64> does not contain Array<'_N: &gui::Window>
+// Without the `z` line in between, `w` is accepted and prints [].
+[]

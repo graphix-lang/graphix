@@ -1,0 +1,40 @@
+// t-tvar-04: a dynamic module's body compiles at the GENERIC level, so its
+// top-level cells are schemes.
+//
+// Module::update -> compile_source (graphix-compiler/src/node/module.rs:781)
+// compiles and checks the loaded body with no AtLevel guard, so every cell it
+// creates takes the thread's default level, Level::GENERIC
+// (graphix-types/src/typ/tvar.rs:141); only compile_top and check_and_fuse
+// enter Level::TOP. `let z = never()` seeds a GENERIC cell, `z <- x` lowers
+// nothing into it (tvar::lower returns at a generic level), f's gate
+// generalizes x, and each call copies it (Level::copied_by): f is
+// polymorphic in the top-level z, so f("s") and f(1) both check and both
+// write z, which the signature exports as i64.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-tvar-04.gx
+//          (and the same with --no-fusion)
+//
+// expected: the load is refused, status is a DynamicLoadError ("type mismatch
+//   ...: string does not contain i64" at f(1)), as the same body is refused
+//   in a static module (t.gx + t.gxi `val w: i64`) and at a script's top
+//   level (design/tvar_constraints.md, Generalization: a definition is
+//   monomorphic in a top-level cell it captures).
+// observed (JIT, default): the load succeeds and the runtime dies:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `w`: runtime String("s") does not match the compiled
+//   Scalar(I64) slot / Error: runtime did not respond
+// observed (--no-fusion): the load succeeds, `"s" * 2` logs an arith error,
+//   then 2; with `t::w` as the last expression it prints "s" then 1.
+// variant: writing `let w: i64 = z` in the source instead makes the load
+//   fail at f("s") with the internal "an instance at fn(x: string) -> string
+//   of a definition typed fn(x: '_N) -> '_M" (a compiler-bug error) in place
+//   of the check's message.
+let status = mod t dynamic {
+    sandbox whitelist [core];
+    sig { val w: i64 };
+    source "let z = never(); let f = |x| { z <- x; x }; let b = f(\"s\"); let a = f(1); let w = z"
+};
+let g = |v: i64| v * 2;
+let out = select status { error as e => never(dbg(e)), null as _ => g(t::w) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

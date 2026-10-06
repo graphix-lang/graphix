@@ -305,6 +305,16 @@ run!(
 ; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: missing concrete definition for an abstract type.
+// CR claude for eric: [test-gap] The comment above claims a refusal the design does not
+// have. A gxi `type T;` with nothing in the gx is the Rust-backed row of
+// design/nominal_abstract_types.md (sys's `type File;` is one), and it compiles. This
+// test fails only because `val x: T` mismatches `let x = 42`, which
+// abstract_type_sig_mismatch already pins: delete it, or make it a positive pin (gxi
+// `type T; val x: i64`, result 0). The comment at line 779 says the pattern is also
+// refused outside the definition, but no test pins that (`select inner::make(42) {
+// inner::T(x) => x }`: "its values cannot be destructured"). The nine `v.is_err()`
+// predicates in this file accept any error; match the refusal text as
+// interface_omits_singleton does. (tests-lang-c-06)
 run!(
     abstract_type_missing_definition,
     |v: Result<&Value>| v.is_err(),

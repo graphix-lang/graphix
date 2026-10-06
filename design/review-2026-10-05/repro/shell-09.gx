@@ -1,0 +1,24 @@
+// shell-09: --fusion-stats prints "0 of 0" on every warm start and under --check
+//
+// The shell prints the fusion counters of this process's compile
+// (graphix-shell/src/lib.rs:378-383). A warm start restores the program
+// entry from the image and fuses nothing; --check runs CheckOnly, which
+// never fuses (graphix-rt/src/gx.rs:837-841). --expand builds, so it fuses.
+//
+// command: export XDG_CACHE_HOME=$(mktemp -d)
+//          graphix --fusion-stats design/review-2026-10-05/repro/shell-09.gx
+//          graphix --fusion-stats design/review-2026-10-05/repro/shell-09.gx
+//          graphix --check --fusion-stats design/review-2026-10-05/repro/shell-09.gx
+//
+// expected: one profile for one program on every run, and no profile (or a
+//   refusal) under --check without --expand.
+// observed (HEAD c722befe, debug build):
+//   cold:    fusion: 1 of 2 attempted regions fused, 1 blocked
+//              1x builtin `sys::exit` has no fast-call entry
+//   warm:    fusion: 0 of 0 attempted regions fused, 0 blocked
+//   --check: fusion: 0 of 0 attempted regions fused, 0 blocked
+let f = |x: i64| x * 2 + 1;
+
+let r = f(20);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

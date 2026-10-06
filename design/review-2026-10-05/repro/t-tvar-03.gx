@@ -1,0 +1,32 @@
+// t-tvar-03: a `<-` target bound to a lambda is generalized; the writer
+// unifies into the scheme, so it narrows only the uses checked after it.
+//
+// `let f = |x| x` puts f in poly_binds (graphix-compiler/src/node/bind.rs:232).
+// `f(41)` instantiates the scheme fn('a) -> 'a at i64. The connect's check
+// (node/mod.rs:2334, bind.typ.check_contains) then binds the scheme's own
+// generic 'a to string, after that use was typed. With lines 2 and 3 swapped
+// the program is refused ("string does not contain i64").
+//
+// command: graphix --check design/review-2026-10-05/repro/t-tvar-03.gx
+//          graphix --no-cache design/review-2026-10-05/repro/t-tvar-03.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-tvar-03.gx
+//
+// expected: --check refuses it in either statement order (the writer does
+//   not fit the fn('a) -> 'a that f(41) used, or f, being written, is not
+//   generalized and f(41) fixes 'a = i64).
+// observed: --check exits 0. The default run panics the runtime thread:
+//   "panicked at graphix-compiler/src/fusion/kernel.rs:243:13: kernel param
+//   `n`: runtime String("oops") does not match the compiled Scalar(I64)
+//   slot", then "Error: runtime did not respond", exit 1. --no-fusion prints
+//   42, then logs "arith error ... Parse error ... Unexpected `o`". With
+//   RUST_LOG=error --log-dir, both binds log "a run-time bind at f(41) did
+//   not type: an instance at fn(x: i64) -> i64 of a definition typed ..."
+//   (the identity's own definition was narrowed by the writer too).
+//
+// The same hole, two other ways (both pass --check, both log an arith error):
+//   let id = |x| x; let y = never(); y <- id; let r = y("s"); y <- |x: i64| x + 1; r
+//   let f = |x| x; let fr = &f; *fr <- |x: i64| x + 1; let g = f; g("s")
+let f = |x| x;
+let n = f(41);
+f <- |x| "oops";
+n + 1

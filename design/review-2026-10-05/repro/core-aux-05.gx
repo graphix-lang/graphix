@@ -1,0 +1,46 @@
+// core-aux-05: queuefn: queued entries of deleted call sites stay in the
+// queue and use up trigger releases.
+//
+// A QueueEntry holds only (BindId, Value) pairs
+// (stdlib/graphix-package-core/src/queuefn.rs:24-29) and WrapperApply::delete
+// (line 146) only deletes its pred, so a deleted wrapper site's queued
+// invocations stay in the shared queue. A trigger later pops one, set_var
+// writes binds nobody reads (lines 405-408; the value is left in the store),
+// f never runs, and the release is gone. Here array::map shrinks from 3 slots
+// to 1 while slots 1 and 2 hold queued calls. With the feedback idiom of the
+// queuefn pins (each output is the next trigger) the first release goes to a
+// ghost, nothing is produced, and the queue stalls for good.
+//
+// command: GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/core-aux-05.gx
+// (the default GRAPHIX_PAR and --no-fusion print the same)
+//
+// expected: out=[10], then out=[70] 100ms later (the queued 7 runs once 10
+// feeds the trigger), depth ending at 0.
+//
+// observed:
+//   out=[10] depth=3
+//   out=[10] depth=2
+// then the program exits after 1s idle: f never runs for 7, and depth stays 2
+// (one ghost plus the stuck 7). Control: with `xs <- [7, 2, 3]` (no slot
+// deleted; all three slots queue again) the queue drains completely, ending
+// out=[70, 20, 30] depth=0.
+//
+// The finding's explicit-trigger form shows the same: with xs [1, 2, 3] ->
+// [7] and one trigger per cycle after the shrink, the first two triggers run
+// nothing and `ran 7` prints only at the third.
+//
+// Under GRAPHIX_PAR=force some runs print nothing and never exit: the forked
+// slots also race for the banked pop (reported separately), and when a slot
+// that the shrink then deletes wins it, its in-flight call dies with it.
+let feedback: Any = never();
+let depth = 0;
+let qf = queuefn(
+  #count: &depth,
+  #trigger: feedback,
+  |x: i64| -> i64 sys::time::after_idle(duration:100.ms, x * 10)
+);
+let xs = [1, 2, 3];
+xs <- [7];
+let out = array::map(xs, |x| { let r = qf(x); feedback <- r; r });
+println("out=[out] depth=[depth]");
+sys::exit(sys::time::after_idle(duration:1.s, out ~ 0))

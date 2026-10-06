@@ -550,6 +550,23 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             let mut bytes = vec![0u8; n];
             buf.copy_to_slice(&mut bytes);
             let align = decode_varint(buf)?;
+            // CR claude for eric: [risk] A decoded relocation's offset, kind and
+            // addend, and the record's align, reach cranelift-jit unchecked.
+            // perform_relocations only debug_asserts offset < size before writing, so
+            // an offset past the code is an out-of-bounds write in release. A bad
+            // addend leaves the code calling a garbage address, and kind tags 4 and 5
+            // (GOT/PLT, never emitted with is_pic=false) panic at finalize.
+            // FusedKernel::image_decode trusts state_words and the site layouts the
+            // same way, while the code indexes its blocks at offsets fixed at emission,
+            // so a corrupt entry crashes the shell or corrupts memory instead of
+            // failing the read and starting cold (a corrupted first relocation offset
+            // of a region wrapper gives the panic at compiled_blob.rs:122 in a debug
+            // build). Refuse here a relocation whose offset plus write width exceeds
+            // bytes.len(), a kind this host never emits, and an align that is not a
+            // power of two no larger than a page; define_record already checks callee,
+            // chunk and const indices. These checks only harden the structure: the code
+            // bytes run unverified too, so the real fix is an integrity check on the
+            // entry (see registration.rs:313). (x-image-05)
             let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
             let n = decode_varint(buf)? as usize;
             let mut callees = Vec::with_capacity(n.min(64));

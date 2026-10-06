@@ -219,6 +219,17 @@ fn cell_constraints_ok(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
+        // CR claude for eric: [bug] This probe admits an open cell inside `t`
+        // (`Array<i64> ⊇ Array<'y>` holds with `'y` free). The bind that follows
+        // installs `t` without giving `'y` its part of the conjunct, because
+        // `TVar::bind` passes down only Concrete, Singleton and OneNumber, so `'y`
+        // generalizes unbounded. With `f = 'a: Array<i64> |x: 'a| -> i64 x[0]$`, `let g
+        // = |y| f([y])` is typed `fn(y: 'y) -> i64`. `--check` accepts `g("hello")` and
+        // the build refuses it, and through `let h: fn(y: string) -> i64 = g` the run
+        // panics at fusion/kernel.rs:243 (a String in a compiled Scalar(I64) slot). An
+        // inferred conjunct has the same hole: `let f = |i| a[i]$; let g = |b, k|
+        // f(select b { true => 1, false => k })` passes the check at `g(false, "s")`.
+        // probe: design/review-2026-10-05/repro/t-contains-08.gx (t-contains-08)
         if !c.contains_int(BitFlags::empty(), env, hist, t)? {
             return Ok(false);
         }
@@ -246,6 +257,19 @@ impl OpenPair {
         if t0.is_rigid() && t1.is_rigid() {
             return OpenPair::Distinct;
         }
+        // CR claude for eric: [bug] With exactly one rigid side this picks a name alias
+        // by `frozen` alone. A declared variable written once in its signature is
+        // unfrozen, so AliasLeft (t0 rigid) or AliasRight (t1 rigid) points it at the
+        // other cell through merge_into's Merge::Name path, which has no rigid-survivor
+        // rule; the variable then reads as free and the body binds it. `let eq = |a:
+        // 'x, b: 'x| a == b; let f = |x: 'a| eq(x, 1)` checks as fn(x: i64) and `|x:
+        // 'a, y: 'b| eq(x, y)` as fn(x: 'a, y: 'a), while `x == 1`, `x == y` and `eq(1,
+        // x)` are refused. In a trait impl the check passes, a static call is refused
+        // only at elaboration, and a dynamic call runs the impl at a type it was never
+        // checked at, writing an f64 into an i64 and panicking the JIT (probe:
+        // design/review-2026-10-05/repro/x-typecheck-generics-F13.gx). With one rigid
+        // side the cells should merge (OpenPair::Merge), which keeps the rigid cell.
+        // (x-typecheck-generics-F13)
         match (t0.read().frozen, t1.read().frozen) {
             (true, true) => OpenPair::Merge,
             (true, false) => OpenPair::AliasRight,
@@ -342,6 +366,17 @@ fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
         (Type::App(c0, a0), Type::App(c1, a1)) => {
             link_equal(c0, c1, commit) && link_equal(a0, a1, commit)
         }
+        // CR claude for eric: [bug] A bound variable against a non-variable lands in
+        // this arm, but union_identical accepts that pair through the binding
+        // (setops.rs:80) and Fn equality counts distinct open cells as equal, so
+        // identical_linked answers identical and welds nothing. A union member that is
+        // a variable bound to a function type then covers a same-shaped function type
+        // through the identity shortcuts (lines 558, 817, 837, 893) with their open
+        // cells left apart: the checker accepts a program whose string-typed binding
+        // holds an i64, the node-walk prints it, and the JIT panics the runtime at
+        // fusion/kernel.rs:243. Add the arm union_identical has, recursing into the
+        // binding with the sides kept in order. probe:
+        // design/review-2026-10-05/repro/x-expr-walks-06.gx (x-expr-walks-06)
         _ => true,
     }
 }
@@ -412,6 +447,18 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
+    // CR claude for eric: [readability] When a trait bound refuses a type, the error is
+    // a bare mismatch against the bounded cell. With no `impl Show for i64`,
+    // `Show::show(2)` gives "type mismatch 'self: unbound within Show does not contain
+    // i64", which never says that i64 lacks an impl. When the impl exists in a sibling
+    // module whose .gxi does not declare it (Env::impls_of hides it from the other
+    // modules' checks), the message is the same, and nothing hints that `impl t::Show
+    // for i64;` in that .gxi fixes it. When the refusing side is a cell with trait
+    // conjuncts, say "i64 does not implement Show", naming the member without an impl
+    // for a union self and the module of a hidden impl that would match. In run mode
+    // the module context also shows the script's synthetic block scope ("compiling
+    // module #do4611686018427394750::b", node/module.rs:771), where --check prints
+    // "compiling module b". (x-typecheck-patterns-14)
     fn contains_mismatch(&self, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -561,6 +608,33 @@ impl Type {
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
+                // CR claude for eric: [bug] This memo keys a reference on its
+                // definition and its params. A typedef whose params grow as it recurses
+                // never meets a repeated pair, so comparing two different
+                // instantiations of it unfolds forever. Example: `type N<'a> = [null,
+                // ('a, N<Array<'a>>)]`, which the cast_to_a_growing_definition pin
+                // treats as legal. `let n1: N<i64> = null; let n2: N<[i64, string]> =
+                // n1` is a valid widening, and it hangs `--check`; so does the
+                // `N<string>` form, which should be refused. The language server checks
+                // inside its message loop, so such a file freezes it. Contractiveness
+                // in Env::deftype makes this memo sound but does not bound it, and
+                // nothing here plays the role of fusion's MAX_FREEZE_EXPANSIONS; probe:
+                // design/review-2026-10-05/repro/t-contains-09.gx (t-contains-09)
+                // CR claude for eric: [bug] This memo never ends a walk through a
+                // recursive typedef whose self-reference is a union member (`[T<'a>,
+                // null]`, ErrChain's `cause`) once the refs' params hold type
+                // variables. `[T<P>, null] ⊇ T<Q>` and `T<P> ⊇ {..}` are keyed by the
+                // non-Ref side's allocation, and expand_ref (line 148) rebuilds such a
+                // ref's expansion on every visit; set_covers_by_distribution's head()
+                // rebuilds every ref it expands. So no pair ever repeats, and the walk
+                // recurses until memory runs out. Both `let h = |s| { catch(e) null;
+                // error(`A(s))?; error(`B(s))?; null }` (the catch's union probes
+                // ErrChain<[`A('s), `B('s)]> ⊇ ErrChain<`A('s)>) and `type T<'a> = {n:
+                // [T<'a>, null], v: 'a}; let g = |t: T<'b>| -> T<['b, i64]> t;` take
+                // `graphix --check`, and every run, past 6 GB in about 6 s. The memo
+                // has to recognize a pair met again by its content, not by its
+                // allocation. probe: design/review-2026-10-05/repro/x-parallel-02.gx
+                // (x-parallel-02)
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
@@ -626,6 +700,20 @@ impl Type {
                 if id0 != id1 {
                     return Ok(false);
                 }
+                // CR claude for eric: [bug] Abstract parameters are checked
+                // covariantly, whatever the representation (or a Rust-backed handle)
+                // does with them. With `type Sink<'a> = Abstract<fn(x: 'a) -> i64>`, a
+                // `Sink<i64>` is accepted as a `Sink<[i64, string]>`, so a string
+                // reaches `|x: i64|`. Likewise a helper taking `db::Tree<i64, [i64,
+                // string]>` accepts a `db::Tree<i64, i64>` and stores a string in the
+                // i64 tree. The JIT then reads the string's pointer as an i64 or panics
+                // at fusion/kernel.rs:243, while the transparent `type Sink<'a> = fn(x:
+                // 'a) -> i64` is refused. Make abstract parameters invariant (check
+                // both directions), or record a variance per parameter at Env::deftype
+                // with Rust-backed types invariant. The open-constructor case in
+                // app_contains (`'c<a0> ⊇ 'c<a1>` by a0 ⊇ a1) is the same rule and
+                // needs the same fix. probe:
+                // design/review-2026-10-05/repro/t-contains-07.gx (t-contains-07)
                 Ok(p0.len() == p1.len()
                     && p0
                         .iter()
@@ -680,6 +768,14 @@ impl Type {
                 e.contains_int(flags, env, hist, &Type::Any)
             }
             (Self::Error(e0), Self::Error(e1)) => e0.contains_int(flags, env, hist, e1),
+            // CR claude for eric: [dead] This arm and the pointer-equality arms at 691
+            // (Struct), 704 (Variant) and 815 (Set) never fire. contains_dispatch is
+            // reached only from contains_int_inner, after same_content (453) has
+            // already returned true for every pair whose Tuple, Struct, Variant, Set or
+            // Fn content is one allocation. For the same reason, `same` in the Fn arm
+            // (936) is always false. Delete the four arms and reduce the Fn arm to `let
+            // r = f0.contains_int(flags, env, hist, f1)?; if r && commit {
+            // f0.lambda_ids.link(&f1.lambda_ids) } Ok(r)`. (t-contains-14)
             (Self::Tuple(t0), Self::Tuple(t1)) if Arc::ptr_eq(t0, t1) => Ok(true),
             (Self::Tuple(t0), Self::Tuple(t1)) => Ok(t0.len() == t1.len()
                 && t0
@@ -714,6 +810,20 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
+            // CR claude for eric: [bug] This arm makes references covariant (`&[i64,
+            // string]` holds `&i64`). A reference is writable, and
+            // ConnectDeref::typecheck0_with (node/mod.rs:2361) checks `*r <- v` only
+            // against r's own type. So a program that passes the check writes a string
+            // or null into an `i64` binding: the JIT then panics at
+            // fusion/kernel.rs:243 and the runtime dies, while the node-walk computes
+            // on the wrong type. No annotation is needed: `let set = |v: 'a, r: &'a| *r
+            // <- v` called as `set(n, &x)` with `n: [i64, null]` and `x = 1` passes.
+            // The same call with the reference first, `set(&x, n)`, is refused, so this
+            // arm undoes callsite.rs::Widening's rule that a reference keeps the first
+            // argument's type. Plain invariance would also refuse the read-only
+            // widenings the stdlib relies on (`#title: &"Chart"` into `&[string,
+            // null]`, tui browser.gx:156), so the fix needs a design choice; probe:
+            // design/review-2026-10-05/repro/c-node-mod-01.gx (c-node-mod-01)
             (Self::ByRef(t0), Self::ByRef(t1)) => t0.contains_int(flags, env, hist, t1),
             // Two vars sharing one cell are already unified; the cycle
             // guard below would otherwise poison both.
@@ -770,6 +880,20 @@ impl Type {
                     {
                         return Ok(true);
                     }
+                    // CR claude for eric: [bug] Under Commit this admits `t0 ⊇ 'r`
+                    // (rigid, open 'r) on a probe of one conjunct and records nothing,
+                    // so t0's open cells stay free and a later check binds them to
+                    // anything. Take `id = |a: Array<'e>| -> Array<'e> a`. Then `'r:
+                    // Array<i64> |x: 'r| -> Array<string> id(x)` leaves 'e open, the
+                    // return check binds 'e := string, and the def is accepted even
+                    // though it returns its Array<i64> argument; without the annotation
+                    // its signature returns a free `Array<'e>`. The instance's own
+                    // check refuses it (GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1), but
+                    // elaboration by substitution trusts the def, so the JIT reads the
+                    // i64 as an ArcStr and aborts. A rank-2 formal with a structural
+                    // quantifier bound (`fn<'b: Array<i64>>(x: 'b) -> Array<string>`)
+                    // reaches the same route. probe:
+                    // design/review-2026-10-05/repro/t-contains-03.gx (t-contains-03)
                     for c in t1.cell_constraints().iter() {
                         // A probe: a flagged check would alias live
                         // cells into the constraint store.
@@ -858,6 +982,25 @@ impl Type {
                         continue;
                     }
                     let mut covered = false;
+                    // CR claude for eric: [bug] This loop commits the first
+                    // non-variable member that covers an rhs member before the residue
+                    // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
+                    // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
+                    // Array<i64>` and then cannot place `Array<Array<i64>>`, though 'b
+                    // := Array<i64> covers both. InstanceTypes::new
+                    // (node/lambda.rs:402) meets exactly this union for every
+                    // array::flat_map or list::flat_map instance whose callback returns
+                    // an array of arrays. So `array::flat_map([1, 2], |x| [[x]])`,
+                    // `array::flat_map(groups, |g| g)`, a generic wrapper over flat_map
+                    // and the book's Bag impl pass --check and the LSP but fail to
+                    // build with no reason given; GRAPHIX_NO_SUBST=1 runs them. Making
+                    // this containment succeed also admits a callback whose return is
+                    // that union itself (`|x| select x { 1 => [x], n => [[n]] }`,
+                    // refused today), and the runtime splices its bare-array member, so
+                    // decide the fix together with flat_map's signature
+                    // (x-engine-collections-03). probe:
+                    // design/review-2026-10-05/repro/x-engine-collections-02.gx
+                    // (x-engine-collections-02)
                     for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                         if c.contains_int(probe, env, hist, m)? {
                             if !c.contains_int(flags, env, hist, m)? {
@@ -903,17 +1046,61 @@ impl Type {
                 .map(|t1| t0.contains_int(flags, env, hist, t1))
                 .collect::<Result<AndAc>>()?
                 .0),
+            // CR claude for eric: [bug] `[i64, 'y] ⊇ 'y` with 'y open binds 'y := i64.
+            // The TVar arms skip it because 'y occurs in the set, this arm has no
+            // identity pre-pass (the Set ⊇ Set arms have one), and set_commit tries the
+            // structural member i64 before the free 'y. An identical struct member
+            // loses the same way: `[{v: i64}, {v: 'y}] ⊇ {v: 'y}` binds 'y := i64. As a
+            // result `let f = |y| array::push([y, 1], y); f("s")` is refused at "s"
+            // with "i64 does not contain string". Also, `let y = str::parse("42")$; let
+            // x = select c { 0 => y, _ => null }; x <- y` is accepted with parse's
+            // target bound to null, when an open target must be refused. Cover t
+            // without binding when a member is identical_linked to it, before
+            // set_commit. probe: design/review-2026-10-05/repro/t-contains-10.gx
+            // (t-contains-10)
             (Self::Set(s), t) => {
                 if graphix_dbg_bind() {
                     eprintln!("SET-T {} >= {t}", Self::Set(s.clone()));
                 }
                 match t {
                     // Prims first: the narrowest TVar bindings.
+                    // CR claude for eric: [bug] When a union with a bare open member is
+                    // checked against a multi-bit primitive, this arm commits the bits
+                    // one at a time. The first bit that no concrete member covers binds
+                    // the open member ('a := i64), the next bit is admitted by nothing,
+                    // and the arm returns false with that binding left behind. So
+                    // `opt::is_some(x)` with x: [i64, string, null] is refused ("[null,
+                    // 'a: i64] does not contain [i64, null, string]"), while the same
+                    // type written as `type N = [i64, string]; [N, null]`, or `[i64,
+                    // `A, null]`, is accepted. A probe of the same pair answers true,
+                    // so set_commit can pick a member whose commit then fails. Bind the
+                    // open member once to the bits no concrete member covers, as the
+                    // Set ⊇ Set residue arm does. probe:
+                    // design/review-2026-10-05/repro/x-diff-types-04.gx
+                    // (x-diff-types-04)
                     Self::Primitive(p) if p.len() > 1 => {
                         let mut all = true;
                         for p in t.iter_prims() {
                             all &= Self::set_admits(s, env, hist, &p)?;
                         }
+                        // CR claude for eric: [bug] This pre-pass commits the
+                        // primitives one at a time. The first primitive no concrete
+                        // member covers binds the bare free member to itself. The next
+                        // one is not admitted by that binding, and the arm returns
+                        // false without trying the whole set at 930 and without undoing
+                        // the binding. A probe of the same pair says true, so
+                        // set_commit's probe-then-commit keeps the binding and moves on
+                        // to the next member. Valid calls are refused:
+                        // `opt::is_some(v)` with `v: [i64, string, null]` fails with
+                        // "[null, 'a: i64] does not contain [i64, null, string]" while
+                        // `[i64, Array<i64>, null]` (a Set, the residue arm at 824) is
+                        // accepted, and the leaked binding refuses an unrelated
+                        // argument (`|x: [Array<['a, null]>, Array<'c>], y: 'a|` called
+                        // with `Array<[bool, null, string]>` and "t"). Hand the
+                        // uncovered primitives to the bare member as one residue, as
+                        // the Set ⊇ Set arm does; probe:
+                        // design/review-2026-10-05/repro/t-contains-11.gx
+                        // (t-contains-11)
                         if all {
                             for p in t.iter_prims() {
                                 if Self::set_commit(s, flags, env, hist, &p)?
@@ -1078,6 +1265,20 @@ impl Type {
                 Ok(true)
             }
             (None, None) => {
+                // CR claude for eric: [bug] When two open rigid cells' bounds reach
+                // each other (`'b: Array<'a>`, or `'b: 'a`), this occurs check fires
+                // before OpenPair::Distinct is consulted. refuse() then answers true,
+                // so the def gate accepts a value of either quantifier as the other.
+                // The cycle_refused marks matter only for a cell still open at a
+                // terminal settle, and a call binds both copies, so nothing reports it.
+                // The instance substitutes that verdict: `'a: Any, 'b: Array<'a> |x:
+                // 'b, y: 'a| -> 'b y` called as `f([1], 12345)` builds a kernel that
+                // returns the i64 as Array<i64> and segfaults, while the node-walk
+                // hands an Array-typed binding an i64. Decide a rigid pair by its
+                // conjuncts, as the `(t0, TVar(t1))` rigid arm does, and not by the
+                // refusal: a blanket Ok(false) would also refuse `'b: 'a |x: 'a, y: 'b|
+                // -> 'a y`, which passes today only through this path. probe:
+                // design/review-2026-10-05/repro/t-tvar-08.gx (t-tvar-08)
                 if cyc0() || cyc1() {
                     return refuse();
                 }
@@ -1245,6 +1446,20 @@ impl Type {
                 }
             }
             if !full {
+                // CR claude for eric: [bug] Distribution allows only one position to
+                // differ, so a set listing every combination of two unions, [(`L, `L),
+                // (`L, `N), (`N, `L), (`N, `N)], is held not to contain ([`L, `N], [`L,
+                // `N]). Select::check_coverage runs this check before the literal pool,
+                // so a select that lists every combination is refused with "missing
+                // match cases". check_dead_arms trusts the pool and refuses a `_` added
+                // after those arms as unreachable, so the exhaustive form cannot be
+                // written at all; tuples, multi-payload variants, structs and payload
+                // binds all hit this. The same gap refuses passing such a tuple to a
+                // parameter typed as the four-member union. Distributing recursively
+                // (split on one position, then require each group to cover the
+                // remaining positions) would close it. probe:
+                // design/review-2026-10-05/repro/x-engine-seq-errors-08.gx
+                // (x-engine-seq-errors-08)
                 if distributing.is_some() {
                     return Ok(false);
                 }
@@ -1338,6 +1553,18 @@ impl Type {
         env: &Env,
         hist: &mut ContainsHist,
     ) -> Result<bool> {
+        // CR claude for eric: [bug] Under a plain Commit (no RigidCheck) a rigid
+        // constructor variable takes this path: cell_constraints_ok passes, the bind is
+        // skipped, and Ok(true) comes back. So inside a `'c: Collection` body,
+        // `Array<i64> ⊇ 'c<i64>` holds without binding 'c, and so do `List<i64> ⊇
+        // 'c<i64>` and `array::len(xs)`. That breaks the rule every TVar arm keeps (a
+        // rigid cell is refused under `rigid || commit`) and the doc above. The check
+        // then accepts bodies that read a Map or List as an Array: the JIT reaches
+        // unreachable_unchecked in Value::clone (UB in release), the node-walk returns
+        // garbage, and the array::len form passes --check only for elaboration to
+        // refuse it. Take this path only when `!cv.is_rigid()`, so a rigid one falls to
+        // the general walk and is refused under commit. probe:
+        // design/review-2026-10-05/repro/t-tvar-01.gx (t-tvar-01)
         if let Self::TVar(cv) = c
             && !cv.is_bound()
             && !(flags.contains(ContainsFlags::RigidCheck) && cv.is_rigid())
@@ -1396,6 +1623,21 @@ impl Type {
                 }
                 Ok(true)
             }
+            // CR claude for eric: [bug] This arm lets a union satisfy a trait whenever
+            // every member has an impl, whatever the trait's methods take. So
+            // `Comb::comb(x, y)` with `comb: fn(self, other: self)` and x, y: [A, B]
+            // passes `--check`. The build then lowers the call through
+            // lower_trait_union (graphix-compiler/src/node/traits.rs:877), which
+            // narrows only the receiver, and refuses `#bind::N(#t, #a1)` because `#a1`
+            // is still [A, B]; the message names `#bind`, `#a1` and `'_N`, and
+            // graphix-fuzz reports a check/build divergence. A generic `'a: Comb |x:
+            // 'a, y: 'a| Comb::comb(x, y)` called with [A, B] fails the same way in its
+            // instance, and only this discharge sees that route, so the refusal belongs
+            // here and in the multi-flag Primitive arm below: a union cannot satisfy a
+            // trait that has a method taking `self` in a parameter other than the
+            // receiver (a `self` return is fine). probe:
+            // design/review-2026-10-05/repro/x-engine-seq-errors-05.gx
+            // (x-engine-seq-errors-05)
             Self::Set(ts) => {
                 for m in ts.iter() {
                     if !Self::trait_contains(tid, flags, env, hist, m)? {
@@ -1465,6 +1707,21 @@ impl Type {
     }
 }
 
+// CR claude for eric: [test-gap] These three tests are the only direct pins of
+// Type::contains. No graphix-tests pin covers the rules broken by the accepted
+// ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
+// (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
+// with the reference first), abstract parameters (t-contains-07), a rigid cell decided
+// by a conjunct probe (t-contains-03), a conjunct never reaching a binding's open cells
+// (t-contains-08), and ⊥ ⊇ 'x, occurs refusals and open rigid constructors (t-tvar-02,
+// t-tvar-08, t-tvar-01). Each passes --check at HEAD, and --check on t-contains-09
+// (contains over a nested typedef) never returns; cast_to_a_growing_definition covers
+// only cast's walk. No family in graphix-fuzz/src/mustreject.rs targets a variance
+// rule, and the generators build no parameterized abstract type. So the fleet meets
+// such a hole only when a generated program happens to run the lie, and then reports it
+// as a JIT divergence (graphix-fuzz check on t-contains-07.gx). Pin each repro with its
+// fix, and once each variance rule is stated, give it a must-reject family: a write
+// through a widened reference, a widened abstract parameter. (t-contains-12)
 #[cfg(test)]
 mod tests {
     use super::*;

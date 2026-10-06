@@ -1,0 +1,25 @@
+// rt-17: design/atomic_recursion.md:15-17 says an infinite tail recursion is
+// "the constant-stack, bounded-memory case". Since tail_calls_are_calls.md
+// a node-walked tail call is an activation like any call: stack and memory
+// grow with depth; only a fused tail loop is a constant-memory native loop.
+//
+// command (Linux; prints the sum and the process's peak RSS, then exits):
+//   graphix --no-cache --no-fusion design/review-2026-10-05/repro/rt-17.gx
+//   graphix --no-cache design/review-2026-10-05/repro/rt-17.gx
+//   GRAPHIX_STACK_BUDGET=64M graphix --no-cache --no-fusion <this file with depth 200000>
+//
+// expected (per the doc): peak memory independent of the depth.
+// observed (HEAD c722befe, debug build): depth 40000 peaks at 688 MB
+//   node-walked (374 MB at depth 20000, ~16 KB per level) and 62 MB fused.
+//   Depth 200000 node-walked under GRAPHIX_STACK_BUDGET=64M aborts with
+//   "stack budget (67108864 bytes) exceeded by a recursion": the stack
+//   budget is what contains it.
+let rec sum = |acc: i64, n: i64| -> i64 select n {
+  0 => acc,
+  n => sum(acc + n, n - 1)
+};
+let go = sys::time::timer(duration:100.ms, false);
+let r = sum(0, go ~ 40000);
+let hwm = re::find(#pat: r"VmHWM:\s+\d+ kB", sys::fs::read_all(r ~ "/proc/self/status")$)$;
+sys::exit(sys::time::after_idle(duration:100.ms, hwm ~ 0));
+(r, hwm)

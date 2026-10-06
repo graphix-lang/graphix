@@ -53,6 +53,15 @@ let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.
+<!-- CR claude for eric: [doc-drift] Point 4 is stale. GxAbstract carries the type
+arguments it was constructed at (graphix-types/src/abstract_value.rs:92-95) and
+Type::is_a compares them (graphix-types/src/typ/cast.rs:676-681), so `Box<i64> as b`
+does not match a Box<string>, as the pin lang::traits::abstract_test_matches_parameters
+asserts. The runtime-shape paragraph (98-101) leaves out `params` and points at
+graphix-compiler/src/abstract_value.rs; the file is graphix-types/src/abstract_value.rs.
+The comment above `match &type_predicate` at
+graphix-compiler/src/node/pattern.rs:1196-1198 repeats the stale claim and should go.
+(t-cast-setops-16) -->
 4. Parameters flow through: `type Box<'a> = Abstract<'a>`, constructor
    `fn<'a>(x: 'a) -> Box<'a>`. The runtime tag does not carry `'a`
    (erased, as in Rust), so `Box<i64> as b` also matches a

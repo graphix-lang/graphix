@@ -1,0 +1,30 @@
+// f-mod-lowering-01: expand_refs' node memo is keyed by a freed address, so
+// one typedef instantiation gets another's expansion and the runtime panics.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-01.gx
+//          (GRAPHIX_DBG_REGION=1 prints the frozen kind of `p`)
+//
+// expected: prints 2, as `graphix --no-cache --no-fusion` does. `p` has type
+// [i64, f64], so its kernel slot is Value { Primitive(I64 | F64) }.
+//
+// observed (HEAD c722befe, debug build, most runs): the region input `p`
+// freezes as kind=Scalar(I64) and the tokio worker panics:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `p`: runtime F64(1.5) does not match the compiled
+//   Scalar(I64) slot
+//   Error: runtime did not respond   (exit 1; graphix-fuzz check aborts, 134)
+//
+// lookup_ref builds W<i64>'s body [i64, Inner] in a fresh allocation;
+// expand_ref_d_inner records it in ResolveCx.nodes under that address
+// (fusion/lowering.rs:706-718, NodeEntry keeps no owner), and the body is
+// dropped once Inner is expanded (lowering.rs:754). W<f64>'s body [f64, Inner]
+// is the same size, gets the freed address and hits W<i64>'s entry: the union
+// becomes [i64, i64]. Address reuse is the cause: with an LD_PRELOAD shim that
+// delays every free() by 65536 frees the same run freezes I64 | F64 and prints
+// 2. Two different typedefs of one shape (W1<i64>, W2<f64>) fail the same
+// way; bodies of different sizes (['a, Inner] vs ['a, Inner, u8]) do not.
+type Inner = i64;
+type W<'a> = ['a, Inner];
+let p: [W<i64>, W<f64>] = once(f64:1.5);
+let g = |q: [W<i64>, W<f64>], k: i64| -> i64 k + 1;
+g(p, 1)

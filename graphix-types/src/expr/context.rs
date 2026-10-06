@@ -92,6 +92,14 @@ pub trait At {
 }
 
 impl At for anyhow::Error {
+    // CR claude for eric: [readability] This adds a frame even when the error's latest
+    // frame is the same expression, which happens often. The walkers wrap a child's
+    // error with the child's spec (`wrap!(n, pass(n, ctx))`, `wrap!(self.n,
+    // child(..))`), and Connect, the arithmetic ops and lambdas also wrap their own
+    // errors. `let x = 1; x <- "s"` prints `at: line: 2, column: 1 ... in: x <- "s"`
+    // twice, and `let b = "x" + a` prints its `"x" + a` frame twice. Return self
+    // unchanged when the outermost ErrorContext (or, if there is none, the ErrorSite)
+    // holds an expression with spec's id. (c-node-mod-08)
     fn at(self, spec: &Expr) -> Self {
         let cx = ErrorContext(spec.clone());
         match self.downcast_ref::<ErrorSite>() {

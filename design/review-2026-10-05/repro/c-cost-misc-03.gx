@@ -1,0 +1,24 @@
+// c-cost-misc-03: the fork threshold T is measured once per process, from
+// nine pool wakes, keeping the lower quartile (graphix-compiler/src/cost.rs:
+// 54-94, a OnceLock never measured again). Forced work (#[parallel] forks
+// without a calibration, as does a Force runtime in the same process) that
+// occupies the pool during the ~20 ms window makes more than six of the nine
+// samples queue behind real jobs, and T comes out inflated for the rest of
+// the process.
+//
+// command (from the repo root; run it a few times):
+//   GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-03.gx 2>&1 >/dev/null | grep calibrated
+//
+// expected: T near an idle pool's, 99k-350k ticks on this box.
+//
+// observed (HEAD c722befe, debug build, 16 cores), four runs: T = 2193764,
+// 98952, 209216 and 15751836 (wakes [68278, 3270689, 3937959, 4160308, ..]).
+// At T = 15.75M ticks (about 4.3 ms) Auto forks no side estimated under
+// 4.3 ms, in every runtime of the process, for its whole life.
+let rec f = |d: i64, v: i64| -> i64 select d { 0 => v, d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003 };
+let heavy = |xs: Array<i64>| #[parallel] array::map(xs, |x| f(14, x));
+let n = 0;
+n <- sys::time::timer(duration:5.ms, 20) ~ n + 1;
+let ys = heavy(array::init(64, |i| i + n));
+sys::exit(sys::time::after_idle(duration:200.ms, n ~ 0));
+array::fold(ys, 0, |a, b| (a + b) % 1000003)

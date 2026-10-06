@@ -1,0 +1,32 @@
+// small-pkgs-03: json::write_str/write_bytes and hbs::render write a Map key
+// through Value's Display (netidx typed-literal syntax)
+//
+// value_to_json (stdlib/graphix-package-json/src/lib.rs:118) inserts each
+// Map key as format!("{k}"): a string key keeps its quotes and escapes, any
+// other key carries its type prefix. hbs::render converts its data through
+// the same function and registers Map partials the same way (hbs lib.rs:56).
+// Both engines agree (graphix-fuzz check: AGREE).
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/small-pkgs-03.gx
+// expected (the round-trip line may come later, json::read is async):
+//   {"a":1}
+//   {"1":"x"}
+//   data: hello Eric
+//   HEADER
+//   round trip equal: true
+// observed (also with --no-fusion):
+//   {"\"a\"":1}
+//   {"i64:1":"x"}
+//   data: hello
+//   error:["HbsErr", "Error rendering \"main\" line 1, col 1: Partial not found hdr"]
+//   round trip equal: false
+let m: Map<string, i64> = {"a" => 1};
+println(json::write_str(m)$);
+println(json::write_str({1 => "x"})$);
+let back: Map<string, i64> = json::read(json::write_str(m)$)$;
+println("round trip equal: [back == m]");
+let d: Map<string, string> = {"name" => "Eric"};
+println("data: [hbs::render("hello {{name}}", d)$]");
+println(hbs::render(#partials: {"hdr" => "HEADER"}, "{{> hdr}}", {n: 1}));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -1,0 +1,35 @@
+// t-contains-03: a commit of `t0 ⊇ 'r` over a rigid open 'r admits by a
+// PROBE of one conjunct (graphix-types/src/typ/contains.rs:773-776) and
+// records nothing, so t0's open cells stay free and a later check binds
+// them to anything.
+//
+// `id(x)` checks `Array<'e> ⊇ 'r` by probing `Array<'e> ⊇ Array<i64>` and
+// leaves 'e open (GRAPHIX_DBG_BIND=1: `CONTAINS Array<'e> >= 'r -> Ok(true)`,
+// no bind); the gate's return check then binds 'e := string. f is accepted
+// as fn<'r: Array<i64>>(x: 'r) -> Array<string> while it returns its
+// Array<i64> argument. Without the return annotation f's signature is
+// fn<'r: Array<i64>>(x: 'r) -> Array<'e> with 'e free, and
+// `let s: Array<string> = f([1, 2])` is accepted the same way. A rank-2
+// formal reaches the same route: `type F = fn<'b: Array<i64>>(x: 'b) ->
+// Array<string>; let apply = |g: F| g([1, 2]); apply(|x| id(x))`.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-contains-03.gx
+//          (also --check; --no-fusion; and
+//          GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1 graphix --no-cache --no-fusion ..)
+//
+// expected: --check refuses at `id(x)`: Array<string> does not contain
+//   Array<'e: i64>. That is what the instance's own check says under
+//   GRAPHIX_NO_SUBST=1, and GRAPHIX_ELAB_AUDIT reports it as elaboration
+//   refusing what the check accepted.
+// observed: --check exits 0. The JIT run prints `s = [1, 2]`, then panics in
+//   arcstr ("misaligned pointer dereference: address must be a multiple of
+//   0x8 but is 0x1"), non-unwinding, abort, exit 134: str::len reads the
+//   i64 1 as an ArcStr. --no-fusion prints `s = [1, 2]` (an Array<string>
+//   holding i64s), never prints `len`, and exits 0.
+let id = |a: Array<'e>| -> Array<'e> a;
+let f = 'r: Array<i64> |x: 'r| -> Array<string> id(x);
+let s = f([1, 2]);
+println("s = [s]");
+let n = str::len(s[0]$);
+println("len = [n]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

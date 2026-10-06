@@ -1,0 +1,25 @@
+// sys-io-13: tls::connect's doc says "A failed upgrade leaves it [the
+// TcpStream] untouched" (stdlib/graphix-package-sys/src/graphix/tls.gxi:19),
+// and tls.rs:81-83 says "A failed upgrade puts the socket back". Only the
+// failures before the handshake (bad CA PEM, bad CA, bad hostname,
+// tls.rs:49-79) restore it; a handshake failure has moved `tcp` into
+// `connector.connect` (tls.rs:80) and drops it, leaving the caller's
+// TcpStream empty. The code is right (a half-done handshake cannot carry
+// plaintext); the doc and the comment are wrong. Swap the hostname for
+// "not a hostname!" and the read after the failure returns the server's bytes.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/sys-io-13.gx
+// expected (per the doc): the read on the TcpStream returns the server's bytes
+// observed: upgrade: error:["TLSError", "TLS handshake failed: ..."]
+//           read on the TcpStream after: error:["IOError", "stream unavailable"]
+use sys::io::{Read, Write};
+use sys::tcp::{accept, connect, listen, listener_addr};
+let l = listen("127.0.0.1:0")$;
+let server = accept(l, null)$;
+let c = connect(listener_addr(l)$)$;
+let w = Write::write_exact(server, buffer::from_string("plaintext, not a TLS record\n"))$;
+let t = sys::tls::connect("localhost", w ~ c);
+println("upgrade: [t]");
+println("read on the TcpStream after: [Read::read(t ~ c, u64:64)]");
+sys::exit(sys::time::after_idle(duration:500.ms, t ~ 0))

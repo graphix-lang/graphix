@@ -363,6 +363,23 @@ impl Type {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
                             (Type::TVar(tv0), Type::TVar(tv1)) => tv0.same_cell(tv1),
+                            // CR claude for eric: [bug] `==` compares type variables by
+                            // binding, so two distinct unbound signature variables
+                            // inside a type count as equal (`Array<'a>` ==
+                            // `Array<'b>`). That lets an implementation less general
+                            // than its interface pass: `val f: fn(x: Array<'a>, y:
+                            // Array<'b>) -> Array<'a>` over `|x: 'c, y: 'c| -> 'c y`
+                            // passes, while the bare `fn(x: 'a, y: 'b) -> 'a` is
+                            // refused. --check and the LSP accept it, and then a direct
+                            // call is refused at elaboration. Through a dynamic module
+                            // or a function value, the call returns ["a", "b"] typed
+                            // Array<i64>: the JIT reads the string as a heap address,
+                            // or with the arguments swapped treats the i64 1 as an
+                            // ArcStr pointer and aborts. Compare unbound cells by
+                            // identity at every depth; `union_identical` alone is not
+                            // enough, because its `Fn` arm uses `==` and `fn(a: 'a) ->
+                            // 'a` against `fn(a: 'b) -> 'b` passes the same way. probe:
+                            // design/review-2026-10-05/repro/t-fntyp-04.gx (t-fntyp-04)
                             _ => sig_type == prev_sig_type,
                         };
                         if matches {

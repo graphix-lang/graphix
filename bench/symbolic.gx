@@ -15,6 +15,17 @@
 // aliased to eval_at's parameter `e` and the checksum came out exactly 2x
 // under fusion. Fixed 2026-07-02 (clone_rebind BindId remap); both modes
 // agree. See graphix-fuzz/findings/audit-jul2026/03.
+// CR claude for eric: [doc-drift] This header, par_symbolic.gx:3-4 and
+// bench/README.md:81-82, 131, 148 and 167-169 say recursive ADTs have no kernel ABI, so
+// this bench barely fuses. At HEAD recursive ADTs use the opaque 2-word ABI.
+// `#[native]` holds on build, deriv and eval_at at their calls in run_one. The one
+// blocker is `simplify`: its tuple-of-variant patterns (`(`Num(x), `Num(y))`) are
+// refused with 'nested variant pattern leaf not lowerable' (fusion/emit/select.rs:613),
+// and its recursive calls then fail as 'mutually recursive static call edge'. With
+// simplify removed, graphix-fuzz run reports only the sys::time::now failures. Lines
+// 13-17 are history and should be deleted. par_symbolic.gx:5 also calls `off` the
+// default GRAPHIX_PAR; the default is `auto` (graphix-types/src/stack.rs:240).
+// (examples-07)
 type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
 
 let n = 32;

@@ -1,0 +1,42 @@
+// x-panics-01: a duration literal with a negative or out-of-range value
+// panics the value parser instead of failing the parse.
+//
+// netidx-value's duration_of (../netidx/netidx-value/src/parser.rs:519)
+// builds the value with Duration::from_secs_f64, which panics on a
+// negative, infinite or overflowing count. Every text-to-Value path goes
+// through it: graphix source literals and patterns, str::parse, cast<T>
+// of a string, and the cast of a value that arrives over netidx. Here a
+// netidx write of the string "duration:-1.s" to a path published with a
+// typed #on_write reaches Value::cast -> parse_value -> duration_of; any
+// netidx client allowed to write the path can do the same.
+//
+// command: graphix -n --no-cache design/review-2026-10-05/repro/x-panics-01.gx
+//
+// expected: the write is refused like any other string, as with "hello":
+//   0
+//   error:["InvalidCast", "can't cast \"hello\" to i64: no primitive conversion"]
+//   (exit 0 after the idle timer)
+//
+// observed (HEAD c722befe, debug build):
+//   0
+//   thread 'tokio-rt-worker' panicked at .../core/src/time.rs:962:23:
+//   cannot convert float seconds to Duration: value is negative
+//   Error: graphix runtime is dead
+//   (exit 1)
+//
+// The same panic, one line each:
+//   `duration:-1.s` (or 1e30s, 1e400s, -1e-300s, 1e300y) in source,
+//   `--check` included: "Error: task N panicked with message cannot
+//   convert float seconds to Duration ..." where `duration:NaNs` gets a
+//   parse error with a caret; typed at the REPL it kills the runtime
+//   ("runtime did not respond", then "graphix runtime is dead").
+//   `str::parse(s)` with s = "duration:-1.s" read from a file, and
+//   `cast<i64>("duration:1e300y")` delivered by a timer: the runtime dies
+//   ("graphix runtime is dead") instead of a ParseError / InvalidCast.
+//   A subscription typed i64 whose publisher sends the string dies the
+//   same way.
+let got: i64 = 0;
+let p = sys::net::publish(#on_write: |v: i64| got <- v, "/local/x", 0);
+let w = sys::net::write("/local/x", sys::time::timer(duration:200.ms, false) ~ "duration:-1.s");
+sys::exit(sys::time::after_idle(duration:800.ms, 0));
+got

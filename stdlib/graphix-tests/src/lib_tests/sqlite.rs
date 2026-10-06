@@ -2,6 +2,15 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
+// CR claude for eric: [test-gap] This test cannot fail. The block's value is the
+// constant `true`, which fires at init whatever open and close do, and a failing `?`
+// with no catch is only logged. It is the only test of sqlite::close.
+// tcp_connect_accept (tcp.rs:9) has the same shape, and stdin_create (sys.rs:69) checks
+// `!is_err` of a Stdio, which is never an error, so it fails only if stdin never
+// produces. Gate the value on the effect: `let c = sqlite::close(db)?; c ~ true` (a
+// failing open then never produces) and `server ~ true` on accept's result. Probe: this
+// fixture with open("/definitely/not/a/dir/x.db") prints the unhandled SqliteError,
+// then `true`. (tests-lib-b2-01)
 run!(sqlite_open_memory, r#"{
     let db = sqlite::open(":memory:")?;
     sqlite::close(db)?;

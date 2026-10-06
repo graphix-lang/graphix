@@ -1,0 +1,23 @@
+// t-parser-b-04: a literal pattern head (true, false, null) leaves the note
+// "`true` is a reserved word and cannot be used as a name" behind, and the
+// note is printed for a later failure next to the literal.
+//
+// pattern() probes a type predicate first (typ() -> typref() -> typath()),
+// and abstract_pattern runs typath() before literal_pattern. typath reads
+// its segments with fname() (graphix-types/src/expr/parser/typexp.rs:37),
+// and fname (parser/mod.rs:411-424) notes every reserved word that does not
+// begin a construct. The probe fails, the literal parses, the note stays.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-parser-b-04.gx
+//
+// expected: a parse error at the `,` (a `|` was meant) with no note, or a
+//   note about the arm; the literal `true` is correct.
+// observed (HEAD c722befe, debug build):
+//   Parse error at line: 23, column: 16
+//   Unexpected `,` ... Expected whitespaces, =>, ...
+//   note: at line: 23, column: 12: `true` is a reserved word and cannot be
+//   used as a name
+// The same note appears for `select b { null, i64 as _ => 1 }` (null),
+// `select b { false, true => 1 }` (false) and `select b { true: 1 }`.
+let b = true;
+select b { true, false => 1 }

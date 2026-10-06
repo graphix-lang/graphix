@@ -1,0 +1,18 @@
+// c-select-seq-08: an or-pattern nested in an element position never counts
+// toward coverage. pooled_leaves (graphix-compiler/src/node/select.rs:642)
+// gives up on a nested Or (:665), so the arm is not pooled, and
+// is_refutable(Or) keeps it out of the irrefutable atoms.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-select-seq-08.gx
+//
+// expected: accepted; running it prints 3.
+// observed: missing match cases: no unguarded arm irrefutably covers (bool, i64)
+//
+// The same arm written as top-level alternatives, (true, n) | (false, n) => n,
+// is accepted. Refused the same way: (true, `A | `B) => 1, (false, _) => 2
+// over (bool, [`A, `B]); `P(`A | `B) => 1, `Q => 2 over [`P([`A, `B]), `Q];
+// {a: true | false, b} => b over {a: bool, b: i64}. Adding `_ => 0` after
+// (true | false, n) => n is accepted, although that arm can never match.
+let x = (true, 3);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select x { (true | false, n) => n }

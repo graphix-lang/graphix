@@ -12,6 +12,15 @@ enum CompletionContext<'a> {
 }
 
 impl<'a> CompletionContext<'a> {
+    // CR claude for eric: [bug] from_str never returns ArgLbl. The '(' that sets fend
+    // (line 23) also ends the scan in the same iteration, where prev is fend + 1, so
+    // s.get(prev..fend) is None. As a result `str::join(#se` + Tab returns Err and
+    // offers nothing, and complete()'s ArgLbl arm (line 117) is dead. prev also starts
+    // at 0, so a line ending in whitespace or '(' is completed as one word (`let x = `
+    // looks up a binding named `let x = `). Line 110's `extra: Some(vec!["hello
+    // world!"])` is a placeholder that IdeMenu never shows. probe: a verbatim copy of
+    // from_str returned ArgLbl for none of the 6.7M strings of up to 8 chars over {a #
+    // ( space { : ,}. (shell-11)
     fn from_str(s: &'a str) -> Result<Self> {
         let mut arg_lbl = 0;
         let mut fend = 0;

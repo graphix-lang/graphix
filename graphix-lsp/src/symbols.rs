@@ -104,6 +104,15 @@ impl ServerState {
                     kind: s.kind,
                     tags: None,
                     deprecated: None,
+                    // CR claude for eric: [bug] `range` ends where the name ends, but
+                    // LSP's `range` encloses the whole declaration and clients use it
+                    // to find the symbol the cursor is in, so outline follow,
+                    // breadcrumbs and sticky scroll never place a cursor inside a
+                    // function body; a .gx declaration's Expr `end` is at hand (a .gxi
+                    // SigItem has none). Query::location likewise answers zero-width
+                    // ranges, so a references list highlights no name although each
+                    // site's written length is known. probe:
+                    // design/review-2026-10-05/repro/lsp-16.py (lsp-16)
                     range: Range { start, end: selection_range.end },
                     selection_range,
                     children: None,
@@ -135,6 +144,16 @@ impl ServerState {
                     Err(_) => continue,
                 },
             };
+            // CR claude for eric: [perf] Every workspace/symbol request reads and
+            // parses each file it searches and filters by the query only afterwards,
+            // though scan has already parsed every file, keyed by mtime, for its
+            // mod_decls. Over netidx-admin's 36 files that is ~0.27 s a request with
+            // the debug build, and when the active document is in no scanned project
+            // (outside the workspace folders, or under a skipped dir) the `None` arm
+            // above searches every .gx/.gxi under the folders: 2.6-7.4 s a request on
+            // this repo. The server is single-threaded and the symbol picker sends a
+            // request per keystroke. Record each file's symbols where scan parses it
+            // and parse only open buffers here. (lsp-10)
             for s in declared(path, text.clone()) {
                 if !s.name.to_ascii_lowercase().contains(&needle) {
                     continue;

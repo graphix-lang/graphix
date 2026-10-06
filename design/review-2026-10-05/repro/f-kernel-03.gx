@@ -1,0 +1,24 @@
+// f-kernel-03: #[parallel] forks a fused callee's loops one slot per pool job.
+//
+// FusedKernel::update (graphix-compiler/src/fusion/kernel.rs:385) loans
+// ctx.fork_mode(), which is Force under #[parallel]. For a callee's loop
+// (kind & ROOT == 0) par_loop::run (graphix-compiler/src/fusion/par_loop.rs:148)
+// drops the forced grain but keeps Force, and cost::forced_grain(None, n) is 1,
+// so every slot of `inner`'s two 1M-slot loops is its own chunk job. The
+// node-walk runs a callee body under ForkFlags::body() (node/lambda.rs:754):
+// the runtime's Auto, which #[parallel] does not reach.
+//
+// command: GRAPHIX_DBG_PAR=1 timeout -s KILL 60 graphix --no-cache design/review-2026-10-05/repro/f-kernel-03.gx
+//   expected: the callee loops decide as they do without the attribute
+//     (Auto, 16 workers: `PAR kernel loop: 1000000 slots, 4 probed, 256 ranges`
+//     until the estimate settles, then `1 probed, 256 ranges`)
+//   observed: `PAR kernel loop: 1000000 slots, 0 probed, 1000000 ranges`, 8 times
+//     (the root loop: `4 slots, 0 probed, 4 ranges`)
+// timing (debug binary, wall, startup ~0.1 s): 1.22 s with the attribute,
+//   0.32 s with `#[parallel] ` deleted. Both print
+//   [999999000000, 1000001000000, 1000003000000, 1000005000000].
+let inner = |n: i64| array::fold(array::map(array::init(1000000, |i| i + n), |x| x * 2), 0, |a, b| a + b);
+let xs = array::init(4, |i| i);
+let r = #[parallel] array::map(xs, |x| inner(x));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

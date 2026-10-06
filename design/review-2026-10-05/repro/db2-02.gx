@@ -1,0 +1,51 @@
+// db2-02: sled's internal tree names bypass the db package's type metadata;
+// the mistyped values crash fused code.
+//
+// The reserved-name check in DbTreeEv::eval (stdlib/graphix-package-db/src/
+// tree.rs:509-511, and BeginTxnCtx::open_tree, txn.rs:298-301) knows only
+// META_TREE and DEFAULT_TREE_META. sled keeps its default tree as the tenant
+// "__sled__default" (sled-0.34.7 src/db.rs:107-118), so db::tree(db,
+// "__sled__default") opens the default tree's data under a metadata key of
+// its own, with any types. db::drop_tree (tree.rs:373-382) checks no name,
+// so dropping "$$__graphix_meta__$$" erases every tree's stored types and a
+// surviving tree reopens with any types. db::tree_names lists both names.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/db2-02.gx
+//   (and again with --no-fusion)
+// expected: the reopen of the default tree as "__sled__default" and the
+//   reopen of "x" after the drop both return DbErr (the stored types are
+//   Tree<string, i64>), or the internal names are refused; nothing is read
+//   as a string.
+// observed (HEAD c722befe, debug build), both engines first print:
+//   tree_names: ["__sled__default", "$$__graphix_meta__$$"]; meta tree dropped: true; read as strings: [4096, 7]
+//   (two i64s in an Array<[string, null]>; strings would print quoted), then
+//   fused: "Segmentation fault", exit 139: len1's kernel takes the nullable
+//   param, unwraps it and reads the i64 4096 as an ArcStr pointer;
+//   --no-fusion: nothing more, exit 0 (len1(v) bottoms silently).
+// variant: `let len1 = |s: string| -> i64 str::len(s) + 1;` called as
+//   `len1((sys::time::after_idle(duration:100.ms, w) ~ v)$)` panics instead:
+//   "kernel param `arg`: runtime I64(4096) does not match the compiled
+//   String slot", then "Error: graphix runtime is dead", exit 1.
+// control: reopening null or "x" as Tree<string, string> without the
+//   internal names returns DbErr "tree '..' has type Tree<string, i64> but
+//   was opened as Tree<string, string>".
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/x.db")$;
+let t: db::Tree<string, i64> = db::tree(db, null)$;
+let ins = db::insert(t, "k", 4096)$;
+let names = db::tree_names(ins ~ db)$;
+let t2: db::Tree<string, string> = db::tree(db, names ~ "__sled__default")$;
+let v = db::get(t2, "k")$;
+let x: db::Tree<string, i64> = db::tree(db, v ~ "x")$;
+let ix = db::insert(x, "k", 7)$;
+let dropped = db::drop_tree(db, ix ~ "$$__graphix_meta__$$")$;
+let x2: db::Tree<string, string> = db::tree(db, dropped ~ "x")$;
+let w = db::get(x2, "k")$;
+let shown = [v, w];
+println("tree_names: [names]; meta tree dropped: [dropped]; read as strings: [shown]");
+let len1 = |s: [string, null]| -> i64 str::len(s$) + 1;
+let n = len1(sys::time::after_idle(duration:100.ms, w) ~ v);
+println("len1(v) = [n]");
+sys::exit(sys::time::after_idle(duration:300.ms, w ~ 0));
+n

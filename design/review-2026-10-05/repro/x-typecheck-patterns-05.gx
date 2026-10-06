@@ -1,0 +1,20 @@
+// x-typecheck-patterns-05: the contractivity check (Type::reaches_unguarded,
+// graphix-types/src/typ/mod.rs) answers "guarded" for a cycle it cannot see.
+// T below is W applied 256 times around [i64, T], i.e. `type T = [i64, T]`.
+// command: graphix --no-cache --check x-typecheck-patterns-05.gx
+//          graphix --no-cache x-typecheck-patterns-05.gx
+// expected: T refused at its definition ("recursive type T refers back to
+//   itself through unions and aliases alone"), as it is with 255 nested W.
+// observed: --check exits 0 and accepts `let n: i64 = s` with s = "hello";
+//   the run panics at fusion/kernel.rs:243: kernel param `n`: runtime
+//   String("hello") does not match the compiled Scalar(I64) slot.
+// Same hole with no depth: a name not yet defined also answers "guarded", so
+//   `type T = G<[i64, T]>; type G<'a> = 'a;` is accepted (refused in the other
+//   order), and `type T = G<T>; type G<'a> = 'a; let x: T = 1; x` hangs
+//   --check in StructPatternNode::compile_int_inner's lookup_ref loop.
+type W<'a> = 'a;
+type T = W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<[i64, T]>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+let s: T = "hello";
+let n: i64 = s;
+let inc = |x: i64| x + 1;
+inc(n)

@@ -1,0 +1,36 @@
+// gx-stdlib-11: bit_and/bit_or/bit_xor/shl/shr lack `+ Singleton`: a mixed-int
+// union typechecks, then the call never produces.
+//
+// The bitwise builtins are declared `fn<'a: Int>(a: 'a, b: 'a) -> 'a`
+// (stdlib/graphix-package-core/src/graphix/mod.gxi:163-178, mod.gx:17-22), so
+// 'a settles to a union such as [i64, u8]. int_binop!/int_shift!
+// (stdlib/graphix-package-core/src/lib.rs:1456-1494) return None when the two
+// values are different variants: no value, no error, no log. The node-walk
+// then rides its last result (CachedArgs::update_inner -> ride()) while the
+// JIT bottoms (graphix_fastcall: None is the cycle's bottom), so the engines
+// disagree. `x + y` over the same operands is refused at check time ("it holds
+// more than one numeric type (cast to one)"). bit_not is per-variant and works.
+//
+// command: graphix --check design/review-2026-10-05/repro/gx-stdlib-11.gx
+//   expected: refused, as `x + y` over [i64, u8] is
+//   observed (HEAD c722befe, debug build): exit 0
+// command: graphix-fuzz check design/review-2026-10-05/repro/gx-stdlib-11.gx
+//   observed: DIVERGENCE - fusion/JIT bug (interp != jit)
+//     interp: Trace([0:[i64:8, i64:0] 1:[i64:8, i64:1] 2:[i64:8, i64:2]])
+//     jit: Trace([0:[i64:8, i64:0]])
+//   (graphix --no-cache prints (8, 0) only; with --no-fusion it prints
+//   (8, 0) (8, 1) (8, 2): cycles 1 and 2 compute bit_and(u8:3, i64:10), which
+//   has no value, and the node-walk re-delivers the stale 8.)
+//
+// Without a prior value neither engine prints anything for the call:
+//   let x: [i64, u8] = i64:12; let y: [i64, u8] = u8:10;
+//   println("bit_and: [bit_and(x, y)]"); println("shl: [shl(x, y)]")
+// passes --check and prints neither line.
+{
+  let n = 0;
+  n <- select n { 0 => 1, 1 => 2, _ => never() };
+  let x: [i64, u8] = select n { 0 => i64:12, _ => u8:3 };
+  let y: [i64, u8] = i64:10;
+  let r = bit_and(x, y);
+  (r, n)
+}

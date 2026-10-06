@@ -1,0 +1,48 @@
+// c-select-seq-04: Select consumes its wake bit in a no-arm window; the later
+// same-arm resumption runs without the wake view.
+//
+// command (repo root):
+//   graphix-fuzz run design/review-2026-10-05/repro/c-select-seq-04.gx
+//   graphix --no-cache design/review-2026-10-05/repro/c-select-seq-04.gx
+//
+// One event (ev=5) switches mode back to `List and clears sel. Both land at
+// ev=6, so the inner select wakes with a bottom scrutinee: it takes its slept
+// bit (select.rs:887) and returns bottom (:920). At ev=7 sel is 1 again and
+// the same-arm path (:978) runs the arm with init and wake_init false. The
+// Bind of presses still holds its own slept bit, so it republishes its
+// initializer 0 over the written 3 (bind.rs: wake_refresh without
+// wake_phantom), and the constant 1 does not fire, so the entry action on
+// entries is skipped.
+//
+// expected (sleep is pause; the arm's constants fire at its wake): presses
+// resumes at 3 and entries counts the re-entry, e.g. with the wake view at
+// the first cycle the arm runs:
+//   ... 2:[i64:1, i64:1, i64:2] 7:[i64:1, i64:1, i64:3] 8:[i64:1, i64:2, i64:4] ...
+// Control: when sel is null and back while the arm sleeps
+// (`3 => null, 4 => 1`) every mode gives
+//   ... 2:[i64:1, i64:1, i64:2] 6:[i64:1, i64:1, i64:3] 7:[i64:1, i64:2, i64:4] ...
+// observed, every mode (interp, jit, no cache, cold, warm; `check` says AGREE):
+//   Trace([0:[i64:1, i64:0, i64:0] 1:[i64:1, i64:1, i64:1] 2:[i64:1, i64:1, i64:2]
+//          7:[i64:1, i64:1, i64:0] 8:[i64:1, i64:1, i64:1] 9:[i64:1, i64:1, i64:2]])
+//   shell (fused and --no-fusion, any GRAPHIX_PAR):
+//   (1, 0, 0) (1, 1, 1) (1, 1, 2) (1, 1, 0) (1, 1, 1) (1, 1, 2)
+// A consulted guard that is bottom at the wake cycle (ChainOut::Undet, :973)
+// resets presses the same way.
+let ev = 0;
+ev <- select ev { k if k < 8 => k + 1, _ => never() };
+let mode: [`Detail, `List] = `List;
+let sel: [i64, null] = 1;
+mode <- select ev { 2 => `Detail, 5 => `List, _ => never() };
+sel <- select ev { 5 => null, 6 => 1, _ => never() };
+let entries = 0;
+select mode {
+  `List => select sel$ {
+    i => {
+      let presses = 0;
+      presses <- ev ~ presses + 1;
+      entries <- (1 ~ entries) + 1;
+      (i, entries, presses)
+    }
+  },
+  `Detail => never()
+}

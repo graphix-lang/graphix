@@ -1,0 +1,72 @@
+// x-builtin-effects-04: the opt HOFs give nothing at an arm's first entry and
+// the pre-sleep result at a wake when their input arrives STALE.
+//
+// Both arms of each select read in0, so whichever arm is awake consumes in0's
+// fire bit and the other arm is entered or woken with in0 STALE
+// (design/wake_catchup.md, "Shared-input effect"). The callback recomputes
+// the present value tagged STALE (GXDBG_CS=1: callback res Tag(32)), and the
+// HOF throws it away: tick_unary keeps only a FIRED callback production
+// (stdlib/graphix-package-core/src/opt.rs:325) and a FIRED null (313-316),
+// OptFilter the same (556-576), OptOrElse/OptOkOrElse emit only on a_fired or
+// f_fired (819-831, 902-913, 989-1000). Its `out` then rides: the phantom
+// (bottom) at a first entry, the pre-sleep value at a wake. mymap, the same
+// function written as a select, recomputes correctly.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-04.gx
+//   (same with --no-fusion, GRAPHIX_PAR=off|force, cold or warm image;
+//   graphix-fuzz check: AGREE, the HOFs never fuse and both engines run them)
+// expected (a select's output is a function of the present world; select
+//   twins of each HOF print exactly these):
+//   n=2 cond=true in0=1: mymap=2 map=2 flat_map=2 filter=null
+//     is_some_and=false is_none_or=false or_else=1 ok_or_else=1
+//   n=4 cond=false in0=20: mymap=62 map=62 flat_map=62 filter=null
+//     is_some_and=false is_none_or=false or_else=20 ok_or_else=20
+// observed (HEAD c722befe, debug build, every mode):
+//   n=2: only the mymap=2 line; all seven opt HOFs are bottom
+//   n=4: mymap=62 map=43 flat_map=43 filter=1 is_some_and=true
+//     is_none_or=true or_else=1 ok_or_else=1
+// With `in0 <- null` in place of 20, n=4 prints mymap=null but map=43.
+let mymap = |x: [i64, null], f: fn(x: i64) -> i64| -> [i64, null] select x {
+  null as _ => null,
+  v => f(v)
+};
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let cond = false;
+let in0: [i64, null] = 1;
+let k1 = 1;
+let k10 = 10;
+let k42 = 42;
+cond <- select n { 1 => true, 3 => false, _ => never() };
+in0 <- select n { 2 => 20, _ => never() };
+sys::exit(select n { 5 => 0, _ => never() });
+let mine = select cond { true => mymap(in0, |v| v + k1), false => mymap(in0, |v| v + k42) };
+let m = select cond { true => opt::map(in0, |v| v + k1), false => opt::map(in0, |v| v + k42) };
+let fm = select cond {
+  true => opt::flat_map(in0, |v| -> [i64, null] v + k1),
+  false => opt::flat_map(in0, |v| -> [i64, null] v + k42)
+};
+let fl = select cond { true => opt::filter(in0, |v| v > k1), false => opt::filter(in0, |v| v < k10) };
+let sa = select cond {
+  true => opt::is_some_and(in0, |v| v > k1),
+  false => opt::is_some_and(in0, |v| v < k10)
+};
+let no = select cond {
+  true => opt::is_none_or(in0, |v| v > k1),
+  false => opt::is_none_or(in0, |v| v < k10)
+};
+let oe = select cond { true => opt::or_else(in0, || k1), false => opt::or_else(in0, || k42) };
+let oke = select cond {
+  true => opt::ok_or_else(in0, || `E),
+  false => opt::ok_or_else(in0, || `F)
+};
+println(n ~ "n=[n] cond=[cond] in0=[in0] mymap=[mine]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] map=[m]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] flat_map=[fm]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] filter=[fl]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] is_some_and=[sa]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] is_none_or=[no]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] or_else=[oe]");
+println(n ~ "n=[n] cond=[cond] in0=[in0] ok_or_else=[oke]");
+null

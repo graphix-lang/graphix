@@ -8,6 +8,13 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, anyhow};
+// CR claude for eric: [style] MemFlags is imported here yet spelled
+// cranelift_codegen::ir::MemFlags at 218 and 226, Endianness is spelled out at 219,
+// 227, 489 and 495, and 194 writes anyhow::anyhow! despite the anyhow import; nodes.rs
+// writes smallvec::SmallVec/smallvec! 15 times with no import. clif_size (463) and
+// zero_const (258) restate prim_to_clif's width table: clif_size is
+// prim_to_clif(p).bytes(), and zero_const is iconst(prim_to_clif(p), 0) for every prim
+// but the two floats. (f-nodes-scalar-09)
 use cranelift_codegen::ir::{
     InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
     condcodes::{FloatCC, IntCC},

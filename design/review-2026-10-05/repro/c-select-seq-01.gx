@@ -1,0 +1,60 @@
+// c-select-seq-01: a bottom or undecidable select window leaves the held
+// arm awake but never updated; whatever lands inside the arm then is lost.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-select-seq-01.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=force, a cold or warm image)
+//
+// `sel` is null while n is 2..3 (100 ms), so `sel$` is bottom and
+// Select::update returns early (graphix-compiler/src/node/select.rs:920).
+// The selected arm is not evaluated and not slept. The timer's ticks in
+// that window reach no one. Timer only re-arms when it sees its own tick
+// in ctx.event.variables (stdlib/graphix-package-sys/src/time.rs), so it
+// never fires again. When sel is 1 again, the same arm is selected and
+// awake, and its timer is dead for good.
+//
+// expected: counting resumes once sel is 1 again (from 1 if the window
+//   pauses the arm, onward from ~9 if it keeps running). Control: with
+//   `2 => 1` in place of `2 => null` it prints 1 2 3 4 4 5 6 ... 28.
+// observed (every mode): 1 2 3 4 4, then nothing until the exit at n = 12.
+//
+// Same window, other victims (each probe run both ways, --no-fusion and not):
+//
+// 1. A seq waiting on an async step wedges. Replace the last line with
+//      let go = select n { 1 | 8 => n, _ => never() };
+//      select sel$ { _ => seq go { let r = sys::time::after_idle(duration:80.ms, go); r * 10 } }
+//    expected: 10 10 80 (what `2 => 1` prints). observed: nothing. Run 1's
+//    reply lands in the window, so the machine stays busy and drops run 2.
+//
+// 2. An arm-local write that lands in the window is lost, and the engines
+//    disagree about it:
+//      let clock = sys::time::timer(duration:50.ms, true);
+//      let n = 0;
+//      n <- clock ~ n + 1;
+//      let click = select n { 2 | 6 => n, _ => never() };
+//      let sel: [i64, null] = 5;
+//      sel <- select n { 2 => null, 4 => 7, _ => never() };
+//      sys::exit(select n { 8 => 0, _ => never() });
+//      select sel$ { k => { let clicks = 0; clicks <- click ~ clicks + 1; (clicks * 100, k) } }
+//    The first click's `clicks <- 1` lands in the window's first cycle.
+//    expected: (0, 5) (100, 7) (200, 7)
+//    observed, node-walk: (0, 5) (0, 7) (100, 7). `clicks * 100` rides its
+//      pre-window resident while the store holds 1, and `clicks + 1` rides
+//      1, so the second click is lost too.
+//    observed, JIT: (0, 5) (100, 7) (100, 7). The kernel computes from the
+//      store; the second click is still lost.
+//    The fuzzer sees it: driven by fuzz inputs instead of the clock
+//    (click = skip(#n: 1, in1), sel <- skip(#n: 1, in0), sel <- click ~ null,
+//    schedule in1=i64:1 then in0=i64:7), graphix-fuzz check reports
+//    DIVERGENCE, interp [0, 7] vs jit [100, 7].
+//
+// An undecidable guard window (a consulted guard standing bottom,
+// ChainOut::Undet, select.rs:973) freezes the timer the same way. A lambda
+// whose argument is bottom keeps its body running, and its timer keeps
+// counting.
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let sel: [i64, null] = 1;
+sel <- select n { 2 => null, 4 => 1, _ => never() };
+sys::exit(select n { 12 => 0, _ => never() });
+select sel$ { _ => count(sys::time::timer(duration:20.ms, true)) }

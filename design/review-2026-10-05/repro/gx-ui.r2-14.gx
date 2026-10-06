@@ -1,0 +1,71 @@
+// gx-ui.r2-14: tui browser: a one-row scroll re-subscribes every visible cell
+// and blanks it to #SUB, and #SUB's width changes the visible columns.
+//
+// browser.gx:93 maps visible_rows to cells by screen position, so a scroll
+// gives every slot a new path: each cell's net::subscribe unsubscribes and
+// resubscribes (net.rs Subscribe::update) and uniq(path) ~ "#SUB" (line 106)
+// blanks it, the rows that stay on screen included (A). The 4-char #SUB feeds
+// content_widths (line 112), so a column whose header and values are
+// narrower than 4 widens and fewer columns fit until the 1 s throttle passes
+// the real widths: at load, and at a scroll that comes more than a second
+// after the last width change (B). The 0.5 s throttle (line 105) holds
+// nothing back: #rate reads stale in this arm of a fresh slot, so Throttle
+// never learns its wait (x-engine-firing-05's cause); every cell is back
+// within ~1 ms. A moved cell can also show the previous row's value for a
+// cycle: Subscribe keeps its BindId across a path change, so an update routed
+// to it for the old path arrives as the new path's value. C is net::subscribe
+// alone, printing only fires whose value belongs to another path.
+//
+// command: env -u WAYLAND_DISPLAY -u DISPLAY graphix --no-cache design/review-2026-10-05/repro/gx-ui.r2-14.gx
+//          (the same with --no-fusion)
+//
+// expected: A: a scroll step changes only the row that enters (r11 and r12
+//   keep their values and never show another row's); B: 8 columns throughout
+//   (8 one-char columns fit in 40); C: no line.
+// observed (HEAD c722befe, debug build, both engines), times from start:
+//   A 1.24s cells [["r10", "#SUB"], ["r11", "#SUB"], ["r12", "#SUB"]]
+//   A 1.24s cells [["r10", "10"], ["r11", "10"], ["r12", "11"]]   (some runs)
+//   A 1.24s cells [["r10", "10"], ["r11", "11"], ["r12", "12"]]
+//   A 1.34s cells [["r11", "#SUB"], ["r12", "#SUB"], ["r2", "#SUB"]]
+//   .. the same at every 100 ms step
+//   B 0.05s header 8 columns, 5 columns; 1.05s 8 columns (load)
+//   B 3.39s header 5 columns; 4.40s 8 columns (B scrolls at 3.3s)
+//   C path /p/k1 got k0:1, path /p/k2 got k1:4, .. (130-215 lines per run,
+//     out of ~460 path switches)
+use tui::{Tui, browser::{MoveCursor, browser}};
+use sys::net;
+type R = Result<string, [`InvalidCast(string), `SubscribeError(string)]>;
+let t0 = sys::time::now(null);
+let at = |e| sys::time::diff(sys::time::now(e), t0);
+let pa = array::map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], |r| net::publish("/s/r[r]/c", r));
+let pb = array::map([1, 2, 3, 4, 5, 6], |r| array::map(["a", "b", "c", "d", "e", "f", "g", "h"], |c| net::publish("/t/r[r]/[c]", r)));
+let cur: MoveCursor = never();
+let a: Tui = browser(#size: {width: 80, height: 4}, #cursor: cur, "/s");
+let curb: MoveCursor = never();
+let b: Tui = browser(#size: {width: 40, height: 4}, #cursor: curb, "/t");
+let cells = select a {
+    `Table(t) => array::map(*t.rows, |r| array::map((*r).cells, |c| c.content.spans)),
+    _ => never()
+};
+let hdr = select b { `Table(t) => array::len((*t.header)$.cells) - 1, _ => never() };
+let i = 0;
+i <- sys::time::timer(duration: 100.ms, 48) ~ i + 1;
+cur <- select i { x if x >= 10 && x < 14 => i ~ `Down(1), _ => never() };
+curb <- select i { x if x >= 31 && x < 34 => i ~ `Down(1), _ => never() };
+println("A [at(cells)] cells [cells]");
+println("B [at(hdr)] header [hdr] columns");
+let tick = 0;
+tick <- sys::time::timer(duration: 2.ms, true) ~ tick + 1;
+let pc = array::init(4, |k| net::publish("/p/k[k]", "k[k]:[tick]"));
+let held: Array<R> = array::init(4, |k| net::subscribe("/p/k[k]"));
+let j = 0;
+j <- sys::time::timer(duration: 10.ms, 460) ~ j + 1;
+let path = "/p/k0";
+path <- j ~ "/p/k[j % 4]";
+let r: R = net::subscribe(path);
+let got = r$ ~ (str::basename(path)$, r$);
+println(select got {
+    (k, s) if str::starts_with(#pfx: "[k]:", s) => never(),
+    (k, s) => "C path /p/[k] got [s]"
+});
+sys::exit(sys::time::timer(duration: 4.8s, false) ~ 0)

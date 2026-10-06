@@ -1,0 +1,55 @@
+// x-unsafe-05: an abstract type test checks a Graphix abstract's
+// parameters but not a Rust-backed abstract's.
+//
+// graphix-compiler/src/node/pattern.rs:1196-1198 says parameters are not
+// carried at runtime, so `Box<i64> as b` also matches a `Box<string>`.
+// For `type Box<'a> = Abstract<'a>` that is false (`gx` below): the box
+// carries its params and Type::is_a compares them
+// (graphix-types/src/typ/cast.rs:672). For a Rust-backed abstract with
+// parameters it is true, since cast.rs:683 compares the id alone, and
+// unsound: `db::Tree<string, i64> as t` takes a Tree<i64, string>, so
+// db::first(t) yields a key of 1 typed string and a value of "one" typed
+// i64 (`rust`), and trait dispatch over a union self calls the other
+// instantiation's impl (`dispatch`).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-unsafe-05.gx
+//          (and again with --no-fusion)
+// expected: ((0, 42), (`Right, null, null), "string->i64")
+// observed: ((0, 42), (`Wrong, "", 0), "i64->string") fused;
+//           ((0, 42), (`Wrong, 1, "one"), "i64->string") with --no-fusion
+let gx = {
+  type Box<'a> = Abstract<'a>;
+  let f = |b: Any| select b {
+    Box<i64> as x => x.0 + 1,
+    _ => 0
+  };
+  (f(Box("str")), f(Box(41)))
+};
+let td = sys::fs::tempdir::create(null)$;
+let d = db::open("[sys::fs::tempdir::path(td)]/db")$;
+let a: db::Tree<i64, string> = db::tree(d, "a")$;
+let ins = db::insert(a, 1, "one")$;
+let x: [db::Tree<i64, string>, db::Tree<string, i64>] = ins ~ a;
+let rust = select x {
+  db::Tree<string, i64> as t => {
+    let p = db::first(t)$$;
+    let k: Any = p.0;
+    let v: Any = p.1;
+    (`Wrong, k, v)
+  },
+  db::Tree<i64, string> as _ => (`Right, null, null)
+};
+trait Name {
+  val name: fn(self) -> string
+};
+impl Name for db::Tree<i64, string> {
+  let name = |t| "i64->string"
+};
+impl Name for db::Tree<string, i64> {
+  let name = |t| "string->i64"
+};
+let b: db::Tree<string, i64> = db::tree(d, "b")$;
+let y: [db::Tree<i64, string>, db::Tree<string, i64>] = b;
+let dispatch = Name::name(y);
+println("[(gx, rust, dispatch)]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

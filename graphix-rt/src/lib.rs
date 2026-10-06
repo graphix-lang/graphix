@@ -180,6 +180,18 @@ impl<X: GXExt> Ref<X> {
     /// This will cause all nodes dependent on *id to update. This is the same
     /// as the `*r <-` operator in Graphix. This does the same thing as
     /// `GXHandle::set` using the target id.
+    // CR claude for eric: [bug] set_deref is not dead: the tui size refs call it
+    // (block.rs:343, layout.rs:260, overlay.rs:127, scrollbar.rs:354, tabs.rs:203). Its
+    // only target is the byref_chain entry compile_ref found (gx.rs:976), so for a
+    // place reference it writes nothing and returns Ok(()). As a result, `block(#size:
+    // &st.size, ..)` never receives a size, while `#size: &sz` does (probe:
+    // design/review-2026-10-05/repro/rt-16.gx). Resolve the target in the runtime at
+    // delivery, as ConnectDeref::resolve does (graphix-compiler/src/node/mod.rs:1616):
+    // ref_path first, then byref_chain. Nearby code really is dead: TRef::set_deref has
+    // no caller; Rt::clear, GXRt::clear (rt.rs:127) and GXExt::clear have none; the
+    // pending tasks put into the two JoinSets (rt.rs:71-74) duplicate join_or_wait's
+    // None-to-pending; and `let scope` in compile_root and compile (gx.rs:671, 702) is
+    // unused. (rt-16)
     pub fn set_deref<T: Into<Value>>(&mut self, v: T) -> Result<()> {
         if let Some(id) = self.target_bid {
             self.rt.set(id, v)?
@@ -377,6 +389,13 @@ impl<X: GXExt> NamedCallable<X> {
     ///
     /// While a late bound function is unresolved calls will queue internally in
     /// the NamedCallsite and will happen when the function is resolved.
+    // CR claude for eric: [bug] Before the name resolves, call parks a oneshot in
+    // self.deferred and awaits it while its future still borrows &mut self. Only
+    // update(&mut self) completes that oneshot, so the documented 'keep calling update
+    // while waiting' cannot be written, and an early call never returns.
+    // call_unchecked's resolved branch (line 403) also runs the checked c.call. Nothing
+    // in the workspace or ../netidx uses NamedCallable or compile_callable_by_name, so
+    // delete both. (rt-12)
     pub async fn call(&mut self, args: ValArray) -> Result<()> {
         match &self.current {
             Some(c) => c.call(args).await,
@@ -653,6 +672,17 @@ impl<X: GXExt> GXHandle<X> {
     ///
     /// The aborted cycle rides its last result and re-fires next cycle,
     /// so a wrongly-fired watchdog costs a cycle, not correctness.
+    // CR claude for eric: [doc-drift] The doc above (lines 654-655) and
+    // design/atomic_recursion.md:84-85 say an interrupted cycle 're-fires next cycle,
+    // so a wrongly-fired watchdog costs a cycle, not correctness', but nothing
+    // re-schedules an interrupted root. GXLambda::update and FusedKernel ride their
+    // resident, do_cycle clears `updated`, and the inputs' fires are spent, so the
+    // derivation recomputes only when an input fires again. A one-shot trigger's result
+    // is therefore lost: at the REPL, a Ctrl-C one second into a 2.7 s `sum(0, go ~
+    // 400000000)` leaves `r` with no value for good, while the uninterrupted run prints
+    // 80000000200000000 (probe: design/review-2026-10-05/repro/rt-06.py). Either re-run
+    // the roots an interrupted cycle updated, with their trigger fires restored, or
+    // correct both docs and the watchdog advice. (rt-06)
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }
@@ -816,6 +846,14 @@ impl<X: GXExt> GXHandle<X> {
         match root {
             None => Ok(None),
             Some(Err(e)) => Err(anyhow!("{e}")),
+            // CR claude for eric: [risk] Every call mints another owning CompExp for
+            // the one program root (ToGX::Program clones the stored ProgramRoot), and
+            // dropping any of them sends Delete and stops the program for everyone. The
+            // image tests already drop one at once
+            // (stdlib/graphix-tests/src/lang/image.rs:297, 560, 691), which deletes the
+            // warm program after its first cycle; they pass only because its values all
+            // arrive in that cycle. Hand the root out once: take the ProgramRoot in the
+            // runtime and answer None or an error afterwards. (rt-14)
             Some(Ok(r)) => Ok(Some(CompRes {
                 exprs: smallvec![CompExp {
                     id: r.id,

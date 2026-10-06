@@ -52,6 +52,16 @@ fn bare_postfix_source(e: &ExprKind) -> Option<&Expr> {
 /// not read it back bare: a leading `{` is the body, a map access is
 /// refused outside brackets, a call of `flush` is the clause, and the
 /// head admits operator expressions only.
+// CR claude for eric: [bug] Both callers also pass a `let` trigger's value here. After
+// `let p =` the head parser reads a leading `{` or a `flush(..)` call bare, so the
+// brace/clause test adds parens there that the parser does not need. Separately,
+// reads_bare has no arm for the prefix operators `*` `!` `-` `&`, which arith(false)
+// also reads bare. The added parens reparse as ExplicitParens, so `graphix fmt` and LSP
+// formatting refuse valid files with "the formatted text says something else": `seq *r
+// { 1 }`, `seq go ~ *r { 1 }`, `seq let v = *r { v + 1 }`, `seq let c = { a: go, b: 2 }
+// { c.a }`, `seqq let v = flush(go) { v }`. The round-trip proptest only generates
+// reference triggers (expr/test.rs:1420), so it cannot catch this. probe:
+// design/review-2026-10-05/repro/t-print-02.sh (t-print-02)
 fn trigger_needs_parens(t: &Expr) -> bool {
     use ExprKind::*;
     // the expression whose first token the head parser meets first, and
@@ -278,6 +288,18 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     }
     // the first line is measured by laying it out, so a head that cannot
     // fit is not tried: that would lay out the body twice at every level
+    // CR claude for eric: [perf] head_min is only a lower bound for a select (`select _
+    // {`), a struct-with (`{ _ with`), a lambda and a call on a non-name callee (1). A
+    // head whose real first line overflows therefore passes this guard: the body is
+    // laid out here, measured, rolled back and laid out again under the head. Nested,
+    // that close to doubles the work per level until indentation alone fills the line.
+    // `graphix fmt --width 160` on 16/18/20/22 nested selects with a 140-char scrutinee
+    // takes 0.14/0.44/1.6/6.1 s (debug build), nested struct-withs on a long name grow
+    // the same way, at the default width 30 levels take 2.3 s, and LSP formatting goes
+    // through this path. The guard needs the head's exact first-line width (for a
+    // select, the scrutinee's flat width) before the body is laid out, or the body must
+    // be laid out once. Probe: design/review-2026-10-05/repro/t-print-03.gx.
+    // (t-print-03)
     if opens_with_bracket(&e.kind) && buf.col() + head_min(&e.kind) <= buf.limit {
         let start = buf.mark();
         let col = buf.col();
@@ -517,6 +539,16 @@ impl fmt::Display for Doc {
             if doc == "" {
                 writeln!(f, "///")?;
             } else {
+                // CR claude for eric: [bug] `doc.lines()` loses parts of the doc. It
+                // drops a doc's final empty line (`/// a` over `///` parses to " a\n").
+                // It also strips the '\r' before each '\n' that a CRLF file's doc lines
+                // keep. The reprinted doc then differs, so `graphix fmt` and LSP
+                // formatting refuse the interface, and the was/now texts in the message
+                // read the same. The PrettyDisplay impl at line 552 repeats this body.
+                // Fix both with one writer, used by both impls, that prints `///{line}`
+                // for each item of `doc.split('\n')`; that also makes the `doc == ""`
+                // branch unnecessary. probe:
+                // design/review-2026-10-05/repro/t-print-05.sh (t-print-05)
                 for line in doc.lines() {
                     writeln!(f, "///{line}")?;
                 }
@@ -1151,6 +1183,14 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// true exactly for identifiers and postfix-chain nodes (`?`/`$` included). Anything else
 /// must be parenthesized (`(a+b).c`; `(42).0` would lex as a float).
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
+    // CR claude for eric: [readability] This admits only names and postfix chains, but
+    // the parser reads any bracket-delimited primary bare as a postfix source and drops
+    // parens around one. So the formatter adds a pair it does not need: `(1, 2).0`
+    // becomes `((1, 2)).0`, `[1, 2][0]` becomes `([1, 2])[0]`, `{ a: 1 }.a` becomes `({
+    // a: 1 }).a` and `select v { .. }.0` becomes `(select v { .. }).0`.
+    // StructWithExpr::write_head has the same gap against the parser's with_source: `{
+    // u$ with b: 5 }` becomes `{ (u$) with b: 5 }`. Numeric constants (`(42).0`) and
+    // ExplicitParens still need the parens. (t-print-13)
     matches!(
         &e.kind,
         ExprKind::Ref { .. }
@@ -1245,6 +1285,15 @@ impl LambdaExpr {
     /// The quantifiers in front of the opening bar, and the space
     /// between them and it.
     fn write_constraints(&self, f: &mut impl Write) -> fmt::Result {
+        // CR claude for eric: [style] The parser stores `'a: Number + Singleton` as one
+        // (tvar, bound) pair per conjunct, and this loop prints each pair on its own.
+        // So the formatter rewrites `'a: Number + Singleton |x: 'a, y: 'a|` as `'a:
+        // Number, 'a: Singleton |x: 'a, y: 'a|`, and the book's `'a: [Number, null] +
+        // OneNumber |x: 'a|` (functions/polymorphism.md) as `'a: [null, Number], 'a:
+        // OneNumber |x: 'a|`. FnType's Display (typ/fntyp.rs) and ImplExpr::write_head
+        // join one variable's bounds with ` + `, each in a loop of its own. One writer
+        // over `&[(TVar, Type)]` that joins adjacent bounds of the same variable would
+        // serve all three. (t-print-11)
         for (i, (tvar, typ)) in self.constraints.iter().enumerate() {
             let sep = if i + 1 < self.constraints.len() { ", " } else { " " };
             write!(f, "{tvar}: {typ}{sep}")?;
@@ -1269,6 +1318,12 @@ impl LambdaExpr {
 
     /// What follows the closing bar, up to the body.
     fn write_returns(&self, f: &mut impl Write) -> fmt::Result {
+        // CR claude for eric: [structure] This match and the one in pretty_returns
+        // below each restate the rule that a function return type is parenthesized,
+        // whether bare or behind `&` (Type::Fn, Type::ByRef(Fn)). typ/fntyp.rs already
+        // holds that rule as Ret::of for fn types, and three copies of one delimiting
+        // rule can drift apart. Make Ret pub(crate) and drive both lambda printers from
+        // Ret::of. (t-print-12)
         match &self.rtype {
             None => (),
             Some(Type::Fn(ft)) => write!(f, " -> ({ft})")?,
@@ -1344,6 +1399,16 @@ impl PrettyDisplay for LambdaExpr {
             buf.rollback(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
+            // CR claude for eric: [bug] Both lambda heads (this one-argument-per-line
+            // form and the one-line form at 1335) write each argument through Arg's
+            // Display, so a labeled default is never laid out. A default holding a
+            // comment prints as `|#cfg: { alpha: i64, beta: i64 } = { // the alpha`
+            // with the next field unindented on the following line. A long default runs
+            // past the width: a 9-field struct default gives a 101-column line at width
+            // 90. Write the `#name[: T] =` head here and place the default with
+            // pretty_tail, the way a struct field's value is placed, and use this form
+            // whenever a default is decorated. Probe:
+            // design/review-2026-10-05/repro/t-print-07.gx. (t-print-07)
             buf.nested(|buf| self.write_args(buf, ",\n", "\n"))?;
             let closing = buf.mark();
             write!(buf, "|")?;
@@ -1643,6 +1708,15 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, "}}")
             }
             OrNever(e) => pretty_then(buf, e, "$"),
+            // CR claude for eric: [readability] A Catch prints as `catch(e) handler`
+            // whatever its role, and Rethrow prints as `e?` (1614, 2233), so --expand
+            // (node/compiler.rs:459) hides a seq machine's error edges: a Machine
+            // catch's action (pc <- `Idle) and abort event, and a Try catch's jump to
+            // the with step and its capture. For `let r = seq { let v = try { f(1)? }
+            // with(e) { 0 }; v }` it prints `catch(e) e?;` and, in `S0`,
+            // `catch(seqtry…) never();`, so nothing visibly enters `S1` or writes
+            // `seqe…`. Print the role's action, manual event and capture, and print
+            // Rethrow as its own form, here and in Display (2251). (x-expr-walks.r2-12)
             Catch(c) => {
                 match &c.constraint {
                     None => write!(buf, "catch({})", c.bind)?,
@@ -2016,7 +2090,26 @@ fn write_str_constant(
         _ => StrForm::Quoted,
     };
     match form {
+        // CR claude for eric: [bug] As written, a raw string that holds \r prints
+        // quoted, because raw_writable rejects \r. Every multi-line raw string in a
+        // CRLF file holds one, so format_source refuses the file with "changed a
+        // string's delimiters". The parser reads any character back verbatim, so this
+        // path can always write raw; raw_writable only matters for the canonical
+        // choice. The same CRLF file also keeps \r in comment and doc text, because the
+        // parser's line_text stops only at \n. fmt then writes \r\n on comment lines
+        // and \n everywhere else, and it refuses a two-line /// doc in a .gxi because
+        // Doc prints through str::lines, which drops every \r but the last. CRLF is
+        // what Windows editors write, and the shipped editor configs format on save;
+        // probe: design/review-2026-10-05/repro/t-print-04.sh (t-print-04)
         StrForm::Raw if raw_writable(s) => write_raw(f, s),
+        // CR claude for eric: [bug] The `!s.is_empty()` guard sends an empty template
+        // to the quoted form. The parser reads `""""""` (and a template holding only
+        // the newline after its opener) as an empty template, so the formatter's
+        // delimiter guard refuses the file: `let i = """"""; i` passes `--check`, and
+        // `graphix fmt` fails with "the formatted text changed a string's delimiters".
+        // write_template of an empty text writes `""""""`, which reads back as the same
+        // empty template, so the guard can go. Probe:
+        // design/review-2026-10-05/repro/t-print-09.gx. (t-print-09)
         StrForm::Template if template_writable(s) && !s.is_empty() => {
             write_template(f, std::iter::once(StrPart::Text(s)))
         }
@@ -2230,6 +2323,19 @@ impl ExprKind {
             }
             ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
+            // CR claude for eric: [readability] `?` and `$` (2250) print their operand
+            // bare, as binary operators do theirs (2115; the pretty forms at 1462, 1614
+            // and 1645). This relies on the ExplicitParens the parser keeps, which a
+            // compiler-built tree lacks. The seq rewrite turns a `?` over a level in a
+            // step into `Qop(StrictSample(pc, x))`, and `graphix --expand` prints it as
+            // `seqpc… ~! x?`, which reads as `seqpc… ~! (x?)`. The fix is to
+            // parenthesize an operand of lower precedence: for `?`/`$`, anything but a
+            // primary or a postfix form; for a binary operator, a child of lower
+            // precedence, or of equal precedence on the right. That corrects
+            // compiler-built trees and leaves parser-built ones as they are. Probe:
+            // `graphix --expand` on `let x: [i64, null] = null; seq
+            // sys::time::timer(duration:10.ms, false) { let v = try { x? } with(e) { 0
+            // }; v }`. (t-print-10)
             ExprKind::Qop(e) | ExprKind::Rethrow(e) => write!(f, "{}?", e),
             ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
             ExprKind::SeqCapture(c) => {

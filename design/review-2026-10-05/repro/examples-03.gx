@@ -1,0 +1,97 @@
+// examples-03: data_table_filter_sort.gx gives `tbl` two writers, so the table
+// shows the unfiltered rows for one cycle whenever list_table refires; and its
+// regex fallback `opt::or_default(re::is_match(..)$, false)` never applies.
+//
+// book/src/examples/gui/data_table_filter_sort.gx:36-49 is
+//   let tbl: Table = raw_tbl;
+//   tbl <- select str::len(pattern) { .. filtered raw_tbl .. };
+// The let keeps tracking its initializer (CLAUDE.md: a fired input of a <-
+// target's initializer overwrites it), and the connect lands a cycle later.
+// So when the listing changes while a pattern is set, `tbl` (and the
+// data_table holding `&tbl`) first gets the whole table, then the filtered
+// one. At lines 41-42, `$` has already turned an invalid regex into bottom
+// and is_match never returns null, so or_default's `false` is dead: while
+// the pattern is a half-typed regex every row's `keep` is bottom, the filter
+// is bottom, the connect does not write, and the table keeps the previous
+// filter, even after the mode picker changes to Exclude.
+//
+// Lines 33-49 below are the example's, unchanged; `fixed` is the suggested
+// fix (derive with a select, select the Result to false), printed beside it.
+// Timeline: 0.5 s pattern "0[14]"; 1 s sensor-04 appears; 1.5 s pattern
+// "0[14](" (invalid); 2 s mode Exclude.
+//
+// command: graphix --no-netidx --no-cache design/review-2026-10-05/repro/examples-03.gx
+//   (the same with --no-fusion, GRAPHIX_PAR=off|force; graphix-fuzz check:
+//   AGREE. --no-netidx matters: the default machine-local resolver keeps an
+//   earlier run's sensor-04 listed for a while, so it is there at startup.)
+//
+// expected: each tbl line equals the fixed line before it: [sensor-01, sensor-04]
+//   at 1 s with no unfiltered line, [] at 1.5 s, all four rows at 2 s.
+// observed (HEAD c722befe, debug build, both engines):
+//   pattern "0[14]" mode Include at 0.505s
+//     fixed at 0.505s: ["sensor-01"]
+//     tbl   at 0.505s: ["sensor-01"]
+//     fixed at 1.017035s: ["sensor-01", "sensor-04"]
+//     tbl   at 1.017124s: ["sensor-01", "sensor-02", "sensor-03", "sensor-04"]
+//     tbl   at 1.017346s: ["sensor-01", "sensor-04"]
+//   pattern "0[14](" mode Include at 1.503s
+//     fixed at 1.503s: []
+//   pattern "0[14](" mode Exclude at 2.003s
+//     fixed at 2.003s: ["sensor-01", "sensor-02", "sensor-03", "sensor-04"]
+//   (tbl prints nothing after 1.017 s: it stays at the "0[14]" Include rows)
+use sys::net::Table;
+
+let start = sys::time::now(null);
+let since = |t: Any| sys::time::diff(sys::time::now(t), start);
+let names = |t: Table| array::map(t.rows, |r| opt::or_default(str::basename(r), r));
+
+sys::net::publish("/local/review/ex03/sensor-01/name", "auth-requests");
+sys::net::publish("/local/review/ex03/sensor-02/name", "auth-errors");
+sys::net::publish("/local/review/ex03/sensor-03/name", "db-latency");
+
+let raw_tbl = sys::net::list_table(#update: sys::time::timer(duration:100.ms, true), "/local/review/ex03")$;
+
+// data_table_filter_sort.gx:33-49, unchanged
+let pattern = "";
+let mode: [`Include, `Exclude] = `Include;
+
+let tbl: Table = raw_tbl;
+tbl <- select str::len(pattern) {
+    n if n == 0 => raw_tbl,
+    _ => {
+        let name_of = |r: string| opt::or_default(str::basename(r), r);
+        let matches = |r: string| opt::or_default(
+            re::is_match(#pat: pattern, name_of(r))$, false);
+        let keep = |r: string| select mode {
+            `Include => matches(r),
+            `Exclude => !matches(r)
+        };
+        { raw_tbl with rows: array::filter(raw_tbl.rows, keep) }
+    }
+};
+
+// the suggested fix: derived, and the regex error selected to false
+let fixed: Table = select str::len(pattern) {
+    0 => raw_tbl,
+    _ => {
+        let name_of = |r: string| opt::or_default(str::basename(r), r);
+        let matches = |r: string| select re::is_match(#pat: pattern, name_of(r)) {
+            error as _ => false,
+            b => b
+        };
+        let keep = |r: string| select mode {
+            `Include => matches(r),
+            `Exclude => !matches(r)
+        };
+        { raw_tbl with rows: array::filter(raw_tbl.rows, keep) }
+    }
+};
+
+pattern <- sys::time::timer(duration:500.ms, false) ~ "0\[14\]";
+sys::net::publish(sys::time::timer(duration:1.s, false) ~ "/local/review/ex03/sensor-04/name", "cache-hits");
+pattern <- sys::time::timer(duration:1500.ms, false) ~ "0\[14\](";
+mode <- sys::time::timer(duration:2.s, false) ~ `Exclude;
+println("pattern \"[pattern]\" mode [mode] at [since((pattern, mode))]");
+println("  fixed at [since(fixed)]: [names(fixed)]");
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0);
+"  tbl   at [since(tbl)]: [names(tbl)]"

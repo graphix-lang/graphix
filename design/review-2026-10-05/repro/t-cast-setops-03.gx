@@ -1,0 +1,26 @@
+// t-cast-setops-03: holds_ref loops forever on an unfilled constructor
+// application, so a cast in a Collection-generic body never finishes checking.
+//
+// holds_ref_int (graphix-types/src/typ/cast.rs:240) derefs `'c<i64>` with `'c`
+// open; with_deref (graphix-types/src/typ/mod.rs:2095) hands back the same App,
+// and the arm recurses on it forever. ensure_sufficient keeps adding stack
+// segments, so memory grows until something kills the process. TypeCast::
+// typecheck0 (graphix-compiler/src/node/mod.rs:1838) calls it on every cast's
+// source. gdb: the first holds_ref call, from TypeCast::typecheck0 under the
+// lambda's check, is 20001 nested holds_ref_int frames deep a moment later.
+//
+// command: graphix --no-cache --check design/review-2026-10-05/repro/t-cast-setops-03.gx
+//   expected: exit 0 at once (an open constructor is unknown, as an open type
+//             variable is: the instance decides, see the
+//             cast_of_a_reference_in_an_instance pin)
+//   observed: "[probe] OOM-KILLED: this run exceeded its 6G memory cap", ~3 s
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-03.gx
+//   expected: [1, 2, 3], then exit 0
+//   observed: the same OOM kill, before the first cycle
+// `graphix lsp` dies the same way when a buffer holding these lines is opened.
+// Without the cast (`|c: Collection| c`) or with `|c: Array<i64>|`, both exit
+// 0 at once.
+let f = |c: Collection| cast<Array<i64>>(c);
+let r = f([1, 2, 3]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

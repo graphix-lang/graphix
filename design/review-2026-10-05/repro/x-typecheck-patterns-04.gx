@@ -1,0 +1,36 @@
+// x-typecheck-patterns-04: select type tests and trait union dispatch pick
+// the wrong arm when two union members share a runtime representation.
+// A nullary variant `A is Value::String("A"); tuples, structs, payload
+// variants and List cells are all Value::Array. The checker keeps the
+// members apart (`let s: string = `A` is refused, both arms below are
+// required and live), but the runtime test (PatternNode::shape_matches ->
+// Type::is_a) admits the other member's values, so the first arm whose
+// shape fits wins.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-typecheck-patterns-04.gx
+// (same with --no-fusion; graphix-fuzz check says AGREE: both engines wrong)
+//
+// expected: ("tag", "string", "tuple", "list", "tag", false)
+// observed: ("string", "tag", "array", "array", "string", true)
+//
+// f: an `A value takes the `string as s` arm.
+// g: the string "A" takes the `A arm (inferred predicate).
+// h: a (i64, i64) tuple takes the Array<i64> arm.
+// l: an empty List<i64> takes the Array<i64> arm.
+// d: Show::show over [string, `A] lowers to a string-first select, so the
+//    `A impl is unreachable.
+// last: "A" == `A over [string, `A] is true.
+trait Show { val show: fn(self) -> string };
+impl Show for string { let show = |s| "string" };
+impl Show for `A { let show = |a| "tag" };
+let f = |x: [string, `A]| select x { string as s => "string", `A => "tag" };
+let g = |x: [`A, string]| select x { `A => "tag", s => "string" };
+let h = |x: [(i64, i64), Array<i64>]| select x { Array<i64> as a => "array", (i64, i64) as t => "tuple" };
+let l = |x: [Array<i64>, List<i64>]| select x { Array<i64> as a => "array", List<i64> as l => "list" };
+let d = |x: [string, `A]| Show::show(x);
+let s = "A";
+let p: (i64, i64) = (1, 2);
+let e: List<i64> = [<>];
+let ss: [string, `A] = "A";
+let tt: [string, `A] = `A;
+(f(`A), g(s), h(p), l(e), d(`A), ss == tt)

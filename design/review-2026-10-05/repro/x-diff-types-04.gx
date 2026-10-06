@@ -1,0 +1,25 @@
+// x-diff-types-04: an open union member cannot absorb a primitive-only
+// union: `opt::is_some(x)` with x: [i64, string, null] is refused.
+//
+// graphix-types/src/typ/contains.rs:912-926: `[null, 'a] ⊇ Primitive(i64 |
+// null | string)` probes each primitive (all admitted), then commits them
+// one at a time through set_commit. i64 binds the bare 'a := i64; string is
+// then admitted by no member and the arm returns Ok(false), keeping the
+// binding. A Set right-hand side takes the residue arm (824-888) instead.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-diff-types-04.gx
+//   (graphix --no-cache gives the same error)
+//
+// expected: exit 0, 'a := [i64, string]. The same type reached another way
+//   is accepted:
+//     type N = [i64, string]; let x: [N, null] = "a"; opt::is_some(x)
+//     let x: [i64, `A, null] = `A; opt::is_some(x)
+// observed (HEAD c722befe, debug build): exit 1, refused at `x`:
+//   type mismatch [null, 'a: i64] does not contain [i64, null, string]
+//
+// Also refused: `let c = 0; let x = select c { 0 => 1, 1 => "a", _ => null };
+// opt::is_some(x)` (no annotation), `let x: [i64, f64, null] = null;
+// opt::is_none(x)`, `let w: ['a, null] = y` with y: [i64, f64].
+let x: [i64, string, null] = "a";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+opt::is_some(x)

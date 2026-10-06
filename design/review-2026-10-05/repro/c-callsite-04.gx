@@ -1,0 +1,27 @@
+// c-callsite-04: CallSite::checked_default compiles an omitted labeled
+// default in its definition's env (with_restored) but typechecks it after
+// the closure returns, in the call site's env. A trait bound the default
+// needs (the `'self: Show` of Show::show) resolves only lexically, so a
+// site whose env lacks the trait refuses the default.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-callsite-04.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-callsite-04.gx
+//
+// expected: ["int 5:1", "int 5:2", "int 5:3"], which
+// `array::map([1, 2, 3], |x| f(x))` prints.
+//
+// observed: `--check` exits 0; the run is refused (exit 1):
+//   in the instance of array::map([1, 2, 3], f) at this call site
+//   .. in: Show::show(5): undefined type Show in #do4611686018427394753
+// graphix-fuzz check: DIVERGENCE - the check accepted what the build refused.
+//
+// Same cause, other shapes: `let app = |g: fn(x: i64) -> string, v: i64|
+// g(v)` declared before the trait, then `app(f, 1)`, is refused at run
+// (declared after the trait it prints "int 5:1"). A module m whose m.gxi
+// exports only `val f: fn(?#s: string, x: i64) -> string`, with the trait
+// and f in m.gx, has `m::f(1)` refused by --check itself:
+// "undefined type Show in m" (with the trait declared in m.gxi it runs).
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "int [x]" };
+let f = |#s = Show::show(5), x: i64| "[s]:[x]";
+array::map([1, 2, 3], f)

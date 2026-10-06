@@ -1,0 +1,24 @@
+// f-kernel-02: FusedKernel classified ASYNC: fused pure arm sleeps, engines disagree on re-entry raises
+// Command: graphix-fuzz check design/review-2026-10-05/repro/f-kernel-02.gx
+// Expected: AGREE (both engines count the same raises).
+// Observed: DIVERGENCE
+//   interp: Trace([2:[i64:0, i64:1] 4:[i64:0, i64:2]])
+//   jit:    Trace([2:[i64:0, i64:1] 4:[i64:0, i64:1]])
+// (`graphix --no-cache` prints (0, 1) (0, 1); with `--no-fusion` it prints (0, 1) (0, 2).)
+// The arm `1 => cast<i64>(t)? + 1` is pure: the node-walk skips its sleep and re-enters it at
+// s = 1 under the birth view (select.rs:1007-1014), t reads FRESH and the `?` raises again. In
+// the JIT the arm body is a FusedKernel, which node_facts (analysis.rs:511) calls ASYNC, so the
+// arm sleeps on deselect and re-enters under the wake view: t reads STALE, no raise
+// (GXDBG_KERNEL_SLEEP=1 shows the kernel slept; GRAPHIX_DBG_INVOKE=1 shows init=true fired=[false]).
+// Controls: an unrelated `let c = count(s);` in the arm makes it sleep on both engines, raised = 1
+// on both; `cast<i64>(*(&t))?` stays pure and never fuses, raised = 2 on both.
+{
+  let s = array::iter([1, 2, 1, 2]);
+  let t = "x";
+  let raised = 0;
+  let out = {
+    catch(x) raised <- x ~ raised + 1;
+    select s { 1 => cast<i64>(t)? + 1, _ => 0 }
+  };
+  (out, raised)
+}

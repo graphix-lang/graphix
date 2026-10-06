@@ -20,6 +20,16 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
+// CR claude for eric: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
+// wherever its last Value does, usually in GX::update_nodes on the runtime thread.
+// TreeInner's sled::Tree, CursorInner's sled::Iter and the subscription task's
+// Arc<TreeInner> work the same way. sled's TreeInner::drop then flushes the log in a
+// loop, and the Db's drop joins the flusher thread and fsyncs, all synchronously inside
+// a cycle. Under an open db::txn, which holds sled's process-global lock (db2-01), the
+// flush waits in concurrency_control::read forever and the whole runtime freezes,
+// because only the runtime can send the commit. Hand the sled handles to a blocking
+// thread on drop (spawn_blocking or a reaper channel). probe:
+// design/review-2026-10-05/repro/db2-06.gx (db2-06)
 #[derive(Debug, Clone)]
 pub struct DbValue {
     pub(crate) inner: Arc<sled::Db>,
@@ -183,6 +193,15 @@ pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Optio
     tree_params_of_result_type(&ft.rtype).and_then(|params| prim_typ(&params[0]))
 }
 
+// CR claude for eric: [bug] The type metadata stored on disk and compared on every open
+// is the type printer's single-line text. A typedef nested in the type prints as its
+// name, so Tree<string, Array<Rec>> stores "Array<Rec>" and a program whose Rec differs
+// opens the tree without the DbErr the book and mod.gxi promise; the values come back
+// mistyped and the engines disagree (the JIT reads an i64 field as "", the node-walk
+// yields 42). The text also changes whenever the printer does, and a database whose
+// stored text differs no longer opens. Store a versioned structural encoding of the
+// type with its typedefs resolved and compare that; keep the printed form for messages.
+// probe: design/review-2026-10-05/repro/db2-19.gx (db2-19)
 pub(crate) fn extract_type_strings_from_rtype(
     resolved_typ: Option<&FnType>,
 ) -> (ArcStr, ArcStr) {
@@ -261,6 +280,14 @@ impl EvalCachedAsync for DbOpenEv {
 
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
+            // CR claude for eric: [bug] Every delivery calls sled::open, and sled holds
+            // an exclusive lock on the database while any handle lives, so opening a
+            // path this process already has open fails with 'could not acquire lock ...
+            // WouldBlock'. That includes this call when its path re-fires with the same
+            // value: the working handle is replaced by the error. Two db::open calls on
+            // one path, or two runtimes in one process, fail the same way; a
+            // process-wide map from canonical path to a weak handle would hand back the
+            // live database. probe: design/review-2026-10-05/repro/db2-16.gx (db2-16)
             match tokio::task::spawn_blocking(move || sled::open(&*path)).await {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
                 Ok(Err(e)) => errf!("DbErr", "{e}"),
@@ -372,6 +399,14 @@ impl EvalCachedAsync for DbDropTreeEv {
 
     fn eval((db, name): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
+            // CR claude for eric: [bug] drop_tree drops the sled tree but leaves the
+            // name's entry in META_TREE. Afterwards get_type still reports the dead
+            // tree's types. db::tree also refuses to recreate the name with any other
+            // types ("tree 'x' has type Tree<string, i64> but was opened as Tree<i64,
+            // f64>"). The entry is on disk, so the name is blocked for good and a
+            // drop-and-recreate migration cannot be done. After a successful drop,
+            // remove the name's metadata entry. probe:
+            // design/review-2026-10-05/repro/db2-10.gx (db2-10)
             match tokio::task::spawn_blocking(move || db.drop_tree(name.as_bytes())).await
             {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
@@ -506,6 +541,20 @@ impl EvalCachedAsync for DbTreeEv {
                 let meta = db.open_tree(&META_TREE)?;
                 match name {
                     Some(name) => {
+                        // CR claude for eric: [bug] This check misses sled's own
+                        // "__sled__default". db.open_tree resolves that name to the
+                        // default tree's data under a metadata key of its own, so the
+                        // default tree reopens with any types (txn.rs:298-301 has the
+                        // same gap). drop_tree (373-382) checks no name, so dropping
+                        // "$$__graphix_meta__$$" erases every tree's stored types, and
+                        // tree_names lists both internal names. The mistyped values
+                        // reach typed code. A fused kernel either panics on a String
+                        // slot and kills the runtime, or reads the i64 through a
+                        // nullable slot as an ArcStr pointer and segfaults; the
+                        // node-walk bottoms silently. One name check shared by tree,
+                        // txn::tree and drop_tree (or a private prefix on every user
+                        // name), plus tree_names hiding the internal names, closes it.
+                        // probe: design/review-2026-10-05/repro/db2-02.gx (db2-02)
                         if &*name == DEFAULT_TREE_META
                             || name.as_bytes() == META_TREE.as_bytes()
                         {
@@ -530,6 +579,14 @@ impl EvalCachedAsync for DbTreeEv {
             .await
             {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
+                // CR claude for eric: [bug] `{e:?}` on an anyhow::Error appends a
+                // 'Stack backtrace:' block whenever RUST_BACKTRACE or
+                // RUST_LIB_BACKTRACE is set, so the DbErr string a program receives,
+                // and may show or compare, changes with the environment and carries a
+                // dozen frames. The same at 241 and txn.rs:183, 223, 355 and 362;
+                // `{e:#}` gives the message and its causes without it. probe:
+                // RUST_BACKTRACE=1 graphix --no-cache
+                // design/review-2026-10-05/repro/db2-14.gx (db2-14)
                 Ok(Err(e)) => errf!("DbErr", "{e:?}"),
                 Ok(Ok(v)) => v,
             }
@@ -583,6 +640,13 @@ impl EvalCachedAsync for DbInsertEv {
         let tree = get_tree_inner(cached, 0)?;
         let key_val = cached.0.get(1)?.as_ref()?;
         let key = encode_key(tree.key_typ, key_val)?;
+        // CR claude for eric: [bug] When encode_key or encode_value fails, prepare_args
+        // returns None and CachedArgsAsync queues nothing, so the call never replies:
+        // no value and no DbErr. An abstract value cannot be packed, yet Tree<string,
+        // db::Db> passes 'v: Concrete, and db::insert(t, "k", db) stays silent; every
+        // encode and parse_batch_ops failure in tree.rs and txn.rs takes this path.
+        // Return the failure from eval as a DbErr, or refuse unpackable 'k and 'v at
+        // the check. probe: design/review-2026-10-05/repro/db2-15.gx (db2-15)
         let val = encode_value(cached.0.get(2)?.as_ref()?)?;
         Some((tree, key, val))
     }
@@ -851,6 +915,19 @@ pub(crate) type DbPopMax = CachedArgsAsync<DbPopMaxEv>;
 #[derive(Debug, Default)]
 pub(crate) struct DbGetLtEv;
 
+// CR claude for eric: [structure] 17 of this file's 27 builtins are three shapes
+// written out one by one: db only (flush, generate_id, tree_names, size_on_disk,
+// was_recovered, checksum), tree only (first, last, pop_min, pop_max, len, is_empty)
+// and tree plus key (get, remove, contains_key, get_lt, get_gt); this one and DbGetGtEv
+// differ in one method call, as do first, last, pop_min and pop_max. Every eval repeats
+// the spawn_blocking call and its JoinError and sled-error mapping. DbTxnTreeEv
+// (txn.rs:454-512) is DbTreeEv (423-481) verbatim, down to a typecheck0 that restates
+// the trait default, and get_db, get_tree_inner, get_txn and get_txn_tree are one
+// downcast that cursor.rs and subscribe.rs inline again. One blocking helper, one
+// generic or macro per shape, one shared tree-types struct and one downcast would
+// remove several hundred lines; the copies already disagree on error formatting ({e}
+// against {e:?}) and on what an undecodable previous value means (txn.rs:150 against
+// 600-603). (db2-12)
 impl EvalCachedAsync for DbGetLtEv {
     type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
 

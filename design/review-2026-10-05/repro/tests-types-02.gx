@@ -1,0 +1,36 @@
+// tests-types-02: a prefix-operator seq trigger prints parenthesized, so
+// `graphix fmt` refuses `seq *r { .. }`.
+//
+// trigger_needs_parens (graphix-types/src/expr/print.rs:55) asks reads_bare
+// (print.rs:66), which has no arm for Not, Neg, Deref or ByRef, so both
+// printers (Display print.rs:2171, pretty print.rs:1505) write
+// `seq (*r) { .. }`. The head parser reads the four prefixes bare
+// (arith(false), parser/mod.rs:845 and 855; arithexp.rs primary) and keeps
+// written parens as ExplicitParens, so the reprint is another tree and
+// format_source refuses it. It is the same defect as t-print-02's cause (b).
+// No test compares a reprinted seq with its parse: parser/test.rs
+// a_prefix_trigger_leaves_the_body_alone checks the parse only, seq_parses
+// compares only queued(), try_with_parses only print idempotence, and the
+// round-trip proptest draws triggers from reference() alone.
+//
+// command: graphix fmt --stdout design/review-2026-10-05/repro/tests-types-02.gx
+//          (graphix --no-cache --check on this file exits 0; run, it prints
+//          "ran" 2 "ran" 6 and exits 0)
+// expected: exit 0, the seq printed back bare: `seq *r { .. }`
+// observed (HEAD c722befe, debug build): exit 1,
+//   design/review-2026-10-05/repro/tests-types-02.gx: formatter bug: the
+//   formatted text says something else
+//   was line: 33, column: 14: r
+//   now line: 34, column: 14: *r
+//   Error: 1 file(s) could not be formatted
+// The same refusal for `seq !b { a }`, `seq -n { a }`, `seq &x { a }`,
+// `seqq *r { a }`, `seq *r; abort(c) { a }`, `seq let v = *r { a }`,
+// `seq x ~ *r { a }`, `seq !a && b { a }` and `seq *r.f { a }`, and for
+// `seq *r { a; b }` at --width 0 (pretty path) as at 90 (flat path);
+// written `seq (*r) { a }`, it formats unchanged.
+let x = 1;
+let r = &x;
+let s = seq *r { println("ran"); *r + 1 };
+x <- sys::time::after_idle(duration:50.ms, 5);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+s

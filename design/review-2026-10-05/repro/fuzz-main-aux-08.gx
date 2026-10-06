@@ -1,0 +1,42 @@
+// fuzz-main-aux-08: Schedule::parse drops a callable-v1 line that sits above
+// the schedule-v1 line, the order CallSpec::render writes.
+//
+// Subject::parse (graphix-fuzz/src/lib.rs:279-282) runs Schedule::parse
+// first. It skips leading `//` lines to reach its own header and returns only
+// the text after that header (graphix-fuzz/src/schedule.rs:118-136), so the
+// callable line never reaches CallSpec::parse and the subject has no CallSpec.
+// callable::has_header still finds the line, so the Dispatch route runs with
+// no dispatches and every pair agrees.
+//
+// command: XDG_CACHE_HOME=$(mktemp -d) graphix-fuzz check \
+//            design/review-2026-10-05/repro/fuzz-main-aux-08.gx
+//
+// expected: DIVERGENCE, twin invariant violated. The schedule sets in0 to 1,
+//   the handler is dispatched with 7 and then 9, `observe` settles at value
+//   16, and the body answers `TwinDiverged. With the two header lines swapped
+//   (schedule line first), check reports exactly that and exits 1:
+//     trace: Trace([0:"Ok"]; [0:"Ok"]; [1:"Ok"]; [1:"TwinDiverged"])
+// observed (HEAD c722befe, debug build): AGREE, exit 0. `graphix-fuzz run`
+//   lists all four engine x route runs, and each one is
+//   Trace([0:"Ok"]; [0:"Ok"]): one schedule epoch and no dispatch epoch.
+//
+// The minimizer writes this order (lib.rs:2458-2461 and 2556). Run on the
+// schedule-first version, `graphix-fuzz minimize` returns the callable line,
+// the schedule line and `TwinDiverged, with module m0 deleted. That pin
+// reproduces only because its callable header is ignored. With its header
+// lines swapped, every mode reports CompileErr "m0::handler not defined".
+// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9
+// schedule-v1: cap=64 events=512; in0=i64:1
+{
+    let o = m0::observe;
+    select (o.value, in0) { (16, 1) => `TwinDiverged, _ => `Ok }
+}
+// file-v1: m0.gx
+type St = { value: i64, cursor: i64 };
+let state: St = { value: 0, cursor: 0 };
+let inner = |st: &St, x: i64| -> null select x {
+  0 => null,
+  n => { let s = n ~ *st; *st <- { value: s.value + n, cursor: s.cursor + 1 }; null }
+};
+let handler = |x: i64| -> null inner(&state, x);
+let observe = state

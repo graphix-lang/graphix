@@ -1,0 +1,15 @@
+// c-lambda-02: a builtin with a defaulted label, bound through a narrower view, is typed at the view
+// commands: graphix --check design/review-2026-10-05/repro/c-lambda-02.gx
+//           graphix --no-cache design/review-2026-10-05/repro/c-lambda-02.gx
+//           graphix-fuzz check design/review-2026-10-05/repro/c-lambda-02.gx
+// expected: the check passes and the build agrees: dbg logs 1, 2, 3 and the program prints [1, 2, 3],
+//           as `array::map([1, 2, 3], |x| dbg(x))` does
+// observed: --check exits 0; the build refuses with "in the instance of ("nop")("nop") at this
+//           call site: expected 1 arguments got 2" (fusion on or off, GRAPHIX_NO_SUBST=1 too);
+//           graphix-fuzz: "DIVERGENCE - the check accepted what the build refused"
+// same refusal: array::map([[3, 1, 2]], array::sort) (got 3); a user HOF
+//   `let apply = |f: fn(a: Array<i64>) -> Array<i64>, a: Array<i64>| -> Array<i64> f(a)`
+//   called as apply(array::rotate, [1, 2, 3]); a user lambda with a defaulted label builds in both places.
+// dynamic form: `f <- clock ~ array::rotate; f([1, 2, 3])` with f: fn(a: Array<i64>) -> Array<i64>
+//   runs but logs "a run-time bind at f([1, 2, 3]) did not type: expected 1 arguments got 2"
+array::map([1, 2, 3], dbg)

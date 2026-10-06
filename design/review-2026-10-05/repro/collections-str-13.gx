@@ -1,0 +1,19 @@
+// collections-str-13: list::concat copies the last list. list/mod.gxi:47 says
+// concat is "O(n) in the total size of all lists except the last", but
+// fc_concat (stdlib/graphix-package-list/src/lib.rs:367) walks every list,
+// the last included, into a buffer and from_iter_back rebuilds every cell.
+//
+// command: GRAPHIX_PAR=off timeout -s KILL 60 graphix --no-cache design/review-2026-10-05/repro/collections-str-13.gx
+//
+// expected: concat of a one-element list onto the long one costs about what
+//           the cons does, whatever the long list's length.
+// observed (debug build): concat 100001 in 18.4-18.7ms, cons in 7-10us; at 25000
+//           elements concat takes 4.2ms: linear in the last list.
+let long = list::from_array(array::init(100000, |i| i));
+let t0 = sys::time::now(long);
+let c = list::concat([<1>], long);
+let t1 = sys::time::now(c);
+let k = list::cons(1, long);
+let t2 = sys::time::now(k);
+println("concat [list::len(c)] in [sys::time::diff(t1, t0)], cons [list::len(k)] in [sys::time::diff(t2, t1)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

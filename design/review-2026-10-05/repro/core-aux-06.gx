@@ -1,0 +1,54 @@
+// core-aux-06: queuefn's wrapper drops f's labeled defaults and its variadic
+// arguments, while the checker types the wrapper exactly as f.
+//
+// build_lambda (stdlib/graphix-package-core/src/queuefn.rs:247-267) builds the
+// wrapper's argspec from f's type alone and gives every labeled formal
+// ArgKind::Labeled, so a call that omits a defaulted label fails its bind in
+// CallSite::prepare_bind (graphix-compiler/src/node/callsite.rs:792, "expected
+// default value") and never produces. build_wrapper_apply (queuefn.rs:460)
+// binds only ftyp.args and WrapperApply::update (queuefn.rs:89) drops every
+// argument past them, so a variadic f runs without its variadic arguments: a
+// wrong value with nothing logged (max, array::push), or no value at all
+// (str::concat). A queued call that a trigger releases loses them the same way.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/core-aux-06.gx
+//   (--no-fusion prints the same; --check accepts the program; graphix-fuzz
+//   check says AGREE: both engines give the wrong answers)
+//
+// expected (a wrapper's first call runs at once and answers as f does):
+//   f(5) = 50
+//   qf(5) = 50
+//   qe(#scale: 3, 5) = 15
+//   max(1, 5) = 5
+//   qm(1, 5) = 5
+//   array::push([1], 2, 3) = [1, 2, 3]
+//   qp([1], 2, 3) = [1, 2, 3]
+//   str::concat(a, b) = ab
+//   qc(a, b) = ab
+// observed (HEAD c722befe, debug build):
+//   f(5) = 50
+//   qe(#scale: 3, 5) = 15
+//   max(1, 5) = 5
+//   qm(1, 5) = 1
+//   array::push([1], 2, 3) = [1, 2, 3]
+//   qp([1], 2, 3) = [1]
+//   str::concat(a, b) = ab
+// qf(5) and qc(a, b) never print. Only qf(5) leaves a trace, and only under
+// RUST_LOG=warn --log-dir: "qf(5): binding the callee failed: expected default
+// value".
+let f = |#scale: i64 = 10, x: i64| -> i64 x * scale;
+let qf = queuefn(#trigger: never(), f);
+let qe = queuefn(#trigger: never(), f);
+let qm = queuefn(#trigger: never(), max);
+let qp = queuefn(#trigger: never(), array::push);
+let qc = queuefn(#trigger: never(), str::concat);
+println("f(5) = [f(5)]");
+println("qf(5) = [qf(5)]");
+println("qe(#scale: 3, 5) = [qe(#scale: 3, 5)]");
+println("max(1, 5) = [max(1, 5)]");
+println("qm(1, 5) = [qm(1, 5)]");
+println("array::push(\[1\], 2, 3) = [array::push([1], 2, 3)]");
+println("qp(\[1\], 2, 3) = [qp([1], 2, 3)]");
+println("str::concat(a, b) = [str::concat("a", "b")]");
+println("qc(a, b) = [qc("a", "b")]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

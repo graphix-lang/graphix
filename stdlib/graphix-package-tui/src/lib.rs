@@ -396,6 +396,12 @@ fn into_borrowed_lines<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
 
 #[async_trait]
 trait TuiWidget {
+    // CR claude for eric: [structure] No widget reads the crossterm `Event`. The
+    // routing widgets pass it on, InputHandlerW queues it beside the Value and reads it
+    // only in a `debug!` (input_handler.rs:404), and eleven leaf widgets plus EmptyW
+    // implement `handle_event` as an empty stub. Take only the Value, give the method a
+    // default `Ok(())` body, and queue Values; the stubs and each leaf's crossterm
+    // import go away. (tui-core-18)
     async fn handle_event(&mut self, e: Event, v: Value) -> Result<()>;
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()>;
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()>;
@@ -537,6 +543,16 @@ impl EvalCachedAsync for SuspendEv {
             if held.lock().is_some() {
                 return Value::Bool(true);
             }
+            // CR claude for eric: [bug] A receiver still parked here is read as 'no
+            // display'. But the display takes it (726) only after the shell has built
+            // the display from the program's first value and its task has run
+            // `with_ctx`, so a suspend asked in the program's first cycles fails with
+            // 'no terminal display is running' in a real terminal. Probe:
+            // `tui::suspend(true)` in the first cycle errors in 5 of 5 runs, and the
+            // release a second later succeeds
+            // (design/review-2026-10-05/repro/tui-core-16.gx). The error is documented
+            // for a context with no display at all (the headless harness); a display
+            // that is still starting should take the request. (tui-core-16)
             if control.0.suspend_rx.lock().is_some() {
                 return errf!("TerminalError", "no terminal display is running");
             }
@@ -653,6 +669,18 @@ impl<X: GXExt> Tui<X> {
             };
             // A display that dies takes the program with it: the shell
             // waits on the stop signal, and nothing else would send it.
+            // CR claude for eric: [bug] A panic anywhere in this task (a widget's draw,
+            // handle_update or compile, or a ratatui assert) unwinds it and tokio drops
+            // it. This fire never runs, and the Stop parked in libstate's TuiControl
+            // (line 646) is never dropped either, so the shell's read_line waits
+            // forever. Dropping the task also drops `root`, whose Delete removes the
+            // whole program: its timers, its writes and a gated sys::exit all stop. The
+            // panic hook has restored the terminal, so ^C is now a SIGINT that the
+            // shell only turns into gx.interrupt(); the process must be killed, and a
+            // REPL session is lost. Fire the stop with an error when the task ends by
+            // panic too, e.g. a drop guard over the control or awaiting an inner
+            // spawn's JoinHandle. probe:
+            // design/review-2026-10-05/repro/tui-widgets-07.gx (tui-widgets-07)
             if let Err(e) = run(gx, env, root, to_rx, &control).await {
                 fire(&control.0.stop, Err(e))
             }
@@ -727,6 +755,17 @@ async fn run<X: GXExt>(
         Some(rx) => rx,
         None => mpsc::unbounded().1,
     };
+    // CR claude for eric: [bug] While the display owns the terminal, anything written
+    // to stderr lands in the alternate screen at ratatui's cursor. That includes every
+    // unhandled error and hot-operator failure (report_failure!,
+    // graphix-compiler/src/node/error.rs:567-573) and the warnings of a compile at run
+    // time. ratatui never repaints those cells, and leaving the alternate screen
+    // discards them, so the diagnostic garbles the UI and is gone after exit. Probe: an
+    // unhandled `Boom` one second in prints 'unhandled error ... "Boom"' on the TUI's
+    // first row, and after Ctrl-C the normal screen does not show it
+    // (design/review-2026-10-05/repro/tui-core-17.gx). Redirect fd 2 while the display
+    // runs (to the log, replayed after restore), or repaint after anything is written.
+    // (tui-core-17)
     let notify = match ratatui::try_init().context("initializing the terminal") {
         Err(e) => Err(e),
         Ok(terminal) => {
@@ -774,6 +813,15 @@ async fn display<X: GXExt>(
     let event = get_id(&env, &["tui", "event"].into())?;
     let mut mouse: TRef<X, bool> =
         TRef::new(gx.compile_ref(get_id(&env, &["tui", "mouse"].into())?).await?)?;
+    // CR claude for eric: [bug] Nothing turns on bracketed paste (crossterm's
+    // EnableBracketedPaste; ratatui's init does not either). So a terminal never
+    // brackets a paste, and the `Paste(string)` event in input_handler.gxi and
+    // book/src/ui/tui/input.md never arrives. Instead a paste comes in as one key event
+    // per character, each a handler round trip, and a pasted newline or bound key acts
+    // as a keypress. No captured stream of a running display contains ESC[?2004h.
+    // Enable it with the terminal, at start and on resume, and disable it at suspend
+    // and restore; line_edit has no `Paste` arm and would then need one. The
+    // alternative is to drop `Paste` from the type and the docs. (tui-core-15)
     if let Some(b) = mouse.t {
         set_mouse(b)
     }
@@ -785,6 +833,17 @@ async fn display<X: GXExt>(
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let notify = loop {
+        // CR claude for eric: [perf] The loop draws the whole tree before every
+        // message, and the shell hands a cycle's batch over one update at a time
+        // (graphix-shell/src/lib.rs:477). So a cycle that changes N refs renders N full
+        // frames, and N-1 of them show a half-applied cycle the program never produced
+        // (new `items` with an old `selected`), which every widget's draw has to
+        // survive. The liveness tick (796) adds another full render every second.
+        // Probe: ten `text`s reading one 1 s counter draw ten frames per tick, each
+        // rewriting one line (69 draws in 6.5 s;
+        // design/review-2026-10-05/repro/tui-core-09.gx). Give `CustomDisplay` the
+        // batch boundary the shell already has, draw once per batch, and skip the draw
+        // on a liveness tick. (tui-core-09)
         if suspended.is_none() {
             terminal.draw(|f| {
                 if let Err(e) = root.draw(f, f.area()) {
@@ -792,6 +851,19 @@ async fn display<X: GXExt>(
                 }
             })?;
         }
+        // CR claude for eric: [bug] Nothing restores the terminal when the process gets
+        // SIGTERM or SIGHUP. This select has no signal branch and the shell handles
+        // only SIGINT (graphix-shell/src/lib.rs:449). So `kill <pid>`, `timeout`, or a
+        // parent's `sys::process::kill(#grace: ..)` (SIGTERM first) leaves the terminal
+        // raw, on the alternate screen, with the cursor hidden and mouse capture on,
+        // and a Graphix program cannot handle the signal itself. A display that resumes
+        // after such a child (line 839) then saves the child's raw mode as the mode to
+        // restore, so the parent's own clean exit leaves the terminal raw too. The
+        // handler belongs in the shell's run loop, which should break so
+        // `output.clear()` restores the display: tokio never unregisters a signal
+        // handler, so a handler in this select would make the REPL ignore SIGTERM once
+        // the display ends. probe: design/review-2026-10-05/repro/tui-core-06.py
+        // (tui-core-06)
         select! {
             _ = liveness.tick() => terminal_connected()?,
             m = to_rx.next() => match m {
@@ -821,6 +893,18 @@ async fn display<X: GXExt>(
                     if let Some(true) = mouse.t {
                         set_mouse(false)
                     }
+                    // CR claude for eric: [bug] Suspending hands the child a hidden
+                    // cursor. Every draw hides it, because no widget sets a cursor
+                    // position. ratatui::restore() only leaves raw mode and the
+                    // alternate screen, and the show comes from the Terminal's Drop,
+                    // which runs only on resume, after try_init has entered the new
+                    // alternate screen. So a sudo or su password prompt, sh or less
+                    // runs with no cursor; nano, vim and micro show it again
+                    // themselves. Drop the Terminal here so its Drop shows the cursor,
+                    // holding the state as Live { terminal, events } | Suspended {
+                    // resume } so that events is None exactly while suspended, or call
+                    // terminal.show_cursor() before restoring. probe:
+                    // design/review-2026-10-05/repro/tui-core-05.py (tui-core-05)
                     ratatui::restore();
                     let (resume_tx, resume_rx) = oneshot::channel();
                     suspended = Some(resume_rx);
@@ -836,6 +920,16 @@ async fn display<X: GXExt>(
                 }
             } => {
                 suspended = None;
+                // CR claude for eric: [bug] Every `ratatui::try_init` wraps the current
+                // panic hook in a new one that calls `restore()`. The display calls it
+                // here at each resume and at each start (730, every REPL display
+                // included), so hooks pile up for the life of the process, and any
+                // panic in the process runs one nested restore per hook. Probe: after k
+                // resumes, a panic writes k+1 consecutive ESC[?1049l before its message
+                // (design/review-2026-10-05/repro/tui-core-14.gx). Install the hook
+                // once, and on resume re-enable raw mode and the alternate screen and
+                // clear the existing terminal instead of calling try_init.
+                // (tui-core-14)
                 terminal = ratatui::try_init().context("taking the terminal back")?;
                 if let Ok(size) = terminal.size() {
                     let _ = terminal.resize(size.into());
@@ -878,6 +972,18 @@ async fn display<X: GXExt>(
     Ok(notify)
 }
 
+// CR claude for eric: [risk] TUITYP is a process-wide `TypeRef`. Its write-once
+// resolution cell is filled, weakly, by the first runtime that checks it, and it is
+// never re-resolved (TypeRef::resolve_in, graphix-types/src/typ/mod.rs:627-649). So a
+// second runtime in the process is checked against the first one's `tui::Tui`. Once the
+// first runtime is dropped the cell is dead: `contains` fails, `unwrap_or(false)`
+// answers false, and the TUI is printed as a value. Probe: two runtimes in turn ask
+// `maybe_init_custom` about `tui::text::text(&"x")`; the first answers Custom, the
+// second NotCustom and logs 'type `tui::Tui` outlived its definition'
+// (design/review-2026-10-05/repro/tui-core-12.rs). A static must not cache what differs
+// between contexts, so build the ref per call; GUITYP
+// (graphix-package-gui/src/lib.rs:101) has the same hazard, and its `is_custom` closure
+// is a copy of this one. (tui-core-12)
 static TUITYP: LazyLock<Type> = LazyLock::new(|| {
     Type::Ref(TypeRef::synthetic(
         ModPath::root(),

@@ -405,8 +405,40 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
     site: &mut ForkSite,
+    // CR claude for eric: [perf] gather collects every child's production into a SmallVec
+    // of 8. So a struct, tuple, variant or array literal, or an interpolation with more
+    // than 8 parts, mallocs and frees on every update, quiet cycles included, before the
+    // dense gate can ride. Select::update's guard tags (select.rs:890) and the map
+    // literal's four vectors (map.rs:124-130) spill the same way past 8 arms or entries.
+    // The elements are pointers and 2-byte tags, so an inline capacity of 32 keeps
+    // realistic literals and selects on the stack. (x-alloc-08)
 ) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
     let n = nodes.len();
+    // CR claude for eric: [structure] This Serial/Measure/Fork dispatch (the ranges,
+    // the `ranges.len() < 2` fallback, cut, fork_each and the merge) is written out
+    // again in update_run (line 880) and update_args (node/callsite.rs:2381).
+    // update_args also cuts its IndexMap slice by hand (callsite.rs:2393-2401) instead
+    // of calling branch::cut. join2 (branch.rs:887) repeats the plan match for two
+    // closures and re-checks, through Splits::fork, what plan just decided. One helper
+    // in branch.rs that owns the dispatch over a splittable slice, with each site
+    // passing its in-order update and its merge, would leave one place to change it,
+    // for example to add the independence check that field, argument and operand forks
+    // lack. (c-analysis-branch-09)
+    // CR claude for eric: [bug] This fork point decides on cost alone, and so do
+    // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
+    // operands). Only plan_block applies the rule that two children reaching an ordered
+    // call keep their serial order (design/parallel_eval.md §3.2, §6). So two calls of
+    // one queuefn wrapper in forked fields, arguments or operands push into its queue
+    // in thread order, and in the default Auto mode, under #[parallel] or once the
+    // children cost enough, which call runs at once and the release order change from
+    // run to run. check_parallel (analysis.rs:1247) also accepts #[parallel] over such
+    // a tuple, call or operator, though it refuses the same calls written as a block. A
+    // bound wrapper call reports ApplyView::BuiltIn(""), which local_summary counts as
+    // neither ordered nor opaque, so a child's ordered fact must be taken before the
+    // wrapper calls bind. Probe: design/review-2026-10-05/repro/x-parallel-01.gx prints
+    // three [1, 2, 3, 4, 5, 6] logs under GRAPHIX_PAR=off and a new permutation on
+    // every default run; graphix-fuzz check on `(q(10), q(20), .., q(60))` with
+    // `#trigger: in0` reports a parallel-evaluation DIVERGENCE. (x-parallel-01)
     match site.plan(ctx, n) {
         Plan::Serial => gather_in_order(ctx, nodes, None),
         Plan::Measure(mut m) => {
@@ -414,6 +446,17 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
             m.done(n);
             r
         }
+        // CR claude for eric: [bug] These fields fork with no independence check, and
+        // so do call arguments (callsite.rs:2387), binary operands (op.rs:179) and
+        // collection slots (collection.rs:867); only a block's runs consult
+        // analysis::plan_block. A sibling can still read what an earlier one publishes
+        // this cycle through a reference to its inner let (`*r` after `r <- &v`), and
+        // two siblings can call one ORDERED queuefn wrapper. A forked cycle then
+        // computes values the serial node-walk does not, which breaks CLAUDE.md's
+        // independence and ORDERED rules. It shows under #[parallel], under
+        // GRAPHIX_PAR=force, and in plain Auto once both siblings cost enough to fork;
+        // GRAPHIX_PAR_AUDIT=1 panics on it. probe:
+        // design/review-2026-10-05/repro/c-analysis-branch-03.gx (c-analysis-branch-03)
         Plan::Fork(s) => {
             let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
             s.ranges(0, n, &mut ranges);
@@ -613,6 +656,15 @@ impl Constant {
 
 /// A constant's production: fired at an init view, standing otherwise.
 /// Every argument-less literal is a constant.
+// CR claude for eric: [risk] Off an init view this re-delivers the caller's stored
+// resident, and callers start that resident two ways. Constant and Lambda start it
+// stale with their value (:597, lambda.rs:1552). A no-argument Variant, `{}` and `[]`
+// start it phantom, a standing bottom (data.rs:610, map.rs:51, array.rs:541). A fresh
+// node first updated off an init view would give Stale(1) for `1` but StaleBottom for
+// `` `A ``, while a kernel stales every constant (const_stale_gate), so the engines
+// would disagree. No path does that today, because every fresh bind, slot and arm entry
+// forces the init view. Start the argument-less literals stale with their value, as
+// Constant does, so the rule holds by construction. (c-data-map-11)
 pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,
@@ -676,6 +728,13 @@ pub struct Block<R: Rt, E: UserEvent> {
     pub(crate) catches: Box<[usize]>,
     /// Production slot for the catch-bearing path: the last covered
     /// child's borrow can't be held across the catches pass.
+    // CR claude for eric: [doc-drift] This doc is stale. Under the default
+    // GRAPHIX_PAR=auto every block of two or more statements updates through
+    // update_forking, which stores each production here (708), not only the
+    // catch-bearing path. Say it holds the block's production when the block cannot
+    // hand back its last child's borrow: after a catch pass or a forked run.
+    // Block::new's doc (714) still says "a `do` block", which is ExprKind::Block now;
+    // write "a non-module block's value is its last child's". (c-node-mod-11)
     resident: TagValue,
     /// The statements as runs for forking (`analysis::plan_block`), made
     /// at the first update that may fork.
@@ -836,7 +895,26 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     at: StmtAt,
 ) -> Result<(Node<R, E>, Scope)> {
     let predeclared = matches!(at, StmtAt::Block { .. });
+    // CR claude for eric: [bug] Catch, use, mod, type, trait and impl statements
+    // compile here without passing through compile_inner (compiler.rs:160). That is the
+    // only place that refuses an unknown attribute or applies a fork or definition
+    // attribute, so every such attribute on these statements is silently ignored.
+    // `#[bogus] type T = i64`, `#[serial] mod m;`, `#[bogus] impl Show for Counter { ..
+    // }`, `#[parallel] trait Show { .. }` and `#[tail_recursive] use array::map` all
+    // pass --check and run, while `#[bogus] let x = 1` is refused as an unknown
+    // attribute. Run the same attribute scan for every statement kind, and refuse an
+    // attribute that means nothing on a declaration. probe:
+    // design/review-2026-10-05/repro/c-data-map-04.gx (c-data-map-04)
     let node = match &e.kind {
+        // CR claude for eric: [bug] A `catch` in a block's value slot matches here,
+        // before the value-slot guard below. So it is accepted, although the doc above
+        // says a declaration other than `let` is refused there, as `use` and `type`
+        // are. The handler covers nothing and the block never produces: in `let x = {
+        // let a: i64 = error(`Boom)?; catch(e) println("inner") }` an outer catch takes
+        // the error and x stays ⊥. A user reading the catch as try/catch gets no
+        // warning. Refuse it with a message of its own (compile()'s "only valid in
+        // statement position" would mislead here), or change the doc. probe:
+        // design/review-2026-10-05/repro/c-node-mod-06.gx (c-node-mod-06)
         ExprKind::Catch(c) => {
             return error::Catch::compile(ctx, flags, e.clone(), scope, top_id, c);
         }
@@ -930,6 +1008,15 @@ pub(crate) type Child<'a, R, E> =
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
 /// body's errors also carry each statement's origin, the file it is in.
+// CR claude for eric: [structure] The statement walkers repeat two rules by hand.
+// Wrapping a statement's error with its spec, plus its origin when the body is a
+// module's, is written four times (942-946, 984-988, 1022-1026, 1115-1119).
+// typecheck0_modules (1000-1033) and typecheck1_statements (1099-1125) both fork a
+// CompileCtx per statement, check under AtLevel in par_iter, join the tasks in order
+// and return the first error in order. Use one helper for a statement's result and one
+// for the fork-check-join loop, with each caller keeping its own task setup (hidden
+// impls for modules, a fresh task for statements). The typecheck0_with impls at
+// 2292-2425 belong beside their nodes. (c-node-mod-09)
 pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     nodes: &mut [Node<R, E>],
@@ -973,6 +1060,19 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
     while at < order.len() {
         let run =
             order[at..].iter().take_while(|i| is_static_module(&slots[**i])).count();
+        // CR claude for eric: [bug] Undeclared impls are hidden only among the members
+        // of one run of adjacent static modules. A module checked alone takes the else
+        // branch with nothing hidden, and impls register at compile time, so it sees
+        // every sibling's undeclared impl, a later sibling's included. Whether b may
+        // use a's undeclared `impl Show for i64` therefore depends on statement
+        // placement. `mod a; mod b;` refuses it. `mod a; let z = 0; mod b;`, `mod b;
+        // let z = 0; mod a;` and an interface-less `mod c;` between them all accept and
+        // run it, and giving c a .gxi refuses it again. CLAUDE.md states the rule
+        // without conditions ("Siblings reach each other only through interfaces"), and
+        // the foreign-write rule in Module::typecheck0 already holds for a module
+        // checked alone, so either hide every static sibling's undeclared impls from
+        // each module's check, serial branch included, or document the run-scoped rule.
+        // probe: design/review-2026-10-05/repro/c-node-mod-04.sh (c-node-mod-04)
         if run >= 2 && !RUNTIME_BIND.get() {
             let run_nodes = order[at..at + run]
                 .iter()
@@ -1014,6 +1114,15 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
         );
         task.env.hidden_impls = Arc::new(hidden);
     }
+    // CR claude for eric: [style] `crate::typ::tvar::{current_level, AtLevel, InTask,
+    // new_task}` is spelled out on seven lines (1017, 1021, 1046, 1105, 1109, 1113,
+    // 1114). `crate::PendingSettle` is spelled out on two (1054, 1066), and so is
+    // `crate::defer_unresolved_names` (812, 1955). `anyhow::anyhow!` (768, 1526) and
+    // `smallvec::SmallVec` (760) are written in full though the file already imports
+    // both. Add the first three to the top `use crate::{..}` group and use the existing
+    // imports for the other two. `results` here and at 1110 is the only plain Vec
+    // beside the pooled `work`, `order` and `slots`; use collect_into_vec into an
+    // LPooled Vec. (c-node-mod-10)
     let level = crate::typ::tvar::current_level();
     let mut results: Vec<Result<()>> = work
         .par_iter_mut()
@@ -1533,6 +1642,15 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
+    // CR claude for eric: [readability] `inferred` is decided by `bind.typ` being a
+    // TVar. That is also true of a `let` typed by its initializer and of a declared
+    // parameter `x: 'a`, not only of a `let` over ⊥ that takes its type from its first
+    // use. `let y = 1; let x = y + 1; x <- "s"` reports "x is i64, inferred from an
+    // earlier use". `'a: Number |x: 'a| -> 'a { x <- "s"; x }` reports "x is 'a:
+    // unbound within Number, inferred from an earlier use, ... declare x: [string, 'a:
+    // unbound within Number]", a declaration that does not parse and that a rigid
+    // variable could never take. Say "inferred from an earlier use" only for a ⊥-fed
+    // cell, and give a declared type variable no declaration hint. (c-node-mod-05)
     let inferred = match &bind.typ {
         Type::TVar(_) => ", inferred from an earlier use,",
         _ => "",
@@ -1621,6 +1739,18 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         if let Some((root, path)) = ctx.rt.ref_path(&cell) {
             return Some(WriteTarget::Place(*root, path.clone()));
         }
+        // CR claude for eric: [bug] A reference to anything but a name or a place
+        // (`&"top"`, `&never()`, `&f(x)`) has no byref_chain entry, so this returns
+        // None. `*r <- v` through it is then dropped with no log and no diagnostic. The
+        // book (udt/references.md:116-123) says `&(a + b)` is exactly `let tmp = a + b;
+        // tmp <- a + b; &tmp`, under which the write lands in tmp. queuefn's #count
+        // already writes this same cell (queuefn.rs:357). The drop kills tui::browser's
+        // #selected_path whenever #selected_row is left at its `&never()` default (the
+        // book's browser_basic.gx), and makes `line_edit::handle(&line_edit::state(..),
+        // e)` answer `Stop while losing the edit. Either fall back to
+        // `WriteTarget::Bind(cell)` here, or keep the drop, warn at the write and
+        // correct the book. probe: design/review-2026-10-05/repro/gx-ui.r2-05.gx
+        // (gx-ui.r2-05)
         ctx.env.byref_chain.get(&cell).map(|id| WriteTarget::Bind(*id))
     }
 }
@@ -1647,10 +1777,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
         let mut up = rhs_fired;
+        // CR claude for eric: [bug] `target` survives the arm's sleep and is
+        // re-resolved only when the reference is on the overlay. So if the reference
+        // moves while this arm sleeps and a sibling arm that reads it consumes the
+        // fire, the woken write keeps landing in the old place: an edit arm over
+        // `&rows[cursor]` writes the previous row after the cursor moved in the view
+        // arm. Going through a call does not help, because the CallSite's wake refresh
+        // only puts the formal in the store. The standing-store branch below also sets
+        // `up`, so the arm's first selection writes the RHS's consumed value; a plain
+        // `x <- v` never does that, and a re-entry does not either. It needs a slept
+        // bit: re-resolve from the present reference at a wake without writing, and
+        // write only for a fired RHS or a fired delivery of the reference. probe:
+        // design/review-2026-10-05/repro/c-node-mod-03.gx (graphix-fuzz run)
+        // (c-node-mod-03)
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
             let t = Self::resolve(ctx, tv);
+            // CR claude for eric: [bug] A retarget sets `up` and writes the RHS's
+            // standing value even when that value already landed at the old target and
+            // the RHS has not fired since, so one write lands in every place a moving
+            // reference visits. `edit(&vals[focus], e)` with `*st <- e ~ ..` copies
+            // field 0's edited state over field 1 when the focus moves. `*r <- t ~ 99`
+            // with r switching from &x to &y writes 99 into both, while the equivalent
+            // `select c { false => x <- v, true => y <- v }` writes only x, as "a
+            // connect writes when its RHS fires" and wake catch-up require. A retarget
+            // should land only a write no target took, which is the pending write
+            // `place_bottom_key` and `place_through_bottom_deref` pin. probe:
+            // design/review-2026-10-05/repro/x-engine-seq-errors-09.gx
+            // (x-engine-seq-errors-09)
             if self.target != t {
                 self.target = t;
                 up = true;
@@ -1952,6 +2107,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        // CR claude for eric: [bug] Only T's names are deferred here; nothing checks
+        // T's typedef applications against their parameter bounds, which every other
+        // site that writes a type gets when a contains expands the Ref
+        // (Type::lookup_ref_with). `type Num<'a: Number> = 'a; never<Num<string>>()`
+        // passes --check, and once the never feeds an unannotated `let` the refusal
+        // comes from Bind::compile's `ptyp.contains(..)?` (node/bind.rs:207) with no
+        // position; `let x = never<Nope>(); x` also reports `undefined type Nope`
+        // unpositioned. Probe: design/review-2026-10-05/repro/x-diff-types-06.gx.
+        // (x-diff-types-06)
         crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
@@ -2043,6 +2207,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         match winner {
             Some(tv) => self.resident.set(tv),
             None if bottomed => self.resident.set_bottom(true),
+            // CR claude for eric: [bug] At a wake this rides the value held from before
+            // the sleep, even when the input that produced it went bottom while the arm
+            // slept. That bottom is not a tracked fire (wake.rs observe skips bottoms),
+            // and the standing bottom seen at the wake is ignored. `let v0 = 10 / in1;
+            // select in0 { 0 => any(v0, never<i64>()), _ => -1 }` re-emits 5 when arm 0
+            // wakes after in1 = 0, where `v0 + 0` in the same arm is ⊥. CLAUDE.md says
+            // "an input that went bottom during the sleep is bottom at the wake", but
+            // design/wake_catchup.md still calls Any's ride correct, and `uniq` rides
+            // the same way. Fix the class, or name the exemption in CLAUDE.md. probe:
+            // design/review-2026-10-05/repro/c-node-mod-07.gx (c-node-mod-07)
             None => self.resident.ride(),
         }
     }

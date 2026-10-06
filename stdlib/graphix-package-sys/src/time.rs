@@ -106,6 +106,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         if let Some(secs) = &self.timeout_v
             && (timeout_up || val_up)
         {
+            // CR claude for eric: [bug] Both arms drop an armed `self.id` without
+            // `release`. Its `by_ref` entry stays for good, and when its timer fires
+            // the runtime stores the dead id and updates this statement (for a script,
+            // the whole program) for nothing. That is about 200 bytes and one stray
+            // update per re-arm, and a debounce re-arms on every input. Timer does the
+            // same in `schedule!` from the `(Some(s), Some(r), _)` arm and in
+            // `error!()`. Releasing first is not the whole fix: `push_var_event`
+            // (graphix-rt/src/gx.rs:455) stores every timer fire, so a released id
+            // whose timer fires later stays in the store, as it already does after
+            // `sleep`/`delete` of an armed timer (about 70 bytes each). probe:
+            // design/review-2026-10-05/repro/x-node-contract-05.py (800k re-arms: 226
+            // MB peak against 62 MB). (x-node-contract-05)
             match secs.clone().cast_to::<Duration>() {
                 Ok(dur) => {
                     let id = BindId::new();
@@ -175,6 +187,17 @@ impl SubAssign<u64> for Repeat {
     fn sub_assign(&mut self, rhs: u64) {
         match self {
             Repeat::Yes | Repeat::No => (),
+            // CR claude for eric: [bug] This subtraction underflows on N(0).
+            // Timer::update's (Some(timeout), Some(repeat)) arm (line 343) schedules
+            // without checking will_repeat(), so timer(d, 0) arms a timer. A count that
+            // drops to 0 while a fire is pending (line 325) also keeps its armed timer,
+            // and in both cases the decrement at line 357 arrives here with 0. A debug
+            // build panics and kills the runtime ("graphix runtime is dead"); a release
+            // build wraps to u64::MAX and fires every period forever, where the gxi
+            // promises n fires. A negative count also fires forever instead of raising
+            // the TimerError its message promises, because from_value's
+            // cast_to::<u64>() wraps -1 to u64::MAX. probe:
+            // design/review-2026-10-05/repro/x-panics-11.gx (x-panics-11)
             Repeat::N(n) => *n -= rhs,
         }
     }
@@ -324,6 +347,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                 Ok(repeat) => {
                     self.repeat = repeat;
                     if let Some(dur) = self.timeout {
+                        // CR claude for eric: [bug] A one-shot timer whose repeat arg
+                        // arrives after its timeout never fires. The `(Some(s), None,
+                        // _)` arm only stores the timeout, and this arm arms the timer
+                        // only when `will_repeat()`, which is false for Repeat::No. In
+                        // `timer(100ms, r)` with `r` written 50 ms after init, `false`
+                        // fires 0 times but `1` fires once, though the doc treats them
+                        // the same. With `r` present at init, `false` fires once. This
+                        // arm cannot tell a timeout that was never armed from a
+                        // one-shot already spent, so that needs its own state. probe:
+                        // design/review-2026-10-05/repro/sys-io-12.gx (sys-io-12)
                         if self.id.is_none() && repeat.will_repeat() {
                             schedule!(dur)
                         }
@@ -374,6 +407,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
     }
 
+    // CR claude for eric: [bug] Sleep drops the timer's timeout and repeat, and update
+    // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
+    // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
+    // fires again, while `timer(duration:3.ms, true)` restarts because constants fire
+    // at the wake. AfterIdle::sleep (line 144) and CachedArgsAsync::sleep
+    // (graphix-package-core/src/lib.rs:936) have the same hole: they reset their output
+    // on the premise that the operation restarts on wake, nothing restarts it over
+    // level arguments, and the arm stays bottom for good (json::read(doc),
+    // sys::fs::read_all(p), after_idle(d, v)). Subscribe and Publish handle this with a
+    // slept bit that makes the first update after sleep act on the present arguments;
+    // these three need the same. Both engines agree, so the fuzzer cannot see it.
+    // Probe: design/review-2026-10-05/repro/x-engine-firing-04.gx. (x-engine-firing-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         self.repeat_v = None;

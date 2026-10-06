@@ -1,0 +1,31 @@
+// c-data-map-02: `{(e) with f: v}` refuses a source typed by a typedef name
+// (or by an uncollapsed union) that `(e).f` accepts.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-data-map-02.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-data-map-02.gx
+//
+// expected: accepted; prints {x: 3, y: 2}, as `let p = w.p; {p with x: 3.0}`
+// does (Point is {x: f64, y: f64}, structural typing).
+//
+// observed (HEAD c722befe, debug build): exit 1, at { (w.p) with x: 3.0 }:
+//   expected a struct
+// while `(w.p).x` on the same w prints 1.
+//
+// StructWith::typecheck0_with (graphix-compiler/src/node/data.rs:1052) reads
+// its source with deref_cloned, which follows bound cells only. `w.p` is
+// typed Type::Ref(Point) (the field's declared type), so it falls into
+// `_ => bail!("expected a struct")`. StructRef uses struct_field_type
+// (data.rs:852), whose deref_typ! expands refs and normalizes sets. A name
+// works only because a pattern bind expands a top-level ref
+// (pattern.rs compile_int_inner). Refused the same way:
+//   {(t.0) with x: 3.0} with t: (Point, i64);
+//   the nested update |s: State| -> State {s with cursor: {(s.cursor) with
+//     row: s.cursor.row + 1}} with type State = {cursor: Cursor, name: string};
+//   an uncollapsed union source:
+//     let k = 1; let n = never();
+//     let s = select k { 0 => {x: n, y: 2}, _ => {x: 3, y: 4} };
+//     n <- 7; {s with x: 5}
+//   is refused with "expected a struct", while `s.x` in its place prints 3.
+type Point = {x: f64, y: f64};
+let w: {p: Point, n: i64} = {p: {x: 1.0, y: 2.0}, n: 0};
+{(w.p) with x: 3.0}

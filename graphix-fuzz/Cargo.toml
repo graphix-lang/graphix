@@ -51,5 +51,11 @@ syn = { version = "2", features = ["full", "parsing"] }
 
 # Local immutable-chunkmap with the deep-nesting drop guard — mirrors
 # the graphix workspace patch (this crate is its own workspace).
+# CR claude for eric: [dead] graphix-fuzz is a member of the root workspace (Cargo.toml
+# members), so cargo ignores this patch with 'patch for the non root package will be
+# ignored' on every invocation, and Cargo.lock takes immutable-chunkmap 2.1.4 from
+# crates.io. The comment above is false twice: the root has no such patch and this crate
+# is not its own workspace. ../../immutable-chunkmap/src is identical to the crates.io
+# 2.1.4 source, drop guard included, so lines 52-55 can go. (fuzz-lib-b-17)
 [patch.crates-io]
 immutable-chunkmap = { path = "../../immutable-chunkmap" }

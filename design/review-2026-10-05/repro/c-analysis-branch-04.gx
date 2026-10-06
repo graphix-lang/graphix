@@ -1,0 +1,40 @@
+// c-analysis-branch-04: plan_block's `published` omits reference cells and
+// place paths published in the cycle.
+//
+// analysis.rs:1116-1120 counts only the ids a statement binds as its
+// publications. A chainless `&(e)` also publishes its own cell
+// (bind.rs:1184 ByRef::publish) and a place `&a[i]` moves its path
+// (bind.rs:1254 set_ref_path); neither id is bound. A `*r` reads `refs`,
+// which meets `published` only when it is non-empty (Vars::meeting,
+// analysis.rs:826), so each block below is planned as one run
+// [`r <- ..`, `let v = *r`]. Forked, `*r` reads the parent's cell or path:
+// `a` never moves past the init read, `b` lags one cycle.
+//
+// command: timeout -s KILL 5 graphix --no-cache design/review-2026-10-05/repro/c-analysis-branch-04.gx
+//          (default env: Auto honours #[parallel]; --no-fusion prints the same)
+//          GRAPHIX_PAR=off timeout -s KILL 5 graphix --no-cache <same file>
+//          graphix-fuzz check <same file>
+//
+// expected (GRAPHIX_PAR=off, the serial evaluation):
+//   (0, 0, 0) (1, 10, 10) (2, 20, 20) (3, 30, 30) (4, 40, 40) (5, 50, 50) (5, 50, 50)
+// observed (default env):
+//   (0, 0, 0) (1, 0, 0) (2, 0, 10) (3, 0, 20) (4, 0, 30) (5, 0, 40) (5, 0, 50)
+// graphix-fuzz check: "DIVERGENCE — parallel evaluation bug (forked
+// node-walk != serial node-walk)", with or without the attributes.
+// GRAPHIX_PAR_AUDIT=1 panics for `a` ("a forked branch read BindId(..),
+// which its left sibling published"), but alone `b` passes the audit:
+// ForkRt::ref_path notes no read and `audit` never looks at ref_paths.
+//
+// No attribute is needed: in the default Auto mode, a block
+// `{ r <- &[n * 1, .., n * 1000]; let v = { let a = *r; a[0]$ + <a 5000-slot
+// array::map/fold over n> }; (n, v) }` driven by n = 0..300 printed v != n
+// on 280 of 301 lines (203 of 301 with fusion), 0 under GRAPHIX_PAR=off.
+let n = 0;
+n <- select n < 5 { true => n + 1, false => never() };
+let arr = [0, 10, 20, 30, 40, 50];
+let holder = 0;
+let r = &holder;
+let p = &holder;
+let a = #[parallel] { r <- &(n * 10); let v = *r; v };
+let b = #[parallel] { p <- &arr[n]; let w = *p; w };
+(n, a, b)

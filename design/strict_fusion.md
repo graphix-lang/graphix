@@ -145,6 +145,14 @@ words per-slot and per-activation multiplicity
 activations. No replay caches (every word a kernel keeps is semantic),
 no selection memory, no inner
 `Apply`s or `Node`s beyond its input feeders. The runtime loans an
+<!-- CR claude for eric: [doc-drift] This list is stale: kernels are also loaned the
+fork mode through `PAR_LOAN` (fusion/par_loop.rs:50), a fifth loan that CLAUDE.md
+already lists. Further down, 'fusion is an embedder switch (UIs run with it off)' is
+wrong: the shell fuses every program unless `--no-fusion` is given or the host is
+Windows (graphix-compiler/src/lib.rs:2179). Above, `emit_qop_always_error` is now
+`emit_qop_always_bad` (fusion/emit/flow.rs:567). Anyone checking a kernel's thread-local
+surface against this list misses the fork loan. Anyone reasoning about UI performance
+from here assumes UIs are node-walked. (x-doc-drift-05) -->
 invocation exactly four things through scoped thread-locals:
 `KERNEL_ABORT` (the interrupt / stack-budget / bottom-abort channel),
 `KERNEL_ENV`, `QOP_RAISES` and the core-trait value hooks. Wire slot 0

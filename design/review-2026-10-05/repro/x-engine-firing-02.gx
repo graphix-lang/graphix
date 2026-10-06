@@ -1,0 +1,29 @@
+// x-engine-firing-02: CachedArgs keeps its previous result when eval returns
+// None; the JIT fastcall trampoline makes that None this cycle's bottom.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/x-engine-firing-02.gx
+//   (graphix-fuzz run ... prints every mode)
+//
+// Epoch 0: n = 1, encode yields 1 byte, (1, 0). Epoch 1: n = u64 max, the
+// Pad guard in buffer.rs logs and returns None ("producing no value").
+// Epoch 2: only t fires.
+// Node-walk: CachedArgs::update_inner (stdlib/graphix-package-core/src/
+// lib.rs:779) rides the epoch-0 bytes on the fired None, so the tuple
+// re-fires with them. JIT: fast_dispatch (graphix-compiler/src/fusion/
+// emit_helpers.rs) returns bottom for None, as FastFn's doc and the book's
+// fast-call contract say ("None means no value this cycle").
+//
+// expected (n is u64 max, encode has no value; R1 in design/dense_delivery.md):
+//   Trace([0:[u64:1, i64:0]]; []; [])
+// observed:
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//   interp: Trace([0:[u64:1, i64:0]]; []; [0:[u64:1, i64:9]])
+//   jit: Trace([0:[u64:1, i64:0]]; []; [])
+//
+// The wake re-eval path (lib.rs:788) diverges the same way: with
+// `select in0 { 0 => (f(n), in0 ~ u64:0), _ => (n, u64:7) }` and epochs
+// in0=1; in1=1; in0=0 (f = |n: u64| buffer::len(buffer::encode([`Pad(n)])))
+// the node-walk re-surfaces (1, 0) at the last epoch, the JIT emits nothing.
+// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:9
+let f = |n: u64, t: i64| (buffer::len(buffer::encode([`Pad(n)])), t);
+f(select in0 { 0 => u64:1, _ => u64:18446744073709551615 }, in1)

@@ -1,0 +1,28 @@
+// c-analysis-branch-11: --check (and the LSP) take a block at a script's top
+// level for the script's package root, so the check refuses an impl the build
+// runs and resolves `package::` to a different binding.
+//
+// The build compiles a script as a `wrap_file_in_do` block (load_program,
+// graphix-rt/src/gx.rs:910), its names under `/#doN`; the check compiles it with
+// compile_script at the root (gx.rs:858, graphix-compiler/src/lib.rs:2078), its
+// names at `/`. A block `{ .. }` is scoped `<parent>/#doM`
+// (graphix-compiler/src/node/compiler.rs:337), and Env::package_root
+// (graphix-types/src/env.rs:649) treats any first-level `#do` component as a
+// script's top level: under the check a top-level block is `/#doM`, a package of
+// its own; under the build it is `/#doN/#doM`, in the script's `/#doN`.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-analysis-branch-11.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-analysis-branch-11.gx
+//
+// expected: both accept the program (the impl is in the type's own script) and
+//   it prints true.
+// observed (HEAD c722befe, debug build): --check fails: "impl Eq for Key: an
+//   abstract type's implementation must live in the type's package (/) or the
+//   trait's (/core)"; the build prints true.
+//   Also `let x = 1; let y = { let x = "s"; package::x + 1 }; y`: --check
+//   refuses "cannot compute string + i64" (package::x is the block's x), the
+//   build prints 2 (package::x is the script's x); with `package::x` alone the
+//   check types y as the string and the build prints 1.
+type Key = Abstract<i64>;
+let out = { impl Eq for Key { let eq = |a, b| a.0 % 10 == b.0 % 10 }; Key(1) == Key(11) };
+out

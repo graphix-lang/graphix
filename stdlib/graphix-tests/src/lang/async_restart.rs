@@ -126,6 +126,18 @@ async fn seq_io(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// CR claude for eric: [test-gap] Every fixture here re-issues its builtin through an
+// argument that fires at the wake, a constant or the `tick`/`go` the woken arm reads;
+// line_reader_rewake's stream stands at the wake, but its reader never stopped, so
+// nothing restarts there. No fixture wakes a builtin whose arguments all stand, the
+// only path where three confirmed bugs show: an async builtin or range stays bottom for
+// good (sys::fs::is_file(path) in a woken arm with `let path = "/etc/hostname"`),
+// take/skip/throttle forget a let-bound #n or #rate, and max/sum/and re-deliver their
+// pre-sleep result. lib_tests/core.rs has no range with a late or bottomed argument
+// either, where range(0, late) first emits RangeError. Both engines run these same
+// nodes, so the fuzzer cannot see any of it. Add an interp/jit fixture per family, `let
+// a = ..; select phase { true => f(a), false => .. }` with phase going true, false,
+// true, plus range(0, late) and range(bottoming, 2). (core-lib-14)
 async fn select_restarts_timer(fusion_disabled: bool) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);

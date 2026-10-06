@@ -79,6 +79,17 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
     let esc: SmallVec<[char; 8]> =
         GRAPHIX_MUST_ESC.into_iter().chain(NAMED.map(|(c, _)| c)).collect();
+    // CR claude for eric: [bug] The generic arm here escapes every other control
+    // character as `\u{hex}`. The string parser (netidx_value::parser::escaped_string,
+    // called from interpolateexp.rs) accepts only n, r, t, 0 and the must-escape
+    // characters after `\`, so a string literal or string pattern holding a raw BEL or
+    // ESC prints as text that does not parse. `graphix fmt` refuses such a file
+    // although `--check` accepts it. Raw and template literals holding such a character
+    // fall back to the same quoted form (print.rs raw_writable/template_writable),
+    // although their parsers read the character verbatim. netidx's VAL_ESC has the same
+    // asymmetry, so accepting `u{hex}` in escaped_string fixes both; the other fix is
+    // to print these characters raw. Probe:
+    // design/review-2026-10-05/repro/t-print-06.gx. (t-print-06)
     Escape::new('\\', &esc, &NAMED, Some(char::is_control)).unwrap()
 });
 
@@ -103,6 +114,18 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until",
     ];
+    // CR claude for eric: [bug] `Error` and `Abstract` are compiler-known type names
+    // that typ() matches as keywords (typexp.rs:427, 429), but they are missing from
+    // this list. typname() therefore accepts `type Error = ..` and `type Abstract =
+    // ..`, and the bare name can never be used afterwards. `let e: Error = ..` fails at
+    // the use with "Expected whitespace or `<`", and with `type Error<'a> = {x: 'a}`
+    // the annotation `Error<i64>` silently means the builtin error type. This breaks
+    // the rule that list_is_a_reserved_type_name pins (a user typedef of a
+    // compiler-known type name refuses at parse): reserve both words here and extend
+    // that test. bound() (typexp.rs:78-85) captures a user type named Concrete,
+    // Function, Singleton or OneNumber the same way, so `type Concrete = [i64, string];
+    // 'a: Concrete` accepts f64. probe: design/review-2026-10-05/repro/t-parser-b-02.sh
+    // (t-parser-b-02)
     let reserved = [
         "true", "false", "ok", "null", "bytes", "Array", "Map", "List", "any", "Any",
         "self", "super", "package", "abort",
@@ -224,11 +247,26 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // CR claude for eric: [bug] Only `\n` ends the line, so on CRLF input the `\r`
+    // becomes the last character of every `//` comment's and `///` doc's text. graphix
+    // fmt then writes comment and doc lines with CRLF and code lines with LF, mixed
+    // endings in one file, and the Doc text shown on hover keeps the `\r`. Stop at `\r`
+    // too (none_of(['\r', '\n'])); the spaces() that follows consumes the CRLF. probe:
+    // design/review-2026-10-05/repro/t-parser-b-08.sh (t-parser-b-08)
     many(none_of(['\n']))
 }
 
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`.
+// CR claude for eric: [doc-drift] Despite "own-line" here and at line 292, comment_line
+// runs wherever leading_decorations does: at every expression start, whatever precedes
+// it on the line. The trailing comment the book calls a parse error
+// (book/src/core/let_binds.md:64-65, `x + 1; // no`) parses whenever a statement
+// follows. So do `select // c`, `a[// c`, `m{// c` and `|#a = // c`, each followed by a
+// newline and the rest. graphix fmt moves the first onto the next statement and prints
+// the others still trailing. Enforce own-line (refuse a comment on a line that already
+// holds a token) and run the gxfmt corpus harness, or restate the rule in the book,
+// CLAUDE.md and these comments. (t-parser-b-11)
 fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -373,6 +411,16 @@ where
         }
     }
     spaces()
+        // CR claude for eric: [bug] string("///") is not under attempt. So in a .gxi, a
+        // `//` line below an item's `///` docs matches `//`, commits, and fails at the
+        // space with a bare "Unexpected ` `" and no reason (sig_item and trait_method
+        // read `//` lines only above the docs). Separately, comment_line (line 242)
+        // notes "`///` is a doc comment, legal only in a .gxi interface file" whenever
+        // leading_comments meets a `///` line, in a .gxi too, so a dangling doc at the
+        // end of a .gxi is told that docs belong in a .gxi. Read `//` and `///` lines
+        // interleaved above an item, or attempt the `///` and note that a `//` cannot
+        // follow the docs; note the .gx rule only where docs are illegal. probe:
+        // design/review-2026-10-05/repro/t-parser-b-07.sh (t-parser-b-07)
         .with(many(string("///").with(line_text()).skip(spaces())))
         .map(|Lines(doc)| Doc(doc.map(ArcStr::from)))
 }
@@ -530,6 +578,16 @@ where
     attempt(spaces().with(token(','))).skip(spaces())
 }
 
+// CR claude for eric: [readability] semisep and csep (line 524) begin with spaces(), so
+// when whitespace separates an item from the next token, the `;` or `,` they expected
+// never reaches the report. `let x = 1\nlet y = 2;` (or `let x = 1 let y = 2;`) gives
+// "Unexpected `l` / Expected whitespace or end of input", and a select missing the
+// comma between arms on separate lines lists `}`, mod, pub, use… but no `,`. With no
+// whitespace (`1 => "a"_ => "b"`) the `,` is listed. A missing separator is the most
+// common syntax slip, and the message never names it. Make the separator and the next
+// item fail at the same position (an item skips its trailing whitespace, the separator
+// is `token(';').skip(spaces())`), or note a reason when the failure follows a complete
+// item. (x-errors-11)
 fn semisep<I>() -> impl Parser<I, Output = char>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -659,6 +717,16 @@ where
             grow((
                 position(),
                 not_followed_by(token('"')),
+                // CR claude for eric: [bug] An overflowing float literal parses to inf:
+                // flt reads `1e400`, `f64:1e309` or `f32:1e40` with str::parse and gets
+                // ±inf, while an out-of-range integer (`u8:300`) is refused here.
+                // Literal (print.rs:353) prints a non-finite f64 through fmt_ext as
+                // `f64:inf`, which the parser does not accept. So `graphix fmt` refuses
+                // the file as a formatter bug, while the program runs with inf. Refuse
+                // a non-finite float here and in literal_pattern (patternexp.rs:257),
+                // or in netidx's flt. The round-trip proptest cannot see it, because
+                // proptest's any::<f64>() draws only finite values. probe:
+                // design/review-2026-10-05/repro/tests-types-04.gx (tests-types-04)
                 parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()),
             ))
             .map(|(pos, _, v)| ExprKind::Constant(v).to_expr(pos)),

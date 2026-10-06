@@ -1,0 +1,25 @@
+// x-builtin-effects-07: array::window is a pure function of its arguments but
+// is declared Effect::Sync (stdlib/graphix-package-array/src/lib.rs:110), so a
+// woken arm shows the window it computed before the sleep, and it never fuses.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-builtin-effects-07.gx
+//
+// The false arm sleeps while c is true; x moves 0 -> 20 then, and the true
+// arm reads x, so x's fire is consumed and the woken false arm reads x STALE.
+// CachedArgs re-runs eval at a wake only for a Stateless builtin
+// (stdlib/graphix-package-core/src/lib.rs:785); window, declared Sync,
+// retags its last result. array::push is Stateless and computes the same
+// array as window here, so each pair must be equal.
+//
+// expected, last epoch (c back to false, x = 20):
+//   [[20, 42], [20, 42]]
+// observed, every mode (interp, jit, no cache, cold, warm; `check` says AGREE):
+//   [0:[[i64:0, i64:42], [i64:20, i64:42]]]
+// fusion: "lambda `f` has no kernel: its body: builtin `array::window` has no
+// fast-call entry".
+// schedule-v1: cap=64 events=512; in0=bool:true; in1=i64:20; in0=bool:false
+let f = |c, x: i64, n: i64, k1: i64, k2: i64| select c {
+  true => (array::window(#n: n, [x], k1), array::push([x], k1)),
+  false => (array::window(#n: n, [x], k2), array::push([x], k2))
+};
+f(in0, in1, 2, 1, 42)

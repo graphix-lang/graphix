@@ -204,6 +204,19 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
         // The display label is accepted as a synonym for the row-name key.
+        // CR claude for eric: [bug] A data cell's click carries its real column key
+        // (render.rs:556). So in a table with a column named "name", this synonym
+        // treats every click on that column as a click on the row-name cell. With
+        // #on_activate set it fires on_activate(row) and returns, and on_select never
+        // sees "row/name". This also happens under #show_row_name: &false, where there
+        // is no row-name column at all. Only the row-name cell sends
+        // ROW_NAME_SENTINEL_KEY, the \0 key that exists so no real column can collide
+        // with it (mod.rs:64-67); drop the synonym here and in test_access.rs:78 and
+        // :104, and have the tests that click "name" send the sentinel. probe:
+        // design/review-2026-10-05/repro/gui-datatable-11.rs (copy it to
+        // stdlib/graphix-package-gui/tests/review_gui_datatable_11.rs, then cargo test
+        // -p graphix-package-gui --test review_gui_datatable_11 -- --nocapture).
+        // (gui-datatable-11)
         if col.as_str() == ROW_NAME_SENTINEL_KEY || col.as_str() == ROW_NAME_HEADER_LABEL
         {
             if let Some(callable) = &self.on_activate {

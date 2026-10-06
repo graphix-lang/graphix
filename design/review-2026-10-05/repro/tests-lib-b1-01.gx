@@ -1,0 +1,43 @@
+// tests-lib-b1-01: ±0.0 and ±NaN are == but hash differently, so
+// array::dedup keeps both, nondeterministically.
+//
+// Value's PartialEq (../netidx/netidx-value/src/op.rs:173-184) calls
+// 0.0 == -0.0 (IEEE) and any NaN == any NaN (the total order), but its Hash
+// (op.rs:61-76) hashes a zero's raw bits and keeps a NaN's sign bit. A hash
+// set then keeps Eq-equal values apart unless their hashes happen to collide
+// in hashbrown's 7-bit control byte (about 1 in 128, with ahash's per-process
+// random keys). array::dedup is an AHashSet<Value>
+// (stdlib/graphix-package-array/src/lib.rs:201); Map keys are ordered and
+// merge the two, as == does.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/tests-lib-b1-01.gx
+//          (the same with --no-fusion; graphix-fuzz run: every mode agrees)
+//
+// expected: (true, "pos", 1, [0], 1, true, 1, 3000)
+//   the dedups agree with == and with the Map: one element each, and every
+//   one of the 3000 equal pairs collapses.
+// observed (HEAD c722befe, debug build, four runs):
+//   (true, "pos", 1, [0, -0], 2, true, 2, 17)
+//   (true, "pos", 1, [0, -0], 2, true, 2, 24)
+//   (true, "pos", 1, [0, -0], 2, true, 2, 21)
+//   (true, "pos", 1, [0, -0], 2, true, 2, 22)
+//   The last field differs from run to run: dedup is nondeterministic, and
+//   so is the two-element case, which collapses on about 1 run in 128.
+let z = f64:0.0;
+let nz = f64:-0.0;
+let pn = math::copysign(math::nan, f64:1.0);
+let nn = math::copysign(math::nan, f64:-1.0);
+let m = {z => "pos"};
+let pairs = array::init(3000, |k| array::len(array::dedup([(z, k), (nz, k)])));
+let r = (
+  z == nz,
+  m{nz}$,
+  map::len(map::insert(m, nz, "neg")),
+  array::dedup([z, nz]),
+  array::len(array::dedup([f32:0.0, f32:-0.0])),
+  pn == nn,
+  array::len(array::dedup([pn, nn])),
+  array::len(array::filter(pairs, |n| n == 1))
+);
+println("[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

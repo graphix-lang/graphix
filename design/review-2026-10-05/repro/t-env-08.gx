@@ -1,0 +1,45 @@
+// t-env-08: a dynamic module's reload unbinds its signature's trait
+// dispatchers, so a later compile of `foo::Show::show` fails.
+//
+// The loaded body's (spliced) `trait Show` re-declaration stores the
+// definition of record, which carries the SIGNATURE's dispatchers, as
+// Trait.def (graphix-types/src/env.rs:1010, graphix-compiler/src/node/
+// traits.rs:199). The reload deletes the old body: Trait::delete ->
+// undeftrait(&self.def) (traits.rs:247) removes the signature's
+// dispatcher from by_id, trait_methods and poly_binds, while the outer
+// env's binds still name it. Code compiled before the reload is
+// unaffected (trait_dynamic_impl_reload pins that); any compile after it
+// (here: the new slots of an array::map callback) resolves
+// `foo::Show::show` to the dropped id.
+//
+// command: RUST_LOG=warn graphix --no-cache --log-dir /tmp/log \
+//            design/review-2026-10-05/repro/t-env-08.gx
+//          (same with --no-fusion)
+//
+// expected: after `arr` grows (600ms) a second line `r [..]` with three
+//   elements (with `val show: fn(s: i64) -> string` in place of the
+//   trait the same program prints `r ["one", "two", "two"]`); without
+//   the reload (`src` never written) it prints `r ["one", "one", "one"]`.
+// observed: `r ["one"]` only; the log holds, once per new slot,
+//   "binding the callee failed: ... foo::Show::show: foo::Show::show
+//   not defined".
+let v1 = "impl Show for i64 { let show = |s| \"one\" }";
+let v2 = "impl Show for i64 { let show = |s| \"two\" }";
+let src = v1;
+let status = mod foo dynamic {
+    sandbox unrestricted;
+    sig {
+        trait Show { val show: fn(self) -> string };
+        impl Show for i64
+    };
+    source src
+};
+let t = sys::time::timer(duration:200.ms, false);
+src <- t ~ v2;
+let arr = [1];
+let t2 = sys::time::timer(duration:600.ms, false);
+arr <- t2 ~ [1, 2, 3];
+let r = array::map(arr, |x: i64| foo::Show::show(x));
+println("status [status]");
+println("r [r]");
+sys::exit(sys::time::after_idle(duration:1500.ms, r ~ 0))

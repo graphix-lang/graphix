@@ -1,0 +1,47 @@
+// gx-stdlib-01: the Read::read_all default never resets its accumulator, so
+// a second request at one call site returns the earlier bytes prepended.
+//
+// io.gxi:48 `let acc: bytes = buffer::from_string("")` has a constant
+// initializer: acc is set once, when the call site is built. Every chunk is
+// appended (`acc <- b ~ buffer::concat(acc, b)`, io.gxi:56) and nothing clears
+// acc when `s` fires again. No system stream (File, TcpStream, TlsStream,
+// Pipe, Stdio) overrides read_all. Here one server call site reads each
+// accepted connection, and the second client's request comes back with the
+// first client's bytes in front of it.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-01.gx
+//          (the same output with --no-fusion, GRAPHIX_PAR=off|force, and a
+//          cold or warm image)
+//
+// expected:
+//   null
+//   server read: client1-secret;
+//   server read: client2;
+// observed (HEAD c722befe, debug build, every mode):
+//   null
+//   server read: client1-secret;
+//   server read: client1-secret;client2;
+//
+// control: with `Read::read(server, u64:1024)` in place of
+// `Read::read_all(server)` the second line is `server read: client2;`, so
+// only `client2;` is on the wire. A file shows the same: read_all(f) over
+// open(a.txt) and then open(b.txt) gives "AAA" and then "AAABBB", and
+// seeking a file back to 0 and reading it again gives its contents twice.
+// read_exact's default keeps its acc the same way (io.gxi:22): over a
+// Graphix-written stream, read_exact(m, 5) and then read_exact(m, 3) give
+// "abcde" and then "abcfgh".
+use sys::io::{Read, Write};
+use sys::tcp::Socket;
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let msg = "client1-secret;";
+let t = sys::time::timer(duration:200.ms, false);
+msg <- t ~ "client2;";
+let client = sys::tcp::connect(msg ~ addr)$;
+let server = sys::tcp::accept(listener, client)$;
+let w = Write::write_exact(client, buffer::from_string(client ~ msg))$;
+Socket::shutdown(w ~ client)$;
+let req = buffer::to_string_lossy(Read::read_all(server)$);
+println("server read: [req]");
+sys::exit(sys::time::after_idle(duration:500.ms, t ~ 0));
+null

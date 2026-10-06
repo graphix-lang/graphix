@@ -67,6 +67,23 @@ fn html_args_from_bad_value_returns_none() {
 
 // These share the real system clipboard; run with --test-threads=1.
 
+// CR claude for eric: [test-gap] These four ignored tests call arboard directly, so
+// they test the third-party crate; graphix's clipboard builtins (ClipboardBuiltin,
+// with_clipboard, the nine ops and their ClipboardError mapping) have no test. They
+// also share the system clipboard and need --test-threads=1, which CLAUDE.md says never
+// to rely on: under --include-ignored, clipboard_clear can clear the clipboard between
+// clipboard_write_read_text's set and get. Replace them with one ignored test, with a
+// reason, that writes and reads back through the graphix builtins in a single program.
+// (tests-ui.r2-15)
+// CR claude for eric: [dead] These four #[ignore] tests call arboard directly and
+// exercise no graphix code. A plain ignore runs in no gate, and the comment asks for
+// --test-threads=1, which the project never relies on: delete them. What goes unpinned
+// is the graphix side. image_args_from_value (clipboard.rs:300) accepts pixels whose
+// length is not width*height*4, and on Linux arboard's PNG encode hits image's
+// assert_eq in PngEncoder::write_image. So write_image panics inside spawn_blocking,
+// and the program gets ClipboardError("spawn_blocking: task .. panicked ..") with a
+// panic on stderr. Check the length there and pin it beside
+// image_args_from_bad_value_returns_none. (tests-ui-15)
 #[test]
 #[ignore]
 fn clipboard_write_read_text() {

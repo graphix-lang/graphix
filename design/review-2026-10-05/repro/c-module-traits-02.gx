@@ -1,0 +1,35 @@
+// c-module-traits-02: a dynamically loaded module body skips the statement-boundary
+// checks (drain_pending_settles, check_pending_names) in Module::compile_source.
+// run: graphix --no-cache design/review-2026-10-05/repro/c-module-traits-02.gx
+// expected (what each body gets as a static module or alone):
+//   FOO LOADERR ... Error<`A> does not contain Error<ErrChain<`B>>
+//   BAR LOADED 42
+//   BAZ LOADERR ... undefined type Nope
+// observed (HEAD c722befe, default GRAPHIX_PAR):
+//   the `B error is delivered to foo's handler typed Error<`A> (printed by println)
+//   FOO LOADED 1
+//   BAR LOADERR ... in: catch(e: Error<`A>) ... Error<`A> does not contain Error<ErrChain<`B>>
+//   BAZ LOADED 1
+// foo's catch-coverage settle is never drained and leaks into the root settle frame; the
+// next one-statement load (bar) drains it and is refused with foo's error. With foo and
+// bar alone (baz and the printlns removed, last expression "[fs] [bs]"), `graphix-fuzz
+// check` reports DIVERGENCE: serial "FOO LOADED BAR LOADERR", forked "FOO LOADED BAR LOADED".
+let s = mod foo dynamic {
+  sandbox whitelist [core];
+  sig { val a: i64; val w: i64 };
+  source r#"let a = 1; let w = { catch(e: Error<`A>) println("[e]"); error(`B)?; 1 }"#
+};
+let t = mod bar dynamic {
+  sandbox whitelist [core];
+  sig { val z: i64 };
+  source "let z = 42"
+};
+let u = mod baz dynamic {
+  sandbox whitelist [core];
+  sig { val w: string };
+  source r#"type T = [i64, Nope]; let v: T = 1; let w = "[v]""#
+};
+println(select s { error as e => "FOO LOADERR [e]", null as _ => "FOO LOADED [foo::w]" });
+println(select t { error as e => "BAR LOADERR [e]", null as _ => "BAR LOADED [bar::z]" });
+println(select u { error as e => "BAZ LOADERR [e]", null as _ => "BAZ LOADED [baz::w]" });
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

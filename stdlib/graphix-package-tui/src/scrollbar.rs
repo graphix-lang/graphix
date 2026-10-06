@@ -157,6 +157,19 @@ impl<X: GXExt> ScrollbarW<X> {
             .context("scrollbar tref viewport_length")?;
         // The draw loop re-applies the same clamp each frame and warns
         // there, so this one uses a throwaway dedup slot.
+        // CR claude for eric: [bug] An omitted content_length leaves
+        // `ScrollbarState::new(50)`, so the thumb is drawn as if 50 rows of content
+        // existed: one line on a 24-row terminal gets an 8-cell thumb, and so do the
+        // book's scroll_basic.gx and scroll_list.gx (probe:
+        // design/review-2026-10-05/repro/tui-widgets-13.gx).
+        // book/src/ui/tui/scroll.md:36-37 says position is required (it is
+        // `?#position`) and content_length is auto-detected (nothing measures the
+        // child). Apart from the 50, this block repeats the first draw, which applies
+        // the same `t` (`TRef::new` leaves it set), so a bad initial value warns twice.
+        // The comment above is also wrong: draw `take()`s content_length and
+        // viewport_length and re-applies only position each frame. Make content_length
+        // required (or default it to 0, which ratatui draws as no bar), fix the book,
+        // and delete this block. (tui-widgets-13)
         let initial_len = content_length
             .t
             .and_then(|t| t)

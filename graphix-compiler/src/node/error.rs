@@ -51,6 +51,27 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
+    // CR claude for eric: [perf] Every raise runs is_a over the whole cause chain (a
+    // lookup_ref of ErrChain, Ori and Pos at each level) after allocating a fresh TVar
+    // and TypeRef. Raising a chain of depth D therefore costs O(D), and rethrowing one
+    // chain at each of N levels costs O(N²) inside one cycle. Probe:
+    // design/review-2026-10-05/repro/c-error-op-03.gx (N = 2000: about 4.5 s, against
+    // 0.35 s when each level raises a fresh error; N = 4000: 19 s). 2000 raises of a
+    // depth-4000 chain take 24 s; the same chain wrapped in a variant takes 0.26 s. The
+    // check already decides chain-ness from the type, by field names (fix_echain_typ).
+    // Decide it from the site's checked type, or test only the top-level shape here.
+    // (c-error-op-03)
+    // CR claude for eric: [bug] Whether a `?` chains its payload or wraps it is decided
+    // twice: here by value (is_a, which checks every field type) and in fix_echain_typ
+    // by type (a struct with these four field names counts as a chain, an alias is
+    // expanded one level only, a union is wrapped whole). Where the two disagree, the
+    // handler's e holds a value outside its checked type: an `Error<MyChain>` alias or
+    // a payload of type [`B, ErrChain<`A>] is typed wrapped but chained at run time,
+    // and `error({cause: 1, error: 20, ori: 3, pos: 4})?` is typed chained but wrapped.
+    // The JIT then panics at fusion/kernel.rs:243 and the runtime dies; the node-walk
+    // computes on the wrong value, and an exhaustive select over (e.0).error matches no
+    // arm. Decide it once at the check and pass that decision to delivery. probe:
+    // design/review-2026-10-05/repro/c-error-op-01.gx (c-error-op-01)
     let (cause, error) = if typ_echain(Type::empty_tvar()).is_a(env, &e) {
         let fields = e.clone().cast_to::<[(ArcStr, Value); 4]>().unwrap();
         let error = fields.into_iter().find(|(n, _)| n == "error").unwrap().1;
@@ -61,6 +82,19 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     [
         (literal!("cause"), cause),
         (literal!("error"), error),
+        // CR claude for eric: [bug] `spec.ori.to_value()` puts `text`, the whole source
+        // file, into every link of the ErrChain, and `parent` adds the text of each
+        // including file. So the book's display idioms `catch(e) error_display <-
+        // "[e]"` (book/src/core/error.md:40) and `println("could not run: [e]")`
+        // (book/src/ui/tui/input.md:152) print the entire program once per chain link,
+        // in both engines. An embedded program's origin is `Source::Internal(text)`
+        // with the same text (graphix-rt/src/gx.rs:761), so it appears twice per link;
+        // the netidx browser puts that value in its title line
+        // (../netidx/netidx-tools/src/browser/browser.gx:34). This is
+        // `Origin::to_value`'s only caller, no Graphix code reads `ori.text`, and the
+        // Rust `Display` for `Origin` already leaves `text` out for files. probe:
+        // design/review-2026-10-05/repro/x-engine-seq-errors-11.gx (one rethrow prints
+        // the file twice). (x-engine-seq-errors-11)
         (literal!("ori"), spec.ori.to_value()),
         (literal!("pos"), pos),
     ]
@@ -88,6 +122,14 @@ pub struct Catch<R: Rt, E: UserEvent> {
 /// A seq machine's handler, or a `try` body arm's jump: the action run
 /// once every error of a failure has arrived.
 #[derive(Debug)]
+// CR claude for eric: [readability] This struct is a catch's failure action: a seq
+// machine's handler, or a try arm's jump to its with branch. NodeView::SeqAbort and
+// NodeTag::SeqAbort, however, carry the abort(..) node, SeqAbortEvent (line 1043).
+// fusion/mod.rs:650-661 and node_shape.rs:309-325 use c.seq_abort and
+// NodeView::SeqAbort a few lines apart for two different types, and AbortRole::Try
+// calls a try's jump an abort. Name this struct after the AST's CatchRole action
+// (CatchAction, field action) and rename SeqAbortEvent to SeqAbort, so the struct,
+// ExprKind, NodeView and NodeTag agree. (c-error-op-11)
 pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
     role: AbortRole<R, E>,
@@ -138,6 +180,18 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
+    // CR claude for eric: [bug] join_raised widens the catch's bind without any check.
+    // It also runs for raises compiled after the catch was checked and its handler
+    // typed and fused: a dynamic module's body, checked at load under the enclosing
+    // catch, and a later REPL input under the session scope. The ascription's coverage
+    // check (the PendingSettle::Contains in Catch::typecheck0_with) and the handler's
+    // typing ran only once, so the handler then receives values outside its type. The
+    // JIT panics at fusion/kernel.rs:243 and the runtime dies; the node-walk passes a
+    // string to an i64 parameter. The same raise written statically is refused by
+    // --check. A raise compiled after its catch was checked should require the bind to
+    // already contain it and fail the load or the input otherwise (the REPL tail catch
+    // must still cover later inputs, catch_repl_cross_input). probe:
+    // design/review-2026-10-05/repro/c-error-op-02.gx (c-error-op-02)
     let joined = match tv.binding() {
         None => etyp.clone(),
         Some(t)
@@ -336,6 +390,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 self.received = self.received.wrapping_add(1);
                 abort.pending = true;
             }
+            // CR claude for eric: [bug] A try's jump runs here once its own handler has
+            // drained, with no check that the machine was aborted meanwhile. A try-body
+            // step that raises two errors in one cycle gets the second one a cycle
+            // later (deliver_error's set_var fallback). An abort(..) firing during that
+            // drain then runs the machine catch's `pc <- Idle` in the same cycle as
+            // this `pc <- S_with`, and the runtime requeues one of the two writes. So
+            // the aborted run takes its with body, and its join step later restarts the
+            // machine from Idle. The aborted run's fallback is emitted under the next
+            // run's trigger and the next run's result is lost (under seqq, results pair
+            // with the wrong requests), against design/seq_blocks.md §9. probe:
+            // design/review-2026-10-05/repro/t-seq-01.gx prints (5, -1); expected (5,
+            // 10), which it prints with one failing `?`. (t-seq-01)
             if abort.pending
                 && self.received == self.own_handler.generation()
                 && !self.own_handler.has_nested_errors()
@@ -349,6 +415,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         TagValue::phantom_ref()
     }
 
+    // CR claude for eric: [bug] Catch::delete never unbinds the error binding that
+    // Catch::compile made with env.bind_variable. Every deleted catch (a collection
+    // slot, an activation, a rebound callee) leaves its Bind in env.by_id and its scope
+    // in env.binds for the rest of the run. Other deletes skip their release the same
+    // way. ByRef::delete (bind.rs:1288) keeps its cell's store entry and the value in
+    // it. array Group::delete and queuefn's WrapperApply::delete leave their genn::bind
+    // arguments bound, QueueFn::delete keeps fid's entry holding f's definition, and
+    // Bind::delete leaves its ids in env.poly_binds. The builtins with a private
+    // delivery id (array/list/map iter and iterq, queue, range, CachedArgsAsync,
+    // throttle, subscribe, rpc, the io readers) unref the id but never store_remove it,
+    // neither in delete nor when sleep mints a fresh one; throttle mints one per wait,
+    // so it leaks with no delete at all. With one array::map slot rebuilt every other
+    // cycle, each of these grows memory by 40-350 MB/s while the same slot without them
+    // stays flat; probe: design/review-2026-10-05/repro/x-node-contract-06.sh
+    // (x-node-contract-06)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.give_up_in_flight();
         ctx.unref_var(self.bind_id, self.top_id);
@@ -471,6 +552,33 @@ impl Strip {
     ) -> Result<Self> {
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
+        // CR claude for eric: [bug] An unbound operand cell passes this probe without
+        // being bound. So `let f = |x| x?` takes the error form, its result is x's own
+        // cell, and the raised type (line 1365) is that cell minus itself, the empty
+        // set, which fix_echain_typ reports as "expected error not []" (line 619)
+        // without naming x or the annotation it needs. An unbound operand should be
+        // decided here: refuse it with a message that names it and asks for its type,
+        // as settle's not_concrete does. The same unbound case lets `|x| x$` pass the
+        // check and fail elaboration (x-typecheck-generics-F1). Separately, `|b: bool,
+        // x: 'a| -> 'a select b { true => x, false => 1 }` is refused as an infinite
+        // type ("declare a named recursive type"), because open_cell_reaches
+        // (graphix-types/src/typ/contains.rs:169) counts the rigid 'a inside ['a, i64]
+        // as a cycle, while `|x: 'a| -> 'a 1` gets the plain mismatch. probe:
+        // design/review-2026-10-05/repro/x-typecheck-generics-F2.gx
+        // (x-typecheck-generics-F2)
+        // CR claude for eric: [bug] This probe binds nothing and answers true for an
+        // open or declared cell. So at the definition's check, `x$` over an untyped or
+        // `'a` parameter becomes Strip::Error, its type is the operand's own cell (f:
+        // fn(x: 'a) -> 'a), and 'a gets no constraint. An instance then recomputes the
+        // strip from the substituted type and refuses it. Result: --check and the LSP
+        // accept `let f = |x| x$; f(1)` but the build fails with "cannot use the $
+        // operator on i64, it has no error and no null". GRAPHIX_ELAB_AUDIT and
+        // graphix-fuzz's check pair both report it, and a call through a function value
+        // logs "a run-time bind did not type" and runs anyway. The check should either
+        // refuse `$` over an open operand or constrain the cell so every instance has
+        // an error or a null; probe:
+        // design/review-2026-10-05/repro/x-typecheck-generics-F1.gx
+        // (x-typecheck-generics-F1)
         if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             Ok(Self::Error)
         } else if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &null)? {
@@ -568,6 +676,17 @@ macro_rules! report_failure {
     ($msg:expr) => {{
         let msg: &str = $msg;
         log::error!("{msg}");
+        // CR claude for eric: [bug] This eprintln! writes every unhandled `?` error (in
+        // both engines) and every node-walk unchecked-arith failure to stderr. In a TUI
+        // program stderr is the terminal ratatui draws on. The text lands at the
+        // cursor, a message that runs past the bottom row scrolls the alternate screen,
+        // and ratatui repaints only the cells it changes. So one failure corrupts the
+        // display for the rest of the run: the header scrolls away and the status line
+        // keeps only its changing digits. --log-dir does not stop it and an embedder
+        // cannot redirect it, because only `log` output can be routed;
+        // analysis.rs:265-266 repeats the same log::error! + eprintln! pair by hand.
+        // probe: design/review-2026-10-05/repro/x-errors-09.sh (needs tmux).
+        // (x-errors-09)
         eprintln!("{msg}");
     }};
 }
@@ -630,6 +749,21 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             }
         },
         Some(Type::Error(et)) => et.with_deref(|et| match et {
+            // CR claude for eric: [bug] `?` refuses any operand whose error payload is
+            // a type variable. `|r: Result<i64, 'e>| -> i64 r?` stops here with `type
+            // must be known`, although the type is written out and `r$` checks. A bound
+            // that rules out a chain (`'e: [`A, `B]`) and `|e| error(e)?` are refused
+            // the same way, so a function that is generic in its error type cannot
+            // raise that error. Typing the raise as plain `ErrChain<'e>` would be
+            // unsound, because `wrap_error` chains a payload that is itself an ErrChain
+            // instead of wrapping it. So either decide the wrap statically for the
+            // site, or over-approximate as the primitive arm above does
+            // (`ErrChain<Any>`), or refuse with a message that names the generic
+            // payload and asks for a concrete error type. Line 619's `expected error
+            // not []` is false for the operands that reach it (`x: Any`, `[Any, null]`,
+            // a `let r = never()` read by `r?` before its writer) and names nothing to
+            // annotate. probe: design/review-2026-10-05/repro/c-error-op-05.gx
+            // (c-error-op-05)
             None => bail!("type must be known"),
             Some(Type::Ref (TypeRef { scope, name, .. }))
                 if scope == &ModPath::root() && name == &*ECHAIN =>
@@ -724,6 +858,15 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let handler = scope.dynamic.handler();
+        // CR claude for eric: [bug] This warns on every compile of a ? under a scope
+        // with no catch, and an instance compiles under its call site's handlers. So
+        // the run repeats, once per instance, a warning the call site already gave
+        // (raise_throws in callsite.rs), and --check never shows these copies. Under
+        // the node-walk every collection slot is an instance, so a growing array prints
+        // one more copy for each new slot while the program runs. Probe:
+        // design/review-2026-10-05/repro/c-error-op-09.gx (--no-fusion: 22 copies).
+        // Warn from typecheck0_with when check holds, as the rethrow branch at line
+        // 1348 already does, and not here. (c-error-op-09)
         if handler.is_none() && !matches!(spec.kind, ExprKind::Rethrow(_)) {
             Self::check_unhandled(&ctx.env, flags, &spec, "error raised by ?")?;
         }

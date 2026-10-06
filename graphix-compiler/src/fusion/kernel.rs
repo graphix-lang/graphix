@@ -58,6 +58,16 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     state: Box<[u64]>,
     /// This instance's own call-site block (wire slot 2), the storage a
     /// kernel caller would otherwise supply.
+    // CR claude for eric: [dead] A wrapper's root body is always a region parent, which
+    // claims only from the State channel (claim_site_word, claim_site_anchor and
+    // claim_self_block_word answer None for it). So WrappedKernel::own_site is always
+    // an empty layout and this block always has zero words: every region that
+    // GRAPHIX_DBG_KERNELS=1 prints shows site_words=0 self_blocks=0. This field is
+    // dead, and so are the own_site walks in Drop, in update's has_self_blocks and
+    // reclaim, the quiescent check, and the own_site entries of both image codecs (here
+    // and in share.rs). Delete own_site, pack 0 in wire slot 2 as kernel_abi.rs:835
+    // already describes, and remove the sentence in kernel_instance_state.md that says
+    // FusedKernel supplies its own site block. (f-kernel-05)
     site: Box<[u64]>,
     /// The last result; ridden when no feeder fired. Bottom feeders may
     /// belong to untaken branches, so only running the kernel decides
@@ -308,6 +318,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let mut any_updated = false;
         let mut any_bottom = false;
         let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
+        // CR claude for eric: [perf] design/parallel_eval.md (3.1 and 10) lists a
+        // kernel's feeders as a fork point and cites this loop, but the loop polls them
+        // one after another and the kernel has no ForkSite. So a lambda call that fuses
+        // with its non-fusable arguments fed (`fusion::try_fuse_feeding_args`) loses
+        // the fork the node-walked call gives its arguments. This holds under
+        // GRAPHIX_PAR=force and under `#[parallel]`, whose check
+        // (`analysis::check_parallel`, run at typecheck1 before fusion) counted that
+        // fork and passes. Auto never measures the site either. probe:
+        // design/review-2026-10-05/repro/f-mod-lowering-12.gx takes 3.0-3.5 s under
+        // off, auto and force alike, while the same call node-walked (impure callee)
+        // takes about 1.9 s under auto/force. Fork the feeders that are not plain input
+        // reads through a ForkSite, as `update_args` forks a call's arguments.
+        // (f-mod-lowering-12)
         for src in self.feeders.iter_mut() {
             let tv = src.update(ctx);
             let tag = tv.tag();
@@ -368,6 +391,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         KERNEL_ABORT.with(|c| c.set(false));
         // A nested kernel's reaches must not count toward this tree, so
         // the enclosing thread-local values are saved and restored.
+        // CR claude for eric: [risk] Only activation trees rooted in the parent's state
+        // words are stamped, counted and reclaimed here. A recursive callee called
+        // inside a loop roots its trees in per-slot call-site blocks
+        // (SiteLeaf.self_blocks under slot_table_words), which neither this gate nor
+        // reclaim_self_block_tree reaches, because the reclaim never walks anchors. So
+        // each slot keeps its deepest recursion's blocks until the slot is truncated or
+        // the kernel drops, against shrink = delete. probe:
+        // design/review-2026-10-05/repro/f-kernel-06.gx, where 100 slots each go 60000
+        // deep once, is OOM-killed under MemoryMax=250M after 57 cycles, while one slot
+        // going deep every other cycle finishes under 120M. The same gate also leaves
+        // SELF_BLOCK_GEN and SELF_BLOCK_REACHED untouched for such a kernel, so when it
+        // runs nested on a thread mid-invocation (a stolen pool job, a value hook) its
+        // reaches add to the enclosing kernel's count and delay that kernel's shed.
+        // parallel_eval.md section 9 says these loans and KERNEL_ABORT are saved and
+        // restored around every kernel call; KERNEL_ABORT is reset at 368 and 419
+        // instead. (f-kernel-06)
         let has_self_blocks = !self.jit.state_self_blocks.is_empty()
             || self.jit.own_site.as_ref().is_some_and(|l| !l.self_blocks.is_empty());
         let (shrink_gen, saved_gen, saved_reached) = if has_self_blocks {
@@ -387,6 +426,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             forced: ctx.fork.forced,
             control: &**ctx.control,
         };
+        // CR claude for eric: [perf] Every kernel run takes the value-hook loan as soon
+        // as any Eq/Ord/Display impl exists anywhere: hooks_live asks env.impls, not
+        // this kernel. par_loop::run never forks under a loan. So one unused `type K =
+        // Abstract<i64>; impl Display for K { let fmt = |k| "K" }` turns off every
+        // kernel-loop fork in the program, under GRAPHIX_PAR=force and #[parallel] too,
+        // and adds an Env clone to every kernel run. Probe: a fused 64-slot map over a
+        // 2000-deep recursion, with #[parallel] on its definition, prints 8 'PAR kernel
+        // loop' lines under GRAPHIX_DBG_PAR=1, and 0 once those two lines are added;
+        // the values are the same. Only a kernel that can meet an abstract value (an
+        // Abstract or Any among its params, locals, constants or callee types) needs
+        // the loan. Decide that at emission, keep it in the record, and wrap only those
+        // runs. (x-parallel-04)
         let ((), mut raises) = crate::node::coretraits::with_display_hooks(ctx, |env| {
             emit_helpers::with_qop_raises(|| {
                 emit_helpers::with_kernel_env(env, || {

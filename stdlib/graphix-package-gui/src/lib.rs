@@ -136,6 +136,19 @@ graphix_derive::defpackage! {
             && !typ.all_bottom()
             && typ != Type::Any
         {
+            // CR claude for eric: [bug] GUITYP.contains commits bindings, so a root of
+            // type Array<'_> whose element is still an open type variable (`[]`,
+            // `[never()]`, `array::map([], |x| x)`, `let z = []; z`) passes: the check
+            // binds the element to &gui::Window and claims the value as a GUI. With a
+            // display that GUI has zero windows, prints nothing and cannot be ended (no
+            // window to close, Ctrl-C only interrupts the runtime); without one the
+            // script fails with "initializing custom display" where it should print [].
+            // In the REPL the binding sticks: after showing `z`, `let w: Array<i64> =
+            // z` is refused as a type mismatch against Array<&gui::Window>. Claim only
+            // a type whose element is already &Window, checked without binding anything
+            // (all_bottom does not see an open variable). probe:
+            // design/review-2026-10-05/repro/gui-core-07.gx (run with WAYLAND_DISPLAY
+            // and DISPLAY unset). (gui-core-07)
             GUITYP.contains(env, &typ).unwrap_or(false)
         } else {
             false

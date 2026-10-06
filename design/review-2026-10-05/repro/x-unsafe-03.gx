@@ -1,0 +1,25 @@
+// x-unsafe-03: buffer::encode reads variant payloads with get_as_unchecked,
+// so a payload of the wrong type is dereferenced instead of refused.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-unsafe-03.gx
+// (same with --no-fusion)
+//
+// expected: no crash. Either the checker refuses the write through the
+// covariant &Any (x-unsafe-01), or encode, finding a `Bytes payload that is
+// not a Value::Bytes, logs and produces no value as the other builtins do.
+// observed: --check exits 0; the run dies with SIGSEGV (exit 139) under both
+// engines, and gdb puts the fault in graphix_package_core::buffer::fc_encode.
+// Without the encode call the program runs and prints ["Bytes", 5] for x.
+//
+// A route with no reference reaches the same crash (the nested-pattern
+// representation collision of c-pattern-02), exit 139 in both engines:
+//   type U = [(string, i64), `Bytes(bytes)];
+//   let f = |xs: Array<U>| select xs {
+//     [`Bytes(b)] => buffer::encode([`Bytes(b)]), _ => buffer::from_string("") };
+//   let p: U = ("Bytes", 5);
+//   f([p])
+let x: buffer::Encode = `U8(u8:1);
+let r: &Any = &x;
+*r <- `Bytes(i64:5);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+buffer::encode([x])

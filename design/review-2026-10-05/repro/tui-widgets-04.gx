@@ -1,0 +1,48 @@
+// tui-widgets-04: sparkline truncates its f64 data to u64 before ratatui
+// scales it with integer math (stdlib/graphix-package-tui/src/sparkline.rs:43
+// and :47, `v as u64`; ratatui-widgets-0.3.0 sparkline.rs:392,
+// `*value * u64::from(height) * 8 / max_height`).
+//
+// command (in a terminal; it is a TUI):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets-04.gx
+//   dev build: cargo run --bin graphix -- --no-cache <this file>
+//
+// expected: the top panel draws four bars scaled to 0.9 (0.2 0.5 0.9 0.4);
+//   in the middle one the 1.2 bar is about 63% of the 1.9 bar; the bottom
+//   one draws 1 2 3 rising and, when inf arrives at 2s, keeps them (inf is
+//   a full bar or an absent one), no panic.
+// observed (HEAD c722befe, pty 36x18):
+//   top panel: empty (every value truncates to 0, so the max is 0).
+//   middle panel: two equal full-height bars (both truncate to 1).
+//   bottom panel at 2s, dev build (overflow checks on): stderr
+//     "panicked at .../ratatui-widgets-0.3.0/src/sparkline.rs:392:25:
+//      attempt to multiply with overflow"; the display task dies, the
+//     terminal is restored, and the process keeps running and ignores Ctrl-C.
+//   bottom panel at 2s, quick/release build: the product wraps and all four
+//     bars go blank, the finite ones included.
+//   A finite value does the same: [1.0, 1000000000000000000.0] on a 10-row
+//   sparkline panics in a dev build.
+use tui::{line, block::block, layout::{child, layout}, sparkline::sparkline};
+
+let fractions = [0.2, 0.5, 0.9, 0.4];
+let close = [1.2, 1.9];
+let blowup = [1.0, 2.0, 3.0];
+blowup <- sys::time::timer(duration:2.s, false) ~ [1.0, 2.0, 3.0, 1.0 / 0.0];
+
+layout(
+  #direction: &`Vertical,
+  &[
+    child(
+      #constraint: `Percentage(33),
+      block(#border: &`All, #title: &line("0.2 0.5 0.9 0.4"), &sparkline(&fractions))
+    ),
+    child(
+      #constraint: `Percentage(33),
+      block(#border: &`All, #title: &line("1.2 1.9"), &sparkline(&close))
+    ),
+    child(
+      #constraint: `Percentage(33),
+      block(#border: &`All, #title: &line("1 2 3, then inf at 2s"), &sparkline(&blowup))
+    )
+  ]
+)

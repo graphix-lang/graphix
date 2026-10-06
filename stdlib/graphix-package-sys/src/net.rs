@@ -129,6 +129,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
                 Some(path) => {
                     let net = NetState::get(ctx);
+                    // CR claude for eric: [perf] Write gets its Dval through
+                    // NetState::subscribe with self.id. That registers the shared
+                    // update channel and a pump route for the id (netstate.rs:408-410),
+                    // yet Write never refs the id and never reads it. Every update of
+                    // the target path is routed there anyway: the runtime stores the
+                    // value under the id, where it stays after the Write is gone, and
+                    // runs a cycle with nothing scheduled. A process whose only
+                    // statement was a write to a path updated about 500 times a second
+                    // used 28 clock ticks of CPU in 6 s, against 0-1 for a write to an
+                    // unpublished path. A write needs only the Dval: take it from
+                    // subscriber.subscribe(path), with no update channel and no route.
+                    // (sys-net-12)
                     let dv = match net.subscribe(
                         ctx,
                         UpdatesFlags::empty(),
@@ -148,6 +160,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                             let old = old.clone();
                             NetState::get(ctx).unsubscribe(old, self.id);
                         }
+                        // CR claude for eric: [bug] When the path first arrives, this
+                        // drains the queue into the new Dval, and then line 158 writes
+                        // the standing `val` again. Unless `val` fired this cycle, the
+                        // queue's last entry already is that value. A value that fired
+                        // before its path was known (a constant, with the path read
+                        // from a subscription) therefore reaches the publisher twice,
+                        // and its on_write runs twice; queued values 1, 2 arrive as 1,
+                        // 2, 2. The standing write belongs only to a value that fired
+                        // this cycle, or to an empty queue (a path switch). probe:
+                        // design/review-2026-10-05/repro/sys-net-05.gx (sys-net-05)
                         Either::Right(q) => {
                             for v in q.drain(..) {
                                 dv.write(v);
@@ -177,6 +199,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         self.dv = Either::Right(vec![])
     }
 
+    // CR claude for eric: [bug] This sleep unsubscribes and empties `dv`, but Write has
+    // no `slept` bit, and update re-subscribes only when the path fires (line 114). If
+    // the path is bound outside the arm, a woken arm reads it stale, so every later
+    // write is pushed onto the queue (line 105) and never sent. The queue grows without
+    // bound and is replayed whole to the next path that fires, which is a different
+    // publisher if the path moved. Subscribe, Publish and PublishRpc re-establish from
+    // their present arguments on the first update after sleep; Write needs the same.
+    // probe: design/review-2026-10-05/repro/sys-net-04.gx (the writes at x = 4, 5, 7, 8
+    // never reach /a and land on /b at x = 10). (sys-net-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         match &mut self.dv {
@@ -317,6 +348,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
         let res = self.cur.as_ref().and_then(|_| {
+            // CR claude for eric: [bug] Every delivered value is cast to the success
+            // type here, errors included, and RpcCall::update does the same at line
+            // 461. So the pump's unsubscribed error (netstate.rs:47) and every call
+            // failure (a handler's error reply, an unknown argument name, the 10 s
+            // subscribe timeout) reach Type::cast_inner, whose Primitive arm passes the
+            // Error to netidx's Value::cast, which treats it as false. A publisher
+            // going away reads as 0 under `let x: i64 = sys::net::subscribe(p)?` (the
+            // book's intro example), a `null`-typed rpc command reports success on
+            // every failure, and the declared SubscribeError/RpcError is never
+            // produced. Turn an Error delivery into SubscribeError/RpcError before the
+            // cast, as List does at line 598; the pump's translation leaves no way to
+            // tell Unsubscribed from a published error value. The cast core has the
+            // same hole on its own: cast<i64>(error(`E)) is ok 0. probe:
+            // design/review-2026-10-05/repro/sys-net-01.gx (sys-net-01)
             ctx.event.variables.get(&self.id).map(|v| match &self.cast_typ {
                 Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
                 None => v.value_cloned(),
@@ -455,6 +500,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
+                // CR claude for eric: [bug] Every fire of `path` or `args` spawns
+                // another call onto the same `self.id` while earlier calls are still in
+                // flight. The runtime delivers the replies in completion order, so a
+                // slow reply to an abandoned request that lands after the current
+                // request's reply becomes the settled value. Moving `p` from a slow
+                // proc to a fast one gives 2, then the slow proc's 1 while `p` names
+                // the fast proc. An abandoned call that fails late (an unpublished
+                // path's 10 s subscribe timeout) likewise replaces a good reply with
+                // its error. Either keep one call in flight and queue the rest, as
+                // CachedArgsAsync does, or re-mint the delivery id per request, as
+                // `sleep` already does, so a stale reply lands nowhere. probe:
+                // design/review-2026-10-05/repro/sys-net-09.gx (sys-net-09)
                 Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             }
         }
@@ -641,6 +698,15 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
+            // CR claude for eric: [structure] This decides whether t can be a cast
+            // target by printing it and looking for a quote. That allocates a String
+            // per typecheck and depends on printer details: without DerefTVars a TVar
+            // prints as its name whether bound or not, and ⊥ prints as _ and passes.
+            // extract_cast_type (stdlib/graphix-package-core/src/lib.rs:57-90) answers
+            // the same question structurally, with has_unbound plus a ⊥ check, so
+            // publish and subscribe/call follow two different rules. Move that
+            // predicate into one package-core helper and call it from both.
+            // (sys-net-17)
             if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
         }
         _ => None,
@@ -793,6 +859,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
                 publish!(path, v)
             }
+            // CR claude for eric: [bug] A path fire while `v` is bottom matches neither
+            // arm: the arm above needs a value and this one needs a fire of `v`. So
+            // `current` keeps the old path's Val. When `v` fires again, this arm calls
+            // update_val on that Val, so the value is published at the old path, and
+            // the new path is not published until `p` fires again. Either compare the
+            // present path with `current`'s here and republish when they differ, or
+            // drop the publication on every path fire as PublishRpc does (net.rs:1122).
+            // probe: design/review-2026-10-05/repro/sys-net-08.gx (sys-net-08)
             ((_, true), (Some(Value::String(path)), Some(v))) => match &self.current {
                 Some((_, val)) => NetState::get(ctx).update_val(val, v.clone()),
                 None => publish!(path, v),
@@ -804,6 +878,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
+                    // CR claude for eric: [bug] When the cast to the on_write parameter
+                    // type fails, cast_value returns an InvalidCast error value, and it
+                    // is stored in `x` and delivered to the callback anyway, so a
+                    // parameter typed i64 (annotated or inferred) holds an error. Any
+                    // netidx client that writes a wrong-typed value (another process on
+                    // the machine-local resolver included) then kills the runtime under
+                    // the JIT (the staging panic at fusion/kernel.rs:243, "graphix
+                    // runtime is dead"), while the node-walk computes with the mistyped
+                    // value and bottoms. A failed cast should reach neither `x` nor the
+                    // callback; answer the writer with the cast error through
+                    // req.send_result instead. PublishRpc's set! casts call arguments
+                    // the same way. probe: design/review-2026-10-05/repro/sys-net-02.gx
+                    // (sys-net-02)
                     let v = match &self.cast_typ {
                         Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
                         None => req.value.clone(),
@@ -879,6 +966,14 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     pid: BindId,
     x: BindId,
     queue: VecDeque<server::RpcCall>,
+    // CR claude for eric: [dead] argbuf is scratch: set! extends, sorts and drains it
+    // within one expansion (lines 1177-1182), so it is empty between updates. The
+    // !self.argbuf.is_empty() guard in image_encode (line 1085) never fires and the
+    // clear in sleep (line 1286) does nothing, and both suggest state that does not
+    // exist. Make it a local SmallVec in set! and drop the field, the guard and the
+    // clear. sort_by_key(|(n, _)| n.clone()) clones an ArcStr each time it computes a
+    // key, while sort_unstable_by(|a, b| a.0.cmp(&b.0)) does not, and argument names
+    // are unique. (sys-net-18)
     argbuf: SmallVec<[(ArcStr, Value); 6]>,
     ready: bool,
     current: Option<(Path, server::Proc)>,
@@ -1203,6 +1298,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 }
             }
         }
+        // CR claude for eric: [bug] Calls are answered strictly in order, and only a
+        // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
+        // every later call is blocked forever: they pile up in `queue` without bound,
+        // and their callers hang because netidx's client call has no timeout. Any
+        // client can cause this. An argument that fails the cast in `set!` puts an
+        // InvalidCast error in `x`, and the handler's field read bottoms; a call that
+        // omits an argument fails the same cast, because the spec's defaults are never
+        // filled in. A handler that throws (rpc's type allows `throws 'e`) or bottoms
+        // on one input (integer div0) wedges the server too. A call whose cast fails
+        // should get the error as its reply instead of being dispatched, and one
+        // unanswered call should not hold up the queue. probe:
+        // design/review-2026-10-05/repro/sys-net-03.gx (sys-net-03)
         if self.ready && self.queue.len() > 0 {
             if let Some(c) = self.queue.front() {
                 if crate::netstate::rpc_dbg() {

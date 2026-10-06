@@ -1,0 +1,68 @@
+// small-pkgs-01: json/toml/pack::read cast their own parse error into a
+// value, so garbage reads as 0/false/null and `?` never raises.
+//
+// Each reader's map_value casts every eval result to the call's target type
+// (stdlib/graphix-package-json/src/lib.rs:180, graphix-package-toml/src/lib.rs:167,
+// graphix-package-pack/src/lib.rs:68), the JsonErr/TomlErr/PackErr error that
+// eval returns for malformed input included. netidx's Value::cast maps an
+// Error to Bool(false).cast(typ) (0, false, null), a string target formats
+// it, an Array target wraps it in a one-element array, and a struct or Map
+// target fails the cast, so the error arrives re-tagged InvalidCast and a
+// `JsonErr(m)` arm never matches. str::parse returns its error before the
+// cast (graphix-package-str/src/lib.rs:813-818). sqlite::query has the same
+// map_value (graphix-package-sqlite/src/lib.rs:226): invalid SQL read as
+// Array<i64> gives [0].
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/small-pkgs-01.gx
+//          (the same with --no-fusion, and cold/warm through the image)
+//
+// expected: every handler runs: "i64 caught JsonErr", "opt caught JsonErr",
+//   "f64 caught TomlErr", "arr caught PackErr", "struct caught JsonErr",
+//   and no "->" line.
+// observed (HEAD c722befe, debug build, both engines; line order varies):
+//   i64 -> 0
+//   opt -> null
+//   f64 -> 0
+//   arr -> ["error:[\"PackErr\", \"BufferShort\"]"]
+//   struct caught InvalidCast: can't cast error:["JsonErr", "expected ident at line 1 column 2"] to { x: i64, y: i64 }: not a struct
+let a: i64 = {
+  catch(e) select (e.0).error {
+    `JsonErr(_) => println("i64 caught JsonErr"),
+    `InvalidCast(m) => println("i64 caught InvalidCast: [m]")
+  };
+  json::read("not json")?
+};
+println("i64 -> [a]");
+let o: [string, null] = {
+  catch(e) select (e.0).error {
+    `JsonErr(_) => println("opt caught JsonErr"),
+    `InvalidCast(m) => println("opt caught InvalidCast: [m]")
+  };
+  json::read("not json")?
+};
+println("opt -> [o]");
+let f: f64 = {
+  catch(e) select (e.0).error {
+    `TomlErr(_) => println("f64 caught TomlErr"),
+    `InvalidCast(m) => println("f64 caught InvalidCast: [m]")
+  };
+  toml::read("= = =")?
+};
+println("f64 -> [f]");
+let arr: Array<string> = {
+  catch(e) select (e.0).error {
+    `PackErr(_) => println("arr caught PackErr"),
+    `InvalidCast(m) => println("arr caught InvalidCast: [m]")
+  };
+  pack::read(bytes:AAAA)?
+};
+println("arr -> [arr]");
+let p: {x: i64, y: i64} = {
+  catch(e) select (e.0).error {
+    `JsonErr(_) => println("struct caught JsonErr"),
+    `InvalidCast(m) => println("struct caught InvalidCast: [m]")
+  };
+  json::read("not json")?
+};
+println("struct -> [p]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

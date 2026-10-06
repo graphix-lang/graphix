@@ -118,6 +118,16 @@ impl<X: GXExt> TuiWidget for ListW<X> {
         repeat_highlight_symbol
             .update(id, &v)
             .context("list update repeat_highlight_symbol")?;
+        // CR claude for eric: [bug] `selected` and `scroll` reach the ListState only
+        // here and at compile, but ratatui's List render rewrites that state on every
+        // draw. An empty list sets the selection to None and the offset to 0, and a
+        // selection past the end is clamped to the last item. Nothing restores them
+        // when the items come back, because the refs did not change. A list whose items
+        // load late shows no highlight at all. A list that shrinks and regrows keeps
+        // the highlight on the clamped row while `selected` still names the old one,
+        // and a requested scroll is lost the same way. Re-apply both from the refs
+        // before every render, as TableW does for its selection; probe:
+        // design/review-2026-10-05/repro/tui-widgets-08.py (tui-widgets-08)
         if let Some(Some(s)) = scroll.update(id, &v).context("list update scroll")? {
             *state = state.clone().with_offset(*s as usize);
         }
@@ -157,6 +167,20 @@ impl<X: GXExt> TuiWidget for ListW<X> {
         if let Some(Some(s)) = &style.t {
             list = list.style(s.0);
         }
+        // CR claude for eric: [bug] `state` keeps whatever ratatui's previous render
+        // wrote into it. An empty list sets the selection to None and the offset to 0,
+        // a selection past the end is clamped to the last item, and both persist,
+        // because `selected` and `scroll` are written into the state only when their
+        // refs update (lines 86-91, 121-126). So after one frame drawn with fewer
+        // items, the highlight stops following the program's `selected` until that ref
+        // fires again. Items that arrive after the first frame never show the
+        // selection, and a list that shrinks and grows back highlights a row other than
+        // the selected one. In netidx-admin's services panel (services.gx:402): delete
+        // the last unit, create another, and the highlight stays on the second row
+        // while the detail pane and the s/R/e/d keys act on the third. Before each
+        // render, re-apply `selected`, and `scroll` when it is set, as table.rs does.
+        // probe: design/review-2026-10-05/repro/tui-widgets.r2-01.gx
+        // (tui-widgets.r2-01)
         frame.render_stateful_widget(list, rect, state);
         Ok(())
     }

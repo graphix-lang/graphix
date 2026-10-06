@@ -63,6 +63,13 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # top. katana (16GB) at 64 sat in 4.2GB of its 5GB swap with a load of
 # 100+ on 8 cores (sep12a: four "child HANG" crashes that all pass on
 # an idle box); 32 is its memory-sized count.
+# CR claude for eric: [doc-drift] The 'Workers = 8x cores' paragraph above (hz0 160,
+# aieka 288, katana 64, ryouko 256) contradicts this table (32/64/80/80) and the
+# memory-sizing paragraph just above it, and it names hosts that are not in the fleet.
+# Delete it and state the sizing rule once (about 375MB per worker on average, 575MB at
+# the top). The dated narration here and in soak.sh, stdout-baseline.sh, build.rs and
+# main.rs (deploy names, dates, 'Eric's call', 'it happened — twice') is history; keep
+# only the invariants. (fuzz-main-aux-19)
 HOSTS=(
     "katana:rsync:32:4:darwin"
     "washu-chan:rsync:64:1:linux"
@@ -251,6 +258,18 @@ sync_tree() {
         now=$(local_fingerprint)
         [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
+        # CR claude for eric: [doc-drift] The comment below and require_clean_inputs say
+        # graphix builds against the sibling immutable-chunkmap through netidx's patch.
+        # But [patch] applies only in the root workspace: Cargo.lock resolves
+        # immutable-chunkmap 2.1.4 from the registry, the root Cargo.toml has no
+        # [patch], and graphix-fuzz/Cargo.toml's [patch.crates-io] is ignored because
+        # graphix-fuzz is a workspace member (its 'own workspace' comment is false). So
+        # the chunkmap sync and its clean check do nothing, and a change landed in
+        # ../immutable-chunkmap reaches no build. FINGERPRINT also leaves out Cargo.lock
+        # and the include_str!'d outcome.manifest and fusecheck.manifest, which do
+        # determine the fuzz binary. Either patch at the root, or drop the sibling sync,
+        # its check and the dead [patch]; either way, add those files to the
+        # fingerprint. (fuzz-main-aux-18)
         if [[ $method == rsync ]]; then
             # graphix builds against the sibling netidx, which is
             # patched onto the sibling immutable-chunkmap.
@@ -306,6 +325,15 @@ launch() {
         say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
              "$name" "$camp" "$seed" "$workers" "$scale" \
              "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
+        # CR claude for eric: [bug] launch is called as a plain command under set -euo
+        # pipefail, and this ssh has no failure handling. One unreachable box, or a
+        # failed log redirect on the remote, exits fleet.sh here. The boxes after it are
+        # never launched, verify never runs, and in deploy the old campaigns are already
+        # stopped. pull, stop and verify degrade per box; launch should too (`|| { warn
+        # "$name LAUNCH FAILED"; rc=1; }`, keep looping, return rc, and let deploy
+        # verify the boxes that did launch). probe: the same loop with a fake ssh
+        # returning 255 for the third host exits 255 without launching the fourth or
+        # reaching verify. (fuzz-main-aux-12)
         timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF'
 camp=$1; seed=$2; workers=$3; scale=$4; mix=$5; asan=$6
 log=~/tmp/fleet-$camp-launch.log
@@ -346,6 +374,17 @@ verify() {
 
 verify_host() {
     local name=$1 camp=$2 want=$3 out gate n bad a b
+    # CR claude for eric: [bug] The remote loop below stops only on FLEET_LAUNCH_OK or
+    # the LAUNCH_WAIT budget. It never stops on a launcher that has already exited. So a
+    # cargo error, a failed regress gate, or soak.sh start refusing an existing campaign
+    # directory holds verify for 92 minutes per box, one box after another. The last
+    # case is every same-name FLEET_ONLY restart of a box that ran the campaign,
+    # whatever the comment at line 86 says. After the budget the script still samples
+    # counters for up to 600s, but this timeout leaves it 120s, so ssh is killed and the
+    # box is reported UNREACHABLE; the launch log's error, which the FAILURES grep
+    # already collected, is never shown. probe:
+    # design/review-2026-10-05/repro/fuzz-main-aux-10.sh (FLEET_LAUNCH_WAIT=20: the
+    # launcher exits 1 at once, verify says UNREACHABLE after 140s). (fuzz-main-aux-10)
     out=$(timeout $((LAUNCH_WAIT + 120)) ssh "$name" bash -s "$camp" "$LAUNCH_WAIT" <<'EOF' || echo "FLEET_UNREACHABLE"
 camp=$1; budget=$2
 log=~/tmp/fleet-$camp-launch.log
@@ -430,6 +469,12 @@ status() {
         name=$(f_name "$h")
         skip_host "$name" && continue
         say "=== $name ==="
+        # CR claude for eric: [bug] With no campaign argument, `ls -d
+        # ~/tmp/target/fuzz/*/` yields each directory with a trailing slash. The pgrep
+        # pattern in this script then becomes `<camp>//graphix-fuzz`, which no command
+        # line contains, so every campaign reports 0 procs. Strip the slash (`d=${d%/}`)
+        # before using it. probe: a copy of sleep run as fz/campX/graphix-fuzz counts 0
+        # with d from `ls -d fz/*/` and nonzero with d=fz/campX. (fuzz-main-aux-13)
         timeout 60 ssh "$name" bash -s "$camp" <<'EOF' || warn "  unreachable"
 camp=$1
 if [ -n "$camp" ]; then dirs=~/tmp/target/fuzz/$camp; else dirs=$(ls -d ~/tmp/target/fuzz/*/ 2>/dev/null); fi

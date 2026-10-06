@@ -5,6 +5,19 @@ val is_some: fn(v: ['a, null]) -> bool;
 /// true if v is null
 val is_none: fn(v: ['a, null]) -> bool;
 
+// CR claude for eric: [doc-drift] These docs promise results that never come while an
+// argument is pending. `contains`, `or_default`, `or` and `and` (and `zip`, `ok_or`)
+// are CachedArgs builtins, which bottom the call while any argument is bottom or has
+// not produced yet (lib.rs:773). So `opt::or(c, b)` with c = 3 shows nothing until b
+// first produces, and `opt::and(null, b)` waits for b. The `_ => None` arms written for
+// a missing argument (opt.rs:74, 93, 112, 131, 180, 226) can never run. The six are
+// also Stateless(None), so a lambda that calls one never fuses ("builtin `opt::or` has
+// no fast-call entry"), even though eval only ever sees every argument present. Either
+// document them as strict, delete those arms and give each a FastCall::Plain fn like
+// fc_xor, or make them raw Apply builtins that decide from the arguments that are
+// present. book/src/stdlib/core.md:419-432 copies this text. probe: `let c: [i64, null]
+// = 3; let b: [i64, null] = never(); opt::or(c, b)` prints nothing (with b = null it
+// prints 3). (gx-stdlib-13)
 /// true if v is not null and equals x. Produces false when v is null
 /// regardless of x.
 val contains: fn(v: ['a, null], x: 'a) -> bool;
@@ -36,6 +49,18 @@ val zip: fn(a: ['a, null], b: ['b, null]) -> [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -> (['a, null], ['b, null]);
 
+// CR claude for eric: [bug] opt::map, flat_map, filter, or_else, ok_or_else,
+// is_some_and and is_none_or (here and opt.gx:11-17), and map::change (map mod.gxi:36,
+// mod.gx:15), declare their callback with no throws variable. The array, list and
+// Collection HOFs, the other map HOFs and core filter all have one. A callback that
+// uses `?` is refused (`fn(x: 'a) -> 'b does not contain fn(n) -> i64 throws ...`), so
+// it cannot raise to the caller's catch and has to drop its error with `$` or a select.
+// The builtins already run the callback in the call site's scope, as core Filter does.
+// Bound with `f: fn(x: 'a) -> 'b throws 'e) -> ['b, null] throws 'e`, 'core_opt_map
+// (and 'core_opt_or_else, 'core_opt_ok_or_else) deliver the raise to the catch in both
+// engines. Add a throws variable to all eight; ok_or_else needs a fresh name, since its
+// 'e is the error payload. probe: design/review-2026-10-05/repro/gx-stdlib-12.gx
+// (gx-stdlib-12)
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
 /// return null. f is invoked at most once per update of v — fire-and-
 /// forget, no queueing. If v updates again before f produces a result,

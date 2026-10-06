@@ -364,6 +364,16 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
 
 type FromArray = CachedArgs<FromArrayEv>;
 
+// CR claude for eric: [perf] concat copies every list, the last included: the loop
+// walks them all into buf and from_iter_back rebuilds every cell, so nothing is shared
+// with the last list and the cost is O(total size), not "O(n) in the total size of all
+// lists except the last" (list/mod.gxi:47). concat([<1>], long) is linear in long (18
+// ms at 100k elements in a debug build, against 10 us for cons), and an accumulator
+// that prepends a batch per step goes quadratic. Consing the earlier lists' elements
+// onto args.last() from the back is what the doc describes. to_array_rev (line 327)
+// likewise says one walk and makes three: len, the Iter collect, and a reversed copy
+// into a second array. probe: design/review-2026-10-05/repro/collections-str-13.gx
+// (collections-str-13)
 fn fc_concat(args: &[Value]) -> Option<Value> {
     let mut buf: LPooled<Vec<Value>> = LPooled::take();
     for l in args {
@@ -561,6 +571,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for eric: [structure] iter and iterq are written six times (array,
+        // list, map), and the copies have drifted. Only array polls ctx.interrupted()
+        // in its set_var loop, so an interrupt or Ctrl-C cannot cut short a list or map
+        // iter cycle. Probe: design/review-2026-10-05/repro/x-dup-05.gx. After a SIGINT
+        // at the loop's start, a 4M-element list runs its whole 0.2 s loop, while the
+        // array copy stops within 1 ms. list::iterq also copies each queued list into
+        // an unpooled Vec<Value>, where it could queue the list's remaining tail, and
+        // only ListIterQ checks is_list. One Iter/IterQ pair over an element source
+        // would end the drift. (x-dup-05)
+        // CR claude for eric: [structure] array (array/src/lib.rs:491-664), list
+        // (523-687 here) and map (map/src/lib.rs:106-299) each hand-write iter and
+        // iterq, six copies of two builtins that differ only in how they enumerate
+        // elements, and they have drifted: only array's loops poll `ctx.interrupted()`,
+        // and the iterq queues are imaged three ways (derived Pack of `(usize,
+        // ValArray)`, of `(usize, Vec<Value>)`, hand-rolled varints) although a queue
+        // is runtime state, empty whenever an image is written. One `Iter`/`IterQ` in
+        // package-core over an element source would replace all six. opt.rs repeats the
+        // shape: OptMap and OptFlatMap (350-497) are identical but for NAME, and
+        // OptIsSomeAnd and OptIsNoneOr (606-755) differ only in the null result.
+        // (x-builtin-effects-16)
         if let Some(list) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
             for v in ListIter::new(list) {
                 ctx.rt.set_var(self.0, v);
@@ -648,6 +678,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         }
         if let Some(list) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) {
             if is_list(&list) {
+                // CR claude for eric: [perf] Each fire copies the whole list into an
+                // unpooled Vec<Value>, cloning every element, before the first is
+                // emitted. A list's tail is O(1) (list::split), and array::iterq queues
+                // the ValArray it is given without copying. Queueing the unconsumed
+                // lists themselves (VecDeque<Value>) and splitting a head off per
+                // trigger copies nothing. (x-alloc-12)
                 let elems: Vec<Value> = ListIter::new(list).collect();
                 if !elems.is_empty() {
                     self.queue.push_back((0, elems));

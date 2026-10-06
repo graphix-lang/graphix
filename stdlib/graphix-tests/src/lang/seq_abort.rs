@@ -86,6 +86,15 @@ async fn abort_bypasses_try(fusion_disabled: bool) -> Result<()> {
 
 // The event is an initial step: a timer in it starts with each run.
 async fn abort_timer_starts_with_the_run(fusion_disabled: bool) -> Result<()> {
+    // CR claude for eric: [test-gap] This test and abort_reads_the_trigger below pass
+    // under the semantics they exist to exclude. Here run 1 is aborted and run 2
+    // finishes in 80 ms whether the 140 ms timer restarts per run or starts once at
+    // init: both print [9]. In abort_reads_the_trigger `go` fires only at ticks 1 and
+    // 9, so no trigger is ever busy-dropped, and an abort clause reading the live `go`
+    // instead of `c` also prints [9]. Swap the durations here (`select go { 1 => 1, _
+    // => 6 }`: per-run prints [1], init-started [1, 9]). There, fire `go` at `1 | 3 |
+    // 9` and give c = 1 a 200 ms body (seq [9], seqq [3, 9]; reading `go` prints [1, 9]
+    // and [1, 3, 9]). (tests-lang-c-03)
     let code = r#"{
         let tick = count(sys::time::timer(duration:40.ms, 16)?);
         let go = select tick { 1 | 9 => tick, _ => never() };

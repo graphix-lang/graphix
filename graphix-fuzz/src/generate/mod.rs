@@ -345,6 +345,17 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut stats = GenStats::default();
     let mut files: Vec<(String, String)> = Vec::new();
     let stmts = gen_slots(&mut ctx, rng, cfg, &mut stats, Some(&mut files));
+    // CR claude for eric: [test-gap] The oracle compares only the root's fires and
+    // stdout, and this tail type is drawn without regard to the statements, so most
+    // generated lets are never observed. A liveness scan of `graphix-fuzz gen 400 7`
+    // finds about 85% of lets unread by the tail, and about 60% of programs read no let
+    // at all. A wrong value from a kernel in an unread statement agrees, and only a
+    // crash or a hang shows: the 5th program of `gen 6 1` fuses 13 regions and traces
+    // `[0:i64:7]` in both engines. The shape gates (audit_bug_shapes_reachable,
+    // labeled_presence) count emitted shapes, so they pass on unobserved ones. Track
+    // unread value bindings in GenCtx and print each one at the end of its block
+    // (`println("[v]")`: stdout is compared at Exact tier and a bottom binding prints
+    // nothing), and have the gates count observed shapes. (fuzz-gen-a-02)
     let tail_ty = types::random_type(rng, cfg.type_depth);
     let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
@@ -402,6 +413,18 @@ fn gen_slots(
         } else if chance(rng, cfg.p_catch) {
             let n = stmts.len();
             let acc = format!("cerr{n}");
+            // CR claude for eric: [test-gap] This sink never receives an error, and
+            // nothing reads it. Every `?` the static generator emits sits in its own `{
+            // catch(e) dflt; x? }` (exprs.rs:523, funcs.rs:423), and `cerrN` never
+            // enters the vocabulary. Inside that wrapper a raise only makes the block
+            // bottom (a catch never produces), so `dflt` goes unobserved too. As a
+            // result this lane never compares a raise routed across a statement or a
+            // call, or the error value delivered: `{ let c: Error<Any> = never();
+            // catch(e) c <- e; let v = (i64:7 /? i64:0)?; i64:3 }` traces `[0:i64:3]`
+            // whether or not the raise reaches `c`. Emit a bare `x?` where a slot catch
+            // covers the block (also inside a lambda called from it), and make the sink
+            // observable, e.g. `n <- c ~ (n + i64:1)` with `n` pushed as I64 (that
+            // traces 0 then 1 on the program above). (fuzz-gen-a-03)
             stmts.push(format!("let {acc}: Error<Any> = never()"));
             let handler = if rng.below(2) == 0 {
                 format!("{acc} <- e")

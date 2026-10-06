@@ -1,0 +1,34 @@
+// t-fntyp-08: an interface `val` pairs labeled arguments by position
+// (FnType::sig_matches_int, graphix-types/src/typ/fntyp.rs:1044), while
+// containment (FnType::align) and trait impl checks pair them by name.
+//
+// The dynamic module's sig and the annotation on `g` declare the same type,
+// fn(#a: i64, #b: string) -> i64, over the same lambda with its labels
+// written b, a. The annotation accepts it; the interface refuses it.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-fntyp-08.gx
+// expected: (1, 1)
+// observed: ("refused: error:[\"DynamicLoadError\", \"compile error signature
+//   mismatch \\\"val f: ...\\\", signature has type fn(#a: i64, #b: string) -> i64,
+//   implementation has type fn(#b: string, #a: i64) -> i64 ... argument 0 kind
+//   mismatch: signature has Labeled { name: \\\"a\\\", has_default: false },
+//   implementation has Labeled { name: \\\"b\\\", has_default: false }\"]", 1)
+// With the source written `|#a: i64, #b: string|` the module loads: (1, 1).
+//
+// The static form is refused the same way at --check: inner.gxi
+// `val f: fn(#a: i64, #b: string) -> i64` over inner.gx
+// `let f = |#b: string, #a: i64| -> i64 a`.
+let status = mod m dynamic {
+    sandbox unrestricted;
+    sig {
+        val f: fn(#a: i64, #b: string) -> i64
+    };
+    source "let f = |#b: string, #a: i64| -> i64 a"
+};
+let g: fn(#a: i64, #b: string) -> i64 = |#b: string, #a: i64| -> i64 a;
+let via_interface: [i64, string] = select status {
+    error as e => "refused: [e]",
+    null as _ => m::f(#a: 1, #b: "x")
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(via_interface, g(#a: 1, #b: "x"))

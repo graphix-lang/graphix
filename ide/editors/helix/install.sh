@@ -68,6 +68,15 @@ else
     echo "  (edit the [[grammar]] block to point at the right source)"
 fi
 
+# CR claude for eric: [bug] Upstream Helix installs its binary as `hx`; `helix` is the
+# Arch-family rename. On most systems this check exits 1 after the queries and
+# languages.toml have already been written, and no grammar is built. The appended
+# languages.toml also makes the published repo's git main the grammar source
+# (languages.toml:39-41), while the queries are linked to this checkout. On a branch
+# whose grammar changed, the queries then name nodes the compiled grammar lacks and
+# Helix shows no colors. Re-running the script, as line 89 advises, only fetches GitHub
+# main again. Use `hx` when it is on PATH and fall back to `helix`, and in link mode
+# write a path-source [[grammar]] that points at this checkout. (ide-tooling.r2-12)
 if ! command -v helix >/dev/null 2>&1; then
     echo "✗ 'helix' not on PATH — skipping grammar build"
     exit 1

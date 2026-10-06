@@ -1,0 +1,32 @@
+// tui-core-16: a suspend asked before the display has taken its receiver
+// fails as "no terminal display is running".
+//
+// SuspendEv::eval (stdlib/graphix-package-tui/src/lib.rs:540-542) reads a
+// receiver still parked in TuiControl as "no display", but the display
+// takes it (lib.rs:726) only after the shell has built it from the
+// program's first value and its task has run with_ctx, so the program's
+// first cycles see no display even in a real terminal.
+//
+// command: in a terminal (or a pty, 100x4) for 3 s:
+//   graphix --no-cache design/review-2026-10-05/repro/tui-core-16.gx
+//
+// expected: the first-cycle request suspends the display (mod.gxi reserves
+//   the error for no display at all, "a headless harness"):
+//   "errs: 0 oks: true false ...".
+// observed (4 of 4 runs): "errs: 1 oks: false last: error:["TerminalError",
+//   "no terminal display is running"]"; the release a second later succeeds.
+use tui::paragraph::paragraph;
+let want = true;
+want <- sys::time::timer(duration:1.s, false) ~ false;
+let r = tui::suspend(want);
+let errs = 0;
+let oks = "";
+let last_err = "none";
+select r {
+  error as e => {
+    errs <- e ~ errs + 1;
+    last_err <- e ~ "[e]"
+  },
+  b => oks <- b ~ "[oks] [b]"
+};
+paragraph(&"errs: [errs] oks:[oks] last: [last_err]")

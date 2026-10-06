@@ -1,0 +1,46 @@
+// x-engine-seq-errors-09: a reference retarget re-writes the RHS's
+// already-landed value into the new target.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-09.gx
+//   (the same with --no-fusion: both engines agree, so the fuzzer cannot see it)
+//
+// One write fires (t1, 99) and lands in a[0] (a moving place `&a[i]`), in x
+// (a plain reference that will switch to &y) and in p (a select writing p or
+// q). At t2 the key moves (i: 0 -> 2), the reference switches (&x -> &y) and
+// the select switches arms. Nothing fires the write again.
+// The select form follows wake catch-up: a write no target took lands once
+// at the next target, a landed one is not replayed. The two reference forms
+// replay the landed 99 into the new target (ConnectDeref::update,
+// graphix-compiler/src/node/mod.rs:1654).
+//
+// expected: ([99, 2, 3], (99, 2), (99, 2))
+// observed: ([99, 2, 99], (99, 99), (99, 2))
+//
+// The same with an editor over `&State` and a focus that moves on its own
+// (`edit(&vals[focus], e)` with `*st <- e ~ {value: "[(*st).value][e]"}`):
+// after one edit of field 0, moving the focus copies field 0's state over
+// field 1: [{value: "a!"}, {value: "a!"}] instead of
+// [{value: "a!"}, {value: "b"}].
+let a = [1, 2, 3];
+let i = 0;
+let ra = &a[i];
+let x = 1;
+let y = 2;
+let c = false;
+let rx = select c { false => &x, true => &y };
+let p = 1;
+let q = 2;
+let t1 = sys::time::timer(duration:0.02s, false);
+let v = t1 ~ 99;
+*ra <- v;
+*rx <- v;
+select c {
+  false => p <- v,
+  true => q <- v
+};
+let t2 = sys::time::timer(duration:0.05s, false);
+i <- t2 ~ 2;
+c <- t2 ~ true;
+let t3 = sys::time::timer(duration:0.1s, false);
+sys::exit(sys::time::after_idle(duration:100.ms, t3 ~ 0));
+t3 ~ (a, (x, y), (p, q))

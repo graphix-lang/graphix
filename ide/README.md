@@ -167,4 +167,26 @@ ide/
     └── graphix-lang/       # Claude Code skill: the language reference
 ```
 
+<!-- CR claude for eric: [doc-drift] graphix-shell/src/lsp/ does not exist: the server
+is graphix-lsp/, and its backend is graphix-shell/src/lsp_backend.rs. The feature list
+(102-106) describes diagnostics as parse errors, though the server publishes the check's
+errors and warnings. It also omits references, document and workspace symbols, and
+formatting. `npm test` (116) runs `tree-sitter test` with no test/corpus, so it passes
+on zero tests. The gate paragraph (142-145) says the ts-compat proptests show the
+grammar parses what the compiler parses. They parse only the printer's canonical output,
+so removed syntax the grammar still accepts, glued forms like `i64:1+x` and wrong tree
+shapes all pass. (ide-tooling.r2-17) -->
+<!-- CR claude for eric: [doc-drift] No such directory: the server is graphix-lsp/ and
+its backend graphix-shell/src/lsp_backend.rs. In this file, line 64 says install.sh
+copies the queries (it links them unless --copy), lines 102-106 list four features where
+the server also answers document and workspace symbols, references and formatting, and
+the Neovim section (30-45) never mentions editors/nvim/graphix.lua.
+editors/zed/README.md:32-41 calls the query files copies and gives a cp command, but
+they are symlinks. skills/graphix-lang/SKILL.md:160 says duration units are ns, us, ms
+and s only, and 192-193 that durations print as `1800.s`, but m, h, d, M and y parse
+(netidx-value parser.rs:497-507) and `duration:1800.s` prints as `30.m`. In
+tree-sitter-graphix, tree-sitter.json links a nonexistent
+github.com/tree-sitter/tree-sitter-graphix and lists c, go, node, python and swift
+bindings that do not exist, package.json's main is the missing bindings/node, and
+Cargo.toml has graphix-compiler's description and categories. (ide-tooling-17) -->
 The LSP server source lives in `graphix-shell/src/lsp/`.

@@ -1,0 +1,32 @@
+// x-panics-10: TUI calendar panics when display_date has no value yet, and the
+// process then idles forever.
+//
+// CalendarW::draw (stdlib/graphix-package-tui/src/calendar.rs:210) unwraps
+// display_date.t, which TRef::new leaves None when the referent has no value
+// when the widget is built (graphix-rt/src/lib.rs:215): here `d` is empty until
+// its seq completes, 100 ms in, and the first frame is drawn before that. The
+// panic ends the display task without firing the stop signal (the shell's only
+// way out; stdlib/graphix-package-tui/src/lib.rs:656 fires it on an Err only),
+// and dropping the task drops the root CompExp, which deletes the whole program
+// (GRAPHIX_DBG_VARS=1 shows every bind unref'd right after the panic). So the
+// gated sys::exit below never runs, and a Ctrl-C keypress does nothing either.
+// `let d: Date = never()` does the same.
+//
+// command (needs a terminal; under a harness give it a pty):
+//   timeout -s KILL 30 script -q -e -c "stty cols 80 rows 24; graphix --no-cache design/review-2026-10-05/repro/x-panics-10.gx 2>/tmp/x-panics-10.err" /dev/null; echo $?
+//
+// expected: an empty frame, then the October 2026 calendar once the date
+//   loads, then exit 0 after ~800 ms, as with `let d = date(2026, 10, 5)`
+//   (that control exits 0 after ~0.9 s).
+// observed (HEAD c722befe, debug build): /tmp/x-panics-10.err holds
+//   thread 'tokio-rt-worker' panicked at stdlib/graphix-package-tui/src/calendar.rs:210:51:
+//   called `Option::unwrap()` on a `None` value
+//   the terminal is restored and the process never exits: rc 137 from the
+//   30 s timeout; a Ctrl-C written to the pty does not end it either.
+use tui::calendar::{date, calendar};
+let d = seq {
+  sys::time::timer(duration:100.ms, false)$;
+  date(2026, 10, 5)
+};
+sys::exit(sys::time::after_idle(duration:800.ms, 0));
+calendar(&d)

@@ -184,6 +184,16 @@ fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     }
 }
 
+// CR claude for eric: [bug] encode_spec reads every payload with get_as_unchecked,
+// trusting the SAFETY claim that the checker guarantees each tag's payload type, and
+// that claim does not hold today. Two programs that pass --check put an i64 under
+// `Bytes: one writes through a reference widened to &Any, the other uses a nested
+// pattern that matches a same-shaped member of a union. The `Bytes arm then
+// dereferences the integer as a PBytes, and the process dies with SIGSEGV in both
+// engines. Every other builtin matches the Value shape and returns None on a mismatch.
+// Doing the same here, per tag, turns any checker hole into a bottom instead of
+// undefined behaviour. probe: design/review-2026-10-05/repro/x-unsafe-03.gx
+// (x-unsafe-03)
 fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
     let (tag, args) = variant_tag(v)?;
     let a = &args[0];
@@ -319,6 +329,18 @@ pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
+    // CR claude for eric: [bug] core_buffer_decode is Stateless(None), but its eval
+    // writes every target with set_var. An arm holding it is judged pure, so each
+    // re-selection runs it as a birth with the standing buf and spec read FIRED. In an
+    // arm that sleeps, CachedArgs re-runs a stateless eval at the wake. Either way
+    // every re-entry rewrites the targets though nothing the call reads fired, a
+    // phantom fire to every reader, while `*r <- v` in the same arm writes once.
+    // Declaring it Sync alone would leave a stale remainder at a wake, and the writes
+    // would still go out from CachedArgs' eval while the last result is bottom: with a
+    // later length ref absent this rewrites the earlier fields every cycle, a busy loop
+    // (one-liner in the probe header). The writes belong to a fired invocation only;
+    // probe: design/review-2026-10-05/repro/x-builtin-effects-02.gx
+    // (x-builtin-effects-02)
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_buffer_decode";
 
@@ -338,6 +360,17 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
         for elem in spec.iter() {
             let (tag, args) = variant_tag(elem)?;
             match &**tag {
+                // CR claude for eric: [structure] The 18 decode_fixed! arms repeat the
+                // same six context arguments: 216 lines where one line per tag would
+                // do. Define the macro inside eval after the locals, or call a fn
+                // fixed<const N: usize>(.., from: fn([u8; N]) -> Value) that takes the
+                // bytes with try_into instead of the unsafe pointer cast. The target
+                // write (resolve_ref, written.insert, set_var) is repeated in the macro
+                // and in Bytes, UTF8, Varint and Zigzag. Bytes, UTF8 and Skip also
+                // repeat the same length lookup and bounds check, and Varint and Zigzag
+                // the same cursor arithmetic. decode_err(&format!(..)) builds a String
+                // only to format it again; errf!("DecodeError", ..) formats once.
+                // (core-aux-15)
                 "I8" => decode_fixed!(
                     ctx,
                     buf,

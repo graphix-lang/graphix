@@ -58,6 +58,19 @@ fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
         cur = match &cur {
             Type::TVar(_) | Type::App(..) => cur.deref_cloned()?,
             Type::Ref(_) => cur.lookup_ref(env).ok()?,
+            // CR claude for eric: [bug] src_head returns None for every union, so
+            // whenever the source is a union the cast loses which kind of collection
+            // the value is. A list typed `[List<i64>, null]` (what `list::tail`
+            // returns) reaches the Array arm as an array, and its cons cells are cast
+            // as elements: `cast<Array<i64>>(list::tail([<1, 2, 3, 4>]))` is `[2, 3]`.
+            // The nested cell converts to i64 by netidx's first-element rule, and the
+            // tail is dropped without an error. The List arm falls back to the value's
+            // shape instead, so `[[1], []]` typed `[Array<Array<i64>>, null]` casts to
+            // `[<[1]>]`. Both engines share cast_from, so graphix-fuzz reports AGREE. A
+            // union whose array-shaped members are all List, or all Array, still
+            // decides the kind; one that holds both cannot be told apart at run time.
+            // probe: design/review-2026-10-05/repro/t-cast-setops-04.gx
+            // (t-cast-setops-04)
             Type::Set(_) | Type::Any | Type::Bottom | Type::Hole => return None,
             _ => return Some(cur),
         };
@@ -237,6 +250,20 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::ByRef(_) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
+            // CR claude for eric: [bug] When an App's constructor is still an open
+            // variable, it dereferences to itself: with_deref hands back the App when
+            // app_filled is None. This arm then calls holds_ref_int on the same App
+            // forever, and ensure_sufficient keeps adding stack segments until memory
+            // runs out. TypeCast::typecheck0 (graphix-compiler/src/node/mod.rs:1838)
+            // reaches this for any cast whose source holds a constructor-trait
+            // application. `let f = |c: Collection| cast<Array<i64>>(c)` is OOM-killed
+            // under --check, under a run, and in `graphix lsp` when the buffer is
+            // opened. An open constructor is unknown in the same way an open cell is
+            // (the instance decides), so the walk must stop on an unfilled App, e.g. by
+            // deciding on its argument; src_head (line 59) has the same self-loop as an
+            // endless CPU loop, and only the holds_ref call that runs first keeps it
+            // unreachable today, so fix both together. probe:
+            // design/review-2026-10-05/repro/t-cast-setops-03.gx (t-cast-setops-03)
             Type::TVar(_) | Type::App(..) => {
                 self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
             }
@@ -301,6 +328,18 @@ impl Type {
                     Err(self.cast_fail("not this abstract type", v))
                 }
             }
+            // CR claude for eric: [bug] This arm turns any u64/v64 into a live
+            // reference. `cast<T>` never gets here, because check_cast refuses a `&T`
+            // target, but the type-directed reads do. Their `'b: Concrete` admits `&T`
+            // (concrete_holds), so `str::parse("u64:N")`, `pack::read`,
+            // `sys::net::subscribe`/`call`, and a publish `#on_write` or rpc `#f`
+            // argument typed with a reference all make a number into a reference to
+            // whatever variable has that id. Writing a string through one into an `i64`
+            // variable panics the JIT (kernel.rs:243) and kills the runtime, and the
+            // node-walk computes with the string. The reads should refuse a target that
+            // holds a reference, as check_cast does. probe:
+            // design/review-2026-10-05/repro/x-typecheck-generics-F14.gx
+            // (x-typecheck-generics-F14)
             Type::ByRef(_) => match v {
                 Value::U64(_) | Value::V64(_) => Ok(None),
                 _ => Err(self.cast_fail("not a reference", v)),
@@ -309,6 +348,38 @@ impl Type {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
+                // CR claude for eric: [bug] An error value that reaches this line
+                // converts through netidx Value::cast, which maps every Value::Error to
+                // Bool(false).cast(t). So cast<i64> of an error is 0, cast<bool> is
+                // false, cast<null> is null, and the Array arm's wrap gives [0], while
+                // a null or bytes value gets InvalidCast. Every type-directed read
+                // shares this path: a typed sys::net::subscribe reads 0 when its
+                // publisher goes away (the pump sends error("unsubscribed")), a typed
+                // sys::net::call reads 0 when the rpc fails, pack::read of a packed
+                // error reads 0, and the `?` after them never raises. Refuse a
+                // Value::Error here unless the set holds Typ::Error; str::parse already
+                // does this by hand, and a string target, which today prints the error,
+                // is the one case to decide. probe:
+                // design/review-2026-10-05/repro/gx-stdlib.r2-12.gx (gx-stdlib.r2-12)
+                // CR claude for eric: [bug] Every type-directed read (str::parse,
+                // json/toml/pack::read, sys::net subscribe/call, sqlite::query) and
+                // every cast from a string reaches this line, and netidx's Value::cast
+                // parses a string as an i64 literal and converts with Rust `as`, so
+                // out-of-range input silently becomes another number:
+                // str::parse("70000") into u16 is 4464, json::read("300") into u8 is
+                // 44, cast<u32>("4294967296") is 0, yet
+                // cast<u64>("18446744073709551615") is refused. The reads promise an
+                // error when the value does not fit (str.gxi "an error on failure",
+                // sys::net "InvalidCast if the conversion fails"), netidx's own parser
+                // refuses "u16:70000", and netidx-admin's parse_id
+                // (tui/services.gx:146) relies on cast<u32> refusing bad input, so a
+                // typed uid 4294967296 becomes uid 0. A union target takes the first
+                // member in Typ order that converts, so cast<[u8, i64]>("300") is u8:44
+                // although i64 holds 300. Number-to-number cast<T> saturation is pinned
+                // (types::cast_narrow_saturates), so an exact conversion for reads and
+                // strings needs a ruling on that pin, and str::parse's signature must
+                // then admit the InvalidCast it can already return. probe:
+                // design/review-2026-10-05/repro/gx-stdlib-02.gx (gx-stdlib-02)
                 match s.iter().find_map(|t| v.clone().cast(t)) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
@@ -370,6 +441,20 @@ impl Type {
                 let spine = match &src {
                     Some(Type::List(_)) => true,
                     Some(Type::Array(_)) => false,
+                    // CR claude for eric: [bug] With no single static source type, a
+                    // 2-element array whose last element is list-shaped is taken for a
+                    // list spine. That covers json/pack/toml/str::parse/netidx reads
+                    // and an Any or union source such as [Array<Array<i64>>, null]. So
+                    // [[1, 2], []] cast to List<Array<i64>> silently becomes [<[1, 2]>]
+                    // and the empty row is lost. The nullable source breaks the rule
+                    // pinned by types::cast_array_to_list (the source type, not the
+                    // shape, picks the conversion), because src_head gives up on a
+                    // union whose only collection member is an Array. The read cases
+                    // cannot be fixed here: a list serializes as its raw rep, so
+                    // json::write_str([<[1, 2]>]) and json::write_str of the array [[1,
+                    // 2], []] are the same document. probe:
+                    // design/review-2026-10-05/repro/t-cast-setops-08.gx
+                    // (t-cast-setops-08)
                     _ => list::len(v).is_some(),
                 };
                 let src = match &src {
@@ -572,6 +657,18 @@ impl Type {
                     Ok(t) => t,
                     Err(_) => return Err(self.cast_fail("undefined type", v)),
                 };
+                // CR claude for eric: [bug] The key includes the reference's params.
+                // The Array, List and Error arms wrap a value of the wrong shape by
+                // casting the same value to the element type, so a typedef whose params
+                // grow as it recurses (`type W<'a> = [Array<W<Array<'a>>>, null]`)
+                // meets the same value under a new key at every level, and this guard
+                // never fires. `cast<W<i64>>("x")` then recurses forever, and memory
+                // grows until the process is killed; the stack budget's abort does not
+                // stop it because the cast never polls, and a typed read of external
+                // data (`json::read("\"x\"")` as `W<i64>`) hangs the same way.
+                // `check_cast` and `holds_ref` key by `ShapeKey` for this kind of
+                // typedef, and this guard has no equivalent. probe:
+                // design/review-2026-10-05/repro/t-cast-setops-12.gx (t-cast-setops-12)
                 let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
                 else {
                     return Err(self.cast_fail("undefined type", v));
@@ -587,6 +684,18 @@ impl Type {
             }
             // A member the value already inhabits wins; else the first
             // member it converts to.
+            // CR claude for eric: [bug] The first member a value converts to wins, and
+            // a payload variant also converts an array of exactly its payload's length
+            // as a tagless payload (555-563). So a value carrying one member's tag is
+            // claimed by any member that sorts before it: cast<[`Abc(string, i64),
+            // `Zed(i64)]> of ["Zed", "5"] or ["Zed", i32:5] gives the variant
+            // Abc("Zed", 5), while with the tag order mirrored the tagged member wins.
+            // The type-directed reads (json, toml, pack, sqlite, str::parse, sys::net)
+            // cast external data this way. A member whose tag the value carries should
+            // beat every tagless reading. probe:
+            // design/review-2026-10-05/repro/t-cast-setops-14.gx is the coverage one;
+            // this one is design/review-2026-10-05/repro/t-cast-setops-13.gx
+            // (t-cast-setops-13)
             Type::Set(ts) => {
                 let mut converted = None;
                 for t in ts.iter() {
@@ -654,6 +763,20 @@ impl Type {
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
+            // CR claude for eric: [perf] Each Type::Ref a runtime match reaches goes
+            // through the committing lookup_ref: resolve the cell, fill a `known` map,
+            // replace_tvars and check_contains each declared parameter bound,
+            // replace_tvars the body and hash a RefKey into `hist`. This happens for
+            // every element of every value matched, since PatternNode::compile expands
+            // only the predicate's top-level ref (node/pattern.rs:1188). Matching a
+            // 200-element array against `Array<Pair<i64>>`, with `type Pair<'a: Number>
+            // = (string, 'a)`, costs 27 times the structural `Array<(string, i64)>`
+            // (9.9 s against 0.36 s for 20000 matches, the select node-walked in both);
+            // an unparameterized `type Pair` costs 3 times. A runtime test should not
+            // commit (lookup_ref_with(env, false) at the least), and resolving each
+            // arm's refs once, when its facts are built, would leave matching as a walk
+            // of a settled type. Probe: design/review-2026-10-05/repro/x-alloc-11.gx.
+            // (x-alloc-11)
             Type::Ref(tr) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
@@ -735,6 +858,20 @@ impl Type {
                 Value::Error(v) => e.is_a_int(env, hist, flags, v),
                 _ => false,
             },
+            // CR claude for eric: [bug] A reference type test matches any u64 or v64
+            // and never sees the referent, yet the select narrows the arm's bind to
+            // `&T` and subtracts `&T` from the later arms (setops.rs:574;
+            // pattern.rs:1215 admits the predicate). Over `r: [&string, &i64]`,
+            // `&string as s` takes a reference to an i64: `*s` hands an i64 to string
+            // code (the JIT panics at kernel.rs:243 and the runtime dies; the node-walk
+            // loses the value), and `*s <- "x"` writes a string into an i64 variable. A
+            // `u64 as n` arm before a reference arm reads the session's bind id as a
+            // number (cold and warm images differ), and the reverse turns a u64 into a
+            // reference to any variable. A reference type test can only answer "is a
+            // reference": refuse a predicate that would narrow a referent, and a
+            // scrutinee that mixes references with u64/v64. probe:
+            // design/review-2026-10-05/repro/x-typecheck-patterns-01.gx
+            // (x-typecheck-patterns-01)
             Type::ByRef(_) => matches!(v, Value::U64(_) | Value::V64(_)),
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {

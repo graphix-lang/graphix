@@ -60,6 +60,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
                 match ($start, $end) {
                     $(
                         (Value::$typ(start), Value::$typ(end)) if start < end => {
+                            // CR claude for eric: [bug] rand's `random_range` unwraps
+                            // `Err(NonFinite)`. The `start < end` guard above lets
+                            // through a float range with an infinite bound or a width
+                            // that overflows (`#start: 0.0 - 1e308, #end: 1e308`), so a
+                            // well-typed program panics the runtime ('runtime did not
+                            // respond'), for f32 and f64 alike.
+                            // `(*start..*end).sample_single(&mut rng()).ok()` (rand's
+                            // `SampleRange`) returns `Err` for both the empty and the
+                            // non-finite range, so it replaces the guard. probe:
+                            // design/review-2026-10-05/repro/x-panics-15.gx
+                            // (x-panics-15)
                             Some(Value::$typ(rng().random_range(*start..*end)))
                         }
                     ),+
@@ -71,6 +82,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         let res = if up {
             match &self.args.0[..] {
                 [Some(start), Some(end), Some(_)] => gen_cases!(
+                    // CR claude for eric: [bug] This list leaves out U8, I8, U16 and
+                    // I16, which the signature's `'a: [Int, Float]` (graphix/mod.gx:1,
+                    // mod.gxi:4) admits. So `rand::rand(#start: u8:0, #end: u8:10,
+                    // #clock: 1)` typechecks and then never fires, in both engines, and
+                    // logs nothing. The bound also lacks `Singleton`, so 'a can settle
+                    // to `[i64, f64]`, and a start and end of different numeric types
+                    // match no arm and stay silent the same way. Add the four small
+                    // integer types here and bound 'a as `[Int, Float] + Singleton`;
+                    // that bound refuses the union and keeps the 0.0/1.0 defaults.
+                    // probe: design/review-2026-10-05/repro/gx-stdlib-10.gx prints only
+                    // its i64 line. (gx-stdlib-10)
                     start, end, F32, F64, I32, I64, Z32, Z64, U32, U64, V32, V64
                 ),
                 _ => None,

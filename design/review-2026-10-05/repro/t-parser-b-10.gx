@@ -1,0 +1,35 @@
+// t-parser-b-10: union_members stops after MAX_ALIAS_DEPTH hops and returns
+// the members found so far, so select's coverage pools read a partial
+// member list as the whole scrutinee: a non-exhaustive select is accepted.
+//
+// union_members (graphix-types/src/expr/pattern.rs:418-441) returns Ok(())
+// once depth > 64 (pattern.rs:425); every nesting level of W below costs two
+// hops (the ref and its union), so at 33 levels the innermost `Z is dropped.
+// heads() (graphix-compiler/src/node/select.rs:623) then gives position 0 of
+// the tuple the domain {`L}, and LiteralPool::claim counts (`L, true) and
+// (`L, false) as covering the whole tuple member. The doc's reason for the
+// cap, "a cyclic typedef", cannot occur: Env::deftype refuses a typedef that
+// recurses through unions and aliases alone.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-parser-b-10.gx
+//          (graphix --check on the same file exits 0)
+//
+// expected: refused, as it is with 32 levels (delete one `W<` and one `>`):
+//   missing match cases: no unguarded arm irrefutably covers ([W<..>, `L], bool)
+// observed (HEAD c722befe, debug build): --check exits 0; the run prints
+//   nothing for `r` (no arm matches (`Z, false)) and exits 0 from the gated
+//   exit; node-walk and JIT agree.
+// The same truncation refuses a valid select: with all four arms
+// ((`L|`Z) x (true|false)) the 33-level version fails with "unreachable arm:
+// the earlier arms already cover the whole scrutinee", and so does
+// `|v: [`M, T62], b: bool|` over a 62-typedef alias chain T62 = .. = T0 =
+// [`L, `Z] with all six arms.
+type W<'a> = [`L, 'a];
+let f = |v: W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<`Z>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>, b: bool| select (v, b) {
+    (`L, true) => 1,
+    (`Z, true) => 3,
+    (`L, false) => 2
+};
+let r = f(`Z, false);
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

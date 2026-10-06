@@ -70,6 +70,17 @@ impl FromValue for AxisV {
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
         let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
+        // CR claude for eric: [bug] A y axis with exactly one label panics the display.
+        // The locked ratatui-widgets 0.3.0 divides by `labels_len - 1` in
+        // render_y_labels (its chart.rs:956) with no guard, which is an integer
+        // division by zero in every build profile. The display task dies on its first
+        // frame and nothing fires the stop signal, so the program keeps running with no
+        // display and Ctrl-C no longer exits it. ratatui-widgets 0.3.2, which ratatui
+        // 0.30.2 requires, adds the `labels_len < 2` guard. Raising the workspace
+        // ratatui floor to 0.30.2 fixes it at the root; the other fix is to set labels
+        // here only when there are at least two. probe:
+        // design/review-2026-10-05/repro/tui-widgets-02.gx (run in a terminal).
+        // (tui-widgets-02)
         if let Some(lbls) = labels {
             let lbls = lbls.into_iter().map(|l| l.0).collect::<Vec<_>>();
             axis = axis.labels(lbls);
@@ -144,6 +155,21 @@ impl<X: GXExt> DatasetW<X> {
                         .clone()
                         .cast_to::<(f64, f64)>()
                         .context("invalid dataset pair")?;
+                    // CR claude for eric: [bug] This keeps non-finite points, and
+                    // ratatui-widgets 0.3.0 paints NaN at the edge: Painter::get_point
+                    // lets NaN through its bounds test and `NaN as usize` is 0, so a
+                    // NaN x lands in column 0 and a NaN y in row 0, and line-clipping
+                    // counts a NaN point as inside. One (NaN, NaN) sample in a Line
+                    // dataset draws a diagonal from its neighbour to the top-left
+                    // corner. In a Scatter it draws a dot there, and a NaN y in a Bar
+                    // dataset draws a full-height bar; an infinite point draws a
+                    // diagonal to the top-right corner. The canvas Line and Points
+                    // shapes (canvas.rs CanvasLineV, CanvasPointsV) take the same path.
+                    // Skip non-finite points here (or split the series at them so a
+                    // Line shows a gap), and make
+                    // chart_dataset_nan_point_does_not_panic assert the drawn buffer.
+                    // probe: design/review-2026-10-05/repro/tui-widgets.r2-11.py
+                    // (tui-widgets.r2-11)
                     self.data.push((x, y));
                 }
             }

@@ -1,0 +1,32 @@
+// http-sqlite-db1-11: sqlite TEXT that is not valid UTF-8 reads back as an
+// empty string.
+//
+// sqlite_to_value (stdlib/graphix-package-sqlite/src/lib.rs:47) maps a Text
+// value through `std::str::from_utf8(s).unwrap_or("")`. SQLite stores TEXT
+// as whatever bytes it is given (another writer's Latin-1, CAST(blob AS
+// TEXT), char() of a surrogate), so such a value reads as "" with no error,
+// and writing the row back erases the stored bytes.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-11.gx
+//          (the same with --no-fusion)
+//
+// expected: the query fails with a catchable `SqliteError naming the column
+//   (as core's bytes_to_string answers `EncodingError("invalid UTF-8: ..")`
+//   and rusqlite's own FromSql for String answers Utf8Error), or at least a
+//   lossy "Caf\u{FFFD}" that keeps the valid content; the UPDATE then never
+//   runs, or keeps "Caf".
+// observed (HEAD c722befe, debug build):
+//   ([{name: "", stored: "436166E9"}], [{stored: ""}])
+//   the Latin-1 "Café" (bytes 43 61 66 E9) reads as "" and the write-back
+//   destroys it. `SELECT CAST(X'C3FF41' AS TEXT)` and `SELECT char(55296)`
+//   (TEXT ED A0 80) also read as "", through Array<Map<string, SqlVal>> too.
+let conn = sqlite::open(":memory:")$;
+let report = seq {
+  sqlite::exec_batch(conn, "CREATE TABLE t (name TEXT); INSERT INTO t VALUES (CAST(X'436166E9' AS TEXT))")$;
+  let read: Array<{name: string, stored: string}> = sqlite::query(conn, "SELECT name, hex(name) AS stored FROM t", [])$;
+  sqlite::exec(conn, "UPDATE t SET name = ?", [read[0]$.name])$;
+  let after: Array<{stored: string}> = sqlite::query(conn, "SELECT hex(name) AS stored FROM t", [])$;
+  (read, after)
+};
+println("[report]");
+sys::exit(sys::time::after_idle(duration:300.ms, report ~ 0))

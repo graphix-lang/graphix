@@ -1,0 +1,17 @@
+// ide-tooling-09: the tree-sitter grammar builds wrong trees, with no ERROR
+// node, for a variant with a payload, for `t.0.1` and for a by-ref lambda.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/ide-tooling-09.gx
+//          cd ide/tree-sitter-graphix && npx tree-sitter parse ../../design/review-2026-10-05/repro/ide-tooling-09.gx
+// expected: the program prints (2, 42, 5); tree-sitter gives a variant node
+//           holding its payload `5`, two nested tuple_ref nodes for `t.0.1`,
+//           and by_ref(lambda(x + 1)).
+// observed: it prints (2, 42, 5); tree-sitter gives (apply (variant)
+//           (apply_args 5)), one tuple_ref whose index is the number `0.1`,
+//           and (binary_expression (by_ref (lambda .. x)) 1).
+let t = ((1, 2), 3);
+let f = &|x| x + 1;
+let v = `A(5);
+let r = (t.0.1, (*f)(41), select v { `A(n) => n });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

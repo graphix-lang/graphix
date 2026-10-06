@@ -1,0 +1,29 @@
+// c-data-map-04: attributes on a `type`, `use`, `catch`, `mod`, `trait` or
+// `impl` statement are never examined.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-data-map-04.gx
+//          graphix --check design/review-2026-10-05/repro/c-data-map-04.gx
+//
+// expected: refused at the type statement: "unknown attribute #[bogus]", as
+// `#[bogus] let x = 1` is; `#[serial]` on a `use` refused or reported as
+// meaningless there.
+//
+// observed (HEAD c722befe, debug build): --check exits 0; the run prints [2].
+//
+// compile_statement (graphix-compiler/src/node/mod.rs:839) compiles these
+// statement kinds directly, bypassing compile_inner (node/compiler.rs:160),
+// the only place attribute names are checked. Also accepted silently:
+// `#[serial] mod m;`, `#[bogus] impl Show for Counter { .. }`,
+// `#[parallel] trait Show { .. }`, `#[tail_recursive] use array::map`.
+// Only a registry attribute is seen, and only with fusion on (the fusion
+// walk reads every node's spec): `#[native] type T = i64` is refused there
+// and accepted under --no-fusion.
+#[bogus]
+type T = i64;
+#[serial]
+use array::map;
+#[bogus]
+catch(e) println("caught [e]");
+let x: T = 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+map([x], |v| v + 1)

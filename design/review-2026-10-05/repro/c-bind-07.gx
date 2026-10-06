@@ -1,0 +1,50 @@
+// c-bind-07: TrackedFires records a wake phantom as a sound fire and
+// replays it as a real catch-up, so a wake's constant overwrites a
+// connect target one cycle later.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-bind-07.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off|force, a cold or
+//          warm image; `graphix-fuzz check` says AGREE)
+//
+// r_late and r_same differ only in WHEN the inner arm that reads `y` is
+// reselected. Both outer arms sleep at n = 2 and wake at n = 4, and their
+// `let y = 5` fires at the wake from its constant alone, so Bind puts y in
+// ctx.event.wake_phantoms. In both, x's last write is 50 (landed at n = 2).
+//
+// r_same: the inner true arm wakes at n = 4 with the outer arm. x's
+//   initializer reads y in the cycle y is a wake phantom, so
+//   Bind::input_fired ignores it and x keeps 50: 50 + 5 = 55.
+// r_late: the inner select re-matches to its false arm at n = 4. Its
+//   tracker (wake.rs observe_except) records y's phantom fire as pending.
+//   At n = 5 the inner true arm wakes and deliver injects y FIRED; that
+//   cycle's wake_phantoms no longer holds y, so x republishes 5 over its
+//   last write: 5 + 5 = 10. GXDBG_LETBIND=1 shows x's let with
+//   keep_connect_target_value=true at n = 4 in r_same and
+//   keep_connect_target_value=false publishing=true at n = 5 in r_late.
+//
+// expected: (55, 55): a wake's constants never overwrite a connect
+//   target's value, directly or through a let (CLAUDE.md "Sleep is pause";
+//   design/wake_catchup.md: such a let's fire "does not count as an input
+//   of a target reading it").
+// observed (every mode): (10, 55).
+// control: `let x = 5` in place of `let x = y` in r_late gives 55.
+let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+let o = uniq(select n { 2 => false, 3 => false, _ => true });
+let late = uniq(select n { 3 => false, 4 => false, _ => true });
+let same = uniq(select n { 3 => false, _ => true });
+let r_late = select o {
+  true => {
+    let y = 5;
+    select late { true => { let x = y; x <- select n { 1 => 50, _ => never() }; x + y }, false => 0 }
+  },
+  false => -1
+};
+let r_same = select o {
+  true => {
+    let y = 5;
+    select same { true => { let x = y; x <- select n { 1 => 50, _ => never() }; x + y }, false => 0 }
+  },
+  false => -1
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select n { 6 => (r_late, r_same), _ => never() }

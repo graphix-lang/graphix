@@ -1,0 +1,27 @@
+// x-parallel-02: the type checker allocates without bound on two raises of
+// different tags whose payloads hold a type variable.
+//
+// The catch joins Error<ErrChain<`A('s)>> and Error<ErrChain<`B('s)>>, and
+// Type::union probes ErrChain<[`A('s), `B('s)]> against ErrChain<`A('s)>.
+// ErrChain's self-reference is a union member (cause: [ErrChain<'a>, null]).
+// The Ref arm of contains_dispatch (graphix-types/src/typ/contains.rs:562-573)
+// keys `[ErrChain<P>, null] >= ErrChain<Q>` and `ErrChain<P> >= {..}` by the
+// non-Ref side's allocation address, and expand_ref (contains.rs:148) rebuilds
+// the expansion of a ref whose params hold a type variable on every visit, so
+// the walk never meets a pair it has seen and recurses until memory runs out.
+// A catch is not needed. The same check never finishes for:
+//   type T<'a> = {n: [T<'a>, null], v: 'a};
+//   let g = |t: T<'b>| -> T<['b, i64]> t;
+//
+// command: graphix --check design/review-2026-10-05/repro/x-parallel-02.gx
+//          (a run does the same, and so does the LSP, which shares the path)
+//
+// expected: the check passes in about 0.1 s, like each control:
+//   `|s: i64|`, one tag (`A twice), or T<i64> against T<[i64, string]>.
+// observed (HEAD c722befe, debug build): memory grows without bound; the 6 GB
+//   probe cap kills it after about 6.5 s (exit 251). GRAPHIX_DBG_BIND=1
+//   prints `SET-T [null, ErrChain<[`A('_n), `B('_n)]>] >= { cause: [null,
+//   ErrChain<`A('_n)>], error: `A('_n), .. }` 37k times in 2 s. The T<'a>
+//   program above does the same. With `let f = |x| error(`A(x))` and the
+//   raises `error(`B(0))?; f(0)?` it spins instead: no answer in 20 s.
+let h = |s| { catch(e) null; error(`A(s))?; error(`B(s))?; null }

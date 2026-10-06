@@ -1,0 +1,19 @@
+// core-aux-13: run!'s interp and jit tests are not serial. They pass
+// ParMode::from_env() (stdlib/graphix-package-core/src/testing.rs:624, 696),
+// which returns Auto when GRAPHIX_PAR is unset (graphix-types/src/stack.rs
+// ParMode::from_env), and Auto forks a loop whose probes say a fork pays.
+// graphix-fuzz pins its Interp/Jit modes to ParMode::Off.
+//
+// command: GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/core-aux-13.gx
+//   (GRAPHIX_PAR unset, as under cargo test)
+// expected (a serial baseline): no "PAR kernel loop" line, then 39999800000
+// observed: "PAR calibrated: ..." and twice
+//   "PAR kernel loop: 200000 slots, 4 probed, 256 ranges", then 39999800000.
+//   With GRAPHIX_PAR=off only 39999800000 prints.
+// The 200 ms timer lets the calibration, started at the first fork point,
+// finish; in a test binary it is shared by every test and done early.
+let t = sys::time::timer(duration:200.ms, false);
+let a = array::init(t ~ 200000, |i| i);
+let s = array::fold(array::map(a, |x| x * 2), 0, |acc, x| acc + x);
+sys::exit(sys::time::after_idle(duration:100.ms, s ~ 0));
+s

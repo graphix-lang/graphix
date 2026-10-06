@@ -142,6 +142,20 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
+        // CR claude for eric: [bug] view gives iced the last value the runtime
+        // delivered, and the event loop rebuilds the UI from it for every batch of
+        // window events while on_input goes to the runtime without waiting. So a key
+        // pressed before the echo of the previous on_input arrives edits the old
+        // string, and its on_input overwrites the earlier keystroke. With `#on_input:
+        // |s| v <- s, &v`, a second key in the next batch turns "ab" into v = "b", and
+        // a search over 200k strings (about 60 ms per keystroke) typed 30 ms per key
+        // turns "item1" into "t1". checkbox and toggler have the same race: two quick
+        // clicks both send the negation of the stale value. Keep the edited text in the
+        // widget and take a runtime value only when it is not the echo of a string this
+        // widget sent (a FIFO of pending sends). probe:
+        // design/review-2026-10-05/repro/gui-widgets-b-07.rs (copy it to
+        // stdlib/graphix-package-gui/tests/review_gui_widgets_b_07.rs and run cargo
+        // test --test review_gui_widgets_b_07) (gui-widgets-b-07)
         let val = self.value.t.as_deref().unwrap_or("");
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
         let mut ti = widget::TextInput::new(placeholder, val);

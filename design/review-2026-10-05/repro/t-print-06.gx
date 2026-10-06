@@ -1,0 +1,16 @@
+// t-print-06: a string literal holding a control character other than
+// \n \r \t \0 prints as `\u{hex}` (GRAPHIX_ESC's generic escape), which the
+// string parser does not accept after `\`, so `graphix fmt` refuses a file
+// `graphix --check` accepts. Raw and template literals holding one fall back
+// to that quoted form. The three literals below hold a raw BEL (0x07) and
+// ESC (0x1b).
+// command: graphix fmt --stdout design/review-2026-10-05/repro/t-print-06.gx
+// expected: exit 0, each literal back in its own delimiters
+// observed (HEAD c722befe, debug build): --check exits 0; fmt exits 1 with
+//   "formatter bug: the formatted text does not parse ... Unexpected `u`"
+//   at `"ring\u{7}here"`; with only the raw or only the template line kept,
+//   the same refusal at its `\u{1b}`.
+let bell = "ringhere";
+let raw = r"esc[1m";
+let tmpl = """esc[1mbold""";
+(bell, raw, tmpl)

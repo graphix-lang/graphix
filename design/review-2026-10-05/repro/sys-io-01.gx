@@ -1,0 +1,60 @@
+// sys-io-01: a pending read holds the stream's only lock, so a write, a
+// close, a shutdown or an address query on the same socket waits for the
+// peer to send. Every stream is one Arc<tokio::sync::Mutex<Option<StreamKind>>>
+// (stdlib/graphix-package-sys/src/lib.rs:190). The lines reader holds the
+// guard across `s.read(..).await` (io.rs:79-81), and so do read and
+// read_exact (io.rs:40-47, 221-230). write, write_exact, flush and close
+// (io.rs:257, 286, 315, 346) and shutdown, peer_addr and local_addr
+// (tcp.rs:154, 183, 217) take the same lock. TlsStream uses the same
+// builtins.
+//
+// The server follows its socket with Lines::lines and echoes each line
+// with one Write::write: 9 bytes for "one" and 11 for "three". The client
+// sends "one" at 300 ms and "three" at 1500 ms. At 800 ms the server asks
+// for its own local_addr, which needs no I/O.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/sys-io-01.gx
+//   (also with --no-fusion, GRAPHIX_PAR=off|force, and the image cache
+//   cold and warm)
+// expected: TCP is full duplex, and nothing in io.gxi or tcp.gxi queues a
+//   write behind a read:
+//   300 ms: server got one
+//   300 ms: server echo wrote 9 bytes
+//   800 ms: server local_addr 127.0.0.1:PORT
+//   1500 ms: server got three
+//   1500 ms: server echo wrote 11 bytes
+// observed (HEAD c722befe, debug build, the same in every mode):
+//   300 ms: client sent one null
+//   300 ms: server got one
+//   1500 ms: client sent three null
+//   1500 ms: server got three
+//   1500 ms: server echo wrote 9 bytes
+//   1500 ms: server local_addr 127.0.0.1:PORT
+//   The echo of "one" and the local_addr answer are sent only after
+//   "three" arrives, when the reader briefly releases the lock. The echo of
+//   "three" is never sent, because the reader takes the lock again.
+//   Control: a single Read::read in place of Lines::lines echoes "one" at
+//   300 ms. A Close::close(t ~ server) at 300 ms finishes only when the
+//   client next sends. The book's tcp.md example (write_exact, then
+//   read_all on one socket) with those two statements swapped never sends
+//   its request: no reply in 8 of 8 runs.
+use sys::io::{Lines, Write};
+use sys::tcp::Socket;
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client = sys::tcp::connect(listener ~ addr)$;
+let server = sys::tcp::accept(listener, client)$;
+let t0 = sys::time::now(server);
+let ms = |x| cast<i64>(cast<f64>(sys::time::diff(sys::time::now(x), t0))$ * 1000.0)$;
+let req = Lines::lines(server)$;
+println("[ms(req)] ms: server got [req]");
+let echo = Write::write(server, buffer::from_string("echo [req]\n"))$;
+println("[ms(echo)] ms: server echo wrote [echo] bytes");
+let one = Write::write_exact(client, sys::time::timer(duration:300.ms, false) ~ buffer::from_string("one\n"));
+println("[ms(one)] ms: client sent one [one]");
+let la = Socket::local_addr(sys::time::timer(duration:800.ms, false) ~ server);
+println("[ms(la)] ms: server local_addr [la]");
+let three = Write::write_exact(client, sys::time::timer(duration:1500.ms, false) ~ buffer::from_string("three\n"));
+println("[ms(three)] ms: client sent three [three]");
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0)

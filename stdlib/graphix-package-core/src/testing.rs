@@ -30,6 +30,18 @@ pub enum FuseExpect {
 /// fixture runs, in `jit` mode only; the per-thread counters are reset
 /// after runtime init so they reflect only the fixture's own program.
 #[cfg(debug_assertions)]
+// CR claude for eric: [test-gap] FuseExpect::Jit, run!'s default, passes when any
+// region of the program fused. A let-bound array literal is a region of its own, so the
+// check holds even while the construct under test node-walks. array_iterq
+// (array.rs:380) is annotated Jit, yet `array::iterq` and `filter` both fail to fuse
+// ('no fast-call entry'), and its one fused region is the `[1, 2, 3, 4]` literal.
+// `array::filter(a, |x| { log(#dest: `Trace, x); 10 / x > 2 })`, whose loop is
+// de-fused, still fuses 2 regions. So the fusion claims in fixture comments
+// (array.rs:401, 418, 513, 702; list.rs:722) are not tested: put #[native] on the
+// expression whose fusion a fixture claims, as array_sort_native_defaults and
+// list_native_pipeline do, or count only regions that cover the result. The doc is also
+// stale: the counters belong to the runtime's Control, not to a thread, and 'With the
+// interpreter gone' (line 45) is history. (tests-lib-a-03)
 pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
     match expect {
         FuseExpect::Jit => {
@@ -251,6 +263,17 @@ where
     init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
 
+// CR claude for eric: [test-gap] Only init_with_flags_and_setup and
+// init_session_with_setup apply the 1 GiB GRAPHIX_STACK_BUDGET default.
+// init_with_session (and so init_with_registration), init_lsp_with_registration and
+// init_lsp_mode do not. set_stack_budget is process-global, so the image, leak and lsp
+// tests (and netidx-admin's image tests) run with no budget when run alone and with 1
+// GiB once any run! fixture in the same process has set it. A runaway recursion there
+// either eats the machine or aborts, depending on test order. Apply the default once,
+// here. The harness also repeats itself: eval, eval_converged, eval_packed and run!
+// each copy the VFS + `{ mod test; test::result }` + wait loop, and find_bind_id (gui,
+// tui, graphix-tests), wait_for_update and compile_named_callable (gui, tui) are
+// verbatim copies that belong in this module. (x-dup-07)
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -274,6 +297,14 @@ where
     let _ = env_logger::try_init();
     // Nothing seeds NetConfig, so tests that touch sys::net share one
     // process-internal netidx materialized on demand.
+    // CR claude for eric: [doc-drift] The comment above is wrong. NetHandles is
+    // per-runtime libstate, and NetConfig::Internal builds a fresh netidx::InternalOnly
+    // for each runtime, with its own resolver on 127.0.0.1:0
+    // (graphix-package-sys/src/netstate.rs:113-150), so tests do not share a netidx and
+    // can reuse paths. The doc at lines 29-31 calls the fusion counters per-thread, and
+    // lib_tests/lift.rs:63-65 says the same of the self-block count; both are the
+    // runtime's Control atomics (ctx.rt.control()). Say per runtime in all three
+    // places. (tests-lang-c-09)
     let st = std::time::Instant::now();
     let mut ctx = GXRt::<NoExt>::new_state()?;
     log::info!("context creation time: {:?}", st.elapsed());
@@ -464,6 +495,16 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     res
 }
 
+// CR claude for eric: [doc-drift] This doc says two modes, lists three, and says the
+// macro expands to three tests; the standard form generates four (interp, par, jit,
+// jit_par), and jit_par is not listed. check_fuse_expectation's doc (line 30) says
+// per-thread counters, but they are per-runtime atomics on Control
+// (graphix-types/src/stack.rs:213-216), and the message at line 45 ('With the
+// interpreter gone ...') is history. design/queue_fn.md:25-29 gives queuefn's signature
+// without its 'a: Function bound and says there is no Fn kind constraint.
+// CLAUDE.md:612-614 says run! asserts equal values across interp and jit, but each mode
+// only checks the fixture's predicate on its own first update and nothing compares
+// them. (core-aux-16)
 /// Run a graphix fixture under two modes and assert the supplied
 /// predicate holds for the produced Value in each:
 ///
@@ -549,6 +590,31 @@ macro_rules! run {
                 }
                 let bs = &ctx.rt;
                 match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
+                    // CR claude for eric: [test-gap] A panic while compiling the
+                    // fixture kills the runtime task, and tokio swallows the panic.
+                    // exec then returns 'runtime did not respond', and this arm passes
+                    // that to the predicate as if it were a refusal. So every fixture
+                    // whose predicate accepts any Err passes on a compiler panic: 45 of
+                    // them in
+                    // lang/{arrays,attributes,basics,collection,datetime,lists,maps,tuples_structs}.rs.
+                    // tuple_index_oob, which says it pins 'a type error, not a compiler
+                    // panic', cannot fail on one. `duration:-1.s` is such an input
+                    // today. Before calling pred, check that the runtime still answers
+                    // (bs.get_env().await is Ok), then tighten those fixtures to match
+                    // their error messages. (tests-lang-d-05)
+                    // CR claude for eric: [test-gap] Every compile error reaches `pred`
+                    // here, a parse error included. 35 run! fixtures in graphix-tests'
+                    // types.rs and traits.rs accept any error with `Err(_)` or
+                    // `is_err()`, which is why SIMPLE_TYPECHECK and RECTYPES2 pass
+                    // today without reaching the rule they name. The crate already
+                    // spells the stronger check by hand 42 times (`Err(e) if
+                    // format!("{e:#}").contains(..)`), plus the eval tables in
+                    // types.rs. Give run! one refusal form that requires a substring of
+                    // the error, which a parse error will not match, and move these
+                    // fixtures onto it with their current messages. Separately,
+                    // CLAUDE.md says run! asserts that the interp and jit values are
+                    // equal. In fact the four modes each apply `pred` on their own and
+                    // nothing compares them. (tests-lang-b-06)
                     Err(e) => assert!(pred(dbg!(Err(e)))),
                     Ok(e) => {
                         let eid = e.exprs[0].id;
@@ -616,6 +682,20 @@ macro_rules! run {
                 Ok(invocations)
             }
 
+            // CR claude for eric: [test-gap] interp and jit pass ParMode::from_env(),
+            // which returns Auto when GRAPHIX_PAR is unset. So these two serial
+            // baselines fork any loop whose probes say a fork pays, and which path a
+            // fixture takes depends on timing; graphix-fuzz pins its Interp and Jit
+            // modes to ParMode::Off (graphix-fuzz/src/lib.rs:73). Pin both to Off
+            // unless GRAPHIX_PAR is set. jit's #[cfg(debug_assertions)] (line 644) is
+            // not needed, since run_with_flags already gates the counter check, and it
+            // leaves cargo test --release with no serial-JIT run of any fixture (the
+            // GRAPHIX_FUSION_DISCOVERY/GRAPHIX_FUSE_AUDIT branches would keep a debug
+            // gate). 44 must-reject fixtures accept any compile error (`Err(_) =>
+            // true`) and 8 accept any error value, so they still pass when the program
+            // fails for an unrelated reason; an expect_err(substring) predicate would
+            // pin the expected refusal. probe:
+            // design/review-2026-10-05/repro/core-aux-13.gx (core-aux-13)
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {

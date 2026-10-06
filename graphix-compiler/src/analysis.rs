@@ -387,6 +387,20 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
     for (iid, b) in bodies.iter() {
         if let Some(d) = lambda_def(ctx, b.lambda) {
+            // CR claude for eric: [bug] This read-join-write of a definition's facts
+            // holds no lock across it: def_facts reads intrinsic_effect and stateless,
+            // and the two stores below happen later. Run-time binds in forked branches
+            // (build_bound -> analyze_bound_callee) run this loop at the same time on
+            // one shared LambdaDef. A bind of a pure instance that read the facts
+            // before a stateful or async instance's stores then writes them back as
+            // pure after those stores, so the definition's facts improve.
+            // arm_sleeps_on_deselect then reads the improved facts, the arm is never
+            // slept, and a count in it is not reset: under GRAPHIX_PAR=force about one
+            // trial in 200 of the probe ends at 8, where the serial run ends at 5. Keep
+            // the facts as one value joined atomically (Pure < Stateful < Async in an
+            // AtomicU8 with fetch_max, or one Mutex<LambdaFacts> held across the join);
+            // that also removes the (Async, stateless) state that only a torn write can
+            // make. probe: design/review-2026-10-05/repro/c-lambda-05.sh (c-lambda-05)
             let e = def_facts(d).join(eff[iid]);
             *d.intrinsic_effect.lock() = e.effect;
             d.stateless.store(e.stateless, Ordering::Relaxed);
@@ -508,6 +522,21 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
+        // CR claude for eric: [bug] A fused arm body is a FusedKernel. This line calls
+        // it ASYNC and for_each_node does not look inside it, so under fusion
+        // arm_sleeps_on_deselect puts a pure arm to sleep that the node-walk never
+        // sleeps. At re-entry the node-walk runs that arm as a birth (standing reads
+        // fresh, select.rs:1007-1014) and the JIT runs it as a wake (standing reads
+        // stale). So a handler-ful `?` over a standing error raises again at every
+        // re-entry on the node-walk and not on the JIT: probe
+        // design/review-2026-10-05/repro/f-kernel-02.gx (graphix-fuzz check:
+        // DIVERGENCE, 2 raises vs 1). The node-walk's own count also changes with
+        // unrelated purity: adding `let c = count(s);` to the arm gives 1 on both
+        // engines, which is the count CLAUDE.md's wake rule predicts (a reselected arm
+        // reads standing values stale). Which re-entry is intended needs a ruling:
+        // classifying a kernel PURE, joined with its feeders and keeping the recursion
+        // check, makes both engines re-raise; counting a handler-ful `?` as impure
+        // makes both read stale. (f-kernel-02)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
             OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::PURE,
@@ -574,6 +603,15 @@ fn node_facts<R: Rt, E: UserEvent>(
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
 /// facts, a builtin its declared `EFFECT`, anything else `Async`.
+// CR claude for eric: [bug] A builtin call contributes only its declared EFFECT, and a
+// lambda passed to it counts as a PURE literal, so the effect of a callback the builtin
+// calls (filter's predicate, opt::map's f, array::group's f) never reaches the caller's
+// facts. `#[sync] let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms,
+// x > 0))` is accepted although g answers a cycle late, and the same g under #[async]
+// is refused as sync. These builtins are already not stateless, so today only the
+// #[sync]/#[async] verdicts are wrong. A builtin call's facts should join the facts of
+// the function arguments it calls back. probe:
+// design/review-2026-10-05/repro/core-lib-08.gx (core-lib-08)
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
@@ -596,6 +634,18 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return instance(g.instance_id(), g.id());
     }
+    // CR claude for eric: [bug] A call to a builtin contributes only the builtin's
+    // declared EFFECT, either through the builtin-bodied def that bind_to_lambda names
+    // (opt::map takes this branch) or through builtin_bindings below. The functions
+    // handed to the builtin are never consulted, and a lambda literal argument counts
+    // as PURE without its body being walked. So a Sync HOF builtin given an async
+    // callback (opt::map, flat_map, filter, or_else, ok_or_else, is_some_and,
+    // is_none_or, core filter, array::group) leaves its caller Sync: #[sync] passes and
+    // #[async] is refused, while array::map or a Graphix HOF with the same callback is
+    // refused. The same hole lets a core-trait method escape its implicit #[sync]: an
+    // Ord impl whose cmp goes through opt::map with an after_idle callback compiles,
+    // and a map of three distinct keys of that type has len 1. probe:
+    // design/review-2026-10-05/repro/core-aux-11.gx (core-aux-11)
     if let NodeView::Ref(r) = cs.fnode().view() {
         if let Some(ids) = graph.and_then(|graph| graph.self_binds.get(&r.id)) {
             ids.iter().for_each(|iid| pending(*iid));
@@ -889,6 +939,20 @@ fn local_summary<R: Rt, E: UserEvent>(
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
+    // CR claude for eric: [bug] local_summary does not see a core-trait dispatch. `==`,
+    // `<` or `"[x]"` on an abstract value with an `impl Eq/Ord/Display` runs the method
+    // through coretraits::call_hook, and no summary includes what the method reads. So
+    // a seq step that compares or prints such a value after a step that writes a
+    // variable the method reads is planned same-cycle and reads the old value: `seq {
+    // sym <- "EUR"; "[price]" }` gives "$5", while the same body through a plain fn
+    // gives "EUR5". plan_block likewise puts a comparison in one run with the statement
+    // that publishes what the method reads (when the comparison comes before the impl,
+    // or the method reads `*r`), so forked and serial evaluation disagree and the
+    // default Auto mode answers nondeterministically; its doc's claim that an impl's
+    // methods read only earlier runs does not hold. A stateful method also gets
+    // different pooled hook sites forked than serial, so it sees different state.
+    // probe: design/review-2026-10-05/repro/c-analysis-branch-02.sh
+    // (c-analysis-branch-02)
     fusion::for_each_node(n, &mut |x| match x.view() {
         NodeView::Ref(r) => {
             s.reads.ids.insert(r.id);
@@ -921,6 +985,19 @@ fn local_summary<R: Rt, E: UserEvent>(
                 }
                 Some(ApplyView::BuiltIn(name)) => {
                     s.ordered |= ordered(name);
+                    // CR claude for eric: [bug] A builtin is made opaque only when an
+                    // argument's top-level type is &T, fn or Any. So
+                    // `buffer::decode(buf, spec)` summarizes as touching nothing,
+                    // although it writes (set_var) and reads lengths (store_value)
+                    // through the references inside `spec: Array<Decode>`.
+                    // plan_machines then enters the next seq step in the cycle the
+                    // decode completes, before the decoded writes land. `seq {
+                    // buffer::decode(b, [`U8(&x)])$; x }` yields the old x (0, not 7),
+                    // and a length written by the step before a decode is read stale.
+                    // Test argument types deeply for references and functions, through
+                    // typedefs. probe:
+                    // design/review-2026-10-05/repro/x-builtin-effects-03.gx
+                    // (x-builtin-effects-03)
                     let reaches =
                         cs.args.values().filter_map(|a| a.node.as_ref()).any(|a| {
                             a.typ().with_deref(|t| {
@@ -1053,6 +1130,24 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
+    // CR claude for eric: [perf] A block's plan is made at its first update from a call
+    // graph collected from its own children, and local_summary makes every call whose
+    // target that graph lacks opaque (reads and writes everything, ordered), so the
+    // statement after a `let` starts a new run. A self-call targets the enclosing
+    // instance, which no walk down from the children reaches: `{ let a = fib(n - 1);
+    // let b = fib(n - 2); a + b }` never forks, and under `#[parallel]` the build is
+    // refused ('statement 2 reads through a reference or a call the compiler cannot
+    // resolve') while `#[parallel] (fib(n - 1) + fib(n - 2))` builds. On a warm image
+    // start every static site is still Callee::Imaged when the plan is made, so no
+    // block of calls forks (GXDBG_SEQPLAN=1 --no-fusion prints 'opaque call g(n) ...
+    // static=true applied=none' on the warm run only). Under the default Auto, every
+    // multi-statement block in every slot and activation also repeats this callee-graph
+    // walk at its first update. Planning where analysis::analyze and
+    // analyze_bound_callee hold the whole graph, and imaging the plan with the block,
+    // fixes the warm start; a self-call also needs its target's summary without the
+    // instance's own lets, which each activation binds afresh, or statement 2 still
+    // reads `a` through it. probe:
+    // design/review-2026-10-05/repro/c-analysis-branch-05.gx (c-analysis-branch-05)
     let graph = collect_static_graph_of(children.iter());
     let ordered = |name: &str| ctx.builtin_ordered(name);
     let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
@@ -1113,6 +1208,19 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
             published = Vars::default();
             run_ordered = false;
         }
+        // CR claude for eric: [bug] `published` holds only the ids a statement binds,
+        // but a reference publishes too. A chainless `&(e)` writes its own cell
+        // (`ByRef::publish`), and a place `&a[i]` with a moving key sets its path
+        // (`set_ref_path`). Neither id is bound, and a later `*r` meets `published`
+        // only when it is non-empty, so `{ r <- &(n * 10); let v = *r; v }` is planned
+        // as one run. Forked, `*r` reads the parent's cell or path: `v` stays at its
+        // init value and a place read lags a cycle, where serial evaluation gives the
+        // new value; default Auto does the same with no attribute once both statements
+        // are expensive. GRAPHIX_PAR_AUDIT catches the cell case but not the path case,
+        // because `ForkRt::ref_path` notes no read and `audit` never compares
+        // `ref_paths`. probe: design/review-2026-10-05/repro/c-analysis-branch-04.gx
+        // (graphix-fuzz check: DIVERGENCE, parallel evaluation bug).
+        // (c-analysis-branch-04)
         let mut refs = Refs::without_callees();
         n.refs(&mut refs);
         refs.with_bound(|id| {
@@ -1174,6 +1282,17 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
                 s
             })
             .collect();
+        // CR claude for eric: [bug] `captures` is keyed by the seq's expression id
+        // (analysis.rs:116), and every instance of the enclosing definition shares it.
+        // So this lookup returns every instance's captures, the store below writes this
+        // machine's verdict into all of them, and the machine planned last decides
+        // liveness for every instance. A function holding `seqq go { put(5); n }`,
+        // where `put` writes the local `n`, prints 5 when called once and (5, 0) when
+        // called twice. In a HOF the verdict follows whichever callback was planned
+        // last. Every engine, parallel mode and image agrees, so graphix-fuzz cannot
+        // see it. Key the captures by the instance that holds them (the walk's
+        // `caller`) as well as by the machine id. probe:
+        // design/review-2026-10-05/repro/c-analysis-branch-01.gx (c-analysis-branch-01)
         if let Some(caps) = captures.get(&m.id) {
             let mut written = Vars::default();
             access.iter().for_each(|s| {
@@ -1262,6 +1381,18 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
             first.get_or_insert((i, why));
         });
+        // CR claude for eric: [bug] A block passes on any run of two statements, even
+        // when one is a constant `let` or a typedef. `#[parallel] { let k = 1; let a =
+        // g(n); a + k }` builds, and its only fork puts the constant beside the call,
+        // while `#[parallel] (1, g(n))` is refused, because every other fork point
+        // needs two children that are more than a constant or a variable read (line
+        // 1295). The check also passes a `#[parallel]` lexically inside a seq body or a
+        // `#[serial]`. There ForkControl keeps the context's `seq` or `inhibit` flag
+        // (node/fork_control.rs:93-95) and fork_mode() is Off (lib.rs:1507), so nothing
+        // under it ever forks: `seq { let v = #[parallel] (g(n), h(n)); v }` builds and
+        // runs serially. Apply the same work test to a run's members, and refuse the
+        // attribute where an enclosing seq or `#[serial]` turns forking off. probe:
+        // design/review-2026-10-05/repro/c-analysis-branch-06.gx (c-analysis-branch-06)
         if runs.iter().any(|(a, b)| b - a >= 2) {
             return Ok(());
         }

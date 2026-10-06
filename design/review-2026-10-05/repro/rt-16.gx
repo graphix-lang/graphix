@@ -1,0 +1,19 @@
+// rt-16: Ref::set_deref is not dead: tui's size refs call it (block.rs:343,
+// layout.rs:260, overlay.rs:127, scrollbar.rs:354, tabs.rs:203). Its target
+// is the byref_chain entry compile_ref found (graphix-rt/src/gx.rs:976); a
+// place reference has none, so set_deref writes nothing and returns Ok(()).
+//
+// command: in a terminal (the TUI needs a tty):
+//   graphix --no-cache design/review-2026-10-05/repro/rt-16.gx; echo $?
+//
+// expected: the exit code is the block's inner width (the terminal's
+//   width; the block has no border), as with `#size: &sz` over a plain
+//   `let sz: [tui::Size, null] = null`.
+// observed (HEAD c722befe, debug build, 120-column pty): 7, the 3 s
+//   fallback: `st.size` never receives a size. The plain `&sz` form exits
+//   with 120.
+use tui::{block::block, paragraph::paragraph};
+let st: {size: [tui::Size, null]} = {size: null};
+sys::exit(select st.size { null as _ => never(), s => s.width });
+sys::exit(sys::time::timer(duration:3.s, false) ~ 7);
+block(#size: &st.size, &paragraph(&"hi"))

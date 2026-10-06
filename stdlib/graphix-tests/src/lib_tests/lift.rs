@@ -34,6 +34,16 @@ async fn collect_n(code: &str, flags: BitFlags<CFlag>, n: usize) -> Result<Vec<V
     let eid = compiled.exprs[0].id;
     let mut out = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    // CR claude for eric: [test-gap] collect_n stops reading at the n-th value. So the
+    // tests named for quiescence (connect_const_then_quiesces,
+    // fold_into_connect_quiesces, array_connect_const_quiesces,
+    // fold_captured_{init,body}_fires_then_quiesces) pin only a prefix. A regression
+    // that makes `x <- 5` fire every cycle gives [0, 5, 5, ...] and a spinning runtime,
+    // and assert_stream(.., &[0, 5]) still passes. The fuzzer cannot catch it either,
+    // because both engines would re-fire and agree. After the n-th value, wait_idle
+    // under the deadline and fail on any further update of eid; a connect that keeps
+    // firing never goes idle, so the deadline fails it. Or collect to quiescence the
+    // way lang/dense_deltas.rs run_delta does. (tests-lib-b2-06)
     while out.len() < n {
         let mut batch = tokio::time::timeout_at(deadline, rx.recv())
             .await
@@ -63,6 +73,13 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
 /// Like [`collect_n`] but samples the live per-activation `SelfBlock`
 /// count after each collected cycle; the caller runs on a current-thread
 /// runtime, so the runtime's kernels count on this thread.
+// CR claude for eric: [structure] collect_n_blocks is collect_n (line 18) with one line
+// changed: the item it pushes. The same VFS table, init, `{ mod test; test::result }`
+// compile and deadline loop appear again in module_stmt.rs first_value, in testing.rs's
+// eval_with_setup, eval_converged and eval_packed, and in lang/dense_deltas.rs
+// run_delta. One driver that returns the context, the result's ExprId and the receiver,
+// plus a next-update helper, would serve all of them, so a change like the quiescence
+// check at line 37 is made once. (tests-lib-b2-12)
 async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
     let gx = format!("let result = {code}");

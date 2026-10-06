@@ -250,6 +250,14 @@ pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
 }
 
 impl SlotShare {
+    // CR claude for eric: [structure] This codec and image_decode below repeat
+    // FusedKernel's codec (fusion/kernel.rs:299-303 and 191-214) at lines 264-268,
+    // 294-298 and 306-324. Both write and read state_words, slot_table_words, own_site,
+    // state_self_blocks and the wrapper record, then make the same load_wrapped call
+    // with the same warning. A field added to WrappedKernel has to be added in four
+    // places, and missing one breaks only one node kind's warm start. A
+    // WrappedKernel::image_encode / image_decode pair next to the type in
+    // fusion/emit/jit.rs, replacing load_wrapped, would serve both. (c-image-09)
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.base as u64, buf);
         encode_varint(self.table.len() as u64, buf);

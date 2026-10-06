@@ -136,6 +136,22 @@ fn leaf_bind<R: Rt, E: UserEvent>(
         BindMode::Reuse(map) => match map.get(name) {
             Some((id, t0)) => {
                 let id = *id;
+                // CR claude for eric: [bug] Under an inferred predicate, this two-way
+                // contains binds the open cells inside both alternatives' inferred
+                // types. For a reused capture that binding is the only lasting effect,
+                // because PatternNode::compile retypes captures and bind_captures types
+                // them later. So `p@ (0, y) | p@ (y, 0) => y + 1` over `([i64, null],
+                // [i64, null])` binds both y cells to i64, taken from the other
+                // alternative's literal. The arm is accepted (without `p@` it is
+                // refused, and the correct `y$ + 1` is refused), and f((0, null))
+                // panics the JIT at fusion/kernel.rs:243 while the node-walk logs
+                // "can't add null". The same probe gives a name that is a payload in
+                // one alternative and a capture in the other the capture's type alone:
+                // `` `A(x) | x@ `B `` over `` [`A([i64, `B]), `B] `` makes x `` `B ``,
+                // so f(`A(5)) bottoms. A rest is compared here as a payload
+                // (capture=false at :417) but typed as a capture, so `[1, r..] | [r..,
+                // "a"]` over Array<[i64, string]> is refused; probe:
+                // design/review-2026-10-05/repro/c-pattern-04.gx (c-pattern-04)
                 if !(t0.contains(&ctx.env, typ)? && typ.contains(&ctx.env, t0)?) {
                     if !capture {
                         format_with_flags(PrintFlag::DerefTVars, || {
@@ -203,6 +219,17 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, out))
     }
 
+    // CR claude for eric: [structure] captures_inner and realign_inner (:284) derive
+    // the type at each child position with the same code: alt_types for an or,
+    // struct_fields for a struct, with_deref for variant and tuple payloads and slice
+    // elements, rep for an abstract. They differ only in what they do with each child
+    // (collect captures, or reset struct field indexes) and on a missing struct field
+    // (skipped here, an error there). Any change to how a position is typed must be
+    // made twice: the pairing of or-alternatives with Set members by count, which
+    // mistypes or-patterns inside slices, is already in both, and alt_types is inlined
+    // a third time at fusion/emit/select.rs:1798. One helper that yields each child's
+    // type, with a struct child's field index, would give both walks a single
+    // derivation. (c-pattern-12)
     fn captures_inner(
         &self,
         env: &Env,
@@ -416,6 +443,18 @@ impl StructPatternNode {
         let all = bind_all(ctx, cx, all, typ, &mut mode)?;
         let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, false));
         let rest = rest.transpose()?;
+        // CR claude for eric: [bug] Every element compiles against one element type.
+        // Under an inferred predicate, that type is infer_slice's union of all the
+        // element patterns (graphix-types/src/expr/pattern.rs:201). A `_` element makes
+        // it Any, so every bind beside it is Any: `[x, _] => x + 1` over Array<i64> is
+        // refused with "cannot compute Any + i64", and `[_, (x, y)]` with "tuple
+        // patterns can't match Any". Elements of different shapes make it a union, and
+        // the Tuple, Variant and Struct arms below accept only their exact constructor.
+        // So `[`A, `B]` over Array<[`A, `B]> is refused, even written `Array<[`A, `B]>
+        // as [`A, `B]`, and so are `[(1, x), (y, 2)]` and `[{b, ..}, x]`. The same
+        // exact-constructor rule refuses `Box(`A(x))` for `type Box =
+        // Abstract<[`A(i64), `B(i64)]>`. probe:
+        // design/review-2026-10-05/repro/c-pattern-08.sh (c-pattern-08)
         let elems = elems
             .iter()
             .map(|p| Self::compile_int(ctx, cx, &et, p, mode.reborrow()))
@@ -433,6 +472,18 @@ impl StructPatternNode {
         // an alias of an alias expands to its body: typedefs are
         // contractive, so the chain ends
         let mut type_predicate = type_predicate.clone();
+        // CR claude for eric: [bug] This chase calls lookup_ref while the statement
+        // list is still compiling. Its second step fills the write-once cell of the ref
+        // inside the alias's body, and every expansion of the alias shares that cell.
+        // When a later sibling declares that name and an outer definition of it is
+        // visible (an enclosing block, a glob, the core prelude), the outer one is
+        // captured for the whole program. The alias's meaning then depends on whether
+        // an unrelated earlier pattern destructured it, which gives a silent wrong type
+        // test or a spurious refusal, the same in every engine. A definition's check,
+        // run in its lambda's captured env (DefTable::record's seed_refs_seen over
+        // g.env), fills cells in the same way. probe:
+        // design/review-2026-10-05/repro/t-typ-mod-02.gx prints ("not A1", "A2"),
+        // expected ("A1", "A2"). (t-typ-mod-02)
         while let Type::Ref(TypeRef { .. }) = type_predicate {
             type_predicate = type_predicate.lookup_ref(&ctx.env)?;
         }
@@ -469,6 +520,17 @@ impl StructPatternNode {
                 // Each alternative compiles against its own member of an
                 // inferred predicate; under an explicit `T as p1 | p2`
                 // every alternative checks against T.
+                // CR claude for eric: [bug] A slice's element type is the union of
+                // every element's inferred type (infer_slice). Through compile_slice
+                // (:421), this pairs an or-pattern's alternatives with that union's
+                // members whenever the counts happen to agree, and captures (:215) and
+                // realign (:288) pair the same way. `[x, 1 | 2]` over Array<[i64,
+                // null]> checks `2` against x's cell, so x is typed i64 and the fused
+                // run panics at fusion/kernel.rs:243 on the null. Because the union is
+                // sorted, `[`B | `A]` over Array<[`A, `B]> is refused while `[`A | `B]`
+                // is accepted. Each alternative needs its own inferred type, or slice
+                // elements must compile with inferred false. probe:
+                // design/review-2026-10-05/repro/c-pattern-05.gx (c-pattern-05)
                 let alt_types = if cx.inferred {
                     alt_types(type_predicate, alts.len())
                 } else {
@@ -494,6 +556,20 @@ impl StructPatternNode {
                     })
                     .collect::<Result<Box<[Self]>>>()?;
                 for i in 1..compiled.len() {
+                    // CR claude for eric: [bug] An alternative that matches_anything()
+                    // only covers its own member of the inferred Set, but this refuses
+                    // every later alternative whatever its member. So `(x, _) | (x, _,
+                    // _)` over `[(i64, i64), (i64, i64, i64)]` is refused, while the
+                    // same select written as two arms is accepted and prints [5, 7].
+                    // matches_anything(Or) (:1052) makes the same mistake through
+                    // matches_every (:1150): `(x, 0, _) | (x, _)` over that union
+                    // counts as a wildcard, so this non-exhaustive select is accepted
+                    // and f((7, 8, 9)) produces nothing. Treat an alternative as a
+                    // wildcard only over its own member, as check_dead_arms does per
+                    // atom. Do not just drop this check: Or's is_match/bind (:906,
+                    // :787) pick an alternative by structure alone, so `(x, _)` would
+                    // bind x to ["x", 1] for {x: 1, y: 2} in `(x, _) | {x, ..}`. probe:
+                    // design/review-2026-10-05/repro/c-pattern-10.sh (c-pattern-10)
                     if compiled[..i].iter().any(|p| p.matches_anything()) {
                         bail!(
                             "unreachable or-pattern alternative: an earlier \
@@ -620,6 +696,17 @@ impl StructPatternNode {
                     )
                 };
                 let (atyp, rep) = r.instantiate(id);
+                // CR claude for eric: [bug] This arm only checks that the predicate
+                // contains the abstract type. The tuple, variant and struct arms also
+                // require the predicate to be their constructor. Because is_refutable
+                // ignores the tag test, `let Box(x): [Box, i64] = v`, `|Box(x): [Box,
+                // null]| ..` and a select arm `[Box, i64] as Box(x)` are all accepted
+                // as irrefutable. On a value that is not a Box, bind_inner binds
+                // nothing, so x keeps its previous value or never appears. The select
+                // is accepted as exhaustive yet matches no arm, and the `_` fallback it
+                // needs is refused as unreachable. Refuse a predicate that is not this
+                // abstract type, as the variant arm does; probe:
+                // design/review-2026-10-05/repro/c-pattern-09.gx (c-pattern-09)
                 type_predicate.check_contains(&ctx.env, &atyp)?;
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 // the payload checks against the declared representation
@@ -786,6 +873,21 @@ impl StructPatternNode {
             // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
+                    // CR claude for eric: [bug] An or-arm picks its alternative by
+                    // structure alone, here and in is_match; emit_or_chain in
+                    // fusion/emit/select.rs does the same. But the check types each
+                    // alternative's binds against its own member of the union. A value
+                    // of a later member that an earlier alternative's structure accepts
+                    // binds through the earlier alternative: same-tag variants, tuples,
+                    // arrays, structs and payload variants are all Value::Array. So a
+                    // bind typed i64 receives a string: the node-walk returns it, the
+                    // fused select returns 0, and a kernel fed the bind panics at
+                    // fusion/kernel.rs:243. The same alternatives written as separate
+                    // arms are typed soundly (x is [i64, string] there). Either test
+                    // each alternative's member before its structure in both engines,
+                    // or type each alternative's binds over the whole scrutinee as
+                    // separate arms are. probe:
+                    // design/review-2026-10-05/repro/c-pattern-06.gx (c-pattern-06)
                     if a.is_match(v) {
                         return a.bind(v, f);
                     }
@@ -1196,7 +1298,46 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // an explicit predicate on an abstract type is a nominal tag
         // test; parameters are not carried at runtime, so `Box<i64> as b`
         // also matches a `Box<string>`
+        // CR claude for eric: [bug] The comment above is false for a Graphix abstract:
+        // the box carries its params and Type::is_a compares them
+        // (graphix-types/src/typ/cast.rs:672; pin abstract_test_matches_parameters,
+        // stdlib/graphix-tests/src/lang/traits.rs:1410).
+        // design/nominal_abstract_types.md rule 4 and its Runtime shape paragraph make
+        // the same stale claim. It holds only for a Rust-backed abstract with
+        // parameters (db::Tree, Cursor, TxnTree, Subscription; netidx-admin's
+        // Ceremony), whose test compares the id alone (cast.rs:683), and there it is
+        // unsound: over [db::Tree<i64, string>, db::Tree<string, i64>] holding a
+        // Tree<i64, string>, `db::Tree<string, i64> as t` is taken and db::first(t)
+        // yields 1 typed string and "one" typed i64 (the JIT reads them as "" and 0,
+        // the node-walk passes them through), and trait dispatch on such a union self
+        // calls the other instantiation's impl. Fix it in one of two ways: refuse such
+        // a test where the scrutinee can hold another instantiation of the same
+        // Rust-backed type, or have the Rust value report its params. Then delete this
+        // comment. probe: design/review-2026-10-05/repro/x-unsafe-05.gx (x-unsafe-05)
+        // CR claude for eric: [doc-drift] The comment above is wrong for a
+        // Graphix-minted abstract. GxAbstract carries its params and Type::is_a
+        // compares them (graphix-types/src/typ/cast.rs:672-681), so with `type Box<'a>
+        // = Abstract<'a>` and `let b: Any = Box(s)` over a string `s`, `select b {
+        // Box<i64> as i => "int box", _ => "other" }` gives "other". Only a Rust-backed
+        // abstract is tested by id alone. design/nominal_abstract_types.md makes the
+        // same claim in item 4 (:56-59). Item 5 (:61) calls the constructor an ordinary
+        // fn value, but `let c = Counter;` and `array::map([1, 2], Box)` are parse
+        // errors. Its three-faces example (:35-37) is refused at `|c| c.0` (needs `c:
+        // Counter`) and at `x + 1` (u64 plus i64), and :98 and :101 leave params out of
+        // GxAbstract and Type::Abstract. (x-typecheck-patterns-13)
         match &type_predicate {
+            // CR claude for eric: [bug] Only a top-level Fn is refused here. A Fn
+            // inside a tuple, struct, array, union member or typedef body passes, and
+            // at run time Type::is_a (graphix-types/src/typ/cast.rs:786) accepts any
+            // lambda for it. So `(fn(x: string) -> string, i64) as (f, n)` matches a
+            // tuple holding a fn(x: i64) -> i64: the select takes the wrong arm and
+            // binds f at a signature it does not have. Calling f runs the function on a
+            // wrong-typed argument, and under fusion a kernel then panics on the
+            // mistyped value (fusion/kernel.rs:243), which kills the runtime.
+            // check_cast already refuses a Fn anywhere in its target, and this check
+            // needs the same whole-type walk. probe:
+            // design/review-2026-10-05/repro/x-typecheck-generics-F5.gx
+            // (x-typecheck-generics-F5)
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
             Type::Concrete | Type::Function | Type::Singleton | Type::OneNumber => {
@@ -1307,6 +1448,19 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// the arm's shallow discriminator. The checker narrows the arm's
     /// binds by exactly this, so a value that fails it is never
     /// delivered to them.
+    // CR claude for eric: [bug] This test cannot tell apart union members that share a
+    // runtime representation: a nullary variant `A is the string "A", and tuples,
+    // structs, payload variants and List cells are all arrays. The checker keeps those
+    // members apart and requires an arm for each. At run time the first arm whose shape
+    // fits wins: over [string, `A] an `A value takes a `string as s` arm and the string
+    // "A" takes an `A arm; a (i64, i64) takes an Array<i64> arm; an empty List takes an
+    // Array arm. Union trait dispatch lowers to this select, so Show::show over
+    // [string, `A] runs the string impl for `A, and == over that union says "A" == `A.
+    // Both engines agree, so the fuzzer cannot see it; either refuse a type-tested or
+    // compared union whose members overlap in runtime footprint, or give those members
+    // distinct representations. probe:
+    // design/review-2026-10-05/repro/x-typecheck-patterns-04.gx
+    // (x-typecheck-patterns-04)
     pub(super) fn shape_matches(
         &self,
         env: &Env,

@@ -1,0 +1,51 @@
+// x-diff-types-01: a trait impl, or a trait default body, may need a bound the
+// trait's method signature does not declare; calls are typed by the trait's
+// signature, so the check accepts what elaboration refuses.
+//
+// Impl::typecheck0 (graphix-compiler/src/node/traits.rs:633) compares an impl
+// method with the declared signature by containment alone, and Trait::compile
+// (traits.rs:173-181) binds a default body under the declared signature with
+// no comparison at all; neither applies the rule FnType::sig_matches enforces
+// for an interface `val` (node/module.rs:395). Here `x + x` gives the impl's
+// 'a the bounds Number + Singleton, while Twice::twice(c, s) is checked
+// against fn(self, x: 'a) -> 'a.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-diff-types-01.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-diff-types-01.gx
+//          RUST_LOG=warn graphix --no-cache --no-fusion --log-dir <dir> \
+//            design/review-2026-10-05/repro/x-diff-types-01.gx
+//
+// expected: --check refuses the impl, as it refuses the interface form
+//   (m.gxi `val twice: fn(x: 'a) -> 'a` over m.gx `let twice = |x| x + x`:
+//   "the implementation requires 'a: Number, which the signature does not
+//   declare").
+// observed (HEAD c722befe, debug build):
+//   --check: exit 0
+//   run: panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//     kernel param `r`: runtime I64(42) does not match the compiled String slot
+//     Error: runtime did not respond   (exit 1)
+//   --no-fusion: prints nothing, exit 0; the log has
+//     ERROR a run-time bind at fs[0]$("21") did not elaborate: ... an instance
+//       at fn(self: Counter, x: string) -> string of a definition typed
+//       fn(c: Counter, x: 'a) -> 'a
+//     WARN error, type string does not match value 42
+//   graphix-fuzz check: the same panic, core dumped (exit 134)
+//
+// Static form, `(Twice::twice(c, 2), Twice::twice(c, "s"))` as the last
+// expression in place of fs and r: --check exit 0; the build refuses the call
+// with the same "an instance at .. of a definition typed fn(c: Counter, x: 'a)
+// -> 'a" (the printed definition omits the bound that refused it);
+// graphix-fuzz check: "DIVERGENCE — the check accepted what the build
+// refused".
+// Default-body form, `trait Twice { val twice: fn(self, x: 'a) -> 'a = |c, x|
+// x + x }; impl Twice for Counter;`: the same results in both forms.
+// Control: with `val twice: fn<'a: Number + Singleton>(self, x: 'a) -> 'a`
+// the static form is refused by --check at Twice::twice(c, "s").
+type Counter = Abstract<i64>;
+trait Twice { val twice: fn(self, x: 'a) -> 'a };
+impl Twice for Counter { let twice = |c, x| x + x };
+let c = Counter(1);
+let fs = [|s: string| Twice::twice(c, s), |s: string| "[s][s]"];
+let r = fs[0]$("21");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(r, str::len(r), "[r]!")

@@ -530,6 +530,15 @@ pub struct TryWithExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct SeqMachineExpr {
+    // CR claude for eric: [structure] `id` and `SeqCaptureExpr::machine` (line 560) are
+    // the seq's `spec.id.inner()` (seq.rs:230, :833) held as bare u64s, and so are the
+    // node fields and the analysis map that pair them (seq_machine.rs:95, :440;
+    // analysis.rs:49). That skips the typed-id rule and image relocation: an image
+    // writes them raw, which works only because nothing compares them with a live
+    // ExprId. Type them as ExprId.
+    // design/review-2026-10-05/repro/c-analysis-branch-01.gx shows this same key
+    // failing today, because every instance of the enclosing function shares it, so
+    // change its type and its identity together. (t-expr-core-08)
     pub id: u64,
     pub pc: Arc<Expr>,
     pub scopes: Arc<[u32]>,
@@ -944,6 +953,17 @@ impl ExprKind {
 pub enum Source {
     File(PathBuf),
     Netidx(Path),
+    // CR claude for eric: [structure] Internal carries a VFS module's bare leaf name
+    // (graphix-types/src/expr/resolver.rs:233) or an entire program's text (the shell's
+    // embedded main program, graphix-shell/src/lib.rs:247, which GX::load_exprs parses
+    // at graphix-rt/src/gx.rs:761; the fuzzer), and Display prints both as `module
+    // {m}`. An error in a standalone build's main program therefore reads 'in module'
+    // followed by the whole program (graphix-fuzz run on a type error prints `in module
+    // test` included from `module { mod test; test::result }`), two VFS modules named
+    // util in different scopes print alike, and an image stores an embedded program's
+    // text twice, here and in Origin.text. Split it: a VFS variant holding the module
+    // path, and a program variant whose text lives only in Origin.text.
+    // (t-format-resolver-16)
     Internal(ArcStr),
     #[default]
     Unspecified,
@@ -963,6 +983,10 @@ impl fmt::Display for Source {
 }
 
 impl Source {
+    // CR claude for eric: [dead] `has_filename`, `is_file` (line 979) and
+    // `UseItem::leading_keyword` (line 293) have no callers in this workspace or in
+    // ../netidx; delete them. `UseItem::plain` (line 283) is used only by a parser test
+    // (parser/test.rs:983) and belongs under #[cfg(test)]. (t-expr-core-06)
     pub fn has_filename(&self, name: &str) -> bool {
         match self {
             Self::File(buf) => match buf.file_name() {
@@ -1296,6 +1320,19 @@ impl PartialOrd for Expr {
     }
 }
 
+// CR claude for eric: [bug] Expr's PartialEq, PartialOrd and Debug recurse through the
+// derived ExprKind impls with no ensure_sufficient (Display, fold and Drop have one),
+// so each call goes as deep as the AST. format_source compares the reparse with the
+// original using `!=` (format.rs:328). The two parses share no Arcs, so triomphe's
+// pointer shortcut never applies. As a result `graphix fmt`, and the LSP's formatting
+// request through the same format_source, abort with a stack overflow on a file that
+// --check accepts: 300 parenthesized 1000-term `+` chains, about 300k AST levels,
+// inside the nesting limit. Probe: `python3 design/review-2026-10-05/repro/x-stack-05.py`
+// writes x-stack-05.gx; `graphix fmt --width 100000000 --stdout x-stack-05.gx` exits
+// 134 in ExprKind::eq. On the same
+// path, fmt_flat (print.rs:482) walks decorated() and flat-prints the whole subtree at
+// every level, so layout is quadratic in depth: 5, 10 and 20 nested chains take 5, 18
+// and 73 s on the debug build. (x-stack-05)
 impl PartialEq for Expr {
     fn eq(&self, rhs: &Expr) -> bool {
         self.kind.eq(&rhs.kind)
@@ -1315,6 +1352,20 @@ impl Expr {
     /// Whether `other` is a clone of this expression: the same id,
     /// origin and position over equal syntax (shared children compare
     /// by pointer).
+    // CR claude for eric: [bug] same_tree compares `kind ==`, and Expr equality looks
+    // at kind only at every level (not by pointer, as the doc says). So it ignores
+    // `dec` and every child's id and dec, but the codec writes `dec`, and expr_key
+    // makes a decorated clone a ref to an undecorated twin with the same id.
+    // fork_on_body (node/compiler.rs:101) makes exactly such a clone when it moves
+    // #[serial]/#[parallel] from a `let` onto the lambda body. When the `let` is inside
+    // another function, that function's def is encoded first, and the inner def's body
+    // decodes without the attribute. After a warm start every instance bound at run
+    // time then has no ForkControl: #[serial] stops ordering effects, #[parallel] stops
+    // forcing forks, and collection slots no longer mirror their imaged prototype's
+    // fusion walk, so they node-walk (a 200000-element init/fold that runs cold in 0.5
+    // s exceeds 6 GB warm). Compare `dec` and walk the children with same_tree (ptr::eq
+    // first), or key an expression by its encoded bytes; probe:
+    // design/review-2026-10-05/repro/t-image-01.sh (t-image-01)
     pub(crate) fn same_tree(&self, other: &Expr) -> bool {
         self.id == other.id
             && self.pos == other.pos

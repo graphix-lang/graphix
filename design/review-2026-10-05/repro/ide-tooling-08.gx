@@ -1,0 +1,15 @@
+// ide-tooling-08: the tree-sitter grammar has no `~!` operator, so
+// `t ~! x + 1` parses as `t ~ ((!x) + 1)`, with no ERROR node.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/ide-tooling-08.gx
+//          cd ide/tree-sitter-graphix && npx tree-sitter parse ../../design/review-2026-10-05/repro/ide-tooling-08.gx
+// expected: the program prints 3 (StrictSample(t, x + 1)); tree-sitter gives
+//           one binary_expression with operator `~!` over `t` and `x + 1`.
+// observed: it prints 3; tree-sitter gives
+//           (binary_expression t (binary_expression (unary_expression x) 1)),
+//           a `~` whose right operand is `(!x) + 1`.
+let t = 1;
+let x = 2;
+let r = t ~! x + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

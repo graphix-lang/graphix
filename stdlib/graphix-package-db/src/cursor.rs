@@ -49,6 +49,15 @@ impl EvalCachedAsync for DbCursorNewEv {
         Some((prefix_val, tree))
     }
 
+    // CR claude for eric: [structure] cursor::new and cursor::range (221-240) only
+    // build a sled::Iter, which does no I/O (sled's range stores the bounds; reads
+    // happen in next()), yet both are async builtins that hop through spawn_blocking.
+    // The cursor arrives a cycle late, and the JoinError arm (71, 236) can put a DbErr
+    // where cursor.gxi promises a plain Cursor, which read and read_many then ignore
+    // without a word (their prepare_args return None). Make both sync EvalCached
+    // builtins that return the cursor directly. A prefix encode_key refuses also widens
+    // silently to a full scan (56-59; subscribe.rs:187-190 watches everything the same
+    // way); it should match nothing or be refused. (http-sqlite-db1-15)
     fn eval((prefix_val, tree): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match tokio::task::spawn_blocking(move || {

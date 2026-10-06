@@ -1,0 +1,36 @@
+// x-engine-seq-errors-05: a trait method with a second `self`-typed
+// parameter, called over a union self type, passes the check and is
+// refused by the build, whose message names the lowering's private
+// bindings.
+//
+// commands:
+//   graphix --check design/review-2026-10-05/repro/x-engine-seq-errors-05.gx
+//   graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-05.gx
+//   graphix-fuzz check design/review-2026-10-05/repro/x-engine-seq-errors-05.gx
+//
+// The check discharges `'self: Comb` with 'self := [A, B] because each
+// member has an impl (graphix-types/src/typ/contains.rs:1399, the Set arm
+// of trait_contains). Elaboration lowers the call to
+// `select #s { A as #t => #bind::N(#t, #a1), B as #t => .. }`
+// (graphix-compiler/src/node/traits.rs:877, lower_trait_union), which
+// narrows only the receiver: `#a1` stays [A, B] and A's comb takes an A.
+// Both values here are A at run time; the refusal is static. The same
+// failure comes through a generic wrapper (the instance fails):
+//   let f = 'a: Comb |x: 'a, y: 'a| Comb::comb(x, y); f(pick(0), pick(0))
+// and with `others: Array<self>` or a labeled `#other: self`. A `self`
+// return alone works: `fn(self) -> self` over [A, B] runs.
+//
+// expected: the check refuses the call, in the program's terms.
+// observed: `--check` exits 0; the run exits 1 with
+//   in: #bind::4611686018427391910(#t, #a1)
+//   in: #a1
+//   type mismatch A does not contain '_4611686018427394572: [A, B]
+// and graphix-fuzz check prints DIVERGENCE (the check accepted what the
+// build refused).
+trait Comb { val comb: fn(self, other: self) -> string };
+type A = Abstract<i64>;
+type B = Abstract<string>;
+impl Comb for A { let comb = |a, o| "A [a.0 + o.0]" };
+impl Comb for B { let comb = |b, o| "B [b.0][o.0]" };
+let pick = |n: i64| -> [A, B] select n { 0 => A(1), _ => B("x") };
+Comb::comb(pick(0), pick(0))

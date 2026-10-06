@@ -187,6 +187,16 @@ pub trait StreamMark: 'static + Send + Sync {
 }
 
 pub struct Stream<K: StreamMark> {
+    // CR claude for eric: [bug] One lock guards the whole stream, and every read holds
+    // it across its await: the lines reader at io.rs:79-81, and read and read_exact at
+    // io.rs:40-47 and 221-230. So on a TcpStream or TlsStream, a pending read blocks
+    // write, write_exact, flush, close, shutdown, peer_addr and local_addr until the
+    // peer sends. A server that follows `Lines::lines(s)` and answers each line sends
+    // each answer only when the client's next line arrives. `close(s)` cannot stop a
+    // reader whose peer is silent, and the book's tcp.md example hangs if its
+    // write_exact and read_all statements are swapped. The socket needs read and write
+    // halves that lock independently (`TcpStream::into_split`, `tokio::io::split` for
+    // TLS). probe: design/review-2026-10-05/repro/sys-io-01.gx (sys-io-01)
     pub inner: Arc<Mutex<Option<StreamKind>>>,
     mark: PhantomData<K>,
 }
@@ -199,6 +209,11 @@ impl<K: StreamMark> Stream<K> {
     /// A handle of this kind onto an EXISTING stream. `tls::connect`
     /// mints one: the TLS session and the TCP handle it was built
     /// from are the same socket, and both handles see it.
+    // CR claude for eric: [doc-drift] The doc above is false: tls::connect does not
+    // share the TCP handle's socket. It takes the StreamKind out of that handle and
+    // wraps the session in a fresh one through wrap_tls (Stream::new), leaving the TCP
+    // handle empty. from_inner's only caller is Stream::new (line 196), in this repo
+    // and in ../netidx. Inline it into new and delete it with its doc. (sys-io-16)
     pub(crate) fn from_inner(inner: Arc<Mutex<Option<StreamKind>>>) -> Self {
         Stream { inner, mark: PhantomData }
     }
@@ -593,6 +608,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
+            // CR claude for eric: [bug] This exits inside a cycle, so the shell's
+            // orderly end (graphix-shell/src/lib.rs:542-547) never runs. A TUI program
+            // that ends with sys::exit leaves the terminal in the alternate screen,
+            // with the cursor hidden and in raw mode; tui::exit restores it but takes
+            // no exit code. Its kill_on_drop children outlive it too, and they also
+            // outlive Ctrl-C and tui::exit. The kill lives in the own_child task
+            // (process.rs:66-104), which does not get to run when the runtime is torn
+            // down, and the tokio Command (process.rs:239) has no kill_on_drop, so that
+            // half needs a fix in process.rs as well. probe:
+            // design/review-2026-10-05/repro/x-errors-01.py (x-errors-01)
             std::process::exit(code as i32);
         }
         TagValue::phantom_ref()

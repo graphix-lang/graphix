@@ -111,6 +111,19 @@ impl ServerState {
             Some(idxs) if !idxs.is_empty() => {
                 idxs.iter().map(|i| self.workspace.projects[*i].root.clone()).collect()
             }
+            // CR claude for eric: [bug] A `.gxi` that no project contains becomes its
+            // own root here, and `check` hands it to `RootFile::load`, which parses the
+            // interface as a program. A valid interface then gets a parse error ("`///`
+            // is a doc comment, legal only in a .gxi interface file"), and hover and
+            // definition in it return nothing. Every interface is outside every project
+            // when the client names no workspace (single-file mode), and a new
+            // interface is outside until a save rescans the disk; after that save the
+            // error never clears, because nothing retires the old root.
+            // `detect_package_scope` (workspace.rs:229) tests only the `mod` stem, so a
+            // package's `mod.gxi` fails the same way. A `.gxi` should be checked under
+            // the roots of its `.gx` sibling (the sibling itself when it stands alone)
+            // and never be a root of its own. probe:
+            // design/review-2026-10-05/repro/lsp-05.py (lsp-05)
             Some(_) | None => vec![path.to_path_buf()],
         }
     }
@@ -161,6 +174,19 @@ impl ServerState {
     /// Disk changed: the project graph may have, and every edited root
     /// may read the file.
     pub fn saved(&mut self) {
+        // CR claude for eric: [bug] This rescan can turn a root into a module, for
+        // example when a save adds `mod helper;` to main.gx. Nothing then drops the old
+        // root's `checked`, `warnings` and `diagnosed` entries, because
+        // `close_document` only visits the roots `roots_of` names now. So the
+        // diagnostics its last check published stay on its files for the life of the
+        // server, through edits and after every file is closed, and its Env and Ide
+        // stay in memory. After a rescan and on close, retire every root that is no
+        // longer a root of an open document: publish empty lists for its diagnosed
+        // files (`saved` has to return them) and drop its entries. Keeping all per-root
+        // state in one map would make that a single remove. probe:
+        // design/review-2026-10-05/repro/lsp-04.py (helper.gx keeps "`super` goes above
+        // the package root" after main.gx gains `mod helper;` and checks clean).
+        // (lsp-04)
         self.workspace = scan(&self.workspace_roots, &self.workspace);
         let open: Vec<PathBuf> = self.documents.keys().filter_map(uri_to_path).collect();
         for path in open {
@@ -188,6 +214,16 @@ impl ServerState {
             }
             Err(e) => Some(self.diagnostic(&e, root)),
         };
+        // CR claude for eric: [bug] A publish replaces the client's whole list for a
+        // file, but `now` holds only this root's diagnostics. A file two projects share
+        // (gui/icon.gx is in 51) therefore shows whichever root published last.
+        // `cleared`, here and in close_document (line 155), empties a file another root
+        // still fails on. Observed: tool_b's warning on util.gx replaces tool_a's
+        // error. A parse error typed into tool_a.gx, or closing tool_b.gx, leaves
+        // util.gx clean while the other project still does not compile. Publish, per
+        // file, the union over every root that covers it, and clear a file only when no
+        // root has anything on it. probe: design/review-2026-10-05/repro/lsp-03.py
+        // (`python3 design/review-2026-10-05/repro/lsp-03.py <graphix>`) (lsp-03)
         let mut now = self.warnings.get(root).cloned().unwrap_or_default();
         if let Some((uri, error)) = error {
             now.entry(uri).or_default().insert(0, error);
@@ -226,6 +262,15 @@ impl ServerState {
     fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (Uri, Diagnostic) {
         let loc = error_location(err);
         let path = loc.file.unwrap_or_else(|| root.to_path_buf());
+        // CR claude for eric: [bug] path_to_uri also returns None for absolute paths.
+        // So this expect kills the server (main-thread panic, exit 101) on the first
+        // failed check whose error file or root path holds [ ] ^ | \ or is not UTF-8.
+        // PATH_ENCODE (uri.rs:13) is the WHATWG path set, but lsp_types 0.97's Uri is
+        // fluent-uri, which refuses those characters in a path, and a non-UTF-8 path
+        // has no URI at all. The same None makes warned (line 207) drop such a file's
+        // warnings without a word. probe: design/review-2026-10-05/repro/x-panics-03.py
+        // (a type error in <ws>/[x]/main.gx; a^b, a|b, a\b and a \xff.gx root the
+        // same). (x-panics-03)
         let uri = path_to_uri(&path)
             .or_else(|| path_to_uri(root))
             .expect("a checked root is an absolute path");
@@ -234,6 +279,19 @@ impl ServerState {
             start: self.encode(text, at),
             end: self.encode(text, loc.end.unwrap_or_else(|| extent(text, at))),
         };
+        // CR claude for eric: [bug] `documents` is keyed by the URI string the client
+        // sent, but this `uri` is rebuilt by `path_to_uri`. That function leaves `( ) !
+        // $ & ' * + , ; = : @` unencoded, while VS Code (ide/editors/vscode)
+        // percent-encodes them. For a file under e.g. `proj (copy)/` the lookup misses,
+        // so the error range is encoded against the file on disk rather than the
+        // unsaved buffer the check read. An error on a line the disk lacks lands at
+        // (3,0)-(3,0), a parse error's underline is measured on the disk line, and
+        // UTF-16 columns are counted over the disk's characters. The same miss drops
+        // the version in `publish` (server.rs:141), makes `workspace_symbols` parse the
+        // disk (symbols.rs:131), and puts every diagnostic under a URI the client never
+        // sent; encode against the erring expression's `ori.text` as `warned` does, key
+        // documents by path and publish under the client's URI. probe:
+        // design/review-2026-10-05/repro/lsp-06.py (lsp-06)
         let range = match self.documents.get(&uri) {
             Some(doc) => range(&doc.text),
             None => match std::fs::read_to_string(&path) {

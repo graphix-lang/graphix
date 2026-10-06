@@ -1,0 +1,20 @@
+// tui-core-13: `#margin` overrides `#horizontal_margin` but not `#vertical_margin`.
+//
+// LayoutW::draw (stdlib/graphix-package-tui/src/layout.rs:242-253) applies
+// horizontal_margin, then margin, then vertical_margin; ratatui's
+// Layout::margin(m) sets both axes, so the general margin erases the
+// horizontal override applied before it while the vertical override
+// applied after it wins.
+//
+// command: in a terminal (or a pty, 40x12):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-core-13.gx
+//
+// expected: the per-axis margins override the general one on both axes:
+//   the block's top-left corner at row 4, column 11 (vertical 3,
+//   horizontal 10), as it is when `#margin` is left out.
+// observed: row 4, column 2: the vertical margin of 3 is honoured, the
+//   horizontal margin of 10 is replaced by the margin of 1.
+use tui::{block::block, text::text, layout::{child, layout}};
+layout(#horizontal_margin: &10, #margin: &1, #vertical_margin: &3, &[
+  child(#constraint: `Fill(1), block(#border: &`All, &text(&"x")))
+])

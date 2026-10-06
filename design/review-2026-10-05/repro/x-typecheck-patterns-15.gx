@@ -1,0 +1,18 @@
+// x-typecheck-patterns-15: `graphix-fuzz check` prints AGREE when nothing
+// was compared. check_verdict (graphix-fuzz/src/lib.rs:1442) returns no
+// divergence for an Excluded-tier program without comparing values (any
+// program naming rand::, sys::time, sys::net, throttle, ...: the usual
+// `sys::exit(sys::time::after_idle(..))` gate makes every probe Excluded)
+// and for a node-walk that disagrees with its own rerun; the `check`
+// command (graphix-fuzz/src/main.rs:1059) prints every no-divergence as
+// "AGREE — interp and jit, no cache, cold and warm produce the same result".
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/x-typecheck-patterns-15.gx
+//          graphix-fuzz run design/review-2026-10-05/repro/x-typecheck-patterns-15.gx
+//
+// expected: check says what it concluded, e.g. "EXCLUDED: values not
+//   compared", and keeps AGREE for programs it compared.
+// observed: check prints "AGREE — interp and jit, no cache, cold and warm
+//   produce the same result" (exit 0), while run shows a different random
+//   value in each of its eight modes.
+rand::rand(#start: 0, #end: 1000000000, #clock: null)

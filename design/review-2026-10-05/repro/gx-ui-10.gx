@@ -1,0 +1,29 @@
+// gx-ui-10: tui line_edit inserts Ctrl/Alt chords as text.
+//
+// line_edit::step's `Char(ch) arm (stdlib/graphix-package-tui/src/graphix/
+// line_edit.gx:9) never reads k.modifiers. crossterm reports Ctrl+U as
+// Char('u') with [Control] and Alt+B as Char('b') with [Alt] (only Ctrl+C is
+// taken before the handlers, tui/src/lib.rs:676), so a chord types its letter
+// into the focused editor; form.gx:36-38 hands every key it does not handle
+// to the focused editor. line_edit.gxi:10 and :18 say printable characters
+// insert.
+//
+// command: env -u WAYLAND_DISPLAY -u DISPLAY graphix --no-cache design/review-2026-10-05/repro/gx-ui-10.gx
+//          (the same with --no-fusion)
+//
+// expected: ctrl-u null, alt-b null (the editor does not consume a chord, so
+//   handle answers `Continue), shift-A {cursor: 3, value: "abA"}
+// observed (HEAD c722befe, debug build, both engines):
+//   ctrl-u {cursor: 3, value: "abu"}
+//   alt-b {cursor: 3, value: "abb"}
+//   shift-A {cursor: 3, value: "abA"}
+use tui::{line_edit, input_handler::{Event, KeyCode, KeyModifier}};
+let k = |c: KeyCode, m: Array<KeyModifier>| -> Event `Key({code: c, kind: `Press, modifiers: m, state: []});
+let st = line_edit::state("ab");
+let a = line_edit::step(st, k(`Char("u"), [`Control]));
+let b = line_edit::step(st, k(`Char("b"), [`Alt]));
+let c = line_edit::step(st, k(`Char("A"), [`Shift]));
+println("ctrl-u [a]");
+println("alt-b [b]");
+println("shift-A [c]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

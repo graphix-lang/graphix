@@ -35,6 +35,17 @@ const DEPTH_VAR: &str = "GRAPHIX_DEEP_DEPTH";
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
+// CR claude for eric: [bug] No shape here puts a postfix or operator run inside parens.
+// So the pin cannot see that the parser caps each run (arithexp.rs:195, :270) and the
+// paren depth separately, but never the depth of the AST: 100 paren levels around runs
+// of 999 `$` parse into an AST about 100k deep. That program's type error then aborts
+// `graphix --check` with a stack overflow. At::at (expr/context.rs:97) adds one context
+// layer per AST level and, at each one, downcasts through the whole chain, recursively
+// inside anyhow; probe: design/review-2026-10-05/repro/t-parser-a-02.gx. The `field`
+// shape split into 101 levels of 999 `.a` aborts the same way, so the header's claim
+// that the parser refuses anything past max_nesting() is false, and this pin only
+// drives the error path to accepted() = 125. Add that split shape and assert it comes
+// back REFUSED at REJECTED. (t-parser-a-02)
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
@@ -82,6 +93,14 @@ fn program(shape: &str, d: usize) -> String {
         "qop" => format!("let a = [1];\nlet x = a[0]{}", "$".repeat(d)),
         "neg" => format!("let x = {}1", "-".repeat(d)),
         "not" => format!("let x = {}true", "!".repeat(d)),
+        // CR claude for eric: [test-gap] `mod m{i} { .. }` is an inline module, which
+        // the parser has never had (a parse error at the first `{`), and run_child
+        // counts any error but the nesting refusal as success (lines 181-185), so this
+        // shape passes at both depths without building an AST. No shape nests an
+        // unresolved `mod`, so resolve_modules_int's recursion and holds_unresolved go
+        // unexercised. Make it nested blocks around `mod x; x::k` with an x.gx written
+        // beside deep.gx, and fail the child on a parse error at accepted() depth,
+        // which line 229 says must not happen. (t-format-resolver-13)
         "modnest" => {
             let mut s = String::from("let x = 1");
             for i in 0..d {
@@ -171,6 +190,19 @@ fn run_child(shape: &str, depth: usize) {
     let r = rt.block_on(async {
         ShellBuilder::<NoExt>::default()
             .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
+            // CR claude for eric: [test-gap] Every shape runs through Mode::Check. That
+            // is the check alone (CFlag::CheckOnly: no instance typing, elaboration,
+            // fusion, image, cycle or formatter), at max_nesting()/8 = 125 levels. No
+            // shape nests an operator or postfix chain inside parens, which is how a
+            // program reaches about max_nesting²/3 AST levels inside the limit. So
+            // crashes on the other paths pass the pin. A lambda whose body is 100
+            // nested 1000-term `+` chains passes --check, but calling it aborts in
+            // Add::typecheck0_instance (`graphix --no-cache --no-fusion`). `graphix
+            // fmt` aborts on the file design/review-2026-10-05/repro/x-stack-05.py
+            // writes. Add a
+            // chains-in-parens shape at the top level and inside a called lambda, run
+            // each shape as a script with fusion on and off, and format it.
+            // (x-stack-07)
             .mode(Mode::Check(Source::File(file.clone())))
             .build()
             .expect("building shell")

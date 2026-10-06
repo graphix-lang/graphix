@@ -143,6 +143,16 @@ impl Trace {
 
     /// Structural equality. `Value`'s own equality is graphix's total
     /// order (`NaN == NaN`, `-0.0 == 0.0`), so no float special-casing.
+    // CR claude for eric: [doc-drift] Trace equality is Value's equality, which
+    // compares non-NaN floats with == (so -0.0 equals 0.0) and decimals by value
+    // ignoring scale. design/graphix_fuzz.md §3 says floats otherwise compare exactly
+    // and that agrees_with encodes zero relaxations. Both differences are visible to
+    // programs (`"[x]"` prints -0 vs 0, `1.0 / x` gives -inf vs inf), so an engine or
+    // image codec that flips a result's zero sign or decimal scale still agrees here.
+    // Compare float leaves by bits with NaN canonicalized, and decimals by mantissa and
+    // scale, in one trace-specific equality used by agrees_with, agrees_final and the
+    // first-difference classifiers; or state the relaxation in the doc.
+    // (fuzz-main-aux-20)
     pub fn agrees_with(&self, other: &Trace) -> bool {
         self == other
     }

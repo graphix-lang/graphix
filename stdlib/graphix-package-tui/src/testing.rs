@@ -321,6 +321,16 @@ impl TuiTestHarness {
 
 /// Deliver a batch's updates; false when it held none (the runtime sends
 /// a batch every cycle, empty or not).
+// CR claude for eric: [test-gap] The harness says it builds and drives the tree the way
+// the runtime does, but it differs from the display in four ways that hide bugs from
+// tests. An update to the root expression goes to `handle_update` instead of rebuilding
+// the tree as display does (lib.rs:804-808), so a program whose root re-fires (a
+// `select` over screens) keeps its first tree. `tui::size` and `tui::event` are never
+// set, so a program reading them sees nothing. `dispatch_event` always drains, so no
+// test can put a second event in front of the input handler while a reply is pending,
+// and Ctrl-C reaches the widgets instead of stopping. Rebuild on the root id here, set
+// `size` from the viewport and `event` on each dispatch, and add a dispatch that
+// delivers several events before draining. (tui-core-10)
 async fn deliver(
     widget: &mut TuiW,
     watched: &mut IntMap<ExprId, Value>,

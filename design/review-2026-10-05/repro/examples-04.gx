@@ -1,0 +1,22 @@
+// examples-04: color_palette.gx groups at n == 255 and drops color 255.
+//
+// book/src/examples/tui/color_palette.gx:10 is
+//   line(array::flatten(array::group(span, |n, _| n == 255)))
+// over three spans per value of range(0, 256): 256 updates, 0..255.
+// array::group calls f with the buffer length after the push
+// (stdlib/graphix-package-array/src/lib.rs Group::update, `set!`), so
+// `n == 255` emits the buffer holding 0..254; 255 starts a new buffer that
+// never emits. Same pipeline over i64 in place of spans.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/examples-04.gx
+//          (the same with --no-fusion)
+// expected: groups=256 spans=768 first=0 last=255
+// observed (HEAD c722befe, debug build, both engines):
+//          groups=255 spans=765 first=0 last=254
+let idx: Array<i64> = select range(0, 256)$ {
+    i => [i, i, i]
+};
+let g = array::group(idx, |n, _| n == 255);
+let flat = array::flatten(g);
+println("groups=[array::len(g)] spans=[array::len(flat)] first=[flat[0]$] last=[flat[-1]$]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

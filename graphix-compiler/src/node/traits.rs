@@ -46,6 +46,17 @@ use triomphe::Arc;
 /// module, with `self` a trait-bounded quantifier (rigid while a
 /// default body is checked).
 pub(crate) fn method_sig(parsed: &FnType, tref: &Type, scope: &ModPath) -> FnType {
+    // CR claude for eric: [bug] The declared method type is scoped but never passed
+    // through Type::rewrite_trait_args, which Lambda::compile, let annotations and .gxi
+    // vals all run. So a trait as a parameter's type (`fn(self, c: Display)`) or a
+    // quantifier bounded by a constructor trait (`fn<'c: Collection>(self, c: 'c)`)
+    // stays unrewritten here, while the impl's or the default's lambda is rewritten.
+    // Every impl of such a method is refused with a message that prints the same type
+    // on both sides, a call that reaches a default body is refused with `undefined type
+    // Display`, and a trait used as a method's return type is accepted where a let
+    // annotation refuses it. Trait::compile and both interface paths in module.rs take
+    // the declared signature from here, so the rewrite belongs here. probe:
+    // design/review-2026-10-05/repro/x-diff-types-03.gx (x-diff-types-03)
     let ft = parsed.scope_refs(scope);
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     ft.alias_tvars(&mut known);
@@ -171,6 +182,19 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         ctx.env.import_glob(&dscope.lexical, def.path.clone());
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         for (m, d) in t.methods.iter().zip(def.methods.iter()) {
+            // CR claude for eric: [bug] Each default is bound as `let <method>` in one
+            // block under dscope, and that binding beats the glob-imported dispatcher.
+            // So a default that calls an earlier default bare (`twice(s)`) runs the
+            // default body directly instead of dispatching. An implementation's
+            // override of the callee is ignored whenever another default reaches it,
+            // and the result depends on declaration order: a default declared before
+            // `twice` dispatches, one declared after does not, and `Show::twice(s)`
+            // always dispatches. Both engines agree, so the fuzzer cannot catch it.
+            // Bind the defaults where a sibling cannot see them (a child scope each, or
+            // private names handed to set_trait_defaults) so a bare method name always
+            // reaches the dispatcher. probe:
+            // design/review-2026-10-05/repro/x-engine-seq-errors-01.gx
+            // (x-engine-seq-errors-01)
             if let Some(body) = &m.default {
                 let sig = d.typ.reset_tvars();
                 let b = BindExpr {
@@ -196,6 +220,19 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 defaults_by_name.push((n.clone(), *id));
             }
         }
+        // CR claude for eric: [bug] This stores the definition of record as the node's
+        // def. A re-declaration therefore holds the signature's dispatchers, not the
+        // ones its own deftrait minted, and every interface or dynamic-sig trait is a
+        // re-declaration because add_interface_modules splices one into the body. When
+        // a dynamic module reloads, delete's undeftrait(&self.def) removes the
+        // signature's dispatchers from by_id, trait_methods and poly_binds and drops
+        // the record, but the outer env's binds still name them. Every later compile of
+        // foo::Show::show (a new array::map slot, a REPL line) then fails with
+        // "foo::Show::show not defined", and the first body's own dispatchers leak.
+        // Keep deftrait's def on the node and apply the defaults to the record
+        // separately: undeftrait then removes this declaration's dispatchers, and drops
+        // the record only when it is this declaration. probe:
+        // design/review-2026-10-05/repro/t-env-08.gx (t-env-08)
         let def = ctx.env.set_trait_defaults(def.id, defaults_by_name.drain(..));
         Ok(Node::new(Self { spec, def, defaults }))
     }
@@ -358,6 +395,17 @@ pub(crate) fn check_target(
                 )
             }
         }
+        // CR claude for eric: [bug] An inline union of primitives (`[i64, string]`,
+        // `[i64, null]`) normalizes to one Type::Primitive with several flags. It
+        // misses this arm, and the `_` arm accepts it as a target in the trait's own
+        // package, while `Number` and `[`A, `B]` are refused here. The impl is never
+        // used, because the check looks for an impl per member (`Show::show(v)` with
+        // `v: [i64, string]` is still refused), and it makes every member impl a
+        // 'conflicting implementation'. probe:
+        // design/review-2026-10-05/repro/x-typecheck-patterns-11.gx. Refuse
+        // `Type::Primitive(p) if p.len() > 1` with this arm's message.
+        // resolve_trait_call (:746) has the same blind spot for a multi-flag Primitive
+        // self. (x-typecheck-patterns-11)
         Type::Set(_) => bail!(
             "impl {} for {target}: a union is never an implementation target; \
              implement each member",
@@ -546,6 +594,19 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
+        // CR claude for eric: [bug] An impl in a lambda body registers here once for
+        // the definition's check, whose discarded body is deleted only at
+        // apply_deferred, and again for every instance. So the lambda's first call
+        // fails the build with "conflicting implementation ... at" the impl's own line,
+        // while --check, which builds no instances, accepts the program. If the lambda
+        // is never called, the check's registration is still visible to every
+        // compile-time trait resolution in the program, but it is gone for run-time
+        // binds. Example: beside an uncalled `let f = |x: i64| -> string { impl Show
+        // for T {..}; "[x]" }`, `array::map([1, 2, 3], |x| Show::show(T(x)))` prints
+        // ["T<1>", "T<2>", "T<3>"] fused and nothing under the node-walk (graphix-fuzz
+        // check: DIVERGENCE). Either refuse an impl in a body that compiles per
+        // instance, in the check and the build alike, or register it once. probe:
+        // design/review-2026-10-05/repro/c-module-traits-05.sh (c-module-traits-05)
         let fulfils = ctx.env.register_impl(def.clone()).at(&spec)?;
         Ok(Node::new(Self {
             spec,
@@ -630,6 +691,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
+            // CR claude for eric: [bug] This compares an impl method with the trait's
+            // signature by containment only. A method whose body adds a bound the trait
+            // does not declare is accepted: `|c, x| x + x` under `fn(self, x: 'a) ->
+            // 'a` gives 'a the bounds Number + Singleton. A default body
+            // (Trait::compile, line 175) is not compared at all. Calls are typed by the
+            // trait's signature, so --check accepts `Twice::twice(c, "s")`, and then
+            // elaboration refuses it with "an instance at .. of a definition typed
+            // fn(c: Counter, x: 'a) -> 'a", a message that leaves out the bound. Under
+            // a run-time bind the refused instance runs anyway: the JIT panics at
+            // fusion/kernel.rs:243 (an I64 in a String slot), and the node-walk
+            // produces nothing. Interface vals get FnType::sig_matches (module.rs:395);
+            // impl methods and default bodies need the same bound rule against
+            // method_sig_at. probe: design/review-2026-10-05/repro/x-diff-types-01.gx
+            // (x-diff-types-01)
             expected.check_contains(&ctx.env, &bind.typ).with_context(|| {
                 format!(
                     "method {} of impl {} for {} has type {}, the trait declares {expected}",
@@ -743,6 +818,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(core) = CoreTrait::of_id(def.id) {
             return self.lower_core_call(ctx, core);
         }
+        // CR claude for eric: [bug] A union of primitives (`[i64, string]`, `[i64,
+        // null]`) normalizes to one multi-flag `Type::Primitive`, not a `Type::Set`, so
+        // it skips this lowering and `find_impl` is asked for the whole union, while
+        // `trait_contains` (contains.rs:1407) accepts it member by member. `--check`
+        // and the LSP pass, then the build refuses with "no implementation of Show for
+        // [i64, string]"; `lower_trait_union` fails the same way on such a member of a
+        // Set self (`[i64, string, Counter]`). In a lambda bound at run time (reached
+        // by a dynamic call) the build passes and the call silently never produces,
+        // with only a log line, in every engine mode. Split a multi-flag primitive into
+        // one arm per flag, here and in `lower_trait_union`. probe:
+        // design/review-2026-10-05/repro/x-engine-seq-errors-04.gx
+        // (x-engine-seq-errors-04)
         if let Type::Set(members) = &self_t
             && !def.hole
         {

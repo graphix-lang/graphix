@@ -1,0 +1,25 @@
+// db2-15: an unencodable key or value makes a db call never reply, instead
+// of returning DbErr.
+//
+// DbInsertEv::prepare_args (stdlib/graphix-package-db/src/tree.rs:586)
+// returns None when encode_value fails, and CachedArgsAsync then queues
+// nothing: no eval, no reply. An abstract value (db::Db is impl_no_pack)
+// cannot be packed, yet Tree<string, db::Db> passes 'v: Concrete. Every
+// encode_key/encode_value/parse_batch_ops failure in tree.rs and txn.rs
+// takes the same path.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/db2-15.gx
+// expected: "insert replied: error:[\"DbErr\", ...]" (or the tree type
+//   refused at the check), then the control line
+// observed (HEAD c722befe, debug build): only "control insert replied: null";
+//   the first insert never produces anything
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/p.db")$;
+let t: db::Tree<string, db::Db> = db::tree(db, "a")$;
+let r = db::insert(t, "k", db);
+println("insert replied: [r]");
+let t2: db::Tree<string, i64> = db::tree(db, "b")$;
+let r2 = db::insert(t2, t ~ "k", 1);
+println("control insert replied: [r2]");
+sys::exit(sys::time::after_idle(duration:500.ms, r2 ~ 0));
+r

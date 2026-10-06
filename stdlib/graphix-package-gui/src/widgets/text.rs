@@ -80,6 +80,19 @@ impl<X: GXExt> super::GuiWidget<X> for TextW<X> {
         let content = self.content.t.as_deref().unwrap_or("");
         let mut t = widget::Text::new(content);
         if let Some(Some(sz)) = self.size.t {
+            // CR claude for eric: [bug] A `#size` of 0.0 reaches iced unchecked and
+            // panics cosmic-text in layout ("line height cannot be 0").
+            // text_input.rs:172, text_editor.rs:156, the checked checkbox at
+            // toggle.rs:113 and markdown's `#text_size` (markdown.rs:97) do the same.
+            // The panic happens on the main thread inside `GuiHandler::about_to_wait`,
+            // which has no guard, so the program dies; it also poisons iced's global
+            // font-system lock, so catching the panic would not save the next frame.
+            // One press at the left edge of a slider with the default `#min` of 0.0
+            // that drives the size is enough to trigger it, and a negative size does
+            // not panic but spins the frame at 100% CPU forever (cosmic-text's
+            // `shape_until_scroll` never returns). Check sizes (> 0 and finite) before
+            // they reach iced. probe:
+            // design/review-2026-10-05/repro/gui-widgets-b-02.rs (gui-widgets-b-02)
             t = t.size(sz as f32);
         }
         if let Some(Some(c)) = self.color.t.as_ref() {

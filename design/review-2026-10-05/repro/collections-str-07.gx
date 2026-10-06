@@ -1,0 +1,54 @@
+// collections-str-07: str::len counts bytes, str::sub indexes chars: the
+// stdlib TUI line editor (tui::line_edit) and the browser example break on
+// non-ASCII text.
+//
+// line_edit keeps its cursor as a char position (line_edit.gxi:2-3, one
+// step per `Char) and slices with str::sub, whose #start/#len are char
+// indexes (str mod.gxi:101-105), but sets and bounds the cursor with
+// str::len, which counts BYTES (str mod.gxi:98, lib.rs str_len). view()
+// sizes its mask and places its cursor cell by str::len too. The browser
+// example's backspace (book/src/examples/tui/browser_commands.gx:73-74, the
+// same code in ../netidx/netidx-tools/src/browser/browser.gx) is
+// str::sub(#len: str::len(c) - 1): a no-op on any command holding a
+// non-ASCII char.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-07.gx
+//          (identical output with --no-fusion; the str::len/str::sub values
+//          agree across engines and image modes under graphix-fuzz run)
+//
+// expected:
+//   abc bs: ab|2
+//   héé bs: hé|2  bs: h|1
+//   typed é, End: é|1  bs: |0
+//   view typed é: <é>|< >|<>
+//   masked é: *
+//   browser bs: aé -> a  éa -> é
+// observed:
+//   abc bs: ab|2
+//   héé bs: héé|4  bs: héé|3
+//   typed é, End: é|2  bs: é|1
+//   view typed é: <é>|<>|<>
+//   masked é: **
+//   browser bs: aé -> aé  éa -> éa
+use tui::{Line, Span, input_handler::{Event, KeyCode}, line_edit};
+
+let key = |c: KeyCode| -> Event `Key({code: c, kind: `Press, modifiers: [], state: []});
+let go = |s: line_edit::State, c: KeyCode| -> line_edit::State line_edit::step(s, key(c))$;
+let show = |s: line_edit::State| "[s.value]|[s.cursor]";
+let spans = |l: Line| select l.spans {
+    Array<Span> as a => str::join(#sep: "|", array::map(a, |s: Span| "<[s.content]>")),
+    string as s => s
+};
+let browser_bs = |c: string| str::sub(#start: 0, #len: str::len(c) - 1, c)$;
+let a1 = go(line_edit::state("abc"), `Backspace);
+let b1 = go(line_edit::state("héé"), `Backspace);
+let typed = go(line_edit::state(""), `Char("é"));
+let end = go(typed, `End);
+let masked = line_edit::view(#mask: "*", #focused: false, &typed);
+println("abc bs: [show(a1)]");
+println("héé bs: [show(b1)]  bs: [show(go(b1, `Backspace))]");
+println("typed é, End: [show(end)]  bs: [show(go(end, `Backspace))]");
+println("view typed é: [spans(line_edit::view(&typed))]");
+println("masked é: [spans(masked)]");
+println("browser bs: aé -> [browser_bs("aé")]  éa -> [browser_bs("éa")]");
+sys::exit(sys::time::after_idle(duration: 100.ms, 0))

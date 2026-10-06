@@ -79,6 +79,16 @@ pub(super) fn call_args(
 /// a tuple index, a bounds-checked array index / slice, a map lookup, or
 /// a numeric cast, each fallible one consumed by `$`. Misses are kept to
 /// a small fraction because a bottom program burns the campaign timeout.
+// CR claude for eric: [doc-drift] Stale rationale: the doc above says misses are kept
+// small because a bottom program burns the campaign timeout, and lines 531-532 say a
+// `/0` is slow to check. In fact a bottom program is an instant empty-trace agreement:
+// `{ let v0 = [i64:1, i64:2][5]$; let v1 = (i64:3 / i64:0); (v0, v1) }` agrees in about
+// 200 ms. The real cost of a miss is that one bottom blanks every reader of it.
+// GenCfg::max_lets (mod.rs:80-81) says a program has 0..=max_lets slots, but geo_slots
+// draws a geometric count with mean max_lets/2, capped at min(4 * max_lets, 48).
+// design/graphix_fuzz.md:49-50 names `gen_expr(target: Type)` and `find_producers`,
+// which do not exist: the code is gen_typed over GenType, with try_call, try_accessor
+// and try_hof as the producers. (fuzz-gen-a-08)
 fn try_accessor(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -346,6 +356,18 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // flat_map's callback returns ['b, Array<'b>] and the checker
             // binds 'b to the body without backtracking, so only a scalar
             // element body is unambiguous
+            // CR claude for eric: [test-gap] This arm is the only flat_map the
+            // generator draws, and its callback returns a scalar, so the splice is
+            // never generated. try_hof never draws array::filter_map or find_map (two
+            // of the eight native-loop HOFs) or the list twins, and try_map_builtin
+            // draws no Map HOF but map::filter. A flat_map whose callback returns
+            // nested arrays is where --check accepts what the build refuses
+            // (x-engine-collections-02), which Pair::Check would report if this arm
+            // drew one. These shapes reach the fleet only through mutation of the
+            // harvested fixtures, and map::union has no test or fixture anywhere. Add
+            // array-returning flat_map bodies, filter_map and find_map arms, and the
+            // list and map twins (map::map, map::fold, map::filter_map, map::union with
+            // overlapping keys). (x-engine-collections-11)
             2 if e.is_scalar() => {
                 let d_ty = types::scalar_type(rng);
                 let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);

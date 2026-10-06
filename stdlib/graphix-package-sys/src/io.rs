@@ -43,6 +43,16 @@ impl EvalCachedAsync for IoReadEv {
                 None => return errf!("IOError", "stream unavailable"),
             };
             let mut buf: LPooled<Vec<u8>> = LPooled::take();
+            // CR claude for eric: [bug] This allocates and zeroes n bytes before
+            // reading, and read_exact does the same at line 227, so the caller's n sets
+            // the allocation whatever the stream holds. n = u64:4611686018427387904
+            // aborts the process (SIGABRT, "memory allocation of ... bytes failed"). n
+            // >= 2^63 panics "capacity overflow" in the task, and that call site never
+            // answers again. n = 1 GiB on a 12-byte file peaks at 1 GB RSS, and a
+            // length prefix read from a peer and passed to read_exact lets the peer
+            // pick n. read may return fewer than n bytes, so its buffer can be capped;
+            // read_exact can grow as bytes arrive. probe:
+            // design/review-2026-10-05/repro/x-panics-12.gx (x-panics-12)
             buf.resize(n as usize, 0);
             match s.read(&mut buf).await {
                 Ok(n) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf[..n]))),
@@ -81,6 +91,15 @@ async fn line_reader(
             match s.read(&mut chunk).await {
                 // EOF. A trailing fragment with no newline is NOT a
                 // line and is dropped, exactly as `tail` would.
+                // CR claude for eric: [risk] The rationale above is false: `printf
+                // 'a\nb' | tail -n 1` prints b. The reader stops at EOF and does not
+                // follow the stream, so the held fragment is the stream's real last
+                // line, and it is lost. A file without a trailing newline, or a child
+                // running `printf 'first\nlast'`, yields only "first". BufRead::lines
+                // and tokio_util's LinesCodec::decode_eof emit that line. Emit `held`
+                // as a final line at EOF and update io.gxi:72-74, or keep the drop and
+                // delete the false comment. probe:
+                // design/review-2026-10-05/repro/sys-io-17.gx (sys-io-17)
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) => {
@@ -95,6 +114,14 @@ async fn line_reader(
         let mut out = LBATCH.take();
         let mut lines: LPooled<Vec<Value>> = LPooled::take();
         let mut start = 0;
+        // CR claude for eric: [perf] Each read starts the newline search over at offset
+        // 0 of `held`, rescanning the partial line already known to hold no '\n'. One
+        // S-byte line therefore costs about S²/128K compares: a single 32 MiB line took
+        // 2.4 s through lines_batched (16 MiB 0.9 s, 8 MiB 0.17 s), against 0.05 s for
+        // 32 MiB of 1 KiB lines. Start the first search at the length `held` had before
+        // this read's extend. `held` also has no cap, so a peer that never sends '\n'
+        // grows it without limit. A maximum line length, past which the reader returns
+        // an IOError, would bound a socket reader. (sys-io-10)
         while let Some(off) = held[start..].iter().position(|b| *b == b'\n') {
             let end = start + off;
             // Tolerate CRLF so a line framed on one platform reads the
@@ -178,6 +205,18 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         // One reader per instance, started by the first stream that
         // arrives. A stream is consumed as it is read, so re-arming on a
         // later delivery of the same handle would race the reader.
+        // CR claude for eric: [bug] The `started` latch runs one detached reader for
+        // the first stream and ignores every later delivery. When the argument becomes
+        // a different stream (a reconnect, a restarted child, a rotated file), this
+        // call keeps delivering the old stream's lines and never reads the new one. No
+        // handle to the task is kept, so neither a new stream nor `delete` stops the
+        // old reader: it reads into a dead id until EOF and races any later reader of
+        // the same stream for its bytes. Only a re-delivery of the same handle
+        // (`Arc::ptr_eq`) should be ignored. A different stream should abort the old
+        // reader and start a new one under a fresh id, and `delete` should abort it.
+        // probe: design/review-2026-10-05/repro/sys-io-08.gx (after `s` becomes b's
+        // stdout it prints a5..a8 and never a b line); the delete half:
+        // design/review-2026-10-05/repro/x-node-contract-03.gx. (sys-io-08)
         if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && !self.started
@@ -195,6 +234,17 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         }
     }
 
+    // CR claude for eric: [bug] delete only unrefs the id: the line_reader task that
+    // update spawned keeps the stream and reads it into the dead id until EOF, holding
+    // the stream's lock, its watch channel and a store entry. A fresh instance on the
+    // same stream (a regrown collection slot, a replaced dynamic callee, a re-reached
+    // recursion depth) then takes turns with it on the lock and gets every other line.
+    // Keep the spawn's AbortHandle and abort it here, as DbSubscribe and HttpServe do,
+    // and store_remove the id. Related: a started instance ignores a different stream
+    // that arrives later, so after the first of two streams is removed from an
+    // array::map, the remaining slot keeps reading the removed stream while the deleted
+    // slot's reader eats the other one. probe:
+    // design/review-2026-10-05/repro/x-node-contract-03.gx (x-node-contract-03)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
     }

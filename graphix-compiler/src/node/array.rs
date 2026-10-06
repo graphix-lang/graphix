@@ -127,6 +127,10 @@ fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
         && bytes.contains_with_flags(BitFlags::empty(), env, source)?)
 }
 
+// CR claude for eric: [readability] index has no doc; its line, 'The position index `i`
+// names in a sequence of `len` elements.', sits at 121 as the first line of
+// known_bytes' doc, so known_bytes is summarized by a sentence about index. Move it
+// here. (c-collection-09)
 pub(crate) fn index(len: usize, i: i64) -> Option<usize> {
     offset(len, i).filter(|j| *j < len)
 }

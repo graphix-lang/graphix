@@ -1,0 +1,33 @@
+// sys-io-04: fs watch: path() and events() on one Watch steal each other's
+// events. WatchStream::update removes the cycle's custom delivery for the
+// Watch's bind id (stdlib/graphix-package-sys/src/watch.rs:635,
+// Event::take_custom is a remove), and every reader of the Watch refs that
+// one id, so the first reader to update takes the event from the rest.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/sys-io-04.gx
+//   (same with --no-fusion, and with the image cache on)
+// expected: both readers see both events:
+//   path: DIR, events: {event: `Established, paths: ["DIR"]},
+//   path: DIR/f1, events: {event: `CreateFile, paths: ["DIR/f1"]}
+// observed (serial, every engine):
+//   path: DIR
+//   path: DIR/f1
+//   and no "events:" line. Declare `e` before `p` and `events` gets both
+//   events while `path` gets none; two `path(h)` readers: the second never
+//   fires.
+// observed with GRAPHIX_PAR=force: each event reaches exactly one reader,
+//   which one varies run to run and event to event, e.g.
+//   path: DIR
+//   events: {event: `CreateFile, paths: ["DIR/f1"]}
+use sys::fs::watch::{create, watch, path, events};
+let td = sys::fs::tempdir::create(null)$;
+let dir = sys::fs::tempdir::path(td);
+let w = create(null)$;
+let h = watch(#interest: [`Established, `Create], w, dir)$;
+let p = path(h);
+let e = events(h);
+println("path: [p]");
+println("events: [e]");
+let wr = sys::fs::write_all(#path: "[dir]/f1", sys::time::timer(duration:700.ms, false) ~ "hello")$;
+sys::exit(sys::time::after_idle(duration:1500.ms, wr ~ 0))

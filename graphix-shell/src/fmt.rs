@@ -57,6 +57,18 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.files {
         let res = (|| -> Result<bool> {
             let text = fs::read_to_string(path)?;
+            // CR claude for eric: [bug] The CLI discovers the config from the canonical
+            // path, the LSP (graphix-lsp/src/handlers/formatting.rs:42) from the path
+            // as opened, and gxfmt from the path as given, so a symlinked source is
+            // laid out by the config above its target here and by the one above the
+            // link in the editor: format-on-save and `graphix fmt --check` disagree on
+            // it. FormatConfig::discover also keeps `..` from std::path::absolute, so a
+            // relative `../x/y.gx` (gxfmt run over ../netidx) climbs the working
+            // directory's ancestors. One function from a file path to its config
+            // (absolute, lexically normalized, not canonical, the empty parent handled
+            // once) would serve all three callers. probe:
+            // design/review-2026-10-05/repro/t-format-resolver-11.py
+            // (t-format-resolver-11)
             let file = fs::canonicalize(path)?;
             let cfg = args.config(file.parent().unwrap_or(&file))?;
             let formatted = format_source(SourceKind::of_path(path), &text, &cfg)?;
@@ -64,6 +76,18 @@ pub fn run(args: Args) -> Result<()> {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);
             }
+            // CR claude for eric: [risk] format_source emits LF, so a CRLF file always
+            // counts as changed. `graphix fmt --check` lists every file of a CRLF
+            // checkout (core.autocrlf without this repo's eol=lf) without saying why,
+            // and `graphix fmt` silently rewrites the line endings. format_stdin's
+            // --check (line 41) fails CRLF input the same way, and a CRLF file with a
+            // raw string spanning lines is refused as a 'formatter bug'. Keep the
+            // input's newline style (in format_source, so stdin and the LSP share the
+            // fix), or document LF-only and name line endings in --check's report. The
+            // write at line 69 also truncates before writing, so a failed write leaves
+            // the source cut short; writing a sibling temp file and renaming it over
+            // the original avoids that. probe: printf 'let x = 1;\r\nx\r\n' > crlf.gx;
+            // graphix fmt --check crlf.gx (shell-19)
             let changed = *formatted != text;
             if changed && !args.check {
                 fs::write(path, formatted.as_bytes())?

@@ -18,6 +18,18 @@ const FIRST_CYCLE_WEDGE: &str = "{ let rec f = |v: i64| -> i64 f(v + i64:1); f(i
 
 /// Wedges only after producing a few values, so the wedge lands while
 /// the input loop is live.
+// CR claude for eric: [test-gap] This program never wedges. Each `s <- fold(..)` lands
+// next cycle and adds one activation, so every cycle completes and it keeps printing
+// `0` (about 1500 lines in 7 s) in both engines. A script that is not wedged exits on
+// the first SIGINT through the input loop's ctrl_c path whether or not the interrupt
+// works, and `alive` at 6 s holds only because the program never ends. So neither
+// later-cycle test pins that SIGINT frees a cycle spinning after the input loop is
+// live, nor the exit path's interrupt-before-clear order. A timer-gated wedge does: `{
+// let x = i64:0; x <- sys::time::timer(duration:1.s, false) ~ i64:1; let rec f = |n:
+// i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; f(x) }` prints one value,
+// spins at 100% CPU, and one SIGINT frees it in both engines. Assert that no new output
+// arrives while it is alive, and signal soon after the wedge, since the node-walk grows
+// about 450 MB/s. (tests-shell-compiler-06)
 const LATER_CYCLE_WEDGE: &str = "{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); \
      let m = x / i64:3; \
      let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, \

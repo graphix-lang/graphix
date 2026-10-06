@@ -1,0 +1,33 @@
+// collections-str-05: array::group never unbinds its synthesized n/x
+// bindings, so every deleted Group leaves two Binds in env.by_id.
+//
+// Group::init (stdlib/graphix-package-array/src/lib.rs:349-351) binds `n`
+// and `x` with genn::bind, and Env::bind_variable inserts each into the
+// global env.by_id; Group::delete (lib.rs:478) never calls
+// unbind_variable. Every other tick below builds 100 map slots, each
+// holding one Group, and the next tick deletes them all, so RSS should
+// stay flat.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-05.gx
+//
+// expected: VmRSS flat, as with core `filter(x, |v| v > 1)` in place of
+//           the group call (filter unbinds its `x`):
+//           95892, 98180, 99660, 100756 kB.
+// observed (HEAD c722befe, debug build): about +26 MB per 1000 ticks
+//           (50000 Groups, about 530 bytes each), without bound:
+//           144600, 171636, 199796, 223760 kB.
+// Attribution: with 'array_group bound under a 725-character module
+// path the growth rises to about 1300 bytes per Group, so each deleted
+// Group keeps its fresh `#fn` scope path once (both Binds share it);
+// 'sys_net_publish, built the same way (fresh scope, genn::bind,
+// genn::apply, a dynamically bound callback) but unbinding at delete,
+// stays flat under both the short and the long path.
+let clock = sys::time::timer(duration:1.ms, true);
+let n = count(clock);
+let xs = select n % 2 { 0 => [], _ => array::init(100, |i| i) };
+let ys = array::map(xs, |x| array::group(x, |n, v| n > 1));
+let probe = filter(n, |k| k % 1000 == 0);
+let st = sys::fs::read_all(probe ~ "/proc/self/status");
+let rss = array::filter(str::split(#pat: "\n", st$), |l| str::starts_with(#pfx: "VmRSS", l));
+sys::exit(sys::time::after_idle(duration:300.ms, take(#n: 1, skip(#n: 4050, clock)) ~ 0));
+rss

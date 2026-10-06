@@ -1,0 +1,23 @@
+// x-panics-12: sys::io::Read::read and read_exact allocate the requested
+// byte count before reading (stdlib/graphix-package-sys/src/io.rs:46 and
+// :227, `buf.resize(n as usize, 0)`), so the caller's n decides the
+// allocation, not the bytes the stream has.
+//
+// command (from the repo root):
+//   graphix --no-cache design/review-2026-10-05/repro/x-panics-12.gx
+//
+// expected: "read returned: <this file, base64>" (read returns at most n
+// bytes, fewer when fewer are available), then exit 0.
+//
+// observed (HEAD c722befe, debug build): nothing on stdout; stderr says
+// "memory allocation of 4611686018427387904 bytes failed" and the process
+// aborts (SIGABRT, exit 134). read_exact in place of read aborts the same
+// way (io.rs:227). With n = u64:18446744073709551615 the task panics
+// "capacity overflow" instead: the call never answers, and a later call
+// at the same site never runs. With n = u64:1073741824 the read returns
+// this file but the process peaks at 1082 MB RSS (59 MB with n = 4096).
+let f = sys::fs::open(`Read, "design/review-2026-10-05/repro/x-panics-12.gx")$;
+let r = sys::io::Read::read(f, u64:4611686018427387904);
+println("read returned: [r]");
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+r

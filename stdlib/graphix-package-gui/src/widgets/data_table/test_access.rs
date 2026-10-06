@@ -44,6 +44,14 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Inject a sparkline point directly, bypassing netidx; decimates
     /// like the runtime path.
+    // CR claude for eric: [structure] Push, history_seconds trim and decimate are
+    // written out three times: the dispatch task (subscriptions.rs:206-217),
+    // push_defaults_to_sparklines (:664-671), and this test-only copy, which has no
+    // trim. sparkline_decimation_caps_length and
+    // sparkline_decimation_preserves_extremes drive only this copy. Deleting the
+    // decimate call on either production path leaves those histories capped only by the
+    // time window, and both tests stay green. Write one push_sparkline_point(history,
+    // now, v, history_secs) in types.rs and call it from all three. (tests-ui-09)
     pub fn dt_push_sparkline(&self, row: &str, col: &str, when: Instant, v: f64) {
         let key = match self.sparkline_key_for(row, col) {
             Some(k) => k,

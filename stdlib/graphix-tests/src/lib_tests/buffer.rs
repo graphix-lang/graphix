@@ -27,6 +27,12 @@ run!(bytes_to_string_invalid, BYTES_TO_STRING_INVALID, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
 
+// CR claude for eric: [test-gap] The predicate only checks that the result is
+// non-empty, so a decode that drops the bad byte ("helo") passes. Return
+// buffer::to_string_lossy(b) and compare it in Rust with "he\u{FFFD}lo", which both
+// engines produce today. arith.rs:264 has the same gap: its comment says the rand let
+// evaluates eagerly, but its predicate's 99 comes out whether rand runs or not.
+// (tests-lib-b1-14)
 const BYTES_TO_STRING_LOSSY_INVALID: &str = r#"{
   let b = buffer::from_array([u8:104, u8:101, u8:255, u8:108, u8:111]);
   str::len(buffer::to_string_lossy(b)) > 0
@@ -117,6 +123,12 @@ const ENCODE_FIXED_SIZES: &str = r#"{
 }"#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The ASPIRE comment above, and the 12 others in this
+// file, say the body does not fuse while the fixture asserts FuseExpect::Jit. The
+// encode-only bodies fuse whole, and the decode bodies fuse everything except
+// buffer::decode, which has no fast-call entry (graphix-fuzz run). Delete them; most of
+// the 120 ASPIRE lines in this crate sit beside a Jit expectation the same way.
+// (tests-lib-b1-08)
 run!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(
         &a[..],

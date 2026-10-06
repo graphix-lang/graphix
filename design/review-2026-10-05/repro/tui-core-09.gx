@@ -1,0 +1,33 @@
+// tui-core-09: the display draws the whole tree once per update, not
+// once per cycle.
+//
+// display (stdlib/graphix-package-tui/src/lib.rs:787-815) draws before
+// every message it takes, and the shell forwards a cycle's batch one
+// update at a time (graphix-shell/src/lib.rs:477, process_update per
+// GXEvent), so each tick below is ten full renders, nine of them a
+// half-applied cycle; the liveness tick (lib.rs:796) adds an eleventh.
+//
+// command: in a pty (40x12) for 6.5 s, splitting the output stream at each
+//   ESC[?25l (ratatui hides the cursor once per draw):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-core-09.gx
+//
+// expected: one frame per tick, all ten lines changing together.
+// observed: 69 draws in 6.5 s; each tick is ten frames that rewrite one
+//   line each (row 1 shows "a 1" while rows 2-10 still show 0, and so on),
+//   then one empty frame for the liveness tick.
+use tui::{text::text, layout::{child, layout}};
+let clock = sys::time::timer(duration:1.s, true);
+let n = 0;
+n <- clock ~ n + 1;
+layout(#direction: &`Vertical, &[
+  child(#constraint: `Length(1), text(&"a [n]")),
+  child(#constraint: `Length(1), text(&"b [n]")),
+  child(#constraint: `Length(1), text(&"c [n]")),
+  child(#constraint: `Length(1), text(&"d [n]")),
+  child(#constraint: `Length(1), text(&"e [n]")),
+  child(#constraint: `Length(1), text(&"f [n]")),
+  child(#constraint: `Length(1), text(&"g [n]")),
+  child(#constraint: `Length(1), text(&"h [n]")),
+  child(#constraint: `Length(1), text(&"i [n]")),
+  child(#constraint: `Length(1), text(&"j [n]"))
+])

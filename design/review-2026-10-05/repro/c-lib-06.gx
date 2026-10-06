@@ -1,0 +1,20 @@
+// c-lib-06: a statement that fails its check cancels its references at
+// the runtime (Rt::unref_var), for pairs the runtime never registered,
+// instead of in pending_refs. check_and_fuse drops the deferred
+// references on Err (graphix-compiler/src/lib.rs:1934), and abandon_stmt
+// drops them again before it deletes the node (lib.rs:2245-2246).
+// Module::compile_source and read_registration delete first, then drop.
+//
+// command: GRAPHIX_DBG_VARS=1 graphix --no-cache design/review-2026-10-05/repro/c-lib-06.gx 2>&1 | grep UNREF_VAR
+//
+// expected: no UNREF_VAR line. The failed statement registered nothing
+// with the runtime, so deleting it cancels its two references (`x` and
+// `y`) in pending_refs.
+//
+// observed (HEAD c722befe, debug build): the type error (exit 1), then
+// two UNREF_VAR lines for `x` and `y` under the script's expression id,
+// with no REF_VAR line for either pair. GXRt ignores an unknown pair, so
+// nothing else shows.
+let x = 1;
+let y = x + 2;
+let z: string = y

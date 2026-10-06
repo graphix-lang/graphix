@@ -1,0 +1,27 @@
+// c-lambda-04: #[sync] on a higher-order function is judged only by the
+// instances the first analysis reaches.
+//
+// LambdaDef::intrinsic_effect's doc (graphix-compiler/src/node/lambda.rs:472)
+// says calls through fn-typed parameters do not contribute. They do: a
+// resolved callback's instance joins the HOF instance's facts
+// (analysis.rs callee_facts) and every instance joins the definition's
+// (infer_effects), as lang::attributes::sync_on_async_instance pins.
+// check_def_assertions then retires the assertion at the first analysis that
+// reaches the definition, so an instance bound later at run time is never
+// judged.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-lambda-04.gx
+//
+// expected: "#[sync]: this function is async", as the same program reports
+//   when the async callback reaches `apply` through a static call (compile
+//   error), or when the run-time call is the only call (replace the last line
+//   with `g(|x| sys::time::after_idle(duration:1.ms, x), 1)`: the error on
+//   stderr once the call binds)
+// observed (HEAD c722befe, debug build, fusion on and --no-fusion): prints
+//   (2, 1), no assertion error
+#[sync]
+let apply = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x);
+let clock = sys::time::timer(duration:10.ms, false);
+let g = apply;
+g <- clock ~ apply;
+(apply(|x| x + 1, 1), g(|x| sys::time::after_idle(duration:1.ms, x), 1))

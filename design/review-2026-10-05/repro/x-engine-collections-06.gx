@@ -1,0 +1,19 @@
+// x-engine-collections-06: array::dedup keeps 0.0/-0.0 and opposite-sign
+// NaNs, which == and map keys treat as one value.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-06.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-engine-collections-06.gx
+//
+// expected: [0, NaN, 1] true true 1 1 (dedup agrees with ==: one zero, one NaN)
+//
+// observed (both engines): [0, -0, NaN, NaN, 1] true true 1 1
+//
+// netidx-value's Hash for F32/F64 (../netidx/netidx-value/src/op.rs:59-72)
+// hashes -0.0 by its raw bits and keeps the sign bit in its NaN mask, while
+// PartialEq says -0.0 == 0.0 and NaN == NaN, so the AHashSet<Value> in
+// fc_dedup never finds the equal key. x86's 0.0 / 0.0 is a negative NaN.
+let mk = |z: f64| (z / z, -(z / z), -z);
+let (nan, pnan, nz) = mk(0.0);
+let xs = [0.0, nz, nan, pnan, 1.0];
+println("[array::dedup(xs)] [nan == pnan] [nz == 0.0] [map::len({nan => 1, pnan => 2})] [map::len({0.0 => 1, nz => 2})]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

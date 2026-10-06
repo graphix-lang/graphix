@@ -1,0 +1,30 @@
+// core-aux-11: #[sync] accepts a function whose async callback runs under a builtin HOF
+// (opt::map); #[async] on the same function is refused.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-aux-11.gx
+//
+// expected: compile error "#[sync]: this function is async — its body reaches an async
+//   builtin or an async callee", which the same program reports with
+//   `array::map([v$], ..)` or a Graphix `let apply = |v, g| g(v$)` in place of `opt::map`
+// observed (HEAD c722befe, debug build, fusion on and --no-fusion): compiles and prints
+//   (1, 4): f(1)'s output arrives 4 clock ticks (~50 ms) after its trigger at init.
+//   With #[async] in place of #[sync] the program is refused: "#[async]: this function is
+//   sync — nothing in its body defers an output to a later cycle".
+// Every Effect::Sync builtin that takes a callback does the same: opt::{map, flat_map,
+//   filter, or_else, ok_or_else, is_some_and, is_none_or}, core filter, array::group.
+//
+// Same cause, the implicit #[sync] of a core-trait method: this program compiles and
+//   prints 1 (both engines), where the body `sys::time::after_idle(duration:20.ms,
+//   Ord::cmp(a.0, b.0))` is refused and a sync callback in opt::map prints 3:
+//     type K = Abstract<i64>;
+//     impl Ord for K { let cmp = |a, b| opt::map(a.0, |x: i64| sys::time::after_idle(duration:20.ms, Ord::cmp(x, b.0)))$ };
+//     sys::exit(sys::time::after_idle(duration:100.ms, 0));
+//     map::len({K(1) => 1, K(2) => 2, K(3) => 3})
+#[sync]
+let f = |v: [i64, null]| opt::map(v, |n: i64| sys::time::after_idle(duration:50.ms, n));
+let r = f(1);
+let clock = sys::time::timer(duration:10.ms, true);
+let ticks = 0;
+ticks <- clock ~ ticks + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, r ~ 0));
+(r, r ~ ticks)

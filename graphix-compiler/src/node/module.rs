@@ -53,6 +53,17 @@ pub(crate) fn compile_use_item(
         let scope_l = &scope.lexical;
         match anchor {
             None => bail!("a glob needs a path prefix"),
+            // CR claude for eric: [bug] Splitting one `super::*` into a glob source per
+            // chain level makes Env::lookup_at (graphix-types/src/env.rs:714) treat the
+            // levels as rival globs. Any name declared at two levels, which is ordinary
+            // shadowing, is then reported as ambiguous, even though `use super::x`
+            // walks the chain innermost-first and takes the inner name. The outer name
+            // cannot be named at all, so the advice "import one explicitly" offers no
+            // choice. The error names internal `#do`/`#fn` scopes (and an empty name
+            // for the root under --check), and for a type it shows up as "undefined
+            // type T". Register the chain glob as one source that resolves
+            // innermost-first before it is compared with other globs. probe:
+            // design/review-2026-10-05/repro/t-env-07.sh (t-env-07)
             Some(UseAnchor::Chain(a)) => {
                 // a `super::*` anchor may span block levels: capture
                 // each level as its own glob source
@@ -128,6 +139,18 @@ pub(crate) fn compile_use_items(
     if reexport {
         bail!("re-exports (`pub use`) are not yet supported")
     }
+    // CR claude for eric: [bug] Each item is installed in UseItem::sorted order before
+    // the next item's prefix resolves through the scope's imports. So alphabetical
+    // order decides whether a sibling sees a rename (or glob) that rebinds the
+    // statement's root: `{ use a::{b, c as a}; b }` takes b from `a`, while `{ use
+    // a::{z, c as a}; z }` silently takes z from `a::c`. Resolve every item's prefix
+    // against the scope as it stood before the statement, or refuse an item that
+    // rebinds its own statement's root (rustc takes both from `a::c`). bind_sig_item
+    // (line 210) loops the same way. A .gxi `use` compiles a second time when it is
+    // spliced into the body, so a lone `use sys::net as sys;` in a .gxi is refused as
+    // already imported. probe:
+    // design/review-2026-10-05/repro/t-format-resolver.r2-05.sh
+    // (t-format-resolver.r2-05)
     for item in items {
         compile_use_item(env, pending, pos, ori, scope, replace, item)?;
     }
@@ -336,6 +359,22 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
+            // CR claude for eric: [bug] This publishes the rep of every abstract
+            // typedef with a body under a re-exported `mod sub;`. A gxi body is already
+            // public from bind_sig, so the only reps this changes are an interface-less
+            // descendant's own `type T = Abstract<..>`. As a result, a parent gxi that
+            // lists `mod sub;` makes `outer::sub::T(5)`, `.0` and `T(p)` legal from
+            // anywhere, while the same tree without the parent gxi, or a top-level
+            // interface-less module, refuses them: adding an interface widens what the
+            // child exposes. design/nominal_abstract_types.md calls an interface-less
+            // `Abstract<..>` module-private, but book/src/modules/interfaces.md:379 and
+            // the doc on Env::publish_abstract_rep call it public. For module-private,
+            // delete this loop and fix those two docs; for public, register an
+            // interface-less module's reps public in TypeDef::compile and fix the
+            // design table; either way, pin both nestings. probe:
+            // design/review-2026-10-05/repro/x-typecheck-patterns-10.sh (nested_gxi and
+            // deep print "5 6"; nested_plain and flat refuse).
+            // (x-typecheck-patterns-10)
             let exported: LPooled<Vec<AbstractId>> = inner_env
                 .typedefs
                 .iter()
@@ -388,10 +427,35 @@ fn check_sig<R: Rt, E: UserEvent>(
             for id in ids.drain(..) {
                 let Some(inner) = ctx.env.by_id.get(&id) else { continue };
                 let name = inner.name.clone();
+                // CR claude for eric: [bug] Every top-level `let` of a name is paired
+                // with the interface `val` of that name. So a body that shadows an
+                // exported name (`let x = ..; let x = ..`) proxies both bindings to the
+                // one exported id. The export then carries whichever binding fired
+                // last, and a write to it also reaches the shadowed binding.
+                // proxy_lambda_defs resolves `m::f(..)` to the shadowed lambda when the
+                // last `f` is not a lambda literal, and the sig is also checked against
+                // the shadowed binding's type, which gives a spurious mismatch. Only
+                // the effective (last) binding of each name should be proxied and
+                // checked. probe: design/review-2026-10-05/repro/c-module-traits-03.sh
+                // (`val f: fn(x: i64) -> i64` over `let f = |x: i64| -> i64 x + 1; let
+                // g = |x: i64| -> i64 x + 100; let f = g`: `m::f(1)` is 2, and 101
+                // without the gxi). (c-module-traits-03)
                 let Some(proxy_id) = binds.get(&name) else { continue };
                 let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
                 let typ = if single.is_some() { bind.typ() } else { &inner.typ };
                 proxy_bind.typ.unbind_tvars();
+                // CR claude for eric: [bug] check_sig attaches no site to any of its
+                // errors: this val mismatch, the typedef bails (440-480), the trait
+                // bail (563) and "sig item .. is missing an implementation" (589). So
+                // every interface conformance error is placed at the parent's `mod m`
+                // statement in the parent's file. The implementing let/type/trait
+                // (n.spec()) and the .gxi item (si.pos/si.ori) are both in hand. The
+                // LSP shows the diagnostic at that `mod` line with only the chain leaf,
+                // which here is 'type mismatch: signature has i64, implementation has
+                // string': the val's name is only in this `.with_context` string, and
+                // nothing appears in m.gx or m.gxi. An ordinary body error in the same
+                // module is placed in m.gx (case 5 of the probe). probe:
+                // design/review-2026-10-05/repro/x-errors-06.py (x-errors-06)
                 proxy_bind.typ.sig_matches(&ctx.env, typ).with_context(|| {
                     format_compact!(
                         "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
@@ -516,6 +580,24 @@ fn check_sig<R: Rt, E: UserEvent>(
                             .trait_def(trait_id)
                             .cloned()
                             .expect("bound by bind_sig");
+                        // CR claude for eric: [bug] An implementation fulfils this
+                        // declaration whenever its head merely overlaps it
+                        // (register_impl pairs by heads_overlap). The declared method
+                        // bindings are then proxied here without comparing the
+                        // implementation's head, bounds or method types to the
+                        // declaration's, as the `val` arm does with sig_matches. So
+                        // `impl<'a> Show for Box<'a>;` in the gxi is fulfilled by `impl
+                        // Show for Box<i64> { .. }`, consumers are typed against the
+                        // wider declaration, and `--check` accepts
+                        // `Show::show(m::Box("hello"))`. A static module is then
+                        // refused at elaboration (an instance at Box<string> of a
+                        // definition typed Box<i64>). A dynamic module runs the
+                        // Box<i64> body on a Box<string> and returns a string typed
+                        // i64, and a fused consumer panics at fusion/kernel.rs:243.
+                        // Require the implementation's head and bounds to be equivalent
+                        // to the declared ones before the proxies are wired; probe:
+                        // design/review-2026-10-05/repro/c-module-traits-04.sh
+                        // (c-module-traits-04)
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
@@ -746,6 +828,15 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let task = crate::typ::tvar::new_task();
         let _task = crate::typ::tvar::InTask::enter(task);
+        // CR claude for eric: [perf] The module keeps a whole clone of ctx.env, but
+        // only its lexical fields are ever read: with_restored_mut swaps them,
+        // export_sig reads them, the image writes them with lexical_encode, and a warm
+        // start runs on a lexical-only decode. The clone's global maps (by_id, names,
+        // trait_defs, impls, ...) pin this version for the module's lifetime, so every
+        // later write to a node they still share copies that node. Env::lexical()
+        // exists to avoid exactly this cost, and lambda definitions already use it. Use
+        // ctx.env.lexical() here. sig_env (line 727) has the same problem, and the
+        // image writes it as a whole Env (line 927). (t-env-10)
         let mut env = ctx.env.clone();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
@@ -797,6 +888,41 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         };
         let pending = mem::take(&mut ctx.pending_imports);
         let census = ctx.attr_census.lock().len();
+        // CR claude for eric: [bug] The loaded body compiles and checks here without
+        // entering Level::TOP, so every cell it creates takes the thread's default
+        // Level::GENERIC (tvar.rs:141); only compile_top and check_and_fuse enter TOP.
+        // A top-level `let z = never()` is then a scheme cell, tvar::lower claims
+        // nothing into it, and a definition that writes z is generalized and copied at
+        // every call instead of staying monomorphic in it. A body the static check
+        // refuses (`let f = |x| { z <- x; x }; f("s"); f(1)`, exported as `val w: i64`)
+        // loads: the JIT panics at fusion/kernel.rs:243 and the runtime dies, the
+        // node-walk delivers "s" as an i64, and an annotated variant gets the internal
+        // "an instance at ... of a definition typed ..." error. Enter
+        // `AtLevel::enter(Level::TOP)` around the compile and check, as compile_top
+        // does. probe: design/review-2026-10-05/repro/t-tvar-04.gx (t-tvar-04)
+        // CR claude for eric: [bug] A loaded body never gets its check's
+        // statement-boundary checks: neither drain_pending_settles nor
+        // check_pending_names runs here. With two or more statements (the one-statement
+        // path drains, after typecheck1), a catch(e: T) that does not cover its region
+        // loads and its handler receives errors outside T, and an undefined type name
+        // in a typedef loads. The undrained settles stay in the root settle frame, and
+        // the next one-statement load drains them, refusing a valid module with the
+        // earlier module's error. A forked cycle does not see that frame, so serial and
+        // forked runs diverge (graphix-fuzz check reports it). The check's settles
+        // should drain after check_body and before typecheck1, in a settle frame of the
+        // load's own, followed by the name check. probe:
+        // design/review-2026-10-05/repro/c-module-traits-02.gx (c-module-traits-02)
+        // CR claude for eric: [bug] A reload accepts a hidden abstract type (`type C;`
+        // in the sig) whose `Abstract<..>` differs from the previous load's. AbstractId
+        // comes from the path alone, so a value the consumer minted under the old
+        // source reaches the new code, which treats its payload as the new type. The
+        // node-walk then gets wrong values or bottoms silently: `str::len(c.0)` on an
+        // old i64 payload never produces and logs nothing. When the new code hands such
+        // a payload back to a consumer's fused kernel, FusedKernel::stage panics and
+        // the runtime dies. Either refuse a reload that changes a hidden
+        // representation, or derive the id from the path and the representation. probe:
+        // design/review-2026-10-05/repro/x-engine-seq-errors-10.gx
+        // (x-engine-seq-errors-10)
         let res = self.compile_inner(ctx, &exprs).and_then(|()| {
             crate::check_pending_imports(ctx)?;
             self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx))
@@ -838,6 +964,19 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 exprs.iter(),
             )
         });
+        // CR claude for eric: [bug] This restores builtins_allowed before check_body,
+        // so the sandbox flag only covers the loaded source's top-level statements.
+        // Every lambda body and labeled default is compiled later with builtins
+        // allowed: at its definition check (Lambda::typecheck0), in check_defaults,
+        // when an instance elaborates, and at run-time binds. So a module under
+        // `sandbox whitelist [core]` or `sandbox blacklist [sys]` can define and call
+        // any host builtin by putting the stub in a lambda: `let outer = |p: string| ->
+        // string { let rd = |path: string| -> Result<string, `IOError(string)>
+        // 'sys_fs_read_all; rd(p)$ }` reads files, and the same wrapper around
+        // 'sys_fs_write_all writes them. The permission has to follow the definition,
+        // not this compile window: for example, record it where the lambda literal is
+        // compiled and hold it around every compile of its body and defaults. probe:
+        // design/review-2026-10-05/repro/c-module-traits-01.gx (c-module-traits-01)
         ctx.builtins_allowed = builtins_allowed;
         (self.nodes, self.catches) = compiled?;
         if let Body::Dynamic { .. } = &self.body {

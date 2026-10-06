@@ -271,6 +271,15 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
 
 /// The child nodes of a view in a deterministic order; a kernel's are
 /// its input feeders.
+// CR claude for eric: [structure] node_children is a second exhaustive NodeView child
+// walk beside fusion::for_each_node_inner (fusion/mod.rs:602-780), and the two have
+// drifted. This one skips a static module's statements (m.nodes; source() is None for
+// Body::Static), select guards and impl prototype sites. So NodeShape::contains(..)
+// cannot find a kernel inside a module with an interface, a guard or an impl's
+// prototypes, and describe_node prints such a module as a leaf. One child step on
+// NodeView, with a kernel's feeders as the only difference between the walks, would
+// serve both. binary_operands, which analysis.rs:1320 uses, belongs beside that step
+// rather than in this test module. (c-cost-misc-08)
 fn node_children<'a, R: Rt, E: UserEvent>(
     view: &NodeView<'a, R, E>,
 ) -> SmallVec<[&'a Node<R, E>; 4]> {

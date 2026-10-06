@@ -1,0 +1,34 @@
+// f-select-03: the option-form type test matches any non-null value when
+// neither the tested type nor the option's inner type is a register scalar.
+//
+// emit_arm_cond (graphix-compiler/src/fusion/emit/select.rs:1006-1011)
+// admits a single-primitive type predicate over a Nullable scrutinee when
+// `nullable_inner(scrut).and_then(scalar_prim) == PrimType::from_typ(pt)`.
+// For `string` over `[Array<i64>, null]` or `[datetime, null]` both sides
+// are None, and the option form (:1016) emits `disc != NULL`: "is a string"
+// becomes "is not null". The bind reads with the predicate's kind
+// (graphix_nullable_string, "" on a mismatch), so `s` is "".
+// The definition's check accepts the arm ('a may be string) and an instance
+// takes its definition's types, so the instance's dead arm reaches emission
+// (GRAPHIX_NO_SUBST=1 re-checks the instance and refuses it instead).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-select-03.gx
+//          (and the same with --no-fusion)
+//
+// expected (what --no-fusion prints; --check passes):
+//   (7, 7, 102)
+// observed (fusion on, the default; cold and warm image alike):
+//   (100, 100, 102)
+// The `[string, null]` control (102) agrees. graphix-fuzz check of the same
+// call over a scheduled input reports DIVERGENCE (interp 7, jit 100).
+let f = |x: ['a, null]| -> i64 select x {
+  string as s => str::len(s) + 100,
+  null as _ => 0,
+  _ => 7
+};
+let t = sys::time::timer(duration:10.ms, false);
+let a: [Array<i64>, null] = t ~ [1];
+let d: [datetime, null] = t ~ datetime:"2020-01-01T00:00:00Z";
+let c: [string, null] = t ~ "ab";
+println((f(a), f(d), f(c)));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

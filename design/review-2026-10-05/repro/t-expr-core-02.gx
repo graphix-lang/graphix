@@ -1,0 +1,46 @@
+// t-expr-core-02: AbstractId::of hashes the lexical scope text, and a
+// function body's scope carries minted ids (`#fn<LambdaId>`, `#do<ExprId>`),
+// so a type declared in a function body splits: once per instance of an
+// enclosing function (each recompiles the inner lambda literal with a fresh
+// LambdaId), and again after a warm start (the image relocates both ids, so
+// an instance compiled at run time hashes another path than the restored
+// ones). The checker gives every instance the one type its definition's
+// check settled.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/t-expr-core-02.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/t-expr-core-02.gx
+//          (cold vs warm: the same without --no-cache, twice, over an empty
+//          XDG_CACHE_HOME; the program never exits on its own)
+//
+// expected: (true, true), cold and warm (one identity per definition:
+//   design/nominal_abstract_types.md "Identity"; Env::undeftype's "every
+//   compile of one source typedef registers the same one").
+//
+// observed: cold (false, true), both engines; warm (the second plain run,
+//   which maps the image the first wrote) (false, false). graphix-fuzz
+//   check: DIVERGENCE — image bug: the restored program differs from the
+//   cold one (interp) interp/cold: Trace([0:[false, true]]) interp/warm:
+//   Trace([0:[false, false]]). Printing a T value whose id is not the
+//   static type's falls back to the untyped form: `(outer(1), outer(1))`
+//   prints [T(1), T(1)].
+//
+// variant, check accepts and the build refuses (graphix-fuzz check:
+// "DIVERGENCE — the check accepted what the build refused"):
+//   let outer = |x: i64| { let inner = |y: i64| { type T = Abstract<i64>;
+//     let get = |t: T| t.0; get(T(y)) }; inner(x) }; outer(1)
+//   --check: exit 0; run: type mismatch fn(t: T) -> '_..: unbound does not
+//   contain fn(t: T) -> i64
+let outer = |x: i64| {
+    let inner = |y: i64| {
+        type T = Abstract<i64>;
+        T(y)
+    };
+    inner(x)
+};
+let mk = |x: i64| {
+    type U = Abstract<i64>;
+    U(x)
+};
+let a = mk(1);
+let h = select a { _ => mk };
+(outer(1) == outer(1), a == h(1))

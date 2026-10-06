@@ -1,0 +1,35 @@
+// c-callsite-07: an omitted labeled default is checked against the call
+// site's view of the parameter (CallSite::checked_default, self.ftype), not
+// against the callee's own parameter, which is the only place the default's
+// value goes. Through a fn-typed parameter whose labeled formal is narrower
+// than the callee's, the check cannot see the callee and passes, and
+// elaboration refuses the callee's default.
+//
+// graphix = a debug build of HEAD c722befe. From the repo root:
+//   graphix --check design/review-2026-10-05/repro/c-callsite-07.gx
+//   graphix --no-cache design/review-2026-10-05/repro/c-callsite-07.gx
+//   graphix-fuzz check design/review-2026-10-05/repro/c-callsite-07.gx
+//
+// expected: accepted by both, prints 2 (g gets n = "hello", which its
+// [i64, string] parameter holds; `g(1)` prints 2).
+//
+// observed: `--check` exits 0; the run is refused (exit 1):
+//   in the instance of h(g) at this call site .. in: f(1) .. in: "hello"
+//   type mismatch i64 does not contain string
+// GRAPHIX_ELAB_AUDIT=1 reports it at typecheck1; graphix-fuzz check:
+//   DIVERGENCE - the check accepted what the build refused.
+// With a fn-typed let instead of a parameter (`let f: fn(?#n: i64, x: i64)
+// -> i64 = g; f(1)`) the check sees g and refuses the call the same way,
+// while `f(#n: 3, 1)` runs and prints 2.
+//
+// The check never judges the defaults of a function passed through a
+// fn-typed parameter, also where refusing is right: with
+//   let g = 'a: Number |#n: 'a = 3, x: 'a| -> 'a x + n;
+//   let h = |f: fn(?#n: f64, x: f64) -> f64| f(1.5);
+//   h(g)
+// `--check` exits 0 and the build refuses `3` ("f64 does not contain
+// i64"); graphix-fuzz check reports the same DIVERGENCE. (`g(1.5)` alone is
+// refused by the check.)
+let g = |#n: [i64, string] = "hello", x: i64| -> i64 x + 1;
+let h = |f: fn(?#n: i64, x: i64) -> i64| f(1);
+h(g)

@@ -69,6 +69,15 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
+<!-- CR claude for eric: [doc-drift] must_reject.md numbers eight families, and
+graphix-fuzz/src/mustreject.rs:26-37 has ten `Family` ids, not seven. The fuzzer docs
+have drifted too. graphix_fuzz.md, the doc CLAUDE.md points at for the fuzzer, never
+describes the forked pair (`Pair::Par`, the `par`/`jit_par` runs, the
+`GRAPHIX_FUZZ_PAR=0` switch). It also says `check-one` prints one `VERDICT` line, but
+`check-one` answers by exit status 0/7/10 (graphix-fuzz/src/main.rs:840-853). The `Pair`
+doc comment (graphix-fuzz/src/lib.rs:1219-1221) says there are two pairs besides
+`Engine`, but there are eight. A reader of graphix_fuzz.md cannot learn how the
+forked-vs-serial check works or how to turn it off. (x-doc-drift-14) -->
 | `must_reject.md` | Must-reject mutation from the base's types (rigid consumers, seven families, verdicts); labeled/optional argument generation for every lane |
 | `parallel_compile.md` | the compile context and its forks; compile tasks own the cells they create and the check decides every cell; parallel code generation and statement elaboration; the plan for instances and module bodies |
 | `parallel_eval.md` | forked independent subtrees of a cycle on the evaluation pool, serial-equivalent by branch views merged in order; fork decisions measured per site (`Auto`, the default); `#[parallel]`/`#[serial]`; kernel loops as chunks |

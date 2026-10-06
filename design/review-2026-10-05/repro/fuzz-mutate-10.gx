@@ -1,0 +1,17 @@
+// fuzz-mutate-10: let-inline moves a value that raises (`x?`, or a call
+// whose callee raises) under a later `catch`, so the raise reaches that
+// handler instead of the one it had: a false let-inline typeflip
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-10.gx
+// (base: graphix --check accepts, warning that the raise is not caught)
+// expected: typemorph: no flips. let-inline's only catch guard is the
+// reverse case, a value holding a `catch` moved into a seq body
+// (typemorph.rs:270-276).
+// observed: exit 1,
+// TYPEFLIP fuzz-mutate-10.gx let-inline#1: N: type mismatch Error<`A> does not
+// contain Error<ErrChain<`B>>
+//   mutant: { let x: [i64, Error<`B>] = 1; let k = 2; let r = { catch(e: Error<`A>) 0; (x?) + k }; r }
+// The refusal is the language rule (a catch installs its handler for the
+// rest of its block): `graphix --check` on the mutant refuses it at the
+// catch. The same flip with `let f = |x: [i64, Error<`B>]| x?; .. let v =
+// f(x)` in place of `let v = x?` (let-inline#2, mutant `.. (f(x)) + k ..`).
+{ let x: [i64, Error<`B>] = 1; let v = x?; let k = 2; let r = { catch(e: Error<`A>) 0; v + k }; r }

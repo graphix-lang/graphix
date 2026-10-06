@@ -1,0 +1,33 @@
+// f-select-02: `?`/`$` over an inner that is always an error (or always
+// null) emits the Value-shaped placeholder (NULL|TAINT, iconst.i64 0)
+// whatever the qop node's own type (fusion/emit/flow.rs:579,
+// emit_qop_always_bad). The result is bottom, so a consumer binds that type
+// (a guard to bool, an arm or an argument to f64/string) and emits for it.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-select-02.gx
+//
+// expected: the guard is a consulted bottom, so the select is bottom and
+// nothing prints (what `--no-fusion` does); `--check` exits 0.
+//
+// observed: the guard's `band v65, v72` ands the i64 0 with an i8, the
+// Cranelift verifier refuses it at link, and the link panics:
+//   thread 'tokio-rt-worker' panicked at
+//     graphix-compiler/src/fusion/emit/jit.rs:1187:13:
+//     the JIT could not link emitted code: compile: Verifier errors
+//   Error: loading initial modules ... channel closed  (exit 1)
+// `graphix-fuzz check` on this file aborts (core dumped, exit 134).
+//
+// The same verifier panic, swapping the `let f` line:
+//   let f = |x: i64| (x > i64:0) && (error(`E))$;
+//   let f = |x: i64| !((error(`E))$);
+//   let f = |x: f64| (error(`E))$ + x;   (with x = f64:5.0)
+//   let f = |x: i64| select x { 0 => (error(`E))$, n => n > 3 };
+//   let g = |b: bool| b && true; let f = |x: i64| g((error(`E))$) || (x > i64:3);
+//   let f = |x: i64| select x { n if (null)$ => n, _ => i64:7 };
+// and a SEGFAULT (exit 139; --no-fusion: nothing, the unhandled error logged)
+// when a string merge takes the 0 as an ArcStr, with x = i64:-5:
+//   let f = |a: i64| select a > i64:0 { true => "pos", false => error(`Neg(a))? };
+let f = |x: i64| select x { n if (error(`E))$ => n, _ => i64:7 };
+let x = i64:5;
+x <- never(x);
+f(x)

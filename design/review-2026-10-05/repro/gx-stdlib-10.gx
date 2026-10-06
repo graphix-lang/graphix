@@ -1,0 +1,29 @@
+// gx-stdlib-10: rand::rand typechecks for i8/i16/u8/u16 (and unions) but
+// never produces.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-10.gx
+// (same with --no-fusion; rand is Effect::Sync and never fuses)
+//
+// expected: six lines, one per call (u8, i8, u16, i16, union, i64), each a
+// value in [0, 10): `'a: [Int, Float]` admits every one of these types and
+// the doc promises a number every time #clock updates.
+// observed: only `i64 N` prints, then the program exits 0. The u8, i8, u16
+// and i16 calls fall to `_ => None` in Rand::update's gen_cases
+// (stdlib/graphix-package-rand/src/lib.rs:73-75) and ride the phantom
+// forever, with nothing logged; so does the call whose 'a settled to
+// [i64, f64] (start I64(0), end F64(10.0) match no arm).
+let a = rand::rand(#start: u8:0, #end: u8:10, #clock: 1);
+let b = rand::rand(#start: i8:0, #end: i8:10, #clock: 1);
+let c = rand::rand(#start: u16:0, #end: u16:10, #clock: 1);
+let d = rand::rand(#start: i16:0, #end: i16:10, #clock: 1);
+let s: [i64, f64] = 0;
+let e: [i64, f64] = 10.0;
+let u = rand::rand(#start: s, #end: e, #clock: 1);
+let k = rand::rand(#start: 0, #end: 10, #clock: 1);
+println("u8 [a]");
+println("i8 [b]");
+println("u16 [c]");
+println("i16 [d]");
+println("union [u]");
+println("i64 [k]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -1,0 +1,32 @@
+// c-analysis-branch-05: block plans are built from a block-local call graph
+// at run time, so self-calls and (on a warm image start) every static call
+// are opaque.
+//
+// plan_block_explained (graphix-compiler/src/analysis.rs:1056) collects the
+// call graph from the block's children only; local_summary (analysis.rs:910-961)
+// makes a call whose static target that graph lacks opaque (reads and writes
+// everything, ordered). A self-call names the enclosing instance, which no walk
+// down from the children reaches, and on a warm start every static site is
+// Callee::Imaged with no apply when the plan is made (node/mod.rs:688), so
+// every statement after a `let` starts a run of its own.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-analysis-branch-05.gx
+//
+// expected: the two `let`s are independent static calls, as the operands of
+//   `#[parallel] (fib(n - 1) + fib(n - 2))` are (that form builds and prints 55);
+//   the program builds and prints 55.
+// observed (HEAD c722befe, debug build): the build is refused:
+//   "#[parallel] has nothing to run in parallel: statement 2 reads through a
+//   reference or a call the compiler cannot resolve". Without the attribute,
+//   GRAPHIX_PAR=force GXDBG_SEQPLAN=1 graphix --no-cache --no-fusion prints
+//   "SEQPLAN opaque call fib(n - 1) ... static=true applied=none" per plan.
+//
+// warm start: `let a = g(n); let b = h(n); a + b` over two static lambdas, run
+//   twice with GXDBG_SEQPLAN=1 --no-fusion and a cache: the cold run plans both
+//   calls as known, the warm run prints "SEQPLAN opaque call g(n) ...
+//   static=true applied=none" for each, so the block never forks.
+let rec fib = |n: i64| -> i64 select n < 2 {
+  true => n,
+  false => #[parallel] { let a = fib(n - 1); let b = fib(n - 2); a + b }
+};
+fib(10)

@@ -89,6 +89,17 @@ impl Client {
         self.root.join(file)
     }
 
+    // CR claude for eric: [test-gap] The harness spells every URI with the server's own
+    // path_to_uri, so client and server agree by construction: a client spelling that
+    // differs (VS Code percent-encodes `[ ] ( ) ! $ & ' + , ; = @`) never reaches the
+    // server, and a root holding `[` cannot start here (path_to_uri gives None and the
+    // unwraps here and in start_at panic), though the server panics in
+    // ServerState::diagnostic on one. `at` counts chars while the server runs the
+    // UTF-16 default, which is why fixtures must be ASCII, so no test crosses
+    // decode/encode on non-ASCII text. Spell URIs as VS Code does, add a root with a
+    // space and brackets, and count marker columns in UTF-16. Also unpinned: a file in
+    // two projects, a root that stops being one after a save, a lone .gxi, a shebang
+    // script. (lsp-17)
     fn uri(&self, file: &str) -> Uri {
         path_to_uri(&self.path(file)).unwrap()
     }
@@ -166,6 +177,16 @@ impl Client {
     }
 
     /// A request with arbitrary params: the error message, if refused.
+    // CR claude for eric: [structure] raw_request repeats request's receive loop but
+    // drops publishDiagnostics. The server flushes dirty roots before answering a
+    // request, so a raw_request after an edit swallows that check's diagnostics and a
+    // later files_with_diagnostics() reads stale state. warnings() and underlined()
+    // also carry the same offset closure: share one receive-until-response loop that
+    // records diagnostics, and one offset fn. A clean first check publishes nothing
+    // (graphix-lsp/src/state.rs:191-199), so files_with_diagnostics() == [] cannot tell
+    // checked-clean from never-checked, and stdlib_packages_check rests on that alone.
+    // Have it also assert something only a finished check answers, such as document
+    // symbols for mod.gx. (tests-shell-compiler-15)
     pub fn raw_request(
         &mut self,
         method: &str,

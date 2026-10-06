@@ -1,0 +1,17 @@
+// fuzz-gen-b-10: mutate_schedule's epoch removal can drop the only epoch
+// that carries an input, and the mutant then reads an undeclared input.
+//
+// graphix-fuzz/src/mutate.rs:378 removes a random epoch and nothing
+// re-checks the inputs; the driver declares inputs from the epochs
+// (Schedule::inputs, schedule.rs:55), which is why reactive.rs:227-234
+// re-adds any input no epoch carries. This file is the mutant op 1 makes
+// from the schedule `in0=i64:2 in1=i64:3; in0=i64:5` by removing its first
+// epoch. Removing the sole epoch of a one-epoch schedule (about a quarter of
+// generated schedules) leaves no input declared at all.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/fuzz-gen-b-10.gx
+// expected: a mutant that runs (every input the body reads is declared)
+// observed: CompileErr `in1 not defined` in every mode; the verdict is
+// AGREE, so the run is wasted
+// schedule-v1: cap=80 events=640; in0=i64:5
+{ let v1 = i64:0; v1 <- in1 ~ (v1 + in1); (v1 + in0) }

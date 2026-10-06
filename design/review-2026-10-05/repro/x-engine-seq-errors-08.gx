@@ -1,0 +1,33 @@
+// x-engine-seq-errors-08: a select that lists every combination of two
+// variant unions is refused as non-exhaustive, and a `_` arm after it is
+// refused as unreachable, so the exhaustive form has no accepted spelling.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-engine-seq-errors-08.gx
+//
+// expected: accepted (the four arms cover ([`L, `N], [`L, `N]); CLAUDE.md:
+//   variant heads pool per position inside composite patterns); a run prints 3.
+// observed (--check and a run alike):
+//   missing match cases type mismatch [(`L, `L), (`L, `N), (`N, `L), (`N, `N)]
+//   does not contain ([`L, `N], [`L, `N])
+// with `_ => 0` added as a fifth arm:
+//   unreachable arm: the earlier arms already cover the whole scrutinee,
+//   unused match cases
+// The same pair of refusals with payload arms ((`Circle(r0), `Square(s)) ..
+// over two [`Circle(f64), `Square(f64)]), with `P(`A, `X) .. `P(`B, `Y) over
+// `P([`A, `B], [`X, `Y]), with {x: `A, y: `A} .. over {x: [`A, `B], y: [`A, `B]},
+// and with (`L, _), (`N, `L), (`N, `N). Only replacing one explicit arm by `_`
+// is accepted. Outside select, passing (a, b) to a parameter typed
+// [(`L, `L), (`L, `N), (`N, `L), (`N, `N)] is refused the same way.
+//
+// Select::check_coverage (graphix-compiler/src/node/select.rs:308) checks the
+// union of the arms' types first, and Type::set_covers_by_distribution_inner
+// (graphix-types/src/typ/contains.rs:1248) lets only one position distribute;
+// check_dead_arms trusts the literal pool, which sees the four arms complete.
+type LN = [`L, `N];
+let f = |a: LN, b: LN| select (a, b) {
+  (`L, `L) => 1,
+  (`L, `N) => 2,
+  (`N, `L) => 3,
+  (`N, `N) => 4
+};
+f(`N, `L)

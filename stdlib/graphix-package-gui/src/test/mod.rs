@@ -88,6 +88,21 @@ impl GuiTestHarness {
 
     /// Drain all pending reactive updates into the widget tree.
     /// Returns true if any updates were processed.
+    // CR claude for eric: [structure] drain waits for a quiet window (100 ms with no
+    // batch, 50 ms after the last), where the TUI harness drains to
+    // GXHandle::wait_idle: each drain here sleeps 50-100 ms against wait_idle's 3-6 ms,
+    // and viewport_metrics_update_on_resize spends 2.1 s in its 20 drains. Under a
+    // multi_thread runtime (stack_children_follow_rotation) a reply that comes more
+    // than 100 ms after the call is lost; the current_thread tests cannot lose one this
+    // way, since the runtime finishes its cycles on the drain's own thread before the
+    // timer is seen. find_bind_id, wait_for_update, compile_named_callable and
+    // get_watched are verbatim copies of graphix-package-tui/src/testing.rs, watch and
+    // call_callback nearly so, theme_test.rs repeats the setup and
+    // graphix-tests/src/lib_tests/callable.rs has a third find_bind_id, so a fix to one
+    // copy misses the others (wait_idle is in the TUI's only). One shared core in
+    // graphix_package_core::testing fixes both; the drain loops that wait for netidx
+    // values then need next_update or wait_until, as the TUI's do. probe:
+    // design/review-2026-10-05/repro/tests-ui-06.rs (tests-ui-06)
     async fn drain(&mut self) -> Result<bool> {
         let mut changed = false;
         let timeout = tokio::time::sleep(Duration::from_millis(100));
@@ -167,6 +182,21 @@ impl GuiTestHarness {
                 }
                 // Host-handled in production; tests call the widget
                 // helpers directly.
+                // CR claude for eric: [test-gap] The comment above is wrong. Production
+                // does not handle ColumnResize* in the host: event_loop.rs:406-414
+                // sends them to on_message like every other message, and
+                // DataTableW::on_message (data_table/mod.rs:524-539) turns a move into
+                // the on_resize Call. Dropping them here means no test drives a drag
+                // through that arm. Deleting its shell.publish, or inverting its
+                // is_column_resizing guard, keeps every test green, and
+                // on_resize_fires_on_drag calls the helpers directly and checks only `>
+                // 100.0` where the answer is 180.0. Forward these messages to
+                // on_message like the rest, and make on_resize_fires_on_drag a real
+                // drag (drag_horizontal over the header's resize handle) asserting
+                // 180.0. The render.rs:471-473 doc ("the message drain filters") and
+                // the GuiWidget::is_column_resizing forwarding default
+                // (widgets/mod.rs:200), which nothing calls on a container, are
+                // leftovers of the same design. (tests-ui-07)
                 Message::ColumnResizeStart(_)
                 | Message::ColumnResizeMove(_)
                 | Message::ColumnResizeEnd => {}
@@ -182,6 +212,16 @@ impl GuiTestHarness {
     }
 
     /// Call `view()` on the widget.
+    // CR claude for eric: [test-gap] Every *_renders test in canvas_test.rs and
+    // chart_test.rs calls this and drops the element, and
+    // InteractionHarness::process_events (:438) builds and updates a UserInterface but
+    // never draws. So canvas.rs draw_shape never runs for any shape, and the
+    // candlestick, error-bar, 3D, legend and styled-mesh chart bodies never run. Only
+    // fresh_chart_redraws_an_inherited_cache and markers_draw_on_every_series_kind call
+    // Program::draw. A panic in one of those bodies would take down a GUI program while
+    // these tests stay green. Add a draw step (ui.draw after update in
+    // InteractionHarness, or Program::draw on chart and canvas roots as
+    // chart_test.rs:342-348 does) and make the *_renders tests call it. (tests-ui-08)
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.widget.view()
     }
@@ -435,6 +475,18 @@ impl InteractionHarness {
 
     /// Build a UserInterface, feed events, and return the messages the
     /// widgets produced.
+    // CR claude for eric: [test-gap] This rebuilds the event loop's frame by hand, and
+    // dispatch_calls copies its message drain (already differing: it drops the
+    // ColumnResize messages the loop passes to the widget), so no test drives
+    // about_to_wait. The loop's departures from iced's protocol therefore cannot fail.
+    // It never sends window::Event::RedrawRequested, so iced buttons, checkboxes,
+    // togglers and text inputs never set a status and draw Disabled. It never forwards
+    // ModifiersChanged, so text_input's Ctrl+C/X/V/A never fire. It also presents
+    // without a clear color, keeps the cursor Available after CursorLeft, and applies
+    // messages after the draw. Extract the per-window frame into one function the loop
+    // and this harness share, and pin it: an enabled button resolves Status::Active,
+    // Ctrl+V into a focused text_input with a stub clipboard yields on_input, and
+    // CursorLeft fires a mouse_area's on_exit. (gui-core-18)
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
         let element = self.inner.widget.view();
         let cache = std::mem::take(&mut self.cache);
@@ -445,6 +497,18 @@ impl InteractionHarness {
         let cursor = mouse::Cursor::Available(self.cursor_position);
         let (_state, _statuses) =
             ui.update(events, cursor, &mut self.renderer, &mut clipboard, &mut messages);
+        // CR claude for eric: [test-gap] Apart from two direct Program::draw calls in
+        // chart_test, no GUI test draws: this loop lays out and routes events but never
+        // calls `ui.draw`, and the *_renders tests in canvas_test, chart_test and
+        // widgets_test only build the element tree (for a chart or canvas, just
+        // `Canvas::new(self)`). So canvas draw_shape, every chart mode but Numeric, the
+        // data table's SparklineCanvas and every widget's draw run in no test.
+        // markers_draw_on_every_series_kind checks plot_info, which draw.rs sets before
+        // the mesh and series are drawn, and chart draw errors are only logged, so it
+        // sees a panic but not the error its doc names. Call `ui.draw` here after
+        // `update` with the headless renderer this harness holds, route the *_renders
+        // tests through the same render, and make chart draw errors visible to a test.
+        // (tests-ui.r2-05)
         self.cache = ui.into_cache();
         messages
     }
@@ -508,6 +572,14 @@ impl InteractionHarness {
         all
     }
 
+    // CR claude for eric: [dead] click_center, click_at, InteractionHarness::viewport
+    // (478) and InteractionHarness::before_view (473) have no callers, nor does
+    // DataTableW::dt_snapshot_value_at (widgets/data_table/test_access.rs:150), which
+    // copies data_table_snapshot's cell lookup; each is hidden by #[allow(dead_code)].
+    // The allows on `compiled` (38), GuiTestHarness::before_view (192), wait_until
+    // (199), InteractionHarness::drain (452) and resize (459) cover items that are
+    // used. Delete the five helpers and every one of these allows, so the compiler
+    // reports the next helper that goes dead. (tests-ui.r2-16)
     #[allow(dead_code)]
     fn click_center(&mut self) -> Vec<Message> {
         let center = Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0);

@@ -1,0 +1,19 @@
+// c-callsite-05: Widening::misfit drops the variables an argument holds wider
+// when another variable it holds is incomparable, so the verdict on a call
+// over a multi-variable formal depends on argument order.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-callsite-05.gx
+//
+// expected: accepted, 'x and 'y both settle to [i64, f64] (the widest
+// argument per variable). The other five orders of the same three
+// arguments are accepted: g((1, 1), (3, i), (i, 2.0)) runs
+// ((1, 1), (3, 1), (1, 2)).
+//
+// observed: exit 1,
+//   type mismatch ('x: i64, 'y: [i64, f64]) does not contain ([i64, f64], f64)
+// at (i, 2.0): probing it widened 'x to [i64, f64] but 'y (f64 against
+// i64) was incomparable, so misfit returned before binding 'x and the
+// deferred re-check met 'x still i64.
+let g = |a: ('x, 'y), b: ('x, 'y), c: ('x, 'y)| (a, b, c);
+let i: [i64, f64] = 1;
+g((1, 1), (i, 2.0), (3, i))

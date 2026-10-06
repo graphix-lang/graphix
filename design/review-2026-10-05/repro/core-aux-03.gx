@@ -1,0 +1,53 @@
+// core-aux-03: queuefn leaks every deleted instance: the wrapper def stays in
+// lambda_defs, and fid's store entry and the wrapper's arg binds are never freed.
+//
+// QueueFn::build_lambda registers the wrapper with ctx.wrap_lambda
+// (stdlib/graphix-package-core/src/queuefn.rs:305), which inserts it into
+// ctx.lambda_defs holding a ctx.env.clone() (queuefn.rs:288); nothing removes
+// it. QueueFn::delete (queuefn.rs:435-437) only unrefs fid, so fid's store
+// entry (queuefn.rs:376, holding f) stays too. WrapperApply::delete
+// (queuefn.rs:146-148) never unbinds the qa{i} binds genn::bind made
+// (queuefn.rs:461) nor removes their store entries (queuefn.rs:101);
+// genn::SynthCall::delete does both. mk runs once per slot of an array that
+// regrows 100 slots every other cycle, so 100 queuefns are made and deleted
+// per regrowth; the program prints (n, live slots, VmRSS) every 2 s and exits
+// after 20 s.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-aux-03.gx
+//
+// expected (a deleted slot's state goes with it: the header of
+//   stdlib/graphix-tests/src/lib_tests/leaks.rs; "shrink = delete"): RSS flat
+//   after warm-up, as it is with `let q = |y: i64| -> i64 y + 1;` in mk
+//   (64.9 -> 75.1 MB from n=902 to n=8186).
+// observed (HEAD c722befe, debug build):
+//   (337, 0, ["VmRSS:\t  324916 kB"])
+//   (655, 0, ["VmRSS:\t  624752 kB"])
+//   (933, 0, ["VmRSS:\t  925172 kB"])
+//   ...
+//   (2375, 0, ["VmRSS:\t 2568268 kB"])
+//   (2643, 0, ["VmRSS:\t 2875296 kB"])
+//   about 22 KB per queuefn instance, linear and unbounded; the same with
+//   GRAPHIX_PAR=off --no-fusion (343 MB -> 3.17 GB by n=2087).
+// variants of mk, KB leaked per instance:
+//   `x` in place of `q(x)` (wrapper built, never called): ~10
+//   f a shared top-level `inc` in place of the literal, not called: ~5
+//     (the lambda_defs entry; fid's store entry then pins a shared f)
+//   f a shared top-level `inc`, called: ~16 (the qa binds add ~11)
+//   `never<fn(y: i64) -> i64>()` as f (no wrapper built): ~0.17, flattening
+let clock = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let mk = |x: i64| {
+  let q = queuefn(#trigger: clock, |y: i64| -> i64 y + 1);
+  q(x)
+};
+let xs = select n % 2 {
+  0 => array::init(100, |i| i),
+  _ => []
+};
+let live = array::len(array::map(xs, |x| mk(x)));
+let tick = sys::time::timer(duration:2.s, true);
+let status = sys::fs::read_all(tick ~ "/proc/self/status")$;
+let rss = array::filter(str::split(#pat: "\n", status), |l| str::starts_with(#pfx: "VmRSS", l));
+sys::exit(sys::time::timer(duration:20.s, false) ~ 0);
+status ~ (n, live, rss)

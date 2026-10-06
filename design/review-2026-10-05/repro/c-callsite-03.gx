@@ -1,0 +1,36 @@
+// c-callsite-03: a run-time bind (build_bound) compiles the defaults a
+// site omits but never elaborates them (no typecheck1), so a trait call
+// in a default is never dispatched: its function node is the trait's
+// dispatcher, which holds no value, and the default is bottom forever.
+// The static bind elaborates the same default and works.
+//
+// graphix = a debug build of HEAD c722befe. From the repo root:
+//   graphix --no-cache design/review-2026-10-05/repro/c-callsite-03.gx
+//
+// expected (lines in any order), then "done":
+//   static: int 5
+//   recursive: int 5
+//   slots: ["5:1", "5:2"]
+//   dynamic: 5:1
+// observed, also with --no-fusion and GRAPHIX_PAR=off, nothing logged:
+//   static: int 5
+//   "done"
+// Replacing both trait calls with string literals prints all four lines.
+// graphix-fuzz check on the recursive case alone says AGREE (both
+// engines produce nothing).
+trait Show { val show: fn(self) -> string };
+impl Show for i64 { let show = |x| "int [x]" };
+let rec f = |#s = Show::show(5), x: i64| -> string select x {
+  0 => s,
+  x => f(x - 1)
+};
+let g = |#s = Display::fmt(5), x: i64| "[s]:[x]";
+let pick = |b: bool| select b { true => g, false => g };
+let h = pick(true);
+let top = f(#s: "top", 1);
+println("static: [f(0)]");
+println("recursive: [top]");
+println("slots: [array::map([1, 2], g)]");
+println("dynamic: [h(1)]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+"done"

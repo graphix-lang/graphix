@@ -1,0 +1,30 @@
+// x-expr-walks.r2-05: a seq trigger's destructuring let drops the
+// trigger's type annotation, so `seq let {x, ..}: P = t { .. }` is refused.
+//
+// design/seq_blocks.md §4: `trigger := let pat [: T] = expr`. The lowering
+// (graphix-types/src/expr/seq.rs trigger_snapshot, line 198) puts `: P` on
+// the generated `seqtv` value let only and destructures the run's value with
+// `let {x, ..} = seqgo<id>` (no annotation). A partial struct pattern needs
+// its let's own annotation (node/pattern.rs: "non exhaustive struct matches
+// require type annotations"), so the documented form is refused. The seqq
+// form (desugar_let, line 145: `let pat = seqbind<id>`) fails the same way.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/x-expr-walks.r2-05.gx
+//          (--check is enough; the refusal is at compile time)
+//
+// expected: accepted, prints 2, exits. Both `let {x, ..}: P = t; x + 1` and
+//   `seq let p: P = t { p.x + 1 }` are accepted and print 2, and so is the
+//   hand-lowered machine with `let {x, ..}: P = seqgo` in place of
+//   `let {x, ..} = seqgo`.
+//
+// observed:
+//   0: at: line: 28, column: 9 .., in: let { x, .. } = seqgo4611686018427393..
+//   1: non exhaustive struct matches require type annotations
+// with `seqq` in place of `seq`:
+//   0: at: line: 28, column: 9 .., in: let { x, .. } = seqbind461168601842739..
+//   1: match error { x: i64, y: i64 } can't be matched by { x: '_..: unbound }
+type P = {x: i64, y: i64};
+let t: P = {x: 1, y: 2};
+let r = seq let {x, ..}: P = t { x + 1 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

@@ -126,6 +126,18 @@ where
         spaces1().with(string("for")).with(spaces1()).with(typ()),
         // A following `{` may belong to an enclosing form: commit only
         // once it reads as a method block.
+        // CR claude for eric: [structure] The enclosing form this attempt serves is
+        // `select impl T for X { arms }`, an impl as a select scrutinee, which the
+        // compiler refuses ("an impl is not an expression"). Only the print round-trip
+        // proptest produces it, because select! takes any leaf, impl_decl included
+        // (expr/test.rs:1398), as an unparenthesized scrutinee. Every real impl pays
+        // for it: an error inside a method body backtracks the whole block, and the
+        // report loses its Unexpected/Expected lines ("the parser could not continue
+        // past this point", where the same body in a `let` says what was expected).
+        // Keep declaration forms out of the generator's scrutinee positions (or
+        // parenthesize them, as loose_needs_parens does for operands) and drop the
+        // attempt, so a `{` after an impl head commits to the method block. probe:
+        // design/review-2026-10-05/repro/t-parser-b-05.gx (t-parser-b-05)
         spaces().with(optional(attempt(between(
             token('{'),
             sptoken('}'),

@@ -1,0 +1,24 @@
+// ide-tooling.r2-09: the tree-sitter grammar eats an operator glued to a
+// typed literal.
+//
+// grammar.js:805-820 offers `_bare_value` and `_value_extension` after every
+// `T:` ascription; their characters include `+ / =` (base64 for `bytes:`)
+// and `-` before a digit, so the scanner (src/scanner.c) swallows the
+// operator and its operand as value text. The real parser stops at the end
+// of the number.
+//
+// command: graphix --check design/review-2026-10-05/repro/ide-tooling.r2-09.gx
+//          cd ide/tree-sitter-graphix && npx tree-sitter parse ../../design/review-2026-10-05/repro/ide-tooling.r2-09.gx
+// expected: --check passes; tree-sitter gives binary_expression nodes, no ERROR.
+// observed: --check passes; tree-sitter gives ERROR at `a`, `b` and `c`, and
+//           `d` and `e` reduce to one opaque (type_ascription (primitive_type))
+//           with the operator and operand gone. The committed fuzz pin
+//           graphix-fuzz/findings/bottom-scrutinee-jun2026/02_inline_bottom_scrutinee.gx
+//           errors the same way.
+let x = 2;
+let a = i64:4/i64:2;
+let b = i64:1+i64:2;
+let c = i64:1==i64:2;
+let d = i64:1+x;
+let e = i64:5-3;
+(a, b, c, d, e)

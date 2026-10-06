@@ -1,0 +1,39 @@
+// x-builtin-effects-05: dbg, log and sys::time::now are Stateless(None),
+// so they re-print or resample at every arm re-entry.
+//
+// `c` is true at n = 1, 3, 5. x, y and z never change. An arm that holds
+// only Stateless calls skips sleep (analysis::arm_sleeps_on_deselect), and
+// select.rs enters it again as a birth (init without wake_init), where a
+// standing argument reads FIRED. The effect runs again with no input fire.
+// println is Sync, so its arm sleeps and the wake reads y STALE.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-05.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-builtin-effects-05.gx
+//
+// expected (both engines): each print once, at the first entry (the
+//   catch-up of the init fire no arm read): "dbg(x): 5" once, "7" once,
+//   "dbg(z): 9" once; the println(t) line shows ONE timestamp at all three
+//   entries (`now` fires only when its trigger does; book: "return the
+//   current time each time trigger updates").
+// observed (HEAD c722befe, debug build):
+//   default (JIT):  "dbg(x): 5" 3 times, "7" once, "dbg(z): 9" once,
+//                   3 different timestamps.
+//   --no-fusion:    "dbg(x): 5" 3 times, "7" once, "dbg(z): 9" 3 times,
+//                   3 different timestamps.
+//   The engines disagree on dbg(z): under the JIT the `100` in its arm is a
+//   FusedKernel, which node_facts counts as ASYNC, so that arm sleeps.
+//   log(#dest: `Stdout, x) in arm `a` prints 3 times too. Adding
+//   `let q = once(c);` to arm `t` (so it sleeps) gives one timestamp.
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let x = 5;
+let y = 7;
+let z = 9;
+let c = select n { 1 => true, 3 => true, 5 => true, _ => false };
+let a = select c { true => dbg(#dest: `Stdout, x), false => 0 };
+let b = select c { true => { println(y); y }, false => 0 };
+let d = select c { true => { dbg(#dest: `Stdout, z); 100 }, false => 0 };
+let t = select c { true => sys::time::now(x), false => datetime:"2000-01-01T00:00:00Z" };
+println(t);
+sys::exit(select n { 7 => 0, _ => never() })

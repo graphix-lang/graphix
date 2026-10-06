@@ -193,6 +193,19 @@ macro_rules! slider_widget {
             }
 
             fn view(&self) -> IcedElement<'_> {
+                // CR claude for eric: [bug] value, min and max here, and the step at
+                // line 214, are cast to f32. So iced's Slider and VerticalSlider run
+                // over f32 even though they accept f64, and every value on_change
+                // delivers is rounded to f32. A 0.05 step from 0 reaches the program as
+                // 0.05000000074505806, and book/src/examples/gui/custom_palette.gx then
+                // shows "Brightness: 0.05000000074505806". With step 1, ArrowUp past
+                // 16777216 rounds back to the current value, iced does not publish an
+                // unchanged value, and the slider sticks. Fix: build the sliders over
+                // f64 by dropping the four `as f32` casts and sending `Value::F64(v)`.
+                // probe: design/review-2026-10-05/repro/gui-widgets-b-06.rs (copy it
+                // into stdlib/graphix-package-gui/tests/; its iced_f64_control case
+                // shows f64 sliders deliver 0.05 and step past 2^24).
+                // (gui-widgets-b-06)
                 let val = self.value.t.unwrap_or(0.0) as f32;
                 let min = self.min.t.unwrap_or(0.0) as f32;
                 let max = self.max.t.unwrap_or(100.0) as f32;
@@ -210,6 +223,15 @@ macro_rules! slider_widget {
                         }
                         None => Message::Nop,
                     });
+                // CR claude for eric: [bug] A null `#step` sets no step, so iced's
+                // default step of 1.0 applies: a slider over 0..1 without `#step` can
+                // only send 0 or 1, but book/src/ui/gui/slider.md says null means
+                // continuous. A step of 0 or NaN reaches iced unchecked and makes every
+                // click inside the track send the max. A range whose min is above its
+                // max leaves the slider inert. Give null a step fine enough to be
+                // continuous (or change the book), and ignore a step that is not finite
+                // and positive; vertical_slider shares this code. probe:
+                // design/review-2026-10-05/repro/gui-widgets-b-10.rs (gui-widgets-b-10)
                 if let Some(Some(step)) = self.step.t {
                     sl = sl.step(step as f32);
                 }

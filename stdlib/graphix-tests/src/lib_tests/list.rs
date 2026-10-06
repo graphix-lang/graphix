@@ -30,6 +30,17 @@ const LIST_SINGLETON: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The 34 `// ASPIRE: Jit ..` and `// None: ..` lines in
+// list.rs, array.rs and core.rs sit on fixtures annotated FuseExpect::Jit, so each
+// comment contradicts its annotation. Some are also false: this body fuses whole (one
+// region, both fast calls), and `all` (core.rs:158) has a fast-call entry (fc_all),
+// with its fixture fusing whole. Other comments misdescribe their fixtures: core.rs:792
+// (hold is Effect::Sync, not Async), core.rs:171 ([1..6] is Array<i64>, not
+// heterogeneous), core.rs:501 (the triggers arrive one per cycle together with xs, not
+// on init), array.rs:1091 (the predicate is a select, not `==`), array.rs:1291 (the
+// leaves are i64, not nullable), array.rs:1019 (equal interp and jit values cannot
+// prove drop-exactly-once). Delete the ASPIRE/None lines, put #[native] where fusion is
+// the point, and correct or delete the others. (tests-lib-a-12)
 run!(list_singleton, LIST_SINGLETON, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -62,6 +73,14 @@ const LIST_TAIL_NONEMPTY: &str = r#"
 "#;
 
 // ASPIRE: Jit — composite/value cross-kernel call args.
+// CR claude for eric: [structure] list_tail_nonempty and list_uncons_nonempty (91)
+// match the cons-cell layout `[2, [3, []]]`, which design/list_native.md says is
+// private and free to change. A change of representation would break them even though
+// no program behaves differently. Assert through the API instead:
+// `list::to_array(list::tail(list::from_array([1, 2, 3]))$)` gives [2, 3]. LIST_NIL (6)
+// and LIST_IS_EMPTY_TRUE (115) are the same program, and LIST_LEN (168) and
+// LIST_FROM_ARRAY_LEN (272) differ only in length; delete one of each pair.
+// (tests-lib-a-17)
 run!(list_tail_nonempty, LIST_TAIL_NONEMPTY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -465,6 +484,15 @@ run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
 
 // A heterogeneous list with a Fn member flowing through find into
 // Number-constrained arith is rejected.
+// CR claude for eric: [test-gap] The comment says the Fn member reaches the fold's
+// Number-constrained `acc + x`. In fact the program is refused earlier, at the find
+// callback's `x > 10` ('cannot compare [i64, null, fn(..)] with i64'). Since
+// `matches!(v, Err(_))` accepts any error, the fold's check could regress with this
+// test still green. With `|x| true` as the find callback, the refusal is the fold's
+// ('arithmetic is fn('a: Number, 'a) -> 'a'); use that callback and assert on the error
+// text. The unit's nine other expect-Err fixtures (array_map2, array_fold1,
+// array_group1/2, array_init4, filter1, list_map/fold/init_type_err) also accept any
+// error, so a renamed builtin would still pass them. (tests-lib-a-09)
 const LIST_FIND_HET_FN_FOLD_TYPE_ERR: &str = r#"
 {
   let a = array::init(3, |i| {

@@ -1,0 +1,33 @@
+// x-engine-seq-errors-02: a trait method used as a value (let alias,
+// struct field, impl method bound to a dispatcher, HOF argument through
+// an alias) passes the check and never produces, in both engines.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-02.gx
+//          (same with --no-fusion; `--check` exits 0 with nothing printed)
+//
+// expected: all five lines (or the check refuses the four value uses):
+//   direct: desc1
+//   let alias: desc2
+//   struct field: desc3
+//   map over alias: ["desc4"]
+//   impl alias: desc5
+//
+// observed (both engines, no warning logged): only
+//   direct: desc1
+// then 0 and the exit. The dispatcher binding `Desc::desc` never holds a
+// value; only a call whose function node is the dispatcher itself, or a
+// HOF argument written as `Desc::desc`, is resolved statically.
+trait Desc { val desc: fn(self) -> string };
+trait Show { val show: fn(self) -> string };
+type A = Abstract<i64>;
+impl Desc for A { let desc = |a| "desc[a.0]" };
+impl Show for A { let show = Desc::desc };
+let d = Desc::desc;
+let ops = {f: Desc::desc};
+println("direct: [Desc::desc(A(1))]");
+println("let alias: [d(A(2))]");
+println("struct field: [(ops.f)(A(3))]");
+println("map over alias: [array::map([A(4)], d)]");
+println("impl alias: [Show::show(A(5))]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

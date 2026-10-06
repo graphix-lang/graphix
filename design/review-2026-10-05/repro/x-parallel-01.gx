@@ -1,0 +1,57 @@
+// x-parallel-01: ORDERED is honoured only in block plans: queuefn calls in
+// forked constructor fields, call arguments and operator operands race.
+//
+// Each queue releases one queued call per clock tick, oldest first, and its
+// callback appends the released value to its own log. Serially the first call
+// of each group runs at once and the rest queue left to right, so every log
+// is [1, 2, 3, 4, 5, 6]. `#[parallel]` makes the tuple, the call's arguments
+// and the operands fork in the default Auto mode; the wrapper sites then take
+// the shared queue's lock in thread order. The build accepts all three
+// attributes although every pair of siblings reaches the same ordered call.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-parallel-01.gx
+//          (default mode, GRAPHIX_PAR unset), then again with GRAPHIX_PAR=off
+//
+// expected: ([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]) in
+// every mode: a forked cycle computes what the serial node-walk does, and two
+// subtrees that both reach an ordered call keep their serial order
+// (design/parallel_eval.md §1, §3.2, §6; CLAUDE.md "Parallel evaluation").
+// `#[parallel]` should be refused here, as it is over a block whose
+// statements all call q (`#[parallel] let r = { q(1); q(2); q(3) }` fails
+// to build: "nothing to run in parallel: statement 2 ...").
+//
+// observed: GRAPHIX_PAR=off: the expected value (4 of 4 runs). Default: a new
+// permutation of each log on every run (7 of 7), e.g.
+//   ([6, 4, 1, 3, 2, 5], [4, 1, 6, 5, 3, 2], [5, 3, 1, 6, 4, 2])
+//   ([3, 6, 2, 5, 4, 1], [4, 2, 6, 5, 3, 1], [5, 1, 2, 3, 6, 4])
+//
+// Without the attribute, through the fuzzer's forced pair:
+//   // schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4; in0=i64:5; in0=i64:6; in0=i64:7
+//   { let log: Array<i64> = [];
+//     let q = queuefn(#trigger: in0, |x: i64| -> i64 { log <- x ~ array::push(log, x); x });
+//     let r = (q(10), q(20), q(30), q(40), q(50), q(60));
+//     log }
+// graphix-fuzz check: DIVERGENCE (parallel evaluation bug) 4 of 4 runs; the
+// same with `f(q(10), .., q(60))` and `((q(10) + q(20)) + ..)`. The block
+// form `let a = q(10); let b = q(20); ..` AGREEs (plan_block breaks the run).
+// With no attribute in the default mode, four costly fields
+// `[q(heavy(n) * 10 + 1), .., q(heavy(n + 3) * 10 + 4)]` release 1, 2, 3, 4
+// serially and 2, 1, 3, 4 / 4, 1, 3, 2 / 2, 3, 4, 1 once the cost model forks.
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let fields: Array<i64> = [];
+let args: Array<i64> = [];
+let operands: Array<i64> = [];
+let qf = queuefn(#trigger: clk, |x: i64| -> i64 { fields <- x ~ array::push(fields, x); x });
+let qa = queuefn(#trigger: clk, |x: i64| -> i64 { args <- x ~ array::push(args, x); x });
+let qo = queuefn(#trigger: clk, |x: i64| -> i64 { operands <- x ~ array::push(operands, x); x });
+let f = |a: i64, b: i64, c: i64, d: i64, e: i64, g: i64| -> i64 a + b + c + d + e + g;
+#[parallel]
+let t = (qf(1), qf(2), qf(3), qf(4), qf(5), qf(6));
+#[parallel]
+let s = f(qa(1), qa(2), qa(3), qa(4), qa(5), qa(6));
+#[parallel]
+let o = ((qo(1) + qo(2)) + (qo(3) + qo(4))) + (qo(5) + qo(6));
+sys::exit(select n { x if x > 9 => 0, _ => never() });
+(fields, args, operands)

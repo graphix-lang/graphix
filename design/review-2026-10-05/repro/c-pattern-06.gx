@@ -1,0 +1,33 @@
+// c-pattern-06: an or-arm binds through the first alternative whose
+// structure matches, ignoring the union member that alternative was typed
+// against (StructPatternNode::Or in graphix-compiler/src/node/pattern.rs:
+// is_match is any-of and bind takes the first structural match;
+// emit_or_chain in fusion/emit/select.rs tests structure only as well).
+// Below, x is shared by both alternatives and is i64 (alternative 1 decides
+// it), so the check narrows `A(x, 1) to the member `A(i64, i64). `A("s", 1)
+// is a value of the other member, `A(string, i64), yet the first
+// alternative's structure accepts it and binds x = "s".
+//
+// command: graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-pattern-06.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-pattern-06.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/c-pattern-06.gx
+//
+// expected: 1 in both engines (the second alternative binds x = 1).
+// observed: --check exits 0.
+//   --no-fusion prints "s" (a string out of a function typed -> i64).
+//   default (the select fuses) prints 0.
+//   graphix-fuzz check: DIVERGENCE, interp Trace([0:"s"]), jit Trace([0:i64:0]).
+//
+// The same alternatives as two separate arms are typed soundly: arm 0's x is
+// [i64, string] there and the check refuses `-> i64`. Other shapes of the
+// same hole: over [{a: i64, b: i64}, {c: string, d: i64}], the arm
+// `{a: x, b: 1} | {d: x, ..} => x * 10` applied to {c: "s", d: 1} binds
+// x = "s" by field index: the node-walk logs an arith error and the JIT
+// panics at fusion/kernel.rs:243 ("kernel param `x`: runtime String("s")
+// does not match the compiled Scalar(I64) slot"). Over
+// [((string, i64), i64), {x: i64, y: i64}], `((_, 0), x) | {x, ..} => x`
+// applied to {x: 0, y: 2} returns ["y", 2] in both engines.
+type E = [`A(i64, i64), `A(string, i64)];
+let f = |v: E| -> i64 select v { `A(x, 1) | `A(_, x) => x };
+let a: E = `A("s", 1);
+f(a)

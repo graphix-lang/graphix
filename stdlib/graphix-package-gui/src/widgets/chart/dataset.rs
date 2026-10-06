@@ -203,6 +203,18 @@ pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
             }
         }
     }
+    // CR claude for eric: [bug] Numeric and datetime XY, candlestick and error-bar data
+    // all set has_other, so mixing them is never reported. The first non-empty dataset
+    // picks Numeric or TimeSeries and draw_chart_body silently skips the rest: a
+    // numeric line next to a datetime line draws one series and logs nothing. A real
+    // conflict logs error! here, and chart_mode runs in every handle_event and
+    // mouse_interaction and in each uncached draw, so a bar mixed with a line logs on
+    // every mouse move (50 errors for 50 cursor moves). In Empty mode, draw returns
+    // before resetting plot_info, and the candlestick, error-bar, bar and pie snaps in
+    // find_nearest_point check no mode, so a stale plot area can show tooltips for data
+    // that is not drawn. Compute the mode once per data change in handle_update, report
+    // numeric/datetime mixing, and log a conflict once. probe:
+    // design/review-2026-10-05/repro/gui-chart-18.rs (gui-chart-18)
     let mode_count = has_bar as u8 + has_pie as u8 + has_3d as u8 + has_other as u8;
     if mode_count > 1 {
         error!("chart: cannot mix bar, pie, 3D, and XY/timeseries datasets");

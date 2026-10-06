@@ -1,0 +1,21 @@
+// c-data-map-01: `m{k}` checks key containment backwards: a lookup key
+// narrower than the map's key type is refused.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-data-map-01.gx
+//
+// expected: accepted; its value is "r", as map::get(m, `Red) checks and
+// returns, and as m{k} with k: [`Green, `Red] = `Red returns in both engines.
+//
+// observed: exit 1, at m{`Red}:
+//   type mismatch Map<`Red, '_: string> does not contain
+//   Map<'_: [`Green, `Red], '_: string>
+//
+// MapRef::typecheck0_with (graphix-compiler/src/node/map.rs:244) checks that
+// Map<key type, 'v> contains the source's type; map containment is covariant
+// in the key, so it demands key type ⊇ map key type. Refused the same way:
+// m{1} over Map<[i64, string], i64>, m{"a"} over Map<[string, null], i64>,
+// &m{`Red} (Place::elem_type, graphix-compiler/src/node/bind.rs:1058), and
+// let f = |m| m{`Red}; f({`Red => "r", `Green => "g"}). A wider key is
+// accepted: m{k} with k: [i64, string] over Map<i64, i64>.
+let m = {`Red => "r", `Green => "g"};
+m{`Red}

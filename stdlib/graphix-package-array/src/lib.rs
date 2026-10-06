@@ -52,6 +52,16 @@ type Concat = CachedArgs<ConcatEv>;
 fn fc_push_back(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Array(a), tl @ ..] => {
+            // CR claude for eric: [perf] fc_push_back, like fc_push_front, fc_concat,
+            // fc_flatten and fc_dedup, copies its result through an unpooled
+            // SmallVec<[Value; 32]> and then again into ValArray::from_iter_exact. Past
+            // 32 elements, each call mallocs and frees a buffer the size of the result
+            // (160 KB for a 10k array) and moves every Value twice. These are
+            // FastCalls, so a kernel that calls them pays this too. The length is known
+            // up front (a.len() + tl.len(); flatten can sum its parts), so the array
+            // can be filled in place from a counted chain, as the private `Counted` in
+            // fusion/emit_helpers.rs:1737 does; dedup can collect into an LPooled<Vec>.
+            // (x-alloc-09)
             let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
             buf.extend(a.iter().cloned());
             buf.extend(tl.iter().cloned());
@@ -107,6 +117,19 @@ struct WindowEv(SmallVec<[Value; 32]>);
 graphix_package_core::pack_image_state!(WindowEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
+    // CR claude for eric: [bug] array::window is a pure function of its arguments (the
+    // SmallVec is scratch that every eval drains or clears), but it is declared
+    // Effect::Sync, which effects.rs reserves for cross-invocation state or a result
+    // that depends on which arguments arrived. At a wake CachedArgs re-runs eval only
+    // for a Stateless builtin (graphix-package-core/src/lib.rs:785) and otherwise
+    // retags the old result. So a re-selected arm whose input fire was consumed by a
+    // sibling arm shows the window from before the sleep: [0, 42] where array::push
+    // over the same arguments shows [20, 42], in both engines alike. With no FastCall,
+    // every kernel that reaches window de-fuses. Declare it
+    // Stateless(Some(FastCall::Plain(..))) with a fast fn that does what eval does, and
+    // drop it from the stateful list in design/recursive_activations.md. probe:
+    // design/review-2026-10-05/repro/x-builtin-effects-07.gx (graphix-fuzz run; check
+    // says AGREE). (x-builtin-effects-07)
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_window";
 
@@ -116,6 +139,13 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
             [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
                 if tl.iter().all(|v| v.is_some()) =>
             {
+                // CR claude for eric: [bug] A negative #n casts to a huge usize, so
+                // total <= window always holds and the window keeps every element ever
+                // pushed. array::window(#n: -1, ..) is therefore an unbounded buffer,
+                // though mod.gxi promises an array no larger than #n. Convert with
+                // usize::try_from and treat a negative size as 0 (or log and bottom).
+                // probe: design/review-2026-10-05/repro/x-engine-collections-09.gx
+                // (x-engine-collections-09)
                 let window = *window as usize;
                 let total = a.len() + tl.len();
                 let tl_vals = tl.iter().map(|v| v.clone().unwrap());
@@ -198,6 +228,16 @@ type Sort = CachedArgs<SortEv>;
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
+            // CR claude for eric: [bug] This set misses keys that == calls equal.
+            // netidx-value's Hash for F32/F64 (../netidx/netidx-value/src/op.rs:59-72)
+            // hashes -0.0 by its raw bits and keeps the sign bit in its NaN mask, while
+            // its PartialEq says -0.0 == 0.0 and every NaN is equal. So dedup keeps
+            // both zeros and both NaN signs (x86's 0.0 / 0.0 is a negative NaN), while
+            // == and map keys treat each pair as one value. Fix it in that Hash (one
+            // bit pattern for every NaN, -0.0 hashed as 0.0), since every hash
+            // container of Value depends on it. probe:
+            // design/review-2026-10-05/repro/x-engine-collections-06.gx
+            // (x-engine-collections-06)
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
             for v in a.iter() {
@@ -438,6 +478,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
+            // CR claude for eric: [bug] seam_tick reads a bottom answer from the
+            // predicate as "not answered yet", so `ready` stays false. A bottom answer
+            // is a FreshBottom: a `?` raise (which `throws 'e` allows), a div0, or a
+            // `$` on a bad index. When that bottom depends only on n and x, nothing
+            // re-fires the predicate. Group then never emits again, and every later v
+            // is pushed onto `queue` and never popped. The raise is the clear case: the
+            // error reaches the catch and the group is dead, whereas a seq machine
+            // aborts the run and takes the next trigger. A gated predicate (`n >= th$`
+            // with th null for a while) does rely on this wait and recovers today, so
+            // the fix has to tell a raise apart from a pending gate. probe:
+            // design/review-2026-10-05/repro/collections-str-04.gx (collections-str-04)
             match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {
@@ -475,6 +526,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
+    // CR claude for eric: [bug] delete never unbinds the `n` and `x` bindings that init
+    // made with genn::bind, so each deleted Group leaves two Binds in the global
+    // env.by_id for the rest of the session, and both keep its fresh `#fn` scope path
+    // alive. Collection-slot churn or a dynamic rebind over array::group therefore
+    // grows memory without bound, about 530 bytes per deleted Group. Core filter, opt
+    // and sys::net::publish unbind at delete and stay flat. Add
+    // `ctx.env.unbind_variable(self.nid)` and `ctx.env.unbind_variable(self.xid)` here.
+    // queuefn's WrapperApply::delete (stdlib/graphix-package-core/src/queuefn.rs:146)
+    // has the same omission: no unbind_variable and no store_remove for its arg_bids.
+    // probe: design/review-2026-10-05/repro/collections-str-05.gx (VmRSS +26 MB per
+    // 1000 ticks; the same program with core filter stays flat). (collections-str-05)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.nid);
         ctx.rt.store_remove(&self.pid);

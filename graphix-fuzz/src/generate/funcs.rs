@@ -22,6 +22,13 @@ fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
 
 /// Distinct parameter names, collision-pool-biased but unique within
 /// one param list (`|x, x|` is an error).
+// CR claude for eric: [structure] param_names is param_names_excluding (line 147) with
+// an empty `taken`, drawing the same random numbers: delete it and call
+// param_names_excluding(.., &[]). callback_param (exprs.rs:219) and bind_name
+// (patterns.rs:33) are the same collision-pool-or-fresh draw and differ only in the
+// taken test, so one GenCtx method that takes that test serves both. exprs::pick
+// (exprs.rs:11) duplicates Rng::pick (mutate.rs:36). None of these changes RNG
+// consumption, so programs stay byte-identical per seed. (fuzz-gen-a-11)
 fn param_names(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -286,6 +293,15 @@ pub(super) fn gen_bare_lambda(
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];
     // f stays out of the callable vocabulary but must mask whatever it
     // shadowed
+    // CR claude for eric: [test-gap] The premise here and in the doc comments at lines
+    // 231-234 and 273-276 is stale: a bare lambda's call result has its arguments'
+    // exact type, not a Number-wide one. `let f = |a, b| ((a * b) - (b + a)); let c: u8
+    // = f(u8:2, u8:2)` and `let g = |a| ((a * a) - a); let m: Array<v32> =
+    // array::map([v32:2, v32:1], g)` check and run at all 14 numeric types. As a result
+    // the bare lambda is never called again, and neither site binding below is pushed,
+    // so neither instance's value can reach the tail. Push `f` as `GenType::PolyFn {
+    // arity }` and each site's binding at its type (`Array<ty>` for the map form), and
+    // delete the stale rationale. (fuzz-gen-a-07)
     ctx.push(f.clone(), GenType::Opaque);
     let (ta, tb) = distinct_numeric_pair(rng);
     // the two sites: calls, or (one param) the lambda passed as a value,
@@ -444,6 +460,20 @@ pub(super) fn gen_ref_stmts(
     let rty = GenType::Ref(Box::new(inner.clone()));
     let mut stmts = Vec::new();
     let tgts = ctx.vars_of(&inner);
+    // CR claude for eric: [test-gap] No lane generates a place reference. This takes
+    // `&` of a whole scalar binding or of a literal only, so `&v.f`, `&v.0`, `&v[i]`
+    // and `&m{k}` with write-through patching (design/place_references.md) reach the
+    // oracle only through corpus mutation. The generators also never emit `$`/`?` on an
+    // option (try_accessor's comment at exprs.rs:172-173 that `?` is error-only is
+    // stale), and `gen 2000` (seeds 7 and 11) plus `gen 1500 --reactive` contain no
+    // `~!`, `never<T>()`, `name@` capture, partial struct pattern, attribute, `catch(e:
+    // T)`, parameterized or recursive typedef, or decimal/datetime/duration/bytes
+    // value. Place refs with write-through and option `$`/`?` both pass `graphix-fuzz
+    // check` (AGREE), so emitting them is cheap. Target a field, element or key of a
+    // visible struct, tuple, array or map binding here, with a literal write-through,
+    // and unwrap options in try_accessor with `name$` and a catch-covered `name?`. The
+    // struct-field deref candidate at exprs.rs:102-106 is dead because no generated
+    // struct type has a Ref field. (fuzz-gen-a-06)
     let (val, var_target) = if !tgts.is_empty() && rng.below(3) != 0 {
         (format!("&{}", tgts[rng.below(tgts.len())]), true)
     } else {
@@ -493,6 +523,16 @@ pub(super) fn gen_rec_lambda(
     let m = ctx.fresh();
     let mark = ctx.mark();
     ctx.push(m.clone(), I64);
+    // CR claude for eric: [test-gap] `base` is generated before arm 1 creates `acc`
+    // (line 507), so the accumulator tail loop always returns `base` and its carried
+    // `acc + m` is dead in every instance. The fold callback's let rec (exprs.rs:436)
+    // is multiplied by `i64:0`, which erases its value the same way. A JIT tail loop
+    // that carries a parameter wrongly therefore agrees unless it bottoms: `let rec v0
+    // = |v1: i64, v3: i64| -> i64 select v1 { v2 if v2 <= i64:0 => i64:-100, v2 =>
+    // v0(v2 - i64:1, v3 + v2) }; v0(i64:5, i64:0)` is -100 whatever `v3` holds (fused,
+    // same in both engines). Draw the arm first and let arm 1's `base` see `acc` (or
+    // return `base + acc`), and drop the `* i64:0` (the loop's sum is at most 79,800).
+    // (fuzz-gen-a-05)
     let base = exprs::gen_typed(ctx, rng, &I64, 1);
     ctx.truncate(mark);
     let (sig, stmt_args, step) = match rng.below(4) {

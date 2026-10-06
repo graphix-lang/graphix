@@ -147,6 +147,11 @@ impl TxnCtx<'_> {
         let prev = self.trees[tree_idx].insert(key, value)?;
         Ok(match prev {
             None => Value::Null,
+            // CR claude for eric: [bug] An undecodable previous value becomes null here
+            // and at 161, which tells the program the key was absent, although it held
+            // a value that is now gone. db::insert and db::remove (tree.rs:600-603,
+            // 632-635) and TxnCtx::get report DbErr for the same bytes. probe:
+            // design/review-2026-10-05/repro/db2-18.gx (db2-18)
             Some(ivec) => decode_value(&ivec).unwrap_or(Value::Null),
         })
     }
@@ -204,6 +209,16 @@ impl TxnCtx<'_> {
                 TxnCommand::Batch { tree_idx, ref batch } => {
                     self.apply_batch(tree_idx, batch)
                 }
+                // CR claude for eric: [bug] Commit replies null but never calls
+                // self.trees[0].flush(), so sled leaves the commit in its in-memory log
+                // until the 500 ms flusher runs. A program that commits and then calls
+                // sys::exit (std::process::exit, so no Drop runs) or crashes loses the
+                // commit. The book calls these ACID transactions. The flusher also
+                // takes sled's process-global concurrency lock, which every open
+                // db::txn holds for its whole life, so while another transaction is
+                // open nothing reaches disk. Either set flush_on_commit here (an fsync
+                // per commit), or document that a commit is durable only after
+                // db::flush. probe: design/review-2026-10-05/repro/db2-09.sh (db2-09)
                 TxnCommand::Commit => {
                     *self.commit_reply.borrow_mut() = Some(reply);
                     return Ok(());
@@ -241,6 +256,17 @@ fn run_transaction(
         RefCell::new(Some((first_msg, rx)));
     let commit_reply: RefCell<Option<oneshot::Sender<Value>>> = RefCell::new(None);
     let aborted = Cell::new(false);
+    // CR claude for eric: [bug] The whole interactive transaction runs inside this
+    // closure: TxnCtx::run waits in rx.recv() for the program's next command. For as
+    // long as the closure runs, sled 0.34 holds stage()'s concurrency_control::write().
+    // That is one static RwLock shared by every sled Db in the process, and every plain
+    // tree op, iterator step, generate_id, flush and sled's log flusher take its read
+    // side. So from a txn's first data op until its commit or rollback, every other db
+    // operation in the process blocks, on any database file. A plain op that the commit
+    // is sequenced after deadlocks, so do two txns interleaved across two databases,
+    // and a txn that is never committed freezes all db I/O for good. probe:
+    // design/review-2026-10-05/repro/db2-01.gx (hangs after "txn insert done";
+    // committing before the get exits 0). (db2-01)
     let result = sled::transaction::Transactional::transaction(
         trees,
         |tx_trees: &Vec<sled::transaction::TransactionalTree>| {
@@ -305,6 +331,13 @@ impl BeginTxnCtx {
         }
         // Read-only check for early mismatch detection
         let meta = self.db.open_tree(&META_TREE)?;
+        // CR claude for eric: [structure] This re-implements check_or_store_meta's
+        // comparison (tree.rs:139-147) with its own message ('Tree<{sk}, {sv}>, but was
+        // opened as' here, no comma there), and read_meta repeats check_or_store_meta's
+        // splitn parse with its '?' fallbacks (tree.rs:120-123 and 139-142). One parse
+        // and one compare-with-message, used by db::tree and both transaction paths,
+        // would leave one place to change when the stored form or the rule changes.
+        // (db2-17)
         match read_meta(&meta, &tree_name)? {
             Some((sk, sv)) => {
                 if sk != key_typ_str || sv != val_typ_str {
@@ -328,6 +361,17 @@ impl BeginTxnCtx {
                 }
             },
         }
+        // CR claude for eric: [bug] Every db::txn::tree call pushes a new slot here,
+        // even for a name this transaction already opened. sled gives each slot its own
+        // overlay (writes map and read cache) and commits the slots in slot order. So a
+        // handle does not see a write made through another handle to the same tree, and
+        // at commit the later-opened handle's write beats a later write made through
+        // the earlier one, with no error. Two helpers that each open the tree in a
+        // shared transaction hit this. Return the existing slot on a repeat open, keyed
+        // by tree name (DEFAULT_TREE_META for null); the read_meta/pending_meta checks
+        // above already hold both opens' types equal. probe:
+        // design/review-2026-10-05/repro/db2-03.gx prints (null, 2), expected (1, 3).
+        // (db2-03)
         let tree = match &name {
             None => (*self.db).clone(),
             Some(n) => self.db.open_tree(n.as_bytes())?,

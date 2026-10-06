@@ -46,6 +46,18 @@ pub struct Calibration {
     shift: u32,
 }
 
+// CR claude for eric: [perf] T_BUCKET = 6 puts T in bucket 6. The smallest per-slot
+// estimate a histogram can give is then floor(0) = 2^shift, between T/128 and T/64
+// (2048 ticks at T = 143552), and any cheaper slot is rounded up to it.
+// ProbeSite::grain forks once est * n >= 2T, and a LoopSite never checks a loop's
+// measured total first (SlotSite's Probe stage does). So under Auto every kernel loop
+// longer than 128-256 slots forks, however cheap its slots are. Probe:
+// design/review-2026-10-05/repro/c-cost-misc-01.gx, a 400-slot `i + n` init recomputed
+// 20000 times. Off: 0.82 s wall, 0.85 s CPU. Auto: 2.3-2.5 s wall, 9.2-9.7 s CPU, with
+// about 19000 cycles forked into 5-6 ranges at an estimate of exactly floor(0).
+// design/parallel_eval.md §5 wants bucket 0 near 16 ns; anchoring T near bucket 12 (or
+// adding buckets) and requiring a measured loop total of 2T before a LoopSite forks
+// would each stop it. (c-cost-misc-01)
 const T_BUCKET: u32 = 6;
 
 /// How many threshold multiples of a stolen job's start latency.
@@ -61,6 +73,18 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
+    // CR claude for eric: [perf] calibration() starts measuring at the first plan of
+    // any site and returns None for at least 18 ms (nine 2 ms sleeps); every site that
+    // plans in that window runs in order. A kernel loop plans once per run, so a
+    // program whose first cycle is one big fused loop never forks under Auto.
+    // design/parallel_eval.md:412-419 (and §10 for kernel loops) says a one-shot growth
+    // forks in the cycle that builds it. Probe:
+    // design/review-2026-10-05/repro/c-cost-misc-07.gx, a 20000-slot map of 1023 calls
+    // per slot: Auto forks nothing (real 1.59 s against 1.68 s with off), while Force
+    // forks both loops. Starting the calibration with the runtime was measured to make
+    // forced ranges bimodal (parallel_eval.md:464-471), so the options are for a long
+    // loop planned inside the window to wait for the calibration, or for the doc to say
+    // the first cycle may not fork. (c-cost-misc-07)
     if !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
@@ -78,6 +102,18 @@ pub fn calibration() -> Option<&'static Calibration> {
 fn calibrate() -> Calibration {
     let pool = crate::branch::eval_pool();
     let mut wakes = [0u64; 9];
+    // CR claude for eric: [perf] T is measured once per process (a OnceLock) from nine
+    // pool wakes, keeping the lower quartile, and nothing checks that the pool is idle
+    // while it samples. Forced work can hold the workers through that window:
+    // #[parallel] forks before any calibration exists, and so does a Force runtime in
+    // the same process. More than six samples then queue behind real jobs, and T stays
+    // inflated for every runtime in the process. At 15.75M ticks (about 4.3 ms), Auto
+    // forks nothing estimated below that. Probe:
+    // design/review-2026-10-05/repro/c-cost-misc-03.gx, a #[parallel] map of 64 heavy
+    // slots every 5 ms: four runs gave T = 2.19M, 99k, 209k and 15.75M ticks, against
+    // 99k-350k with an idle pool. Sampling only while no part is live (and retrying),
+    // or re-measuring and keeping the minimum, would keep T measuring the idle pool.
+    // (c-cost-misc-03)
     for w in wakes.iter_mut() {
         // let the workers park
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -245,6 +281,16 @@ impl ForkSite {
         }
     }
 
+    // CR claude for eric: [perf] Under Auto, a wide run of statements that only ride is
+    // forked on every cycle. Meter::time counts a quiet update like any other, so once
+    // a run's quiet walk reaches 2T the site turns Measured. This plan then forks every
+    // unsampled update and wakes the pool, whose idle workers spin, for work that fired
+    // nothing; T prices the wake latency, not that spin. A Measured run of 256 or more
+    // statements also never returns to Serial: each child's estimate is at least
+    // floor(0), T/128 to T/64, so `pays` holds whatever the children cost. Probe:
+    // design/review-2026-10-05/repro/x-alloc-02.gx (1000 quiet lets beside a 100us
+    // timer) runs 4.0 s wall in both modes, with user+sys 2.7 s under GRAPHIX_PAR=off
+    // against 14 s under the default Auto. (x-alloc-02)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
         let Some(cal) = calibration() else { return Plan::Serial };
         match &mut self.0 {

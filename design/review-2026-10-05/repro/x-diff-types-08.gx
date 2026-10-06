@@ -1,0 +1,33 @@
+// x-diff-types-08: a core-trait hook site is built at run time without a
+// run-time bind's framing.
+//
+// build_site (graphix-compiler/src/node/coretraits.rs:223-235) runs
+// SynthCall::build (node/genn.rs:129-161), typecheck0 and typecheck1 of a
+// static call that elaborates the impl's instance, during a cycle and
+// outside node::with_runtime_settles (node/mod.rs:1040-1059). So the
+// build has no settle frame of its own (CallSite::typecheck1 pushes its
+// settle onto the root frame, callsite.rs:2219-2220, which nothing drains
+// until the next compile_top clears it unjudged), no task of its own (its
+// cells are task 0's), and RUNTIME_BIND unset, so the impl body's
+// statements fork as rayon compile tasks from inside the cycle
+// (typecheck1_statements, node/mod.rs:1096).
+//
+// command: GRAPHIX_TASK_AUDIT=1 graphix --no-cache design/review-2026-10-05/repro/x-diff-types-08.gx 2>&1 | grep 'to a cell of task 0'
+// expected: nothing (a run-time bind elaborates serially in a task of its own)
+// observed: `FOREIGN-WRITE by task N to a cell of task 0`, written by a
+//           forked statement task when the first `==` runs (about 1.7 s
+//           in, after the timer); without the `==` it is gone. Prints true.
+//           (The cell elaboration writes is the one x-diff-types-07 leaves
+//           open; the fork and the task-0 owner are this finding's.)
+type Key = Abstract<string>;
+impl Eq for Key {
+  let eq = |a, b| {
+    let x = filter(str::to_lower(a.0), |s| str::len(s) > 0);
+    let y = str::to_lower(b.0);
+    x == y
+  }
+};
+let t = sys::time::timer(duration:1500.ms, false);
+let r = (t ~ Key("Foo")) == Key("FOO");
+sys::exit(sys::time::after_idle(duration:1800.ms, 0));
+r

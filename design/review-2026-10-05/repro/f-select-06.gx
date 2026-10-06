@@ -1,0 +1,18 @@
+// f-select-06: string literal patterns de-fuse, at top level and as a
+// variant payload. A string scrutinee classifies Opaque (only `_` and
+// guard arms, graphix-compiler/src/fusion/emit/select.rs:347-353), and
+// both literal paths require a register scalar (:1563, :1702).
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/f-select-06.gx
+//   expected: f and g fuse.
+//   observed: values agree; fusion lists "non-scalar literal pattern
+//     String("a")" (f) and "variant payload literal String("q") over
+//     Primitive(.. String) not lowerable" (g).
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:0
+{
+  let f = |s: string| select s { "a" => i64:1, "b1" => i64:2, _ => i64:3 };
+  let g = |c: [`Char(string), `Up]| select c { `Char("q") => i64:10, `Char(_) => i64:11, `Up => i64:12 };
+  let s = select in0 { i64:0 => "a", n => "b[n]" };
+  let c: [`Char(string), `Up] = select in0 { i64:0 => `Up, i64:1 => `Char("q"), _ => `Char("z") };
+  f(s) + g(c)
+}

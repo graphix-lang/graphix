@@ -208,10 +208,31 @@ module.exports = grammar({
     ),
 
     // Module and use
+    // CR claude for eric: [dead] The grammar still accepts syntax the parser rejects:
+    // inline module bodies and signatures (`mod m { .. }`, `mod m: { .. } { .. }`,
+    // 214-220, 238-245, 264-269), `where` clauses (540-543), `ok` as null (1053), `?T`
+    // (567), fn types without `-> T` (504), `?#` and `#foo x` lambda params (735-756),
+    // `@name` vargs other than `@args` (536, 748), `\x41`/`\u{..}` escapes (1088-1089,
+    // 1130-1131) and a leading `/` on paths (388, 1145). Editors color rejected code as
+    // valid, and indents.scm and graphix-mode.el still name module_body and signature.
+    // `~!` has no rule beside `~` (842), so `a ~! b == c` parses as `a ~ ((!b) == c)`.
+    // Delete the dead alternatives together with their query references, and add the
+    // `~!` rule. (ide-tooling.r2-13)
     module: $ => choice(
       // Bodyless module declaration: mod name
       seq('mod', field('name', $._binding_name)),
       // Static module: mod name { ... }
+      // CR claude for eric: [dead] This branch, with module_body (238) and signature
+      // (264), accepts inline `mod m { .. }` and `mod m: {..} {..}`, which the parser
+      // refuses, and so do fn-type `where` clauses (constraints_clause 540, plus the
+      // `where` captures in highlights.scm and graphix-mode.el), `?T` (abstract_type
+      // 567), `?#x` and `#x pat` lambda params (736-737, 751), fn types without `-> T`
+      // (504), `@name` vargs for names other than `args` (536, 748), `ok` as null
+      // (1053), a leading `/` on paths (388, 1145) and a leading `+` on numbers. Each
+      // shows as well-formed Graphix in the editor while `graphix --check` refuses it;
+      // delete the productions and their captures. do_block (971) is named after the
+      // removed `do`, and the comment at 121-125 says `///` before a `let` parses,
+      // which gives an ERROR. (ide-tooling-12)
       seq(
         'mod',
         field('name', $._binding_name),
@@ -469,6 +490,20 @@ module.exports = grammar({
       'Any',
     ),
 
+    // CR claude for eric: [bug] The grammar has no type application. The real parser
+    // accepts `self<T>` as a fn-type receiver and in a type, and `'a<T>` in a type
+    // (graphix-types/src/expr/parser/typexp.rs fnpositional() and typ()), but here
+    // type_variable, self_type and the self_param receiver (line 525) take no argument.
+    // As a result, core's Collection trait (mod.gxi lines 54-81) parses with 18 ERROR
+    // nodes, all on its `self<..>` types. In the book's `|c: 'c<'a>| -> 'c<'a> map(c,
+    // ..)`, error recovery turns the lambda body into the builtin reference `'a`. An
+    // optional `<T>` on type_variable conflicts with builtin_ref in tree-sitter
+    // generate; a `_type` alternative `prec(1, seq(choice($.type_variable,
+    // $.self_type), '<', $._type, '>'))` plus an optional `<T>` after the receiver
+    // generates without conflicts and parses every tracked .gx/.gxi as before, with
+    // core mod.gxi now clean. The ts_expr/ts_pp proptests miss this because typexp() in
+    // graphix-types/src/expr/test.rs generates no Type::App and no self receiver.
+    // probe: design/review-2026-10-05/repro/ide-tooling-03.sh (ide-tooling-03)
     type_variable: $ => seq("'", $._binding_name),
 
     // the receiver type of a trait method signature
@@ -714,6 +749,20 @@ module.exports = grammar({
     ),
 
     // Lambda: constraints|params| -> rtype throws body
+    // CR claude for eric: [bug] lambda has no precedence, and the seven lambda
+    // conflicts let the GLR parser keep both readings. Whenever a token follows the
+    // lambda (`;`, `,`, `)`), a body whose top operator is binary is cut at that
+    // operator: `|acc, x| acc + x;` parses as `(|acc, x| acc) + x`, while the real
+    // parser takes the whole expr() as the body (lambdaexp.rs:172-176). 69 lambdas in
+    // this repo and netidx-admin parse this way (`|e| e.kind == p`, `|x| x * 10`). The
+    // parameter after the operator falls outside locals.scm's (lambda) scope, so the
+    // tree-sitter highlighter colors it as a namespace, and selection by node sees the
+    // short extent. Wrapping the rule in prec.right(-1, ...), as let_binding and
+    // connect do, fixes all 69 and leaves the corpus's ERROR set unchanged; the
+    // generator then reports the seven lambda conflicts as unnecessary. ts_expr/ts_pp
+    // only look for ERROR nodes and there is no test/corpus, so nothing pins tree
+    // shapes. probe: design/review-2026-10-05/repro/ide-tooling.r2-05.sh
+    // (ide-tooling.r2-05)
     lambda: $ => seq(
       optional($.lambda_constraints),
       '|',
@@ -802,6 +851,17 @@ module.exports = grammar({
     // Non-string values that can appear after the colon in type ascription.
     // Strings are handled separately in type_ascription to share nodes with
     // expression contexts, enabling GLR to resolve struct/map ambiguity.
+    // CR claude for eric: [bug] Every `T:` ascription admits `_bare_value` and the
+    // `_value_extension` run. Their characters include `+ / =` (base64 for `bytes:`)
+    // and `-` before a digit, so an operator glued to a typed literal is swallowed as
+    // value text. `i64:4/i64:2`, `i64:1+i64:2` and `i64:1==i64:2` give ERROR nodes,
+    // while `i64:1+x` and `i64:5-3` reduce to one `type_ascription` that drops the
+    // operator and operand. The real parser stops at the end of the number, and the
+    // committed fuzz pin
+    // graphix-fuzz/findings/bottom-scrutinee-jun2026/02_inline_bottom_scrutinee.gx
+    // errors at `i64:1/i64:0`. Admit the bare value and the `+ / =` run only after
+    // `bytes:`, and give other ascriptions a unit-only extension (`1.5s`, `500.ms`).
+    // Probe: design/review-2026-10-05/repro/ide-tooling.r2-09.gx. (ide-tooling.r2-09)
     _typed_value: $ => choice(
       // Nested type ascription (e.g., error:i8:0)
       $.type_ascription,
@@ -839,6 +899,13 @@ module.exports = grammar({
       prec.left('multiplicative', seq($._expression, '*?', $._expression)),
       prec.left('multiplicative', seq($._expression, '/?', $._expression)),
       prec.left('multiplicative', seq($._expression, '%?', $._expression)),
+      // CR claude for eric: [bug] binary_expression has no `~!` (BinOp::StrictSample,
+      // precedence 0 like `~`), so tree-sitter splits it into `~` and a unary `!` and
+      // reads `t ~! x + 1` as `t ~ ((!x) + 1)` with no ERROR node: every tree-sitter
+      // editor shows the wrong structure, and highlights.scm and graphix-mode.el cannot
+      // capture the operator. Add a `~!` arm at 'sample' precedence and the token to
+      // both operator lists. probe: design/review-2026-10-05/repro/ide-tooling-08.gx
+      // (ide-tooling-08)
       prec.left('sample', seq($._expression, '~', $._expression)),
     ),
 
@@ -1223,6 +1290,15 @@ module.exports = grammar({
     ),
 
     // Variant
+    // CR claude for eric: [bug] Every payload variant parses as a call, `` `A(5) `` as
+    // (apply (variant) (apply_args 5)), so this rule's payload branch (1229) never
+    // matches. tuple_ref (1239) takes `$.number`, so in `t.0.1` the float `0.1` wins
+    // and one tuple_ref stands where the parser builds two. by_ref (980) puts 'unary'
+    // precedence over its whole operand, so `&|x| x + 1` is `(&|x| x) + 1` even at the
+    // end of input, where `|x| x + 1` alone parses right. None of these gives an ERROR
+    // node, so structural selection, navigation and any query over these nodes see the
+    // wrong tree. probe: design/review-2026-10-05/repro/ide-tooling-09.gx
+    // (ide-tooling-09)
     variant: $ => prec.left(seq(
       '`',
       $.type_identifier,
@@ -1282,6 +1358,15 @@ module.exports = grammar({
     )),
 
     // Identifiers
+    // CR claude for eric: [bug] identifier and type_identifier (1320) are ASCII-only,
+    // but the parser's ident() starts a value name with any non-uppercase letter and a
+    // type name with any uppercase one (parser/mod.rs:136, 389-403), so `let café = 1`
+    // is an ERROR in every tree-sitter editor. The scanner's base64 tokens, BARE_VALUE
+    // pattern 3 (src/scanner.c:277-303) and VALUE_EXTENSION (228-246), follow every
+    // typed literal, not only `bytes:`: `i64:4/i64:2` and `i64:1+i64:2` give ERROR
+    // nodes, and `i64:1==x` and `f64:1.5/x` collapse into one type_ascription. An empty
+    // `bytes:` gives a MISSING or ERROR node. probe:
+    // design/review-2026-10-05/repro/ide-tooling-10.gx (ide-tooling-10)
     identifier: $ => /[a-z_][a-zA-Z0-9_]*/,
 
     // Type-name keywords are legal BINDING names (2026-08-18): let,
@@ -1304,6 +1389,16 @@ module.exports = grammar({
     // same relaxation as the reference parser: reserved-ness protects
     // bindings and type names, and a field is neither. Aliased so the
     // node stays an `identifier` for highlighting and queries.
+    // CR claude for eric: [bug] The grammar rejects four things the parser accepts.
+    // This list lacks seqq, trait, impl, pub, self, super and package, so `{seqq: 1, b:
+    // 2}` and `s.seqq` are ERROR. `identifier` and `type_identifier` (1285, 1320) are
+    // ASCII-only, while the parser takes any non-uppercase letter to start a value name
+    // and any uppercase letter to start a type name (`let café = 1`, `type Ñame =
+    // i64`). `do_block` (971-977) needs two expressions, so `{ a; }` gets a MISSING
+    // identifier, and `flush` lexes as a keyword after a seq head, so `seq flush { ..
+    // }` over a variable named flush errors. Editors show these valid programs as
+    // broken. Probe: design/review-2026-10-05/repro/ide-tooling.r2-10.gx.
+    // (ide-tooling.r2-10)
     _field_name: $ => choice(
       $.identifier,
       alias(choice(

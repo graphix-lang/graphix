@@ -61,6 +61,17 @@ pub(crate) type IsNone = CachedArgs<IsNoneEv>;
 pub(crate) struct ContainsEv;
 crate::unit_image_state!(ContainsEv);
 
+// CR claude for eric: [perf] opt::contains, or_default, or, and, zip and ok_or (lines
+// 65-219) and core::divide (lib.rs:1332) are pure but declared `Stateless(None)`, so a
+// kernel that calls one de-fuses ("builtin has no fast-call entry") and `#[native]
+// array::map(xs, |x| opt::or_default(x, 0) + 1)` is refused. Their exemption, producing
+// on partial delivery, cannot happen: CachedArgs bottoms an invocation with a missing
+// or bottom slot before eval runs (lib.rs:773), so `opt::or(3, never())` produces
+// nothing and the `_ => None` arms are dead. Give each a `FastCall::Plain` fn called
+// through `fast_eval`. sum, product, min, max, mean, and, or (lib.rs:1280-1436, 2238)
+// are as pure but declared `Sync`, with the same dead partial-delivery arms. The caveat
+// in book/src/packages/creating.md:202-210 and the "partial argument delivery" clause
+// at effects.rs:59 describe the same impossible case. (x-builtin-effects-13)
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_contains";
@@ -322,6 +333,31 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
             }
             None => None,
         };
+        // CR claude for eric: [bug] While the input is null, `x` keeps the last
+        // non-null value, yet `inner_out` is still emitted whenever the callback fires
+        // on its own: a captured variable changes, the `f` argument changes, or an
+        // async callback answers after the null arrived. So opt::map and flat_map emit
+        // f(stale x), is_some_and gives true and is_none_or gives false, all while v is
+        // null. opt.gxi and the select spelling `select v { null as _ => null, x =>
+        // f(x) }` give null/false/true there and do not fire, and OptFilter::update
+        // (line 572) re-emits a spurious null the same way. Remembering whether the
+        // last delivered input (fired or stale) was null, and dropping inner_out while
+        // it was, would match the select. Both engines run this builtin, so
+        // graphix-fuzz agrees. probe: design/review-2026-10-05/repro/core-aux-01.gx
+        // (prints `n=2 v=null offset=10 map=15`). (core-aux-01)
+        // CR claude for eric: [bug] A STALE callback production is dropped here, and a
+        // stale null is dropped at line 316. So when an arm is entered or woken with
+        // this input STALE (a sibling arm read it and spent the fire bit), the HOF
+        // rides `out`: bottom at a first entry, the pre-sleep value at a wake. The same
+        // function written as a select recomputes from the present input, as
+        // design/wake_catchup.md requires. OptFilter (556-576) and the OrElse pair
+        // (819-831, 902-913, 989-1000, which emit only on a_fired/f_fired) do the same,
+        // so all seven opt HOFs are affected. Surfacing a stale production as STALE
+        // (seam_value, keeping its tag), a stale null included, would follow the
+        // first-production and wake rules. probe:
+        // design/review-2026-10-05/repro/x-builtin-effects-04.gx (at the wake it prints
+        // map=43 for 62, filter=1 for null, or_else=1 for 20; at the first entry every
+        // HOF is bottom). (x-builtin-effects-04)
         let inner_out = seam_tick(self.inner.update(ctx)).map(|tv| tv.value_cloned());
         direct.or(inner_out)
     }
@@ -346,6 +382,14 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     }
 }
 
+// CR claude for eric: [structure] OptMap, OptFlatMap, OptIsSomeAnd and OptIsNoneOr are
+// four 74-line copies of the same BuiltIn and Apply delegation to HofState. They differ
+// only in NAME and the on_null value (Null, Null, false, true). OptOrElse and
+// OptOkOrElse (854-1027) differ only in wrapping the fallback in an error, and
+// OrEv::eval and OrDefaultEv::eval are identical. One builtin generic over a kind that
+// carries NAME and on_null (as CachedArgs<Ev> does for evals), plus one or_else generic
+// over the wrap, would delete about 300 lines. Core's Filter (lib.rs:1628) repeats
+// HofState's init, callable feed and delete and could hold a HofState. (core-aux-14)
 #[derive(Debug)]
 pub(crate) struct OptMap<R: Rt, E: UserEvent> {
     s: HofState<R, E>,

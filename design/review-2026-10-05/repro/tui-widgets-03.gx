@@ -1,0 +1,17 @@
+// tui-widgets-03: table: a width Percentage above 100 (or below 0) trips
+// ratatui's Table::widths assert and kills the display.
+// command (needs a terminal; `script` supplies a pty):
+//   script -qec "timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/tui-widgets-03.gx" /dev/null
+// expected: a two-column table showing "a" and "b"; Ctrl-C exits.
+// observed: thread 'tokio-rt-worker' panicked at
+//   ratatui-widgets-0.3.0/src/table.rs:1006:13:
+//   Percentages should be between 0 and 100 inclusively.
+// and the process keeps running with no display: Ctrl-C no longer exits
+// it (the display task died without firing the shell's stop signal).
+// `Percentage(-1)` panics the same way (`as u16` makes it 65535);
+// `Percentage(100)` renders and exits on Ctrl-C.
+use tui::{line, table::{cell, row, table}};
+
+let r1 = row([cell(line("a")), cell(line("b"))]);
+
+table(#widths: &[`Percentage(60), `Percentage(101)], &[&r1])

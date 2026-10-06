@@ -1,0 +1,31 @@
+// t-contains-09: contains never terminates on two instantiations of a
+// recursive typedef whose parameters grow as it recurses (non-regular).
+//
+// The Ref arm of contains (graphix-types/src/typ/contains.rs:562-574)
+// memoizes pairs by RefHist::ref_id (typ/mod.rs:175-204), which keys a
+// reference on its definition and its params. N<Array^k<..>> is a new key
+// at every level, so the coinductive memo never fires and the walk
+// unfolds forever. Contractiveness (Env::deftype) does not bound it.
+//
+// timeout -s KILL 60 graphix --check design/review-2026-10-05/repro/t-contains-09.gx
+//   expected: exit 0 at once: N<[i64, string]> holds every N<i64>. The
+//             regular `type R<'a> = [null, ('a, R<'a>)]` checks in 0.1 s
+//             (R<[i64, null]> := R<i64> accepted, R<string> := R<i64>
+//             refused with a type mismatch), and N<i64> := N<i64> too.
+//   observed (HEAD c722befe, debug build): no exit, killed by the timeout
+//             (137) at 20 s and 60 s. The same hang with
+//             `let n2: N<string> = n1` (should be refused), with a call
+//             `f(n1)` where `let f = |n: N<[i64, string]>| n`, and with
+//             type Perfect<'a> = [`Zero('a), `Succ(Perfect<('a, 'a)>)]
+//             and `let y: Perfect<[i64, null]> = x` for x: Perfect<i64>
+//             (there the params double each level, so each level costs
+//             twice the last).
+// GRAPHIX_DBG_BIND=1 prints one SET-T line per level, each with a new
+// parameter (about 750 levels in 5 s, none repeats):
+//   SET-T [null, ([i64, string], N<Array<[i64, string]>>)] >= (i64, N<Array<i64>>)
+//   SET-T [null, (Array<[i64, string]>, N<Array<Array<[i64, string]>>>)] >= (Array<i64>, N<Array<Array<i64>>>)
+//   SET-T [null, (Array<Array<[i64, string]>>, N<Array<Array<Array<[i64, string]>>>>)] >= ...
+type N<'a> = [null, ('a, N<Array<'a>>)];
+let n1: N<i64> = null;
+let n2: N<[i64, string]> = n1;
+n2

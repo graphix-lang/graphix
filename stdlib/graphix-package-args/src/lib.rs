@@ -83,6 +83,16 @@ fn build_clap_arg(spec: &Arg) -> clap::Arg {
     arg
 }
 
+// CR claude for eric: [bug] The spec reaches clap unchecked, and clap checks a command
+// only under debug assertions. In a debug build, the runtime panics ("Error: runtime
+// did not respond", exit 1) when a spec claims -h or help (clap's own help flag), gives
+// two args the same short, writes a short as "-p", or names a subcommand help. A
+// release build accepts the same spec and takes the first match: -h becomes host,
+// --help lists -h twice, and a second -v cannot be reached. A #short longer than one
+// character is cut to its first character with no error (lines 61, 72). Check the spec
+// here and return ArgError on a conflict, or turn off clap's help/version flags when
+// the spec claims them. probe: design/review-2026-10-05/repro/small-pkgs-07.gx
+// (small-pkgs-07)
 fn build_clap_command(spec: &Command) -> clap::Command {
     let mut cmd = clap::Command::new(spec.name.to_string());
 

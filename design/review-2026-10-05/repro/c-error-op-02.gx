@@ -1,0 +1,44 @@
+// c-error-op-02: raises compiled after a catch's check widen its type
+// unchecked (dynamic modules, REPL inputs), and the runtime dies.
+//
+// join_raised (graphix-compiler/src/node/error.rs:137-153) unions every
+// raise into the catch's bind cell. The ascription's coverage check, a
+// PendingSettle::Contains (error.rs:1285-1289), and the handler's typing
+// and fusion happen once, at the program's check. A dynamic module's body
+// is checked at load (module.rs compile_source -> check_body), under the
+// enclosing catch, so its `?` re-binds `e` to [T, Error<ErrChain<string>>]
+// with no check, and the already-fused handler receives a string.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-error-op-02.gx
+//          (and the same with --no-fusion; graphix-fuzz check aborts)
+//
+// expected: the load is refused (r is an error:`DynamicLoadError naming the
+//   uncovered type), as the same raise written statically is:
+//   `let w = error("hello")?` in place of the mod fails --check with
+//   "type mismatch Error<ErrChain<i64>> does not contain
+//   Error<ErrChain<string>>". The handler never sees a string.
+// observed (HEAD c722befe, debug build): --check passes; the JIT run panics
+//   at fusion/kernel.rs:243 "kernel param `x`: runtime String("hello") does
+//   not match the compiled Scalar(I64) slot", then "Error: runtime did not
+//   respond" (exit 1). --no-fusion: the load succeeds (r = null) and
+//   f("hello") logs an arith parse error: `x: i64` holds a string.
+//
+// REPL twin, one input per line (graphix with no file, --no-cache):
+//   let f = |x: i64| x * 2 + 1
+//   catch(e: Error<ErrChain<i64>>) println(f((e.0).error))
+//   let w = error("hello")?
+// is accepted, panics the same way, and the next input prints
+// "Error: graphix runtime is dead". An unascribed `catch(e) println(g(e))`
+// with `let g = |x: Error<ErrChain<i64>>| f((x.0).error)`, then
+// `let v = error(41)?` (prints 83) and `let w = error("hello")?`, does too.
+let f = |x: i64| x * 2 + 1;
+let r = {
+  catch(e: Error<ErrChain<i64>>) println(f((e.0).error));
+  mod foo dynamic {
+    sandbox unrestricted;
+    sig { val v: i64 };
+    source r#"let v = 1; let w = error("hello")?"#
+  }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

@@ -1,0 +1,32 @@
+// db2-10: drop_tree leaves the tree's type metadata, so the name can never
+// be reused with new types.
+//
+// DbDropTreeEv::eval (stdlib/graphix-package-db/src/tree.rs:373-382) calls
+// sled's drop_tree and never removes the name's entry in META_TREE. The
+// dropped tree is gone from tree_names, but get_type still reports its types
+// and db::tree refuses to recreate the name with any other types.
+//
+// run: graphix --no-cache design/review-2026-10-05/repro/db2-10.gx
+// (same output with --no-fusion)
+//
+// expected:
+//   dropped: true; tree_names after drop: [...no "x"...]; get_type after drop: null
+//   "reopen as Tree<i64, f64> ok"
+// observed:
+//   dropped: true; tree_names after drop: ["__sled__default", "$$__graphix_meta__$$"]; get_type after drop: ("string", "i64")
+//   "reopen as Tree<i64, f64> failed: error:[\"DbErr\", \"tree 'x' has type Tree<string, i64> but was opened as Tree<i64, f64>\"]"
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/x.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "x")$;
+let ins = db::insert(t, "k", 1)$;
+let dropped = db::drop_tree(db, ins ~ "x")$;
+let names = db::tree_names(dropped ~ db)$;
+let ty = db::get_type(db, names ~ "x")$;
+let t2: Result<db::Tree<i64, f64>, `DbErr(string)> = db::tree(db, ty ~ "x");
+let r = select t2 {
+    error as e => "reopen as Tree<i64, f64> failed: [e]",
+    _ => "reopen as Tree<i64, f64> ok"
+};
+println("dropped: [dropped]; tree_names after drop: [names]; get_type after drop: [ty]");
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

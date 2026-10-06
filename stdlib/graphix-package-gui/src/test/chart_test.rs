@@ -2,6 +2,15 @@ use super::GuiTestHarness;
 use crate::widgets::chart::pad_range;
 use anyhow::Result;
 
+// CR claude for eric: [test-gap] auto_range is a copy of compute_ranges' min/max fold,
+// so the six auto_range_* tests check this copy and pad_range, not the code that draws.
+// No test reaches compute_time_ranges or compute_3d_ranges, and compute_ranges is
+// reached only through the two tests that call Program::draw on numeric lines. The
+// thirteen tests from axis_range_renders to mesh_style_3d only call h.view(), which
+// builds the Canvas without running Program::draw, so a panic or a wrong range while
+// drawing still passes them. Test the compute_* functions on harness datasets, and draw
+// every fixture through Program::draw as fresh_chart_redraws_an_inherited_cache does.
+// (gui-chart-12)
 fn auto_range<'a>(
     data: impl IntoIterator<Item = &'a [(f64, f64)]>,
     f: impl Fn(&(f64, f64)) -> f64,

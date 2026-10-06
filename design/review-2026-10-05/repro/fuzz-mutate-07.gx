@@ -1,0 +1,23 @@
+// fuzz-mutate-07: let-inline moves a reader of an open (⊥) let past another
+// reader of it, so the other reader decides the cell first and the moved one
+// is refused: a false let-inline typeflip (a transform-precondition gap)
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-07.gx
+// expected: typemorph: no flips (stmt-permute already declines to swap these
+// two readers of `g`, by its `open` set at typemorph.rs:295)
+// observed: TYPEFLIP ... let-inline#3: N: type mismatch iN does not contain
+// '_N: [iN, null]
+//   mutant: { ..; let g = never(); let y = h(g); (k(g)) + y }
+// The refusal is the language rule (an unannotated let over ⊥ takes its type
+// from its first use): `graphix --check` accepts this program and refuses the
+// mutant at `k(g)`, "type mismatch i64 does not contain '_N: [i64, null]".
+// The same flip when the other reader sits in the use's own statement before
+// the use (`let x = k(g); h(g) + x` inlines to `h(g) + (k(g))`), and with
+// function-typed readers (k takes fn(?#x: i64) -> i64, h fn(#x: i64) -> i64).
+{
+    let k = |v: i64| v;
+    let h = |v: [i64, null]| 0;
+    let g = never();
+    let x = k(g);
+    let y = h(g);
+    x + y
+}

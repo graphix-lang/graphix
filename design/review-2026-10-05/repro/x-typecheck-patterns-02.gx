@@ -1,0 +1,40 @@
+// x-typecheck-patterns-02: the literal pool ignores an arm's explicit type
+// predicate, so a non-exhaustive select is accepted (and, in the dead-arm
+// walk, a reachable arm is refused).
+//
+// select.rs:279 pools the structure pattern alone and LiteralPool::claim
+// (select.rs:791) picks the scrutinee member by shape alone. The two arms
+// below pool to "(true, _) and (false, _) of (bool, [i64, string])", but
+// each only matches values of its own written type, so (false, 5) and
+// (true, "s") match no arm.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-patterns-02.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-typecheck-patterns-02.gx
+//
+// expected: refused by the check with "missing match cases".
+//
+// observed: `--check` exits 0. The run (default and --no-fusion alike;
+// graphix-fuzz check says AGREE) prints only
+//   a: true-int 1
+//   b: false-str s
+//   0
+// and `c:`/`d:` never print: the select is a silent standing bottom.
+// The same happens for a struct scrutinee {a: bool, b: [i64, string]}, a
+// variant payload `P(bool, [i64, string]) and (bool, [`A, `B]).
+//
+// dead-arm side: adding the arms `(bool, string) as (b, x) => "any-str [x]"`
+// and then `(bool, i64) as (b, x) => "any-int [x]"` makes the select really
+// exhaustive with every arm reachable, but the check refuses the first of
+// them: "unreachable arm: the earlier arms already cover the whole
+// scrutinee" (check_dead_arms, select.rs:478).
+let f = |v: (bool, [i64, string])| select v {
+  (bool, i64) as (true, x) => "true-int [x]",
+  (bool, string) as (false, x) => "false-str [x]"
+};
+let s = "s";
+println("a: [f((true, 1))]");
+println("b: [f((false, s))]");
+println("c: [f((false, 5))]");
+println("d: [f((true, s))]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

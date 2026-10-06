@@ -1,0 +1,40 @@
+// x-diff-par-05: the fork merge turns any id two siblings both delivered
+// into a write next cycle.
+//
+// fork_each (graphix-compiler/src/branch.rs:660-670) and fork_join
+// (branch.rs:768-773) take an id that a later sibling also holds in its own
+// event layer out of that layer and queue SetVar(id, value) for the next
+// cycle. That copies deliver_error's occupied case, so it is right only for
+// error-handler ids. Module::update primes a freshly loaded body's external
+// refs with try_insert(id, fired(v)) and never removes them
+// (graphix-compiler/src/node/module.rs:986-990). Two dynamic modules loading
+// in one cycle in sibling branches (tuple fields here, gather -> fork_each;
+// `==` operands take join2 -> fork_join the same way) therefore both own the
+// prime of `y`, and the merge writes y := 1 again next cycle. Serial
+// evaluation makes no such write: its second try_insert just fails. `y` is a
+// constant, so `n` must stay 1.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/x-diff-par-05.gx
+//   DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+//     interp:     Trace([3:[i64:1, i64:3, [null, null]]])
+//     interp/par: Trace([3:[i64:1, i64:3, [null, null]] 5:[i64:2, i64:3, [null, null]]])
+// command: timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/x-diff-par-05.gx
+//   expected (and GRAPHIX_PAR=off): (1, 3, (null, null))
+//   observed (default Auto, #[parallel] forks the tuple; also GRAPHIX_PAR=force,
+//   with or without --no-fusion, HEAD c722befe debug build):
+//     (1, 3, (null, null))
+//     (2, 3, (null, null))
+//   GRAPHIX_DBG_VARS=1 shows the extra SET_VAR of y's bind id = i64:1.
+// With only one module in the tuple both modes print the first line only.
+let y = 1;
+let n = 0;
+n <- y ~ n + 1;
+let k = 0;
+k <- select k { x if x < 3 => x + 1, _ => never() };
+let src = never();
+src <- select k { 2 => "let v = super::y + 1", _ => never() };
+let r = #[parallel] (
+    mod a dynamic { sandbox unrestricted; sig { val v: i64 }; source src },
+    mod b dynamic { sandbox unrestricted; sig { val v: i64 }; source src }
+);
+(n, k, r)

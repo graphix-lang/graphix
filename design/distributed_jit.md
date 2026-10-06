@@ -169,6 +169,22 @@ each was obvious in hindsight and invisible in advance.
    first fired by an async input.
 
 4. **Runtime wake-ups key on `(BindId, top_id)`.** Feeders register
+   <!-- CR claude for eric: [doc-drift] `ExecCtx::fuse_top_id` is now
+   `FusionCtx::top_id` (fusion/mod.rs:349), and the `quiet_flag` this doc lists among
+   BodyCx's words is gone. Other design docs also cite names the tree no longer has as
+   if they were current: the `Arc<Mutex<Option<Arc<ResolvedRef>>>>` cell and
+   `find_visible` (env_independent_typerefs.md; the cell holds a `Weak`,
+   typ/mod.rs:426), `restore_lexical_env` (module_system.md, program_image.md; now
+   `Env::swap_lexical` and the context's `with_restored`), `predeclared_mods`
+   (module_system.md), `own_sound`/`own_anyfire` (organic_firing.md), `to_define`
+   (kernel_instance_state.md), `jit::define_spill_thunk` (recursive_activations.md; now
+   the kernel's `self_thunk`), `seq_manual` (seq_blocks.md), `prototype_def`
+   (traits.md), `FnType::freeze_shared_tvars` (tvar_constraints.md),
+   `gen_expr`/`find_producers` (graphix_fuzz.md; now `gen_typed`/`gen_pinned`),
+   `update_many` (parallel_compile.md), `Delta`/`EffectLog` (parallel_eval.md; branch.rs
+   has `RtView`/`ForkRt`/`Layered`/`CxView`) and `BackendStub` (jit_startup.md). Anyone
+   who greps for one of these to find the mechanism finds nothing and cannot tell
+   whether the rule still holds. (x-doc-drift-11) -->
    `ref_var` under the REAL top expression id (`ExecCtx::fuse_top_id`),
    never an interior `ExprId`: the runtime wakes a top only while its
    (id, top) ref count is nonzero, and an id no installed expression

@@ -1,0 +1,35 @@
+// t-fntyp-01: merged, covariant reference types let `*r <- v` store an
+// ill-typed value; the JIT panics.
+//
+// merge_inner (graphix-types/src/typ/normalize.rs:557) merges two references'
+// targets, so the select below is typed `&[i64, string]` (`let z: i64 = r`
+// reports exactly that), a reference to a variable that exists nowhere. A
+// written `[&i64, &string]` normalizes the same way. ConnectDeref's check
+// (graphix-compiler/src/node/mod.rs:2361) then accepts `*r <- "s"`, which
+// lands in `x: i64`.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-fntyp-01.gx
+//          graphix --no-cache design/review-2026-10-05/repro/t-fntyp-01.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-fntyp-01.gx
+//
+// expected: the check refuses `*r <- "s"`: `r` may point at `x: i64`.
+//
+// observed: --check exits 0. The fused run panics and the runtime dies:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `x`: runtime String("s") does not match the compiled Scalar(I64) slot
+//   Error: runtime did not respond  (exit 1)
+// --no-fusion prints 2, then `x + 1` over x = "s" logs an arith error.
+//
+// Not merging is not enough on its own. With `let y = [1]` and
+// `*r <- [2, 3]` the two targets do not merge (r is typed
+// `[&i64, &Array<i64>]`), yet the check still passes, because ConnectDeref
+// accepts a write when ANY member of r's type contains `&typeof(v)`. The
+// fused run panics the same way (runtime Array([2, 3]) in `x`), and
+// --no-fusion prints 2 then [3, 3]: the i64 `x` holds an array.
+let x = 1;
+let y = "a";
+let c = true;
+let r = select c { true => &x, false => &y };
+*r <- "s";
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+x + 1

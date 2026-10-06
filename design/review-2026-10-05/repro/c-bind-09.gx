@@ -1,0 +1,20 @@
+// c-bind-09: a destructuring let leaves a stale builtin_bindings entry; the JIT fast-calls the old builtin
+// command: graphix --no-cache design/review-2026-10-05/repro/c-bind-09.gx
+//     and: graphix-fuzz check design/review-2026-10-05/repro/c-bind-09.gx
+// expected: 42 (the destructured `slen` shadows the builtin one; `graphix --no-fusion` prints 42)
+// observed: the JIT prints 3 (str_len("abc")); graphix-fuzz: DIVERGENCE interp Trace([0:i64:42]) jit Trace([0:i64:3])
+// Variants, same stale (scope, name) entry:
+// - replacement returns string, `let (slen, k) = (|s: string| -> string "[s]!", 0)`: the JIT
+//   aborts the process (panic "fused call returned a Value whose shape (disc 0x400) does not
+//   match its declared return type" in a function that cannot unwind); node-walk prints "abc!"
+// - replacement returns f64, `(|s: string| -> f64 1.5, 0)` with `slen(s) + 1.0`: the JIT
+//   prints 1 (i64 3 read as f64 bits), node-walk 2.5
+// - `let a = |@args: bool| -> bool 'core_and; let (a, k) = (|#x = true| x, 0); a()`: refused
+//   as a dead variadic call (callsite.rs:80); with `let a = |#x = true| x` it is accepted
+// - `let t = |s: string| -> i64 'str_len; let (t, k) = (|n: i64| throttle(#rate: duration:0.001s, n), 0);`
+//   then `#[sync] let f = |n: i64| t(n)`: the assertion passes (analysis.rs:613); without the
+//   stale entry it is refused as async
+let slen = |s: string| -> i64 'str_len;
+let (slen, k) = (|s: string| -> i64 42, 0);
+let f = |s: string| slen(s);
+f("abc")

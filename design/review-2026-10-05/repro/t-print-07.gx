@@ -1,0 +1,17 @@
+// t-print-07: both lambda heads write a labeled default through Arg's
+// Display, flat, so a default holding a comment breaks the layout and a
+// long default runs past the width.
+// command: graphix fmt --stdout design/review-2026-10-05/repro/t-print-07.gx
+// expected: each default laid out like a struct field's value: the comment
+//   on its own line above `alpha`, the fields indented, no line over 90
+// observed (HEAD c722befe, debug build): exit 0, and f's head prints as
+//   let f = |#cfg: { alpha: i64, beta: i64 } = { // the alpha
+//   alpha: 1, beta: 2 }, x| x + cfg.alpha;
+//   while g's head keeps its default on one 101-column line
+let f = |#cfg: {alpha: i64, beta: i64} = {
+    // the alpha
+    alpha: 1,
+    beta: 2
+}, x| x + cfg.alpha;
+let g = |#cfg = { alpha: 1, beta: 2, gamma: 3, delta: 4, epsilon: 5, zeta: 6, eta: 7, theta: 8, iota: 9 }, x| x + 1;
+f(g(3))

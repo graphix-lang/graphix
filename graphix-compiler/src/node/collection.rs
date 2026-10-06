@@ -203,6 +203,16 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
 /// malformed pair is logged and skipped. Key order reads the core-trait
 /// hooks, so the caller runs this under them.
 pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Value {
+    // CR claude for eric: [bug] CMap::from_iter is chunkmap's insert_many: a stable
+    // sort, then dedup_by, which keeps the FIRST pair of each equal key. So map::map
+    // and map::filter_map keep the first of colliding output keys, while a map literal
+    // and map::insert keep the last: map::map({"a" => 1, "b" => 2}, |(k, v)| (1, k)) is
+    // {1 => "a"}, and {1 => "a", 1 => "b"} is {1 => "b"}. Both engines come through
+    // here, so they agree, and map/mod.gxi states neither rule. Make it last-wins,
+    // which matches literals, insert and union's documented rule, and state it in the
+    // map and filter_map docs. probe:
+    // design/review-2026-10-05/repro/x-engine-collections-08.gx
+    // (x-engine-collections-08)
     Value::Map(CMap::from_iter(pairs.into_iter().filter_map(|v| {
         let pair = split_pair(v);
         if pair.is_none() {
@@ -317,6 +327,13 @@ impl MapCollection for IndexRange {
 
 /// A slot's last production.
 #[derive(Debug, Default)]
+// CR claude for eric: [dead] SlotState::Empty is never observed: set() never writes it,
+// and every read follows a run of every slot (an interrupt returns ride() before any
+// read). So once poisoned is false every slot holds a value: the all(value().is_some())
+// tests at 1100 and 1109 are always true and the else at 1112-1114 is dead, as are
+// FoldQ's SlotState::Empty seed (1497) and its Some(SlotState::Empty) arm (1527). Drop
+// the variant (a slot holds its last value or bottom) and the dead arms.
+// (c-collection-04)
 enum SlotState {
     /// Never produced.
     #[default]
@@ -447,6 +464,20 @@ impl CallKind {
         ctx: &ExecCtx<'_, R, E>,
         prototype: &Node<R, E>,
     ) -> Self {
+        // CR claude for eric: [bug] When resolve_trait_call has lowered the prototype
+        // (a core trait, or a user trait over a union element type), it views as its
+        // lowered block and has no static_target. So this returns Slot(None), and every
+        // slot calls through the callback parameter. That parameter is bound to the
+        // dispatcher, which never holds a value. As a result `array::map([1, 2],
+        // Display::fmt)` and `array::map(ys, Show::show)` over `Array<[A, B]>` produce
+        // nothing in both engines. fold, init and list::map behave the same, `--check`
+        // passes, and nothing is logged. A sibling case diverges: in `app(Display::fmt,
+        // [1, 2])` with `app = |f: fn(x: i64) -> string, xs: Array<i64>| array::map(xs,
+        // |x| f(x))`, the node-walk produces nothing but the JIT gives ["1", "2"]. A
+        // slot's instance is built at run time, after unregister_fn_params has dropped
+        // f from trait_methods. probe:
+        // design/review-2026-10-05/repro/x-engine-seq-errors-03.gx
+        // (x-engine-seq-errors-03)
         let NodeView::CallSite(site) = prototype.view() else { return Self::Slot(None) };
         let def = site
             .static_target
@@ -857,6 +888,19 @@ fn update_slots<R: Rt, E: UserEvent>(
 ) -> Option<Option<Tag>> {
     let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));
     let n = standing.len();
+    // CR claude for eric: [bug] The standing slots fork here on cost alone, and the
+    // fresh ones fork through site.fresh.run below. Nothing tells the collection that
+    // its callback reaches an ordered or opaque call, so slots that share one queuefn
+    // queue push into it and pop from it in thread order. That breaks the rule
+    // plan_block enforces for statements (design/parallel_eval.md §3.2, §6). In the
+    // default Auto mode the program's value then depends on scheduling. Probe:
+    // design/review-2026-10-05/repro/c-collection-02.gx prints null under
+    // GRAPHIX_PAR=off and an out-of-order index in most default runs, and graphix-fuzz
+    // check on `array::map([1, 2, 3, 4, 5, 6, 7, 8], |x| q(x) ~ n)` over a shared
+    // queuefn reports a parallel-evaluation DIVERGENCE. The ForkSite users (gather,
+    // call arguments, operands) have the same hole: `(q(1) ~ n, q(2) ~ n, q(3) ~ n,
+    // q(4) ~ n)` comes out in a different order under GRAPHIX_PAR=force.
+    // (c-collection-02)
     let production = match site.plan(ctx, n) {
         SlotPlan::Serial => update_slots_in_order(ctx, standing, 0, old_len)?,
         SlotPlan::Measure(t0) => {
@@ -924,6 +968,13 @@ fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
 /// ahead of their first updates, where `site` says the builds pay for
 /// it; a slot built in order binds at its first update. `call` is a
 /// slot's call.
+// CR claude for eric: [perf] build_fresh runs on every update with a valid source, as
+// does CallKind::slot (a lambda_defs lookup and a Value clone, 1035/1437), though both
+// matter only when slots were added. With nothing fresh, its apply_deferred still
+// drains pending_refs, and a hashbrown drain rewrites every control byte of a table
+// that keeps the capacity of the largest compile batch; in a forked branch the DerefMut
+// on ctx.cx also boxes a CompileCtx fork that the merge joins back. Return early when
+// fresh is empty, and build the CallKind inside resize's add closure. (c-collection-05)
 fn build_fresh<R: Rt, E: UserEvent, S: Send>(
     ctx: &mut ExecCtx<'_, R, E>,
     fresh: &mut [S],
@@ -1049,6 +1100,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // Elements move only on a fire, in a frame (a rebound loop
                 // variable arrives stale) or past a sleep; a fresh slot
                 // always takes its element.
+                // CR claude for eric: [doc-drift] The comment above says elements also
+                // move 'in a frame (a rebound loop variable arrives stale)', but the
+                // node-walk has no frames (design/tail_calls_are_calls.md) and moved is
+                // src_trig || woke; FoldQ's copy at 1447 says the same. Drop the frame
+                // clause in both. (c-collection-07)
                 let moved = src_trig || woke;
                 let from = if moved { 0 } else { old_len.min(self.slots.len()) };
                 for (slot, value) in
@@ -1061,6 +1117,22 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // whether or not a slot fires, and so do moved elements
                 // under a result that reads them.
                 let back = std::mem::take(&mut self.src_bottom);
+                // CR claude for eric: [bug] MapQ and FoldQ each carry a copy of the
+                // source/resize/deliver prologue (1018-1059, 1420-1456), and the firing
+                // rules after it have drifted from each other and from the JIT's exact
+                // SlotFlags rule, which fires on any resize and treats a source back
+                // from bottom as one. Here MapQ merges the source's tag, so a resize or
+                // a return that the source delivers STALE (an arm waking after another
+                // arm consumed the source's fire) does not fire, and the empty-source
+                // return at 1069 takes the source's tag alone; FoldQ fires on a resize
+                // but needs src_trig for a return (1522). graphix-fuzz check reports
+                // DIVERGENCE (interp 4:0, jit 4:4) for map on a shrink and for map and
+                // fold on a return; probe:
+                // design/review-2026-10-05/repro/c-collection-03.gx. One shared
+                // prologue with one rule (fire iff resized, back from bottom, a slot
+                // fired, or the source fired empty) closes it; typecheck*, delete,
+                // sleep, image and emit_clif_call are pairwise copies too.
+                // (c-collection-03)
                 if resized || back || (self.base.op.reads_elements() && moved) {
                     production = merge_tag(production, tag);
                 }
@@ -1148,6 +1220,19 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         &self.base.typ
     }
 
+    // CR claude for eric: [bug] MapQ::refs, and FoldQ::refs at line 1571, report the
+    // source and the prototype but not the slots, whose call sites hold the bound
+    // instances. When the callback is chosen at run time, or the callback calls a
+    // function chosen at run time, the prototype never binds. What the slot instances
+    // read is then missing from the refs that Select and the seq machine re-collect at
+    // each deselect, and from the refs Bind::input_fired reads at a wake. As a result,
+    // a fire that lands while the arm sleeps is not re-raised at the wake, and a live
+    // fire in the wake cycle is held back from a let that a connect writes; `[g(n)]` in
+    // place of `array::map([n], g)` handles both correctly. Probe:
+    // design/review-2026-10-05/repro/x-node-contract-04.gx (graphix-fuzz run gives
+    // Trace([]), expected 9:[i64:9]). Walking each slot's call with its arg ids bound
+    // (acc_id and element_id in FoldQ) would close it; slots are empty at compile time,
+    // so compile-time users see no change. (x-node-contract-04)
     fn refs(&self, refs: &mut Refs) {
         self.base.source.refs(refs);
         refs.bound.insert(self.base.prototype_id);
@@ -1464,6 +1549,18 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
         if self.slots.is_empty() && source_ok {
             return match init.tag() {
+                // CR claude for eric: [bug] When the init is bottom, a fired empty
+                // source does not fire the fold. This arm takes its trigger from the
+                // init alone. The value arm below joins in the source's tag
+                // (`tag.join(t)`), and the kernel fires on a fired empty source
+                // (fusion/emit/scaffold.rs:602-604). So the node-walk returns a stale
+                // bottom where the JIT returns a fresh one. A fold whose callback
+                // ignores its acc misses the fire, and a `<-` target initialized by
+                // such a fold keeps same-cycle writes that the JIT re-publishes over
+                // (both engines do that with a valid init).
+                // `set_bottom(tag.join(t).triggers())` makes the two arms agree. probe:
+                // design/review-2026-10-05/repro/f-scaffold-body-05.gx
+                // (f-scaffold-body-05)
                 t if t.is_bottom() => self.resident.set_bottom(t.triggers()),
                 t => {
                     self.resident.set(TagValue::tagged(init.value_cloned(), tag.join(t)))
@@ -1637,6 +1734,20 @@ impl Flavor {
     /// Append a flat_map callback's result: its elements when it is this
     /// flavor's collection, else itself.
     fn extend(self, elems: &mut LPooled<Vec<Value>>, v: &Value) {
+        // CR claude for eric: [bug] flat_map chooses between splicing and pushing by
+        // looking at the value, but its callback may return a bare 'b (`['b,
+        // Array<'b>]`, `['b, List<'b>]`). A tuple, struct, payload variant or list 'b
+        // is an array at run time, and any empty or 2-slot array passes list::is_list.
+        // So `array::flat_map([1, 2], |x| (x, x * 10))` checks as Array<(i64, i64)> but
+        // is [1, 10, 2, 20] in both engines, `list::flat_map` with the same callback
+        // drops every second component, and code that reads the result by its type then
+        // diverges (the node-walk bottoms, kernels read 0).
+        // graphix_value_buf_extend_from_list in fusion/emit_helpers.rs makes the same
+        // value test. The splice has to follow the callback's resolved return type, or
+        // the signatures become `-> Array<'b>` / `-> List<'b>` like
+        // Collection::flat_map's (lang::functions::flat_map_declared_union pins the
+        // bare form). probe: design/review-2026-10-05/repro/c-collection-01.gx
+        // (c-collection-01)
         match (self, v) {
             (Self::Array, Value::Array(a)) => elems.extend(a.iter().cloned()),
             (Self::List, v) if list::is_list(v) => {
@@ -1649,6 +1760,15 @@ impl Flavor {
     /// Emit the loop source as the scaffold's ValArray. Returns the
     /// source's (disc, payload), whose disc drives the firing wrap,
     /// plus the loop's [`scaffold::ArraySrc`].
+    // CR claude for eric: [structure] The fused-loop emission (514-648 and 1649-2072,
+    // about 550 lines: CallbackParam, the emit_*_kind gates,
+    // Flavor::emit_source/emit_result, emit_flattened_source) is the only cranelift
+    // code under node/; other nodes' emit_clif delegate to fusion/emit. Moving it
+    // beside scaffold.rs leaves this file the node-walk semantics. emit_source also
+    // returns a CompiledExpr whose payload the List/Map flatten helper has already
+    // consumed, kept only for the disc the ArraySrc carries: return the ArraySrc alone
+    // and call flags.apply directly in place of finish_loop_result, a one-line wrapper.
+    // (c-collection-06)
     fn emit_source<R: Rt, E: UserEvent>(
         self,
         cx: &mut BodyCx,

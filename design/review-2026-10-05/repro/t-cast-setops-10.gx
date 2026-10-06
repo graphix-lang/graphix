@@ -1,0 +1,23 @@
+// t-cast-setops-10: typed printing keys its path guard on the definition
+// only, leaking the list rep into interpolated strings.
+//
+// TVal's Ref arm (graphix-types/src/typ/tval.rs:163) keys its path set on
+// (tr.def_key(), value address); cast_int and is_a_int key on ref_key(tr),
+// definition plus parameters. Under O<O<X>> the inner O<X> meets the same
+// value under the same definition, the guard reads it as a name expanding
+// without consuming structure, and the value prints naked: a List shows its
+// private cons rep, a variant its raw array, a struct its field pairs.
+// Field b (one O) prints right. Both engines agree: the printer is shared
+// by string interpolation, print/println/dbg and the shell.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-10.gx
+// expected (what the same values print as under one O):
+//   ("{a: [<1, 2>], b: [<1, 2>], c: `Foo(3), d: {x: 1}}", 49)
+// observed:
+//   ("{a: [1, [2, []]], b: [<1, 2>], c: [\"Foo\", 3], d: [[\"x\", 1]]}", 60)
+type O<'a> = ['a, null];
+type S = {a: O<O<List<i64>>>, b: O<List<i64>>, c: O<O<`Foo(i64)>>, d: O<O<{x: i64}>>};
+let s: S = {a: [<1, 2>], b: [<1, 2>], c: `Foo(3), d: {x: 1}};
+let r = "[s]";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, str::len(r))

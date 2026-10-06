@@ -1,0 +1,41 @@
+// c-node-mod-03: ConnectDeref caches its write target across an arm's sleep,
+// and its first resolution from the standing store always writes.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/c-node-mod-03.gx
+//   (graphix-fuzz check says AGREE: every mode gives the same wrong trace)
+//
+// A list editor: in0 is the mode (1 = edit), in1 the cursor, in2 the input.
+// The view arm reads *r and in2, so it consumes their fires
+// (design/wake_catchup.md, rule 2).
+// Epoch 1, the first entry to edit: `*r <- in2` takes its target from the
+//   standing store and writes in2's consumed 0 into rows[0]. A plain connect
+//   in that position writes nothing (`a <- in2` beside a reader of `a + in2`),
+//   and the re-entry at epoch 4 writes nothing either.
+// Epoch 3 moves the cursor while the edit arm sleeps. The view arm consumes
+//   r's fire, so the woken ConnectDeref keeps rows[0] as its target.
+// Epoch 5 (in2 = 7) writes rows[0]. The root's fire then re-delivers r, and
+//   the retarget writes rows[2] too.
+//
+// expected:
+//   Trace([0:[[1, 2, 3], 1]]; [0:[[1, 2, 3], -1]]; [0:[[1, 2, 3], 1]];
+//         [0:[[1, 2, 3], 3]]; [0:[[1, 2, 3], -1]]; [1:[[1, 2, 7], -1]])
+// observed (every mode; i64: prefixes dropped):
+//   Trace([0:[[1, 2, 3], 1]]; [0:[[1, 2, 3], -1] 1:[[0, 2, 3], -1]];
+//         [0:[[0, 2, 3], 0]]; [0:[[0, 2, 3], 3]]; [0:[[0, 2, 3], -1]];
+//         [1:[[7, 2, 3], -1] 2:[[7, 2, 7], -1]])
+//
+// A call does not help: with `let put = |r: &i64, v: i64| -> i64 { *r <- v; v }`
+// and the edit arm `put(r, in2)`, a cursor move during the sleep still writes
+// the old row first. The CallSite's wake refresh stands the formal in the
+// store and never delivers it, and the callee's ConnectDeref retargets only
+// on a delivery.
+// schedule-v1: cap=96 events=768; in0=i64:1; in0=i64:0; in1=i64:2; in0=i64:1; in2=i64:7
+{
+  let rows = [i64:1, i64:2, i64:3];
+  let r = &rows[in1];
+  let o = select in0 {
+    i64:1 => { *r <- in2; i64:-1 },
+    _ => *r + in2
+  };
+  (rows, o)
+}

@@ -1,0 +1,20 @@
+// t-fntyp-02: union normalization merges distinct unbound type variables
+// inside products and collections (normalize.rs flat_eq compares with TVar ==,
+// and two distinct unbound cells compare equal).
+// `pick` is inferred as fn(c: bool, a: 'a, b: 'b) -> Array<'b>: the true arm's
+// Array<'a> is dropped, so `v` below is typed i64 but holds "x".
+//   graphix --check t-fntyp-02.gx
+//     expected: refused at `v + 1` (v can be the string "x"); observed: exit 0
+//   graphix --no-cache t-fntyp-02.gx
+//     observed: panic at graphix-compiler/src/fusion/kernel.rs:243 "kernel param
+//     `v`: runtime String("x") does not match the compiled Scalar(I64) slot",
+//     then "Error: runtime did not respond"
+//   graphix --no-cache --no-fusion t-fntyp-02.gx
+//     observed: arith error, "x" parsed as an i64
+// Struct twin (`{x: a}` / `{x: b}`, read `.x`): graphix-fuzz check reports
+// DIVERGENCE, interp Trace([]) vs jit Trace([0:i64:1]).
+// Inferred type: replace the last two lines with `let g: i64 = pick; g` and
+// --check prints `-> Array<'b>` (b's cell).
+let pick = |c: bool, a, b| select c { true => [a], false => [b] };
+let v = pick(true, "x", 41)[0]$;
+v + 1

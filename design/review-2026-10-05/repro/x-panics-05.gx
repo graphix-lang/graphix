@@ -1,0 +1,15 @@
+// Finding x-panics-05: Duration Pack decode panics on out-of-range nanos
+// Command: graphix --no-cache design/review-2026-10-05/repro/x-panics-05.gx
+// bytes:C///////////O5rKAA== is a Value::Duration with secs = u64::MAX and
+// ns = 1_000_000_000 (0x3B9ACA00). netidx-core Duration::decode builds it with
+// Duration::new(secs, ns), whose nanos carry overflows secs past u64::MAX.
+// Expected: "decoded: ..." prints a `PackErr(..) Result (decode returns Err,
+//   which pack's eval maps to errf!("PackErr", ..)).
+// Observed: thread 'tokio-rt-worker' panicked "overflow in Duration::new" at
+//   core/src/time.rs; "decoded" is never printed and the pack::read call site
+//   produces nothing (the spawned task's panic is swallowed as a JoinError).
+let b = bytes:C///////////O5rKAA==;
+let d: Result<duration, [`PackErr(string), `InvalidCast(string)]> = pack::read(b);
+println("decoded: [d]");
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+d

@@ -1,0 +1,24 @@
+// f-kernel-04: the ABI gate refuses [T, null] for a T with no register form,
+// while the wider primitive union fuses.
+//
+// freeze_for_abi_d_inner (graphix-compiler/src/fusion/kernel_abi.rs:393) returns
+// Err(Unsupported) for a two-member primitive union with null unless the other
+// member is a string or a register scalar; every other primitive union is an
+// opaque Value (line 405). A struct freezes field by field, so one
+// [duration, null] field (or datetime, bytes, decimal, v32/v64/z32/z64) makes
+// the whole record type unfusable, even for a body that never reads the field.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/f-kernel-04.gx
+//   expected: [2, 4] (what it prints with the field typed [duration, i64, null])
+//   observed: #[native] expression did not fully fuse to native code:
+//     emit_clif: lambda call site `#[native] array::map(rows, |r| r.n * 2)` not discovered
+// command: graphix-fuzz run on the program without #[native]:
+//   fusion: attempted=6 fused=0 (`formal `x` has no kernel encoding`,
+//   `let value of shape None`); with [duration, i64, null]: fused=1.
+//   A bare Array<[duration, null]> with `select d { null as _ => 0, _ => 1 }`
+//   fails the same way: `select scrutinee type Primitive(Null | Duration)
+//   doesn't freeze concrete`.
+let rows: Array<{n: i64, t: [duration, null]}> = [{n: 1, t: duration:1.s}, {n: 2, t: null}];
+let r = #[native] array::map(rows, |r| r.n * 2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

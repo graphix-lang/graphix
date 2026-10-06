@@ -1,0 +1,32 @@
+// t-cast-setops-12: a cast descends forever through a growing-parameter
+// typedef via its wrap conversions.
+//
+// The Ref arm's path guard (graphix-types/src/typ/cast.rs:575-583) keys
+// on (definition, params, value address). The Array, List and Error arms
+// wrap a value of the wrong shape by casting the SAME value to the
+// element type (cast.rs:362-365, 331-333, the List arm likewise), so a
+// typedef whose parameters grow as it recurses reaches the same value
+// under W<i64>, W<Array<i64>>, W<Array<Array<i64>>>, ...: the key is new
+// every level, "the type recurses without consuming it" never fires,
+// and every level expands a bigger type. With a non-growing typedef
+// (type V<'a> = [Array<V<'a>>, null]) the same cast ends at once with
+// InvalidCast.
+//
+// command: XDG_CACHE_HOME=<scratch> timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/t-cast-setops-12.gx
+//          (the same with --no-fusion; `--check` exits 0)
+//
+// expected: result: error:["InvalidCast", "can't cast \"x\" to
+//   [null, Array<W<Array<i64>>>]: no member admits it"], then exit 0
+//   (what V prints for the same cast).
+// observed: no output; killed by the timeout (exit 137). Under a 1G memory
+//   cap it is OOM-killed after ~40 s. GRAPHIX_STACK_BUDGET=64M logs the
+//   budget abort 70 times in 40 s but the recursion goes on: the cast
+//   never polls the interrupt. gdb at the first budget abort: ~26600
+//   frames of Type::cast_inner/cast_int under TypeCast::update. The same
+//   hang through external data: json::read("\"x\"") typed W<i64>.
+type W<'a> = [Array<W<Array<'a>>>, null];
+let s = "x";
+let r = cast<W<i64>>(s);
+println("result: [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

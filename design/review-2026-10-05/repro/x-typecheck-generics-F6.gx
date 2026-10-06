@@ -1,0 +1,32 @@
+// x-typecheck-generics-F6: a rank-2 argument's quantifier escapes into a
+// captured outer cell; the check accepts, the run violates the types.
+//
+// `g` writes its parameter into the top-level `st`, so g's type is
+// fn(x: 'st) -> 'st over st's environment cell: g holds for one type, not
+// for every 'b. Checking `h(g)` against the rigid `fn<'b: Any>(x: 'b) -> 'b`
+// aliases st's cell to the quantifier 'b (callsite.rs typecheck_arg, rank-2
+// branch: the pre-unify and check_contains_rigid let an open cell the
+// argument does not own alias 'b), and h's body then types f(1) as i64 and
+// f("s") as string while both write the one `st`.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F6.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F6.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-typecheck-generics-F6.gx
+//
+// expected: the check refuses h(g), as it refuses apply(|x: i64| ..): the
+// argument is not well typed for every 'b.
+//
+// observed: --check exits 0. The fused run panics:
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `a`: runtime String("s") does not match the compiled Scalar(I64) slot
+//   Error: graphix runtime is dead
+// --no-fusion prints 2, then `a` (typed i64) holds "s":
+//   arith error ... at line: 32, column: 1 "Parse error ... Unexpected `s` ..."
+// With GRAPHIX_NO_SUBST=1 elaboration refuses it instead: "st is i64,
+// inferred from an earlier use, and cannot hold string".
+let st = never();
+let g = |x| { st <- x; st };
+let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+let (a, b) = h(g);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+a * 2

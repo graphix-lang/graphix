@@ -1,0 +1,52 @@
+// t-expr-core-01: GxAbstract params decode unguarded: crafted parse/pack/netidx
+// input aborts the process.
+//
+// Once the program has built any Graphix abstract value (`T(1)` here), the
+// GxAbstract wrapper is registered in netidx's Abstract registry, so every
+// later Value decode that meets its uuid decodes the `params: Arc<[Type]>`
+// field through Type::decode -> shape_decode (graphix-types/src/typ/mod.rs
+// 1024-1088), which recurses once per nesting level with no ensure_sufficient
+// and no depth bound, at one input byte per level. `input` below is the text
+// form of such a value whose one param is Array<..<Any>> 196,608 deep (a
+// 262 KB string): a 30-byte header, 196,608 bytes of tag 0x08 (ARRAY, base64
+// CAgI per 3 bytes), then ANY and a null payload (ARA=). In a debug build
+// 10,000 levels (a 13 KB string) already abort.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-expr-core-01.gx
+//          (the same with --no-fusion, and with a cold or warm image)
+//
+// expected: an error value (ParseError or InvalidCast), as the shallow
+//   control prints: with input "abstract:IVoMMX6SS05huC1vE8mkfQgAAAAAAAAwOQF4AQgICAEQ"
+//   (3 levels) it prints error:["InvalidCast", "can't cast x(null) to ..."].
+// observed (HEAD c722befe, debug build, both engines): "thread
+//   'tokio-rt-worker' has overflowed its stack / fatal runtime error: stack
+//   overflow, aborting", exit 134. gdb: ~17,500 frames of Type::decode /
+//   shape_decode / Arc<Type>::decode under GxAbstract::decode, from
+//   netidx_value::parser::parse_value in graphix_package_str::fc_parse.
+//   Replacing `T(1)` by `1` (no abstract value built) prints InvalidCast of
+//   an opaque abstract instead: the wrapper is not registered.
+// The same bytes abort through pack::read (a 50 KB file) and through a netidx
+// subscription (the overflow is in netidx::subscriber::connection::decode_task).
+type T = Abstract<i64>;
+let t = T(1);
+let s0 = "CAgI";
+let s1 = "[s0][s0]";
+let s2 = "[s1][s1]";
+let s3 = "[s2][s2]";
+let s4 = "[s3][s3]";
+let s5 = "[s4][s4]";
+let s6 = "[s5][s5]";
+let s7 = "[s6][s6]";
+let s8 = "[s7][s7]";
+let s9 = "[s8][s8]";
+let s10 = "[s9][s9]";
+let s11 = "[s10][s10]";
+let s12 = "[s11][s11]";
+let s13 = "[s12][s12]";
+let s14 = "[s13][s13]";
+let s15 = "[s14][s14]";
+let s16 = "[s15][s15]";
+let input = "abstract:oIAMWgwxfpJLTmG4LW8TyaR9CAAAAAAAADA5AXgB[s16]ARA=";
+let r: [i64, Error<`ParseError(string)>] = str::parse(t ~ input);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+r

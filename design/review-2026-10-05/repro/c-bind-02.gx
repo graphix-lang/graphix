@@ -1,0 +1,41 @@
+// c-bind-02: a wake's constant fire passed through a call formal or a
+// pattern bind resets a <- target.
+//
+// Only Bind::update records a wake's constant fire in Event::wake_phantoms
+// (graphix-compiler/src/node/bind.rs:366-368), and only Bind::input_fired
+// (bind.rs:140-147) reads it. CallSite's publish_production
+// (node/callsite.rs:2454), GXLambda::update's formal publish
+// (node/lambda.rs:743-746) and PatternNode::bind_event (node/pattern.rs:1256)
+// relay the constant's fire FIRED without marking it, so the callee's
+// `let c = start` (or the arm's `let c = s`) sees an input fire and
+// republishes its seed over the last write. The three columns are one
+// counter written three ways inside an arm that sleeps (n = 3, 4) and wakes
+// (n = 5): inline, seeded from a defaulted formal, seeded from a pattern bind.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-bind-02.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off|force;
+//          graphix-fuzz check: AGREE, every engine and image mode agrees)
+//
+// expected (sleep is pause: CLAUDE.md, design/wake_catchup.md "A target is
+//   held back from the wake's own fire"; the inline column is the pinned
+//   lang::select::wake_constant_keeps_target behaviour):
+//   (0, 0, 0) (1, 1, 1) (-1, -1, -1) (2, 2, 2) (3, 3, 3)
+// observed (HEAD c722befe, debug build, every mode):
+//   (0, 0, 0) (1, 1, 1) (-1, -1, -1) (2, 0, 0) (3, 1, 1)
+//   The formal and pattern-bind counters restart from their seed at the wake.
+//   An outer variable as the seed (`counter(#start: s0, click)`) or a
+//   constant inside the callee (`let c = 0`) keeps 2.
+let n = array::iter([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+let tab = uniq(select n { 3 => `B, 4 => `B, _ => `A });
+let click = select n { 1 => null, 2 => null, 7 => null, _ => never() };
+let counter = |#start: i64 = 0, ev: Any| -> i64 { let c = start; c <- ev ~ c + 1; c };
+let r = select tab {
+  `A => (
+    { let c = 0; c <- click ~ c + 1; c },
+    counter(click),
+    select 0 { s => { let c = s; c <- click ~ c + 1; c } }
+  ),
+  `B => (-1, -1, -1)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, r ~ 0));
+r

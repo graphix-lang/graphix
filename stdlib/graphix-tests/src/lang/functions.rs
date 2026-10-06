@@ -13,6 +13,14 @@ const LAMBDA: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The note "ASPIRE: Jit — the body does not fuse into a
+// kernel yet" is false here and above fused_arith (343), fused_tail_loop (361),
+// fused_mandelbrot (433), lazy_no_annotations (465), dyncall_hof (496),
+// nested_optional0 (684) and arg_update_after_bind (728): each body builds its kernel,
+// and `#[native]` on the call holds today. Delete these notes. On the fused_* tests,
+// put `#[native]` on the call so the name's claim is pinned, since FuseExpect::Jit
+// passes on any kernel. The note is still true for lambdamatch0 and
+// arg_update_before_bind, which build no kernel. (tests-lang-a-09)
 run!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
@@ -28,6 +36,11 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 
 // A monomorphic fn-typed param: `f(y) + 1` with `f: fn<'a: Number>` is
 // ill-typed (concrete arithmetic on an arbitrary rigid 'a).
+// CR claude for eric: [doc-drift] This comment describes the fixture this test
+// replaced, and its claim is now false. Under the rank-2 rule a call copies the
+// formal's own quantifier, so `let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
+// g(|x| x, 1)` checks and yields 2. Delete the comment; if that rank-2 case matters,
+// pin it in its own test. (tests-lang-a-13)
 run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -829,6 +842,15 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
 // consuming path, never the whole kernel.
 
 // A fold whose init bottoms never dispatches; the independent tail fires.
+// CR claude for eric: [doc-drift] The comment above is false: this first fold returns 7
+// in both engines, because its callback never reads acc (as fold_tainted_init_recovers
+// asserts), so it does dispatch. The comment at line 844 describes a callback consuming
+// a bottom acc, but UNUSED_BOTTOM_COMPOSITE_WITH_HOF has no fold.
+// find_bottom_after_match, fold_tainted_init_consumed_bottoms and
+// nontail_result_as_fold_init claim a bottom or a fire their predicates never observe:
+// they check only `false` or an independent tail. Observe each claim with `any(r, -1)`;
+// today the consuming fold and the find give -1, and the first nontail fold gives 42.
+// (tests-lang-a-07)
 const FOLD_BOTTOM_INIT_UNREAD_ACC: &str = r#"
 {
   let b = i64:1 / i64:0;
@@ -1172,6 +1194,13 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
+// CR claude for eric: [test-gap] This fixture is not Graphix: `sync`, `let mut`, `for`
+// and `=` assignment do not parse. The program fails at the parser, `matches!(v,
+// Err(_))` accepts that, and so the test cannot fail whatever the checker does. Use the
+// corpus form, `array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0,
+// |res, v| res / v)`, and match "both operands must be one numeric type". Both
+// callsite_rejects_* tests are now refused by the operand rule, not by a call-site
+// check, so name them after that rule. (tests-lang-a-01)
 const CALLSITE_REJECTS_HETEROGENEOUS_RETURN: &str = r#"
 sync {
   let mut res = i64:0;
@@ -1461,6 +1490,13 @@ run!(
 
 // A tail-jump arg that bottoms every pass rides its previous value: the
 // loop keeps acc=0 and reaches the base.
+// CR claude for eric: [doc-drift] The comment and the test name say a bottomed tail
+// argument rides its previous value, but CLAUDE.md says a bottom input never rides. The
+// 0.0 comes from the base arm `0 => 0.0`, which never reads acc, so this test cannot
+// tell riding from not consuming. Rename it (e.g. tail_arg_bottom_unread_by_base) and
+// say what it pins: a bottomed argument the base never reads does not bottom the
+// result. The consuming form, `0 => acc`, is bottom in both engines today (`any(f(3,
+// 0), -1)` gives -1). (tests-lang-a-04)
 const TAIL_ARG_BOTTOM_RIDES_CACHE: &str = r#"
 {
     let rec f = |n: i64, acc: i64| -> f64
@@ -1958,6 +1994,18 @@ run!(null_callee_is_bottom, NULL_CALLEE_IS_BOTTOM, |v: Result<&Value>| {
 // for a non-tail call: the loop does not keep the previous value. `obs`
 // is written only by a value, so it stays null while the result is
 // bottom.
+// CR claude for eric: [risk] This fixture orders its events with wall-clock timers and
+// passes only while t1 (30 ms) lands at least three cycles before t2 (60 ms). The
+// runtime puts every completed timer into one cycle (graphix-rt/src/gx.rs:1029). So if
+// the runtime thread stalls across the 30 ms gap (a loaded parallel run; par and
+// jit_par also wait on the shared eval pool at every fork), `t2 ~ obs` reads obs before
+// it is written and the test fails with [null, null]. select_sibling_binds_spent and
+// let_sibling_binds_spent (select.rs:1885, 2002) depend on a 100 ms gap the same way
+// and fail with (1, 0, 1). Drive the events with a step counter, as
+// arm_sampled_write_keeps_trigger does; rewritten that way, all three give the expected
+// values in all four modes. probe: design/review-2026-10-05/repro/tests-lang-a-02.sh
+// (freezes the runtime with SIGSTOP for 35 ms or 120 ms across the gap).
+// (tests-lang-a-02)
 const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 {
   let rec f = |n: i64, x: i64, k: i64| -> i64 select n {

@@ -1,0 +1,19 @@
+// t-contains-08: a conjunct is only probed at a bind; the open cells inside the binding never receive it
+// `f([y])` binds f's `'a: Array<i64>` to `Array<'y>` after a probe that admits the open `'y`,
+// so `g` generalizes to `fn(y: 'y) -> i64` with `'y` free and `h` may call it with a string.
+// command: graphix --check repro.gx ; graphix --no-cache repro.gx
+// expected: --check refuses `let h: fn(y: string) -> i64 = g` (Array<i64> does not contain Array<string>)
+// observed: --check exits 0; the run panics the runtime (fusion on, the default):
+//   thread 'tokio-rt-worker' panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `r`: runtime String("hello") does not match the compiled Scalar(I64) slot
+//   Error: runtime did not respond   (exit 1)
+// --no-fusion: f's body runs on "hello" and `r * 3` logs an arith error.
+// static form: replace the last three lines by `g("hello")`: --check exits 0, the build refuses
+//   "an instance at fn(x: Array<string>) -> i64 of a definition typed fn<'a: Array<i64>>(x: 'a) -> i64"
+// inferred-conjunct form (no written bound), same divergence:
+//   let a = [10, 20, 30]; let f = |i| a[i]$; let g = |b, k| f(select b { true => 1, false => k }); g(false, "s")
+let f = 'a: Array<i64> |x: 'a| -> i64 x[0]$;
+let g = |y| f([y]);
+let h: fn(y: string) -> i64 = g;
+let r = h("hello");
+r * 3

@@ -1,0 +1,34 @@
+// fuzz-gen-b-03: dyn_reload's block sources never load: array::len under
+// sandbox whitelist [core].
+//
+// graphix-fuzz/src/generate/reactive.rs:536-541 builds half of dyn_reload's
+// sources as the block below (it always calls array::len), and line 551
+// loads every source under `sandbox whitelist [core]`, which removes the
+// array package. The block never compiles, so the generated select always
+// takes its `i64:-1` arm for it and a reload swap never tears down a loaded
+// body with live statements. Module dr0 is the generator's shape; dr1 is
+// the same source with array whitelisted.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/fuzz-gen-b-03.gx
+// expected (the block source loads, as it does with array whitelisted):
+//   core=20 core_array=20
+// observed:
+//   core: error:["DynamicLoadError", "compile error at: line: 1, column: 70,
+//     in: array::len\n\nCaused by:\n    array::len not defined"]
+//   core=-1 core_array=20
+//
+// Same site under graphix-fuzz run, sources [plain, block, block] selected by
+// in0 = 1, 2, 4, 3: [core] traces [0; -1; -1; -1; 9] (only the plain source
+// ever loads), [core, array] traces [0; 1; 9; 4; 9].
+//
+// At scale: `graphix-fuzz gen 3000 31 --reactive` emits 467 dyn_reload
+// sources, 245 of them block sources, none loadable under [core]; 17 of the
+// other 222 draw str::len or map::len and fail the same way. With
+// [core, array, str, map] every source loads.
+let src = r#"let f = |p: i64| -> i64 p * i64:2; let q = f(i64:3) * i64:5; let z = array::len([q, q + i64:1, f(i64:3 + i64:2)]); let w = q + z"#;
+let a = mod dr0 dynamic { sandbox whitelist [core]; sig { val f: fn(x: i64) -> i64 }; source src };
+let b = mod dr1 dynamic { sandbox whitelist [core, array]; sig { val f: fn(x: i64) -> i64 }; source src };
+let va = select a { error as e => { println("core: [e]"); i64:-1 }, null as _ => dr0::f(i64:10) };
+let vb = select b { error as e => { println("core_array: [e]"); i64:-1 }, null as _ => dr1::f(i64:10) };
+println("core=[va] core_array=[vb]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

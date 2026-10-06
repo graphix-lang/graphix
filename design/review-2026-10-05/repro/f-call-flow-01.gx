@@ -1,0 +1,34 @@
+// f-call-flow-01: a self tail call does not widen a scalar argument fed
+// to a value-shaped formal ([f64, null], [bool, null], [i32, null],
+// [i64, f64], ...): emit_self_tail_call (fusion/emit/flow.rs:318) hands the
+// raw scalar CLIF value to emit_tail_rebind_jump (fusion/emit/body.rs:112),
+// which clones it as a Value or def_vars it into the I64 payload word.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-call-flow-01.gx
+//
+// expected (what --no-fusion prints, and --check passes):
+//   3
+//   5
+//
+// observed (fusion on, the default): the process dies before the first cycle
+//   thread 'tokio-rt-worker' panicked at graphix-compiler/src/fusion/emit/jit.rs:1187:13:
+//   the JIT could not link emitted code: compile: Verifier errors
+//   Error: loading initial modules / Caused by: channel closed   (exit 1)
+// GRAPHIX_DUMP_CLIF=1 shows `v47 = call fn10(..)` returning f64 passed as the
+// i64 payload of `call fn2(v52, v47)` (graphix_value_clone).
+// graphix-fuzz check on the same program aborts (core dumped, exit 134).
+//
+// The owned-argument form panics during emission instead:
+//   let rec f = |x: [f64, null], n: i64| select n { 0 => x, n => f(1.5, n - 1) }
+//   cranelift-frontend frontend.rs:509: declared type of variable var1
+//   doesn't match type of value v43
+// [i64, null] fed an i64 works; a non-tail self call (marshal_args widens) works.
+let rec last = |best: [f64, null], xs: Array<f64>| -> [f64, null] select xs {
+  [] => best,
+  [h, t..] => last(h, t)
+};
+let a = [1.0, 2.0, 3.0];
+a <- [4.0, 5.0];
+let r = last(null, a);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

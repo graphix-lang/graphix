@@ -1,0 +1,36 @@
+// f-call-flow-03: the native tail loop shares one activation's memory across
+// all its passes.
+//
+// f's body runs a collection loop (array::map) whose prev-length word is a
+// site word claimed once per kernel (scaffold.rs SlotFlags::new ->
+// claim_site_word). The tail loop (fusion/emit/lower.rs:146) reuses that word
+// for every pass, so pass k compares its length with pass k-1's, and the next
+// cycle's first pass with the last pass's. The node-walk gives every depth its
+// own activation and its own MapQ instance.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-call-flow-03.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/f-call-flow-03.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/f-call-flow-03.gx
+//
+// expected (the node-walk, the activations' answer): 6, once. z fires at
+// cycle 1, but only the tail call reads it, so no depth's select emits.
+// observed (JIT): 6, then 6 again at cycle 1. At pass 0 the map sees length 3
+// against the stored length 1 (left by the pass over [3]) and reports a resize.
+// graphix-fuzz: DIVERGENCE interp Trace([0:i64:6]) vs jit Trace([0:i64:6 1:i64:6]);
+// the same with GRAPHIX_PAR=off and with GRAPHIX_NO_OUTLINE=1.
+// GRAPHIX_DBG_KERNELS=1: f has site_words=1 self_blocks=0.
+//
+// controls (all AGREE): `0 + f(..)` (native recursion, a block per depth:
+// site_words=2 self_blocks=1); `array::len(a)` in place of the map; a map over
+// a constant [1, 2, 3] (the same length at every pass).
+// variant: `let m = array::len(array::map(a, |v| v + cast<i64>("x")?))` in the
+// body under a counting catch, with the source rewritten to the same contents:
+// the node-walk counts 6 raises, the JIT 9 (pass 0 reads entered = 0 and treats
+// the 3 standing slots as new).
+let z = 0;
+z <- 1;
+let rec f = |a: Array<i64>, acc: i64, z: i64| -> i64 select a {
+  [] => acc,
+  [x, rest..] => f(rest, acc + array::len(array::map(a, |v| v)), z)
+};
+f([1, 2, 3], 0, z)

@@ -41,6 +41,17 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     Value::Array(a) => {
                         write!(f, "[")?;
                         stack.push(W::S("]"));
+                        // CR claude for eric: [perf] The cap counts values written, but
+                        // each visited array pushes all of its elements here, and each
+                        // map collects and pushes all of its pairs (54-63), before the
+                        // cap applies. So NakedPrefix walks and allocates in proportion
+                        // to a value's width: a failed cast<(i64, i64)> of an
+                        // 8M-element array costs about 130 MB of transient stack to
+                        // build a 456-byte InvalidCast message (cast.rs:46). A string
+                        // leaf is written whole, so a failed cast of a large string
+                        // puts the whole string in the message. Keep a cursor per open
+                        // array or map, and cut long string leaves, so the prefix is
+                        // bounded in work and size. (t-cast-setops-15)
                         for i in (0..a.len()).rev() {
                             stack.push(W::V(&a[i]));
                             if i > 0 {
@@ -140,6 +151,22 @@ impl<'a> TVal<'a> {
         match (&self.typ, &self.v) {
             (
                 Type::Primitive(_)
+                // CR claude for eric: [bug] Every typed print of an abstract value
+                // loses the payload's type here. GxAbstract's Debug prints the payload
+                // with fmt_naked, so a struct payload prints as its pair array, a tuple
+                // as an array, a variant as [tag, args] (a nullary one as a quoted
+                // string) and a List as its private nested-array rep. So `"[P({x: 1, y:
+                // 2})]"` is `P([["x", 1], ["y", 2]])` while `"[p.0]"` is `{x: 1, y:
+                // 2}`. Interpolation, println, dbg, the structural default of
+                // Display::fmt and the shell echo all print this, where
+                // design/traits.md and the book promise the type-directed structural
+                // case in Graphix syntax. The env here holds the rep and its formals
+                // (`Env::abstract_reps`), so this arm can print the payload as a TVal
+                // of the rep at the box's params when the Display hook declines. A
+                // process-global rep table keyed by AbstractId would be wrong, because
+                // the id is the path's alone and two contexts may give one path
+                // different reps. probe:
+                // design/review-2026-10-05/repro/t-expr-core-05.gx (t-expr-core-05)
                 | Type::Abstract { .. }
                 | Type::Hole
                 | Type::Concrete
@@ -160,6 +187,18 @@ impl<'a> TVal<'a> {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
+                // CR claude for eric: [bug] The path key is the definition alone, while
+                // cast_int and is_a_int key on ref_key(tr), the definition plus its
+                // parameters. Under O<O<X>> with `type O<'a> = ['a, null]` (core's
+                // Option included), the inner O<X> meets the same value under the same
+                // definition. The guard takes it for a name expanding without consuming
+                // structure, and the value prints naked: a List as its private cons rep
+                // [1, [2, []]], a variant as ["Foo", 3], a struct as [["x", 1]]. String
+                // interpolation, print/println/dbg and the shell share this printer, so
+                // programs see the wrong string; A<B<X>> over two definitions prints
+                // right. Key on ref_key(tr) as the cast walks do, ideally through one
+                // path-key type the three walks share. probe:
+                // design/review-2026-10-05/repro/t-cast-setops-10.gx (t-cast-setops-10)
                 let key = (tr.def_key().unwrap_or(0), (*v as *const Value).addr());
                 if !hist.insert(key) {
                     return fmt_naked(f, v);

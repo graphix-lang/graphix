@@ -26,6 +26,15 @@ pub fn max_nesting() -> usize {
 /// Raise or lower [`max_nesting`]. Process-global. The limit also bounds
 /// the unguarded recursions downstream (derived `Drop` glue on a deep
 /// `Type`); raising it past what they survive trades an error for an abort.
+// CR claude for eric: [doc-drift] The doc above says the limit bounds the unguarded
+// recursions downstream and gives derived Drop glue on a deep Type as the example.
+// Type's Drop is guarded now (typ/mod.rs:1309). The limit does not bound AST depth
+// either: each operator or postfix fold is capped separately and folds nest inside
+// parens, so about max_nesting²/3 levels (300k at the default) parse and pass --check.
+// CLAUDE.md's Stack discipline section implies the same wrong bound: it says folds are
+// "capped at the fold" and contrasts that with "Type depth is not bounded by the
+// limit". Both should say the limit bounds parser knots and each fold's length, not AST
+// depth, so every AST walk needs its own guard. (x-stack-12)
 pub fn set_max_nesting(depth: usize) {
     MAX_NESTING.store(depth, Ordering::Relaxed)
 }
@@ -158,6 +167,16 @@ impl std::fmt::Display for ParseFailure {
 
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long.
+// CR claude for eric: [readability] A file ends with a newline, so a parse that fails
+// at end of input is at line N+1, column 1, which `text.lines().nth(..)` does not have,
+// and the report shows no source line or caret: `let x = 1;\nlet y = (x + 2\n` gives
+// only "Parse error at line: 3, column: 1 / Unexpected end of input". Show the last
+// non-empty line with the caret after its end. Misplaced comments are never named
+// either: one on a block's last line gives "Unexpected `}`" over about 60 alternatives,
+// `a // x` parses as division and fails at the second slash, and one after a file's
+// last statement gives "Unexpected end of input" with no snippet. comment_line
+// (mod.rs:232) already notes a reason for `///`; the same kind of note could state
+// where a comment is allowed. (x-errors-19)
 fn snippet(text: &str, pos: SourcePosition) -> String {
     let Some(line) = text.lines().nth((pos.line.max(1) - 1) as usize) else {
         return String::new();
@@ -209,6 +228,16 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
         let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
         // a refusal is the failure only when no branch got past it
+        // CR claude for eric: [bug] A nesting refusal is reported only when no branch
+        // got past it. On a nested call (`f(f(f(..`) some branch peeks a column past
+        // the knot GrowStack refused, so from 333 levels on the user gets 'the parser
+        // could not continue past this point' with no word of the limit, while parens,
+        // variants and tuples name it at 100,000 levels.
+        // graphix-shell/tests/deep_nesting.rs cannot see this: it requires REFUSED only
+        // of parens (lines 250-253). Its REJECTED doc (line 24, 'every shape must come
+        // back REFUSED') also contradicts lines 239-243, which accept any exit. probe:
+        // design/review-2026-10-05/repro/tests-shell-compiler-08.gx
+        // (tests-shell-compiler-08)
         let refused = REFUSED.with(|r| r.get()).filter(|r| key(*r) >= key(furthest));
         if refused.is_some() {
             return ParseFailure {

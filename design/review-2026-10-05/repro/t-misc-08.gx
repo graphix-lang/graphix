@@ -1,0 +1,41 @@
+// t-misc-08: GRAPHIX_PROFILE loses module and instance attribution inside
+// compile tasks.
+//
+// Profile state is thread-local (graphix-types/src/profile.rs:87) and compile
+// tasks run on rayon workers with no open span, so a task's first span starts
+// a root of its own (profile.rs:137). A run of interface modules is checked in
+// parallel (graphix-compiler/src/node/mod.rs:996-1037). Module::typecheck0
+// calls profile::module (node/module.rs:1077) before check_body opens its
+// ModuleCheck span, so module() returns None (profile.rs:173). Statement tasks
+// (node/mod.rs:1092-1131) do the same to every instance they elaborate.
+//
+// command: GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1 graphix --no-cache \
+//            design/review-2026-10-05/repro/t-misc-08.gx 2> profile.log
+//   grep -c '^PROFILE root=ModuleCheck' profile.log
+//   grep 'mphase=ModuleCheck' profile.log
+//   grep '^INSTANCE' profile.log | grep t-misc-08.gx
+// (the module half comes from the stdlib's registration, which --no-cache
+// compiles; an interface-less `mod a;` compiles as a plain block and is never
+// a module check)
+//
+// expected: each stdlib interface module's check is charged to its own
+//   module= line under the registration's Compile root; each g instance
+//   carries parent = the f instance whose elaboration built it, and each f
+//   instance an elaboration_ns.
+// observed: 66-67 root=ModuleCheck roots on worker threads (the count varies
+//   by run); none names the module it checks (only a module nested inside
+//   one, such as sys::fs::watch, gets module= lines).
+//   The gui::* modules show only mphase=BuildGraph, while `gui`'s
+//   mphase=ModuleCheck (4.9 ms) is the wait for 33 worker roots (9.8 ms).
+//   Every INSTANCE row from this file has parent=0 elaboration_ns=0, and each
+//   instance is split over two worker roots (graph_calls=1 in one,
+//   check_calls=1 in the other). Reduced to one statement,
+//   `(|x: i64| (|y: i64| y + 1)(x) * 2)(1)`, elaboration stays on the
+//   compiling thread: one row per instance, the inner one's parent is the
+//   outer's id and the outer's elaboration_ns is set.
+let g = |x: i64| x + 1;
+let f = |x: i64| g(x) * 2;
+let a = f(1);
+let b = f(2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+a + b

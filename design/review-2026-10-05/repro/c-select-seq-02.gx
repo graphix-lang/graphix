@@ -1,0 +1,40 @@
+// c-select-seq-02: Literal pool aligns leaves by flat index: a non-exhaustive
+// bool-literal select is accepted, then silently bottom.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-select-seq-02.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-select-seq-02.gx
+//          (same with --no-fusion)
+//
+// The arms miss ((false, false), (true, _)): first.0 is false, second.0 is
+// true and first.1 is false. pooled_leaves (graphix-compiler/src/node/
+// select.rs:642) flattens `((true, _), _)` to leaves at 0.0, 0.1, 1 and
+// `(_, (false, _))` to 0, 1.0, 1.1; LiteralPool::claim (:808) checks only
+// that the counts match and PoolGroup::complete (:818) compares by index,
+// so the group "completes" and check_coverage accepts the select.
+//
+// expected: --check refuses, "missing match cases" (it does when the arms
+//   nest alike, e.g. ((true, _), _) and ((_, true), _) alone).
+// observed: --check exits 0. The run prints, in both engines:
+//   covered: 3
+//   0
+//   ("uncovered: .." never prints: no arm matches, the select is bottom.)
+//
+// Adding the arm the value needs, `((false, false), (true, _)) => 4`, as a
+// fourth arm is refused: "unreachable arm: the earlier arms already cover
+// the whole scrutinee, unused match cases" (check_dead_arms diffs the whole
+// member once the pool completes).
+//
+// graphix-fuzz run over all 16 values (in0 bits -> the four bools, output
+// in0 * 10 + arm): Interp and Jit (fused=2) agree, with the epochs for
+// in0 = 4 and in0 = 12 (the two uncovered values) empty. The same holds for
+// nested struct patterns ({p: {x: true, y: _}, q: _} ...). Variant heads are
+// caught by the type-predicate check before the pool.
+let f = |v: ((bool, bool), (bool, bool))| select v {
+  ((true, _), _) => 1,
+  (_, (false, _)) => 2,
+  ((_, true), _) => 3
+};
+println("covered: [f(((false, true), (true, false)))]");
+println("uncovered: [f(((false, false), (true, false)))]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

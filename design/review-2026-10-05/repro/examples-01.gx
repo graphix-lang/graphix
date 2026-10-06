@@ -1,0 +1,44 @@
+// examples-01: the clipboard example's paste handler samples the previous
+// async read, so every paste after the first shows the clipboard as it was at
+// the previous press.
+//
+// book/src/examples/gui/clipboard.gx:26 is
+//   #on_press: |c| pasted <- c ~ clipboard::read_text(c)$
+// read_text is a CachedArgsAsync builtin
+// (stdlib/graphix-package-core/src/lib.rs:879-911): a press issues the read
+// and, until the reply lands in a later cycle, the builtin re-delivers its
+// previous reply as stale (design/async_sleep_outputs.md: "ordinary updates
+// still retain the latest completed value"). `c ~` samples that previous
+// reply at the press; the new reply then fires with no `c` fire to sample it.
+// Only the first press is right, because `~` banks a trigger that finds its
+// right side absent.
+//
+// The GUI calls the handler through one persistent instance whose argument
+// variable each press sets (graphix-rt/src/gx.rs compile_callable at 922,
+// call_callable at 987). sys::net::publish's #on_write is the same mechanism
+// (stdlib/graphix-package-sys/src/net.rs Publish::init/update), and json::read
+// is the same CachedArgsAsync wrapper as read_text, so this program has the
+// example's shape without a display or the user's clipboard. `lagging` is the
+// example's handler; `fixed` is the suggested one,
+// `pasted <- clipboard::read_text(c)$`.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/examples-01.gx
+//          (the same with --no-fusion, a cold or warm image, GRAPHIX_PAR=force)
+//
+// expected: (k, k, k) on every line: the reply to event k carries k.
+// observed (HEAD c722befe, debug build, every mode):
+//   (1, 1, 1)
+//   (2, 1, 2)
+//   (3, 2, 3)
+//   (4, 3, 4)
+//   (5, 4, 5)
+let clock = sys::time::timer(duration:300.ms, true);
+let k = count(clock);
+let lagging = -1;
+let fixed = -1;
+sys::net::publish(#on_write: |c: string| lagging <- c ~ json::read(c)$, "/local/lagging", 0)$;
+sys::net::publish(#on_write: |c: string| fixed <- json::read(c)$, "/local/fixed", 0)$;
+sys::net::write("/local/lagging", "[k]")$;
+sys::net::write("/local/fixed", "[k]")$;
+sys::exit(select k { 6 => 0, _ => never() });
+sys::time::after_idle(duration:100.ms, (k, lagging, fixed))

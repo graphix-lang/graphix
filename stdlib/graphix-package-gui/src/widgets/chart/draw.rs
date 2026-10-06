@@ -121,6 +121,18 @@ macro_rules! draw_chart_body {
     ($chart:expr, $self:expr, $chart_style:expr, $xy_variant:path,
      $ohlc_variant:path, $eb_variant:path, $label_sz:expr) => {{
         let chart_style: Option<&ChartStyleV> = $chart_style;
+        // CR claude for eric: [bug] Every sample is handed to plotters whatever the
+        // visible range, and plotters clamps each mapped point into the plot rect
+        // (Rect::truncate). So with an x_range/y_range narrower than the data, or after
+        // any pan or zoom, out-of-view scatter points are drawn on the border, and line
+        // and area segments bend toward the clamped corner. A point about 2^31 px
+        // outside the view overflows plotters' i32 `limit.0 + offset`. In debug builds
+        // that is a panic (one -1e7 sample under y_range {0, 1}, or about 160 wheel
+        // zoom steps); in release the add wraps and the point is drawn on the opposite
+        // edge. Clip each series to the view in data space before drawing: split
+        // segments at the edge, and drop out-of-view markers, candles and error bars.
+        // Also bound how far handle_scroll can zoom in. probe:
+        // design/review-2026-10-05/repro/gui-chart-02.rs (gui-chart-02)
         for (i, ds) in $self.datasets.iter().enumerate() {
             match ds {
                 DatasetEntry::XY { kind, data, style } => {
@@ -362,6 +374,17 @@ macro_rules! configure_mesh {
                 mesh_cfg.label_style(style.clone());
                 mesh_cfg.axis_desc_style(style);
             }
+            // CR claude for eric: [bug] These mesh counts are unchecked i64 values cast
+            // to usize, here and in the 3D axes at 865-882. Two values cause a panic on
+            // the first draw. `x_light_lines: 0` (the book calls it "bold lines only")
+            // or `x_labels: 0` panics any time-series chart: plotters' datetime key
+            // points get a 0 hint, which overflows a pow in debug and divides by zero
+            // in release. The same values panic a one-category bar chart in
+            // `step_by(0)`. A negative 2D count panics on overflow in debug and
+            // allocates without bound in release, and a negative 3D label count loops
+            // forever. The GUI draws on the main thread, so the whole program dies.
+            // Probe: design/review-2026-10-05/repro/gui-chart-04.rs (an integration
+            // test; the command is in its header). (gui-chart-04)
             if let Some(n) = ms.x_labels {
                 mesh_cfg.x_labels(n as usize);
             }
@@ -477,6 +500,19 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let (x_min, x_max) = state.x_view.unwrap_or(base_x);
                     let (y_min, y_max) = state.y_view.unwrap_or(base_y);
 
+                    // CR claude for eric: [structure] The Numeric, TimeSeries and Bar
+                    // arms repeat the label-area sizing (480-500, 558-578, 646-666; the
+                    // copies differ only in the x padding constants) and the PlotInfo
+                    // construction (508-518, 586-596, 676-686). The draw_series match
+                    // that adds a label and a legend is written out eleven times, with
+                    // one of three legend shapes. DatasetEntry::DashedLine is XY plus a
+                    // dash and a gap, so every match on DatasetEntry in mod.rs,
+                    // ranges.rs, dataset.rs and interact.rs needs an `XY | DashedLine`
+                    // arm, and draw.rs repeats the line arm for it. compile_datasets'
+                    // eleven arms also repeat the same compile_ref/TRef::new/context
+                    // statement. One label-area helper, one PlotInfo helper, one legend
+                    // helper, an XYKind::Dashed { dash, gap } and one data-compiling
+                    // helper would remove the copies. (gui-chart-13)
                     let (_, tick_h) = estimate_text("0", label_sz as f64);
                     let prec = tick_precision(y_max - y_min);
                     let y_min_s = format!("{y_min:.prec$}");
@@ -740,11 +776,43 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
 
                     let center_x = (w / 2) as i32;
                     let center_y = ((h + title_h) / 2) as i32;
+                    // CR claude for eric: [bug] title_h is the estimated title height
+                    // plus the margin (29 px at the defaults), and `h - title_h` is
+                    // u32. A titled pie chart shorter than that (#height:
+                    // &`Fixed(20.0), or a window resized small) panics a debug build
+                    // here with 'attempt to subtract with overflow'. A release build
+                    // wraps instead, takes the radius from the width and puts the
+                    // centre below the frame. Use h.saturating_sub(title_h) and skip
+                    // the pie when nothing is left. probe:
+                    // design/review-2026-10-05/repro/gui-chart-15.rs (gui-chart-15)
                     let radius = (w.min(h - title_h) as f64 * 0.35).max(10.0);
 
                     let pie_labels: Vec<String> =
                         pie_data.0.iter().map(|(l, _)| l.clone()).collect();
+                    // CR claude for eric: [bug] These values reach plotters' Pie
+                    // unchecked, and Pie::draw loops `while offset_theta <=
+                    // theta_final` with theta_final = slice / total * 2π + offset. When
+                    // the values sum to zero and the first nonzero one is positive,
+                    // theta_final is inf, so the draw never returns and pushes points
+                    // until the process runs out of memory, on the GUI's main thread. A
+                    // total near zero ([1.0, -0.999999]) takes about 1.8e9 iterations
+                    // (~15 GB), and a non-finite #start_angle hangs the same loop with
+                    // ordinary data. The tooltip already skips total <= 0
+                    // (interact.rs:481); the draw needs the same guard over finite
+                    // non-negative slices, and a finite start angle taken mod 360.
+                    // probe: design/review-2026-10-05/repro/gui-chart-03.rs, which
+                    // draws chart(&[pie(&[("in", 100.0), ("out", -100.0)])])
+                    // headlessly. (gui-chart-03)
                     let sizes: Vec<f64> = pie_data.0.iter().map(|(_, v)| *v).collect();
+                    // CR claude for eric: [bug] A #colors array shorter than the data
+                    // goes to plotters' Pie unchanged. Pie::draw returns LengthMismatch
+                    // at the first slice without a colour (logged as "chart draw pie"),
+                    // so only the slices before it are drawn: #colors: [red] over three
+                    // slices paints one 60-degree wedge, and #colors: [] paints
+                    // nothing. Give every slice a colour: cycle the given ones as the
+                    // palette path does, or fall back to the palette when the array is
+                    // empty. probe: design/review-2026-10-05/repro/gui-chart-16.rs
+                    // (gui-chart-16)
                     let colors: Vec<RGBColor> = match &pie_style.colors {
                         Some(cs) => {
                             cs.iter().map(|c| ChartColor::to_plotters_rgb(*c)).collect()
@@ -774,6 +842,21 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     if let Some(angle) = pie_style.start_angle {
                         pie.start_angle(angle);
                     }
+                    // CR claude for eric: [bug] The book (chart.md, PieStyle) documents
+                    // `donut` as the inner radius as a fraction of the outer radius
+                    // (0.0-1.0). Plotters' `donut_hole` takes a hole radius in pixels
+                    // and ignores anything not strictly between 0 and `radius`. So
+                    // `#donut: 0.5` draws a full pie, the whole documented range gives
+                    // at most a 1 px hole, and `#donut: 52.0` is a 52 px hole whatever
+                    // size the pie is drawn at. Pass `hole.clamp(0.0, 1.0) * radius`
+                    // instead. `label_offset` below has the same problem: the book
+                    // calls it a percentage, but plotters adds it to the radius in
+                    // pixels (`#label_offset: 50.0` moves the labels 50 px at every
+                    // size), so scale it by the radius or document pixels. probe:
+                    // design/review-2026-10-05/repro/gui-chart-11.rs (copy to
+                    // stdlib/graphix-package-gui/tests/review_gui_chart_11.rs; cargo
+                    // test -p graphix-package-gui --test review_gui_chart_11 --
+                    // --nocapture) (gui-chart-11)
                     if let Some(hole) = pie_style.donut {
                         pie.donut_hole(hole);
                     }
@@ -990,6 +1073,28 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                         .filter(|row| !row.is_empty())
                                         .flat_map(|row| row.iter().map(|&(_, _, z)| z))
                                         .collect();
+                                    // CR claude for eric: [bug] z_lookup finds a
+                                    // point's row and column by binary search over
+                                    // x_vals (each row's first x) and y_vals (row 0's
+                                    // ys). That is only right when both axes ascend,
+                                    // and nothing sorts the grid; the book documents no
+                                    // order. On a descending axis of three or more
+                                    // values the search misses and unwrap_or(0) reads
+                                    // row 0 (column 0), so every row is drawn with the
+                                    // first row's z. Rows at x = 2, 1, 0 with z = 5, 9,
+                                    // 1 draw a flat plane at z = 5, and the book's
+                                    // chart_3d paraboloid with its rows reversed draws
+                                    // the x = 4 row extruded along x. The same rebuild
+                                    // also ignores every point's own x/y past row[0]
+                                    // and row 0, and shifts the flat index on ragged
+                                    // rows; building each cell's polygon straight from
+                                    // grid[i][j], grid[i][j+1], grid[i+1][j+1],
+                                    // grid[i+1][j] avoids recovering indices from
+                                    // values. probe:
+                                    // design/review-2026-10-05/repro/gui-chart-08.rs
+                                    // (screenshots of the descending grids are
+                                    // pixel-identical to the first-row-z prediction).
+                                    // (gui-chart-08)
                                     let z_lookup = |x: f64, y: f64| -> f64 {
                                         let ri = x_vals
                                             .binary_search_by(|v| {

@@ -1,0 +1,42 @@
+// sys-net-08: publish keeps the old path when the path changes while the
+// value is bottom, and sends every later value to the old path.
+//
+// Publish::update (stdlib/graphix-package-sys/src/net.rs:787-801): the
+// path-change arm (net.rs:788) needs a value, so a path fire while `v` is
+// bottom does nothing and `current` keeps (/local/pa, Val). The value arm
+// (net.rs:796) never compares the present path with `current`'s, so when
+// `v` fires again it calls update_val on the /local/pa Val. /local/pb is
+// published only if `p` fires again.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/sys-net-08.gx
+//          (--no-fusion and GRAPHIX_PAR=off|force print the same)
+//
+// expected: 2 is published at /local/pb, the path in force when it fires;
+//   the last line is ("/local/pb", <anything but "value 2">, "value 2")
+// observed (HEAD c722befe, debug build), exit 0:
+//   ("/local/pa", "value 1", "pb never published")
+//   ("/local/pb", "value 1", "pb never published")
+//   ("/local/pb", "value 2", "pb never published")
+//   /local/pa receives 2; /local/pb is never published (also with a 4 s
+//   wait before the exit).
+// control: without the `src <- t1 ~ null` line (the value stands when `p`
+//   moves) the publication moves: /local/pb receives 1, then 2.
+let p = "/local/pa";
+let src: [i64, null] = i64:1;
+let t1 = sys::time::timer(duration:200.ms, false);
+let t2 = sys::time::timer(duration:400.ms, false);
+let t3 = sys::time::timer(duration:600.ms, false);
+src <- t1 ~ null;
+p <- t2 ~ "/local/pb";
+src <- t3 ~ i64:2;
+sys::net::publish(p, src$);
+let sa: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> = sys::net::subscribe("/local/pa");
+let sb: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> = sys::net::subscribe("/local/pb");
+let show = |r: Result<i64, [`SubscribeError(string), `InvalidCast(string)]>| select r {
+  error as e => "error [e]",
+  v => "value [v]"
+};
+let b = "pb never published";
+b <- show(sb);
+sys::exit(sys::time::after_idle(duration:1.5s, 0));
+(p, show(sa), b)

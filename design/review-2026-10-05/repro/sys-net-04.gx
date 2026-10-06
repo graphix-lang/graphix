@@ -1,0 +1,45 @@
+// sys-net-04: sys::net::write loses every write after its select arm sleeps
+// and wakes, and replays them to the next path.
+//
+// Write::sleep (stdlib/graphix-package-sys/src/net.rs:180) unsubscribes and
+// resets `dv` to an empty queue, but Write has no `slept` bit: update
+// (net.rs:114) re-subscribes only when the path FIRES. A woken arm reads a
+// path bound outside it stale, so every later write is pushed onto the queue
+// (net.rs:105) and never sent. The queue is replayed, whole, to the next
+// path that fires (net.rs:151). Subscribe, Publish and PublishRpc re-establish
+// from the present arguments on wake (their `slept` bit, pins
+// net_subscribe_arm_rewake / net_publish_arm_rewake); Write does not.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/sys-net-04.gx
+//          (--no-fusion and GRAPHIX_PAR=off print the same)
+//
+// expected: every write made while the `On arm is selected reaches the path
+//   it targets: the last line is
+//   (12, [100, 200, 400, 500, 700, 800], [1000, 1100])
+//   With the literal "/local/wakewrite/a" in place of `p` in the write (a
+//   constant fires at the wake), /a does receive 400, 500, 700, 800.
+// observed (HEAD c722befe, debug build): /a never receives a write after the
+//   first sleep (x = 3); the four writes made at x = 4, 5, 7, 8 are queued
+//   and land on /b in a burst when `p` moves there at x = 10:
+//   (9, [100, 200], [])
+//   (10, [100, 200], [])
+//   (10, [100, 200], [400])
+//   (10, [100, 200], [400, 500])
+//   (10, [100, 200], [400, 500, 700])
+//   (10, [100, 200], [400, 500, 700, 800])
+//   (10, [100, 200], [400, 500, 700, 800, 1000])
+//   (11, [100, 200], [400, 500, 700, 800, 1000, 1100])
+//   (12, [100, 200], [400, 500, 700, 800, 1000, 1100])
+let x = i64:0;
+let loga: Array<i64> = [];
+let logb: Array<i64> = [];
+let p = "/local/wakewrite/a";
+sys::net::publish(#on_write: |v: i64| loga <- v ~ array::push(loga, v), "/local/wakewrite/a", i64:0);
+sys::net::publish(#on_write: |v: i64| logb <- v ~ array::push(logb, v), "/local/wakewrite/b", i64:0);
+let t = sys::time::timer(duration:0.1s, true);
+x <- t ~ x + i64:1;
+let flip = select x % i64:3 { i64:0 => `Off, _ => `On };
+select flip { `On => sys::net::write(p, x * i64:100), `Off => null };
+p <- select x { i64:9 => "/local/wakewrite/b", _ => never() };
+sys::exit(select x { n if n >= i64:13 => i64:0, _ => never() });
+(x, loga, logb)

@@ -1,0 +1,99 @@
+// sys-io-03: one in-flight request per call site, never cancelled: TLS
+// handshake DoS, stuck accept/wait.
+//
+// CachedArgsAsync (stdlib/graphix-package-core/src/lib.rs:891-905) runs one
+// request per call site at a time, FIFO. New args queue behind the request in
+// flight, and nothing cancels or supersedes it (spawn_var keeps no abort
+// handle; sleep/delete only drop the reply id). Each of the three call sites
+// below gets new args while its request waits on something that does not come.
+//
+// command (from the repo root; the same with --no-fusion):
+//   timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/sys-io-03.gx
+//
+// expected:
+//   wait: the replacement child exits at once at 0.3 s and wait reports its
+//     exit code 5 then; the replaced child's status is never reported as c's.
+//   accept: the new listener's client (connected at 0.5 s) is accepted at
+//     0.5 s; the connect to the replaced listener at 1.2 s is refused, since
+//     the program holds no reference to it (tcp.gxi:3-4).
+//   tls: client 2's handshake completes at 0.2 s.
+// observed (HEAD c722befe, debug build):
+//   365142.ns wait: spawned pid 2432303
+//   500696.ns accept: listening on 127.0.0.1:40085
+//   null
+//   101607078.ns accept: listening on 127.0.0.1:36357
+//   201399949.ns tls: client 2 connected, starting its handshake
+//   302182315.ns wait: spawned pid 2432320
+//   504463563.ns accept: a client connected to 127.0.0.1:36357
+//   1.2016524450000001s accept: connect to the replaced listener 127.0.0.1:40085: abstract:
+//   1.201833343s accept: accepted a connection on 127.0.0.1:40085
+//   1.201883555s accept: accepted a connection on 127.0.0.1:36357
+//   1.50177966s tls: the silent client closed its socket
+//   1.501902657s tls: server handshake: error:["TLSError", "TLS accept failed: tls handshake eof"]
+//   1.516056856s tls: client 2 handshake: abstract:
+//   1.516276494s tls: server handshake: abstract:
+//   2.002482594s wait: exit code 3 while c is pid 2432320
+//   2.002711283s wait: exit code 5 while c is pid 2432320
+//
+// wait: nothing until the replaced child exits at 2.0 s, then that child's
+// code 3 while c names the new child, then 5. accept: the new listener's
+// client is not accepted until something connects to the replaced port, which
+// is still bound, and accept delivers that connection first. tls: neither
+// handshake completes until the silent client hangs up (without the close,
+// never: there is no handshake timeout).
+//
+// controls: wait(timer(400.ms) ~ c.proc) reports code 5 at 0.4 s;
+// accept(l, timer(300.ms)), issued only after the listener changed, accepts
+// the new listener's client at 0.5 s and the connect to the replaced port is
+// refused (os error 111); without the silent client both handshakes complete
+// within 40 ms.
+use sys::{io::Close, tcp::Socket};
+let t0 = once(sys::time::now(null));
+let at = |x| sys::time::diff(sys::time::now(x), t0);
+// wait: the child is replaced at 0.3 s by one that exits at once
+{
+  let cmd = sys::process::options(#args: ["-c", "sleep 2; exit 3"], "sh");
+  cmd <- sys::time::timer(duration:300.ms, false) ~ sys::process::options(#args: ["-c", "exit 5"], "sh");
+  let c = sys::process::spawn(cmd)$;
+  println("[at(c)] wait: spawned pid [c.pid]");
+  let st = sys::process::wait(c.proc)$;
+  println("[at(st)] wait: exit code [st.code] while c is pid [st ~ c.pid]")
+};
+// accept: the listener is replaced at 0.1 s while an accept is pending
+{
+  let addr = "127.0.0.1:0";
+  addr <- sys::time::timer(duration:100.ms, false) ~ "127.0.0.1:0";
+  let l = sys::tcp::listen(addr)$;
+  let la = sys::tcp::listener_addr(l)$;
+  println("[at(la)] accept: listening on [la]");
+  let first = once(la);
+  let srv = Socket::local_addr(sys::tcp::accept(l, null)$)$;
+  println("[at(srv)] accept: accepted a connection on [srv]");
+  let cl = Socket::peer_addr(sys::tcp::connect(sys::time::after_idle(duration:400.ms, la))$)$;
+  println("[at(cl)] accept: a client connected to [cl]");
+  let old = sys::tcp::connect(sys::time::timer(duration:1200.ms, false) ~ first);
+  println("[at(old)] accept: connect to the replaced listener [first]: [old]")
+};
+// tls: a client that never speaks connects first, client 2 at 0.2 s
+{
+  let dir = "/home/eric/proj/graphix/stdlib/graphix-tests/certs";
+  let cert = sys::fs::read_all_bin("[dir]/server.pem")$;
+  let key = sys::fs::read_all_bin("[dir]/server.key")$;
+  let ca = sys::fs::read_all_bin("[dir]/ca.pem")$;
+  let l = sys::tcp::listen("127.0.0.1:0")$;
+  let la = sys::tcp::listener_addr(l)$;
+  let n = 0;
+  let conn = sys::tcp::accept(l, n)$;
+  n <- conn ~ n + 1;
+  let stls = sys::tls::accept(#cert: cert, #key: key, conn);
+  println("[at(stls)] tls: server handshake: [stls]");
+  let silent = sys::tcp::connect(la)$;
+  let closed = Close::close(sys::time::timer(duration:1500.ms, false) ~ silent);
+  println("[at(closed)] tls: the silent client closed its socket");
+  let c2 = sys::tcp::connect(sys::time::timer(duration:200.ms, false) ~ la)$;
+  println("[at(c2)] tls: client 2 connected, starting its handshake");
+  let ctls = sys::tls::connect(#ca_cert: ca, "127.0.0.1", c2);
+  println("[at(ctls)] tls: client 2 handshake: [ctls]")
+};
+sys::exit(sys::time::timer(duration:2500.ms, false) ~ 0);
+null

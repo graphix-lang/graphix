@@ -1,0 +1,63 @@
+// gx-ui.r2-05: writes through a chainless `&expr` reference are silently
+// dropped, contrary to the book.
+//
+// ConnectDeref::resolve (graphix-compiler/src/node/mod.rs:1616-1625) returns
+// None when the reference's cell has no registered place and no byref_chain
+// entry, i.e. for every `&e` whose e is neither a name nor a place (`&"top"`,
+// `&never()`, `&f(x)`); update() then writes nothing and logs nothing, and
+// --check says nothing. book/src/udt/references.md:116-123 says `&(a + b)`
+// "is exactly `let tmp = a + b; tmp <- a + b; &tmp`", under which `*r <- v`
+// writes tmp. The cell is real storage: ByRef::publish writes it and
+// Deref::address reads it (node/bind.rs), and queuefn's #count resolves a
+// chainless reference to that cell and writes it (core/src/queuefn.rs:357),
+// which section 3 shows beside a dropped in-language write to the same ref.
+// Section 2 is tui::browser's shape (browser.gx:6-7, 81-85): with
+// #selected_row omitted (default &never(), as the book's browser_basic.gx
+// does) #selected_path never fires (gx-ui-03 pins the browser itself).
+// Section 5: line_edit::handle answers `Stop and the edit is lost.
+//
+// command: graphix --no-cache -n design/review-2026-10-05/repro/gx-ui.r2-05.gx
+//          (identical with --no-fusion and with a cold or warm image;
+//          graphix-fuzz check: AGREE)
+//
+// expected (book semantics): 1 shows *r0=hello after top; 2 prints
+//   p=a/leaf; 3 shows a 42 among the depths; 4 shows hello after top;
+//   5 shows value=abx.
+// observed (HEAD c722befe, debug build, both engines):
+//   1 write through &"top": *r0=top
+//   3 queuefn writes the same kind of cell: *depth=null
+//   4 write through &v: *rv=top
+//   5 handle(&line_edit::state("ab"), x): reply=Stop value=ab
+//   3 queuefn writes the same kind of cell: *depth=1
+//   4 write through &v: *rv=hello
+//   3 queuefn writes the same kind of cell: *depth=2
+//   (no line 2, no 42, no abx; nothing logged under RUST_LOG=debug)
+use tui::{line_edit, input_handler::Event};
+let r0 = &"top";
+*r0 <- "hello";
+println("1 write through &\"top\": *r0=[*r0]");
+let f = |#row: &string = &never(), #path: &string = &never(), x: string| -> string {
+    *row <- x;
+    *path <- "[*row]/leaf";
+    x
+};
+let p: string = never();
+f(#path: &p, "a");
+println("2 default &never() written then read back: p=[p]");
+let held: i64 = never();
+let depth: &[i64, null] = &null;
+let slow = queuefn(#trigger: held, #count: depth, |x: i64| -> i64 x + 1);
+let q1 = slow(1);
+let q2 = slow(2);
+let q3 = slow(3);
+println("3 queuefn writes the same kind of cell: *depth=[*depth]");
+*depth <- 42;
+let v = "top";
+let rv = &v;
+*rv <- "hello";
+println("4 write through &v: *rv=[*rv]");
+let ev: Event = `Key({ code: `Char("x"), kind: `Press, modifiers: [], state: [] });
+let st = &line_edit::state("ab");
+let reply = line_edit::handle(st, ev);
+println("5 handle(&line_edit::state(\"ab\"), x): reply=[reply] value=[(*st).value]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

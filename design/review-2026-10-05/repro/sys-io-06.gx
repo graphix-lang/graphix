@@ -1,0 +1,27 @@
+// sys-io-06: watch::create re-fires its config error on every cycle; a
+// state-writing consumer spins.
+//
+// CreateWatcher::update (stdlib/graphix-package-sys/src/watch.rs:298-318)
+// reads poll_interval and poll_batch_size through seam_value (fired OR stale)
+// and, while either is invalid, returns TagValue::fired(error) on every
+// update, whether or not an input fired. Nothing here fires after init except
+// the status write, so the error should fire once. Instead every cycle
+// re-fires it, the connect writes status again, the write schedules the next
+// cycle: a 100% CPU loop with no self-read anywhere.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/sys-io-06.gx
+// expected: after 500ms: status watch failed written 2 times
+// observed: after 500ms: status watch failed written 71429 times
+//   (user 0.69 s over 0.64 s wall; the count varies run to run)
+// control: with #poll_interval: duration:1.s it prints
+//   "after 500ms: status watching written 2 times".
+// Same with #poll_batch_size: -1. Without a writer the error still re-fires
+// on every unrelated cycle: under a 5-tick timer, count(w) reaches 12 and a
+// `$` on the result logs "ignored error" 12 times (RUST_LOG=warn --log-dir).
+let status = "starting";
+let w = sys::fs::watch::create(#poll_interval: duration:10.ms, null);
+status <- select w { error as _ => "watch failed", _ => "watching" };
+let n = count(status);
+let done = sys::time::timer(duration:500.ms, false);
+println(done ~ "after 500ms: status [status] written [n] times");
+sys::exit(sys::time::after_idle(duration:50.ms, done ~ 0))

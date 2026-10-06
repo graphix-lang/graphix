@@ -1,0 +1,31 @@
+// db2-13: db::subscription::new and its accessors ignore a bottomed argument
+// and keep firing.
+//
+// DbSubscribe::update (stdlib/graphix-package-db/src/subscribe.rs:169-179)
+// reads the tree and prefix with seam_tick, so a bottom is "no event": the
+// old watch keeps running and the last Subscription rides. The accessors
+// (subscribe.rs:320-333) re-ref the bind id CachedVals kept when their `sub`
+// goes bottom. design/dense_delivery.md rule 13: builtins bottom on any
+// bottomed argument.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/db2-13.gx
+// At 300ms mode turns `Off, which makes t2 (a subscription's tree) and the
+// second accessor's subscription never(); at 600ms "late" is inserted.
+// expected: neither on_insert reports "late"
+// observed (HEAD c722befe, debug build, jit and --no-fusion): both print
+//   [{key: "late", value: 1}]
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/p.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "a")$;
+let mode: [`On, `Off] = `On;
+mode <- sys::time::timer(duration:300.ms, false) ~ `Off;
+let t2 = select mode { `On => t, `Off => never() };
+let e1 = db::subscription::on_insert(db::subscription::new(t2))$;
+println("on_insert over a bottomed tree: [e1]");
+let sub = db::subscription::new(t);
+let e2 = db::subscription::on_insert(select mode { `On => sub, `Off => never() })$;
+println("on_insert over a bottomed subscription: [e2]");
+let i1 = db::insert(t, sys::time::timer(duration:600.ms, false) ~ "late", 1)$;
+println(i1 ~ "inserted late, mode [mode]");
+sys::exit(sys::time::after_idle(duration:300.ms, i1 ~ 0));
+i1

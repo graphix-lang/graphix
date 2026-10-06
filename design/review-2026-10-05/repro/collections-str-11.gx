@@ -1,0 +1,14 @@
+// collections-str-11: str::dirname returns "/" for a relative or empty path.
+// netidx's Path::dirname is None for "foo" and "" as well as for "/foo" and
+// "/", and fc_dirname (stdlib/graphix-package-str/src/lib.rs:231) maps every
+// None but "/" itself to "/".
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/collections-str-11.gx
+//          (and with --no-fusion: the same)
+//
+// expected: [null, null, null, "/", "foo"]; str/mod.gxi:34 says "null if s
+//           does not have a parent path"
+// observed: ["/", "/", null, "/", "foo"]
+let r = [str::dirname("foo"), str::dirname(""), str::dirname("/"), str::dirname("/foo"), str::dirname("foo/bar")];
+println("[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

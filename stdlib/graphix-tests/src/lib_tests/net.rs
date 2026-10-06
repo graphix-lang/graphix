@@ -1,3 +1,13 @@
+// CR claude for eric: [test-gap] These pins, and the other sys::net uses under
+// stdlib/graphix-tests, cover successful deliveries only. No test fails if any of these
+// breaks: a write's select arm sleeping and waking, a publisher going away under a
+// subscriber, an rpc server failing or its path missing, a written value or call
+// argument failing its cast, a second subscriber joining a path, updates arriving
+// faster than a cycle, publish's path changing while its value is bottom, or rpc
+// replies arriving out of order. graphix-fuzz marks every program naming sys::net as
+// oracle_tier Excluded (graphix-fuzz/src/lib.rs:798), which never records a divergence,
+// so these pins are the only check sys::net has. Add one per case with its fix.
+// (sys-net-19)
 use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
@@ -38,6 +48,15 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// CR claude for eric: [test-gap] NET_WRITE1 is said to pin that on_write casts the
+// written i64 to the callback's `string` type. But `cast<i64>(v)?` gives 43 whether v
+// is the cast string ("i64:43" today) or the raw i64, so the cast is never observed.
+// publish_typed_onwrite (typecheck.rs:244) casts i64 to i64, and no fixture writes a
+// value the cast refuses: that path panics the JIT and kills the runtime (sys-net-02).
+// sys::net::write's arm re-wake (sys-net-04) has no pin either. Make the callback
+// observe v (e.g. `x <- str::len(v)`, expecting [42, 6]). Add a fixture that writes
+// "abc" to an i64 on_write and asserts x is unchanged in all four modes.
+// (tests-lib-b2-05)
 const NET_WRITE1: &str = r#"
 {
   let p = "/local/foo";

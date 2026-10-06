@@ -42,6 +42,15 @@ struct Cell {
     pos: SourcePosition,
 }
 
+// CR claude for eric: [structure] CarriedBinds, Cell and collect_step_binds (line 1047)
+// are left from the carried-cell lowering; dependency_summaries.md §3 says there are no
+// carried cells. The pre-pass now only names each try's `e` cell: its three arms
+// restate try_of's 'bare, or a let's or a connect's value' rule, the key's name half is
+// redundant since a try has one bind, and its Result never fails. lower_try (line 666)
+// can name `seqe{id}` and push its `let .. = never()` into self.decls as it does the
+// join cell, which deletes the map, the walk and Machine::cells. The Redirect doc below
+// still says 'a carried cell'; its cells are a `seq let` trigger's names, a try's `e`
+// and the seqq liveness probe's capture cells. (t-seq-12)
 type CarriedBinds = IndexMap<(ExprId, ArcStr), Cell>;
 
 /// Where the rewrite sends a name. A carried cell takes every use; a
@@ -195,6 +204,18 @@ fn trigger_snapshot(
             let single = matches!(b.pattern, StructurePattern::Bind(_));
             let mut body: LPooled<Vec<Expr>> = LPooled::take();
             if !single {
+                // CR claude for eric: [bug] This destructuring let drops the trigger's
+                // annotation: `b.typ` reaches only the `seqtv` value let. So `seq let
+                // {x, ..}: P = t { x + 1 }` is refused with "non exhaustive struct
+                // matches require type annotations" at the generated `let { x, .. } =
+                // seqgo<id>`, though design/seq_blocks.md §4 allows `let pat [: T]` and
+                // a plain `let {x, ..}: P = t` is accepted. desugar_let has the same
+                // hole at line 145 (`let pat = seqbind<id>`, which the abort and flush
+                // events reuse), so the seqq form is refused too. Passing
+                // `b.typ.clone()` here and `typ.clone()` at line 145 fixes both; the
+                // hand-lowered machine with `let {x, ..}: P = seqgo` is accepted and
+                // prints 2. probe: design/review-2026-10-05/repro/x-expr-walks.r2-05.gx
+                // (x-expr-walks.r2-05)
                 body.push(let_pat(pos, b.pattern.clone(), None, r#ref(pos, go)));
             }
             b.pattern.with_names(&mut |n| {
@@ -314,6 +335,18 @@ fn desugar_plain(seq: &Parts, queue: Option<&Queue>) -> Result<Expr> {
     if manual {
         exprs.push(ExprKind::SeqAbort(Arc::new(r#ref(pos, &aborted))).to_expr(pos));
     }
+    // CR claude for eric: [bug] The trigger is filtered after `catch_node` (line 313),
+    // so it runs under the machine's handler. An error raised by the trigger, or by a
+    // function it calls, aborts the run in progress. Under `seqq` (trigger bound in
+    // desugar_queued's prelude), and for this seq's own `abort(..)` event (bound before
+    // the catch), the same error goes to the enclosing handler and leaves the run
+    // alone. A busy seq should drop a trigger (design/seq_blocks.md §5), not die of
+    // one. A trigger that fires and raises in one cycle is worse: `pc <- go ~ S0` and
+    // the abort action's `pc <- Idle` queue back to back, so the new run enters S0,
+    // issues its effects and is killed a cycle later. Binding the trigger before
+    // `catch_node` and filtering that name here would match seqq; probe:
+    // design/review-2026-10-05/repro/t-seq-03.gx (prints no value; with `seqq let` it
+    // prints 1). (t-seq-03)
     let filter = apply_filter(pos, trig_expr, lambda_sampling(pos, &idle));
     exprs.push(let_bind(pos, &go, None, filter));
     exprs.push(connect(pos, &pc, sample(pos, r#ref(pos, &go), variant(pos, &labels[0]))));
@@ -373,6 +406,17 @@ fn abort_event(
         let flushed = format_compact!("seqfl{id}");
         let event = run_event(&rewrite(e, visible), &edge, &armed);
         out.push(let_bind(e.pos, &flushed, None, event));
+        // CR claude for eric: [bug] The flush reaches core::queue's #flush through this
+        // connect, so the queue clears one cycle after the flush event fires. A request
+        // that fires in the event's own cycle was already pushed that cycle, so it is
+        // cleared along with the old ones. The book (core/seq.md: "A request that
+        // arrives with the flush or after it is kept") and seq_blocks.md §9 both say it
+        // is kept. One consequence: in the latest-wins idiom `seqq q; flush(newer)`,
+        // where `newer` is the new request itself, the new request is flushed too and
+        // nothing runs. probe: design/review-2026-10-05/repro/x-engine-seq-errors-06.gx
+        // prints ([], [7]) in every engine and image mode, where the docs give ([6],
+        // [7]). seqq_flush_empties_the_queue only tests a request six ticks after the
+        // cancel. (x-engine-seq-errors-06)
         out.push(connect(e.pos, q.flush, r#ref(e.pos, &flushed)));
         events.push(r#ref(e.pos, &flushed));
     }
@@ -439,6 +483,16 @@ fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> 
 }
 
 /// The variable a place expression is rooted at, if it names one.
+// CR claude for eric: [bug] place_root is a second copy of the compiler's place walk
+// (graphix-compiler/src/node/bind.rs Place::of and ByRef::compile) and gives different
+// answers. It stops at ExplicitParens, which the compiler unwraps at every step, and it
+// follows ArraySlice, which the compiler does not treat as a place. So in a seqq body,
+// `&(n)` or `&(s.f)` writes the variable through the reference but leaves it
+// snapshotted, and a read-modify-write loses updates. With three queued requests, `let
+// r = &(b); *r <- b + 1; b` yields 0 0 0 and leaves b at 1, where `&b` yields 1 2 3.
+// Meanwhile `&s[0..2]`, a derived channel that cannot write `s`, makes every other read
+// of `s` live. One place-chain function in graphix-types used by both would keep them
+// in step. probe: design/review-2026-10-05/repro/x-expr-walks-02.gx (x-expr-walks-02)
 fn place_root(mut e: &Expr) -> Option<&ModPath> {
     loop {
         match &e.kind {
@@ -577,6 +631,16 @@ impl Machine<'_> {
         Ok(tails)
     }
 
+    // CR claude for eric: [bug] The statement's own attributes (stmt.dec) are dropped
+    // here for until, try-let, let and connect statements: the rebuilt guard, sink
+    // write, let_pat and connect_path carry no dec. lower_block drops them the same way
+    // for a block's lets and connects. Only an expression statement keeps its
+    // attribute, through rewrite. So inside a seq such an attribute is neither applied
+    // nor refused. #[sync] on an async function, #[native] on a let, #[parallel] with
+    // nothing to fork, and an unknown #[bogus] all compile and run, while the same
+    // statement outside a seq is a compile error. probe:
+    // design/review-2026-10-05/repro/t-seq-08.gx (prints 42; expected a compile error).
+    // (t-seq-08)
     fn lower_stmt(&mut self, stmt: &Expr, sink: &Sink, visible: &Names) -> Result<Tails> {
         let pos = stmt.pos;
         if let ExprKind::Until(cond) = &stmt.kind {
@@ -587,6 +651,16 @@ impl Machine<'_> {
                 )
                 .at(stmt));
             }
+            // CR claude for eric: [bug] An until condition is never typed bool.
+            // Machine::step binds the step's value let with no type, and the machine
+            // completes an until step only on a fired Value::Bool(true)
+            // (node/seq_machine.rs:313). So `until n + 1`, `until "ready"` and `let f =
+            // |x| seq { until x; 42 }; f(7)` all pass --check, then the run stalls
+            // forever with no diagnostic. The book and design/seq_blocks.md §4 say the
+            // condition is a boolean. Give the until step's value let the type bool so
+            // the check refuses a non-bool condition, and add a must-reject pin. probe:
+            // design/review-2026-10-05/repro/t-seq-06.gx (--check exits 0 and the run
+            // prints nothing; with `until n + 1 > 0` it prints r = 42). (t-seq-06)
             let value = guard(entry_fire(rewrite(cond, visible), self.pc));
             return Ok(Tails::from_iter([self.step(true, value, |_| LPooled::take())]));
         }
@@ -666,6 +740,18 @@ impl Machine<'_> {
         let e_cell = self.cells[&(spec.id, t.bind.name.clone())].name.clone();
         let join = (!sink.is_empty()).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
+            // CR claude for eric: [bug] The join cell takes the let's annotation only
+            // when the pattern is a single name, but the annotation types the whole
+            // value whatever the pattern. So `let (v, n): ([i64, null], i64) = try {
+            // (f(1)?, 1) } with(_) { (null, 0) }`, the struct form, and `let _: [i64,
+            // null] = try { f(1)? } with(_) { null }` are all refused, while `let p:
+            // ([i64, null], i64) = ..` runs. The book says to "annotate the let to
+            // recover into a wider one". The refusal is a raw type mismatch at the
+            // generated `seqjN <- seqvN`, not write_mismatch's "declare .. where it is
+            // bound", so the unannotated case, which the book refuses on purpose, never
+            // tells the user to annotate the let either. design/seq_blocks.md §7.2
+            // still says the try's value is the union of both bodies. probe:
+            // design/review-2026-10-05/repro/t-seq-07.gx (t-seq-07)
             let typ = match sink.first() {
                 Some(Write::Let { pattern: StructurePattern::Bind(_), typ }) => {
                     typ.clone()
@@ -779,6 +865,19 @@ impl Machine<'_> {
                         sample(s.pos, r#ref(s.pos, self.pc), r#ref(s.pos, &v)),
                     ));
                 }
+                // CR claude for eric: [bug] A declaration (`use`, `type`, `trait`,
+                // `impl`, or a static `mod`) lands in this arm and is bound as a value.
+                // lower_stmt's `_` arm (line 635) does the same at the seq level and in
+                // try and with bodies. The compiler then refuses it with "a use
+                // declaration is not an expression — it may only appear as a statement
+                // in a block or module body", even though it is a statement in a block.
+                // The book says a seq block is ordinary Graphix, with only `until` and
+                // `try` refused. Inside a block, emit the declaration into the lowered
+                // body as a statement with no value slot; at the seq level, either make
+                // it visible to the later steps or refuse it with a message saying
+                // declarations are not seq statements. probe:
+                // design/review-2026-10-05/repro/x-expr-walks.r2-06.gx
+                // (x-expr-walks.r2-06)
                 _ => body.push(let_bind(s.pos, &v, None, self.stmt_value(s, &vis)?)),
             }
             vals.push(r#ref(s.pos, &v));
@@ -838,6 +937,16 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let activation = format_compact!("seqqactivation{id}");
     let input = format_compact!("seqqinput{id}");
     let result = format_compact!("seqqresult{id}");
+    // CR claude for eric: [bug] The trigger's names here are this one simple name. For
+    // `seqq let (a, b) = t` that name is desugar_let's synthetic `seqbindN`, which the
+    // body never reads. So an `until` reads a and b live (the latest t), and a and b
+    // become SeqCaptures that any opaque call in the body turns live in every read. The
+    // trigger's own bind is also not kept out of live_ids below, so one `&x` or `x <-
+    // ..` in the body makes every read of the trigger live, the until and the result
+    // included. Under `seq`, and under `seqq let p = t`, each run reads its own request
+    // (reads go to the snapshot, `&` and writes reach the variable), as
+    // book/src/core/seq.md and dependency_summaries.md §4 say. probe:
+    // design/review-2026-10-05/repro/t-seq-04.gx (t-seq-04)
     let trigger_name = trigger.and_then(|t| simple_ref_name(t.expr()));
     let mut captures = body.iter().fold(
         LPooled::<IndexMap<ArcStr, (Expr, ArcStr, BindId)>>::take(),
@@ -1005,6 +1114,17 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             prelude.push(let_bind(pos, &dequeued, None, request));
         }
     }
+    // CR claude for eric: [perf] The machine trigger is the bare name `seqqinput{id}`,
+    // so trigger_snapshot (line 184) gives every seqq a `seqt{id}_seqqinput{id}` cell
+    // and a connect that writes it at each run start, and nothing reads it; a plain
+    // `seq go {..}` whose steps never read `go` gets the same dead cell. When the body
+    // reads the trigger's name, as every `seqq let a = e { .. a .. }` does, line 933
+    // queues the request a second time: another any/~/hold and a tuple slot identical
+    // to field 0, which the capture reads in place of field 0. Skip the snapshot for
+    // the generated trigger and take the trigger's capture from the request slot.
+    // probe: `graphix --expand` of `let go = 1; seqq let a = go { let b = a + 1; b }`
+    // shows the unread `seqt.._seqqinput..` and a 2-tuple of identical holds.
+    // (t-seq-11)
     let machine_trigger = SeqTrigger::Expr(Arc::new(r#ref(pos, &input)));
     let abort = abort.map(|e| rewrite(e, &run_names));
     let flush = flush.map(|e| rewrite(e, &run_names));
@@ -1224,6 +1344,16 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     args.reserve(call.args.len() + 1);
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
+        // CR claude for eric: [bug] Only an inline lambda stays at the call site. A
+        // named function argument (`array::map(xs, inc)`, `apply(inc, 1)`) goes into
+        // the snapshot tuple, and the callee receives `seqissued.k`, which nothing
+        // resolves statically. The step's summary is then opaque (reads and writes
+        // all). Under seqq every capture of the machine reads its live variable instead
+        // of the request snapshot. Under seq the next step waits a cycle. The
+        // callback's loop no longer fuses, and `#[native]` on it is refused although it
+        // compiles outside a seq. Naming a callback changes the program's values.
+        // Probe: design/review-2026-10-05/repro/t-seq-02.gx prints (([2, 3, 4], 100),
+        // ([2, 3, 4], 0)); expected 0 in both. (t-seq-02)
         let value = if inline_lambda(arg) {
             ExprKind::StrictSample {
                 lhs: Arc::new(r#ref(arg.pos, pc)),
@@ -1263,6 +1393,17 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     )
 }
 
+// CR claude for eric: [bug] shadow_step only knows `let`, so a block-local `use` does
+// not shadow a redirected name. Example: with outer `let y = 7; let x = 100`, `seqq t {
+// select t { _ => { use package::y as x; x + 1 } } }` reads the outer x's capture and
+// yields 101. The same select outside the seqq, or under `seq t`, yields 8. A seq
+// trigger name, a `seq let` name and a with-bind are also renamed past a `use`. The
+// fallthrough at line 1462, and refuse_catch's fold_outside_lambdas, also walk into a
+// resolved `mod`'s file body as if it were the seq's scope. So a module declared in a
+// seq body's lambda that reads its own `let x` is refused with `seqqcap<id>_0 not
+// defined`, and a `catch` in such a module's file is refused as a catch in a seq. Both
+// engines share the lowering, so graphix-fuzz says AGREE. probe:
+// design/review-2026-10-05/repro/x-expr-walks-01.sh (x-expr-walks-01)
 fn shadow_step(e: &Expr, map: &mut Names) {
     if let ExprKind::Bind(b) = &e.kind {
         b.pattern.with_names(&mut |n| {
@@ -1351,6 +1492,20 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let body = rewrite_stmts(body, &inner, mode.deferred());
             ExprKind::Seq { kind, trigger, abort, body }
         }
+        // CR claude for eric: [bug] In a seq step this arm replaces the `?`'s operand
+        // with lowered code: `seqpc<id> ~! x`, a seqq capture `seqqcap<id>_0`, or a
+        // call's whole issue block. null_error (graphix-compiler/src/node/error.rs:544)
+        // prints that operand into the program-visible `NullError` string. So `try { x?
+        // } with(e)` sees `NullError("seqpc4611686018427394755 ~! x")`, where the book
+        // and the same `?` outside a seq give `NullError("x")`, and a handler matching
+        // `` `NullError("x") `` takes the wrong arm. The id comes from the
+        // process-global ExprId counter, so the value differs between --no-cache and a
+        // registration-warm start, and from run to run when modules with interfaces
+        // load in parallel. Both engines share null_error, so graphix-fuzz reports
+        // AGREE. The NullError text needs the operand as written, carried past this
+        // rewrite; separately, the printers write `?` over this unparenthesized operand
+        // bare (expr/print.rs:1614, :2233), so --expand shows `seqpc.. ~! x?`. probe:
+        // design/review-2026-10-05/repro/t-print-01.sh (t-print-01)
         ExprKind::Qop(x) => {
             let x = rewrite(x, map);
             match mode {

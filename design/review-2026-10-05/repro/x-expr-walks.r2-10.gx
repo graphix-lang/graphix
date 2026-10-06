@@ -1,0 +1,34 @@
+// x-expr-walks.r2-10: a bound never passes through Type::rewrite_trait_args,
+// so neither its hole refusal nor its trait-as-type refusal applies to it.
+//
+// Lambda constraints (graphix-compiler/src/node/lambda.rs:1406) and typedef
+// parameter bounds (graphix-types/src/env.rs:1423) are only scoped, and
+// Type::holes (graphix-types/src/typ/mod.rs:1661) and
+// rewrite_trait_args_inner skip a Fn type's quantifier conjuncts.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-expr-walks.r2-10.gx
+//
+// expected: the definition refused, as `let g = |x: Array<'_>| x` is:
+//   "'_ is the hole of a constructor trait's implementation target
+//   (`impl Collection for Array<'_>`); it is not a type".
+// observed (HEAD c722befe, debug build): the definition alone checks clean;
+//   the call fails at `[1]` with "type mismatch 'a: unbound within
+//   Array<'_> does not contain Array<'_N: i64>". The same for
+//   `type T<'a: Array<'_>> = 'a; let x: T<Array<i64>> = [1]` ("type mismatch
+//   Array<'_> does not contain Array<i64>") and for the annotation
+//   `let f: fn<'a: Array<'_>>(x: 'a) -> 'a = |x| x`.
+//
+// The trait half, where the check and the build disagree:
+//   trait Show { val show: fn(self) -> string };
+//   impl Show for i64 { let show = |x| "i[x]" };
+//   let f = 'a: Array<Show> |x: 'a| x;
+//   f(["a"])
+// `graphix --check` accepts it (exit 0, nothing printed); a run refuses it
+// at elaboration: "an instance at fn(x: Array<string>) -> Array<string> of a
+// definition typed fn<'a: Array<Show>>(x: 'a) -> '_N". `graphix-fuzz check`
+// on it: "DIVERGENCE — the check accepted what the build refused
+// (elaboration refused a program the definition and call-site checks
+// passed: a type-system bug)". `|x: Array<Show>| x` is refused at the
+// definition ("trait Show used as a type").
+let f = 'a: Array<'_> |x: 'a| x;
+f([1])

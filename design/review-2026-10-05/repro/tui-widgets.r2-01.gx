@@ -1,0 +1,61 @@
+// tui-widgets.r2-01: list: the highlight stops following `selected` after a
+// frame drawn with fewer items (ratatui's render-time state changes persist)
+//
+// ListW (stdlib/graphix-package-tui/src/list.rs) writes `selected`/`scroll`
+// into its ListState only at compile and when those refs update (lines 86-91,
+// 121-126); draw renders the state as ratatui's previous render left it (line
+// 160). That render sets the selection to None on an empty list and clamps a
+// selection past the end to the last item
+// (ratatui-widgets-0.3.0/src/list/rendering.rs:42-50), and both stick.
+//
+// The top list has the shape of netidx-admin's services panel
+// (tui/services.gx:223-225, 273-274, 402; tui/mod.gx:81-85): `sel` moves to
+// 2, the last row goes away (a unit deleted), a third row comes back (a unit
+// created), and `selected(rows, sel)` is the row the panel's keys act on. The
+// bottom list gets its items one second after the first frame.
+//
+// command: run in a terminal (it needs a tty), watch 4 s, Ctrl-C exits:
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets.r2-01.gx
+//
+// expected from t=3s:          observed (HEAD c722befe, debug build, 10x40
+//                              pty, default and --no-fusion alike):
+//     alpha                        alpha
+//     beta                       >>beta
+//   >>delta                        delta
+//   target: delta (sel = 2)      target: delta (sel = 2)
+//   late items, selected 1:      late items, selected 1:
+//     one                        one
+//   >>two                        two
+//     three                      three
+// (t=1s..2s shows ">>gamma" and the target gamma; at t=2s ratatui clamps the
+// highlight to beta, matching the clamped target; at t=3s the target moves to
+// delta and the highlight stays on beta)
+use tui::{
+  line,
+  layout::{child, layout},
+  list::list,
+  paragraph::paragraph
+};
+
+let rows: Array<string> = ["alpha", "beta", "gamma"];
+let sel = 0;
+sel <- sys::time::after_idle(duration:1.s, 2);
+rows <- sys::time::after_idle(duration:2.s, ["alpha", "beta"]);
+rows <- sys::time::after_idle(duration:3.s, ["alpha", "beta", "delta"]);
+let selected = |rows: Array<'a>, i: i64| -> ['a, null] select rows {
+  [] => null,
+  rows => rows[min(i, array::len(rows) - 1)]$
+};
+let target: [Array<tui::Line>, string] = select selected(rows, sel) {
+  null as _ => "target: nothing",
+  u => "target: [u] (sel = [sel])"
+};
+let names = array::map(rows, |r| line(r));
+let late = [];
+late <- sys::time::after_idle(duration:1.s, [line("one"), line("two"), line("three")]);
+layout(#direction: &`Vertical, &[
+  child(#constraint: `Length(3), list(#highlight_symbol: &">>", #selected: &sel, &names)),
+  child(#constraint: `Length(1), paragraph(&target)),
+  child(#constraint: `Length(1), paragraph(&"late items, selected 1:")),
+  child(#constraint: `Length(3), list(#highlight_symbol: &">>", #selected: &1, &late))
+])

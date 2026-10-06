@@ -1,0 +1,29 @@
+// core-aux-04: queuefn: a released invocation is overwritten by an
+// immediate dispatch at the same call site.
+//
+// A pop delivers the queued args with ctx.rt.set_var, so they land in the
+// next cycle (stdlib/graphix-package-core/src/queuefn.rs:405-408). If the
+// trigger fires again in that cycle with the queue empty it banks a pop, and
+// a new call at the same site takes the immediate path, which inserts its
+// args straight into ctx.event.variables (queuefn.rs:97-103) over the
+// delivered ones. The runtime itself re-queues a second write to a bind in
+// one cycle (graphix-rt/src/gx.rs:429-432, push_var_event!).
+//
+// c=0: qf(1) runs immediately. c=1: qf(2) is queued. c=2: trig pops 2 for
+// delivery at c=3. c=3: trig banks a pop (queue empty) and qf(3) takes it,
+// writing 3 over the delivered 2. Two call sites hit the same path (site b's
+// popped call lost when b is called again in its delivery cycle), and with
+// several args the popped call merges into the new one instead.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-aux-04.gx
+//   (same with --no-fusion and GRAPHIX_PAR=off|force; graphix-fuzz check
+//   AGREEs, so both engines lose it)
+//
+// expected: ran 1, ran 2, ran 3 (every released invocation runs, in order)
+// observed: ran 1, ran 3 (f(2) never runs), then exit code 4
+let c = 0;
+c <- select c { n if n < 4 => n + 1, _ => never() };
+let trig = select c { 2 => true, 3 => true, _ => never() };
+let qf = queuefn(#trigger: trig, |x: i64| -> i64 { println("ran [x]"); x });
+let r = qf(select c { 0 => 1, 1 => 2, 3 => 3, _ => never() });
+sys::exit(sys::time::after_idle(duration:300.ms, c))

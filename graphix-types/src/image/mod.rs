@@ -444,6 +444,16 @@ impl ImageDecoder {
 
     /// The image every offset in the session refers into. Set before
     /// anything decodes; the session keeps it for what decodes later.
+    // CR claude for eric: [risk] decode_at's unsafe slice (line 1022) is sound only
+    // while nothing replaces `image` during a session, but `set_image` is a safe pub fn
+    // reachable mid-session through the pub `image::decoding(|d| ..)`; a codec that
+    // calls it there frees the bytes decode_at is reading when the decoder held the
+    // last clone (UB from safe code), and `set_offsets` there empties every built slot.
+    // Take the image and the offsets in `ImageDecoder::new` and drop both setters: the
+    // offsets, like the instance ids before them in the trailer, are plain varints that
+    // can be read before the session instead of inside it as registration.rs:372 does.
+    // Then no decoder exists half set up and nothing can move the bytes under
+    // decode_at. (t-image-07)
     pub fn set_image(&mut self, image: Bytes) {
         self.image = image;
     }
@@ -1008,6 +1018,20 @@ pub fn decode_at<T>(
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
+        // CR claude for eric: [bug] This guard refuses re-entry of `ord` only when
+        // `prev == built`, i.e. only when nothing was entered since this ordinal's last
+        // entry. But enter() (l.396) does `self.built += 1` on every call, so a corrupt
+        // image whose misframed decode enters at least one object per round (the Type
+        // -> TypeRef params(Vec<Type>) -> Type -> REF ord path does) advances `built`
+        // each round and the same ordinals recurse without bound; each level mmaps a 32
+        // MB stacker segment. design/program_image.md promises "entered at most twice;
+        // a third entry is a corrupt image and fails the read" and CLAUDE.md promises a
+        // cold fallback -- neither holds: one bit flipped in a cached program image
+        // OOM-kills the session (uncapped) or aborts with "channel closed"/exit 1
+        // (capped), a registration entry aborts with "memory allocation ... failed"
+        // (SIGABRT), never cold. Enforce the documented bound (a per-ordinal entry
+        // count, fail the third) and count only enters that fill an empty slot. probe:
+        // design/review-2026-10-05/repro/x-image-04.sh (x-image-04)
         let prev = match d.active.insert(ord, built) {
             Some(prev) if prev == built => return None,
             prev => prev,
@@ -1169,6 +1193,15 @@ pub fn enter(obj: Obj) -> Result<(), PackError> {
 /// Read an object written by [`object_encode`]: a reference clones the
 /// store's object or decodes its definition with `full`; a definition
 /// decodes `contents` and enters it.
+// CR claude for eric: [structure] tvar_decode (1362), cell_decode (1393),
+// refcell_decode (667), resolved_read (725) and dynscope_decode
+// (graphix-compiler/src/image/mod.rs:127) each repeat this function's REF/DEF dispatch:
+// with_slice, the tag match, built or decode_at, UnknownTag. The first three differ
+// from it only in entering the object before its contents. dynscope_decode is
+// foreign_decode behind a ROOT tag, and only resolved_read's Building lookup is its
+// own. Give this function an entered-first form and route them through it and
+// foreign_decode, so the rules for a definition (a DEF only where decode_at starts,
+// re-entry) are written in two places instead of six. (x-image-11)
 pub(crate) fn object_decode<T: Object>(
     buf: &mut impl Buf,
     contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
@@ -1229,6 +1262,18 @@ pub(crate) fn shared_key(
     }
     let start = out.len();
     crate::stack::ensure_sufficient(|| walk(out));
+    // CR claude for eric: [bug] Each memo entry keeps the node's whole key, its
+    // children's bytes included, and a hit copies that whole key into the parent. So a
+    // chain of depth d costs d^2/2 bytes and time, and the "linear" claim in
+    // design/program_image.md does not hold. Fusion freezes a fresh deep copy of each
+    // kernel's param type and return type (kernel_abi::freeze_for_abi_d_inner), so N
+    // chained `let x_i = [x_{i-1}]` lets cost about N^3/3 bytes here. Measured peaks:
+    // 0.6 / 1.6 / 3.4 GB at N = 1000 / 1500 / 2000, against 0.2 / 0.35 / 0.56 GB with
+    // --no-cache. At deep_nesting.rs's FLAT_DEPTH of 3000, the flattype pin shape is
+    // OOM-killed past 6 GB under the default image cache, while it runs in 1.1 GB with
+    // --no-cache. A fixed-size entry per node (an interned ordinal of its content, with
+    // the parent keyed by its children's ordinals) would make the memo linear. probe:
+    // design/review-2026-10-05/repro/t-misc-02.sh (t-misc-02)
     let key: Box<[u8]> = out[start..].into();
     encoding(|e| {
         e.type_keys.insert(ptr, (keep(), key));

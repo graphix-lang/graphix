@@ -53,6 +53,15 @@ impl<X: GXExt> KeyboardAreaW<X> {
 
 /// Convert an iced keyboard event to a graphix Value struct:
 /// `{key: string, modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool}, text: string, repeat: bool}`
+// CR claude for eric: [structure] KeyboardArea hands its callbacks the whole
+// keyboard::Event, so this function has to rule out ModifiersChanged with
+// unreachable!(), even though iced_keyboard_area.rs:139-149 calls it only for
+// KeyPressed and KeyReleased. Passing key, modifiers, text and repeat from those two
+// arms makes the panic impossible to reach. Named keys are spelled with
+// format!("{named:?}"), which makes iced's derived Debug output the key-name contract
+// that keyboard_area.md documents ("Enter", "ArrowUp"), and it allocates a String and
+// then an ArcStr for every key. Use format_compact!(..).as_str().into(), and pin a few
+// names in a test so a rename in iced cannot change them silently. (gui-widgets-a-14)
 fn key_event_to_value(event: &keyboard::Event) -> Value {
     let (key, modifiers, text, repeat) = match event {
         keyboard::Event::KeyPressed { key, modifiers, text, repeat, .. } => {

@@ -1,0 +1,15 @@
+// small-pkgs-07: args::parse hands the spec to clap unvalidated; a spec that claims -h panics the runtime in a debug build
+// command (any dev-profile build, debug assertions on): cargo run --bin graphix -- --no-cache design/review-2026-10-05/repro/small-pkgs-07.gx
+// expected: the conflict comes back as an ArgError (or -h goes to host and the auto help gives it up); the program prints its result and exits 0
+// observed (debug build, HEAD c722befe), exit 1:
+//   thread 'tokio-rt-worker' panicked at clap_builder-4.6.0/src/builder/debug_asserts.rs:125:17:
+//   Command tool: Short option names must be unique for each argument, but '-h' is in use by both 'host' and 'help'
+//   Error: runtime did not respond
+// observed (quick profile, no debug assertions): no panic; `-- -h db1` gives host "db1", and `-- --help` lists both "-h, --host" and "-h, --help"
+// the same runtime panic, one spec at a time: args::flag(#name: "help"); args::flag(#name: "verbose", #short: "v") beside args::flag(#name: "version", #short: "v");
+//   args::option(#name: "port", #short: "-p") (clap arg.rs:184, short option name cannot be `-`); #subcommands: [args::command(#name: "help", [])]
+let r = args::parse(
+    args::command(#name: "tool", [args::option(#name: "host", #short: "h", #default: "localhost")])
+);
+println("[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -1,0 +1,24 @@
+// c-data-map-06: #[native] together with #[parallel] or #[serial] on one
+// expression is always refused.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-data-map-06.gx
+//
+// expected: prints [2, 4, 6]; the map fuses (it does without #[parallel])
+// and its depth-0 loop takes the forced grain, as design/parallel_eval.md
+// §7 describes for a fork-control node over a fused child.
+//
+// observed (HEAD c722befe, debug build): refused at the decorated map:
+//   #[native] expression did not fully fuse to native code:
+//     - fork control runs its child under flags of its own
+//
+// `#[parallel] let f = ..` moves #[parallel] onto the body (fork_on_body,
+// graphix-compiler/src/node/compiler.rs:101), where it joins #[native];
+// compile_inner (compiler.rs:194-195) then wraps the node in ForkControl
+// under the same decorated spec, so the census dispatches #[native] on the
+// wrapper, which never emits (fusion::effect_blocker). Refused the same
+// way: `|xs| #[parallel] #[native] array::map(..)`, `#[native] #[parallel]
+// ..`, `|x: i64| -> i64 #[serial] #[native] (x * 2 + 1)`. Accepted:
+// `#[parallel] (#[native] array::map(xs, |x| x * 2))`.
+#[parallel] let f = |xs: Array<i64>| -> Array<i64> #[native] array::map(xs, |x| x * 2);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f([1, 2, 3])

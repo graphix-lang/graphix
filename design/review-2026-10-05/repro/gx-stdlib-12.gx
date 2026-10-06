@@ -1,0 +1,33 @@
+// gx-stdlib-12: the opt HOFs and map::change refuse a callback that raises.
+//
+// opt::map, flat_map, filter, or_else, ok_or_else, is_some_and and is_none_or
+// (stdlib/graphix-package-core/src/graphix/opt.gxi:43-83, opt.gx:11-17) and
+// map::change (stdlib/graphix-package-map/src/graphix/mod.gxi:36, mod.gx:15)
+// declare their callback without `throws 'e`, unlike every array, list, map
+// and Collection HOF and core `filter` (core mod.gxi:129). The builtins call
+// the callback through genn::apply with the call site's scope, as core Filter
+// does (stdlib/graphix-package-core/src/opt.rs:262-282), so only the
+// signature stands between a `?` in the callback and the caller's catch.
+//
+// command: graphix --check design/review-2026-10-05/repro/gx-stdlib-12.gx
+// expected: accepted; run, it prints `7 0` then `7 1` (the "z" cast reaches
+//   the catch).
+// observed (HEAD c722befe): refused, "type mismatch fn(x: 'a: string) ->
+//   'b: i64 does not contain fn(n: string) -> i64 throws
+//   Error<ErrChain<`InvalidCast(string)>>". opt::filter and map::change are
+//   refused the same way; a predicate can only drop its error with `$`.
+//
+// The builtin already delivers the raise: replace both `opt::map` below with
+// `omap`, bound as
+//   let omap = |v: ['a, null], f: fn(x: 'a) -> 'b throws 'e| -> ['b, null] throws 'e 'core_opt_map;
+// and the program prints `7 0` then `7 1` (graphix-fuzz check: AGREE;
+// 'core_opt_or_else bound the same way delivers a nullary callback's raise).
+let m = {"a" => "z", "b" => "7"};
+let errs = 0;
+let r = {
+    catch(e) errs <- e ~ errs + 1;
+    let bad = opt::map(map::get(m, "a"), |n| cast<i64>(n)?);
+    opt::map(map::get(m, "b"), |n| cast<i64>(n)?)
+};
+println("[r] [errs]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

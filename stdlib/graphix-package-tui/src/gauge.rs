@@ -12,6 +12,13 @@ use tokio::try_join;
 /// Clamp `raw` into the [0, 1] range ratatui requires, warning once per
 /// distinct out-of-range value: `last` holds the previously warned
 /// value's bit pattern (reliable across NaN and signed zero). NaN → 0.0.
+// CR claude for eric: [structure] clamp_ratio is a validate-style clamp-and-warn helper
+// that lives in gauge.rs, so line_gauge.rs imports it from gauge. Meanwhile
+// validate.rs's module doc describes this function's slot ('an Option<u64> holding the
+// last-warned bit pattern'), although every function in validate.rs takes an
+// `Option<i64>` holding the raw value. Move clamp_ratio and its tests into validate.rs,
+// import it from there in gauge and line_gauge, and cut the slot description from the
+// module doc, since the signatures already say it. (tui-widgets-16)
 pub(super) fn clamp_ratio(widget: &str, last: &mut Option<u64>, raw: f64) -> f64 {
     if (0.0..=1.0).contains(&raw) {
         *last = None;

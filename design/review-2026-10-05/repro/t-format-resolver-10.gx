@@ -1,0 +1,19 @@
+// t-format-resolver-10: `graphix fmt` rewrites a raw or template string in a
+// select pattern as an escaped quoted string and writes it, exit 0.
+// string_pattern (graphix-types/src/expr/parser/patternexp.rs:245) keeps the
+// literal's Value and drops its StrForm, StructurePattern::Literal has no
+// place for it, and the ornament walk (graphix-types/src/expr/format.rs:360)
+// records Delimiters only for expression constants, so the guard cannot see
+// the change. CLAUDE.md: a result whose string delimiters differ from the
+// input is refused, never written.
+//
+// command: graphix fmt --stdout design/review-2026-10-05/repro/t-format-resolver-10.gx
+// expected: the patterns print as written (r"C:\path\[x]" and the template),
+//   as the same strings in expression position do (`s` below), or fmt refuses.
+// observed (HEAD c722befe, debug build), exit 0:
+//   select s { "C:\\path\\\[x\]" => 1, "tmpl \"q\" \[x\]" => 2, _ => 0 }
+//   (the program still prints 1 before and after)
+let s = r"C:\path\[x]";
+let a = select s { r"C:\path\[x]" => 1, """tmpl "q" [x]""" => 2, _ => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+a

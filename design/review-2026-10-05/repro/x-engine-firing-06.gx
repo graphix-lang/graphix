@@ -1,0 +1,24 @@
+// x-engine-firing-06: pure builtins classified Effect::Sync (sum, product,
+// min, max, and, or, mean) show their pre-sleep result at a wake.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-engine-firing-06.gx
+//
+// The true arm sleeps while c is false; x moves 5 -> 10 then, and the
+// false arm reads x, so x's fire is consumed and the woken arm sees x
+// STALE. CachedArgs re-runs eval at a wake only for Stateless builtins
+// (stdlib/graphix-package-core/src/lib.rs:785); a Sync one retags its
+// last result.
+//
+// expected, last epoch (c back to true, x = 10, y = 1):
+//   [max 10, sum 11, x + y 11, divide 10]
+// observed, every mode (interp, jit, no cache, cold, warm; `check` says AGREE):
+//   Trace(...; [0:[i64:10, i64:10, i64:10, i64:10]]; [0:[i64:5, i64:6, i64:11, i64:10]])
+// max and sum show the value from before the sleep (5, 6). `x + y` and
+// `divide` (the same eval shape as sum, declared Stateless(None)) recompute.
+// product, min, and, or and mean behave like sum and max.
+// schedule-v1: cap=64 events=512; in0=bool:true; in1=i64:5; in0=bool:false; in1=i64:10; in0=bool:true
+let f = |c, x: i64, y: i64| select c {
+  true => (max(x, y), sum(x, y), x + y, divide(x, y)),
+  false => (x, x, x, x)
+};
+f(in0, in1, 1)

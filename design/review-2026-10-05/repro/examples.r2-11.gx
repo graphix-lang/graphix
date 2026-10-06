@@ -1,0 +1,21 @@
+// examples.r2-11: tui/color_palette.gx, one of the nine examples no book page
+// includes, never shows colour 255.
+//
+// book/src/examples/tui/color_palette.gx:10 is
+//   line(array::flatten(array::group(span, |n, _| n == 255)))
+// over span = three spans per value of range(0, 256), i.e. 256 updates
+// (0..255). array::group passes the buffer length AFTER the push
+// (stdlib/graphix-package-array/src/lib.rs Group::update, `set!`), so
+// `n == 255` emits when the buffer holds indices 0..254; index 255 starts a
+// new buffer that never reaches 255 and is never shown. This program is the
+// same pipeline over i64 in place of spans.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/examples.r2-11.gx
+// expected: len=768 last=255
+// observed: len=765 last=254
+let span: Array<i64> = select range(0, 256)$ {
+    i => [i, i, i]
+};
+let g = array::flatten(array::group(span, |n, _| n == 255));
+println("len=[array::len(g)] last=[g[-1]$]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0))

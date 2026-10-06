@@ -105,6 +105,21 @@ pub fn window_event(
         WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
             events.push(Event::Window(window::Event::Rescaled(*scale_factor as f32)));
         }
+        // CR claude for eric: [bug] winit's ModifiersChanged lands in this arm, so iced
+        // never gets keyboard::Event::ModifiersChanged. event_loop.rs:159 only stamps
+        // KeyPressed.modifiers, and iced 0.14's text_input, scrollable, slider and
+        // pick_list never read that field: they keep their own modifier state, which
+        // only ModifiersChanged sets. As a result every text_input, combo_box and
+        // data_table cell editor ignores Ctrl+C/X/V/A, Shift selection and Ctrl word
+        // moves (Ctrl+V pastes nothing, End then Ctrl+Backspace deletes one character),
+        // Shift+wheel scrolls a scrollable vertically, and Ctrl+wheel does nothing on
+        // slider and pick_list. Forward it as iced_winit does:
+        // Event::Keyboard(keyboard::Event::ModifiersChanged(convert_modifiers(m.state()))).
+        // This arm also drops Ime events, and the UI's input_method is never applied
+        // (no IME composition); mouse_button maps Back/Forward to None although iced
+        // has both. probe: design/review-2026-10-05/repro/gui-core-02.rs (copy to
+        // stdlib/graphix-package-gui/tests/review_gui_core_02.rs, then cargo test -p
+        // graphix-package-gui --test review_gui_core_02 -- --nocapture). (gui-core-02)
         _ => {}
     }
     events

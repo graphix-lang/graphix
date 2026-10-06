@@ -1,0 +1,44 @@
+// gx-ui-01: a typedef body may use a type variable it never declares, and
+// every expansion freshens it, so a value stored at one type reads back at
+// any other (gui::radio::Radio is the stdlib's instance).
+//
+// Env::deftype (graphix-types/src/env.rs:1427-1455) collects the body's
+// variables into `used` and refuses declared-but-unused ones, never
+// used-but-undeclared ones. Type::lookup_ref_with expands a Ref through
+// replace_tvars (graphix-types/src/typ/mod.rs:2003), which freshens every
+// variable that is not a parameter, so each mention of `R` below has its
+// own 'a: the annotation binds one to string, the read binds another to i64.
+//
+// command: graphix --check design/review-2026-10-05/repro/gx-ui-01.gx
+//          graphix --no-cache design/review-2026-10-05/repro/gx-ui-01.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/gx-ui-01.gx
+//
+// expected: --check refuses `type R` (undeclared type variable 'a; the
+//   typedef needs `<'a>`, and then `let v: i64 = *w.value` is a mismatch).
+// observed (HEAD c722befe, debug build):
+//   --check: exit 0.
+//   run: panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//     kernel param `v`: runtime String("y") does not match the compiled
+//     Scalar(I64) slot; then "Error: runtime did not respond", exit 1.
+//     graphix-fuzz check on this file aborts (core dumped).
+//   --no-fusion: arith error ... Unexpected `y` (it computes "y" + 1).
+//
+// variants, same cause:
+//   `type R = { value: 'a }; let w: R = { value: "y" }; let v: i64 = w.value; v + 1`
+//     graphix-fuzz check: DIVERGENCE interp: Trace([]) jit: Trace([0:i64:1])
+//     (the kernel reads "y" as 0 and answers 1).
+//   `type Bx = Abstract<{ value: 'a }>` with `Bx({ value: "y" }).0.value`
+//     read as i64: the same DIVERGENCE.
+//   `type G = fn(x: 'a) -> 'a; let f: G = |x: i64| x + 1; let s: string = f("s"); s`
+//     --check: exit 0; the build refuses it ("an instance at fn(x: string)
+//     -> string of a definition typed fn(x: i64) -> ..."): elaboration
+//     refusing what the check accepted. The inline annotation
+//     `let f: fn(x: 'a) -> 'a = ..` is refused by the check, as it should be.
+//   the stdlib's own (run with DISPLAY/WAYLAND_DISPLAY unset):
+//     `use gui::{Widget, radio::radio}; let w: Widget = radio(#label: &"two", &"y");
+//      let v: i64 = select w { `Radio(r) => *r.value, _ => 0 }; v + 1`
+//     --check: exit 0; run: the same kernel.rs:243 panic, exit 1.
+type R = { value: &'a };
+let w: R = { value: &"y" };
+let v: i64 = *w.value;
+v + 1

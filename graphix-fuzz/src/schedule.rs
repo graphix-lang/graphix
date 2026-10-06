@@ -25,6 +25,16 @@ pub struct Schedule {
     /// One entry per injection epoch (after the compile burst): the
     /// simultaneous `(input name, value)` set delivered before that
     /// epoch's quiescence wait.
+    // CR claude for eric: [structure] Schedule and CallSpec hold injections as netidx
+    // Values, although only i64, f64 and bool are legal. So other kinds are
+    // representable and are answered by panics (render_value, canonical,
+    // Schedule::decls, CallSpec::decls), and value_kind encodes the kind as magic u8s.
+    // The decl text and the per-epoch header loop are copied verbatim between Schedule
+    // and CallSpec, and the leading-comment header scan is written three times
+    // (has_header, CallSpec::parse, Schedule::parse). An `enum Lit { I64(i64),
+    // F64(f64), Bool(bool) }` with its type name, default literal, render and parse
+    // would remove value_kind, canonical and the panics, and one decl helper plus one
+    // section renderer would serve both specs. (fuzz-main-aux-16)
     pub epochs: Vec<Vec<(String, Value)>>,
     /// Per-segment active-cycle budget (see `GXHandle::trace_start`).
     pub max_cycles: u64,
@@ -115,6 +125,19 @@ impl Schedule {
     /// header is an error, never silently a comment.
     pub fn parse(text: &str) -> Result<(Schedule, &str), String> {
         let mut cursor = text;
+        // CR claude for eric: [bug] This loop skips leading `//` lines to reach the
+        // schedule header, and the parse returns only the text after that header, so a
+        // `// callable-v1:` line above it is dropped. CallSpec::render writes exactly
+        // that order, and so do mutate_wrapper, minimize's reattach and typemorph's
+        // compose. Subject::parse runs this parse first, so the subject loses its
+        // CallSpec while callable::has_header still selects the Dispatch route: no
+        // dispatch runs and every pair agrees. The minimizer rewrites a schedule-first
+        // program into this order, then deletes the handler's module because its
+        // candidates no longer need it. Keep the skipped lines in the returned body as
+        // CallSpec::parse keeps `pre`, or give the three scans one shared header
+        // splitter. probe: design/review-2026-10-05/repro/fuzz-main-aux-08.gx
+        // (graphix-fuzz check: AGREE; with its two header lines swapped: DIVERGENCE).
+        // (fuzz-main-aux-08)
         let (line, rest) = loop {
             let t = cursor.trim_start_matches(['\n', ' ']);
             if t.starts_with(HEADER_PREFIX) {
@@ -182,6 +205,23 @@ impl Schedule {
                 max_cycles: max_cycles.unwrap_or(trace::MAX_CYCLES),
                 max_events: max_events.unwrap_or(trace::MAX_EVENTS),
             },
+            // CR claude for eric: [bug] This returns only the text after the schedule
+            // header, so every `//` line the scan skipped above it is dropped, a `//
+            // callable-v1:` header included (CallSpec::parse keeps its `pre`, this does
+            // not). CallSpec::render documents the callable line first and either order
+            // as fine, and minimize's `reattach` (lib.rs:2458), mutate_wrapper
+            // (mutate.rs:345) and typemorph_subject (lib.rs:2876) all emit callable
+            // first. Subject::parse then finds no CallSpec, so nothing is dispatched on
+            // either route, while `has_header` still sends the program through
+            // check_callable, which agrees vacuously. A pin with both headers in that
+            // order is silently vacuous, and minimizing one written schedule-first
+            // returns a program that no longer diverges. Keep the skipped lines in the
+            // returned body (or render the schedule first everywhere and fix the docs),
+            // and test both orders through Subject::parse. probe:
+            // design/review-2026-10-05/repro/fuzz-lib-b-06.sh (check reports DIVERGENCE
+            // with the schedule line first and AGREE with the two lines swapped;
+            // minimize with budget 1 prints "no divergence to minimize").
+            // (fuzz-lib-b-06)
             rest,
         ))
     }

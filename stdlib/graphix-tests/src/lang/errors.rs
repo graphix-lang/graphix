@@ -293,6 +293,15 @@ run!(catch_block_scope, CATCH_BLOCK_SCOPE, |v: Result<&Value>| matches!(
 
 // A catch covering a lambda body's `?` keeps those errors out of the
 // lambda's inferred throws.
+// CR claude for eric: [test-gap] Nothing in this fixture observes f's throws. An
+// uncovered `?` only logs, so with the catch deleted the program still compiles and
+// yields 1, and a regression that leaked covered errors into the lambda's inferred
+// throws would still pass. Ascribe the lambda and call through it: `let g: fn(i: i64)
+// -> i64 = f; (g(0), g(9)).0`. With the catch that yields 1; without it the program is
+// refused ('fn(i: i64) -> i64 does not contain ... throws
+// Error<ErrChain<`ArrayIndexError(string)>>'). The 'None:' comment above the run!
+// contradicts its FuseExpect::Jit: parts of the body fuse, and the catch only stops f
+// from getting a kernel of its own. Delete it. (tests-lang-d-04)
 const CATCH_IN_LAMBDA_THROWS: &str = r#"
 {
     let err0: Error<Any> = never();
@@ -499,6 +508,12 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
         a[10]?
     }"#;
     let r = graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await;
+    // CR claude for eric: [test-gap] is_err() also holds if the narrow catch is
+    // accepted. Its handler is never(e) and a[10]? raises, so the block never produces
+    // a value, eval returns its 5 s timeout error, and the test passes. The same
+    // program with catch(e: Error<Any>) compiles and prints nothing. Assert on the
+    // refusal itself, e.g. that format!("{e:#}") contains 'does not contain
+    // Error<ErrChain<`ArrayIndexError'. (tests-lang-d-03)
     assert!(
         r.is_err(),
         "too-narrow catch(e: T) must be rejected, got {:?}",

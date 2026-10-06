@@ -21,6 +21,19 @@ impl FromValue for PointV {
             y: f32,
         }
         let Fields { x, y } = v.cast_to()?;
+        // CR claude for eric: [bug] PointV accepts NaN and infinite coordinates. So do
+        // the other f32 fields of CanvasShape, PathSegment and StrokeV (radius, width,
+        // angles), and draw_shape passes them to iced unchecked. A shape such as `x: v
+        // / total * 300.0` while `total` is 0.0 panics when the canvas draws: in a
+        // debug build lyon's path builder asserts `p.x.is_finite()` on every point, and
+        // in a release build a filled path fails tessellation and iced_wgpu's
+        // Frame::fill panics on `.expect("Tessellate path.")`. The draw runs inside
+        // winit's run_app on the shell's main thread and nothing catches the panic, so
+        // the whole graphix process exits. Refusing non-finite numbers in these
+        // conversions would let TRef::update log the error and keep the last good
+        // shapes. probe: design/review-2026-10-05/repro/gui-widgets-a-01.rs (copy to
+        // stdlib/graphix-package-gui/tests/review_gui_widgets_a_01.rs; nan_circle_draws
+        // panics, finite_circle_draws passes). (gui-widgets-a-01)
         Ok(Self(Point::new(x, y)))
     }
 }

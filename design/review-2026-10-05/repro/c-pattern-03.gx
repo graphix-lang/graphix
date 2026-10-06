@@ -1,0 +1,40 @@
+// c-pattern-03: or-pattern "exactly equal payload types" is never checked
+// against the scrutinee. Pattern compile (graphix-compiler/src/node/
+// pattern.rs:139) compares the alternatives' inferred payload types, which
+// are two open cells, so the check unifies them and passes. The select
+// narrowing (graphix-compiler/src/node/select.rs:1260) then binds the shared
+// cell to the FIRST alternative's member (i64) and accepts `B(i64) as fitting
+// inside `B([i64, string]). At run time neither engine tests the payload
+// type (GXDBG_SHALLOW=1: [`A(i64), `B(i64)] => [`A(Any), `B(Any)]), so
+// `B("s") delivers a string into x: i64.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-pattern-03.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-pattern-03.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-pattern-03.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/c-pattern-03.gx
+//
+// expected: refused, "or-pattern alternatives must bind x at exactly equal
+//   types (first alternative: i64, here: [i64, string])".
+// observed: --check exits 0. The node-walk prints "s" for `y: i64`; the JIT
+//   prints 0. graphix-fuzz check: DIVERGENCE, interp: Trace([0:"s"]),
+//   jit: Trace([0:i64:0]).
+//
+// Variants (same binary, same flags):
+// - JIT panic: when the select does not fuse whole and x feeds a kernel,
+//     let g = |n: i64| n * 2 + 1;
+//     let f = |v: [`A(i64), `B([i64, string]), `C]| select v { `A(x) | `B(x) => g(x), _ => count(v) };
+//     f(`B("s"))
+//   is accepted and the runtime panics at fusion/kernel.rs:243: "kernel param
+//   `x`: runtime String("s") does not match the compiled Scalar(I64) slot".
+// - Order: `B(x) | `A(x) gets x: [i64, string] (accepted with a body that
+//   takes the wider type, e.g. "[x]").
+// - Over [`A(i64), `B(string)], `A(x) | `B(x) is refused, but by "unreachable
+//   or-pattern alternative: `B(i64) will never match `B(string)" (with a `_`
+//   arm) or "missing match cases" (without), never by the equal-types rule.
+//   The pins or_equal_types_err and or_payload_unequal_rejected
+//   (stdlib/graphix-tests/src/lang/select.rs) are refused by the same
+//   "unreachable or-pattern alternative" check; only an explicit predicate
+//   (`(i64, string) as (0, y) | (y, "z")`) reaches the equal-types message.
+let f = |v: [`A(i64), `B([i64, string]), `C]| -> i64 select v { `A(x) | `B(x) => x, _ => 0 };
+let y: i64 = f(`B("s"));
+y

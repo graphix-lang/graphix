@@ -111,6 +111,16 @@ impl NetHandles {
 
 impl NetHandles {
     fn get_or_materialize(&self, cfg: NetConfig) -> Result<&Handles> {
+        // CR claude for eric: [risk] get_or_materialize reads the OnceLock, builds the
+        // handles outside it and sets it afterwards. Callers that first touch the
+        // network at the same time therefore each build a universe, and all but one are
+        // dropped. With GRAPHIX_PAR=force and --no-netidx, sys::net::publish mapped
+        // over 16 paths spawned 7 and 11 gx-netidx threads in 2 of 20 runs, against one
+        // in every serial run. Each thread was an InternalOnly resolver, publisher and
+        // subscriber, and all were alive at once. Probe:
+        // design/review-2026-10-05/repro/sys-net-14.gx. Values stay correct; the cost
+        // is the extra spin-ups, each holding an eval-pool worker in a blocking recv,
+        // so hold one lock across the check, the build and the set. (sys-net-14)
         if let Some(h) = self.0.get() {
             return Ok(h);
         }
@@ -290,6 +300,24 @@ impl NetState {
                                     // coalesce per SubId (last wins) — the same channel can be
                                     // registered on a shared Dval more than once — then fan out
                                     // to every registered reader.
+                                    // CR claude for eric: [bug] This map keeps only the
+                                    // last update per SubId in each netidx batch, so a
+                                    // subscription silently drops every intermediate
+                                    // value that arrives in the same batch. netidx
+                                    // delivers all of them: on one burst a `netidx
+                                    // subscriber` CLI printed 0..200 in order while
+                                    // this subscription got 66 of 201. Which values
+                                    // survive depends on batch timing, so count, log or
+                                    // array::group over a subscription gives
+                                    // nondeterministic results. The case in the comment
+                                    // (a shared channel registered again) only re-sends
+                                    // `last` under BEGIN_WITH_LAST. Handle it at
+                                    // registration (NO_SPURIOUS, plus `dv.last()` to
+                                    // the new BindId) and forward every event in order
+                                    // here. probe:
+                                    // design/review-2026-10-05/repro/sys-net-07.gx
+                                    // (last line (177..192, 200), expected (201, 200)).
+                                    // (sys-net-07)
                                     let mut last: LPooled<IntMap<SubId, NEvent>> =
                                         LPooled::take();
                                     for (sub_id, ev) in batch.drain(..) {
@@ -361,6 +389,18 @@ impl NetState {
         // FLUSHER: commit the publish batch when pinged, coalescing
         // pings that arrive while a commit is in flight.
         {
+            // CR claude for eric: [risk] The flusher holds st2, an Arc of the Inner
+            // that owns flush_tx, and loops until flush_rx closes, so Inner is never
+            // dropped. After the runtime goes away, these all live until the tokio
+            // runtime shuts down: the flusher and graveyard tasks, the cached rpc
+            // client Procs, the change trackers and, through NetHandles, the publisher,
+            // the subscriber and (in Internal mode) the gx-netidx thread with its
+            // private resolver. A process that runs several runtimes on one tokio
+            // runtime keeps one netidx universe for each finished runtime that touched
+            // sys::net. A graphix-fuzz check-batch worker is one: it runs every session
+            // of every subject on its #[tokio::main] runtime. Give the flusher only
+            // what it uses (the pending batch behind its own Arc, and the timeout), so
+            // dropping NetState closes flush_tx and the tasks exit. (sys-net-13)
             let st2 = st.clone();
             task::spawn(async move {
                 while let Some(()) = flush_rx.next().await {
@@ -405,6 +445,18 @@ impl NetState {
         id: BindId,
     ) -> Result<Dval> {
         let updates_tx = self.0.netidx_updates_tx.clone();
+        // CR claude for eric: [bug] Every subscription registers the one shared channel
+        // with BEGIN_WITH_LAST. When the path's Dval is already subscribed, netidx
+        // sends `last` again (NO_SPURIOUS unset,
+        // ../netidx/netidx/src/subscriber/connection.rs:377), and the pump fans it out
+        // to every BindId on the SubId (lines 299-304). So each existing subscriber of
+        // a path fires again with the value it already had whenever another subscribe
+        // of that path starts, including one in a woken select arm, and any count, seqq
+        // or `<-` driven by it runs again. A channel per subscription would not fix it:
+        // netidx sends that event to every stream of the subscription
+        // (connection.rs:604). The new BindId needs `dv.last()` delivered to it alone.
+        // probe: design/review-2026-10-05/repro/sys-net-06.gx (count(a) goes 1, then 2
+        // at 0.5s when `b` subscribes the same path). (sys-net-06)
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         self.0.routes.lock().subs.entry(dv.id()).or_default().push(id);
@@ -489,6 +541,18 @@ impl NetState {
             clients.retain(|(_, _, last)| {
                 now.saturating_duration_since(*last) < Duration::from_secs(60)
             });
+            // CR claude for eric: [bug] This keeps reusing one netidx client Proc per
+            // path until no call has used the path for 60 s. That Proc reads the
+            // procedure's argument names only once (a OnceCell in client::Proc::call,
+            // netidx-protocols rpc.rs:498-534) and refuses any later call that names an
+            // argument outside that set. So after the server republishes the path with
+            // a different spec, every call that names a new argument fails with "no
+            // such argument b" as long as calls keep arriving less than 60 s apart. The
+            // program sees 0 (the error cast of sys-net-01), while a fresh Proc answers
+            // 20. A cache must not change a call's answer. Fix the root: when a name is
+            // missing, re-read the argument set from the call Dval's current value. At
+            // minimum, drop the entry when a call through it fails. probe:
+            // design/review-2026-10-05/repro/sys-net-10.gx (sys-net-10)
             match clients.iter_mut().find(|(p, _, _)| p == &path) {
                 Some((_, proc, last)) => {
                     *last = now;

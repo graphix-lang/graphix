@@ -1,0 +1,22 @@
+// c-data-map-09: an `error:` literal is typed as the bare primitive `error`,
+// which no Error<T> but Error<Any> contains.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-data-map-09.gx
+//
+// expected: prints "boom" (`error:"boom"` is how the shell prints the
+// Error<string> that error("boom") makes), or the literal is refused by
+// the parser with a pointer to error(..).
+//
+// observed (HEAD c722befe, debug build): refused at error:"boom":
+//   type mismatch Error<string> does not contain error
+//
+// The literal parser hands the text to netidx's parse_value
+// (graphix-types/src/expr/parser/mod.rs:660), which also takes
+// `error:<value>` and `abstract:<base64>`; compile_kind types every Constant
+// as Type::Primitive(Typ::get(v)) (graphix-compiler/src/node/compiler.rs:333).
+// Also refused: `let x: [i64, Error<string>] = error:"boom"`, and
+// `select error:"boom" { error as x => x.0, _ => "no" }` ("expected tuple
+// not error"). `f(error:"boom")` with `f = |e: Error<Any>| e` is accepted.
+let f = |e: Error<string>| e.0;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(error:"boom")

@@ -1,0 +1,29 @@
+// c-error-op-05: `?` refuses a generic or unknown error type with internal
+// messages, though `$` accepts the same operand.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-error-op-05.gx
+//          (run: graphix --no-cache design/review-2026-10-05/repro/c-error-op-05.gx)
+//
+// expected: accepted; the run prints `caught Neg`, as it does with the payload
+// written concretely (`|r: Result<i64, `Neg>| -> i64 r?`).
+//
+// observed: refused at `r?` (line 27, column 40):
+//     5: type must be known
+// (fix_echain_typ, graphix-compiler/src/node/error.rs:633: the payload `'e` is
+// an open variable). The same lambda with `r$` checks and runs.
+//
+// The same refusal: `'e: [`A, `B] |r: [i64, Error<'e>]| -> i64 r?` (a bound
+// that rules out a chain) and `let raise = |e| error(e)?`.
+// Refused with `expected error not []` (error.rs:619), which names no
+// operand: `let x: Any = 3; { catch(e) println("[e]"); x? }`,
+// `|x: [Any, null]| x?`, `|x| x?`, and `let r = never(); let out = { catch(e)
+// ..; r? }; r <- t ~ error(`X)` (the writer placed before the reader checks
+// and runs).
+//
+// Constraint on a fix: wrap_error (error.rs:51) chains a payload that is
+// itself an ErrChain instead of wrapping it, so for an unbounded 'e the
+// raise is `ErrChain<'e>` or `'e` depending on the instance; typing it
+// `ErrChain<'e>` needs the chain decision made statically for the site.
+let must = |r: Result<i64, 'e>| -> i64 r?;
+let out = { catch(e) println("caught [(e.0).error]"); must(error(`Neg)) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

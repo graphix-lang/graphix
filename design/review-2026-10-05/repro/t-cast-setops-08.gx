@@ -1,0 +1,30 @@
+// t-cast-setops-08: a List cast with no single static source type (a json,
+// pack, toml or str::parse read, a netidx value, an Any or union source)
+// reads a 2-element array whose last element is list-shaped (`[]`) as a
+// list spine, and silently drops that element.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-08.gx
+//          (the same with --no-fusion; graphix-fuzz check says AGREE)
+//
+// expected: b is 2. The type of opt has no List member, and the pin
+// types::cast_array_to_list says the cast's source type, not the value's
+// shape, picks the conversion. c and d read the same document, so at least
+// one of them must be wrong: json::write_str(rows), the JSON of an array of
+// two rows, and json::write_str([<[1, 2]>]), the JSON of a one-element list
+// (design/list_native.md "Printing and the wire"), are both "[[1,2],[]]".
+//
+// observed, both engines: ("[[1,2],[]]", 2, 1, 1, 1). Only the source that
+// is statically an Array keeps both rows. pack::read(pack::write_bytes(rows)$)
+// and str::parse(r"[[1, 2], []]") into List<Array<i64>> also give one
+// element, json::read(r"[[], []]") gives [<[]>], and json::read(r"[1, []]")
+// into List<[i64, Array<i64>]> gives [<1>].
+// json::read(r"[[1, 2], [3]]") gives both rows.
+let rows: Array<Array<i64>> = [[1, 2], []];
+let opt: [Array<Array<i64>>, null] = [[1, 2], []];
+let doc = json::write_str(rows)$;
+let a: List<Array<i64>> = cast<List<Array<i64>>>(rows)$;
+let b: List<Array<i64>> = cast<List<Array<i64>>>(opt)$;
+let c: List<Array<i64>> = json::read(doc)$;
+let d: List<Array<i64>> = json::read(json::write_str([<[1, 2]>])$)$;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(doc, list::len(a), list::len(b), list::len(c), list::len(d))

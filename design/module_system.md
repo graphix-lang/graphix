@@ -164,6 +164,17 @@ module's own business when the body is instance-elaborated elsewhere.
 ### The table
 
 `Env.names: Map<ModPath, ScopeNames>`, where a `ScopeNames` is
+<!-- CR claude for eric: [doc-drift] Out of date with the code. In this file: the field
+is keyword_anchored, not chain (here and at line 215); restore_lexical_env is now
+Env::swap_lexical (line 170, and also design/program_image.md:169); predeclared_mods no
+longer exists (line 226; compile_statement now passes a predeclared flag); and the Pins
+at lines 8-9 name graphix-compiler/src/expr/parser/test.rs and
+graphix-compiler/src/env.rs, which now live under graphix-types/src. In
+design/env_independent_typerefs.md: the cell holds a Weak, not an Arc (line 23);
+find_visible is now resolve_visible (line 25); the check_mode_parity pin no longer
+exists (line 4); and there is no #[pack(skip)] (lines 38-40): the syntax codec mints a
+fresh cell, while an image carries the cell (graphix-types/src/typ/mod.rs:451).
+(t-env-11) -->
 `imports: name → ImportEntry { scope, name, chain }` plus the scope's
 glob source list in declaration order. Scope paths are globally
 unique, so `names` is a per-context registry of every module's and

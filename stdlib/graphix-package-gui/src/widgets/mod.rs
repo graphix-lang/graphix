@@ -12,6 +12,28 @@ use std::{future::Future, pin::Pin};
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
 /// Compile an optional callable ref during widget construction.
+// CR claude for eric: [structure] Every gui and tui widget names each property six or
+// more times: its field, the FromValue Fields struct, the destructure, the try_join! of
+// compile_ref, TRef::new(..).context(..), and the .update(id, v).context(..) chain in
+// handle_update. Across the two crates that is about 260 TRef constructions, 335
+// compile_ref calls and 257 update calls. A property that is compiled but left out of
+// handle_update never changes after startup, and nothing catches it. A declarative
+// macro beside this family would make that omission impossible: it takes one `name:
+// Type` list per widget and generates the decode, the joined compile_refs, the TRefs
+// and the update chain. context_menu.rs:84-118 and menu_bar.rs:195-230 also repeat one
+// menu-item update loop, which should be a single shared function. (x-dup-14)
+// CR claude for eric: [structure] These four macros each pair a Ref with state derived
+// from it, and the pairing is still copied by hand. menu_bar.rs:62-69 repeats
+// compile_callable!, data_table/mod.rs:133-140 repeats it with null meaning no handler,
+// data_table's update_cb! (mod.rs:347-355) skips update_callable's is_for check and so
+// recompiles a handler on every fire, and children have no helper (flex_widget! below,
+// grid.rs:40-45 and 78-87, stack.rs:34-39 and 68-74). Each of those sites also writes
+// out Ref::update by hand as `if id == r.id { r.last = Some(v.clone()); .. }`. Small
+// owning types (a handler: Ref + Option<Callable>, a child: Ref + GuiW, children: Ref +
+// Vec<GuiW>) with compile and update methods built on Ref::update would replace the
+// macros and the copies, so a fix such as a same-value check is made once.
+// flex_widget!'s spacing, padding, width and height idents are the same in both
+// expansions and can be fixed field names. (gui-widgets-a-09)
 macro_rules! compile_callable {
     ($gx:expr, $ref:ident, $label:expr) => {
         match $ref.last.as_ref() {
@@ -176,6 +198,17 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 
     /// Child widgets that `on_message` and `before_view` forward to.
     /// Leaf widgets return `&mut []` (the default); containers override.
+    // CR claude for eric: [bug] Children are one slice, so a widget with two child
+    // groups cannot list them all: TableW forwards on_message to its headers and cells
+    // by hand but not before_view, and TooltipW lists `child` and never `tip`. A
+    // data_table in a table cell or header therefore never runs before_view, so a live
+    // change to its sort column is not re-sorted until an unrelated widget ref update
+    // reaches handle_update (in the probe it is never sorted at all). A child visitor
+    // that every composite implements once (e.g. `for_each_child_mut`) would make the
+    // default on_message and before_view complete. The default is_column_resizing
+    // traversal has no caller; only DataTableW's override is used, from its own
+    // on_message. probe: design/review-2026-10-05/repro/gui-widgets-a.r2-11.rs
+    // (gui-widgets-a.r2-11)
     fn children_mut(&mut self) -> &mut [GuiW<X>] {
         &mut []
     }
@@ -344,6 +377,33 @@ macro_rules! flex_widget {
                     .context(concat!($label, " update height"))?.is_some();
                 changed |= self.$align.update(id, v)
                     .context(concat!($label, " update ", stringify!($align)))?.is_some();
+                // CR claude for eric: [bug] This recompiles every child whenever the
+                // children ref fires, even when the delivered array equals the one
+                // already compiled. A place reference re-fires its value on every write
+                // to its root (graphix-compiler/src/node/bind.rs:977), so
+                // `column(&[text_editor(#on_edit: .., &doc.text), ..])` rebuilds the
+                // editor on each write to `doc`. The new Content puts the cursor at (0,
+                // 0), so typing "abc" leaves "cba". update_child! (:49), stack, grid,
+                // table, menu_bar, context_menu and window.rs:147/201 rebuild the same
+                // way (a `window(#title: &doc.title, ..)` rebuilds the whole window).
+                // Skip the recompile when the ref's `last` equals the delivered value.
+                // probe: design/review-2026-10-05/repro/gui-widgets-b-01.rs (copy it
+                // under stdlib/graphix-package-gui/tests/ and run cargo test -p
+                // graphix-package-gui --test review_gui_widgets_b_01).
+                // (gui-widgets-b-01)
+                // CR claude for eric: [bug] This recompiles every child whenever the
+                // children ref fires, even when the new array equals
+                // `children_ref.last` or only a sibling changed. `select page` re-emits
+                // the identical array when Home is clicked on Home, and appending one
+                // row to N rows rebuilds all N. The rebuild throws away state held in
+                // the widget structs (a text_editor's cursor and selection restart at
+                // 0). It also gives every handler in the subtree a fresh call site,
+                // which `update_callable` exists to prevent. `update_child!` (line 49),
+                // grid.rs, stack.rs and window.rs's window_ref and content_ref arms
+                // have the same shape. probe:
+                // design/review-2026-10-05/repro/gui-widgets-a-04.rs (typing Y after
+                // the re-fire gives "Yabchello", expected "abcYhello"; 0 of 20 old
+                // editors survive an append). (gui-widgets-a-04)
                 if id == self.children_ref.id {
                     self.children_ref.last = Some(v.clone());
                     self.children = rt.block_on(

@@ -342,6 +342,17 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   machine itself are ordered in the block plan: the abort must fail the
   guards before the machine updates.
 
+<!-- CR claude for eric: [doc-drift] §4.3 and §5 describe a cost model other than the
+one in cost.rs. :247-250 and :362-363 have a cycle-level histogram decide whether to
+enter the pool; none exists, and the pool is entered at the fork (§4.5). :351 and :358
+put bucket 0 near 16 ns; T_BUCKET = 6 puts it at T/128-T/64, about 0.3-1.1 us on this
+box. :371-384 pack members greedily largest-first into a join tree, halve slot ranges
+down to the grain, and use a construction histogram for growth. As built, a site splits
+contiguous ranges at the weighted midpoint (Splits::split), slots fork in flat ranges of
+the grain, and growth has two ProbeSites. :406 says the median wake where the code and
+:436-439 take the lower quartile, and :83 and :751 call FusedKernel feeders a fork
+point, though FusedKernel::update (fusion/kernel.rs:311) updates them in order and
+CLAUDE.md does not list them. (c-cost-misc-11) -->
 ## 5. The cost model
 
 The engine measures, and the measurements choose the fork points.
@@ -389,6 +400,18 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
+<!-- CR claude for eric: [doc-drift] The next line says fork plans are imaged; §3.3 and
+Block::image_encode (graphix-compiler/src/node/mod.rs:1154) say they are not, and a warm
+start replans. §8 (lines 663-667 and 681-683) says the join asserts disjoint keys under
+GRAPHIX_PAR_AUDIT, and that a hook site built in a branch joins the registry at the
+merge with a duplicate deleted. In the code, TrackedMap::join asserts nothing, the audit
+(branch.rs:785) checks only a right branch's reads, and return_site
+(node/coretraits.rs:330) puts a site back in the shared pool at once, as §4.4 says.
+dependency_summaries.md §6 (lines 178-183) says write sets decide conflicts, while §3.2
+here and plan_block compare reads with publications and never consult writes. The
+analysis.rs module doc names three passes; the module also holds the dependency
+summaries, the seq and block plans, the #[parallel] check and arm_sleeps_on_deselect.
+(c-analysis-branch-10) -->
 **Not imaged.** Histograms are run-time state; a warm start relearns
 them. Fork plans (§3.3), which are static, are imaged.
 
@@ -660,6 +683,16 @@ that safe: they are independent.
 - **Two shared resources keep their locks:** the JIT (a kernel install,
   C/fusion/emit/jit.rs:1263) and the image decoder
   (C/node/callsite.rs:1768). Both are taken once per first use.
+<!-- CR claude for eric: [doc-drift] Stale against the code: no join asserts disjoint
+keys under GRAPHIX_PAR_AUDIT, which only audits a branch's reads (branch.rs:783). The
+C/lib.rs:1163 citation for fork/join above is also stale (they are at 1230 and 1264).
+parallel_compile.md:180 puts `fusion` in ExecCtx's runtime half, but it is
+CompileCtx::fusion. Its lines 400-402 call bind_to_lambda and batch_connect_targets a
+fork's own scratch, but they are tracked maps forked and joined (lib.rs:1237-1238).
+graphix-shell/src/lsp_backend.rs:61 says lsp_mode forces fusion off, but nothing reads
+it for fusion; the LSP is fusion-free because its check runs CheckOnly. lib.rs:1611,
+1706, 1986 and 2016 link ExecCtx::pending_settles, pending_imports and pending_names,
+but those are CompileCtx fields. (c-lib-10) -->
 - **Joins touch disjoint keys.** `TrackedMap::join` keeps the last join
   per key and detects no conflict. Runtime binds write fresh ids
   (`by_id`, `bind_to_lambda` keyed by new `BindId`s) and balanced pairs

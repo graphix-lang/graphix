@@ -3,6 +3,13 @@ let add_auth = |bearer, base| select bearer {
     null as _ => base
 };
 
+// CR claude for eric: [structure] get, post, put, delete and patch are five copies of
+// one `request` call. They differ only in `#method` and in whether a JSON body (and its
+// content-type header) is sent; post, put and patch are identical except for the
+// method. A change to the JSON headers or the auth rule has to be made five times. One
+// hidden helper, `send(method, bearer, headers, body: [string, null], client, url)`,
+// that adds content-type when body is non-null makes each of the five a one-line call
+// (that shape passes --check). (gx-stdlib-18)
 let get = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
     request(
         #headers: array::concat(add_auth(bearer, [("accept", "application/json")]), headers),

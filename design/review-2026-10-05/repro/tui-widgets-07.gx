@@ -1,0 +1,38 @@
+// tui-widgets-07: a panic in a TUI widget kills the display task silently;
+// the program is deleted and the shell waits forever, deaf to Ctrl-C.
+//
+// Tui::start (stdlib/graphix-package-tui/src/lib.rs:656) fires the shell's
+// stop signal only when `run` returns Err. A panic in the display task
+// (here ratatui's Table::widths assert in TableW::draw) unwinds it; tokio
+// drops the future, and with it the root CompExp, whose Drop sends
+// ToGX::Delete for the whole program (RUST_LOG=graphix_rt=debug with
+// --log-dir logs the deletes right after the panic). The Stop sender stays
+// parked in libstate's TuiControl (lib.rs:646), neither fired nor dropped,
+// so the shell's read_line (graphix-shell/src/input.rs:74) waits forever.
+// The terminal is restored, so ^C is now SIGINT, which the shell only turns
+// into gx.interrupt(). Any widget panic does the same (x-panics-10,
+// tui-widgets-02); this one comes 1 s into a healthy run.
+//
+// command (needs a terminal; `script` supplies a pty):
+//   timeout -s KILL 15 script -q -e -c "stty cols 80 rows 24; graphix --no-cache design/review-2026-10-05/repro/tui-widgets-07.gx 2>/tmp/tui-widgets-07.err" /dev/null; echo rc=$?; cat /tmp/tui-widgets-07.err
+//
+// expected: after the panic the shell exits with an error naming the dead
+//   display. Control, `101` changed to `50`: "tick 0" .. "tick 14" on
+//   stderr, then exit 0 at ~3 s from the gated sys::exit.
+// observed (HEAD c722befe, debug build): "tick 0" .. "tick 4", then
+//   thread 'tokio-rt-worker' panicked at .../ratatui-widgets-0.3.0/src/table.rs:1006:13:
+//   Percentages should be between 0 and 100 inclusively.
+//   and nothing more: no tick, the sys::exit at 3 s never runs, rc=137 from
+//   the 15 s timeout. ^C typed into the pty is echoed and ignored. In the
+//   REPL, `tui::table::table(#widths: &[`Percentage(101)],
+//   &[&tui::table::row([tui::table::cell(tui::line("a"))])])` wedges the
+//   session: after the panic neither ^C nor a new line is served (with 50,
+//   ^C returns to the prompt and `40 + 2` prints 42).
+use tui::{line, table::{cell, row, table}};
+let n = 0;
+n <- sys::time::timer(duration:200.ms, true) ~ n + 1;
+println(#dest: `Stderr, "tick [n]");
+let pct = 60;
+pct <- sys::time::after_idle(duration:1.s, 101);
+sys::exit(sys::time::after_idle(duration:3.s, 0));
+table(#widths: &[`Percentage(pct)], &[&row([cell(line("a"))])])

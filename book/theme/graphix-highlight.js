@@ -118,6 +118,16 @@
     return {
       name: "Graphix",
       aliases: ["gx"],
+      // CR claude for eric: [doc-drift] The keyword list lacks seq, seqq, until, abort,
+      // flush, try, catch, cast, never, any, rec, pub, trait and impl. The book's code
+      // uses most of them, and they render as plain text. built_in lists String, Bool,
+      // DateTime and Duration, which are not Graphix types, and lacks List. STRING
+      // knows only plain double quotes, so a triple-quoted template scans as an empty
+      // string followed by a new one, with its brackets shown as a splice, and `r#` raw
+      // strings are not recognized. The block-comment rule (140) and the type-suffixed
+      // numbers such as `42i64` (43-66) describe syntax Graphix does not have. Take the
+      // keywords from the parser's KEYWORDS (graphix-types/src/expr/parser/mod.rs:100).
+      // (ide-tooling.r2-16)
       keywords: {
         keyword:
           "let fn mod type val sig use select if throws dynamic sandbox whitelist as with",
@@ -172,6 +182,17 @@
 
         // Type annotations in patterns
         {
+          // CR claude for eric: [bug] This mode opens at every `:` and ends at the next
+          // `,`, `)`, `}`, `]`, `=` or `>`, coloring only type names inside, so
+          // struct-literal values and typed literals lose their colors: `{name:
+          // "hello", age: 3}` and `i64:3` render with no spans. The keywords (123) lack
+          // seq, seqq, until, try, catch, cast, never, rec, trait, impl, pub, abort and
+          // flush, so the seq chapter's examples show no keyword colored; the lambda
+          // mode (155-171) never matches because OPERATORS takes every `|` first; the
+          // `/*` comment mode (140), which Graphix does not have, turns `total /*count
+          // + 1` into a comment; and triple-quoted and `r#` strings split into
+          // fragments. probe: run docs/book/highlight-abc7f01d.js (hljs 10.1.1) and
+          // this file in node and call hljs.highlight('graphix', src). (ide-tooling-13)
           begin: ":\\s*",
           end: "(?=[,\\)\\}\\]=>]|$)",
           keywords: {

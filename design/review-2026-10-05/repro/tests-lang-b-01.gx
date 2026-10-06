@@ -1,0 +1,29 @@
+// tests-lang-b-01: the typedef that lang::types::typedef_tvar_ok pins as
+// accepted (stdlib/graphix-tests/src/lang/types.rs:232) is unsound. Its 'c
+// is declared nowhere, Env::deftype (graphix-types/src/env.rs:1451) never
+// refuses a used-but-undeclared variable, and every expansion of T freshens
+// 'c (Type::lookup_ref_with -> replace_tvars). So a function stored at
+// c: i64 is called with a string. Same root cause as gx-ui-01.
+//
+// command: graphix --check design/review-2026-10-05/repro/tests-lang-b-01.gx
+//          timeout -s KILL 20 graphix --no-cache design/review-2026-10-05/repro/tests-lang-b-01.gx
+//          (the same with --no-fusion)
+//
+// expected: --check refuses `type T` (undeclared type variable 'c), or at
+//   least refuses `g(1, 2, "x")` (c is i64).
+// observed (HEAD c722befe, debug build):
+//   --check: exit 0.
+//   run, with and without fusion: arith error at line 27, column 68
+//     "Unexpected `x`" (it computes 3 + "x"); graphix-fuzz check logs
+//     "a run-time bind at g(1, 2, "x") did not type: an instance at
+//     fn(a: i64, b: i64, c: string) -> i64 of a definition typed
+//     fn(a: i64, b: i64, c: i64)" and runs it anyway.
+//
+// variant without a fn type (the engines then disagree):
+//   `type R = { v: 'a }; let r2: R = { v: "s" }; let f = |r: R| r.v + 1; f(r2)`
+//   --check: exit 0. graphix-fuzz check: DIVERGENCE interp: Trace([])
+//   jit: Trace([0:i64:1]) (the kernel reads "s" as 0 and answers 1).
+type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn(a: 'a, b: 'b, c: 'c) -> 'a };
+let t: T<i64, i64> = { foo: 1, bar: 2, f: |a: i64, b: i64, c: i64| a + b + c };
+let g = t.f;
+g(1, 2, "x")

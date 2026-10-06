@@ -204,6 +204,22 @@ impl StructurePattern {
         list: bool,
         elems: &[Self],
     ) -> Result<Type> {
+        // CR claude for eric: [bug] The slice's element type is the union of what its
+        // element patterns infer, so `[0, rest..]` over Array<[i64, null]> infers
+        // Array<i64>, and the select's narrowing (select.rs:1260) never widens it to
+        // the scrutinee's element type. bind_captures then types `rest` and `all@` as
+        // Array<i64> (`[`Open, rest..]` over Array<Tok> gives Array<`Open>).
+        // compile_slice types every element bind with the shared union, and narrowing
+        // binds its cell to only one leftover member (`[1, x]` over Array<[i64, string,
+        // f64]> gives x: [i64, f64]). At run time the arm tests only Array<Any>
+        // (shallow_discriminant), so values outside those types reach the binds: the
+        // check passes ill-typed code, the JIT and the node-walk disagree, a select on
+        // x with no string arm passes as exhaustive and produces nothing, and `select
+        // rest { [`Num(n), ..] => n, _ => 0 }` is refused as dead. CLAUDE.md says a
+        // slice's rest carries the scrutinee's types, so each position, the rest and
+        // `all@` should be typed from the scrutinee. probe:
+        // design/review-2026-10-05/repro/c-pattern-01.gx (jit 12, node-walk "can't add
+        // null"). (c-pattern-01)
         let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
         for p in elems {
             ts.push(p.infer_type_predicate(env, scope)?);
@@ -422,6 +438,19 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
         depth: usize,
         out: &mut SmallVec<[Type; 8]>,
     ) -> Result<()> {
+        // CR claude for eric: [bug] Past MAX_ALIAS_DEPTH this returns Ok with the
+        // members found so far, and select's coverage takes the partial list for the
+        // whole scrutinee: heads() (select.rs:623) hands it to the literal pool as a
+        // closed domain. Each level of `type W<'a> = [`L, 'a]` costs two hops. So with
+        // `v` a 33-level W<..<`Z>..>, the arms (`L, true), (`Z, true), (`L, false) over
+        // `(v, b)` check as exhaustive, and f(`Z, false) never produces. The complete
+        // four-arm select, and a six-arm one over a 62-typedef alias chain to [`L, `Z],
+        // are refused with "unreachable arm". The "cyclic typedef" this guards against
+        // cannot occur, because Env::deftype refuses a typedef that recurses through
+        // unions and aliases alone: drop the cap and guard the recursion with
+        // ensure_sufficient like the other type walks, or make reaching it an error,
+        // never a truncation. probe: design/review-2026-10-05/repro/t-parser-b-10.gx
+        // (t-parser-b-10)
         if depth > MAX_ALIAS_DEPTH {
             return Ok(());
         }

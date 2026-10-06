@@ -1,0 +1,43 @@
+// t-tvar-02: ⊥ ⊇ 'x binds a parameter cell (even a rigid one) to ⊥, then
+// the definition's gate reopens it.
+//
+// `let b: _ = x` asks ⊥ ⊇ 'a. The (Bottom, TVar) arm of contains
+// (graphix-types/src/typ/contains.rs:585) commits 'a := ⊥ without the
+// rigidity check every other bind arm makes, so the body is checked with
+// x: ⊥ and `x + 1` types as i64 (a ⊥ operand takes the other's type).
+// The gate's unbind_vacuous_tvars (graphix-types/src/typ/tvar.rs:1565,
+// called at graphix-compiler/src/node/lambda.rs:1816) then reopens 'a, so
+// f's signature is fn<'a: Number>(x: 'a) -> i64 and f(2.5) is accepted.
+// Without the `let b: _ = x` line the definition is refused ("cannot
+// compute 'a ... + i64").
+//
+// command: graphix --check design/review-2026-10-05/repro/t-tvar-02.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-tvar-02.gx
+//          graphix --no-cache design/review-2026-10-05/repro/t-tvar-02.gx
+//
+// expected: --check refuses the definition at `let b: _ = x` (`_` does not
+//   contain 'a, a rigid quantifier), as `let b: _ = 1` is refused.
+// observed: --check exits 0. The node-walk prints `f64:3.5` for `r: i64`.
+//   The JIT panics at graphix-compiler/src/fusion/emit/jit.rs:1187 "the
+//   JIT could not link emitted code: compile: Verifier errors" and the
+//   runtime dies; graphix-fuzz check aborts (core dumped).
+//   GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1 --no-fusion reports
+//   "ELAB-AUDIT ... type mismatch _ does not contain f64": elaboration
+//   refuses what the check accepted.
+//
+// The same hole without a quantifier: `let f = |x| { let b: _ = x; b }`
+// gets fn(x: 'x) -> 'r (a free return); `let g = |v: string| str::len(v);
+// g(f(1))` passes --check and the JIT panics "kernel param `v`: runtime
+// I64(1) does not match the compiled String slot". `let f = |x| -> _ x;
+// let s: string = f(1)` passes and prints `i64:1` for `cast<string>(s)$`.
+// Through a stdlib signature, no `_` written: `let h = |x| { let p =
+// sys::net::publish(#on_write: |v| x, "/t", 1); str::len(x) }; h(42)`
+// passes --check (h: fn(x: 'x) -> i64) and the build refuses it in the
+// instance of publish.
+let f = 'a: Number |x: 'a| {
+    let b: _ = x;
+    x + 1
+};
+let r: i64 = f(2.5);
+println(cast<string>(r)$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

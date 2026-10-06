@@ -59,6 +59,16 @@ fn strip_header(s: &str) -> String {
     let mut lines = s.lines().peekable();
     while let Some(l) = lines.peek() {
         let t = l.trim_start();
+        // CR claude for eric: [test-gap] strip_header keeps only the schedule-v1 and
+        // expect-reject lines, so a `// callable-v1:` header is stripped from every
+        // pin. findings/callable-route-aug2026/02_dispatch_route_matrix.gx therefore
+        // embeds as a bare body. regress synthesizes no driver and never calls
+        // compile_callable or Callable::call, and outcome.manifest and
+        // fusecheck.manifest were blessed against that stripped text. Keep the
+        // callable-v1 line too (or every `// <name>-v1:` header line), then re-bless
+        // both manifests. probe: graphix-fuzz run on the pin shows Dispatch traces
+        // reaching value 16; on the pin without its comment block it shows only
+        // InLanguage, one epoch, value 0. (fuzz-main-aux-03)
         if t.starts_with("// schedule-v1:") || t == "// expect: reject" {
             kept.push(t);
             lines.next();

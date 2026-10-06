@@ -408,6 +408,17 @@ impl<X: GXExt> InputHandlerW<X> {
         Ok(())
     }
 
+    // CR claude for eric: [bug] When the handler lambda changes, update_callable drops
+    // the old Callable and compiles a new one, but `pending` stays true if a call is
+    // still out. That call's reply comes back, if at all, under the old callable's
+    // expr, which the `id == h.expr` test in handle_update no longer matches. So
+    // `pending` is never cleared, maybe_send_queued never sends again, and every later
+    // event (mouse moves included) is queued forever. A handler chosen by `select mode
+    // { `A => fa, `B => fb }`, where a key flips `mode`, wedges as soon as the next key
+    // arrives before the swap lands (fast typing, key repeat, a paste). probe:
+    // design/review-2026-10-05/repro/tui-core-03.py. Typing 'ma' in one burst leaves
+    // count at 1 and no later key is handled; the same keys a second apart work.
+    // (tui-core-03)
     async fn set_handle(&mut self, v: Value) -> Result<()> {
         self.gx.update_callable(&mut self.handle, v).await?;
         self.maybe_send_queued().await?;
@@ -417,6 +428,17 @@ impl<X: GXExt> InputHandlerW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for InputHandlerW<X> {
+    // CR claude for eric: [bug] Events go to the handler one at a time, and `pending`
+    // is cleared only by a reply (451) or by `#enabled` going false (442). So one call
+    // whose reply never fires stops this handler for good: a raise in the reply, which
+    // the `throws 'e` signature allows, or a bottom such as `(k ~ mode)$` over a null.
+    // After that every event, mouse moves included, is pushed onto `queued` and kept
+    // (about 1 KB each), nothing beneath this handler sees input again, a bottom logs
+    // nothing, and only Ctrl-C still works. One missed reply should cost one event, and
+    // the queue needs a bound. probe: design/review-2026-10-05/repro/tui-core-04.py
+    // (keys a a x m a b: the handler is called for a, a, x and the count stops at 2;
+    // --mem: RSS 62 -> 147 MB over 80000 more keys, flat with no handler).
+    // (tui-core-04)
     async fn handle_event(&mut self, e: Event, v: Value) -> Result<()> {
         if self.enabled.t.and_then(|b| b).unwrap_or(true) {
             self.queued.push_back((e, v));
@@ -445,6 +467,21 @@ impl<X: GXExt> TuiWidget for InputHandlerW<X> {
         if id == child_ref.id {
             *child = compile(self.gx.clone(), v.clone()).await?;
         }
+        // CR claude for eric: [bug] Every update of the handler's call site is taken as
+        // the reply to queued.front(), but the call site also fires when no call was
+        // made. A select emits when a consulted guard's input fires, so the canonical
+        // `kk@ `Up if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop }` answers Stop a
+        // second time in the cycle where `sel` lands: one call, two replies (the book's
+        // `select (mode, event)` handler does the same). When the next key is already
+        // queued (type-ahead, or a paste, since bracketed paste is off), it gets that
+        // stale verdict and its own reply goes to the key after it, so keys the handler
+        // continues never reach the child and keys it stops leak through. An in-flight
+        // flag cannot tell the stale reply from the real one, because it arrives after
+        // the next key's call was sent; the runtime has to say which call an output
+        // answers. probe: timeout -s KILL 170 python3
+        // design/review-2026-10-05/repro/tui-core-01.py <graphix> (Up+'x' in one write:
+        // 0 of 20 'x' reach the inner handler; a stopped 'a' after 'b' leaks 7-37 of
+        // 60). (tui-core-01)
         if let Some(h) = handle
             && id == h.expr
         {

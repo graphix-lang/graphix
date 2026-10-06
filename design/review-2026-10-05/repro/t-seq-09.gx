@@ -1,0 +1,39 @@
+// t-seq-09: try/with body scope gets a fresh id per compile: nested seqs
+// re-lower, recursive HOF OOMs.
+// SeqMachine::compile names each try/with scope with ExprId::new()
+// (seq_machine.rs:195), so the lowered_seqs key (seq id, lexical scope)
+// misses for a seq nested there, and every compile of the enclosing
+// definition lowers it again with new expression ids: those nodes have no
+// DefTable rows (the instance checks them again), lowered_seqs gains an
+// entry per instance, and a lambda literal there gets a new source id per
+// instance. Below, the recursive call's FnArgIdentity therefore never
+// matches the resolving instance, and elaboration builds instances without
+// end.
+//
+// command: timeout -s KILL 150 graphix --no-cache design/review-2026-10-05/repro/t-seq-09.gx
+//          timeout -s KILL 15 graphix --no-cache --expand design/review-2026-10-05/repro/t-seq-09.gx | grep -c 'seq at line: 34'
+//
+// expected: prints 13 and exits, as it does with the inner seq moved out
+// of the try (`let a = seq { .. }; try { a } with(e) { 0 }`): 13 in 0.3 s,
+// and --expand lowers each seq once and plans 2 instances of g.
+//
+// observed (HEAD c722befe, debug build): no output. --expand never
+// finishes: the inner seq (line 34) is lowered 240-275 times in 15 s. A
+// run grows about 90 MB/s and is OOM-killed at the 6 GB probe cap after
+// about 2 minutes (115 s and 119 s in two runs).
+// Without recursion the same miss costs a lowering, a check of the
+// lowered nodes and a lowered_seqs entry per instance: a body with one seq
+// inside a try and one beside it, called 3 times, lowers the inner one 4
+// times and the other once. A collection callback of the shape
+// `|x| seq { let r = try { let a = seq { let b = x + 1; b * 2 }; a + y? }
+// with(e) { 0 }; r }`, mapped over an array a 1 ms timer toggles between
+// [] and 8 elements, grows RSS 171 -> 486 MB in 20 s against 96 -> 153 MB
+// with the inner seq moved out of the try.
+let rec g = |f: fn(x: i64) -> i64, n: i64| -> i64 seq {
+  try {
+    seq { select n { 0 => f(0), _ => g(|x| f(x) + 1, n - 1) } }
+  } with(e) { 0 }
+};
+let out = g(|x| x + 10, 3);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

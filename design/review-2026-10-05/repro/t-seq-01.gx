@@ -1,0 +1,46 @@
+// t-seq-01: an abort(..) that fires while a try-body step's errors drain
+// loses to the try's jump: the aborted run enters its with body.
+//
+// A try-body step that raises two errors in one cycle gets the second one
+// a cycle later (node/error.rs:603-604, deliver_error's set_var fallback),
+// so the jump catch runs `pc <- S_with` in that later cycle
+// (node/error.rs:339) without looking at the machine handler. An abort
+// firing in that cycle also runs the machine catch's `pc <- Idle`; the
+// runtime requeues the second of the two pc writes (graphix-rt/src/gx.rs
+// push_var_event), so pc goes S1 (with body), Idle, then the with body's
+// own `pc <- S2` (join) lands after Idle and resumes the dead run from
+// idle under the next run's trigger snapshot.
+//
+// Run 1 (c = 1) fails both `?` in the cycle it enters; the abort fires at
+// step 3, the cycle the second error is delivered. Run 2 (c = 5) cannot
+// fail.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/t-seq-01.gx
+//          (--no-fusion, GRAPHIX_PAR=off|force and a warm image print the
+//          same; graphix-fuzz check: AGREE, both engines run one machine)
+//
+// expected: (5, 10). design/seq_blocks.md §9: an abort is silent and a try
+//   around the current step is not taken, so run 1 ends at step 3 and run 2
+//   completes. The same program with one failing `?` (`let b = c;`) prints
+//   (5, 10).
+// observed (HEAD c722befe, debug build): (5, -1) and nothing else: run 1's
+//   fallback paired with run 2's c, and run 2's own result lost.
+//   GRAPHIX_DBG_VARS=1 shows pc <- "S1" and pc <- "Idle" written in the
+//   abort cycle, later pc <- "S2" delivered after "Idle".
+let step = 0;
+step <- select step { n if n < 30 => n + 1, _ => never() };
+let go = select step { 1 | 5 => step, _ => never() };
+let r = seq let c = go; abort(select step { 3 => true, _ => never() }) {
+  let v = try {
+    {
+      let a = (select c { 1 => error(`A), n => n })?;
+      let b = (select c { 1 => error(`B), n => n })?;
+      a + b
+    }
+  } with(e) {
+    -1
+  };
+  (c, v)
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

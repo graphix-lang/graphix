@@ -694,6 +694,13 @@ async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
     let stalls =
         format!("{{ {CLOCK} let k = 7; let f = |v| k; seqq request {{ f(request) }} }}");
     let (values, _) = run_delta(&stalls, fusion_disabled).await?;
+    // CR claude for eric: [test-gap] `values.len() <= 1` also passes for [] (the first
+    // run stalling too) and for any single wrong value; both engines print [7], so
+    // assert `as_i64s(&values) == [7]`. Two sibling assertions are loose the same way.
+    // seq_errors.rs:486 (slept_catch_in_flight) never checks `out`, so a `B(1)`
+    // delivered after its catch slept would pass; today it prints only "caught `A(1)".
+    // seq_let.rs:51 accepts BIND_IS_SCOPED's refusal on the needle "c", which nearly
+    // any message contains; the refusal is "c not defined". (tests-lang-c-08)
     assert!(values.len() <= 1, "{values:?}");
     let sampled = format!(
         "{{ {CLOCK} let k = 7; let f = |v| v ~ k; seqq request {{ f(request) }} }}"

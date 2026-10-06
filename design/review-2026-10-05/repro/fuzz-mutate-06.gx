@@ -1,0 +1,15 @@
+// fuzz-mutate-06: affected_stmts tracks only `let x =` binds; a statement
+// reading a name of a destructuring let built from the value is filed MISPLACED
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-06.gx
+// (or the program alone on stdin: graphix-fuzz typemorph-one <outfile>)
+// expected: no flips. Both mutants are refused, rightly, at `p + 1`
+// (`graphix --check` on either mutant: in `let z = p + 1`), where `w`'s new
+// type reaches through `let (p, q) = (w, 2)`, a let built from `w`.
+// observed: exit 1,
+// TYPEFLIP ... widen-consumer#1: MISPLACED: N: cannot compute '_N: [iN, string] + iN ...
+//   mutant: { let w = select 1 == 1 { true => 1, false => "tm" }; let (p, q) = (w, 2); ... }
+// TYPEFLIP ... retype#12: MISPLACED: N: cannot compute string + iN ...
+//   mutant: { let w = "tm"; let (p, q) = (w, 2); ... }
+// The right sites are statements 0, 1 and 3 (mustreject.rs:800): `p` is never
+// added to `affected`. With `let p = (w, 2).0` instead: REJECT ok for both.
+{ let w = 1; let (p, q) = (w, 2); let z = p + 1; let y = w + 3; (z, y, q) }

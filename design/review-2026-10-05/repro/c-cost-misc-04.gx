@@ -1,0 +1,39 @@
+// c-cost-misc-04: the evaluation pool's size follows RAYON_NUM_THREADS
+// when GRAPHIX_EVAL_THREADS is unset, so every fuzz campaign child
+// evaluates on 2 workers.
+//
+// branch::eval_pool (graphix-compiler/src/branch.rs:807-821) passes
+// num_threads(0) when GRAPHIX_EVAL_THREADS is unset, and rayon-core 1.13
+// resolves 0 through RAYON_NUM_THREADS (ThreadPoolBuilder::get_num_threads,
+// rayon-core-1.13.0/src/lib.rs:458-475). Its doc comment says "default one
+// per core"; design/parallel_eval.md:734-738 says the compile pool's
+// RAYON_NUM_THREADS=2 "does not govern evaluation". graphix-fuzz's
+// child_command (graphix-fuzz/src/lib.rs:3963-3969) sets
+// RAYON_NUM_THREADS=2 on every campaign child.
+//
+// A bare #[parallel] kernel loop forks one range per evaluation worker
+// (cost::forced_grain(Some(0), n)), so the range count GRAPHIX_DBG_PAR
+// prints is the pool's size.
+//
+// command (from the repo root):
+//   GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-04.gx
+//   RAYON_NUM_THREADS=2 GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-04.gx
+//
+// expected: one range per core both times (16 on a 16-core box):
+//   PAR kernel loop: 1000 slots, 0 probed, 16 ranges
+// observed (HEAD c722befe, debug build, 16 cores):
+//   unset:                 PAR kernel loop: 1000 slots, 0 probed, 16 ranges
+//   RAYON_NUM_THREADS=2:   PAR kernel loop: 1000 slots, 0 probed, 2 ranges
+//   RAYON_NUM_THREADS=1:   ... 1 ranges
+//   GRAPHIX_EVAL_THREADS=5, with or without RAYON_NUM_THREADS=2: ... 5 ranges
+// The process's graphix-eval-* threads in /proc/<pid>/task count the same
+// (16, 2, 5). A `graphix-fuzz check-one` child given this program without
+// its sys::exit line and the environment child_command and
+// check_isolated_in set (RAYON_NUM_THREADS=2, TOKIO_WORKER_THREADS=2) runs
+// its Par/JitPar oracle on 2 graphix-eval threads, 16 without
+// RAYON_NUM_THREADS; its GRAPHIX_DBG_PAR line reads 2 ranges vs 16.
+// `graphix-fuzz check` and `regress` run in-process and get one per core.
+let double = |xs: Array<i64>| #[parallel] array::map(xs, |x| x * 2);
+let xs = array::init(1000, |i| i);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(double(xs))

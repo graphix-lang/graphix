@@ -1,0 +1,25 @@
+// x-diff-types-05: a constructor-trait parameter's element is one cell
+// for every call through a written fn type.
+//
+// Type::rewrite_trait_args (graphix-types/src/typ/mod.rs:2150-2209) gives
+// `fn(c: Collection)` the element `Type::empty_tvar()` (Type::trait_param,
+// mod.rs:1691) and `fn<'c: Collection>(c: 'c)` the element `'c#elem`
+// (ctor_quantifiers, mod.rs:2350), and adds neither to the fn type's
+// `quantifiers`. FnType::shared_call / instantiate copy only the
+// quantifiers (`#c`, `'c`), so the first call through the formal binds
+// the element for every later call. A lambda header's element
+// (node/lambda.rs:1331-1344) is a cell its definition owns and is copied
+// per call: `n([1, 2])` and `n(["x"])` both check.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-diff-types-05.gx
+// expected: exit 0 (each call picks the formal's quantifiers anew, as
+//           `|f: fn<'b: Number>(x: 'b) -> 'b| f(1) + cast<i64>(f(2.5))$` does)
+// observed: exit 1, `type mismatch Array<'_N: i64> does not contain
+//           Array<string>` at `f(["x"])`. The same refusal for
+//           `fn<'c: Collection>(c: 'c) -> i64` called with `[<1, 2>]` and
+//           `[<"x">]`, for `let f: fn(c: Collection) -> i64 = n`, and for
+//           `type F = fn(c: Collection) -> i64; |f: F| ..`.
+use Collection::*;
+let n = |c: Collection| fold(c, 0, |acc, x| acc + 1);
+let apply = |f: fn(c: Collection) -> i64| (f([1, 2]), f(["x"]));
+apply(n)

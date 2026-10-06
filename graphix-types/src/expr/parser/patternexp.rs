@@ -195,6 +195,18 @@ where
                 match pat {
                     Some(pat) => Ok(Field::Named(name, pat, at)),
                     None if is_reserved_binding(&name) => {
+                        // CR claude for eric: [bug] This refusal notes no reason, so
+                        // wherever another branch gets further its message is lost. In
+                        // a select arm, `select s { {type, x} => x }` reports only "the
+                        // parser could not continue past this point", while `let {type,
+                        // x} = s` shows "a reserved word field needs the explicit
+                        // `name: pattern` form". Only pattern positions reach
+                        // struct_pattern, so this is never a routine probe (unlike the
+                        // `name: value` refusal in struct_fields): return
+                        // grow::refusal::<I>(pos, ..) here, which notes the reason at
+                        // the field. probe:
+                        // design/review-2026-10-05/repro/t-parser-b-14.gx
+                        // (t-parser-b-14)
                         Err(StreamErrorFor::<I>::message_static_message(
                             "a reserved word field needs the explicit `name: pattern` form",
                         ))
@@ -242,6 +254,17 @@ where
 {
     (choice((raw_string(), interpolated())), position()).then(|(e, end): (Expr, _)| {
         match &e.kind {
+            // CR claude for eric: [bug] A string pattern keeps the literal's Value and
+            // drops its StrForm, and StructurePattern::Literal has no place for one, so
+            // `graphix fmt` prints a raw or template string pattern as an escaped
+            // quoted string. The ornament walk (graphix-types/src/expr/format.rs:360)
+            // records delimiters only for expression constants, so the guard writes the
+            // change with exit 0, where CLAUDE.md says changed delimiters are refused;
+            // the value is kept, the author's form is lost. Carry the form beside the
+            // literal (always equal, like WrittenAt), print it under AsWritten, and add
+            // pattern literals to the ornament walk. probe:
+            // design/review-2026-10-05/repro/t-format-resolver-10.gx
+            // (t-format-resolver-10)
             ExprKind::Constant(v @ Value::String(_)) => value(v.clone()).left(),
             _ => refuse(end, "a string pattern cannot interpolate").right(),
         }

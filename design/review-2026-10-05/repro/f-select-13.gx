@@ -1,0 +1,26 @@
+// f-select-13: a guarded arm whose guard is not pure of its binds has its
+// pattern condition and owned binds emitted twice per invocation: once in
+// the guard prologue (graphix-compiler/src/fusion/emit/select.rs:740-751,
+// binds cloned under the mask, then dropped) and again in the take chain
+// (:782-801).
+//
+// command: GRAPHIX_DUMP_CLIF=1 graphix --no-cache design/review-2026-10-05/repro/f-select-13.gx
+//   In the kernel of f, count calls by signature:
+//   (i64, i64, i64, i64) -> i8 is graphix_variant_tag_eq,
+//   (i64, i64, i64) -> i64 is graphix_variant_payload_array.
+//   expected: 3 tag tests (one per arm) and 2 payload clones (one per
+//     binding arm), with the first arm's prologue results reused.
+//   observed: 4 tag tests and 3 payload clones: the first arm's tag test
+//     and its `xs` clone run in the prologue and again in the chain.
+//   control: with the guard replaced by `if true` (pure, so no prologue)
+//     the same kernel has 3 tag tests and 2 payload clones.
+let lim = i64:3;
+let f = |t: [`A(Array<i64>), `B]| -> i64 select t {
+  `A(xs) if array::len(xs) > lim => i64:1,
+  `A(xs) => array::len(xs),
+  `B => i64:0
+};
+let t: [`A(Array<i64>), `B] = `A([i64:1, i64:2]);
+let r = f(t);
+sys::exit(sys::time::after_idle(duration:100.ms, i64:0));
+r

@@ -86,6 +86,14 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
 /// (`design/tvar_constraints.md`, Generalization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
+// CR claude for eric: [structure] Level has three shapes (top `{0, None}`, a definition
+// `{d >= 1, Some(id)}`, generic `{u32::MAX, None}`) but admits any pair: generic is a
+// depth sentinel that `claim` relies on to sort deepest, and `Pack::decode` accepts
+// `{3, None}` or `{u32::MAX, Some(id)}`. The doc comment above says in prose what `enum
+// Level { Top, Def { depth, owner }, Generic }` would say in the type, with one depth
+// method for `claim` and `generalize`. LambdaDef keeps only the depth (lambda.rs:489),
+// and two sites rebuild the Level from it by hand (lambda.rs:1588, 1846); it could keep
+// the Level. (x-invalid-states-08)
 pub struct Level {
     #[doc(hidden)]
     pub depth: u32,
@@ -467,6 +475,18 @@ impl fmt::Display for TVar {
                 return write!(f, "'{}: …", self.name);
             }
             let r = (|| {
+                // CR claude for eric: [readability] Every inferred cell prints here as
+                // `'<name>: binding`, and an inferred cell's name is its raw id
+                // (`_4611686018427394559`, TVar::default below). So the most common
+                // type errors carry a 19-digit internal number: `let f = |x| x + 1;
+                // f("a")` reports "type mismatch '_4611686018427394559: i64 does not
+                // contain string", `a.len` on `[1, 2]` reports "expected struct not
+                // Array<'_4611686018427394466: i64>", and `let {a, c} = {a: 1, b: 2}`
+                // shows "{ a: '_…: i64, c: '_…: unbound }". fntyp.rs's
+                // polymorphic_sig_preserves_tvar_names already requires that auto tvars
+                // not leak into pretty output, but this arm puts them into every error
+                // message. Print a bound generated cell as its binding alone, and give
+                // an unbound one a short name instead of its id. (x-errors-10)
                 write!(f, "'{}: ", self.name)?;
                 let (typ, cons) = {
                     let cell = self.cell();
@@ -695,6 +715,17 @@ impl TVar {
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
+        // CR claude for eric: [structure] The four predicate conjuncts (Concrete,
+        // Function, Singleton, OneNumber) are tested one by one at each site that needs
+        // them: the four requires_* getters (900-919), this sequence, copy's own list
+        // of the same three (960-982), settle.rs:45-48, 120-125, 154-161 and 296,
+        // contains.rs:527-534 and graphix-compiler/src/node/lambda.rs:118. These
+        // matches! lists are not checked for exhaustiveness, so if a fifth predicate is
+        // missed at one of them, it is silently not enforced there. In this function
+        // each getter clones the cell Arc and takes its lock: five cell() reads per
+        // bind where one would do. Read the cell's predicates once as a set, and give
+        // bind and copy one shared routine that applies them to the binding.
+        // (t-tvar-10)
         if self.requires_concrete() {
             t.require_concrete();
         }
@@ -784,6 +815,20 @@ impl TVar {
         let (s_cell, o_cell) = (self.cell(), other.cell());
         let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
         match earlier {
+            // CR claude for eric: [bug] In a module check, two open cells created
+            // outside the module land here when the check must unify them, e.g.
+            // `super::x <- super::y` or `super::x == super::y` over two unannotated
+            // outer lets. This arm returns without calling decided_of, so nothing is
+            // recorded, OwnWrites never sees it, the module is not refused, and
+            // contains answers true as though the cells were one. The program then runs
+            // with a type the check never established. In the probe, --check passes (it
+            // is refused without m.gxi), the JIT panics at fusion/kernel.rs:243 on a
+            // String in an i64 slot, and the node-walk logs an arith error. Record the
+            // decision here when the two cells differ (a same-cell alias is a no-op and
+            // must stay unrecorded), so the module is refused as the CLAUDE.md module
+            // rule says; the cycle_refused/bottom_fed OR below also skips an earlier
+            // cell without recording it. probe:
+            // design/review-2026-10-05/repro/t-tvar-05.sh (t-tvar-05)
             (true, true) => return,
             (true, false) if how == Merge::Name => {
                 let frozen = other.read().frozen;
@@ -993,6 +1038,18 @@ impl TVar {
             && let Some(t) = self.binding()
             && let Some(n) = t.normalize_int(cx)
         {
+            // CR claude for eric: [bug] Normalizing re-binds the cell through `bind`,
+            // and `decided()` counts that as a foreign decision. So a module with an
+            // interface that only reads a parent's settled binding is refused with "the
+            // check decides a type the code around the module left open". Trigger: the
+            // parent has `let v = never(); v <- [`A, `B][0]; mod inner;` and inner.gx,
+            // which has a .gxi, has `select v { _ => x }`. v's stored binding `['_N:
+            // [`A, `B], Error<..>]` is not in normal form, so the module's select tries
+            // to rewrite it. The same module without its .gxi, the same code inline, or
+            // one `select v` in the parent before the `mod` (which normalizes the cell
+            // in task 0 first) all check and print 5, and Display, Eq and `encoded_len`
+            // reach the same write through `FnType::constraint_pairs`. probe:
+            // design/review-2026-10-05/repro/t-fntyp-06.sh (t-fntyp-06)
             self.bind(n);
         }
         self.clone()
@@ -1351,6 +1408,20 @@ impl Type {
                     e.insert(tv.clone());
                 }
             },
+            // CR claude for eric: [bug] This arm hands a nested function type the
+            // enclosing signature's name map, so a quantifier the nested type declares
+            // itself (`fn<'a: Number>`) is merged with a same-named variable of the
+            // enclosing signature; Lambda::compile and .gxi vals both reach it. In `|x:
+            // 'a, f: fn<'a: Number>(y: 'a) -> 'a|` the body still picks f's quantifier
+            // anew per call, but at a call `x: 1` binds the shared cell to i64 before
+            // f's argument is checked, so `fn(y: i64)` passes the rigid check (renaming
+            // the quantifier to 'b, or putting f before x, refuses it). With a static
+            // callee elaboration then refuses what the check accepted; with a dynamic
+            // one the i64 function runs on 2.5 and the fused run panics at
+            // kernel.rs:243 (node-walk: the i64 `st * 3` is 7.5). A nested type's
+            // declared quantifiers need a scope of their own here, or the reuse
+            // refused. probe: design/review-2026-10-05/repro/x-typecheck-generics-F9.gx
+            // (x-typecheck-generics-F9)
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
         })
@@ -1562,6 +1633,17 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
+                // CR claude for eric: [bug] This reopens every cell bound to ⊥,
+                // including a ⊥ the body required. A `⊥ ⊇ 'x` from a `_` annotation, a
+                // `-> _` return, or a callback formal like publish's `#on_write` is a
+                // fact, not a vacuous observation, so the signature drops it even
+                // though the body was checked with x: ⊥. The (Bottom, TVar) arm at
+                // contains.rs:585 also binds a rigid cell, which every other bind arm
+                // refuses. Result: `'a: Number |x: 'a| { let b: _ = x; x + 1 }` passes
+                // --check as fn<'a: Number>(x: 'a) -> i64. Then `let r: i64 = f(2.5)`
+                // holds f64:3.5 in the node-walk, and the JIT panics linking the
+                // instance (Verifier errors). probe:
+                // design/review-2026-10-05/repro/t-tvar-02.gx (t-tvar-02)
                 if tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()
                 }
@@ -1704,6 +1786,20 @@ impl UnionParts {
     fn narrowing(&self) -> Option<Type> {
         match (&self.first, self.known) {
             (Some(k), 1) => Some(k.clone()),
+            // CR claude for eric: [bug] With no known member, each open member gets a
+            // Singleton conjunct of its own, and that does not make the union one type.
+            // `['a, 'b]` passes as an arithmetic operand and its members later bind i64
+            // and f64; this is the design doc's "two open members may still differ".
+            // `let g = |c, a, b| { let s = select c { true => a, false => b }; let t =
+            // select c { true => b, false => a }; s + t }` is typed `fn(c, a: 'a:
+            // Number & Singleton, b: 'b: Number & Singleton) -> ['a, 'b]`, so `g(true,
+            // 1, 2.5)` passes --check and both engines compute 3.5 by promotion, while
+            // GRAPHIX_NO_SUBST=1 refuses it. When the members bind after the operand is
+            // checked (`f(select b { true => p, false => q })` with `f = |s| s + s`,
+            // then `p <- 1; q <- 2.0`), --check passes and the build fails on the
+            // compiler-bug path: "an instance at fn(s: [i64, f64]) ... of a definition
+            // typed ...". The open members must be one type, not each a singleton.
+            // probe: design/review-2026-10-05/repro/t-tvar-06.gx (t-tvar-06)
             (_, 0) => Some(Type::Singleton),
             _ => None,
         }

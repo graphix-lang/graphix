@@ -1,0 +1,34 @@
+// x-engine-collections-03: flat_map's `['b, Array<'b>]` callback type is not
+// parametric. A generic definition's check binds flat_map's 'b to its own
+// 'b (no splice), each instance takes those types by substitution, and the
+// runtime still splices every array the callback returns, so an instance at
+// a 'b that holds arrays builds with types its values do not have.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-engine-collections-03.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/x-engine-collections-03.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-03.gx
+//          GRAPHIX_NO_SUBST=1 graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-03.gx
+//
+// expected: g's instance at 'b := [Array<i64>, null] is either refused (the
+// monomorphic `array::flat_map([1, 2], |x: i64| -> [Array<i64>, null] [x])`
+// is refused by --check, and GRAPHIX_NO_SUBST=1 refuses this program) or
+// does not splice, printing (2, [2, 2]).
+//
+// observed: --check exits 0 and the program builds. r, typed
+// Array<[Array<i64>, null]>, is [1, 10, 2, 20] in both engines (the last
+// line replaced by `r`). The node-walk's array::len of an i64 element
+// bottoms and prints nothing; the JIT prints (4, [0, 0, 0, 0]).
+// graphix-fuzz check exits 1: "DIVERGENCE — fusion/JIT bug (interp != jit)",
+// interp Trace([]), jit Trace([0:[i64:4, [i64:0, i64:0, i64:0, i64:0]]]).
+// GRAPHIX_NO_SUBST=1 exits 1 at `|x| f(x)`: "type mismatch fn(x: 'a: i64) ->
+// ['b: i64, Array<'b: i64>] throws 'e: unbound does not contain fn(x: '_N:
+// i64) -> '_M: [null, Array<i64>]", the monomorphic call's refusal.
+// At 'b := Array<X> exactly only x-engine-collections-02's set-coverage bug
+// refuses the build. list::flat_map has the same hole: a
+// List<[List<i64>, null]> comes back as [<1, 10, 2, 20>].
+// No gated sys::exit: graphix-fuzz excludes programs naming sys::time from
+// comparison.
+let g = |f: fn(x: i64) -> 'b| -> Array<'b> array::flat_map([1, 2], |x| f(x));
+let r: Array<[Array<i64>, null]> = g(|x: i64| -> [Array<i64>, null] [x, x * 10]);
+let lens = |a: Array<[Array<i64>, null]>| array::map(a, |y| select y { null as _ => -1, v => array::len(v) });
+(array::len(r), lens(r))

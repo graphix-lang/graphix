@@ -9,6 +9,15 @@ type MoveCursor = [
     `Down(i64)
 ];
 
+// CR claude for eric: [doc-drift] book/src/ui/tui/browser.md misstates this signature
+// in four places. The positional is `path`, not `s` (line 25). #selected_row is the
+// selected row's full path (/t/r1), not its display name. #selected_path is optional,
+// not required. #size is an input the viewport is sized from, not an output (lines
+// 32-34); browser_commands.gx feeds it the enclosing block's #size output. Neither the
+// page nor this gxi says the listing is fetched once per new path
+// (net::list_table(path) without #update, browser.gx:21), so rows published later
+// appear only after the path changes. Correct the page and give this val `///` docs
+// that say the same; tui/mod.gxi:143 also says 'widets'. (gx-ui-12)
 val browser: fn(
     ?#selected_style: Style,
     ?#header_style: Style,

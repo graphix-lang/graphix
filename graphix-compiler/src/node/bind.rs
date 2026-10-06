@@ -137,9 +137,43 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// Whether an input the initializer's fire can come through was
     /// delivered fired this cycle, live or as a wake catch-up, and not
     /// by a wake's constants.
+    // CR claude for eric: [bug] Only Bind::update marks a wake's constant fire in
+    // wake_phantoms, so this test cannot see the same fire when another republisher
+    // passes it on. CallSite::publish_production and the formal loop in
+    // GXLambda::update publish a formal FIRED, and PatternNode::bind_event publishes a
+    // pattern bind FIRED, without marking it. As a result, a `let c = start` in a
+    // function called with a constant or defaulted argument, or a `let c = s` under
+    // `select 0 { s => .. }`, republishes its seed over the target's last write at
+    // every wake of the arm, while the same code inline keeps it. Function-held state
+    // seeded from an argument resets instead of pausing (a counter in a tab restarts at
+    // its seed). Both engines agree, so the fuzzer cannot see it. probe:
+    // design/review-2026-10-05/repro/c-bind-02.gx (expected (2, 2, 2) at the wake,
+    // observed (2, 0, 0)). (c-bind-02)
     fn input_fired(&self, ctx: &ExecCtx<'_, R, E>) -> bool {
+        // CR claude for eric: [perf] input_fired builds a fresh Refs and walks the
+        // whole initializer at every wake (each woken arm, each seq step entry).
+        // CallSite::refs descends into callee instance bodies (callsite.rs:2228), so a
+        // let over a call walks the callee's whole instance tree, and every let inside
+        // it walks its own subtree again. With `let s = f(k - 1)` in each activation, a
+        // recursion of depth D costs O(D^2) per wake: 10 wakes of f(1000) take 4.85 s,
+        // against 0.48 s for the same function without the let (debug build, default
+        // mode). Answer it from the delivery (see the wake_phantoms CR in Bind::update)
+        // or from a set computed once per instance, not by a walk per let per wake.
+        // probe: design/review-2026-10-05/repro/c-bind-12.gx (c-bind-12)
         let mut refs = Refs::default();
         self.node.refs(&mut refs);
+        // CR claude for eric: [bug] input_fired decides from the initializer's refs,
+        // not from its production: any triggering ref delivered with a tag that
+        // triggers() counts, a fresh bottom included, even where it cannot reach the
+        // value this cycle (an untaken select arm, an earlier block statement). The
+        // wake's constant, or wake_refresh's quiet republish of a stale initializer,
+        // then overwrites the `<-` target's last write, which the never-slept arm
+        // keeps. In a sleeping arm `let y = select c { true => 5, false => w }; y <-
+        // ev` goes from 50 back to 5 at the wake when w fires or fresh-bottoms in the
+        // wake cycle (the `select n { k => v, _ => never() }` idiom fresh-bottoms at
+        // every fire of n, even if it never had a value); with a constant in that arm y
+        // keeps 50. Both engines agree, so the fuzzer cannot see it. probe:
+        // design/review-2026-10-05/repro/c-bind-06.gx (c-bind-06)
         refs.triggering.difference(&refs.bound).any(|id| {
             !ctx.event.wake_phantoms.contains_key(id)
                 && matches!(read_var(ctx, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
@@ -204,6 +238,20 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         let _generic = AtLevel::enter(Level::GENERIC);
                         pat.infer_type_predicate(&ctx.env, &scope.lexical)?
                     };
+                    // CR claude for eric: [bug] The shape check compares the pattern's
+                    // un-completed predicate ({x: 'a} for {x, ..}) with the value's
+                    // type, so `let p = {x: 1, y: 2}; let {x, ..} = p` is refused with
+                    // "match error { x: i64, y: i64 } can't be matched by { x: '_N:
+                    // unbound }". StructPatternNode::compile accepts that type
+                    // (pattern.rs:632), the same let annotated with it is accepted, and
+                    // select completes the predicate against its scrutinee
+                    // (select.rs:1240). Over a call's cell the let is refused with
+                    // pattern.rs:641's "non exhaustive struct matches require type
+                    // annotations" instead, so one rule has two messages. Complete ptyp
+                    // against typ as select does, or refuse an unannotated partial
+                    // pattern with the one annotation message. probe:
+                    // design/review-2026-10-05/repro/x-expr-walks.r2-11.gx
+                    // (x-expr-walks.r2-11)
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bailat!(spec, "match error {typ} can't be matched by {ptyp}")
@@ -229,6 +277,21 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
+        // CR claude for eric: [bug] A binding that `<-` rewrites is generalized here as
+        // if it were immutable. The connect's check (node/mod.rs:2334) then unifies the
+        // written type into the scheme's own generic cells, so a writer narrows the
+        // definition, and only the uses checked after it see that. Statement order
+        // decides acceptance: `let f = |x| x; let n = f(41); f <- |x| "oops"; n + 1`
+        // passes --check but is refused with the use and the writer swapped. At run
+        // time the dynamic call binds the new function at the old type: the run-time
+        // bind logs "did not type" and carries on, the node-walk logs an arith error,
+        // and the fused `n + 1` panics the runtime thread at fusion/kernel.rs:243
+        // ("runtime String("oops") does not match the compiled Scalar(I64) slot"). Two
+        // other paths open the same hole: `let fr = &f; *fr <- ..` (the reference holds
+        // a copy, so f's scheme is never narrowed), and a let over ⊥ that a scheme was
+        // written into, which stays polymorphic because `lower` skips generic cells
+        // (graphix-types/src/typ/tvar.rs:292). probe:
+        // design/review-2026-10-05/repro/t-tvar-03.gx (t-tvar-03)
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
@@ -236,6 +299,19 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
+        // CR claude for eric: [bug] Only a single-name `let` updates
+        // `builtin_bindings`: a destructuring `let` (tuple, struct, variant, `name@`
+        // capture) that rebinds a builtin-bound name in the same scope leaves the old
+        // `(scope, name)` entry, and the fast-call lowering (fusion/lowering.rs:273),
+        // the effect classification (analysis.rs:613) and the dead-variadic check
+        // (callsite.rs:80) all read it for the new binding. The JIT then fast-calls the
+        // old builtin (42 node-walked, 3 fused), and when the new function's return
+        // type differs it reads the result at the wrong type (f64 bits) or aborts the
+        // process on the shape-check panic. The same entry refuses a valid `a()` as a
+        // dead variadic call and lets `#[sync]` pass over an async callee. Remove the
+        // key for every name the pattern binds and insert only for a single-name
+        // builtin binding. probe: design/review-2026-10-05/repro/c-bind-09.gx
+        // (c-bind-09)
         if let expr::StructurePattern::Bind(name) = pat {
             let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
             match builtin_binding(&node, value) {
@@ -329,6 +405,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let woke = self.slept.take();
         // At a wake the initializer's constants fire; the fire is the wake's,
         // not an event's, unless one of its inputs fired too.
+        // CR claude for eric: [structure] Whether a fire is the wake's own is a
+        // property of the delivery. It is kept instead in Event::wake_phantoms, a side
+        // set that only this let writes (line 365) and reads (input_fired), re-derived
+        // for each let by a ref walk. Every other republisher passes the wake's
+        // constant fire on as a real one: a call's formals and a select's pattern binds
+        // (c-bind-02.gx), and TrackedFires when it replays the fire a cycle later
+        // (c-bind-07.gx). The walk also counts inputs that cannot reach the production
+        // (c-bind-06.gx) and costs O(subtree) per let (c-bind-12.gx). In the three bug
+        // repros, a wake's constant overwrites a `<-` target's last write. Carry it as
+        // a Tag bit that a constant sets under wake_init and a real fire clears in
+        // join, so every republisher passes it along, and delete wake_phantoms and
+        // input_fired. probes: design/review-2026-10-05/repro/c-bind-02.gx,
+        // c-bind-06.gx, c-bind-07.gx, c-bind-12.gx (c-bind-13)
         let wake_phantom = ctx.event.wake_init && !self.input_fired(ctx);
         let tv = self.node.update(ctx);
         let tag = tv.tag();
@@ -337,6 +426,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // persists in the store. A connect target's value is its last
         // write: a wake's fire republishes nothing over it, nor does a
         // standing bottom (`let x = never()`).
+        // CR claude for eric: [bug] This hold-back is decided once for the whole
+        // pattern. When any id the pattern binds is a `<-` target, no id is published
+        // at the wake, so a destructuring let's non-target siblings keep their
+        // pre-sleep value instead of the recompute. wake_catchup.md exempts only `<-`
+        // targets from the wake republish. In a sleeping arm, `let (a, b) = (0, z +
+        // 100); a <- n ~ a + 1; b` shows b = 100 after z moved to 5 while the other arm
+        // consumed its fire; the same arm written as two lets shows 105, and the quiet
+        // path (`let (a, b) = p`) loses it the same way. Both engines agree, so the
+        // fuzzer cannot see it. Hold back only the target ids and publish the rest as
+        // usual. probe: design/review-2026-10-05/repro/c-bind-05.gx (c-bind-05)
         let keep_connect_target_value =
             wake_phantom && (self.ever_published || tag.is_bottom()) && {
                 let mut target = false;
@@ -1148,6 +1247,17 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         let id = BindId::new();
         // A place reference types as a reference to the element and
         // still mints a cell so embedders keep reading the mirror.
+        // CR claude for eric: [bug] Nothing here marks the referent (the `Ref`'s
+        // binding, or the place's root) as a `<-` target; mark_connect_target's only
+        // caller is Connect::compile. So a binding written only through `*r <- v` (or
+        // by a builtin through the reference) is in neither connect_targets nor
+        // batch_connect_targets. An arm's wake republishes its initializer over the
+        // last write (Bind::update's keep rule misses it, against sleep-is-pause), and
+        // a call to a function binding written this way stays statically resolved to
+        // the old lambda. Both engines agree, so the fuzzer cannot see it. probe:
+        // design/review-2026-10-05/repro/c-node-mod-02.gx (a counter bumped through
+        // `&x` resets to 10 at every wake while the `x <- ..` twin counts 11, 12, 13;
+        // `f(1)` returns 2 while `g = f; g(1)` returns 101). (c-node-mod-02)
         let (referent, typ) = match Place::<R, E>::of(expr) {
             Some((root, specs)) => {
                 let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
@@ -1286,6 +1396,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug] ByRef::delete never calls
+        // `ctx.rt.store_remove(&self.id)`. The entry that `publish` and `bottom_mirror`
+        // wrote under the cell id outlives the node and pins the last value it
+        // mirrored. A let's pattern removes its entry at delete (pattern.rs:1068).
+        // Every deleted collection slot or recursive activation holding a `&e` leaks
+        // one entry for the rest of the run: 10 map slots of `&str::concat(..)` (64 KB
+        // each), rebuilt every other ms, grow RSS from 210 to 943 MB in 6 s, while the
+        // same program without the `&` stays at 71 MB. netidx-admin's `array::map(rows,
+        // |e| &row([..]))` tables have this shape. A reference kept past its slot also
+        // reads that frozen copy (104 while x is 110), not bottom. probe:
+        // design/review-2026-10-05/repro/c-bind-11.py (c-bind-11)
         ctx.env.byref_chain.remove(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));
@@ -1392,6 +1513,20 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         };
         match &mut self.addr {
             Some((cur, p)) if *cur == id => {
+                // CR claude for eric: [bug] When the root stays the same and only the
+                // path changes (a moving place reference whose key moved), this returns
+                // moved=false. update() then delivers the element at the new path under
+                // the reference's and the root's tags, which are STALE when neither
+                // fired, so every node downstream keeps the old element (R1 in
+                // design/dense_delivery.md). The Deref also takes a ref only on the
+                // root (the ref_var below), so ByRef's notify_set on the cell at a move
+                // schedules no reader. A moving reference that reaches its reader
+                // without firing (held in state, once, sampled) therefore does not
+                // re-fire the reader at the move, which design/place_references.md
+                // promises and which a sampled plain reference does. With `cur <- go ~
+                // &vals[focus]` and focus moved, `(*cur, *cur * 1)` prints (30, 10) and
+                // a select over `*cur` stays on the old arm, with or without fusion.
+                // probe: design/review-2026-10-05/repro/c-bind-10.gx (c-bind-10)
                 if &p[..] != path {
                     *p = path.into();
                 }

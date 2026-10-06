@@ -1,0 +1,21 @@
+// small-pkgs-19: the fuzz oracle judges json::read by its exact reply cycle,
+// so graphix-fuzz check gives a different verdict run to run.
+//
+// oracle_tier (graphix-fuzz/src/lib.rs:830) sends only programs that mention
+// `sys::` or `http::` to FinalValues. json::read, toml::read, pack::read,
+// xls::, db:: and sqlite:: are EvalCachedAsync tasks as well, so their reply
+// lands in whichever cycle the scheduler allows, and the Exact tier compares
+// that cycle. The generator never draws these packages, so selfcheck cannot
+// flag the missing markers.
+//
+// command: timeout -s KILL 180 graphix-fuzz check design/review-2026-10-05/repro/small-pkgs-19.gx
+//   (several times)
+// expected: AGREE every run (every mode computes the same value)
+// observed (HEAD c722befe, debug build), six runs: DIVERGENCE "fusion/JIT
+//   bug" (interp at cycle 2, jit at 1) twice, AGREE once, DIVERGENCE
+//   "parallel evaluation bug" (interp 2, interp/par 1) once, DIVERGENCE
+//   "image bug" (jit/nocache 1, jit/cold 2) twice; the value is always
+//   [{"a" => 1, "b" => 2}, 5]
+let m = {"a" => 1, "b" => 2};
+let n: i64 = json::read("5")?;
+(m, n)

@@ -1,0 +1,35 @@
+// tests-lib-b1-03: json-over-tcp fixtures shut down the socket concurrently
+// with the write (racy).
+//
+// The program of json_stream_tcp (stdlib/graphix-tests/src/lib_tests/json.rs);
+// json_stream_nested, toml_stream_tcp and pack_stream_tcp use the same idiom.
+// Write::write_exact(client, ..) and Socket::shutdown(client) both fire when
+// `client` fires and run as two spawned tasks; nothing orders them. run!
+// passes because its tests use tokio's current_thread runtime, which polls
+// spawned tasks in spawn order. The shell's multi-thread runtime does not:
+// the shutdown can lock the stream first, the write gets EPIPE, the server
+// reads EOF.
+//
+// command (from the repo root):
+//   for i in $(seq 50); do timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/tests-lib-b1-03.gx 2>&1 | grep -o '"alice"\|Broken pipe'; done | sort | uniq -c
+//
+// expected: 50 "alice".
+// observed (HEAD c722befe, debug build): 5 to 12 of 50 runs "Broken pipe"
+// (45/5, 38/12 in two batches); a failing run prints
+//   unhandled error ... line: 31, column: 1 ["IOError", "write_exact failed: Broken pipe (os error 32)"]
+//   unhandled error ... line: 33, column: 16 ["InvalidCast", "can't cast error:[\"JsonErr\", \"EOF while parsing a value at line 1 column 0\"] to { age: i64, name: string }: not a struct"]
+// The toml and pack variants fail 4 of 30 runs each. Sequenced,
+// `let written = Write::write_exact(..)?; Socket::shutdown(written ~ client)?`,
+// 50 of 50 runs print "alice".
+use sys::io::{Read, Write};
+use sys::tcp::Socket;
+type Msg = {age: i64, name: string};
+let listener = sys::tcp::listen("127.0.0.1:0")?;
+let addr = sys::tcp::listener_addr(listener)?;
+let client = sys::tcp::connect(addr)?;
+let server = sys::tcp::accept(listener, client)?;
+Write::write_exact(client, json::write_bytes({name: "alice", age: 30})?)?;
+Socket::shutdown(client)?;
+let msg: Msg = json::read(Read::read_all(server)?)?;
+sys::exit(sys::time::timer(duration:1.s, false)$ ~ 0);
+msg.name

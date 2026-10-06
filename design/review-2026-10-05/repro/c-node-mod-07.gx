@@ -1,0 +1,19 @@
+// c-node-mod-07: `any` surfaces a pre-sleep value at the wake although
+// its input went bottom while the arm slept.
+//
+// Any::update (graphix-compiler/src/node/mod.rs:2043) bottoms only on a
+// triggering bottom. The FreshBottom of v0 (in1 = 0) lands while arm 0
+// sleeps; a bottom is not a tracked fire (node/wake.rs observe), so at the
+// wake any sees a StaleBottom, ignores it, and rides its pre-sleep 5.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/c-node-mod-07.gx
+//
+// expected: the last epoch is quiet: v0 is bottom at the wake, as
+// `v0 + 0` in the same arm shows (Trace(..; []; [])), and as the arm shows
+// when it stays awake while v0 bottoms.
+//
+// observed (interp and jit, every session mode):
+//   Trace([]; [0:i64:10]; [0:i64:5]; [0:i64:-1]; []; [0:i64:5])
+// `uniq(v0)` in place of the any rides the same way.
+// schedule-v1: cap=96 events=768; in0=i64:0 in1=i64:1; in1=i64:2; in0=i64:1; in1=i64:0; in0=i64:0
+{let v0 = i64:10 / in1; select in0 {i64:0 => any(v0, never<i64>()), _ => i64:-1}}

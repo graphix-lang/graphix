@@ -1,0 +1,52 @@
+// f-kernel-01: the callee context word drops the wake bit, so a woken
+// arm's fused callee fires on stale args.
+//
+// emit_callee_context_word (graphix-compiler/src/fusion/emit/call.rs:338)
+// passes a callee `first_use(word)` = init | first call, never bit 1
+// (wake). Inside every callee wake_flag is 0, so `genuine = init & !wake`
+// (call.rs:151-157) is just `init`; under an arm wake init is forced to 1,
+// the fastcall stale mask is zeroed, and str::len over a stale arg returns
+// FIRED. The node-walk keeps event.wake_init through the callee's dispatch
+// and returns STALE.
+//
+// Both writes compute the same array: x calls the lambda f (a cross-kernel
+// call), y calls str::len directly inside the fused loop. Arm 1 is entered
+// again at s = 1 (cycles 3 and 5) with t standing; t's fire was consumed
+// at the first entry, so neither write repeats.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-kernel-01.gx
+//   expected: AGREE, Trace([0:[1, 1] 2:[2, 2]])
+//   observed: DIVERGENCE - fusion/JIT bug (interp != jit)
+//     interp: Trace([0:[i64:1, i64:1] 2:[i64:2, i64:2]])
+//     jit: Trace([0:[i64:1, i64:1] 2:[i64:2, i64:2] 4:[i64:3, i64:2] 6:[i64:4, i64:2]])
+//
+// command: timeout -s KILL 5 graphix --no-cache design/review-2026-10-05/repro/f-kernel-01.gx
+//   (never exits; 137 is the timeout)
+//   expected (and --no-fusion): (1, 1) (2, 2)
+//   observed (JIT, the default): (1, 1) (2, 2) (3, 2) (4, 2): x is written
+//   again at every re-entry, y is not.
+//
+// With GXDBG_DYNC=1 GRAPHIX_DBG_INVOKE=1, at each re-entry (fired=[false])
+// the loop through f logs `FASTCALL n=1 taint=0 stale=0 -> Tag(0)` (FIRED)
+// and the direct loop logs `stale=1 -> Tag(32)` (STALE). GRAPHIX_DUMP_CLIF=1
+// shows the loop's chunk decoding the wake bit and never using it: f's
+// context word is a bor of the init, new-slot and first-call bits only.
+// The same divergence: under GRAPHIX_PAR=off and GRAPHIX_NO_OUTLINE=1;
+// with a scalar call (`1 => x <- f(t)` over `t = "hello"`); and at a
+// site's first dispatch under a wake (arm 2 reads t first, then arm 1 is
+// entered for the first time: the node-walk never writes x, the JIT does).
+{
+  let s = array::iter([1, 2, 1, 2, 1]);
+  let t = ["a", "bb"];
+  let f = |a: string| str::len(a);
+  let x: Array<i64> = [];
+  let y: Array<i64> = [];
+  let r = select s {
+    1 => {
+      x <- array::map(t, |e| f(e));
+      y <- array::map(t, |e| str::len(e))
+    },
+    _ => never()
+  };
+  (count(x), count(y))
+}

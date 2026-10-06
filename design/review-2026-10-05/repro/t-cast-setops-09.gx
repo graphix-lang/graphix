@@ -1,0 +1,33 @@
+// t-cast-setops-09: a nullary variant counts as array-shaped in union, diff
+// and contains.
+//
+// At runtime `Foo is Value::String("Foo") (node/data.rs:649, Type::is_a at
+// typ/cast.rs:764), never an array. Type::contains (typ/contains.rs:638-641)
+// says `array` contains every Variant, Type::diff (typ/setops.rs:529-538)
+// makes `Foo - array empty, and Type::union (typ/setops.rs:255-262) folds
+// `Foo into `array`. So the checker treats the select below as exhaustive,
+// while at runtime `Foo matches neither arm and the select produces nothing.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-09.gx
+//   (the same with --no-fusion; graphix --check exits 0;
+//   graphix-fuzz check: AGREE, both engines produce the same wrong result)
+//
+// expected: the program is refused (the select does not cover `Foo), or,
+//   if accepted, all three lines print.
+// observed (HEAD c722befe, debug build, both engines):
+//   3 => i64 arm
+//   array => array arm
+//   (no line for `Foo: f(`Foo) never produces)
+//
+// Same root, other symptoms:
+//   select x { array as _ => "a", `Foo => "f", i64 as _ => "i" } over this x
+//     is refused: "pattern `Foo will never match i64", though `Foo reaches it.
+//   let x: array = `Foo; x  is accepted and prints "Foo"; array::len over it
+//     (through `let y: Array<Any> = x`) produces nothing.
+//   |a: array| [a, `Foo]  is typed Array<array>.
+let f = |x: [`Foo, i64, Array<i64>]| select x { array as _ => "array arm", i64 as _ => "i64 arm" };
+let a = [1];
+println("3 => [f(3)]");
+println("array => [f(a)]");
+println("`Foo => [f(`Foo)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

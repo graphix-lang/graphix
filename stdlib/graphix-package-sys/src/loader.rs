@@ -96,6 +96,25 @@ impl ModuleResolver for NetidxResolver {
                 source: Source::Netidx(p.clone()),
                 text,
             };
+            // CR claude for eric: [bug] The netidx loader lays modules out differently
+            // from files. It has three gaps: - This line tries only `{base}/{name}.gx`,
+            // never `{base}/{name}/mod.gx`. - `for_source` below puts a module's
+            // submodules under the module's own path (`/s/m.gx` looks for
+            // `/s/m.gx/n.gx`), where a file module looks in `<dir>/m/`. -
+            // graphix-shell/src/main.rs:412 looks for a `netidx:` script's modules
+            // under the script's own path, where a file script uses its parent
+            // directory. The book's netidx hierarchy
+            // (book/src/modules/implementation.md:153, `m/mod.gx` + `m/n.gx`) therefore
+            // fails with "module m could not be found". The layout `m.gx` + `m/n.gx`
+            // fails on `n`. An `m.gx` beside a `netidx:` script is not found without
+            // GRAPHIX_MODPATH. The same trees on disk all load. The layout rule (which
+            // files a name maps to, and where an implementation's submodules live) is
+            // written four times: resolve_from_vfs, resolve_from_files, the File branch
+            // of resolve_modules_int, and here. One shared helper would keep the four
+            // in step. Separately, design/netidx_extraction.md:28 still names
+            // graphix-compiler/src/expr/resolver.rs, which is now
+            // graphix-types/src/expr/resolver.rs. probe:
+            // design/review-2026-10-05/repro/x-dup-02.sh (x-dup-02)
             let impl_path = self.base.append(&format_compact!("{name}.gx"));
             let intf_path = self.base.append(&format_compact!("{name}.gxi"));
             let (impl_sub, intf_sub) = join!(
@@ -109,6 +128,18 @@ impl ModuleResolver for NetidxResolver {
                     return Resolution::TryNextMethod;
                 }
             };
+            // CR claude for eric: [bug] Every failure to fetch the .gxi becomes "no
+            // interface": a non-string value, a publisher that exited but is still
+            // listed, a --resolve-timeout expiry, a denial. The module then compiles
+            // without its interface, so items it hides are visible and its signatures
+            // and abstract types are not enforced. The implementation's Err arm above
+            // does the same with TryNextMethod, so a later resolver's module of the
+            // same name stands in. FilesResolver returns Resolution::Broken in both
+            // cases; here only an error whose SubscribeErrors holds NotFound should
+            // mean absent. probe: design/review-2026-10-05/repro/sys-net-15.sh (bar.gxi
+            // published as 42, or by a publisher that has exited: `bar::hidden` gives
+            // 2, not "not defined"; bar.gx published as 42 loads a file fallback
+            // instead). (sys-net-15)
             let interface = intf_sub.ok().map(|text| ori(text, &intf_path));
             Resolution::parsed(interface, implementation)
         })

@@ -1,0 +1,42 @@
+// t-seq-03: plain seq's trigger sits under the machine's catch, so an
+// error the trigger raises aborts the run in progress.
+//
+// desugar_plain (graphix-types/src/expr/seq.rs:313-318) pushes the
+// machine's catch before `let go = filter(<trigger>, |x| x ~ idle)`, so a
+// `?` in the trigger (or in a function the trigger calls) raises to the
+// machine's handler: every running step's guard fails and the abort
+// action writes pc idle. seqq binds its trigger in the prelude outside the
+// machine (desugar_queued, seq.rs:920-925), and seq's own abort(..) event
+// is also bound before the catch (seq.rs:310-312).
+//
+// Here go fires at step 1 (run 1 starts, c = 1, waits for step > 11) and
+// at step 5, where e is an error. The step-5 trigger arrives while run 1
+// is busy, so it should be dropped (design/seq_blocks.md section 5,
+// book/src/core/seq.md "seq and seqq": the forms differ only in drop vs
+// queue) and its error should reach the enclosing handler.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-seq-03.gx
+//          (same with --no-fusion; graphix-fuzz check: AGREE)
+//
+// expected: "run 1 started", then 1 (and the trigger's error reported).
+//   `seqq let` in place of `seq let` prints exactly that; so does this
+//   program with e never an error (`99 => error(`T)`).
+// observed: "run 1 started", the unhandled-error report, and no value:
+//   run 1 was killed at step 5.
+//
+// Same-cycle variant: with `go = select step { 5 => step, _ => never() }`
+// and the trigger `({ e?; go })`, the trigger fires and raises at step 5;
+// the start write (pc <- go ~ S0) and the abort action's pc <- Idle queue
+// one after the other, so the run prints "run 5 started" and is killed a
+// cycle later; seqq prints "run 5 started" then 5.
+let step = 0;
+step <- select step { n if n < 40 => n + 1, _ => never() };
+let e: [i64, Error<`T>] = select step { 5 => error(`T), n => n };
+let go = select step { 1 | 5 => step, _ => never() };
+let r = seq let c = (go ~ e)? {
+    println("run [c] started");
+    until step > c + 10;
+    c
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

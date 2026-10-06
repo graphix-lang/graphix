@@ -1,0 +1,36 @@
+// db2-19: the on-disk type metadata is the type printer's text, and a typedef
+// nested in a tree's type is stored by name.
+//
+// extract_type_strings_from_rtype (stdlib/graphix-package-db/src/tree.rs:
+// 194-195) stores format!("{}", ty); open compares the strings (tree.rs:143,
+// txn.rs:310, 323). Type::Ref prints its name (graphix-types/src/typ/
+// print.rs), so a top-level Rec is stored expanded ("{ x: i64 }") but
+// Array<Rec> is stored as "Array<Rec>". Two blocks below define different
+// Rec types and open one tree as Tree<string, Array<Rec>>.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/db2-19.gx
+//          (and again with --no-fusion)
+// expected: the second db::tree returns DbErr: the stored element is { x: i64 }
+// observed (HEAD c722befe, debug build): it opens and reads the i64 field
+//   through { x: string }. jit: x read as a string: "", len 0 (prints "");
+//   --no-fusion: the println never fires and the program's value is 42.
+//   The engines disagree. Stored types: ("string", "Array<Rec>").
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/p.db")$;
+let wrote = {
+    type Rec = {x: i64};
+    let t: db::Tree<string, Array<Rec>> = db::tree(db, "arr")$;
+    db::insert(t, "k", [{x: 42}])$
+};
+let s = {
+    type Rec = {x: string};
+    let t: db::Tree<string, Array<Rec>> = db::tree(db, wrote ~ "arr")$;
+    let a = db::get(t, t ~ "k")?$;
+    a[0]$.x
+};
+let ty = db::get_type(db, wrote ~ "arr")$;
+println("stored types: [ty]");
+let n = str::len(s);
+println("x read as a string: \"[s]\", len [n]");
+sys::exit(sys::time::after_idle(duration:300.ms, s ~ 0));
+s

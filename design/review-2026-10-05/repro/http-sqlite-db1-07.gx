@@ -1,0 +1,44 @@
+// http-sqlite-db1-07: a start error in HttpServe::update returns before the
+// request intake and the handler update, dropping that cycle's work.
+//
+// command: GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-07.gx
+// (~14 s). The fused spins hold the runtime ~1.5 s each so three events land
+// in one cycle: the handler's async is_file reply, r2's request, and the
+// first tick of tk, which sets #max_connections to 0, a start error (a
+// restart on a fixed port fails the same way with EADDRINUSE).
+// control: change `1 => 0` to `1 => 40` (that restart succeeds).
+//
+// expected (the control prints this): r1, r2 and r3 "200 file /etc/passwd".
+// observed:
+//   server: SERVE ERR ... max_connections must be > 0, got 0
+//   r2: 500 Internal Server Error    (its request was never taken)
+//   server: serving 127.0.0.1:...    (tk's second tick restarts it fine)
+//   r1: ERR ... request failed ...   (6 s client timeout: is_file's reply was
+//                                     dropped and CachedArgsAsync stays running)
+//   r3: ERR ... request failed ...   (6 s timeout: the restarted server is wedged)
+// The default GRAPHIX_PAR gives the same; under GRAPHIX_PAR=force the forked
+// schedule puts r1's request in that cycle instead, and r1 gets the 500.
+let rec spin = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => spin(n - 1, acc + 1) };
+let show = |r: Result<http::Response, `HTTPError(string)>| select r { error as e => "ERR [e]", v => "[v.status] [v.body]" };
+let showsrv = |s: Result<http::Server, `HTTPError(string)>| select s { error as e => "SERVE ERR [e]", v => "serving [http::server_addr(v)]" };
+let handler = |req: http::Request| -> http::Response select sys::fs::is_file(req.path) {
+  error as e => { body: "[e]", headers: [], status: u16:404, url: "" },
+  p => { body: "file [p]", headers: [], status: u16:200, url: "" }
+};
+let t1 = sys::time::timer(duration:300.ms, false);
+let t3 = sys::time::timer(duration:800.ms, false);
+let tk = sys::time::timer(t3 ~ duration:500.ms, 2);
+let srv = http::serve(#addr: "127.0.0.1:0", #max_connections: select count(tk) { 1 => 0, n => 50 }, #handler: handler);
+let addr = once(http::server_addr(srv$));
+let c = http::client(#timeout: duration:6.s, addr)$;
+let r1 = http::get(t1 ~ c, "http://[addr]/etc/passwd");
+let h1 = spin(t1 ~ 400000000, 0);
+let r2 = http::get(t3 ~ c, "http://[addr]/etc/passwd");
+let h2 = spin(t3 ~ 400000000, 0);
+let addr2 = skip(#n: 1, http::server_addr(srv$));
+let r3 = http::get(c, "http://[addr2]/etc/passwd");
+println("[sys::time::now(srv)] server: [showsrv(srv)]");
+println("[sys::time::now(r1)] r1: [show(r1)]");
+println("[sys::time::now(r2)] r2: [show(r2)]");
+println("[sys::time::now(r3)] r3: [show(r3)]");
+sys::exit(sys::time::after_idle(duration:14.s, 0))

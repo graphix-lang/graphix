@@ -1,0 +1,68 @@
+// http-sqlite-db1-14: request body errors and non-UTF-8 bodies/headers are
+// silently turned into null or "".
+//
+// handle_http_request (stdlib/graphix-package-http/src/lib.rs:496-511) maps a
+// body read error to an empty body and a non-UTF-8 body to null, and dispatches
+// the request either way. headers_to_value (169) turns a header value that is
+// not visible ASCII into "" (server-side request headers and client-side
+// response headers alike). value_to_header_map (146-151) drops an outgoing
+// header it cannot encode without telling the caller.
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-14.gx
+//          (the same with --no-fusion)
+//
+// expected: r2's body (bytes ff fe 68) reaches the handler, or the request is
+//   refused; r4's handler sees x-name="café" and every client sees
+//   x-reply="café"; r6 returns an HTTPError for the invalid header value; the
+//   truncated raw POST is answered 400 and never reaches the handler.
+// observed (HEAD c722befe, debug build, both engines):
+//   r2 binary body:    200 POST /binary-body body=null ...   (same as no body)
+//   r4 utf8 header:    ... headers=["x-name=\"\""] | response headers ["x-reply=\"\""]
+//   r6 auth + newline: 200 GET /auth-newline body=null headers=[] ...
+//                      (sent without the header, no error)
+//   handler saw: POST /truncated body=null headers=[]
+//   raw POST, 5 of 100 body bytes then EOF; reply: HTTP/1.1 200 OK ...
+//   (the raw reply carries "x-reply: café" on the wire; only the client's
+//   decoding loses it)
+use sys::{io::{Read, Write}, tcp::Socket};
+let show_body = |b: [string, null]| -> string select b { null as _ => "null", s => "\"[s]\"" };
+let picked = |hs: Array<(string, string)>| -> Array<string> array::filter_map(hs, |h: (string, string)| select h {
+  ("x-name", v) => "x-name=\"[v]\"",
+  ("authorization", v) => "authorization=\"[v]\"",
+  ("x-reply", v) => "x-reply=\"[v]\"",
+  _ => null
+});
+let handler = |req: http::Request| -> http::Response {
+  let desc = "[req.method] [req.path] body=[show_body(req.body)] headers=[picked(req.headers)]";
+  println("handler saw: [desc]");
+  { body: desc, headers: [("x-reply", "café")], status: u16:200, url: "" }
+};
+let s = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let addr = http::server_addr(s);
+let c = http::default_client(s)$;
+let showb = |r: Result<http::BinResponse, `HTTPError(string)>| -> string select r {
+  error as e => "ERR [e]",
+  v => "[v.status] [buffer::to_string_lossy(v.body)] | response headers [picked(v.headers)]"
+};
+let show = |r: Result<http::Response, `HTTPError(string)>| -> string select r {
+  error as e => "ERR [e]",
+  v => "[v.status] [v.body] | response headers [picked(v.headers)]"
+};
+let r1 = http::request_bin(#method: `POST, #body: buffer::from_array([u8:104, u8:105]), c, "http://[addr]/utf8-body");
+println("r1 utf8 body:        [showb(r1)]");
+let r2 = http::request_bin(#method: `POST, #body: buffer::from_array([u8:255, u8:254, u8:104]), c, r1 ~ "http://[addr]/binary-body");
+println("r2 binary body:      [showb(r2)]");
+let r3 = http::request(#headers: [("x-name", "cafe")], c, r2 ~ "http://[addr]/ascii-header");
+println("r3 ascii header:     [show(r3)]");
+let r4 = http::request(#headers: [("x-name", "café")], c, r3 ~ "http://[addr]/utf8-header");
+println("r4 utf8 header:      [show(r4)]");
+let r5 = http::request(#headers: [("authorization", "Bearer abc")], c, r4 ~ "http://[addr]/auth");
+println("r5 auth header:      [show(r5)]");
+let r6 = http::request(#headers: [("authorization", "Bearer abc\n")], c, r5 ~ "http://[addr]/auth-newline");
+println("r6 auth + newline:   [show(r6)]");
+let conn = sys::tcp::connect(r6 ~ addr)$;
+let wrote = Write::write_exact(conn, buffer::from_string("POST /truncated HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\nshort"))$;
+let shut = Socket::shutdown(wrote ~ conn)$;
+let reply = Read::read_all(shut ~ conn);
+println("raw POST, 5 of 100 body bytes then EOF; reply: [select reply { error as e => "ERR [e]", b => buffer::to_string_lossy(b) }]");
+sys::exit(sys::time::after_idle(duration:2.s, reply ~ 0))

@@ -1,0 +1,46 @@
+// t-tvar-06: Singleton narrowing gives each open union member its own
+// bound, so a union of two open members passes as an arithmetic operand
+// and mixed numerics slip through.
+//
+// UnionParts::narrowing (graphix-types/src/typ/tvar.rs:1707) answers
+// `Singleton` for a union with no known member, so narrow_singleton (an
+// arithmetic operand, graphix-compiler/src/node/op.rs:751) and
+// require_singleton (a bind of a Singleton cell) give each open member a
+// Singleton conjunct of its own. That does not make the union one type:
+// `g` below is typed
+//   fn(c: bool, a: 'a: Number & Singleton, b: 'b: Number & Singleton) -> ['a, 'b]
+// and its `s + t` computes over [i64, f64] at the call g(true, 1, 2.5).
+// Binding the arguments first (`let x = 1; let y = 2.5; g(true, x, y)`)
+// changes nothing.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-tvar-06.gx
+//          (also --check, --no-fusion, GRAPHIX_NO_SUBST=1;
+//          graphix-fuzz check: AGREE, the JIT declines the union operand)
+//
+// expected (CLAUDE.md "Operators": arithmetic over a type holding two
+//   numeric types is refused, a generic definition's at the call, by the
+//   check): --check refuses the call, "... holds more than one numeric
+//   type" or a Singleton refusal.
+// observed (HEAD c722befe, debug build): --check exits 0; the run prints
+//   3.5 in both engines (i64 1 + f64 2.5 computed by promotion);
+//   GRAPHIX_NO_SUBST=1 (the instance re-checks its body) refuses it:
+//   "cannot compute with values of '_: [i64, f64]: it holds more than one
+//   numeric type (cast to one)".
+//
+// Variant, members bound after the operand is checked: --check exits 0 and
+// the build refuses on the compiler-bug path (GRAPHIX_ELAB_AUDIT=1 reports
+// it): "an instance at fn(s: [i64, f64]) -> [i64, f64] of a definition
+// typed fn(s: '_) -> '_".
+//   let f = |s| s + s; let p = never(); let q = never();
+//   let r = f(select true { true => p, false => q }); p <- 1; q <- 2.0; r
+// At top level, `let s = select b { true => p, false => q }; let r = s + s;
+// p <- 1; q <- 2.0; r` runs and prints 2; with the two writers above the
+// select it is refused ("holds more than one numeric type").
+let g = |c, a, b| {
+  let s = select c { true => a, false => b };
+  let t = select c { true => b, false => a };
+  s + t
+};
+let r = g(true, 1, 2.5);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

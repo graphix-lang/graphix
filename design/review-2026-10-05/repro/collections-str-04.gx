@@ -1,0 +1,35 @@
+// collections-str-04: array::group never emits again after its predicate
+// raises (or bottoms) for one element; later inputs pile up in its queue.
+//
+// The predicate raises for x = 5 (group's signature allows `throws 'e`). The
+// error reaches the catch, then group never emits again, although chk(x) is
+// true for every later x. Group sets `ready = false` before it calls the
+// predicate and reads the answer through seam_tick, which takes the
+// FreshBottom answer for "not answered yet". Nothing re-fires the predicate
+// for x = 5, so `ready` never comes back and every later v is pushed onto
+// `queue` and never popped (stdlib/graphix-package-array/src/lib.rs:423-441).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-04.gx
+//          (the same with --no-fusion, and with the image cache cold or warm)
+// expected: grouping goes on after the caught error:
+//          [1, 2] / [3, 4] / caught / [5, 6] (or [6, 7]) / ... up to x = 20
+// observed: [1, 2]
+//           [3, 4]
+//           caught
+//           (nothing more; the program exits after 20 ticks)
+// A bottom without a raise wedges it the same way: with
+// `let tbl = [1, 1, 1, 1, 1]`, the predicate `tbl[x % 7]$ > 0 && n >= 2`
+// prints [1, 2], [3, 4] and nothing for x = 5..40, in every graphix-fuzz
+// mode (the predicate fused).
+let chk = |x: i64| -> [bool, Error<`Bad(i64)>] select x {
+  5 => error(`Bad(x)),
+  _ => true
+};
+let clock = sys::time::timer(duration:5.ms, true);
+let v = count(clock);
+let g = {
+  catch(e) println(e ~ "caught");
+  array::group(v, |n, x| chk(x)? && n >= 2)
+};
+sys::exit(take(#n: 1, skip(#n: 20, clock)) ~ 0);
+g

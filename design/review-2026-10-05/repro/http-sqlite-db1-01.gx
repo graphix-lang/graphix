@@ -1,0 +1,64 @@
+// http-sqlite-db1-01: http::serve pairs any handler fire with the oldest
+// queued request, so responses leak across clients.
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache \
+//            design/review-2026-10-05/repro/http-sqlite-db1-01.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off, GRAPHIX_PAR=force)
+//
+// expected: (("page for /alice", "page for /bob", "page for /carol"),
+//            ("page for /alice", "page for /bob", "page for /carol"))
+// observed (HEAD c722befe, debug build, 10 of 10 runs across the modes):
+//   (("page for /bob", "page for /bob", "page for /bob"),
+//    ("page for /alice", "page for /alice", "page for /alice"))
+//   The first triple is whichever request was dispatched first, three times.
+//
+// s1, concurrent clients: after a reply, HttpServe::update
+// (stdlib/graphix-package-http/src/lib.rs:865-889) writes the next queued
+// request into x and updates the handler again IN THE SAME CYCLE. The body's
+// `let page` publication is still fired in ctx.event.variables, so the
+// handler fires again with the first page, and that goes to the next client.
+// The real answers arrive later, find the queue empty and are dropped. The
+// handler without the `let` (the after_idle inline in the struct) answers
+// correctly. A `seqq let r = req { .. }` handler fails the same way, and so
+// does a static file server (sys::fs::read_all): 5 of 5 runs gave every
+// concurrent client the first file.
+// s2, sequential clients (each request sent after the previous reply): the
+// first handler fire after a dispatch is taken as the reply. Here the
+// `hits <- req ~ hits + 1` write lands a cycle after the request and fires
+// the response while `page` still holds /alice's page. A second async value
+// or a timer read in the body does the same (two db::get lookups: 4 of 5
+// runs answered /bob with "bob-name alice-perms").
+// sys::net::rpc (stdlib/graphix-package-sys/src/net.rs:1214-1240) has the
+// same loop and the same results for both shapes.
+let page_handler = |req: http::Request| -> http::Response {
+  let page = sys::time::after_idle(duration:100.ms, "page for [req.path]");
+  { body: page, headers: [], status: u16:200, url: "" }
+};
+let hits = 0;
+let counting_handler = |req: http::Request| -> http::Response {
+  hits <- req ~ hits + 1;
+  let page = sys::time::after_idle(duration:100.ms, "page for [req.path]");
+  { body: page, headers: [("x-hits", "[hits]")], status: u16:200, url: "" }
+};
+let show = |r: Result<http::Response, `HTTPError(string)>| select r {
+  error as e => "ERR [e]",
+  v => v.body
+};
+// three concurrent clients
+let s1 = http::serve(#addr: "127.0.0.1:0", #handler: page_handler)$;
+let a1 = http::server_addr(s1);
+let c1 = http::client(#timeout: duration:5.s, a1)$;
+let concurrent = (
+  show(http::get(c1, "http://[a1]/alice")),
+  show(http::get(c1, "http://[a1]/bob")),
+  show(http::get(c1, "http://[a1]/carol"))
+);
+// three sequential clients, each request sent after the previous reply
+let s2 = http::serve(#addr: "127.0.0.1:0", #handler: counting_handler)$;
+let a2 = http::server_addr(s2);
+let c2 = http::client(#timeout: duration:5.s, a2)$;
+let q1 = http::get(c2, "http://[a2]/alice");
+let q2 = http::get(q1 ~ c2, "http://[a2]/bob");
+let q3 = http::get(q2 ~ c2, "http://[a2]/carol");
+sys::exit(sys::time::after_idle(duration:1.s, q3 ~ 0));
+(concurrent, (show(q1), show(q2), show(q3)))

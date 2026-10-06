@@ -1,0 +1,33 @@
+// f-mod-lowering-06: labeled formals break lambda kernels: positional-index
+// lookup and misleading refusals.
+//
+// self_calls_abi_consistent (graphix-compiler/src/fusion/lowering.rs:1227)
+// looks each slot formal up with cs.arg_positional(i), where i is the
+// formal's index among ALL formals (formal_slots, line 1091). Labeled
+// formals come first, so with one labeled formal the last positional lookup
+// is out of range: every self-recursive lambda with a labeled formal is
+// refused. formal_slots (line 1066) skips an invariant fn-typed formal only
+// when it is positional, so a labeled callback refuses every kernel, with a
+// message about self-calls the lambda does not have.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-06.gx
+//   (GXDBG_NATIVE_ALL=1 also prints every fusion failure)
+//
+// expected: (10, 7), as the positional twin prints (drop the `#` from both
+//   formals and both labels at the calls: `|k: i64, n: i64|`, `f(k + 1, m - 1)`,
+//   `f(0, 5)`, `|cb: fn(v: i64) -> i64, x: i64|`, `g(|v| v * 2, 3)`).
+// observed (HEAD c722befe, debug build):
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: lambda call site `f(#k: 0, 5)` not discovered — subtree node-walks
+//     - emit_clif: lambda call site `g(#cb: |v| v * 2, 3)` not discovered — subtree node-walks
+//   and under GXDBG_NATIVE_ALL=1 the reasons recorded are false:
+//     lambda `f` has no kernel: a self-call passes a formal a value of another shape
+//     lambda `g` has no kernel: fn-typed formal `cb` is not forwarded unchanged by its self-calls
+// Without #[native] both engines print (10, 7) (graphix-fuzz check: AGREE);
+// graphix-fuzz run shows the two calls unfused. The labeled-default
+// accumulator `|#acc: i64 = 0, n: i64|` fails #[native] the same way.
+let rec f = |#k: i64, n: i64| -> i64 select n { 0 => k, m => f(#k: k + 1, m - 1) + 1 };
+let g = |#cb: fn(v: i64) -> i64, x: i64| -> i64 cb(x) + 1;
+let r = #[native] (f(#k: 0, 5), g(#cb: |v| v * 2, 3));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

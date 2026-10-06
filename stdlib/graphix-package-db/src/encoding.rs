@@ -13,6 +13,15 @@ pub(crate) fn encode_value(v: &Value) -> Option<GPooled<Vec<u8>>> {
     let len = v.encoded_len();
     let mut buf = ENCODE_POOL.take();
     buf.reserve(len);
+    // CR claude for eric: [bug] The Pack error is dropped here. Every prepare_args that
+    // calls encode_value or encode_key (insert, batch, compare_and_swap,
+    // get/contains_key/remove on such a key, and the txn twins) reads the None as "do
+    // not fire". `'v: Concrete` admits Rust-backed abstract types whose Pack is
+    // impl_no_pack (db::Db, http::Client, sys::process::Proc, ...), so an op on a value
+    // holding one answers nothing: no DbErr and no log line, and a seq step waiting on
+    // it stalls with its try never taken. Fix: return the PackError and answer DbErr
+    // from eval, or refuse such types in db::tree's typecheck1. probe:
+    // design/review-2026-10-05/repro/http-sqlite-db1-10.gx (http-sqlite-db1-10)
     v.encode(&mut *buf).ok()?;
     Some(buf)
 }
@@ -110,6 +119,21 @@ pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<
             }
             _ => None,
         },
+        // CR claude for eric: [bug] Every key type other than string, bytes and the
+        // integers falls through to Pack here, and Pack's byte order is not the
+        // language's order: negative f64/f32 sort after the positives and in reverse,
+        // pre-1970 datetimes sort last, true sorts before false, decimals sort by scale
+        // and sign before value, and tuple/struct keys compare strings by length first
+        // and put negative ints last. So first, last, pop_min, pop_max, get_lt, get_gt
+        // and cursor::range, which mod.gxi documents as minimum, maximum and
+        // strictly-less, return the wrong entries on such trees: a Tree<f64, string>
+        // holding -3, -1, 0.5, 2 answers first = 0.5 and get_lt(0.0) = null. Pack bytes
+        // also split keys the language treats as equal: get(t, -0.0) misses a key
+        // inserted as 0.0, though 0.0 == -0.0 and a Map finds it. The fix is an
+        // order-preserving encoding per key type (with -0.0 and NaN normalized),
+        // versioned in the tree meta so existing trees still decode, or else the
+        // interface must say which key types are ordered. probe:
+        // design/review-2026-10-05/repro/http-sqlite-db1-03.gx (http-sqlite-db1-03)
         _ => encode_value(v),
     }
 }

@@ -1,0 +1,44 @@
+// tests-lang-b-02: a quantified fn type reached through a typedef is not held
+// rigid where a value binds it, so an i64 function runs on f64.
+//
+// quantified_formal (graphix-compiler/src/node/callsite.rs:244-266) holds a
+// formal's `fn<'b: ..>` quantifiers rigid only when ONE typedef expansion
+// (lookup_ref_with, line 251) yields the Fn. `|f: F|` is refused (pin
+// NESTED_QUANTIFIER_MONO, stdlib/graphix-tests/src/lang/types.rs). With
+// `type G = F`, the expansion of G is the Ref F, quantified_formal returns
+// None, and the argument is checked with 'b open, so 'b := i64 in a throwaway
+// expansion while each call in the body still picks 'b afresh. A struct
+// typedef holding one (`|t: T|`) is the nested-position hole of t-fntyp-03
+// (graphix-types/src/typ/fntyp.rs:946).
+//
+// command: graphix --check design/review-2026-10-05/repro/tests-lang-b-02.gx
+//          timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/tests-lang-b-02.gx
+//          (also --no-fusion, and GRAPHIX_ELAB_AUDIT=1)
+//
+// expected: --check refuses `by_alias(inc)` with "type mismatch fn<'b: Number>(..)
+//   does not contain fn(x: i64) -> i64", as it does with `|f: F|`, and refuses
+//   `by_field({ f: inc })` the same way.
+// observed (HEAD c722befe, debug build): --check exits 0. The run prints
+//   (2.5, 2.5) with and without fusion: inc, typed fn(x: i64) -> i64, computed
+//   1.5 + 1 twice. GRAPHIX_ELAB_AUDIT=1 prints "an instance at fn(x: f64) -> f64
+//   of a definition typed fn(x: i64) -> i64" (and the same at fn(c: f64) -> f64).
+//   graphix-fuzz run logs "a run-time bind at f(1.5) did not type: .." and
+//   "a run-time bind at t.f(1.5) did not type: ..", and runs both binds.
+//
+// crash variant (replace the last line with these three statements):
+//   let seven = |x: i64| -> i64 x ~ 7; let v = by_alias(seven); v + 0.5
+//   --check exits 0. Fusion on: panic at graphix-compiler/src/fusion/kernel.rs:243
+//   "kernel param `v`: runtime I64(7) does not match the compiled Scalar(F64)
+//   slot", then "Error: runtime did not respond", exit 1. --no-fusion prints 7.5.
+//   graphix-fuzz check aborts (exit 134).
+// The CONCRETE pin breaks through G too: `let apply = |f: G| f(1.5);
+//   apply(|x| x + 1)` is accepted and prints 2.5, while with `|f: F|` it is
+//   refused ("cannot compute .. + i64").
+type F = fn<'b: Number>(x: 'b) -> 'b;
+type G = F;
+type T = { f: fn<'c: Number>(c: 'c) -> 'c };
+let inc = |x: i64| -> i64 x + 1;
+let by_alias = |f: G| f(1.5);
+let by_field = |t: T| t.f(1.5);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(by_alias(inc), by_field({ f: inc }))

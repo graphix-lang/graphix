@@ -1,0 +1,14 @@
+// id: x-engine-seq-errors-11
+// title: every raised error embeds the whole source text; "[e]" prints the program
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-11.gx
+// expected: the handler prints the error and where it was raised (file, line, column)
+// observed: the printed error holds ["text", "<this entire file>"] once per chain link,
+// twice here (one rethrow); an error raised in a module also carries every parent file's text
+let a = [1, 2, 3];
+catch(e) println("could not run: [e]");
+let v = {
+  catch(e) e?;
+  a[15]?
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+v

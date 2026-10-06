@@ -138,6 +138,17 @@ impl<X: GXExt> DataTableW<X> {
     /// The column width if set by user drag or ref; `None` means
     /// auto-size from content.
     pub(super) fn explicit_col_width(&self, col_name: &str) -> Option<f32> {
+        // CR claude for eric: [bug] Drags (events.rs:358) and the double-click auto-fit
+        // write user_widths, nothing ever removes an entry, and this lookup prefers
+        // that entry to the width ref. So once the user has touched a column that has a
+        // width ref and on_resize, the program no longer controls its width. With an
+        // on_resize that clamps (w <- min(x, 200.0)), a drag to 400 leaves the column
+        // at 400, and a later write to the ref (a reset) changes nothing.
+        // auto_fit_all_columns (layout.rs:297-318) also resizes on_resize columns
+        // without calling on_resize, so the program's width and the screen diverge.
+        // When a column has a width ref, take its width from the ref and route drags
+        // and auto-fit through on_resize; keep user_widths for columns without one.
+        // Confirmed by reading the code; no window was opened. (gui-datatable-17)
         if let Some(w) = self.user_widths.lock().get(col_name) {
             return Some(*w);
         }
@@ -224,6 +235,29 @@ impl<X: GXExt> DataTableW<X> {
                     let vis =
                         self.actual_visible_cols(self.first_col, metrics.viewport_width);
                     if ci >= self.first_col + vis {
+                        // CR claude for eric: [bug] Scrolling right counts the columns
+                        // that fit starting at ci - cols_in_view, when it should walk
+                        // back from ci over the real widths. cols_in_view (ceil(width /
+                        // MIN_COL_WIDTH) minus the name column, render.rs:149,
+                        // events.rs:233) assumes no column is narrower than 80 px, but
+                        // width refs are not clamped. Take an 80 px name column in an
+                        // 800 px viewport with widths [80 x 9, 300, 300]: Right onto
+                        // c10 sets first_col 3 and draws c10 at x 860..1160, entirely
+                        // off-screen (c9 lands at 720..1020). Ten fixed 40 px columns
+                        // never render the tenth: it lies past cols_in_view, and the
+                        // content is too narrow to scroll. Vertically, three things
+                        // combine. The header is taken as ROW_HEIGHT_ESTIMATE (22) but
+                        // lays out at 24.2 (14 px x 1.3 line height + 6 px padding;
+                        // test_access.rs:123 uses 28). first_row at max scroll is
+                        // round(oy / row_h) (events.rs:276). The ceil'd rows_in_view
+                        // counts the clipped bottom slot as visible, so 100 rows in a
+                        // 10.6-row body end with row 99 only 60% shown, and Down puts
+                        // the selection in that slot. Derive first_col and the rendered
+                        // column range from accumulated widths, and first_row from the
+                        // measured header and the rows that fit whole. Probe: a
+                        // standalone replica of actual_visible_cols, scroll_to_cell,
+                        // display_col_range and handle_scroll (no window opened).
+                        // (gui-datatable-15)
                         self.first_col = ci.saturating_sub(
                             self.actual_visible_cols(
                                 ci.saturating_sub(metrics.cols_in_view),
@@ -237,6 +271,22 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         if changed {
+            // CR claude for eric: [bug] scroll_to_cell (keyboard navigation,
+            // ensure_selection_visible) moves first_row/first_col, and apply_table_sync
+            // resets them to 0 (subscriptions.rs:283). Nothing moves the overlay
+            // scrollable built at render.rs:438 (it has no Id, and the crate has no
+            // scroll_to), so its offset and scrollbar stay where the user last
+            // scrolled. The next wheel notch scrolls from that stale offset and
+            // handle_scroll (events.rs:276) takes it as the new position. After 40
+            // ArrowDowns put row 28 on top, one notch down shows row 3; after a table
+            // update resets the view to row 0 with the overlay at 600 px, one notch
+            // down shows row 30. This flag cannot help: it ignores only offsets within
+            // half a row of first_row*row_h, which a never-moved overlay does not
+            // report, and with the name column shown its x test expects
+            // offset_at_col(0) = the name column width while the overlay rests at 0.
+            // Give the overlay an Id, issue scroll_to for the new position whenever the
+            // widget moves itself, and delete the flag; probe:
+            // design/review-2026-10-05/repro/gui-datatable-08.rs (gui-datatable-08)
             self.ignore_overlay_reassert = true;
             self.update_subscriptions();
         }
@@ -252,6 +302,20 @@ impl<X: GXExt> DataTableW<X> {
         selection.extend(self.selection.iter().cloned());
         // A selected path is a row (the name column) or `<row>/<col>`.
         let mut target: Option<(usize, ArcStr)> = None;
+        // CR claude for eric: [bug] This scrolls to the first selected path in AHashSet
+        // order even when another selected cell is already on screen. With a
+        // multi-select on_select, which the book supports, clicking a cell far from an
+        // earlier selection jumped the view back to the old cell in 8 of 12 trials.
+        // Rows are also matched with strip_prefix, and any remainder is taken as a
+        // column, so selecting row "/t/a/b" or its cell "/t/a/b/x" scrolls to an
+        // earlier row "/t/a". render.rs and handle_table_key match exactly with
+        // cell_path_matches over the displayed columns. Fix: return early when any
+        // selected cell is already in the display range, and match the same exact way
+        // the rest of the widget does. probe:
+        // design/review-2026-10-05/repro/gui-datatable-12.rs (copy it to
+        // stdlib/graphix-package-gui/tests/review_gui_datatable_12.rs and run cargo
+        // test -p graphix-package-gui --test review_gui_datatable_12).
+        // (gui-datatable-12)
         'outer: for sel_path in selection.iter() {
             for (ri, row_path) in self.row_paths.iter().enumerate() {
                 let row_str: &str = row_path;

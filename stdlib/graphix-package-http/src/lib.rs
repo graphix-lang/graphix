@@ -38,6 +38,14 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+// CR claude for eric: [structure] ClientValue (41-77) and ServerValue (101-137)
+// hand-write the PartialEq/Eq/PartialOrd/Ord/Hash-by-Arc-identity impls plus
+// impl_no_pack!/abstract_wrapper! that impl_abstract_arc!(T, static W = "path")
+// (graphix-package-core/src/lib.rs:175) generates, as the db and sqlite handles already
+// use. Rename the fields to inner (or let the macro name the field) and replace each
+// block with one macro call. graphix-package-sys hand-writes the same impls for
+// TcpListenerValue (tcp.rs:22-46) and WatcherValue (watch.rs:161-185).
+// (http-sqlite-db1-16)
 #[derive(Debug, Clone)]
 struct ClientValue {
     client: Arc<reqwest::Client>,
@@ -342,6 +350,14 @@ impl EvalCachedAsync for HttpRequestEv {
         prepare_request_args(cached)
     }
 
+    // CR claude for eric: [structure] HttpRequestEv::eval and HttpRequestBinEv::eval
+    // (388-411) differ only in the body conversion and text() vs bytes(): the
+    // send_request call, status, url, headers and both error mappings are written
+    // twice. Fold them into one helper that takes the body conversion and the body
+    // read. The text body is also copied for nothing:
+    // reqwest::Body::from(s.to_string()) (352) allocates and copies the ArcStr, where
+    // Bytes::from_owner(s) (as build_hyper_response does at 478) hands it to reqwest
+    // without a copy. (http-sqlite-db1-17)
     fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let resp = match send_request(
@@ -493,6 +509,29 @@ async fn handle_http_request(
 ) -> std::result::Result<hyper::Response<Full<Bytes>>, std::convert::Infallible> {
     use http_body_util::BodyExt;
     let (parts, body) = req.into_parts();
+    // CR claude for eric: [bug] A body read error becomes an empty body (498) and a
+    // non-UTF-8 body becomes null (504-511), and the request is dispatched either way:
+    // a POST that declares 100 bytes, sends 5 and closes runs the handler with body
+    // null and is answered 200, and a binary upload cannot be received at all.
+    // headers_to_value (169) turns every header value that is not visible ASCII into ""
+    // (request headers here, response headers in http::request), and
+    // value_to_header_map (146-151) drops an outgoing header it cannot encode, so an
+    // Authorization value with a trailing newline is silently not sent. Answer 400 on a
+    // body read error without dispatching, carry the body as bytes (or [string, bytes,
+    // null]), decode header values lossily, and return HTTPError for an invalid
+    // outgoing header. probe: design/review-2026-10-05/repro/http-sqlite-db1-14.gx
+    // (http-sqlite-db1-14)
+    // CR claude for eric: [risk] Every request body is read whole, with no size limit,
+    // before the handler runs. There is no Content-Length check and no
+    // http_body_util::Limited, and serve has no option for a limit, so a Graphix
+    // handler cannot refuse an upload. The bytes are then copied into an ArcStr while
+    // body_bytes lives until the reply, so a request costs about twice its body, and
+    // each of the 768 default connections can hold one: a single large POST from any
+    // client OOM-kills the process. The Err(_) => Bytes::new() arm also gives the
+    // handler a body that never arrived (the client left mid-upload) as body: null.
+    // probe: design/review-2026-10-05/repro/x-panics-14.py (a declared 100 GiB body
+    // gets no 413; a 32 MiB POST raises peak RSS by 63 MiB; under an 80M cap one 36 MiB
+    // POST OOM-kills the server). (x-panics-14)
     let body_bytes = match body.collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => Bytes::new(),
@@ -627,6 +666,14 @@ async fn serve_loop(
         };
         let io = match &tls {
             None => MaybeTls::Plain(stream),
+            // CR claude for eric: [bug] The TLS handshake is awaited here, inside the
+            // accept loop and with no timeout, so no other connection is accepted until
+            // it finishes. One peer that opens a TCP connection to an HTTPS server and
+            // sends nothing stalls every other client until it disconnects; plain HTTP
+            // spawns at once and is unaffected. Each honest handshake also holds the
+            // loop for its client's round trip. Run the handshake in the spawned
+            // connection task under a timeout, so this loop only accepts TCP. probe:
+            // design/review-2026-10-05/repro/x-panics-09.py (x-panics-09)
             Some(acceptor) => match acceptor.accept(stream).await {
                 Ok(tls_stream) => MaybeTls::Tls(tls_stream),
                 Err(e) => {
@@ -637,6 +684,16 @@ async fn serve_loop(
         };
         let io = hyper_util::rt::TokioIo::new(io);
         let tx = tx.clone();
+        // CR claude for eric: [bug] Each connection is a detached task that holds this
+        // server's id and sender. The abort() on restart (773), delete (911), sleep
+        // (924) and in ServerHandle::drop (97) stops only the accept loop, so open
+        // keep-alive connections outlive the server. After a sleep or a delete, their
+        // requests carry an id that no node takes. The cycle drops the reply channel,
+        // and the client gets 500 on every request until it reconnects, even after the
+        // arm has woken. After an address change, the handler keeps serving those
+        // connections on the port the server left, and their channel stays watched for
+        // as long as the clients keep their sockets open. probe:
+        // design/review-2026-10-05/repro/http-sqlite-db1-08.gx (http-sqlite-db1-08)
         tokio::spawn(async move {
             let _permit = permit;
             let service = hyper::service::service_fn(|req| {
@@ -652,6 +709,16 @@ async fn serve_loop(
     }
 }
 
+// CR claude for eric: [structure] HttpServe is PublishRpc
+// (graphix-package-sys/src/net.rs:872-1290) under another name: the same handler built
+// by genn::bind/reference/apply in init, the same pid write, the same take_custom ->
+// queue -> ready dispatch -> seam_tick reply loop, the same delete, and a sleep that
+// differs only by PublishRpc's wake flag. The copies have already drifted (only
+// PublishRpc republishes after a wake) and share the reply-pairing and wedge bugs, so
+// every fix to the request/reply machine must be made twice. Move the queue, the
+// handler instance, dispatch, reply and sleep/delete into one type in
+// graphix-package-core that both builtins hold, so each keeps only its transport setup.
+// (http-sqlite-db1-12)
 #[derive(Debug)]
 pub(crate) struct HttpServe<R: Rt, E: UserEvent> {
     id: BindId,
@@ -769,6 +836,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
         let mut server_result = None;
+        // CR claude for eric: [bug] Each start error in this block (781-832) returns
+        // before the request intake (850) and the handler update (866), so that cycle's
+        // work is lost. A request delivered in that cycle is cleared with the event,
+        // and its client gets 500. An async reply the handler is waiting for (a db or
+        // fs call) is cleared too: its CachedArgsAsync stays running, `ready` never
+        // comes back, and the server answers nothing again, even after a later restart
+        // succeeds. A restart on a fixed port takes this path today (EADDRINUSE: the
+        // old listener is still open). Keep the error in a local, fall through, and set
+        // `out` once at the end. probe: GRAPHIX_PAR=off graphix --no-cache
+        // design/review-2026-10-05/repro/http-sqlite-db1-07.gx (http-sqlite-db1-07)
+        // CR claude for eric: [bug] A wake never restarts the server that sleep()
+        // aborted (line 920). This condition only looks at argument fires, and at a
+        // wake an argument bound outside the arm is delivered stale. So an http::serve
+        // in a select arm whose addr/cert/key/max_connections are all variables stays
+        // down for good once the arm sleeps and is reselected. The same call with an
+        // inline literal, or with the defaults left out, comes back, because the arm's
+        // constants re-fire. Give HttpServe a `slept` bit set in sleep() and taken here
+        // as a restart, as Subscribe/Publish/PublishRpc do
+        // (graphix-package-sys/src/net.rs:1103, 1112, 1276). probe:
+        // design/review-2026-10-05/repro/http-sqlite-db1-06.gx (http-sqlite-db1-06)
         if addr_fired || cert_fired || key_fired || max_fired {
             if let Some(abort) = self.abort.take() {
                 abort.abort();
@@ -793,6 +880,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     }
                 };
                 let max_conn = match &maxv {
+                    // CR claude for eric: [bug] Any positive `n` is accepted here, but
+                    // `tokio::sync::Semaphore::new` (line 841) asserts `n <=
+                    // Semaphore::MAX_PERMITS` (2^61 - 1 on 64-bit). So
+                    // `#max_connections: 2305843009213693952` panics the runtime
+                    // ('runtime did not respond') instead of returning an `HTTPError`.
+                    // Reject values above `Semaphore::MAX_PERMITS` here as `<= 0` is
+                    // rejected, or clamp to it. `usize::try_from` in place of `as
+                    // usize` also covers the truncation on 32-bit targets. probe:
+                    // design/review-2026-10-05/repro/x-panics-16.gx (x-panics-16)
                     Some(Value::I64(n)) if *n > 0 => *n as usize,
                     Some(Value::I64(n)) => {
                         return self.out.set(TagValue::fired(errf!(
@@ -802,6 +898,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     }
                     _ => 768,
                 };
+                // CR claude for eric: [bug] Restarting on the same address fails. The
+                // abort() above (773-775) only schedules the old serve_loop's
+                // cancellation, and that future owns the old TcpListener until a worker
+                // drops it later, so this bind meets a listening socket and returns
+                // EADDRINUSE. The node then outputs the error and the server stays down
+                // until an argument fires again, because the old task is gone a moment
+                // later. Changing #max_connections, rotating #cert/#key, or any re-fire
+                // of an unchanged #addr hits it (10 of 10 runs for #max_connections).
+                // Keep the bound listener in the node and give the new loop a
+                // try_clone() when the address is unchanged, or bind before aborting
+                // the old loop. probe:
+                // design/review-2026-10-05/repro/http-sqlite-db1-05.gx
+                // (http-sqlite-db1-05)
                 let std_listener = match std::net::TcpListener::bind(&**addr) {
                     Ok(l) => l,
                     Err(e) => {
@@ -855,6 +964,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 self.queue.push_back((request, reply));
             }
         }
+        // CR claude for eric: [bug] `ready` is cleared when a request goes to the
+        // handler and set again only when the handler's output fires (871). Some
+        // handlers never fire for a request: one that raises with `?` (the error goes
+        // to the serve site's catch through `throws 'e`), or one that is bottom for it
+        // (`req.body$` on a GET). That client then gets no reply, no 500 and no
+        // timeout. Every later request from any client waits behind it forever, and
+        // `queue` grows by one per request. One malformed body sent to a
+        // `json::read(req.body$)?` handler stops the server for good. A request the
+        // handler raised on needs an answer (a 500), and one unanswered request should
+        // not hold up the others. probe:
+        // design/review-2026-10-05/repro/http-sqlite-db1-02.gx (http-sqlite-db1-02)
         if self.ready && !self.queue.is_empty() {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
@@ -862,6 +982,20 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 ctx.event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
+        // CR claude for eric: [bug] HttpServe answers the oldest queued request with
+        // whatever its one shared handler instance fires next, so replies cross between
+        // clients. After a reply this loop writes the next request into x and updates
+        // the handler again in the same cycle. A `let` in the handler body still reads
+        // as fired in ctx.event.variables there, so every concurrently queued client
+        // gets the first client's response, and the real answers later reach an empty
+        // queue and are dropped (a seqq handler and a sys::fs::read_all file server
+        // fail the same way). With strictly sequential requests, any fire the new
+        // request did not cause (a second async value, a `hits <- req ~ hits + 1`
+        // write, a timer) is sent as the reply with the previous request's data, and
+        // `ready` serializes all requests server-wide. PublishRpc in
+        // stdlib/graphix-package-sys/src/net.rs:1214 has the same loop and leaks the
+        // same way. probe: design/review-2026-10-05/repro/http-sqlite-db1-01.gx
+        // (http-sqlite-db1-01)
         loop {
             match graphix_package_core::seam_tick(self.handler.update(ctx))
                 .map(|tv| tv.clone())

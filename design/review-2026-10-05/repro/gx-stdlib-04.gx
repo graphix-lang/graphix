@@ -1,0 +1,30 @@
+// gx-stdlib-04: Collection's map/filter/find defaults drop null elements, and
+// Map's filter and find run those defaults.
+//
+// The map and filter defaults (core mod.gxi:61, 64) go through filter_map,
+// whose Option<'b> collapses to 'b when the element type holds null, so an
+// element mapped to null, or a null element the predicate accepts, is dropped
+// as "filtered out". The find default (mod.gxi:66-73) folds over a null seed
+// and cannot record a null match, so it returns a later element. Map's impl
+// (mod.gx:51-57) overrides neither filter nor find; a user collection gets all
+// three defaults. Array's (and List's) intrinsics keep nulls.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-04.gx
+//          (the same with --no-fusion; graphix-fuzz check reports AGREE)
+// expected: map unset 1, map first null, bag map 3, array map 3
+// observed: map unset 0, map first 1, bag map 1, array map 3
+use Collection::*;
+type Bag<'a> = Abstract<Array<'a>>;
+impl Collection for Bag<'_> {
+    let fold = |b, init, f| array::fold(b.0, init, f);
+    let filter_map = |b, f| Bag(array::filter_map(b.0, f));
+    let flat_map = |b, f| Bag(array::flat_map(b.0, |x| f(x).0))
+};
+let m: Map<string, [i64, null]> = {"a" => null, "b" => 1, "c" => 2};
+let g = |x| select x > 2 { true => x, false => null };
+let unset = len(filter(m, |v| opt::is_none(v)));
+let first = find(m, |v| true);
+let bag = len(map(Bag([1, 2, 3]), g));
+let arr = len(map([1, 2, 3], g));
+println("map unset [unset], map first [first], bag map [bag], array map [arr]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

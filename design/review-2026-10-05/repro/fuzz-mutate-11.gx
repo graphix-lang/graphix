@@ -1,0 +1,13 @@
+// fuzz-mutate-11: variant-widen counts only a top-level bind or `_` (or a
+// type-test arm) as a catch-all, so a select whose or-arm has a `_`
+// alternative is widened and its rightful acceptance filed as a LEAK
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-11.gx
+// (base: graphix --check accepts)
+// expected: typemorph: no flips. `` `A | _ `` covers every tag, so the
+// select is no site for family 5 (must_reject.md: "Skip: a consumer with a
+// catch-all"); the widened mutant is accepted, rightly.
+// observed: exit 1,
+// TYPEFLIP fuzz-mutate-11.gx variant-widen#3: LEAK: accepted
+//   mutant: { let v: [`A, `B] = `A; select select 1 == 1 { true => v, false => `<fresh tag> } { `A | _ => 1 } }
+// covers_all (mustreject.rs:1014) never looks inside StructurePattern::Or.
+{ let v: [`A, `B] = `A; select v { `A | _ => 1 } }

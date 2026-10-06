@@ -1,0 +1,21 @@
+// x-typecheck-generics-F1: `$` over an open cell: --check accepts, elaboration refuses
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F1.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F1.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/x-typecheck-generics-F1.gx
+//
+// expected: the check and the build agree. `1$` and `|x: i64| x$` are refused
+// by the check ("cannot use the $ operator on i64, it has no error and no
+// null"), so f(1) should be refused by the check too (or both should accept).
+//
+// observed: --check exits 0 (f: fn(x: 'a) -> 'a). The run exits 1:
+//   in the instance of f(1) at this call site ... in: x$:
+//   cannot use the $ operator on i64, it has no error and no null
+// graphix-fuzz check: "DIVERGENCE — the check accepted what the build refused"
+// and GRAPHIX_ELAB_AUDIT=1 prints an ELAB-AUDIT line at `x$`. Same with
+// `|x: 'a| x$` and with `let g = |xs| array::map(xs, |x| x$); g([1, 2])`.
+// Called through a function value the check cannot resolve (`let g = select
+// b { true => f, false => f }; g(1)`), the run-time bind logs "a run-time bind
+// at g(1) did not type" and runs anyway.
+let f = |x| x$;
+f(1)

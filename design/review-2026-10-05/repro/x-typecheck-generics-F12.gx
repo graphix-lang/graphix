@@ -1,0 +1,25 @@
+// x-typecheck-generics-F12: a select over function values is callable only
+// when the arms' fn types are `==`. Type::merge's Fn arm
+// (graphix-types/src/typ/normalize.rs:514) compares with `==`, which never
+// equates a bound cell with its binding, and nothing instantiates a generic
+// member to meet a monomorphic one, so the union never collapses and the call
+// site refuses it (deref_typ!, graphix-compiler/src/node/mod.rs:143).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F12.gx
+//
+// expected: accepted, prints 2. g and h are both fn(x: i64) -> i64; they
+// differ only in that h writes its return type. Both arms annotated, or both
+// unannotated (`|x| x * 2` beside `|x| x + 1`), is accepted and prints 2.
+//
+// observed: refused, `expected fn not [fn(x: i64) -> i64,
+// fn(x: i64) -> '_N: i64]`. The same refusal for a generic member beside a
+// monomorphic one: `let id = |x| x; let inc = |x: i64| x + 1;
+// let f = select b { true => id, false => inc }; f(1)` gives
+// `expected fn not [fn(x: i64) -> '_N: i64, fn(x: '_M: unbound) -> '_M: unbound]`.
+// `let f: fn(x: i64) -> i64 = select ..` is accepted in both cases.
+let g = |x: i64| x * 2;
+let h = |x: i64| -> i64 x + 1;
+let b = true;
+let f = select b { true => g, false => h };
+println("[f(1)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

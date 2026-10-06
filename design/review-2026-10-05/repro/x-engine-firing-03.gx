@@ -1,0 +1,43 @@
+// x-engine-firing-03: a dynamic call whose function value is briefly bottom
+// (`cb$(x)` while cb is null) keeps its pre-window result after the same
+// function value returns; argument fires and `<-` writes the bound instance
+// missed in the window are lost.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-engine-firing-03.gx
+//
+// While cb is null, CallSite::update_call (graphix-compiler/src/node/
+// callsite.rs:1619) publishes the args and returns bottom; the bound
+// instance is neither updated nor slept. x moves 0 -> 7 in that window.
+// When cb returns, rebind finds the same def (callsite.rs:1701), the
+// instance runs with every input stale, its formal `n` is not republished
+// (GXLambda::update publishes quiet args only on a first dispatch or a
+// wake) and `n * 2` rides its resident.
+//
+// expected (R1 in design/dense_delivery.md; the select-arm twin
+// `f = |c: bool, x, t| (select c { false => g(x), true => never() }, t)` called
+// as `f(in0, in1, in2)` produces exactly this):
+//   Trace([0:[i64:0, i64:0]]; []; []; [0:[i64:14, i64:0]];
+//         [0:[i64:14, i64:1]]; [0:[i64:14, i64:2]]; [0:[i64:16, i64:2]])
+// observed, every mode (interp, jit, no cache, cold, warm; `check` says AGREE):
+//   Trace([0:[i64:0, i64:0]]; []; []; [];
+//         [0:[i64:0, i64:1]]; [0:[i64:0, i64:2]]; [0:[i64:16, i64:2]])
+// The call shows g(0) = 0 with x = 7 for as long as x does not fire again.
+//
+// A `<-` that lands in the window corrupts the instance's state for good.
+// With the schedule `in3=i64:1 in1=i64:1; in0=i64:1; in2=i64:1; in3=i64:2;
+// in2=i64:2` and the body
+//   let click = skip(#n: 1, in1); let restore = skip(#n: 1, in0);
+//   let off = false; off <- click ~ true; off <- restore ~ false;
+//   let g = |x: i64| { let acc = 0; acc <- x ~ acc + 1; acc * 10 };
+//   let cb: [fn(x: i64) -> i64, null] = select off { true => null, false => g };
+//   let f = |cb: [fn(x: i64) -> i64, null], x, t| (cb$(x), t);
+//   f(cb, in3, in2)
+// acc = 2 lands the cycle cb goes null; `acc + 1` keeps 2, so the next x
+// fire writes 2 again. Observed (both engines): ..; [0:[10, 1]];
+// [1:[20, 1]]; [0:[20, 2]]. The select-arm twin gives [0:[20, 1]];
+// [1:[30, 1]]; [0:[30, 2]].
+// schedule-v1: cap=64 events=512; in0=bool:true; in1=i64:7; in0=bool:false; in2=i64:1; in2=i64:2; in1=i64:8
+let g = |n: i64| n * 2;
+let cb: [fn(n: i64) -> i64, null] = select in0 { false => g, true => null };
+let f = |cb: [fn(n: i64) -> i64, null], x, t| (cb$(x), t);
+f(cb, in1, in2)

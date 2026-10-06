@@ -1,0 +1,19 @@
+// small-pkgs-18: bench::mandelbrot_iterate with a negative max_iter on a
+// non-escaping point never returns.
+//
+// MandelbrotIterate::update (stdlib/graphix-package-bench/src/lib.rs:73-86)
+// counts i down from max_iter and stops only at i == 0, so -1 runs about
+// 2^63 iterations (a debug build panics on the i64 overflow at the end)
+// inside one update. The loop polls no interrupt (the runtime polls it at
+// lambda dispatch and collection loop heads, node/lambda.rs:748,
+// node/collection.rs:971), so nothing contains it. Nothing in the
+// workspace or ../netidx calls bench::mandelbrot_iterate, iterate_auto or
+// pixel_auto.
+//
+// command: timeout -s KILL 20 graphix --no-cache design/review-2026-10-05/repro/small-pkgs-18.gx
+// expected: "ok: 0", then an answer or an error for max_iter -1, then exit 0
+// observed (HEAD c722befe, debug build): "ok: 0", then nothing; one core at
+//   100% until the timeout kills it (exit 137)
+println("ok: [bench::mandelbrot_iterate(0.0, 0.0, 0.0, 0.0, 64)]");
+println("hang: [bench::mandelbrot_iterate(0.0, 0.0, 0.0, 0.0, -1)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -1,0 +1,18 @@
+// t-parser-b-14: in a select arm, the refusal of a reserved-word shorthand
+// field (`{type, x}`) loses its message.
+//
+// struct_pattern refuses the shorthand with a bare
+// StreamErrorFor::message_static_message (graphix-types/src/expr/parser/
+// patternexp.rs:197-201), which notes no reason. In a select arm the type
+// predicate probe reads `{type` as a struct type and gets further, so the
+// furthest-point report drops the message.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-parser-b-14.gx
+//
+// expected: what `let {type, x} = s` reports:
+//   a reserved word field needs the explicit `name: pattern` form
+// observed (HEAD c722befe, debug build):
+//   Parse error at line: 18, column: 17
+//   the parser could not continue past this point
+let s = {type: 1, x: 2};
+select s { {type, x} => x }

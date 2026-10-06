@@ -1,0 +1,50 @@
+// f-scaffold-body-02: a new loop slot's init view fires constants but leaves
+// standing reads of outer locals, and a new fold slot's acc, stale (lost
+// raises).
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-scaffold-body-02.gx
+//          timeout -s KILL 5 graphix --no-cache design/review-2026-10-05/repro/f-scaffold-body-02.gx
+//          timeout -s KILL 5 graphix --no-cache --no-fusion design/review-2026-10-05/repro/f-scaffold-body-02.gx
+//
+// by_capture counts the raises of `err?`, err bound outside the map callback
+// (a kernel param of the fused map). by_acc counts the raises of `acc?` in a
+// fold whose callback reads nothing from outside. The node-walk runs each new
+// slot under event.init: a standing read is FIRED there (node/mod.rs
+// standing_view, R2 of design/dense_delivery.md) and a fresh fold slot's acc
+// is seeded FIRED (node/collection.rs FoldQ::update). The JIT's slot init
+// view (scaffold.rs LoopFrame::run, BodyCx::init_flag) reaches constants and
+// the builtin stale mask only: emit_ref_node keeps the local's STALE disc and
+// the fold acc carries the init's or the previous slot's STALE.
+//
+// expected: (3, 3) when the fourth slot arrives, then (4, 4), in every mode.
+// observed: graphix-fuzz check prints "DIVERGENCE — fusion/JIT bug (interp !=
+// jit)", interp Trace([4:[i64:3, i64:3] 5:[i64:4, i64:4]]), jit
+// Trace([4:[i64:0, i64:0]]); graphix prints (0, 0) fused (also under
+// GRAPHIX_PAR=off|force, GRAPHIX_NO_OUTLINE=1, GRAPHIX_FUSE_SERIAL=1) and
+// (3, 3) then (4, 4) with --no-fusion.
+//
+// Same loss: a let in an outer callback read by an inner growing map, and a
+// capture passed to a callee called from the slot (`let g = |x: i64| -> i64
+// err? + x`, `|x| g(x)`): interp 3 then 4, jit 0. Computing the error inside
+// the callback from a captured tag (`error(tag)?`) raises 4 in both engines:
+// the builtin's stale mask honours the slot's init view, a direct read does
+// not.
+{
+  let n = array::iter([1, 2, 3, 4]);
+  let by_capture = 0;
+  let by_acc = 0;
+  let m = {
+    catch(e) by_capture <- e ~ by_capture + 1;
+    let err: [i64, Error<`E>] = error(`E);
+    array::map(array::init(n, |i| i), |x| err? + x)
+  };
+  let f = {
+    catch(e) by_acc <- e ~ by_acc + 1;
+    let e0: [i64, Error<`E>] = error(`E);
+    array::fold(array::init(n, |i| i), e0, |acc, x| {
+      let v = acc?;
+      acc
+    })
+  };
+  select count(n) { 4 => (by_capture, by_acc), _ => never() }
+}

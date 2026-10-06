@@ -1,0 +1,19 @@
+// c-lambda-08: a builtin's variadic type skips rewrite_trait_args
+//
+// Lambda::compile (graphix-compiler/src/node/lambda.rs:1345) prepares the
+// return type, the throws type and each argument's type with
+// `scope_refs(..).rewrite_trait_args(..)?.apply_ctor_quantifiers(..)`; the
+// variadic's copy of the chain leaves out rewrite_trait_args, so a trait in a
+// variadic's type is neither rewritten to a quantifier nor refused.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-lambda-08.gx
+//
+// expected: the check passes, as it does for the positional twin
+//   `let f = |a: fn(x: Eq) -> i64, b: fn(x: Eq) -> i64| -> Any 'core_all`
+//   with the same call
+// observed (HEAD c722befe, debug build): refused at `|x| 1` with "type
+//   mismatch fn(x: Eq) -> i64 does not contain fn(x: '_N: unbound) -> '_M:
+//   i64". With `@args: Eq` the call is refused with "undefined type Eq" where
+//   the return type `-> Eq` gets "trait Eq used as a type: a trait is a bound".
+let f = |@args: fn(x: Eq) -> i64| -> Any 'core_all;
+f(|x| 1, |x| 2)

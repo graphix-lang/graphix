@@ -1,0 +1,39 @@
+// t-fntyp-05: sig_matches skips implementation cells reached through
+// bindings, missing undeclared bounds and refusing declared ones.
+//
+// FnType::sig_matches_int (graphix-types/src/typ/fntyp.rs:1082) checks
+// bounds only on impl_fn.sig_tvars(), the tvars written at the top of the
+// implementation's type, by name; it never looks through a binding. In
+// `|x| { let y = x[0]$; [y + y] }` the parameter and return cells are bound
+// to Array<'_3>, and the Number + Singleton conjuncts sit on '_3, which
+// tvar_map keys. Neither loop visits '_3, so the bound neither escapes nor
+// matches. The annotated `|x: Array<'b>| -> Array<'b>` gives the expected
+// result in both modules.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-fntyp-05.gx
+//
+// expected: (null, error:["DynamicLoadError", "... the implementation
+//   requires 'a: Number, which the signature does not declare"])
+//
+// observed: (error:["DynamicLoadError", "... missing constraint 'a: Number
+//   in implementation"], null). Calling bad::f(["a", "b"]) then logs an
+//   arith error on strings at run time.
+//
+// The same shape as a file module (inner.gxi `val f: fn(x: Array<'a>) ->
+// Array<'a>`, inner.gx with the unannotated f, main `inner::f(["a", "b"])`):
+// --check exits 0, and the build refuses at elaboration: "an instance at
+// fn(x: Array<string>) -> Array<string> of a definition typed fn(x: '_N) ->
+// '_M" (GRAPHIX_ELAB_AUDIT reports it). The same refusal follows for
+// `|xs| array::map(xs, |x| x + x)`.
+let declared = mod good dynamic {
+  sandbox unrestricted;
+  sig { val f: fn<'a: Number + Singleton>(x: Array<'a>) -> Array<'a> };
+  source r"let f = |x| { let y = x[0]$; [y + y] }"
+};
+let omitted = mod bad dynamic {
+  sandbox unrestricted;
+  sig { val f: fn(x: Array<'a>) -> Array<'a> };
+  source r"let f = |x| { let y = x[0]$; [y + y] }"
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(declared, omitted)

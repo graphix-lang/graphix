@@ -1,0 +1,47 @@
+// c-pattern-04: a reused capture's type probe unifies the alternatives' cells
+// and mistypes payload binds.
+//
+// leaf_bind's Reuse branch (graphix-compiler/src/node/pattern.rs:139) runs a
+// two-way `contains` between the first alternative's type and this one's. For
+// the capture `p@` below they are (i64, 'y0) and ('y1, i64), inferred from the
+// patterns, and the probe binds both y cells to i64 (GRAPHIX_DBG_BIND=1 prints
+// "BIND rhs 'y1 := i64", "BIND lhs 'y0 := i64", then
+// "CONTAINS (i64, 'y0) >= ('y1, i64) -> Ok(true)"). PatternNode::compile then
+// throws the capture's own type away (it retypes captures, :1232-1238), so
+// only the binding of y is left. The select narrows nothing, and y is i64
+// where the scrutinee says [i64, null].
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-pattern-04.gx
+//          (and with --no-fusion; and without --no-cache, cold then warm)
+//
+// expected: refused at --check, like the same arm without `p@`
+//   (y: [i64, null]: "cannot compute '_: [i64, null] + i64: arithmetic is ...").
+// observed (HEAD c722befe, debug build): --check exits 0, then
+//   f((0, 5)) = 6
+//   default (JIT), every image mode, exit 1:
+//     panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//     kernel param `y`: runtime Null does not match the compiled Scalar(I64) slot
+//     Error: runtime did not respond
+//   --no-fusion: arith error ... "can't add null"; the second line never prints.
+//   graphix-fuzz check: the same panic, then "Aborted (core dumped)".
+// The program the intended typing calls for, with `y$ + 1`, is refused:
+//   "cannot use the $ operator on '_: i64, it has no error and no null".
+//
+// The same probe, other shapes (each checked with --check, run both ways):
+//   `w@ {a: 1, b: y} | w@ {a: y, b: 2}`, `w@ `P(1, y) | w@ `P(y, 2)` and
+//   `(w@ (1, y), z) | (w@ (y, 2), z)` over [i64, string] positions: accepted
+//   with y: i64, and fail like this one on a string.
+//   A name that is a payload in one alternative and a capture in the other:
+//     let f = |v: [`A([i64, `B]), `B]| select v { `A(x) | x@ `B => select x { `B => "b" }, _ => "other" }
+//   is accepted with x: `B. f(`B) and f(`A(`B)) give "b"; f(`A(5)) gives
+//   nothing in both engines. An added `i64 as n => ..` inner arm is refused as
+//   unreachable. The order `x@ `B | `A(x)` behaves the same.
+//   A rest, compared as a payload (capture=false, :417) but typed as a capture:
+//     let f = |xs: Array<[i64, string]>| select xs { [1, r..] | [r.., "a"] => array::len(r), _ => 0 }
+//   is refused with "or-pattern alternatives must bind r at exactly equal types
+//   (first alternative: Array<i64>, here: Array<string>)". The same two
+//   patterns as separate arms are accepted.
+let f = |v: ([i64, null], [i64, null])| select v { p@ (0, y) | p@ (y, 0) => y + 1, _ => 0 - 1 };
+println("f((0, 5)) = [f((0, 5))]");
+println("f((0, null)) = [f((0, null))]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

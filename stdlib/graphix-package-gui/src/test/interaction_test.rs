@@ -84,6 +84,16 @@ async fn checkbox_toggle_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
+    // CR claude for eric: [test-gap] These predicates accept any Bool (here and in
+    // toggler_toggle_produces_call), and radio_on_select, text_input_on_input and
+    // text_editor_on_edit accept any String, so a wrapper that sends the old value
+    // (false, "none", "") instead of the new one (true, "option_a", "a") passes.
+    // expect_call_with_args (mod.rs:642) also returns the first match without checking
+    // it is the only one, so a callback fired twice per click passes, and
+    // on_resize_fires_on_drag (data_table_test.rs:1327) accepts any width above 100
+    // where the drag from 100 to 180 must give 180. Assert the exact values, and make
+    // expect_call_with_args require exactly one match as expect_call does.
+    // (tests-ui.r2-14)
     expect_call_with_args(&msgs, |args| {
         matches!(args.iter().next(), Some(Value::Bool(_)))
     });
@@ -329,6 +339,14 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
     );
     // The dropdown is an overlay, which the headless UserInterface does
     // not route clicks to; this pins only that clicking does not panic.
+    // CR claude for eric: [test-gap] The comment above is stale, and the test checks
+    // nothing its name promises. on_edit_combo_column (data_table_test.rs:946-963)
+    // opens the same iced PickList overlay with one click in this harness and selects
+    // an option with a second. Making PickListW's on_select closure
+    // (pick_list.rs:114-119) always return Nop leaves this test green. Click to open,
+    // click the second option at (x, widget bottom + 22 * 1.5) as that test does, and
+    // expect_call_with_args for "Green". Do the same in
+    // combo_box_on_select_produces_call (:405). (tests-ui-11)
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
     let _ = h.click(WIDGET_HIT);
@@ -414,6 +432,16 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
     // Suggestions are an overlay, as for pick_list.
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
+    // CR claude for eric: [test-gap] This test clicks and returns Ok without looking at
+    // any message, so it cannot fail. It should pick an option (type and press Enter,
+    // or click the overlay) and expect the on_select Call. No canvas_test case draws
+    // either: view() never calls Program::draw, so draw_shape (canvas.rs:213-338) runs
+    // in no test (chart_test.rs:282-310 shows a headless draw, and CanvasW would need
+    // as_any). Context menus have only a render test (widgets_test.rs:532), with
+    // nothing for right-click, item clicks, shortcuts, disabled items or a scrolled
+    // container. As a result, the suite passes despite the canvas panics on NaN
+    // coordinates and zero text size, the combo box reset on a same-value options fire,
+    // and the dead shortcuts of a closed context menu. (gui-widgets-a-17)
     let _ = h.click(WIDGET_HIT);
     Ok(())
 }

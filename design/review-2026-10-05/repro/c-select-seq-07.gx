@@ -1,0 +1,28 @@
+// c-select-seq-07: a refutable arm that repeats, or is subsumed by, earlier
+// arms is not a dead-arm error, although the same duplicate inside one arm
+// is: `select x { 0 | 0 => 1, _ => 2 }` is refused with "unreachable
+// or-pattern alternative: duplicate of an earlier alternative" (pin
+// or_dup_alt_err: "Dead alternatives are errors, like dead arms").
+// check_dead_arms (graphix-compiler/src/node/select.rs:379) removes only
+// irrefutable atoms, null, a true/false pair and completed literal pools
+// from what reaches the next arm, so it never sees a refutable arm that
+// can no longer match.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-select-seq-07.gx
+//   (graphix --no-cache design/review-2026-10-05/repro/c-select-seq-07.gx runs it)
+//
+// expected: each select's second arm is refused as unreachable (unused
+//   match cases).
+// observed: --check passes; the run prints (1, 1, 1, 1, 1) and exits 0.
+let x = 0;
+let a = select x { 0 => 1, 0 => 2, _ => 3 };
+let p = (true, false);
+let b = select p { (true, _) => 1, (true, false) => 2, (false, _) => 3 };
+let f = |v: [`A(i64), `B]| select v { `A(0) => 1, `A(0) => 2, `A(_) => 3, `B => 4 };
+let c = f(`A(0));
+let t = true;
+let d = select t { true => 1, true => 2, false => 3 };
+let s = "a";
+let e = select s { "a" => 1, "a" => 2, _ => 3 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a, b, c, d, e)

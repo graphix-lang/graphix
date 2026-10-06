@@ -5,6 +5,15 @@ use sys::time;
 mod icon;
 
 let publish_host = |#name, #status, #cpu, #mem| {
+    // CR claude for eric: [bug] Copied from data_table_basic.gx and never renamed:
+    // lines 8-10, 24 and 26 publish and list under /local/graphix/data_table_basic, and
+    // line 43 titles the window 'Data Table — Basic'. The shell joins the configured
+    // netidx resolver (graphix-shell/src/main.rs:359-365), so running this beside
+    // data_table_basic.gx publishes host-01..03 twice. Basic's 'Fleet health' table
+    // also gains a host-04 row that comes and goes every 2 s, because a sleeping
+    // publish unpublishes. Use /local/graphix/data_table_dummy and a title of its own.
+    // probe: run data_table_basic.gx and this file at the same time against one
+    // resolver. (examples.r2-14)
     sys::net::publish("/local/graphix/data_table_basic/[name]/status", status);
     sys::net::publish("/local/graphix/data_table_basic/[name]/cpu", cpu);
     sys::net::publish("/local/graphix/data_table_basic/[name]/memory", mem);

@@ -1,0 +1,33 @@
+// x-parallel-10: #[parallel] is accepted inside a seq step, where nothing can
+// fork.
+//
+// A seq machine updates its steps under ForkFlags { seq: true, .. }
+// (node/seq_machine.rs), so ExecCtx::fork_mode is Off for everything in the
+// seq body outside a callee body, and the forced grain a ForkControl sets
+// there changes nothing. ForkControl::typecheck1 runs check_parallel, which
+// looks only for static fork points (a map is one), so the attribute builds
+// and is silently ignored. CLAUDE.md: #[parallel] is "a compile error where
+// nothing forks". (A build is needed to see the check at all: --check runs
+// no elaboration, so it never calls check_parallel.)
+//
+// command: GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/x-parallel-10.gx 2>&1 | grep 'PAR kernel loop' | sort | uniq -c
+//
+// expected: the build refuses the second #[parallel], the one inside the seq
+//   step, as it refuses `#[parallel] (n + 1)` (nothing to run in parallel).
+// observed (HEAD c722befe, debug build): it builds and prints (64, 32). The
+//   top-level map (the control) forks: "PAR kernel loop: 64 slots, 0 probed,
+//   16 ranges" x10 (init and map, 5 ticks). The map in the seq step never
+//   forks: no "32 slots" line, in the default mode and under GRAPHIX_PAR=force
+//   alike. Node-walked (--no-fusion), with each slot calling a queuefn wrapper
+//   as a fork detector, the top-level twin released its 8 calls in a new order
+//   on each of 3 runs and the seq one in order on all 3.
+let clk = sys::time::timer(duration:5.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let top = #[parallel] array::map(array::init(64, |i| i + n), |x| x * 2);
+let inseq = seq let k = n {
+  let xs = array::init(32, |i| i + k);
+  #[parallel] array::map(xs, |x| x * 2)
+};
+sys::exit(select n { x if x > 3 => 0, _ => never() });
+(array::len(top), array::len(inseq))

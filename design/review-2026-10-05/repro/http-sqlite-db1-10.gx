@@ -1,0 +1,47 @@
+// http-sqlite-db1-10: db ops on a value Pack cannot encode never fire: no DbErr, the caller stalls
+//
+// encode_value (stdlib/graphix-package-db/src/encoding.rs:16) turns a Pack
+// error into None, and every prepare_args (tree.rs:585-586, 931-939, 993,
+// txn.rs:590-591, 686; parse_batch_ops encoding.rs:165-170) reads None as
+// "do not fire". `'v: Concrete` admits a Rust-backed abstract type (db::Db
+// here; http::Client, sys::process::Proc, ... alike), whose Pack is
+// impl_no_pack, so insert/batch/compare_and_swap of a value holding one
+// answer nothing: no DbErr, no log line (not even at RUST_LOG=debug), and
+// the seq waiting on the insert never finishes; its `try` is never taken.
+//
+// command: TMPDIR=<scratch> timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/http-sqlite-db1-10.gx
+//          (same output with --no-fusion; the db lives in a sys::fs::tempdir)
+// expected: "batch: ..DbErr.." (or "batch: applied"), "cas: ..DbErr.." (or "cas: done"),
+//           and "handle: insert failed: ..DbErr.." (or "handle: insert answered")
+//           followed by "handle: Done", like the control tree
+// observed: 0
+//           handles tree opened
+//           handle: inserting
+//           control: insert answered
+//           control: Done
+//           and nothing from batch, cas or the rest of the handle seq; exit 0 by after_idle
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/db")$;
+let control: db::Tree<string, {name: string, handle: i64}> = db::tree(db, "control")$;
+let handles: db::Tree<string, {name: string, handle: db::Db}> = db::tree(db, "handles")$;
+println(handles ~ "handles tree opened");
+let rb = db::batch(handles, [`Insert("b", {name: "b", handle: db})]);
+println(select rb { error as e => "batch: [e]", _ => "batch: applied" });
+let rc = db::compare_and_swap(handles, "c", null, {name: "c", handle: db});
+println(select rc { error as e => "cas: [e]", _ => "cas: done" });
+let c = seq let t = control {
+    let prev = try { db::insert(t, "k", {name: "main", handle: 7})? } with(e) { println("control: insert failed: [e]"); null };
+    println("control: insert answered");
+    `Done
+};
+println("control: [c]");
+let h = seq let t = handles {
+    println("handle: inserting");
+    let prev = try { db::insert(t, "k", {name: "main", handle: db})? } with(e) { println("handle: insert failed: [e]"); null };
+    println("handle: insert answered");
+    `Done
+};
+println("handle: [h]");
+sys::exit(sys::time::after_idle(duration:1.s, 0));
+0

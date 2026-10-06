@@ -1,0 +1,47 @@
+// x-node-contract-03: IoLines::delete leaves its line_reader task running;
+// a recreated reader on the same stream loses every other line.
+//
+// IoLines::update (stdlib/graphix-package-sys/src/io.rs:181-190) starts
+// line_reader with tokio::spawn and keeps no handle; IoLines::delete
+// (io.rs:198-200) only unrefs the delivery id. The deleted slot's reader
+// keeps the stream and goes on reading it into the dead id until EOF. The
+// fresh slot's reader (shrink = delete, re-reaching is fresh) then takes turns
+// with it on the stream's mutex, one read each.
+//
+// The slot exists at start (its reader starts on the stream), is deleted at
+// n = 1 and re-created at n = 2; the child prints nothing before 0.5 s.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-node-contract-03.gx
+//          (the same with --no-fusion and GRAPHIX_PAR=off)
+//
+// expected: [] ["1"] ["2"] ["3"] ["4"] ["5"] ["6"] ["7"] ["8"] ["9"] ["10"]
+//   (with `let slots: Array<i64> = []` there is no reader before the
+//   deletion and the fresh slot gets every line: [] [] ["1"] .. ["10"])
+//
+// observed (HEAD c722befe, debug build, 3/3 runs, both engines):
+//   [] ["2"] ["4"] ["6"] ["8"] ["10"]
+//
+// The same loss follows a dynamic callee change: with `let f = select mode
+// { `A => |s| "A:[Lines::lines(s)$]", `B => |s| "B:[Lines::lines(s)$]" }`,
+// `f(stream)` and mode going `A -> `B at n = 1, the output is
+// "B:2" "B:4" "B:6" "B:8" "B:10".
+//
+// Removing the first of two streams, `array::map(select drop_a { false =>
+// [a, b], true => [b] }, |s| Lines::lines(s)$)`, prints a1..a5 and never a
+// b line: the deleted slot 1's reader eats b, and slot 0, now given b,
+// keeps reading a (update re-arms on no later stream, `!self.started`).
+use sys::io::Lines;
+
+let child = sys::process::spawn(sys::process::options(
+    #args: ["-c", "sleep 0.5; for i in 1 2 3 4 5 6 7 8 9 10; do echo $i; sleep 0.05; done"],
+    #stdio: sys::process::stdio(#stdout: `Pipe),
+    #kill_on_drop: true,
+    "/bin/sh"
+))$;
+let stream = opt::ok_or(child.stdout, `NoStdout)$;
+let n = 0;
+n <- sys::time::timer(duration:100.ms, true) ~ (n + 1);
+let slots = [0];
+slots <- select n { 1 => [], 2 => [1], _ => never() };
+sys::exit(select n { 15 => 0, _ => never() });
+array::map(slots, |_| Lines::lines(stream)$)

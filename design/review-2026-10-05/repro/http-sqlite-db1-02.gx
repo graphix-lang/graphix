@@ -1,0 +1,52 @@
+// http-sqlite-db1-02: a request the handler never answers wedges http::serve
+// for every later request.
+//
+// HttpServe::update (stdlib/graphix-package-http/src/lib.rs:858-889) clears
+// `ready` when it hands the front request to the handler and sets it again
+// only when the handler's output FIRES. A handler that raises with `?` (the
+// error goes to the catch at the serve site, `throws 'e`) or yields bottom
+// never fires for that request: its reply is never sent, and every later
+// request waits behind it in `queue`, with no 500 and no timeout. Here one
+// POST with a malformed JSON body (input the client controls) stops the
+// server for good.
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-02.gx
+//          (the same with --no-fusion, and with GRAPHIX_PAR=off)
+//
+// expected: the malformed POST is answered promptly (a 500), and the valid
+//   POST, sent 1.5 s later with a 5 s client timeout, is answered "200 hi bob".
+// observed (HEAD c722befe, debug build, all three modes):
+//   handler raised
+//   POST malformed answered after 1.0s: ERR ... error sending request ... (the 1 s client timeout)
+//   POST good      answered after 6.5s: ERR ... error sending request ... (the 5 s client timeout)
+//   With a well-formed first body ("{\"name\": \"amy\"}") both are answered at
+//   once: "200 hi amy" after 4 ms, "200 hi bob" 8 ms after it is sent.
+//
+// Other handler bodies wedge the same way:
+//   bottom:   {body: "echo [req.body$]", headers: [], status: u16:200, url: ""}
+//             with a GET (no body) first: the GET and the POST behind it time out
+//   constant: {body: "hello", headers: [], status: u16:200, url: ""}
+//             fires once at init, before any request: its first request is
+//             never answered, nor any after it
+let handler = |req: http::Request| -> http::Response {
+  let m: {name: string} = json::read(req.body$)?;
+  { body: "hi [m.name]", headers: [], status: u16:200, url: "" }
+};
+let srv = {
+  catch(e) println(e ~ "handler raised");
+  http::serve(#addr: "127.0.0.1:0", #handler: handler)
+};
+let s = srv$;
+let addr = http::server_addr(s);
+let t0 = sys::time::now(s);
+let c1 = http::client(#timeout: duration:1.s, s)$;
+let r1 = http::request(#method: `POST, #body: "{\"name\": ", c1, "http://[addr]/msg");
+let c2 = http::client(#timeout: duration:5.s, sys::time::timer(duration:1500.ms, false))$;
+let r2 = http::request(#method: `POST, #body: "{\"name\": \"bob\"}", c2, "http://[addr]/msg");
+let show = |r: Result<http::Response, `HTTPError(string)>| select r {
+  error as e => "ERR [e]",
+  v => "[v.status] [v.body]"
+};
+println("POST malformed answered after [sys::time::diff(sys::time::now(r1), t0)]: [show(r1)]");
+println("POST good      answered after [sys::time::diff(sys::time::now(r2), t0)]: [show(r2)]");
+sys::exit(sys::time::after_idle(duration:8.s, 0))

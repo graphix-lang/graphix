@@ -75,10 +75,31 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
         if let Some(s) = self.style.t {
             p = p.style(s.0);
         }
+        // CR claude for eric: [bug] Wrapping is set whenever `trim` has a value, and
+        // `#trim: &bool` defaults to `&true`, so every paragraph wraps. ratatui applies
+        // `scroll.x` only on its non-wrapping path, so the `scroll.x` that
+        // paragraph.gxi documents as "in chars" does nothing with either trim value,
+        // and long lines can never be cut off instead of wrapped. Only a trim reference
+        // that never has a value (`#trim: &never<bool>()`) reaches the unwrapped path.
+        // Wrapping needs its own option (e.g. `trim: &[bool, null]` with null meaning
+        // no wrap, or a separate `#wrap`), and the docs should say that x scrolls only
+        // unwrapped text. probe: design/review-2026-10-05/repro/tui-widgets-10.gx
+        // (tui-widgets-10)
         if let Some(trim) = self.trim.t {
             p = p.wrap(Wrap { trim });
         }
         if let Some(s) = self.scroll.t {
+            // CR claude for eric: [bug] scroll.y and scroll.x count content lines and
+            // chars, not terminal cells. clamp_u16 caps them at VISUAL_DIMENSION_CAP
+            // (1024), so a paragraph longer than about 1024 lines cannot be scrolled
+            // past line 1024: `#scroll: &{x: 0, y: 1500}` over 2000 lines shows
+            // L1024..L1047 and logs a clamp warning. ratatui only counts with these
+            // offsets: render_paragraph loops over or skips scroll.y lines, and
+            // LineTruncator widens scroll.x to usize. So every u16 is safe. Clamp them
+            // to [0, u16::MAX], and drop "scroll offsets" from the VISUAL_DIMENSION_CAP
+            // doc in validate.rs. The scrollbar's position and the list's scroll have
+            // no such cap. probe: design/review-2026-10-05/repro/tui-widgets-11.gx (run
+            // in a terminal). (tui-widgets-11)
             let y = validate::clamp_u16(
                 "paragraph",
                 "scroll.y",

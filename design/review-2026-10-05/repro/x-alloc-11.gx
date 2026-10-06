@@ -1,0 +1,36 @@
+// x-alloc-11: a select's runtime type test re-resolves every named type it
+// meets, per value, through the committing lookup_ref.
+//
+// Type::is_a_int (graphix-types/src/typ/cast.rs:657) calls lookup_ref for
+// each Type::Ref it reaches: resolve the cell, build the `known` map,
+// replace_tvars and check_contains each declared parameter bound, then
+// replace_tvars the body, and hash the ref into `hist`. PatternNode::compile
+// expands only the predicate's top-level ref (node/pattern.rs:1188), so a
+// named type under an Array, a field or a union pays this for every
+// element of every value matched.
+//
+// command (from the repo root; time it, then again with the two arms'
+// types written structurally, `Array<(string, i64)>` and
+// `Array<(string, f64)>`, and with an unparameterized `type Pair`):
+//   GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/x-alloc-11.gx
+//
+// expected: about the cost of the structural predicate.
+//
+// observed (HEAD c722befe, debug build; each prints 201 and exits after
+// 20000 cycles of matching a 200-element array; the select node-walks in
+// all three, graphix-fuzz run: "select scrutinee type ... doesn't freeze
+// concrete"):
+//   structural:                       user 0.36 s
+//   `type Pair = (string, i64)`:      user 1.1 s
+//   this file (`'a: Number` param):   user 9.9 s, about 2.4 us per element
+//   (with --no-fusion, where the array::init slots dominate: 6.7, 7.6 and
+//   15.1 s)
+type Pair<'a: Number> = (string, 'a);
+let n = 0;
+n <- n + 1;
+let base = array::init(200, |i| ("x", i));
+let basef = array::init(200, |i| ("y", cast<f64>(i)$));
+let v: [Array<(string, i64)>, Array<(string, f64)>] = select n % 2 { 0 => n ~ base, _ => n ~ basef };
+let r = select v { Array<Pair<i64>> as p => array::len(p), Array<Pair<f64>> as p => array::len(p) + 1 };
+sys::exit(select n { x if x >= 20000 => 0, _ => never() });
+r

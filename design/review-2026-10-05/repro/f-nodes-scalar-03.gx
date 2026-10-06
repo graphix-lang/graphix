@@ -1,0 +1,19 @@
+// f-nodes-scalar-03: an owned first operand leaks when the second operand's loop aborts.
+// command: start the REPL (`graphix --no-cache`), paste the six lines below one at a
+// time, then interrupt about 30 times, 0.4 s apart (Ctrl-C at the prompt, or
+// `kill -INT <pid>` from another shell), and watch `ps -o rss= -p <pid>`. A script
+// run cannot show it: there the first SIGINT ends the run.
+// expected: RSS stays flat; an aborted run frees the array::map result, as it does
+// when the map is bound first (`{ let m = array::map(..); m[array::fold(..) % 7] }`).
+// observed (debug build, GRAPHIX_PAR=off and default alike): +456 MB and +482 MB after
+// 30 interrupts, about 16 MB (the 1M-element map result) per interrupt that lands in
+// the fold; +29 MB with no interrupts; +58 MB for the let-bound control.
+// emit_array_ref_node keeps the owned map result only in an SSA value while it emits
+// the index, and the fold's interrupt check jumps to pending_exit, whose cleanup
+// never drops it.
+let xs = array::init(1000000, |i| i);
+let ys = array::init(5000000, |i| i);
+let clock = sys::time::timer(duration:10.ms, true);
+let t = count(clock);
+let f = |t, xs, ys| array::map(xs, |x| x + t)[array::fold(ys, t, |acc, y| acc + y) % 7];
+let r = f(t, xs, ys)

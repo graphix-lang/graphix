@@ -1,0 +1,38 @@
+// c-callsite-01: CallSite::raise_throws returns early when the callee's
+// `throws` is an open cell, so a call through a `fn(..) throws 'e`
+// parameter raises nothing to the enclosing catch or to the definition's
+// inferred throws.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-callsite-01.gx
+//
+// expected: refused by the check (`--check` included). f(x) raises 'e, so
+// h throws 'e and h(g, 0) throws Error<ErrChain<`Boom>>; the handler must be
+// refused as it is when h declares `-> i64 throws 'e`:
+//   c is i64 and cannot hold Error<ErrChain<`Boom>>
+//
+// observed: `--check` exits 0, and h's inferred signature is
+// fn(f: fn(x: i64) -> i64 throws 'e, x: i64) -> i64, with no throws. At run
+// time the error reaches the catch anyway and `c: i64` holds it:
+//   default (JIT): thread 'tokio-rt-worker' panicked at
+//     graphix-compiler/src/fusion/kernel.rs:243:13: kernel param `c`:
+//     runtime Error(..) does not match the compiled Scalar(I64) slot
+//     Error: runtime did not respond  (exit 1)
+//   --no-fusion: arith error .. at line: 37, column: 25 "can't add error types"
+//   graphix-fuzz check: the same panic, aborts (core dumped, exit 134)
+// The same skip types a catch INSIDE such a function as bottom: with
+// `let caught: bool = never(); catch(e) caught <- e; f(x); caught` as h's
+// body, `--check` passes and the run prints error:[.. "Boom" ..] as the
+// value of `caught`.
+let h = |f: fn(x: i64) -> i64 throws 'e, x: i64| f(x);
+
+let g = |x: i64| -> i64 select x {
+    0 => error(`Boom)?,
+    x => x
+};
+
+let c: i64 = never();
+catch(e) c <- e;
+h(g, 0);
+
+let k = |n: i64| -> i64 n * 2 + 1;
+k(c)

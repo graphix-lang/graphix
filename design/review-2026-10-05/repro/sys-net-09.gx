@@ -1,0 +1,37 @@
+// sys-net-09: a superseded rpc reply can arrive last and become call()'s value.
+//
+// RpcCall::update (stdlib/graphix-package-sys/src/net.rs:449-460) issues a new
+// call on every fire of `path` or `args`, and NetState::call_rpc
+// (stdlib/graphix-package-sys/src/netstate.rs:515) spawns each onto the one
+// BindId; nothing in flight is cancelled or told apart. The runtime delivers
+// spawned tasks in completion order, so a slow reply to an abandoned request
+// that lands after the current request's reply becomes the settled output.
+// CachedArgsAsync (stdlib/graphix-package-core/src/lib.rs:899) keeps one call
+// in flight, so the other async builtins answer in request order.
+//
+// `p` starts at the slow proc (answers 1 after 400 ms) and moves to the fast
+// proc (answers 2 at once) at 150 ms.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/sys-net-09.gx
+//          (the same with --no-fusion)
+// expected: the settled line reads p = /local/fast, r = 2
+// observed (every run: both engines, no cache and cold/warm image):
+//   reply 2 while p = /local/fast
+//   reply 1 while p = /local/fast
+//   "settled: p = /local/fast, r = 1"
+// A superseded call that fails late does the same: start `p` at an unpublished
+// path and its "timeout subscribing to procedure" error lands ~10 s after the
+// fast proc's 2 and replaces it (it prints as 0, through sys-net-01's cast).
+sys::net::rpc(
+    #path: "/local/slow",
+    #doc: "slow",
+    #spec: null,
+    #f: |a: null| sys::time::after_idle(duration:400.ms, a ~ i64:1));
+sys::net::rpc(#path: "/local/fast", #doc: "fast", #spec: null, #f: |a: null| a ~ i64:2);
+let p = "/local/slow";
+p <- sys::time::timer(duration:150.ms, false) ~ "/local/fast";
+let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call(p, null);
+println("reply [r] while p = [p]");
+let settle = sys::time::timer(duration:1.s, false);
+sys::exit(sys::time::after_idle(duration:200.ms, settle ~ 0));
+"settled: p = [settle ~ p], r = [settle ~ r]"

@@ -196,6 +196,16 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
             child_rect.y = child_rect.y.saturating_add(1);
             child_rect.height = child_rect.height.saturating_sub(1);
         }
+        // CR claude for eric: [bug] The selected index reaches the body here, the title
+        // highlight (line 187) and event routing (line 119) without being clamped to
+        // the tab count. Its `Option<u32>` decode also wraps the i64: -1 becomes
+        // 4294967295 and 4294967296 becomes 0. An index at or past the end draws no
+        // body, highlights no title and drops every event. So a tab list that shrinks
+        // below `selected` goes blank and stops taking input until the program lowers
+        // the index, while list and table clamp the same index to their last item.
+        // Compute the index once, negative to 0 and past the end to len - 1, and use it
+        // in all three places. probe:
+        // design/review-2026-10-05/repro/tui-widgets.r2-13.gx (tui-widgets.r2-13)
         let idx = selected.t.and_then(|o| o.map(|s| s as usize)).unwrap_or(0);
         let size = SizeV::from(child_rect);
         if *last_size != size {

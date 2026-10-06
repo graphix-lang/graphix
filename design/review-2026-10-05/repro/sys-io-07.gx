@@ -1,0 +1,29 @@
+// sys-io-07: a pending sys::process::wait owns its Proc, so kill_on_drop
+// never fires while anyone waits.
+//
+// ProcessWaitEv's Args is the ProcValue (stdlib/graphix-package-sys/src/
+// process.rs:301), so the spawned wait future holds the Arc<ManagedProc> and
+// its `ctl` sender until the child exits; own_child kills a kill_on_drop
+// child only when every `ctl` sender is gone (process.rs:88-95). Here the
+// respawn at 300 ms drops the program's last handle to the first child.
+// CachedArgsAsync also queues the second child's wait behind the first.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/sys-io-07.gx
+// expected: the first child (`sleep 1.5; exit 3`) is killed at 0.3 s, when
+//   its last handle drops (process.gxi:69-71); `st` reports the second
+//   child's exit, code 7, at about 0.4 s, and never code 3.
+// observed (node-walk, JIT, PAR=off, cold and warm image alike):
+//   (1.502971535s, {code: 3, success: false})
+//   (1.503029327s, {code: 7, success: false})
+//   The first child ran to its natural exit at 1.5 s, and the second
+//   child's status waited for it.
+// control: with `sleep 97.3101`/`97.3102` as the two children and a pgrep
+//   at 1 s, `wait(c.proc)` leaves both alive; `c.pid` in its place leaves
+//   only the second one.
+let start = sys::time::now(null);
+let script = "sleep 1.5; exit 3";
+script <- sys::time::timer(duration:300.ms, false) ~ "sleep 0.1; exit 7";
+let c = sys::process::spawn(sys::process::options(#kill_on_drop: true, #args: ["-c", script], "sh"))$;
+let st = sys::process::wait(c.proc);
+sys::exit(sys::time::timer(duration:2.5s, false) ~ 0);
+(sys::time::diff(sys::time::now(st), start), st)

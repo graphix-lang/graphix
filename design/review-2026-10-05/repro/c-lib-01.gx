@@ -1,0 +1,46 @@
+// c-lib-01: CompileCtx::lowered_seqs never shrinks, and its key's lexical
+// scope is minted fresh on many compiles, so a seq nested in a function
+// lowers again at every instance and each lowering is kept for good.
+//
+// The memo (graphix-compiler/src/node/compiler.rs:448-464, lib.rs:1115) is
+// keyed by (seq expression id, lexical scope) and nothing removes an entry.
+// SeqMachine::compile names each try/with body scope with a fresh
+// ExprId::new() (node/seq_machine.rs:195), so the inner seq below misses at
+// the definition's check and at every instance of f, and each miss inserts
+// a new lowering under fresh expression ids. The slots of array::init are
+// created and deleted over and over; every new slot is an instance of f.
+// A seq in a lambda literal inside f (`let g = |a: i64| seq { .. }; g(x)`)
+// does the same: each compile of the literal mints a new LambdaId, hence a
+// new `fn` scope (node/lambda.rs:1326, 1216): ~33 MB per 350 instances.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-lib-01.gx
+//   (same with --no-fusion)
+//
+// expected: RSS levels off after warm-up, as it does when the inner
+// `let y = seq { .. }` is moved above the try (`let y = seq { .. }; let r =
+// try { y + 1 } with(e) { 0 }`), or when the seq is f's body itself:
+//   k 401 ~91 MB, k 800 ~93 MB, k 1200 ~95 MB, k 1601 ~96 MB, k 2000 ~98 MB
+//
+// observed: RSS grows by ~34 MB per 400 steps (350 new instances, ~97 KB
+// each, which scales with the size of the inner seq's body):
+//   k 401 ~124 MB, k 801 ~157 MB, k 1201 ~198 MB, k 1601 ~227 MB, k 2000 ~260 MB
+let f = |x: i64| seq {
+  let r = try {
+    let y = seq { let a = x + array::len([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]); a * 2 };
+    y + 1
+  } with(e) { 0 };
+  r
+};
+let k = 0;
+let clock = sys::time::timer(duration:1.ms, true);
+k <- clock ~ k + 1;
+let n = k % 8;
+let total = array::fold(array::init(n, |i| f(i)), 0, |acc, v| acc + v);
+let report = select k % 400 { 0 => k, _ => never() };
+let status = sys::fs::read_all(report ~ "/proc/self/status")$;
+let rss = array::filter_map(
+  str::split(#pat: "\n", status),
+  |l| str::strip_prefix(#pfx: "VmRSS:", l)
+);
+println("k [status ~ k] rss [rss]");
+sys::exit(select k { 2201 => 0, _ => never() })

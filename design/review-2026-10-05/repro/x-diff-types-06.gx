@@ -1,0 +1,20 @@
+// x-diff-types-06: never<T> takes T without checking T's typedef
+// parameter bounds.
+//
+// Never::compile (graphix-compiler/src/node/mod.rs:1895-1898) keeps the
+// written type and Never::typecheck0 (mod.rs:1955) only defers its
+// unresolved names. A bound is checked when a contains expands the Ref
+// (Type::lookup_ref_with, graphix-types/src/typ/mod.rs:1980-1991), which
+// every other site that writes a type reaches at its own position.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-diff-types-06.gx
+// expected: exit 1, `Number does not contain string` at
+//           `never<Num<string>>()`, as for `let x: Num<string> = never()`
+//           and `cast<Num<string>>(1)`
+// observed: exit 0. Under an unannotated let (`let x =
+//           never<Num<string>>(); x`) the refusal comes from
+//           Bind::compile's `ptyp.contains(..)?` (node/bind.rs:207) with no
+//           position at all; `let x = never<Nope>(); x` likewise reports
+//           `undefined type Nope` with no position.
+type Num<'a: Number> = 'a;
+never<Num<string>>()

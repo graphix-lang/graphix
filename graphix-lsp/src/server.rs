@@ -94,6 +94,17 @@ where
         init.capabilities.text_document.as_ref().and_then(|td| {
             td.completion.as_ref()?.completion_item.as_ref()?.snippet_support
         });
+    // CR claude for eric: [bug] ServerState::new (the workspace scan) and every handler
+    // in the loop below run on this thread with no panic guard. Any panic in the parser
+    // or formatter therefore ends the server with exit 101, while a check's panic only
+    // becomes a "task N panicked" diagnostic. Today `duration:-1.s` (x-panics-01) in
+    // any .gx under the workspace, opened or not, kills the server right after
+    // `initialized` and again on every restart. Saving a file that holds it kills the
+    // server in the didSave rescan (ServerState::saved). In an open buffer it kills the
+    // server on documentSymbol or workspace/symbol (symbols.rs declared) and on
+    // formatting (format_source), and a graphixfmt.json indent of 18446744073709551615
+    // kills it on formatting. probe: design/review-2026-10-05/repro/x-panics-02.py
+    // (x-panics-02)
     let mut state = ServerState::new(
         make_backend(&init)?,
         workspace_roots(&init),
@@ -167,6 +178,13 @@ fn respond<P: DeserializeOwned, R: Serialize>(
     }
 }
 
+// CR claude for eric: [structure] Six of the seven handlers (completion, definition,
+// document_symbol, hover, references, workspace_symbol) only unpack the lsp-types
+// params and call a ServerState method, four of them also turning an empty Vec into
+// None, so each request is spread over this route, a handler file and the method. Let
+// those methods take the params and route to them here: the six files, handlers/mod.rs
+// and the glob `use handlers::*` go, and formatting.rs, the one with logic, stays a
+// module. (lsp-13)
 fn handle_request(state: &ServerState, req: Request) -> Response {
     use handlers::*;
     match req.method.as_str() {
@@ -217,6 +235,14 @@ fn handle_notification(state: &mut ServerState, not: Notification) -> Diagnostic
                 return state.close_document(&p.text_document.uri);
             }
         }
+        // CR claude for eric: [risk] workspace/didChangeWatchedFiles, which the VS Code
+        // client sends for every **/*.gx change
+        // (ide/editors/vscode/src/extension.ts:22), falls to the unhandled arm below,
+        // so the project graph is rescanned only on a didSave. A `mod` line that a git
+        // checkout or a generator writes to disk leaves the file it names checked as a
+        // standalone root (where its `super::` names are errors) until some document is
+        // saved. Handle it with `state.saved()`, and watch **/*.gxi as well. probe:
+        // design/review-2026-10-05/repro/lsp-12.py (lsp-12)
         "textDocument/didSave" => state.saved(),
         method => info!("unhandled notification: {method}"),
     }

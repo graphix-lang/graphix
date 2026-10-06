@@ -1,0 +1,31 @@
+// c-cost-misc-07: a program whose first cycle is one big fused loop never
+// forks under Auto. calibration() (graphix-compiler/src/cost.rs:59-73)
+// starts measuring at the first plan of any site and answers None until the
+// measurement lands, at least 18 ms later (nine 2 ms sleeps, cost.rs:81-86);
+// every site that plans in that window runs in order. A kernel loop plans
+// once per run, so the heavy map below, planned microseconds after the init
+// loop started the calibration, runs all 20000 slots in one chunk.
+// design/parallel_eval.md:412-419 says a one-shot growth, a program's first
+// cycle included, needs no history and forks in the cycle that builds it,
+// and §10 makes a kernel loop the same kind of site.
+//
+// command (from the repo root):
+//   GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-07.gx
+//   GRAPHIX_PAR=force GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-07.gx
+//
+// expected: under Auto the map's loop probes its first slots, then forks the
+// rest (each slot is 1023 calls).
+//
+// observed (HEAD c722befe, debug build, 16 cores): Auto prints no "PAR kernel
+// loop" line; the calibration (T = 346612) lands while the map, planned
+// before it, runs in order: real 1.59 s, user 1.19 s, the same as
+// GRAPHIX_PAR=off (real 1.68 s, user 1.22 s). Force forks both loops
+// ("20000 slots, 0 probed, 20000 ranges"). A node-walked first-cycle
+// array::init(20000, ..) alone does fork under Auto (user 0.73 s over real
+// 0.37 s, against real 0.57 s under off): its growth sites plan after the
+// calibration has landed.
+let rec f = |d: i64, v: i64| -> i64 select d { 0 => v, d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003 };
+let ys = array::map(array::init(20000, |i| i), |x| f(9, x));
+let r = array::fold(ys, 0, |a, b| (a + b) % 1000003);
+sys::exit(sys::time::after_idle(duration:50.ms, r ~ 0));
+r

@@ -11,6 +11,15 @@ completion; nothing pauses it partway and resumes it on a later cycle.
 Cycles are the reactive layer (`<-`, `~`, event propagation), not a
 scheduling quantum for evaluation.
 
+<!-- CR claude for eric: [doc-drift] Lines 15-17 are stale since
+tail_calls_are_calls.md. A node-walked tail call is an activation like any other call,
+so an infinite tail recursion is constant-stack and bounded-memory only as a fused
+native loop. Under --no-fusion, or in a body that does not fuse, stack and memory grow
+with depth: sum(0, n) peaks at 374 MB for n = 20k and 688 MB for n = 40k node-walked,
+against 62 MB fused. Only the stack budget contains it, when set
+(GRAPHIX_STACK_BUDGET=64M aborts n = 200k). The pin's header says the same thing
+(stdlib/graphix-tests/src/lib_tests/interrupt.rs:4-5), and its interp variant runs
+exactly such a loop (probe: design/review-2026-10-05/repro/rt-17.gx). (rt-17) -->
 Therefore a program may spin forever inside one cycle, and the engine
 does not bound it. An infinite tail recursion is the constant-stack,
 bounded-memory case; an infinite non-tail recursion is bounded by

@@ -1,0 +1,62 @@
+// db2-07: an atomic db commit reaches subscribers torn across many cycles,
+// and on_insert/on_remove lose the order of an insert and a remove of one key.
+// run: graphix --no-cache design/review-2026-10-05/repro/db2-07.gx
+//
+// Part 1, one txn commit of 2000 inserts. The watch task
+// (stdlib/graphix-package-db/src/subscribe.rs:198-215) forwards whatever sled
+// has ready when it wakes, and the runtime delivers one chunk per bind id per
+// cycle (graphix-rt/src/gx.rs:408-424).
+// expected: "one commit of 2000 inserts reached on_insert in 1 cycles", and
+// the commit returns with all 2000 inserts seen or none.
+// observed (5 runs): 51, 362, 674, 719, 770 cycles; the commit returned
+// midway (after 205 deliveries, 1052 of 2000 inserts seen; after 41, 1809),
+// so the running total passes through values the db never held. db::batch
+// does the same (640 cycles). A two-key transfer per commit or batch
+// (A = 100 - r, B = r, 100 rounds) showed a mirror built from on_insert at
+// A + B = 99 or 101 one to seven times per run.
+//
+// Part 2, each round inserts key 7 and removes key 7 concurrently.
+// expected: the subscription tells a mirror whether key 7 survived.
+// observed (3 runs of 40 rounds): 22-26 rounds deliver both events in one
+// cycle (one chunk, split into two arrays); with that same output, 7-12 of
+// them end with key 7 present and 10-18 with it absent.
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/p.db")$;
+let t: db::Tree<i64, i64> = db::tree(db, null)$;
+let sub = db::subscription::new(t);
+let ins = db::subscription::on_insert(sub)$;
+let fires = 0;
+fires <- ins ~ fires + 1;
+let seen = 0;
+seen <- ins ~ seen + array::len(ins);
+let txn = db::txn::begin(sub ~ db)$;
+let tt: db::txn::TxnTree<i64, i64> = db::txn::tree(txn, txn ~ null)$;
+let staged = db::txn::batch(tt, tt ~ array::init(2000, |i| `Insert(i, 1)))$;
+let committed = db::txn::commit(staged ~ txn)$;
+println(committed ~ "commit returned after [fires] deliveries, [seen] of 2000 inserts seen");
+let t2: db::Tree<i64, i64> = db::tree(db, "race")$;
+let sub2 = db::subscription::new(t2);
+let insv: Array<i64> = [];
+insv <- array::map(db::subscription::on_insert(sub2)$, |e| e.value);
+let remk: Array<i64> = [];
+remk <- array::map(db::subscription::on_remove(sub2)$, |e| e.key);
+let cyc = 0;
+cyc <- (insv, remk) ~ cyc + 1;
+let ic = insv ~ cyc;
+let rc = remk ~ cyc;
+let clock = sys::time::timer(duration:50.ms, true);
+let round = 0;
+round <- clock ~ round + 1;
+let go = select round { r if r > 0 && r <= 40 => r, _ => never() };
+let i = db::insert(t2, go ~ 7, go)$;
+let r = db::remove(t2, go ~ 7)$;
+println(select (rc, rc ~ ic, rc ~ insv) {
+  (x, y, [v, ..]) if x == y => "round [v]: on_insert and on_remove fired in one cycle",
+  _ => never()
+});
+let check = sys::time::after_idle(duration:25.ms, go);
+let present = db::contains_key(t2, check ~ 7)$;
+println("round [present ~ check]: db holds key 7: [present]");
+let last = sys::time::after_idle(duration:2.s, (seen, go));
+println(last ~ "one commit of 2000 inserts reached on_insert in [fires] cycles ([seen] inserts)");
+sys::exit(last ~ 0)

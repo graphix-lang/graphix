@@ -1,0 +1,21 @@
+// t-tvar-01: a rigid constructor variable passes bind_ctor under a plain
+// commit, so a 'c: Collection body may treat 'c<i64> as Array<i64>.
+//
+// graphix --check design/review-2026-10-05/repro/t-tvar-01.gx
+//   expected: refused at the definition, Array<i64> does not contain 'c<i64>
+//             (as `|xs: 'a| { let a: Array<i64> = xs; .. }` and
+//             `'c: Collection |xs: 'c<'e>| ..` are refused)
+//   observed: exit 0
+// graphix --no-cache design/review-2026-10-05/repro/t-tvar-01.gx
+//   observed (debug build): panicked at netidx-value/src/lib.rs:264:42
+//   "unsafe precondition(s) violated: hint::unreachable_unchecked must
+//   never be reached", abort (UB in a release build); --no-fusion prints
+//   nothing (a Map indexed as an Array)
+// with the last line `f([<10, 20, 30>])`, graphix-fuzz check:
+//   DIVERGENCE interp [21, [30., [0.]]] vs jit 140502550597873 (pointer bits,
+//   differs per run); both engines run a List as an Array
+let f = 'c: Collection |xs: 'c<i64>| {
+    let a: Array<i64> = xs;
+    a[1]$ + 1
+};
+f({"k" => 10, "j" => 20})

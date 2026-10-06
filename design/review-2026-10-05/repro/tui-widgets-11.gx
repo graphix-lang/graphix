@@ -1,0 +1,21 @@
+// tui-widgets-11: paragraph: scroll offsets capped at 1024, so long content cannot be
+// scrolled past line 1024
+//
+// ParagraphW::draw (stdlib/graphix-package-tui/src/paragraph.rs:82) clamps scroll.y
+// and scroll.x with validate::clamp_u16, which caps at VISUAL_DIMENSION_CAP = 1024.
+// A scroll offset counts content lines (chars for x), not terminal cells, and
+// ratatui-widgets 0.3.0 only counts with it (paragraph.rs:433-443 loops or skips
+// scroll.y lines; reflow.rs:289 widens scroll.x to usize), so every u16 is safe.
+//
+// command: run in a terminal (it needs a tty):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets-11.gx
+//   (add --log-dir DIR with RUST_LOG=warn to see the clamp's warning)
+//
+// expected: the first visible line is L1500 (L1500..L1523 on an 80x24 terminal).
+// observed (HEAD c722befe, debug build, 80x24 pty): L1024..L1047, and the log says
+//   WARN [graphix_package_tui::validate] paragraph scroll.y 1500 outside [0, 1024];
+//   clamping to 1024
+//   y: 1000 shows L1000 and y: 1024 shows L1024, but y: 1025 already shows L1024.
+use tui::{line, paragraph::paragraph};
+let lines = array::init(2000, |i| line("L[i]"));
+paragraph(#scroll: &{x: 0, y: 1500}, &lines)

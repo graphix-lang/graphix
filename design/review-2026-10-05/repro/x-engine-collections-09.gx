@@ -1,0 +1,21 @@
+// x-engine-collections-09: array::window with a negative #n is an unbounded
+// window, though array/mod.gxi promises "an array no larger than #n".
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-09.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-engine-collections-09.gx
+//
+// expected: neg stays [] (as #n: 0 does), or the call logs and bottoms.
+//
+// observed (both engines), last line:
+//   neg [1, 2, 3, 4, 5] two [4, 5] zero []
+// WindowEv::eval (stdlib/graphix-package-array/src/lib.rs:119) does
+// `*window as usize`, so -1 is usize::MAX and every element is kept.
+let v = array::iter([1, 2, 3, 4, 5]);
+let wn = [];
+wn <- array::window(#n: -1, v ~ wn, v);
+let w2 = [];
+w2 <- array::window(#n: 2, v ~ w2, v);
+let w0 = [];
+w0 <- array::window(#n: 0, v ~ w0, v);
+println("neg [wn] two [w2] zero [w0]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

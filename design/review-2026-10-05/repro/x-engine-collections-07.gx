@@ -1,0 +1,32 @@
+// x-engine-collections-07: the unchecked-arithmetic overflow rule disagrees
+// with CLAUDE.md and with the book, in opposite directions.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-07.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-engine-collections-07.gx
+//
+// CLAUDE.md:518 says "unchecked wraps, integer div0 bottoms", so
+// div(mn, -1) should print mn. The book (core/fundamental_types.md:28 and
+// :56, functions/polymorphism.md:61 and :184, core/reading_types.md:303)
+// says unchecked + bottoms on overflow, so add(mx, 1) should print nothing.
+// x % -1 is 0 for every x, so rem(mn, -1) and crem(mn, -1) have a
+// representable answer.
+//
+// observed (both engines; --no-fusion also logs "arith error" at lines
+// 23 and 24, the div and rem lambdas):
+//   add -9223372036854775808
+//   cdiv error:["ArithError", "arithmetic error"] crem error:["ArithError", "arithmetic error"] crem7 0
+//   rem7 0
+// the "div" and "rem" lines never print: MIN / -1 and MIN % -1 bottom.
+let mx = 9223372036854775807;
+let mn = -9223372036854775807 - 1;
+let add = |a: i64, b: i64| a + b;
+let div = |a: i64, b: i64| a / b;
+let rem = |a: i64, b: i64| a % b;
+let cdiv = |a: i64, b: i64| a /? b;
+let crem = |a: i64, b: i64| a %? b;
+println("add [add(mx, 1)]");
+println("cdiv [cdiv(mn, -1)] crem [crem(mn, -1)] crem7 [crem(7, -1)]");
+println("div [div(mn, -1)]");
+println("rem [rem(mn, -1)]");
+println("rem7 [rem(7, -1)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

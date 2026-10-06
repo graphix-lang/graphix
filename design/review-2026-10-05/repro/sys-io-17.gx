@@ -1,0 +1,23 @@
+// sys-io-17: the line reader drops an unterminated final line, and the
+// comment that justifies it is false.
+//
+// line_reader (stdlib/graphix-package-sys/src/io.rs:82-84) breaks at EOF and
+// discards `held`, "exactly as `tail` would"; but `printf 'a\nb' | tail -n 1`
+// prints `b`. The reader does not follow the stream after EOF, so the held
+// fragment is the stream's real last line and is lost. io.gxi:72-74
+// documents the drop. Unix only (/bin/sh).
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/sys-io-17.gx
+// expected (BufRead::lines, tokio_util LinesCodec::decode_eof, tail):
+//   "child line: first" then "child line: last"
+// observed: "child line: first" only
+use sys::io::Lines;
+let child = sys::process::spawn(sys::process::options(
+  #args: ["-c", "printf 'first\nlast'"],
+  #stdio: sys::process::stdio(#stdout: `Pipe),
+  "/bin/sh"
+))$;
+let out = child.stdout$;
+println("child line: [Lines::lines(out)$]");
+sys::exit(sys::time::after_idle(duration:500.ms, out ~ 0))

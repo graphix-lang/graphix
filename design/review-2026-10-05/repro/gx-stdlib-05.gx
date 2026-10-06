@@ -1,0 +1,57 @@
+// gx-stdlib-05: the Read::read_exact and Write::write_exact defaults
+// (stdlib/graphix-package-sys/src/graphix/io.gxi:26 and :114) re-test
+// completion when their own accumulator write lands, against the stale
+// reply: read_exact emits the first chunk twice, write_exact reports
+// success early.
+//
+// command (from the repo root):
+//   graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-05.gx
+//
+// Chunky is a stream written in Graphix over a real file (this one) whose
+// read returns at most 4 bytes, an ordinary short read. Mock is a sink
+// whose write takes 6 bytes and then fails, answering after 10 ms as any
+// asynchronous write does. Both get read_exact / write_exact from the
+// trait defaults.
+//
+// expected (after the program's own `null`):
+//   read_exact -> "// gx-"
+//   write_exact -> error:["IOError", "disk full"]
+//
+// observed (HEAD c722befe, debug build; the same with --no-fusion):
+//   null
+//   read_exact -> "// g// g"
+//   read_exact -> "// gx-"
+//   write_exact -> null
+//   write_exact -> error:["IOError", "disk full"]
+// read_exact(6) first answers 8 bytes, its first chunk twice;
+// write_exact first answers success with 4 bytes unwritten. A seq step
+// completes on the first answer: `let x = Read::read_exact(..)$` takes
+// "// g// g", and `try { Write::write_exact(..)?; "ok" } with(e) ..` takes
+// "ok". A synchronous read or write does not show it: the reply then
+// fires in the same cycle as the accumulator write.
+use sys::io::{Read, Write};
+type Chunky = Abstract<sys::fs::File>;
+impl Read for Chunky {
+    let read = |s, n| -> Result<bytes, `IOError(string)> {
+        let k = select n > u64:4 { true => u64:4, false => n };
+        Read::read(s.0, k)
+    }
+};
+type Mock = Abstract<i64>;
+impl Write for Mock {
+    let write = |s, data| -> Result<u64, `IOError(string)> {
+        let r: Result<u64, `IOError(string)> = select buffer::len(data) > u64:6 {
+            true => u64:6,
+            false => error(`IOError("disk full"))
+        };
+        sys::time::after_idle(duration:10.ms, r)
+    };
+    let flush = |s| -> Result<null, `IOError(string)> s ~ null
+};
+let f = sys::fs::open(`Read, "design/review-2026-10-05/repro/gx-stdlib-05.gx")$;
+let r = Read::read_exact(Chunky(f), u64:6);
+println("read_exact -> \"[buffer::to_string_lossy(r$)]\"");
+let w = Write::write_exact(Mock(0), buffer::from_string("0123456789"));
+println("write_exact -> [w]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+null

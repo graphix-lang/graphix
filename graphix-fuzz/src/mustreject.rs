@@ -178,6 +178,13 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
+// CR claude for eric: [test-gap] Every family takes the first `cap` qualifying sites in
+// preorder or statement order, so a long subject's probes cluster at its start and its
+// later consumers are never mutated; subjects are deterministic, so a re-run probes the
+// same sites. On the 22nd program of `graphix-fuzz gen 40 23` (over 540 nodes)
+// widen-consumer took #47, #52 and #57 and shared-var #538, #541 and #546, three
+// neighbouring sites each. typemorph's `sample()` exists for this clustering; collect
+// each family's candidates and take `sample(&sites, cap)`. (fuzz-mutate-18)
 pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     let Some(root) = mutate::parse(body) else { return Vec::new() };
     let pre = mutate::preorder(&root);
@@ -335,6 +342,18 @@ fn rigid_probe(l: &LambdaExpr) -> Option<Expr> {
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let sizes = mutate::sizes(root);
+    // CR claude for eric: [structure] This statement walk (`offset = 1; at = offset;
+    // offset += sizes[at]`) is written out again in labels_default, retype,
+    // widen_through_let and mono_reuse (typemorph builds the same list as `offsets`).
+    // The reached-uses loop (uses_reached over later statements, stopping at
+    // binds_after) is copied in labels_default, retype, widen_through_let and
+    // mono_reuse; the positional-iterator plus label-lookup pairing of arguments to
+    // parameters in function_bound, labels_default and widen_consumer; and
+    // widen_consumer (line 671) writes callee_type out inline. Each copy is a place
+    // where a skip-list fix must be repeated, so a fix to reached-use handling can land
+    // in one family and not the others. Factor statement offsets, reached uses and
+    // argument-parameter pairing into one helper each, and call callee_type in
+    // widen_consumer. (fuzz-mutate-15)
     let mut offset = 1usize;
     let mut taken = 0usize;
     for (si, stmt) in stmts.iter().enumerate() {
@@ -807,6 +826,16 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
         });
         if mentions {
             sites.push(k);
+            // CR claude for eric: [bug] Only a `let` whose pattern is a bare name adds
+            // its name to `affected`. A destructuring let built from `v` (`let (p, q) =
+            // (w, 2)`) therefore leaves `p` and `q` untracked. A later `p + 1` is where
+            // `v`'s new type is refused first, which the family's rule says is right,
+            // but that statement is not among the sites. So widen_through_let and
+            // retype's pinned probe file a correct refusal as a MISPLACED typeflip.
+            // Push every name the pattern binds (`lb.pattern.with_names`), not only a
+            // `Bind`. probe: design/review-2026-10-05/repro/fuzz-mutate-06.gx
+            // (`graphix-fuzz typemorph` reports widen-consumer#1 and retype#12
+            // MISPLACED; with `let p = (w, 2).0` both are REJECT ok). (fuzz-mutate-06)
             if let ExprKind::Bind(lb) = &later.kind
                 && let StructurePattern::Bind(w) = &lb.pattern
             {
@@ -967,6 +996,18 @@ fn mono_reuse(
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &wrapped);
         let (ja, jb) = (*ja, *jb);
+        // CR claude for eric: [bug] The right sites are only the definition, ja and jb.
+        // But every value use of the wrapped `f` shares its cells, so the checker
+        // refuses at the first use that conflicts with an earlier one. `firsts` drops
+        // some uses between ja and jb: one whose first parameter is not a single
+        // primitive (`array::map([[1]], f)`, `array::map([1, null], f)`), or one inside
+        // a lambda body, which record_expr_types never types. Such a use is refused
+        // first, and that correct refusal is filed as a MISPLACED typeflip. Expect the
+        // statement of every value use in `values` up to and including jb (`stmt_of`
+        // already has them), and fix the family 1 right-site sentence in
+        // design/must_reject.md to match. probe:
+        // design/review-2026-10-05/repro/fuzz-mutate-05.gx (`graphix-fuzz typemorph
+        // <file>`). (fuzz-mutate-05)
         let probe = finish(Family::MonoReuse, at, &cand, |back, _| {
             [si, ja, jb].into_iter().map(|j| nth_stmt(back, j).and_then(span)).collect()
         });
@@ -1011,6 +1052,14 @@ fn variant_widen(
             break;
         }
         let ExprKind::Select(SelectExpr { arg, arms }) = &e.kind else { continue };
+        // CR claude for eric: [bug] covers_all checks only for a top-level bind or `_`
+        // (or a type test), so an or-arm with a `_` alternative (`` `A | _ ``) is not
+        // seen as a catch-all: the widened scrutinee is still covered, the mutant is
+        // rightly accepted, and it is filed as a LEAK, which also takes variant-widen's
+        // only LEAK class. Count an arm whose `Or` alternatives include `Ignore` as
+        // covering (more generally, any pattern the fresh tag matches). No generator or
+        // corpus seed writes a `_` alternative today, so it is latent. probe:
+        // design/review-2026-10-05/repro/fuzz-mutate-11.gx (fuzz-mutate-11)
         let covers_all = arms.iter().any(|(p, _)| {
             p.type_predicate.is_some()
                 || matches!(

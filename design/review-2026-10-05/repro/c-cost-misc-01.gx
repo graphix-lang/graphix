@@ -1,0 +1,29 @@
+// c-cost-misc-01: under Auto, a fused loop of a few hundred trivially cheap
+// slots forks on every cycle.
+//
+// T_BUCKET = 6 (graphix-compiler/src/cost.rs:49) puts T in bucket 6, so the
+// least per-slot estimate a histogram can give is floor(0) = 2^shift, between
+// T/128 and T/64 (2048 ticks at T = 143552). A cheaper slot is clamped up to
+// it, and ProbeSite::grain (cost.rs:595-599) forks once est * n >= 2T: a
+// settled LoopSite forks every loop longer than 2T / floor(0), 128 to 256
+// slots, whatever its slots cost. Nothing measures the loop's real total
+// first, as SlotSite's Probe stage does for node-walk slots.
+//
+// command (from the repo root; time both):
+//   GRAPHIX_PAR=off GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-01.gx > /dev/null
+//   GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-01.gx > /dev/null
+//
+// expected: the 400-slot `i + n` loop, a few microseconds of work, runs in
+// one chunk under Auto as it does under off.
+//
+// observed (HEAD c722befe, debug build, 16 cores):
+//   off:  real 0.82-0.85 s, user+sys 0.85 s, no fork
+//   Auto: real 2.34-2.47 s, user+sys 9.2-9.7 s; 19059-19125 of the 20000
+//         cycles print "PAR kernel loop: N slots, 1 probed, 5 (or 6) ranges"
+//         (T = 177032 or 143552): ranges of ceil(T / 2048) slots, so the
+//         estimate is exactly floor(0). Same stdout in both modes.
+let n = 0;
+n <- select n { k if k < 20000 => k + 1, _ => never() };
+let xs = array::init((n % 7) + 400, |i| i + n);
+sys::exit(sys::time::after_idle(duration:300.ms, n ~ 0));
+array::fold(xs, 0, |a, b| (a + b) % 1000003)

@@ -310,6 +310,20 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         nodes: &mut Vec<(ExprId, Node<R, E>)>,
     ) -> Result<(SharedDecoder, Scope, Option<ProgramRoot>), PackError> {
         let mut bytes: &[u8] = &image;
+        // CR claude for eric: [risk] Nothing checks an entry's contents. Past the
+        // magic, format, ISA, header offsets and id counts, every byte is trusted,
+        // kernel machine code included (define_function_bytes installs it as stored).
+        // One flipped bit in a cached entry can make a warm run print a changed string
+        // literal with exit 0, make a fused fact() return 1, rename a builtin so every
+        // program calling it fails on every run, or crash in restored JIT code
+        // (SIGSEGV/SIGILL). An entry that fails the read is never written again
+        // (graphix-shell/src/lib.rs:287-310), and entries are renamed into place with
+        // no fsync (graphix-shell/src/cache.rs:198), so a crash that leaves an empty
+        // entry means cold starts until the next build. A checksum over each part the
+        // restore reads (the eager part, each heap instance, each kernel record),
+        // checked before use, with a mismatch handled as a failed read that rewrites
+        // the entry, would close this. probe:
+        // design/review-2026-10-05/repro/x-image-03.sh (x-image-03)
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {
             return Err(PackError::InvalidFormat);
         }

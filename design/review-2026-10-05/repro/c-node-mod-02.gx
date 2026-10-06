@@ -1,0 +1,50 @@
+// c-node-mod-02: a binding written only through a reference is not a `<-`
+// target: an arm's wake resets it, and static calls ignore the write.
+//
+// mark_connect_target has one caller, Connect::compile (node/mod.rs:1445);
+// ByRef::compile (node/bind.rs:1151-1160) records the referent in the byref
+// chain but marks nothing, so a variable written by `*r <- v` is in neither
+// connect_targets (Bind::update's wake keep rule, bind.rs:340-347) nor
+// batch_connect_targets (CallSite::try_static_resolve).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-node-mod-02.gx
+//          (--no-fusion prints the same; graphix-fuzz check reports AGREE)
+//
+// expected: ([(10, 10), (-1, -1), (11, 11), (-1, -1), (12, 12), (-1, -1), (13, 13)], 101, 101)
+// observed: ([(10, 10), (-1, -1), (11, 10), (-1, -1), (12, 10), (-1, -1), (13, 10)], 2, 101)
+//
+// Column one is lang::select::wake_constant_keeps_target's counter, written
+// by `x <- ..`: it keeps its count across the arm's sleeps. Column two is the
+// same counter bumped by a function through `&x` (the lend-state-by-`&`
+// idiom): every wake republishes the initializer 10 over the count. `f(1)`
+// still calls the lambda `f` was bound to after `*fr <- ..` replaced it,
+// while `g = f; g(1)` calls the new one. Adding `x <- never<i64>()` in the
+// second arm and `f <- never<fn(x: i64) -> i64>()` (connects that never
+// write, they only mark the binding) gives the expected output.
+let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+let bump = |c: &i64, ev: i64| -> i64 {
+  *c <- ev ~ *c + 1;
+  0
+};
+let direct = select n % 2 {
+  0 => {
+    let x = 10;
+    x <- n ~ x + 1;
+    x
+  },
+  _ => -1
+};
+let viaref = select n % 2 {
+  0 => {
+    let x = 10;
+    let ignored = bump(&x, n);
+    x
+  },
+  _ => -1
+};
+let f = |x: i64| -> i64 x + 1;
+let fr = &f;
+*fr <- |x: i64| -> i64 x + 100;
+let g = f;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(array::group((direct, viaref), |i, _| i == 7), f(1), g(1))

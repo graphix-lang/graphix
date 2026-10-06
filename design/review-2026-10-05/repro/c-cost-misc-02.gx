@@ -1,0 +1,27 @@
+// c-cost-misc-02: once a kernel loop's site has settled, each run times one
+// slot, slot 0, as a one-slot chunk run (graphix-compiler/src/fusion/
+// par_loop.rs:156-168; cost.rs:586-591 returns 1 probe once settled). That
+// sample carries the run's fixed costs and, in an event-driven program, the
+// cold start after an idle gap, so the estimate inflates.
+//
+// A 100-slot loop is shorter than 2T / floor(0) (140 to 236 slots for the T
+// below), so the bucket-0 floor of c-cost-misc-01 alone would not fork it.
+//
+// command (from the repo root; time both):
+//   GRAPHIX_DBG_PAR=1 graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-02.gx > /dev/null
+//   GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/c-cost-misc-02.gx > /dev/null
+//
+// expected: the trivially cheap 100-slot loop runs in one chunk.
+//
+// observed (HEAD c722befe, debug build, 16 cores), three runs: 1467-1479 of
+// the 1500 cycles print "PAR kernel loop: N slots, 1 probed, 3 (to 10)
+// ranges", i.e. an estimate of 8192 ticks a slot, 2-4x floor(0). CPU
+// user+sys 1.28-1.80 s against 0.62 s under off; same wall time (the timer
+// paces it) and the same output. Two identical loops in one cycle (150 and
+// 170 slots on a 20 ms timer) were estimated 16384 ticks a slot (15-16
+// ranges) for the first and floor(0) (3 ranges) for the second.
+let n = 0;
+n <- sys::time::timer(duration:2.ms, 1500) ~ n + 1;
+let a = array::init((n % 3) + 100, |i| i * 3 + n);
+sys::exit(sys::time::after_idle(duration:300.ms, n ~ 0));
+array::fold(a, 0, |x, y| (x + y) % 1000003)

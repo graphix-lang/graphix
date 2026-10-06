@@ -1,0 +1,28 @@
+// c-data-map-03: a fork-control attribute (#[serial] / #[parallel]) makes the
+// other attributes on the same expression vanish unchecked.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-data-map-03.gx
+//
+// expected: refused at f's value: "#[tail_recursive]: this function is not
+// recursive". Deleting #[serial] from either line gets that line refused so.
+//
+// observed (HEAD c722befe, debug build): runs and prints 4.
+//
+// g (compile_inner, graphix-compiler/src/node/compiler.rs:189-196): on any
+// expression but a `let`, the fork branch returns before the collected
+// definition assertions are registered. Also accepted:
+//   let rec f = #[serial] #[tail_recursive] |n: i64, acc: i64| -> i64
+//     select n { 0 => acc, n => f(n - 1, acc + f(0, n)) }
+//   (refused without #[serial]: "recurses through a non-tail self-call")
+//   #[parallel] #[sync] array::map(xs, |x| x * 2)
+//   (refused without #[parallel]: "annotates a function definition")
+// f (fork_on_body, compiler.rs:116-127): on a decorated `let` whose value is
+// a parenthesized lambda, the parens are stripped and their decorations
+// dropped, so every attribute there is lost, unknown ones included:
+//   #[serial] let f = #[bogus] (|x| x + 1)   passes even --check
+//   #[serial] let f = #[native] (|x| x + 1)  runs (refused without #[serial])
+// Unparenthesized, `#[serial] let f = #[tail_recursive] |x| x + 1` is refused.
+#[serial] let f = #[tail_recursive] (|x| x + 1);
+let g = #[serial] #[tail_recursive] |x| x + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(1) + g(1)

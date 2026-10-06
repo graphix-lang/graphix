@@ -1,0 +1,50 @@
+// x-expr-walks-02: `place_root` disagrees with `Place::of`: grouping
+// parentheses change what a seqq step reads.
+//
+// desugar_queued keeps a capture live when the body takes a reference to
+// it, found by seq.rs::place_root, which stops at ExplicitParens. The
+// compiler (bind.rs Place::of / ByRef::compile) unparens: `&(b)` is `&b`
+// and `&(s.f)` is the place `&s.f` (writes through it reach `b` / `s`).
+// So with parentheses the variable is snapshotted per request while the
+// run writes it through the reference: the read-modify-write loses
+// updates and the run reads its request-time value back. The three
+// columns are one counter written three ways; only the first is
+// unparenthesized.
+//
+// command: timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/x-expr-walks-02.gx
+//          (same with --no-fusion, GRAPHIX_PAR=off|force; graphix-fuzz check:
+//          AGREE, the defect is in the shared seqq lowering)
+//
+// expected (design/seq_blocks.md §8: address-taking keeps a capture live;
+//   the same program with `&b` and `&s.f` prints this):
+//   (1, 1, 1, 1, 1, 1) (1, 1, 1, 2, 2, 2) (2, 2, 2, 2, 2, 2)
+//   (2, 2, 2, 3, 3, 3) (3, 3, 3, 3, 3, 3)
+// observed (HEAD c722befe, debug build, every mode):
+//   (1, 0, 0, 1, 1, 1) (1, 0, 0, 2, 1, 1) (2, 0, 0, 2, 1, 1)
+//   (2, 0, 0, 3, 1, 1) (3, 0, 0, 3, 1, 1)
+//
+// The converse also holds: place_root follows ArraySlice, which the
+// compiler does not make a place, so `&s[0..2]` (a derived channel that
+// cannot write `s`) makes every other read of `s` in the body live.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let request = select step { 1 | 2 | 3 => step, _ => never() };
+let a = 0;
+let b = 0;
+let s = {f: 0, g: 0};
+let bare = seqq request {
+  let r = &a;
+  *r <- a + 1;
+  a
+};
+let paren = seqq request {
+  let r = &(b);
+  *r <- b + 1;
+  b
+};
+let field = seqq request {
+  let r = &(s.f);
+  *r <- s.f + 1;
+  s.f
+};
+(bare, paren, field, a, b, s.f)

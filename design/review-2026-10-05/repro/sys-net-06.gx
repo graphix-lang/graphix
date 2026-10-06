@@ -1,0 +1,31 @@
+// sys-net-06: a second subscriber of a path re-fires every existing
+// subscriber of that path with the value it already had.
+//
+// NetState::subscribe (stdlib/graphix-package-sys/src/netstate.rs:408)
+// registers the one shared updates channel with BEGIN_WITH_LAST for every
+// subscription. When the path's Dval is already subscribed, netidx resends
+// `last` on that channel (NO_SPURIOUS is not set:
+// ../netidx/netidx/src/subscriber/connection.rs:377), and the pump fans the
+// event out to every BindId routed on the SubId (netstate.rs:299-304), so
+// `a` fires again although the publisher published once. A subscribe in a
+// select arm does the same at every wake: with `a` below live, an arm
+// `On => sys::net::subscribe("/local/dup")$` toggled every 0.2s made
+// count(a) 1, 2, 3, 4 at 0, 0.4, 0.8, 1.2s.
+//
+// command: cd "$(mktemp -d)" && timeout -s KILL 30 graphix --no-netidx \
+//            --no-cache /home/eric/proj/graphix/design/review-2026-10-05/repro/sys-net-06.gx
+//   (same with --no-fusion)
+// expected: one line, (1, ~1ms): `a` received 42 once.
+// observed (fusion on and off):
+//   (1, 1255606.ns)
+//   (2, 500964867.ns)
+// control: `b` subscribing another published path at 0.5s leaves count(a) at 1.
+sys::net::publish("/local/dup", i64:42);
+let a: i64 = sys::net::subscribe("/local/dup")$;
+let t = sys::time::timer(duration:0.5s, false);
+let b: i64 = sys::net::subscribe(t ~ "/local/dup")$;
+let na = count(a);
+sys::exit(sys::time::after_idle(duration:1.5s, 0));
+let start = sys::time::now(null);
+let at = sys::time::diff(sys::time::now(na), start);
+(na, at)

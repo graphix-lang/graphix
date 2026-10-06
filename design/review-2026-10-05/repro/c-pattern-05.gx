@@ -1,0 +1,33 @@
+// c-pattern-05: an or-pattern inside a slice element pairs its alternatives
+// with the members of the slice's element union.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-pattern-05.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/c-pattern-05.gx
+//          (again with --no-fusion; graphix-fuzz check on the same file)
+//
+// infer_slice (graphix-types/src/expr/pattern.rs:211) unions every element's
+// inferred type, so `[x, 1 | 2]` infers the element type [i64, 'x]: two
+// members, by coincidence as many as the or-pattern has alternatives.
+// compile_slice (graphix-compiler/src/node/pattern.rs:421) passes the
+// inferred PatCx down, and the Or arm of compile (:472) pairs alternative i
+// with member i: `2` checks against x's cell 'x and binds it to i64. x is
+// typed i64 although the elements are [i64, null].
+//
+// expected: refused, as `[x, 1]` and `[x, 1 | 2 | 3]` are: "cannot compute
+//   [i64, '_: null] + i64".
+// observed: --check exits 0. The fused run panics (an unconditional panic, so
+//   release builds too) and the runtime dies:
+//     kernel param `x`: runtime Null does not match the compiled Scalar(I64) slot
+//     (graphix-compiler/src/fusion/kernel.rs:243), "Error: runtime did not respond"
+//   --no-fusion logs `arith error .. "can't add null"`. graphix-fuzz check
+//   aborts (core dumped, exit 134).
+//
+// Same defect: Array<[i64, string]> with ["s", 1] (runtime String("s") in the
+// i64 slot); `[1 | 2, x]`, `[init.., x, 1 | 2]` and `[<1 | 2, x, rest..>]`
+// over a List are accepted and panic the same way.
+// The pairing follows Type::union's sorted member order, so a valid pattern is
+// refused for the order its alternatives are written in:
+//   let a: Array<[`A, `B]> = [`B]; select a { [`B | `A] => 1, _ => 0 }
+// is refused with "type mismatch `A does not contain `B"; `[`A | `B]` passes.
+let a: Array<[i64, null]> = [null, 1];
+select a { [x, 1 | 2] => x + 1, _ => 0 }

@@ -1,0 +1,29 @@
+// x-builtin-effects-14: split_escaped, splitn_escaped and escape's tr keys
+// refuse a single non-ASCII character.
+//
+// "One character" is checked as a byte count (`s.len() == 1`) in
+// fc_split_escaped and fc_splitn_escaped
+// (stdlib/graphix-package-str/src/lib.rs:558, 562, 594, 598) and for a tr
+// key in build_escape (lib.rs:428). escaping::split/splitn compare chars and
+// accept any char; Escape::new accepts any tr key (only the escape char must
+// be ASCII).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-14.gx
+//
+// expected: ["a", "b§,c"], ["a", "b"], ["a", "b→c"], ["a", "b\\,c"],
+//   and "x\\ry" for the escape.
+// observed: error:["SplitEscError", "split_escaped: invalid escape char"],
+//   error:["SplitEscError", "split_escaped: invalid separator"],
+//   error:["SplitNEscError", "split_escaped: invalid separator"],
+//   ["a", "b\\,c"] (the ASCII control),
+//   error:["StringError", "escape: invalid argument escape: tr key → is invalid,
+//   expected 1 character"].
+let esc = {escape: "\\→", escape_char: "\\", tr: [("→", "r")]};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+  str::split_escaped(#esc: "§", #sep: ",", "a,b§,c"),
+  str::split_escaped(#esc: "\\", #sep: "→", "a→b"),
+  str::splitn_escaped(#n: 2, #esc: "\\", #sep: "→", "a→b→c"),
+  str::split_escaped(#esc: "\\", #sep: ",", "a,b\\,c"),
+  str::escape(#esc: esc, "x→y")
+)

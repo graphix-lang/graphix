@@ -293,6 +293,19 @@ impl TypeMemo {
         if let Some(v) = tb.by_id.get(&id).map(|e| e.1.clone()) {
             return v;
         }
+        // CR claude for eric: [perf] These walks treat a type as a tree and never share
+        // by allocation: resolutions(), the Hash of the by_content key (lines 296-301),
+        // and the freeze this memoizes (kernel_abi.rs:374), which also rebuilds its
+        // result unshared. A type built by sharing, such as `let x1 = (x0, x0); .. let
+        // x24 = (x23, x23); x24 ~ 1`, is linear in memory but has 2^24 leaves. Fusion
+        // on it is exponential in time and memory. With --no-cache on the debug build,
+        // n = 20, 22 and 24 take 1.5, 5.1 and 20.8 s and 0.35, 1.2 and 4.7 GB, against
+        // 0.28 s and 57 MB with --no-fusion. The default cold start takes 9.9 s and 4.3
+        // GB at n = 22. Type::content_key is not a ready replacement key, because its
+        // bytes for such a type are exponential too: the no-fusion cold start grows
+        // from 139 to 324 MB between n = 20 and 22. Memoizing these walks by allocation
+        // keeps them linear; a type error printed on x20 is a 7.3 MB message, the same
+        // shape. (x-stack-09)
         let Some(resolved) = resolutions(t) else { return compute() };
         let key = (!t.has_unbound()).then(|| (t.clone(), resolved));
         let hit = key.as_ref().and_then(|k| tb.by_content.get(k).map(|v| v.clone()));
@@ -624,6 +637,16 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(child)
             }
         }
+        // CR claude for eric: [readability] The comment below is wrong. `ArgMap` is an
+        // IndexMap that iterates in source order (callsite.rs:146-149), not a hash map.
+        // The ArgKey sort it justifies puts positional args before named ones and
+        // orders names alphabetically, which is not source order. The sort costs a
+        // pooled Vec plus a sort per CallSite in every discovery, fingerprint,
+        // raise-blocker and `calls_a_function` walk, and those walks repeat at each
+        // level of the fusion walk. Iterate `cs.args.values().filter_map(|a|
+        // a.node.as_ref())` and drop the comment. `CallSite::fuse`
+        // (callsite.rs:2259-2266) carries the same comment and sort.
+        // (f-mod-lowering-10)
         NodeView::CallSite(cs) => {
             // The args map is hash-ordered; walk in ArgKey order so the
             // downstream discovery order is deterministic.
@@ -1006,6 +1029,16 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
+    // CR claude for eric: [bug] A fed argument runs in the kernel's feeder poll, before
+    // the kernel, so its handler-ful `?` delivers ahead of the queued raises of the
+    // fused arguments to its left, while the node-walk evaluates arguments left to
+    // right. Two raises to one handler in one cycle then reach it in the opposite order
+    // (the first takes the cycle, the second lands next cycle), and a handler that
+    // keeps the last error settles on a different one under fusion. The `let`
+    // equivalence the doc comment cites holds for values, not for raise order. Feeding
+    // every earlier argument that can raise, or not feeding in that case, keeps source
+    // order. probe: design/review-2026-10-05/repro/f-mod-lowering-02.gx (graphix-fuzz
+    // check: DIVERGENCE). (f-mod-lowering-02)
     for arg in cs.args.values_mut() {
         let Some(node) = arg.node.as_mut() else { continue };
         let mut discovery = lowering::BuiltinCallDiscovery::default();
@@ -1013,6 +1046,16 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
             continue;
         }
         let typ = node.typ().clone();
+        // CR claude for eric: [bug] This `#fed` binding is never unbound. It survives
+        // the free_var_input refusal, the failed attempt that puts the originals back,
+        // and `feed` replacing the read, and FusedKernel::delete deletes only feeders.
+        // A collection slot's instance repeats this walk at every bind
+        // (share::fuse_slot), so env.by_id gains an entry per fed argument per slot
+        // created, whether or not the call fuses. Memory grows without bound under slot
+        // churn, about 300 B per slot. probe:
+        // design/review-2026-10-05/repro/f-mod-lowering-03.gx (RSS 94, 225, 393 MB at
+        // cycles 2k/20k/40k; with `{ let y = x ~ x; g(y) }` as the callback, or with
+        // --no-fusion, it stays under 100 MB). (f-mod-lowering-03)
         let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
         if free_var_input(id, ctx).is_none() {
             ctx.discard(read);
@@ -1110,6 +1153,14 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     let (mut heavy, light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
         parts.drain(..).partition(|p| calls_a_function(p));
     let mut light = light;
+    // CR claude for eric: [bug] Every light part is visited before any heavy one, and
+    // the first light error returns before the heavy parts run. So the error returned
+    // is not "the first error in order" that the doc above promises, nor the serial
+    // walk's error, which CLAUDE.md says the task walk reproduces. With `#[native]
+    // g(a); #[native] once(a);` in a block (g a lambda that prints), the default build
+    // reports the later `once` and GRAPHIX_FUSE_SERIAL=1 reports the earlier `g`. Keep
+    // each part's index and return the error with the lowest one. probe:
+    // design/review-2026-10-05/repro/f-mod-lowering-08.gx (f-mod-lowering-08)
     light.drain(..).try_for_each(|p| visit(p, ctx))?;
     if heavy.len() < 2 {
         return heavy.drain(..).try_for_each(|p| visit(p, ctx));
@@ -1212,6 +1263,14 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// `Ok(None)`: the root type has no kernel representation, the subtree
 /// is an identity passthrough, or some node does not emit CLIF.
 /// Discovery rejects known effects; emission validates the remaining shapes.
+// CR claude for eric: [perf] A pure subtree of any size becomes one CLIF function.
+// Cranelift's backtracking register allocator (regalloc2, reached from Jit::link) is
+// superlinear in function size, so cold-start compile time grows roughly quadratically
+// with region size while the node-walk stays linear. Debug build, fused vs --no-fusion:
+// a block of 5000 chained lets, fused as one region, takes 11.3 s vs 1.0 s (2500: 2.9 s
+// vs 0.7 s); a 5000-arm select takes 5.3 s vs 1.0 s; a lambda whose body is a 9000-deep
+// `+` chain takes 44 s vs 0.7 s. Nothing bounds or splits a region. Splitting an
+// oversized region at its parts would keep it native. (x-stack-10)
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut CompileCtx<R, E>,
@@ -1259,6 +1318,17 @@ fn build_region<R: Rt, E: UserEvent>(
     let inputs = collect_region_inputs(&**node, ctx);
     drop(phase);
     let phase = profile::phase(Phase::Callees);
+    // CR claude for eric: [bug] If the JIT cannot be built, `emission()` errs, and this
+    // `?` turns that into a compile error (so do 1292 here and 1122/1141 in
+    // `fuse_each`). The JIT fails to build when the arena reservation is refused under
+    // an address-space limit, when cranelift has no ISA for the host, or when
+    // GRAPHIX_JIT_ARENA cannot be reserved. The result is that every program fails with
+    // fusion on instead of node-walking. `graphix arena.gx` under `ulimit -v 1400000`,
+    // or with GRAPHIX_JIT_ARENA=1000000000000000, prints "jit arena reservation failed:
+    // ... (os error 12)", while `--no-fusion` prints 41. A failed JIT build should mean
+    // fusion is unavailable: log it once, refuse the region, and visit `fuse_each`'s
+    // parts serially. probe: design/review-2026-10-05/repro/f-mod-lowering-05.sh
+    // (f-mod-lowering-05)
     ctx.fusion.emission()?.attempt();
     let lambdas = discover_lambda_calls(node, ctx);
     drop(phase);
@@ -1291,6 +1361,17 @@ fn build_region<R: Rt, E: UserEvent>(
         Err(e) => {
             ctx.fusion.emission()?.forget_attempt();
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
+            // CR claude for eric: [bug] Each refused callee's reason is recorded here,
+            // then `refuse` records the generic emission error for the same call-site
+            // spec. `failure_for_source` returns the last failure for a spec, so
+            // `#[native] g(a)` on a lambda with no kernel reports only "lambda call
+            // site `g(a)` not discovered — subtree node-walks" and never the cause
+            // ("lambda `g` has no kernel: its body: builtin `print` has no fast-call
+            // entry"). This is the book's main use, `#[native] f(..)` on a user
+            // function. One call deeper (`let h = |x: i64| g(x) * 3; #[native] h(a)`),
+            // both records land on `g(x)` inside h's body, outside the subtree
+            // Native::check walks, and the error lists no reason at all. probe:
+            // design/review-2026-10-05/repro/f-mod-lowering-07.gx (f-mod-lowering-07)
             for (spec, why) in lambdas.refused.iter() {
                 ctx.fusion.stats.record_failure(spec, why);
             }
@@ -1310,6 +1391,16 @@ fn build_region<R: Rt, E: UserEvent>(
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
         .collect();
+    // CR claude for eric: [bug] The kernel takes the region's type, which may name a
+    // typedef declared inside the region. fuse then discards the replaced region
+    // (:978), and deleting it runs TypeDef::delete, which undefines that name while the
+    // kernel and the shell's root type (graphix-rt/src/gx.rs:916) still reach it
+    // through a weak resolution cell. The script `type C = {col: i64}; type S = {inner:
+    // C, n: i64}; let s: S = {inner: {col: 1}, n: 2}; s` fuses whole and prints
+    // `[["inner", [["col", 1]]], ["n", 2]]` because TVal's is_a_with fails
+    // (tval.rs:277), while --no-fusion prints `{inner: {col: 1}, n: 2}`. Make the
+    // kernel own the definitions its type names, as DefTable::typedefs and KernelType
+    // do. probe: design/review-2026-10-05/repro/c-data-map-10.gx (c-data-map-10)
     let n = FusedKernel::new(
         node.spec().clone(),
         node.typ().clone(),
@@ -1356,6 +1447,11 @@ fn build_region<R: Rt, E: UserEvent>(
 
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
+// CR claude for eric: [dead] Lines 1354-1355 are the doc comment of `arena_exhausted`,
+// which no longer exists (arena exhaustion is now `ArenaExhausted` in emit/jit.rs). A
+// doc comment attaches to the next item across the blank line, so `refuse`'s rustdoc
+// opens with "Whether a build failed for want of JIT code memory". Delete the two
+// lines. (f-mod-lowering-11)
 fn refuse<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     spec: &Expr,

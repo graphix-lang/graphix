@@ -228,6 +228,17 @@ fn vendor(ws: &Path) {
         // vendor.py writes .cargo/config.toml into the workspace root,
         // but tests write their own per-package configs. Remove it so
         // we don't leave the workspace pointing at vendored sources.
+        // CR claude for eric: [bug] vendor.py never writes .cargo/config.toml: its main
+        // only creates .cargo/ and prints the snippet. So this line deletes the
+        // developer's own <ws>/.cargo/config.toml, which git cannot restore because
+        // .gitignore excludes .cargo, whenever the release gate reaches
+        // created_package_compiles or build_standalone_produces_working_binary. The
+        // tests already write per-package configs, so this remove_file and the comment
+        // above it can both go. vendor.py's docstring item 4 and its "Step 4" comment
+        // claim the same write, and its printout says .config/cargo.toml where it means
+        // .cargo/config.toml. probe: design/review-2026-10-05/repro/package-08.sh runs
+        // the real vendor.py and test in a throwaway copy (PRESENT after vendor.py,
+        // DELETED after the test). (package-08)
         let _ = std::fs::remove_file(ws.join(".cargo/config.toml"));
     });
 }
@@ -766,6 +777,17 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             .filter_map(|v| v.as_str())
             .map(String::from)
             .collect();
+        // CR claude for eric: [test-gap] This pin only checks that each
+        // DEFAULT_PACKAGES name has a shell feature, while is_stdlib_package
+        // (lib.rs:240) routes add, remove and migration by this hand-copied list. A
+        // stdlib crate added to graphix-shell/Cargo.toml but not to the list is routed
+        // by `add` as an external package. update_cargo_toml then replaces its optional
+        // dependency with a plain version string while its `dep:` feature stays, a
+        // manifest cargo refuses. Once `update` has installed it as stdlib, `remove`
+        // answers 'is not installed' (probe: a fake shell source with an optional
+        // graphix-package-math plus feature, then `graphix package add math@0.9.0
+        // --skip-crates-io-check`). Assert stdlib_packages_in_cargo_toml(shell
+        // Cargo.toml) == DEFAULT_PACKAGES ∪ INTERNAL_PACKAGES. (package-09)
         for &name in DEFAULT_PACKAGES {
             if name == "core" {
                 continue;

@@ -104,6 +104,20 @@ pub mod auto_pixel;
 pub use auto_iterate::FusedIterateAuto;
 pub use auto_pixel::FusedPixelAuto;
 
+// CR claude for eric: [dead] Nothing in this workspace or ../netidx calls
+// bench::mandelbrot_iterate, iterate_auto or pixel_auto. Even so, the shell's default
+// `all` feature compiles this package and registers it in every session and image, and
+// every change to the BuiltIn, Apply or image traits has to edit it. Its docs name
+// things that do not exist: mod.gxi and auto_*.rs credit
+// `graphix_compiler::fusion::emit_function_kernel` and
+// `bench/mandelbrot_bench_annotated.gx`, and design/strict_fusion.md:98 calls
+// mandelbrot_iterate the bench's un-fused comparison point, though no bench calls it.
+// FusedIterateAuto and FusedPixelAuto keep the default Effect::Async for pure
+// functions, and mandelbrot_iterate with a negative max_iter on a point that never
+// escapes loops about 2^63 times inside one update, which polls no interrupt. Deleting
+// the package also means dropping INTERNAL_PACKAGES (graphix-package/src/lib.rs:231)
+// and the assertion at graphix-package/src/test.rs:777. probe:
+// design/review-2026-10-05/repro/small-pkgs-18.gx (small-pkgs-18)
 graphix_derive::defpackage! {
     builtins => [MandelbrotIterate, FusedIterateAuto, FusedPixelAuto],
 }

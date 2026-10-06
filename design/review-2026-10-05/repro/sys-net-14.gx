@@ -1,0 +1,22 @@
+// sys-net-14: concurrent first touches of sys::net build several netidx
+// universes for one context; all but one are thrown away.
+//
+// NetHandles::get_or_materialize (stdlib/graphix-package-sys/src/netstate.rs:113-192)
+// checks the OnceLock, builds the handles outside it (in Internal mode: a
+// gx-netidx thread running an InternalOnly resolver, publisher and
+// subscriber) and only then calls `set`. Forked slots that reach it before
+// the first build finishes each spawn a thread and build a universe; the
+// losers are dropped, and each blocked its eval-pool worker on the spin-up.
+//
+// command: GRAPHIX_PAR=force graphix --no-netidx --no-cache design/review-2026-10-05/repro/sys-net-14.gx
+//          while counting the distinct threads named gx-netidx in
+//          /proc/<pid>/task/*/comm (polled every 0.5 ms)
+//
+// expected: one gx-netidx thread per run (one universe per context).
+// observed (HEAD c722befe, debug build): 7 and 11 distinct gx-netidx
+//   threads, all alive at once, in 2 of 20 forced runs of this file (and
+//   2 to 6 in 4 of 15 runs of the map alone, without the exit); 1 in
+//   every run under GRAPHIX_PAR=off. The program's values are correct
+//   either way.
+let r = array::map(array::init(16, |i| "/r/[i]"), |p| sys::net::publish(p, 1));
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0)

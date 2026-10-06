@@ -89,6 +89,17 @@ async fn checkbox_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for eric: [test-gap] The ten *_with_reactive_* tests bind a constant
+// reference, view, drain and view again. Nothing writes the referent, nothing is
+// asserted, and drain()'s changed flag is dropped, so a widget whose handle_update
+// ignored its reference would pass them all. checkbox_with_reactive_ref/_value (:92,
+// :322) and text_input_with_reactive_ref/_value (:120, :350) are near-copies,
+// button_with_callback (:71) is button_renders plus an unused `let count = &0`, and
+// table_column_mismatch_* (:492, :504) repeat the first two cases of interaction_test's
+// table_cell_count_mismatch_lays_out. Bind the value (`let c = false; checkbox(..,
+// &c)`), write it with compile_ref(find_bind_id("test::c")).set(..) as
+// data_table_test.rs:1119-1121 does, and assert drain() returns true. Delete the
+// copies. (tests-ui-10)
 async fn checkbox_with_reactive_ref() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\

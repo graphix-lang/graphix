@@ -4,6 +4,13 @@
 //! current module [`Generation`], cold and warm alike; [`WrappedKernel`]
 //! and the wrapper-seam value packing ([`pack_value_to_u64`]).
 
+// CR claude for eric: [doc-drift] The module doc above, emit/mod.rs:7-8 and CacheKey's
+// doc (735) make `Jit` the emitter and the owner of the `by_kernel` cache, but
+// `Emission` (its `Names` and `Caches`) emits and caches, and `Jit` only compiles and
+// installs at link. emit/mod.rs:13-17 gives the calling convention as (disc, payload)
+// pairs and leaves out the CTX_WIRE_SLOTS words (cycle context, state, site) in front
+// of them. abi.rs:230-234 says an id-less local's `name` goes unread, yet
+// JitEnv::lookup (abi.rs:274-280) matches id-less locals by name. (f-jit-14)
 use crate::{
     Node, Rt, UserEvent,
     env::Env,
@@ -938,6 +945,17 @@ impl Emission {
             layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
         by_id.sort_unstable_by_key(|(id, _)| *id);
         for (id, l) in by_id.drain(..) {
+            // CR claude for eric: [perf] This interns the task's layout lists before
+            // `same` exists, so each list still names the task's own copies of kernels
+            // the parent already has. A task body with an external call site (layout !=
+            // 0) is rekeyed to a layout no parent region produces, so it is never
+            // `moved`, and each task that reached it compiles its own copy; in practice
+            // only layout-0 bodies dedupe. In the probe (20 array elements `g(x + i) +
+            // fact(..)`, with g calling h), the program image holds 19 more records of
+            // g under the default task walk than under GRAPHIX_FUSE_SERIAL=1, while h
+            // and fact match, against CLAUDE.md's 'the output is the serial walk's'.
+            // Compute `same` first and map each task layout list through it before
+            // interning. probe: design/review-2026-10-05/repro/f-jit-06.sh (f-jit-06)
             layouts.insert(id, self.caches.intern_layout(l));
         }
         let layout = |l: u32| if l >= first_layout { layouts[&l] } else { l };
@@ -1164,6 +1182,17 @@ impl Jit {
             .spawn(move || backend_all(&*isa, work));
         match compiled {
             Ok(compiled) => self.in_flight = Some(InFlight { pending, compiled }),
+            // CR claude for eric: [bug] By the time the spawn fails, take_functions has
+            // already moved every Function out of `pending` into `work`, and the failed
+            // spawn dropped `work` along with its closure. This fallback therefore
+            // compiles the Function::new() placeholders. Cranelift panics on them
+            // (remove_constant_phis: entry block unknown) and the whole compile dies.
+            // So a refused batch thread (EAGAIN from pids.max, RLIMIT_NPROC or a
+            // refused stack mmap) never gets the synchronous link this arm is meant to
+            // give it. Keep `work` until the thread exists: send it over a channel
+            // after spawn succeeds, or take it back on Err. probe:
+            // design/review-2026-10-05/repro/f-jit-03.sh; without the shim, systemd-run
+            // --user --scope -p TasksMax=46 hits it too. (f-jit-03)
             Err(_) => self.link(pending),
         }
     }
@@ -1345,6 +1374,15 @@ impl Jit {
              kernel drops) and reinstalling in a fresh module",
             self.retired
         );
+        // CR claude for eric: [risk] If this reinstall fails too, the fresh generation
+        // stays current with the failed install's declared and defined functions and
+        // constant symbols still in it, which the Generation doc says cannot happen
+        // ('never finalized again'). The next finalize_definitions here would relocate
+        // a leftover thunk or chunk against its never-defined owner, and cranelift-jit
+        // panics with 'can't resolve symbol'. Today every path panics anyway (the link
+        // panics on this error, and a warm region too big for a fresh arena cannot link
+        // cold either), so this is latent. Retire the generation again before returning
+        // the error. (f-jit-07)
         let p = self.generation.install(wrappers)?;
         Ok((p, self.generation.code.clone()))
     }
@@ -1360,6 +1398,17 @@ impl Jit {
         own_site: Option<SiteLayout>,
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
     ) -> Result<WrappedKernel> {
+        // CR claude for eric: [perf] A warm start installs and finalizes each restored
+        // region on its own: FusedKernel and SlotShare image_decode call this once per
+        // region, and so does every lazily decoded body. cranelift-jit's arena never
+        // extends a finalized segment, so each region costs at least a page of arena
+        // and RSS plus an mprotect (and a membarrier IPI on aarch64), where a cold link
+        // packs a whole batch under one finalize. With 600 one-line #[native] regions,
+        // GRAPHIX_PROFILE counts 601 finalizes warm against 3 cold, and under
+        // GRAPHIX_JIT_ARENA=1048576 the warm start retires two generations where the
+        // cold run retires none. Queue the decoded wrappers and install them with one
+        // Generation::install when the decoder session ends. probe:
+        // design/review-2026-10-05/repro/f-jit-05.sh (f-jit-05)
         let (ptrs, code) = self.install(std::slice::from_ref(wrapper))?;
         let entry = Entry { fn_ptr: ptrs[0], _code: code, wrapper: wrapper.clone() };
         Ok(WrappedKernel {
@@ -1372,6 +1421,13 @@ impl Jit {
     }
 }
 
+// CR claude for eric: [dead] state_words, slot_table_words and state_self_blocks are
+// written (1517-1519, 1547-1549) and never read. A callee body claims only through its
+// site block, and the region parent's values go straight into its WrappedKernel, so the
+// fields and their 'filled in phase 2' docs send a reader after nothing, and rustc does
+// not flag them. Delete them. lowering::CachedKernel, the lambda signature behind
+// LambdaCallInfo, has the same name; this cache of bodies would read better as
+// CachedBody. (f-jit-12)
 struct CachedKernel {
     /// The body's id in [`Names`].
     func_id: FuncId,
@@ -1497,6 +1553,19 @@ fn compile_region_inner(
     let parent_fid = em.names.local(&parent_sig);
     funcids.push((parent_key, (parent_fid, parent_sig)));
     for (key, k) in callees {
+        // CR claude for eric: [bug] A callee body can miss `by_kernel` here only
+        // because its layout differs: any body with a lambda call keys on this region's
+        // whole callee list. Phase 2 then emits it from this region's instance
+        // (`emitters`) against `k`. `k` is the signature `build_lambda_kernel` cached
+        // for the first instance reached (lowering.rs:933), and its params bind that
+        // instance's formal BindIds. Every read of a formal misses with `emit_clif:
+        // undefined local`, so the region de-fuses and a correct `#[native]` is
+        // refused. Ordinary shapes hit it: select arms that reach `g -> h` both
+        // directly and through a wrapper, or two statements of a module with an
+        // interface. The outcome depends on walk order: `GRAPHIX_FUSE_SERIAL=1` refuses
+        // two such top-level statements that the task walk fuses, which contradicts
+        // design/parallel_compile.md:163-170. probe:
+        // design/review-2026-10-05/repro/f-jit-01.gx (f-jit-01)
         let key = CacheKey { kernel: *key, layout: layout_of(*key) };
         let entry = match em.caches.by_kernel(&key) {
             Some(e) => {
@@ -1775,6 +1844,16 @@ fn emit_trampoline(
         let out = b.block_params(entry)[1];
         // Loading a scalar payload at its narrow CLIF type is sound because
         // the packer stores the sign/zero-extended form.
+        // CR claude for eric: [risk] These narrow loads read a value's low bytes only
+        // on a little-endian host. On a big-endian one (cranelift-native targets s390x,
+        // and compile_top gates fusion only off Windows, lib.rs:2179) an i32 input of 5
+        // loads as 0. The comment above holds only on little-endian, and so does the
+        // value-word encoding both engines share: TagValue::masked (tval.rs:265)
+        // transmutes value_words' widened payload back into a Value, so the node-walk
+        // would misread every narrow scalar there too, and fixing this load alone fixes
+        // nothing. No big-endian target is supported; a crate-level `compile_error!`
+        // under `cfg(target_endian = "big")` would say so instead of computing wrong
+        // values. (f-jit-10)
         let vals: SmallVec<[ClifValue; 16]> = target_sig
             .params
             .iter()
@@ -1819,6 +1898,13 @@ pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     if kernel_abi::scalar_prim_of_value(v) != Some(prim) {
         return None;
     }
+    // CR claude for eric: [structure] This match repeats value_words' scalar widening
+    // (tval.rs:108-117: sign-extend, zero-extend, float bits), and the two must agree.
+    // Kernel constants (scalar.rs:247) and the runtime's scalar staging (kernel.rs:265)
+    // use this table, while every other seam uses value_words, whose doc points back
+    // here. Once the prim check passes, `value_words(v)[1]` is the same word for every
+    // scalar variant, so the body can be `(scalar_prim_of_value(v) ==
+    // Some(prim)).then(|| value_words(v)[1])`. (f-jit-15)
     Some(match *v {
         Value::I8(x) => x as i64 as u64,
         Value::I16(x) => x as i64 as u64,

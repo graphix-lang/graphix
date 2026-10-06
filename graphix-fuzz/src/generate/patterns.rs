@@ -42,6 +42,16 @@ fn bind_name(inner: &mut GenCtx, rng: &mut Rng, mark: usize) -> String {
     n
 }
 
+// CR claude for eric: [test-gap] gen_pattern never emits a `name@ pattern` capture, a
+// partial struct `{f, ..}`, a slice suffix `[init.., x]` or a fixed multi-element slice
+// `[a, b]`. full_coverage_select's or-arms bind nothing, and the only binding or-arm is
+// general_select's integer pair `(l, x) | (x, l)`. The JIT lowers these forms natively
+// (captures typed by bind_captures, the `all@ [..]` owned bind, or-alternatives binding
+// tag payloads typed as the union). An interp/JIT divergence in them can only come from
+// mutated fixtures: `gen 3000 7` and `gen 2000 11 --reactive` contain none of these
+// forms. Add each at low odds. A capture of a tag pattern has the narrowed tag's type,
+// so pushing it at the whole union's type would give a later full-coverage select over
+// it dead arms. (fuzz-gen-b-05)
 fn gen_pattern(
     inner: &mut GenCtx,
     rng: &mut Rng,
@@ -345,6 +355,13 @@ fn general_select(
     // a bound or-alternation over an equal-typed integer pair: both
     // alternatives bind the same name at the same type; structurally
     // distinct and refutable
+    // CR claude for eric: [doc-drift] This unguarded or-arm can come before the
+    // unguarded refutable arm, which the module doc's layout (line 8) says has nothing
+    // unguarded before it. It can also cover that arm completely: `(i64:1, v1) | (v1,
+    // i64:2)` followed by `(i64:1, _)` passes `--check`, because dead arms are found by
+    // type, not by value. What keeps the final arm live is that literal patterns never
+    // complete a type's coverage. Add the or-arm to the layout and state that reason.
+    // (fuzz-gen-b-13)
     if let GenType::Tuple(es) = &scrut_ty {
         if es.len() == 2
             && es[0].render() == es[1].render()

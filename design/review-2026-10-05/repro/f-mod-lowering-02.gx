@@ -1,0 +1,30 @@
+// f-mod-lowering-02: a fed argument's raise is delivered before the raises
+// of the fused arguments to its left (engine divergence).
+//
+// `once` has no fast call, so `try_fuse_feeding_args` (fusion/mod.rs) feeds
+// the second argument to the kernel. `FusedKernel::update` polls its feeders
+// first, so that argument's `?` delivers "y" at once, and the kernel's queued
+// raise of "x" (the first argument) is delivered after the run, into the
+// next cycle. The node-walk evaluates arguments left to right: "x" first.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-mod-lowering-02.gx
+//   expected: AGREE
+//   observed: DIVERGENCE — fusion/JIT bug (interp != jit), exit 1
+//     interp: 1: `InvalidCast("can't cast \"x\" ..")  2: `InvalidCast("can't cast \"y\" ..")
+//     jit (nocache, cold, warm): 1: "y"  2: "x"
+//
+// command: timeout -s KILL 5 graphix --no-cache [--no-fusion] design/review-2026-10-05/repro/f-mod-lowering-02.gx
+//   --no-fusion prints the "x" error then the "y" error; the default (fused)
+//   run prints "y" then "x", so `last` settles on a different error.
+//
+// Controls: the fed argument written first, or `once` removed (nothing fed),
+// agree; a fused raising argument between two fed ones moves to the end.
+let s = "x";
+let t = "y";
+let last: string = never();
+{
+  catch(e) last <- "[(e.0).error]";
+  let f = |a: i64, b: i64| a + b;
+  f(cast<i64>(s)?, cast<i64>(once(t))?)
+};
+last

@@ -244,6 +244,19 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// that matches anything or by the union of what the irrefutable
     /// atoms, `null` (its type's one value), bool literals, literal pools
     /// and slice ladders cover.
+    // CR claude for eric: [structure] Three walks decide what an arm covers, each with
+    // its own rules: this one (mtypes, the itype pre-check, a pool of refutable atoms
+    // only, ladders), check_dead_arms at :379 (null and bool literals, a pool of every
+    // unguarded atom, ladders) and the narrowing in typecheck0_with at :1254
+    // (irrefutable atoms only). They disagree. `(true, `A), (b, `B), (false, `A)` over
+    // `(bool, [`A, `B])` is refused both with and without a trailing `_`
+    // (design/review-2026-10-05/repro/x-typecheck-patterns-06.sh), and the bind after a
+    // `null =>` arm still holds null (repro c-select-seq-06.gx). Every pool fix (type
+    // predicates, leaf alignment) also has to be made in both pools. One walk that
+    // computes, per arm, the type still reaching it would decide all three: binds
+    // narrow to it, an arm is dead when it cannot match it, and the select is
+    // exhaustive when nothing gets past the last arm. The itype step that settles an
+    // open scrutinee stays. (x-typecheck-patterns-08)
     fn check_coverage(&self, ctx: &CompileCtx<R, E>, scrut: &Type) -> Result<()> {
         let env = &ctx.env;
         let mut mtypes: LPooled<Vec<Type>> = LPooled::take();
@@ -265,6 +278,20 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 None if wild => wildcard = true,
                 None => {
                     for (sp, at) in pat.atoms() {
+                        // CR claude for eric: [bug] Coverage pools only refutable
+                        // atoms, but check_dead_arms (line 478) pools every unguarded
+                        // atom, so the two checks disagree. A composite pattern whose
+                        // only heads are payload-less variants, such as `(b, `B)`, is
+                        // irrefutable and adds only its type to mtypes. So `select v {
+                        // (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 }` over
+                        // `(bool, [`A, `B])` is refused for missing cases, and adding
+                        // `_ => 4` is refused as an unreachable arm. The itype
+                        // pre-check below (line 308) splits one position only, so it
+                        // refuses the full grid `(`X, `A), (`X, `B), (`Y, `A), (`Y,
+                        // `B)` before the pool runs, with the same catch-22; pooling
+                        // irrefutable atoms alone does not fix that case. probe:
+                        // design/review-2026-10-05/repro/x-typecheck-patterns-06.sh
+                        // (x-typecheck-patterns-06)
                         if !sp.is_refutable() {
                             mtypes.push(at)
                         } else if let StructPatternNode::Literal(Value::Bool(b)) = sp {
@@ -475,6 +502,19 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     }
                     _ => (),
                 }
+                // CR claude for eric: [bug] A refutable arm that repeats earlier
+                // unguarded arms, or is covered by them, is never reported. This walk
+                // removes from `atype` only irrefutable atoms, null, a true/false pair
+                // and completed pools, so `0 => 1, 0 => 2, _ => 3`, `true => 1, true =>
+                // 2, false => 3` and `(true, _) => 1, (true, false) => 2, (false, _) =>
+                // 3` all pass with a dead second arm. The same duplicate inside one arm
+                // (`0 | 0`) is refused (pattern.rs:462; pin or_dup_alt_err says dead
+                // alternatives are errors "like dead arms"), so the rule holds within
+                // an arm but not across arms. Refuse a later unguarded atom that is
+                // structurally equal to an earlier unguarded one, the way pattern.rs
+                // compares alternatives, and have the pool refuse an arm whose every
+                // head combination its group has already claimed. probe:
+                // design/review-2026-10-05/repro/c-select-seq-07.gx (c-select-seq-07)
                 if let Some(m) = pool.claim(env, scrut, sp)? {
                     atype = atype.diff(env, &m)?;
                 }
@@ -580,6 +620,11 @@ fn deselect<R: Rt, E: UserEvent>(
     if sleep {
         super::deselecting_arm(true, || body.sleep(ctx));
     }
+    // CR claude for eric: [structure] This closure is arm_refs (:590) written out
+    // again, and Select::refs (:1086-1089) writes it out a third time (the body's refs,
+    // then bound_by spelled out). Pass the whole arm here and call arm_refs in both
+    // places, so an arm's reads are collected one way for the tracker's build, its
+    // refresh and the select's refs. (c-select-seq-11)
     tracked.refresh(&ctx.env, j, |r| {
         body.refs(r);
         bound_by(pat, r)
@@ -662,6 +707,17 @@ fn pooled_leaves(
             | StructPatternNode::Struct { .. } => {
                 return crate::stack::ensure_sufficient(|| children(env, sp, t, out));
             }
+            // CR claude for eric: [bug] A nested or-pattern stops the leaf walk here,
+            // and is_refutable(Or) keeps the arm out of the irrefutable atoms, so
+            // nested alternation never counts toward coverage. `select (true, 3) {
+            // (true | false, n) => n }` is refused with "missing match cases: no
+            // unguarded arm irrefutably covers (bool, i64)". `(true, `A | `B) => 1,
+            // (false, _) => 2` and `P(`A | `B) => 1, `Q => 2` are refused the same way,
+            // while the same arms written as top-level alternatives pass, so the user
+            // has to add a `_` arm that can never match. Let a leaf carry the set of
+            // heads named by an Or of pool heads, and have PoolGroup::complete test
+            // membership in that set. probe:
+            // design/review-2026-10-05/repro/c-select-seq-08.gx (c-select-seq-08)
             _ => return Ok(false),
         };
         out.push(Leaf { head, domain: heads(env, t)? });
@@ -795,6 +851,16 @@ impl LiteralPool {
         sp: &StructPatternNode,
     ) -> Result<Option<Type>> {
         let Some(shape) = Shape::of(sp) else { return Ok(None) };
+        // CR claude for eric: [bug] The pool credits an atom by its structure alone and
+        // never reads the arm's explicit type predicate. So `(bool, i64) as (true, x)`
+        // and `(bool, string) as (false, x)` complete `(bool, [i64, string])`, though
+        // `(false, 5)` and `(true, "s")` match neither arm. check_coverage then accepts
+        // this non-exhaustive select, which in both engines is a silent standing bottom
+        // on those values. check_dead_arms (line 478) also refuses a reachable arm
+        // placed after them as "unreachable arm". Pool an atom against `m` only when
+        // its type predicate contains `m`, as the slice ladder does at line 327. probe:
+        // design/review-2026-10-05/repro/x-typecheck-patterns-02.gx
+        // (x-typecheck-patterns-02)
         let Some(m) = shape.member(env, scrut)? else { return Ok(None) };
         let Some(leaves) = pooled_leaves(env, sp, &m)? else { return Ok(None) };
         let i = match self.groups.iter().position(|g| g.shape == shape) {
@@ -805,6 +871,18 @@ impl LiteralPool {
             }
         };
         let g = &mut self.groups[i];
+        // CR claude for eric: [bug] Leaves are compared by index, but an index is not a
+        // position. pooled_leaves (:642) descends into a nested tuple or struct only
+        // where the arm's own pattern does, so `((true, _), _)` has leaves at 0.0, 0.1,
+        // 1 and `(_, (false, _))` has them at 0, 1.0, 1.1. This count check is the only
+        // alignment test, and complete() (:818) compares heads and takes domains by
+        // index, so arms that nest differently complete a group that misses values.
+        // check_coverage then accepts a non-exhaustive select, which is silently bottom
+        // for the gap on both engines; check_dead_arms refuses the arm that fills the
+        // gap as unreachable; and an exhaustive set whose arms differ in leaf count is
+        // refused. Key each leaf by its path in the scrutinee type, and let a bind or
+        // `_` at a coarser path match every position under it. probe:
+        // design/review-2026-10-05/repro/c-select-seq-02.gx (c-select-seq-02)
         if g.done || g.arms.iter().any(|a| a.len() != leaves.len()) {
             return Ok(None);
         }
@@ -884,6 +962,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         } = self;
         let LazyArmFacts { tracked, sleep_on_deselect, shallow } =
             arm_facts.as_mut().expect("arm facts built above");
+        // CR claude for eric: [bug] The wake bit is taken before the bottom-scrutinee
+        // and `ChainOut::Undet` early returns, so a select whose wake cycle is a no-arm
+        // window loses its wake. When the scrutinee or guard comes back with the same
+        // arm, the same-arm path runs it with init and wake_init false while the arm's
+        // nodes still hold their own slept bits. A `let x = 0; x <- ..` in the arm then
+        // republishes its initializer over its last write (Bind's wake_refresh without
+        // wake_phantom), and the arm's constants do not fire, so its entry actions are
+        // skipped. Whether arm state survives the sleep thus depends on whether a
+        // transient bottom lands exactly on the wake cycle; both engines agree, so the
+        // fuzzer cannot see it. Keep the bit until an arm is evaluated, and run a
+        // deferred-wake same-arm resumption under the wake view as the
+        // becoming-selected path does. probe:
+        // design/review-2026-10-05/repro/c-select-seq-04.gx (c-select-seq-04)
         let woke = slept.take();
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
@@ -903,6 +994,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         && pat.guard.is_some()
                         && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
                 {
+                    // CR claude for eric: [bug] The guard tick delivers the arm's binds
+                    // with bind_event, which writes the store as well as the overlay.
+                    // unbind_event below removes only the overlay, so an untaken
+                    // guarded arm's binds keep every scrutinee value its shape admits,
+                    // stamped this cycle with the scrutinee's tag. A closure or
+                    // reference made in the arm then reads values the arm never
+                    // matched, as fresh fires: `(k, b) if b => |u: i64| k * 100 + u`,
+                    // taken only at k = 2, gives 303 404 505 606 for f(n) and fires
+                    // f(0) on every n, while the same test written `(k, true)` gives
+                    // 203..206 and fires f(0) once. The store should change only when
+                    // the arm is taken. probe:
+                    // design/review-2026-10-05/repro/c-select-seq-05.gx
+                    // (c-select-seq-05)
                     pat.bind_event(ctx, v, arg_prod);
                     true
                 }
@@ -917,6 +1021,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // emission is decided by the consulted set below.
         let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
         // A bottom scrutinee bottoms the select; it consults no guards.
+        // CR claude for eric: [bug] This return, and the ChainOut::Undet return below,
+        // leave the selected arm selected and awake, but it is neither updated nor
+        // slept. TrackedFires catches up the arm's free inputs, but anything that lands
+        // inside the arm during the window is lost for good. A timer tick is lost, so
+        // the Timer never re-arms. An async reply is lost, so a seq step waiting on it
+        // never completes and the machine drops every later trigger. An arm-local `<-`
+        // is lost: the node-walk then rides pre-window residents while a kernel reads
+        // the store, so the engines disagree. Pause the arm for the window as a
+        // deselect does, or keep running it with its output dropped (that breaks
+        // SELECT_UNDECIDABLE_QUIET). probe:
+        // design/review-2026-10-05/repro/c-select-seq-01.gx prints 1 2 3 4 4 and stops;
+        // with `2 => 1` it counts to 28. (c-select-seq-01)
         if arg.tag.is_bottom() {
             return resident.set_bottom(arg_prod.triggers());
         }
@@ -1009,6 +1125,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // birth and gets `init` only.
                 let (init, wake) = (ctx.event.init, ctx.event.wake_init);
                 ctx.event.init = true;
+                // CR claude for eric: [readability] The comment at :1007-1009 misstates
+                // this rule. Every arm that sleeps on deselect enters under the wake
+                // view, including on its first selection, when it has never slept. A
+                // pure arm enters under `init` alone at every selection, not only at
+                // its birth, and it was updated each time it was selected before. A
+                // reader concludes that an impure arm's first selection takes the birth
+                // view, and it does not. State the rule instead: an arm that sleeps on
+                // deselect enters under the wake view, and a pure non-recursive arm,
+                // which has nothing to pause, enters under `init` alone.
+                // (c-select-seq-12)
                 if sleep_on_deselect[i] {
                     ctx.event.wake_init = true;
                 }
@@ -1018,6 +1144,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.
+            // CR claude for eric: [test-gap] Since exhaustiveness is enforced, only a
+            // checker bug can leave no arm matching, yet that case is silent. The
+            // select goes bottom here, the JIT's last-arm fall-through
+            // (fusion/emit/select.rs:853) jumps to the same bottom, nothing is logged,
+            // and the two engines agree. So graphix-fuzz reports AGREE and soaks cannot
+            // surface a coverage hole:
+            // design/review-2026-10-05/repro/c-select-seq-02.gx is a non-exhaustive
+            // select the checker accepts, and both engines give an empty trace for its
+            // uncovered values. Log a no-match at error level, once per select site and
+            // in both engines, as a swallowed `$` is logged, and have the fuzzer count
+            // that log as a single-run finding. (x-typecheck-patterns-09)
             ChainOut::Taken(None) => {
                 if let Some(j) = selected.take() {
                     deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
@@ -1257,6 +1394,22 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // earlier unguarded irrefutable atom. The `any_as_tvar` view
             // keeps a `_` slot from short-circuiting the walk.
             let narrowed = pat.type_predicate.any_as_tvar();
+            // CR claude for eric: [bug] An or-arm's payload binds share one cell that
+            // pattern compile already unified: pattern.rs:139 compares two open cells,
+            // so the exactly-equal-types check always passes. Here that cell takes the
+            // first alternative's member type, and later alternatives only have to fit
+            // inside theirs. So `A(x) | `B(x) => x, _ => 0 over [`A(i64), `B([i64,
+            // string]), `C] is accepted with x: i64, while the runtime tests only
+            // `B(Any): `B("s") puts a string in the i64 slot, the node-walk returns "s"
+            // from a -> i64 function, the JIT reads 0, and a select that does not fuse
+            // whole panics at fusion/kernel.rs:243 when x feeds a kernel. The result
+            // also depends on alternative order (`B(x) | `A(x) gets x: [i64, string]),
+            // and the pins or_equal_types_err and or_payload_unequal_rejected are
+            // refused by the dead-alternative check rather than by this rule, so the
+            // rule is not pinned. Compare each shared name's narrowed per-alternative
+            // payload types both ways here, before one cell serves them, and report the
+            // equal-types message. probe:
+            // design/review-2026-10-05/repro/c-pattern-03.gx (c-pattern-03)
             ntype.contains(&ctx.env, &narrowed)?;
             pat.bind_captures(&ctx.env, &narrowed)?;
             // The guard typechecks after the narrowing so it sees the
@@ -1270,6 +1423,17 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
+            // CR claude for eric: [bug] Later arms' binds are narrowed only by earlier
+            // irrefutable atoms. check_coverage and check_dead_arms also count a `null`
+            // literal, a true/false pair, a completed literal pool and a complete slice
+            // ladder as covering their member. So a bind keeps a member the dead-arm
+            // walk has proven cannot reach it. Over `x: [i64, null]`, `select x { null
+            // => 0, v => v + 1 }` is refused with `[i64, null] + i64` while `null as _
+            // => 0` is accepted; `true => .., false => ..`, `{d: `A, ..}`/`{d: `B, ..}`
+            // pools and `[]`/`[x, tl..]` ladders fail the same way, and `-> i64 select
+            // o { null => 0, n => n }` is refused. The narrowing should subtract per
+            // arm exactly what check_dead_arms subtracts. probe:
+            // design/review-2026-10-05/repro/c-select-seq-06.gx (c-select-seq-06)
             if pat.guard.is_none() {
                 for (sp, at) in pat.atoms() {
                     if !sp.is_refutable() {

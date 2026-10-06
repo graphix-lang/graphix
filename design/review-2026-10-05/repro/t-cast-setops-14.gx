@@ -1,0 +1,41 @@
+// t-cast-setops-14: select coverage accepts a non-exhaustive select when its
+// arm predicates name instances of one recursive (or non-linear) typedef.
+//
+// Type::union_ref_params (graphix-types/src/typ/setops.rs:144-174) unions two
+// same-scope refs to one definition that differ in one parameter by unioning
+// that parameter, and keeps the merge when it contains both inputs. Where the
+// parameter recurses or occurs twice in the body, the merge holds more than
+// the two inputs: L<i64> u L<string> becomes L<[i64, string]>, which admits
+// mixed lists. Select coverage unions its arms' predicates with Type::union
+// (graphix-compiler/src/node/select.rs:292 and 338), so the arms below are
+// taken to cover L<[i64, string]>. Refs written in two arms' own patterns
+// carry two block scopes and expand instead (refused, correctly); refs reached
+// through typedef names share the typedef's scope and merge.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-14.gx
+//          (graphix-fuzz run: every mode's trace is empty)
+//
+// expected: refused, missing match cases, as it is with the predicates written
+//   inline (`L<i64> as _ => .., L<string> as _ => ..`).
+// observed (HEAD c722befe, debug build): --check passes; the run prints
+//   nothing (no arm matches `Cons(1, `Cons("x", `Nil))) and exits 0.
+//   With `x: L<[i64, string, f64]>` the refusal shows the merged coverage
+//   type: "L<[i64, string]> does not contain ...".
+//   The non-linear form behaves the same: `type P<'a> = ('a, 'a); type Q =
+//   `W(P<i64>); type R = `W(P<string>)` over `x: `W(P<[i64, string]>) =
+//   `W((1, "x"))` is accepted and matches nothing, while the same arms written
+//   inline (`W(P<i64>) as _, `W(P<string>) as _) are refused. So does a
+//   parameter under a collection: `type A<'a> = Array<'a>; type Ia = A<i64>;
+//   type Sa = A<string>` over `x: A<[i64, string]> = [1, "x"]` is accepted and
+//   matches nothing, while aliases of the builtin Array<i64>/Array<string> are
+//   refused.
+type L<'a> = [`Nil, `Cons('a, L<'a>)];
+
+type Ints = L<i64>;
+
+type Strs = L<string>;
+
+let x: L<[i64, string]> = `Cons(1, `Cons("x", `Nil));
+let r = select x { Ints as _ => "ints", Strs as _ => "strings" };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

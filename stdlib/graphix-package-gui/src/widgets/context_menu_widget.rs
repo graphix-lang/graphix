@@ -103,7 +103,31 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             shell,
             viewport,
         );
+        // CR claude for eric: [bug] This sets `open` on every right-click over the
+        // child, even when this menu cannot show. That happens in three cases: an inner
+        // context_menu already captured the click (there is no
+        // `shell.is_event_captured()` check here, unlike iced_keyboard_area.rs:133), a
+        // child's pick_list dropdown covers this menu, or `items` is empty. The flag
+        // survives, so the menu pops up unprompted at the old right-click position once
+        // the cause goes away: right after an inner menu item is chosen, after a
+        // dropdown option is picked, or when the items arrive. The next click there
+        // then chooses its first item. A capture check covers only the nested case,
+        // because pick_list ignores right-clicks. probe:
+        // design/review-2026-10-05/repro/gui-widgets-a-08.rs
+        // (`nested_inner_item_reopens_outer`: choose Rename, and the outer "New folder"
+        // menu is then open at the same spot). (gui-widgets-a-08)
         let state = tree.state.downcast_mut::<State>();
+        // CR claude for eric: [doc-drift] menu.md says a shortcut triggers its action
+        // globally within the window, and book/src/examples/gui/context_menu.gx shows
+        // Ctrl+C and Ctrl+V. This match has no shortcut arm, though. Only
+        // MenuOverlay::update matches shortcuts, and that overlay exists only while the
+        // menu is open (OwnedMenuBar::update handles them globally). So a context
+        // menu's shortcuts do nothing until the menu is opened with a right-click.
+        // Either match the item shortcuts here (deciding which of several per-row menus
+        // owns a key) or document that context-menu shortcuts work only while the menu
+        // is open. probe: design/review-2026-10-05/repro/gui-widgets-a-12.rs (closed
+        // menu: Ctrl+C publishes nothing; menu::bar and an opened menu: the Call).
+        // (gui-widgets-a-12)
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 if cursor.is_over(layout.bounds()) {
@@ -161,6 +185,19 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         }
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.desc,
+            // CR claude for eric: [bug] overlay() drops `translation`. Inside a
+            // scrollable, `state.position` is in content coordinates, because iced
+            // gives children the cursor plus the scroll offset and expects overlays to
+            // add `translation`, as pick_list and tooltip do. So the menu opens at the
+            // cursor plus the scroll offset: scrolled 1000px, it is laid out 900px
+            // below a 200px window and cannot be used. OwnedMenuBar::overlay
+            // (menu_bar_widget.rs:519) drops it the same way. MenuOverlay::layout also
+            // ignores its `bounds`, so a menu opened near the bottom or right edge runs
+            // off the window; iced's own menu flips above and stays within the bounds.
+            // Probe: design/review-2026-10-05/repro/gui-widgets-a-05.rs (copy it to
+            // stdlib/graphix-package-gui/tests/ and run cargo test --test
+            // review_gui_widgets_a_05); iced's pick_list in the same scrolled list is
+            // the passing control. (gui-widgets-a-05)
             position: state.position,
             open: Some(&mut state.open),
         })))

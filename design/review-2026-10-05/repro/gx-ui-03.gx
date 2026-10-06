@@ -1,0 +1,56 @@
+// gx-ui-03: browser: selected_path never fires without #selected_row, and both
+// outputs go stale on an empty listing
+// (stdlib/graphix-package-tui/src/graphix/browser.gx:81-85).
+//
+// browser.gx:81 writes *selected_row and lines 82-85 build selected_path by
+// reading *selected_row back. Without #selected_row the parameter is its
+// default &never(), a reference to a non-variable expression, which has
+// nowhere to write (ConnectDeref::resolve, graphix-compiler/src/node/mod.rs),
+// so the read-back stays bottom and selected_path never fires.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-ui-03.gx
+//          (the same with --no-fusion; graphix-fuzz check on the A half: AGREE)
+//
+// expected: an "A:" line, selected_path=/n/d/w (browser A passes only
+//   #selected_path, as book/src/examples/tui/browser_basic.gx does). For B,
+//   after t=4 enters the leaf /n/d/x (its listing is empty), the outputs do not
+//   switch to /n/d/w, a row of the previous listing the user never selected,
+//   and the second Enter at t=7 does not navigate to /n/d/w.
+// observed (HEAD c722befe, debug build, both engines): no "A:" line at all; B:
+//   B: t=4 path=/n/d/x rows=["/n/d/w", "/n/d/x"] selected_row=/n/d/w selected_path=/n/d/x
+//   B: t=4 path=/n/d/x rows=[] selected_row=/n/d/w selected_path=/n/d/w
+//   B: t=7 path=/n/d/w rows=[] selected_row=/n/d/w selected_path=/n/d/w
+//   The selection resets to row 0 before the new listing arrives, so the
+//   outputs take the old listing's row 0, and the $-gated write never
+//   replaces it while the listing is empty. At t=2 selected_path also
+//   re-fires the old /n/d/w a cycle after selected_row moves to /n/d/x.
+use tui::{Tui, browser::{MoveCursor, browser}};
+let p1 = sys::net::publish("/n/d/w", 1);
+let p2 = sys::net::publish("/n/d/x", 2);
+let only: string = never();
+let b1: Tui = browser(#size: {width: 80, height: 24}, #selected_path: &only, "/n/d");
+println("A: path-only selected_path=[only]");
+let path = "/n/d";
+let sr: string = never();
+let sp: string = never();
+let cur: MoveCursor = never();
+let b2: Tui = browser(
+    #size: {width: 80, height: 24},
+    #cursor: cur,
+    #selected_row: &sr,
+    #selected_path: &sp,
+    path
+);
+let rows = sys::net::list_table(path)$.rows;
+let t = sys::time::timer(duration:400.ms, true);
+let i = 0;
+i <- t ~ i + 1;
+select i {
+    2 => cur <- `Down(1),
+    4 => path <- i ~ sr,
+    7 => path <- i ~ sr,
+    _ => never()
+};
+println("B: t=[i] path=[path] rows=[rows] selected_row=[sr] selected_path=[sp]");
+sys::exit(select i { 9 => i ~ 0, _ => never() });
+0

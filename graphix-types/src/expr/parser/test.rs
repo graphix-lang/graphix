@@ -2280,6 +2280,19 @@ fn a_prefix_trigger_leaves_the_body_alone() {
         let ExprKind::Seq { trigger: Some(t), body, .. } = &e.kind else {
             panic!("{e:?}")
         };
+        // CR claude for eric: [test-gap] This prints the trigger alone, so the seq
+        // around it is never printed and parsed back. Printed whole, each of these four
+        // comes out as `seq (*r) { a }`, because reads_bare in print.rs has no arm for
+        // `*` `!` `-` `&`; the reparse keeps the parens as ExplicitParens, so `graphix
+        // fmt` and LSP formatting refuse any file holding one (the printer fix is
+        // t-print-02's CR at trigger_needs_parens). seq_parses (line 2205) compares
+        // only queued() after its reprint, try_with_parses (line 2243) checks only
+        // print idempotence, and format.rs seq_trigger_reads_back_as_written has no
+        // prefix case, so no test reprints a prefix trigger and compares the tree.
+        // Assert parse_one(&e.to_string()) == e, and the same for to_string_pretty(0),
+        // here and in seq_parses, and add `seq *r { h()? }` and `seq x ~ *r { h()? }`
+        // to seq_trigger_reads_back_as_written. probe:
+        // design/review-2026-10-05/repro/tests-types-02.gx (tests-types-02)
         assert_eq!(t.expr().to_string(), trigger, "{src}");
         assert_eq!(body.len(), 1, "{src}");
     }

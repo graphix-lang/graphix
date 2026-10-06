@@ -1,0 +1,16 @@
+// fuzz-mutate-05: mono-reuse expects only the two compared uses; a value
+// use between them refuses first and the probe is filed MISPLACED
+// command: graphix-fuzz typemorph design/review-2026-10-05/repro/fuzz-mutate-05.gx
+// (or the program alone on stdin: graphix-fuzz typemorph-one <outfile>)
+// expected: no flips. The mutant `let f = { let tm__0 = null; |x| x }` is
+// refused, rightly, at `let c`: the first value use that conflicts with
+// `let a` (`graphix --check` on the mutant: line 1, column 68)
+// observed: TYPEFLIP ... mono-reuse#1: MISPLACED: N: type mismatch
+// fn(x: 'a: Array<'_N: iN>) -> 'b: unbound throws 'e: unbound does not
+// contain fn(x: '_N: iN) -> '_N: iN
+// The right sites are only si, ja and jb (mustreject.rs:971); `let c` is
+// dropped from `firsts` because its first parameter is not one primitive.
+// Same flip with `array::map([1, null], f)` as `c`, or with the middle
+// use inside a lambda body (`let g = |s: string| array::map([s], f)`),
+// which record_expr_types never types. Without `let c`: REJECT ok.
+{ let f = |x| x; let a = array::map([1], f); let c = array::map([[1]], f); let b = array::map(["s"], f); (a, b, c) }

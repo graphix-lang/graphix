@@ -1,0 +1,44 @@
+// gx-ui-11: a tui form with no fields never answers an ordinary key, which
+// stalls the input_handler it is installed in.
+//
+// form.gx:36-38 sends every key the form does not handle to
+// line_edit::handle(&vals[i], e). With fields = [], vals[0] does not exist,
+// so handle's `e ~ *st` (line_edit.gx:47) waits forever and the handler
+// produces nothing. InputHandlerW (tui/src/input_handler.rs:399-460) sends
+// the next queued event only after the handler answers (`pending`), so after
+// the first such key every later key, Esc and Enter included, queues for
+// good; only Ctrl+C (taken in Rust) still works.
+//
+// command: env -u WAYLAND_DISPLAY -u DISPLAY graphix --no-cache design/review-2026-10-05/repro/gx-ui-11.gx
+//          (the same with --no-fusion)
+//
+// expected: both forms answer every key (the empty form `Continue for keys
+//   1 and 3, since it has no editor to give them to)
+// observed (HEAD c722befe, debug build, both engines):
+//   sent key 0
+//     empty form answered key 0: Stop
+//     one-field form answered key 0: Stop
+//   sent key 1
+//     one-field form answered key 1: Stop
+//   sent key 2
+//     empty form answered key 2: Stop
+//     one-field form answered key 2: Stop
+//   sent key 3
+//     one-field form answered key 3: Stop
+use tui::{form::form, input_handler::{Event, KeyCode}};
+let k = |c: KeyCode| -> Event `Key({code: c, kind: `Press, modifiers: [], state: []});
+let empty = form(#title: "t", #on_submit: |v| null, []);
+let one = form(#title: "t", #on_submit: |v| null, [{label: "a", value: ""}]);
+let script = [k(`Esc), k(`Char("x")), k(`Enter), k(`Char("y"))];
+let ev: Event = never();
+let i = 0;
+i <- sys::time::timer(duration:50.ms, 3) ~ i + 1;
+ev <- script[i]$;
+let h0 = empty.handle;
+let h1 = one.handle;
+let r0 = h0(ev);
+let r1 = h1(ev);
+println(ev ~ "sent key [i]");
+println(r0 ~ "  empty form answered key [i]: [r0]");
+println(r1 ~ "  one-field form answered key [i]: [r1]");
+sys::exit(sys::time::after_idle(duration:300.ms, ev ~ 0))

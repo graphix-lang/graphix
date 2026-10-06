@@ -1,0 +1,47 @@
+// http-sqlite-db1-18: sqlite uses std::sync::Mutex + unwrap: one panic
+// poisons the connection for good.
+//
+// The panic is reachable. SqliteQueryEv::eval
+// (stdlib/graphix-package-sqlite/src/lib.rs:251-261) reads column_count and
+// column_name from the cached statement BEFORE it steps. After a schema
+// change SQLite re-prepares that statement on its first step, so the rows
+// carry the new columns under the old labels. When the column count shrank,
+// `row.get_ref(*idx).unwrap()` (278) panics while with_conn (75) holds the
+// std::sync::Mutex (15). The mutex is poisoned and every later call on the
+// connection, close (349) included, fails.
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-18.gx
+//
+// expected:
+//   m2: [{"a" => 1, "c" => 3, "d" => 4}]   (what a fresh statement returns)
+//   p2: [{"a" => 1, "b" => 2}], then p3, p4 and close succeed
+// observed (HEAD c722befe, debug build):
+//   m2: [{"a" => 1, "b" => 3, "c" => 4}]   (c's value labeled b, d's labeled c)
+//   panicked at stdlib/graphix-package-sqlite/src/lib.rs:278:79: InvalidColumnIndex(2)
+//   p2: error:["InvalidCast", "can't cast error:[\"SqliteError\", \"spawn_blocking failed: ... InvalidColumnIndex(2) ...
+//   p3: error:["SqliteError", "spawn_blocking failed: ... PoisonError { .. } ..."]
+//   p4: the same PoisonError (through InvalidCast)
+//   close: error:["SqliteError", "spawn_blocking failed: ... PoisonError { .. } ..."]
+type SqlVal = [i64, f64, string, bytes, null];
+type Rows = Result<Array<Map<string, SqlVal>>, [`SqliteError(string), `InvalidCast(string)]>;
+let m = sqlite::open(":memory:")$;
+let msetup = sqlite::exec_batch(m, "CREATE TABLE t(a INTEGER, b INTEGER, c INTEGER); INSERT INTO t VALUES(1, 2, 3);")$;
+let m1: Rows = sqlite::query(msetup ~ m, "SELECT * FROM t", []);
+println("m1 SELECT *: [m1]");
+let malter = sqlite::exec_batch(m1 ~ m, "ALTER TABLE t DROP COLUMN b; ALTER TABLE t ADD COLUMN d INTEGER; UPDATE t SET d = 4;")$;
+let m2: Rows = sqlite::query(malter ~ m, "SELECT * FROM t", []);
+println("m2 the same SELECT * after DROP b, ADD d: [m2]");
+let p = sqlite::open(m2 ~ ":memory:")$;
+let psetup = sqlite::exec_batch(p, "CREATE TABLE t(a INTEGER, b INTEGER, c INTEGER); INSERT INTO t VALUES(1, 2, 3);")$;
+let p1: Rows = sqlite::query(psetup ~ p, "SELECT * FROM t", []);
+println("p1 SELECT *: [p1]");
+let palter = sqlite::exec_batch(p1 ~ p, "ALTER TABLE t DROP COLUMN c")$;
+let p2: Rows = sqlite::query(palter ~ p, "SELECT * FROM t", []);
+println("p2 the same SELECT * after DROP c: [p2]");
+let p3 = sqlite::exec(p2 ~ p, "INSERT INTO t VALUES(4, 5)", []);
+println("p3 an unrelated insert: [p3]");
+let p4: Rows = sqlite::query(p3 ~ p, "SELECT a FROM t", []);
+println("p4 an unrelated select: [p4]");
+let pclose = sqlite::close(p4 ~ p);
+println("close: [pclose]");
+sys::exit(sys::time::after_idle(duration:1.s, pclose ~ 0))

@@ -1,0 +1,50 @@
+// c-select-seq-03: catch-up bit spent with no delivery when the input was
+// republished STALE that cycle.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-select-seq-03.gx
+//   (same output with --no-fusion and GRAPHIX_PAR=force; graphix-fuzz check
+//   says AGREE: both engines compute the same wrong value)
+//
+// Three spellings of one program: `inside` binds `let v = x * x` inside the
+// outer arm, `outside` binds it above the select, `formal` passes it to a
+// function. x fires at n=3 while phase is `X and t is `A; `A does not read
+// v, so each inner select keeps v's fire bit for `B. Arm `X sleeps from n=5
+// (phase `Y), t moves to `B at n=7, and phase `X at n=8 wakes the arm, whose
+// inner select re-matches to `B and must catch the pending fire up once
+// (design/wake_catchup.md, rule 4; bits survive sleep).
+// At the wake Bind::update re-publishes the woken `let v` STALE into the
+// overlay (bind.rs wake_refresh), and TrackedFires::deliver (wake.rs:144)
+// takes any overlay entry as a live delivery: the bit is spent and nothing
+// is injected. `w` and the formal read as Standing and are injected FIRED.
+//
+// expected:
+//   (0, 0, 0)
+//   (1, 1, 1)
+// observed:
+//   (0, 0, 0)
+//   (0, 1, 1)
+let n = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+let x = 0;
+x <- select n { 2 => 100, _ => never() };
+let phase = select n { k if k < 5 => `X, k if k < 8 => `Y, _ => `X };
+let t = select n { k if k < 7 => `A, _ => `B };
+let inside = 0;
+let a = select phase {
+  `X => {
+    let v = x * x;
+    select t { `A => 0, `B => inside <- v ~ (inside + 1) }
+  },
+  `Y => never()
+};
+let outside = 0;
+let w = x * x;
+let b = select phase {
+  `X => select t { `A => 0, `B => outside <- w ~ (outside + 1) },
+  `Y => never()
+};
+let formal = 0;
+let f = |v| select t { `A => 0, `B => formal <- v ~ (formal + 1) };
+let c = select phase { `X => f(x * x), `Y => never() };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(inside, outside, formal)

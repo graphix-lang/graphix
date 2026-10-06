@@ -122,9 +122,34 @@ pub fn extract_mod_decls(
 
 /// Collect external module declarations from an `ExprKind` tree,
 /// descending into nested `Resolved` modules.
+// CR claude for eric: [bug] This walk sees only the file's top-level `mod` statements,
+// but the resolver (`resolve_modules_int`, resolver.rs:681) loads a `mod foo;` at any
+// depth, for example in a block or a lambda body. A file reached that way becomes a
+// project root of its own: the server checks it standalone (a `super::` in it reports
+// "`super` goes above the package root"), and an edit to it never re-checks the file
+// that loads it, so that file's diagnostics go stale. The `Dynamic` arm records a
+// module that loads no file, so a sibling `m.gx` joins the declaring file's project and
+// is never checked. The `Resolved` arm is dead because the parser builds only
+// `Unresolved` and `Dynamic`, and the comment below it is false. Collect
+// `ModuleKind::Unresolved` at any depth through `for_each_child`, as the resolver does.
+// probe: design/review-2026-10-05/repro/x-expr-walks-03.py (x-expr-walks-03)
 fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
     if let ExprKind::Module { name, value } = kind {
         match value {
+            // CR claude for eric: [bug] A bare top-level `mod foo dynamic { .. }` is
+            // recorded like `mod foo;`, so bfs_from_root links an unrelated foo.gx
+            // beside the script into its project: foo.gx is then no root and its own
+            // errors never show, since the script's check never loads it. The walk also
+            // reads only top-level statements though a `mod util;` inside a block
+            // checks (the closing comment is wrong), so util.gx stays a root of its own
+            // and an edit to it that breaks the script re-checks nothing. The
+            // `Resolved` arm is dead, as parser::parse never yields one: record
+            // `Unresolved` names wherever a statement stands (Expr::for_each_child). In
+            // detect_package_scope, `started_section` changes nothing (`in_package` is
+            // false before the first header) and its comment is wrong, and
+            // toml::from_str, which graphix-package's read_package_version already
+            // uses, would replace the hand scan that misses `name = '..'`. probe:
+            // design/review-2026-10-05/repro/lsp-15.py (lsp-15)
             ModuleKind::Unresolved { .. } | ModuleKind::Dynamic { .. } => {
                 out.push(name.name.clone());
             }

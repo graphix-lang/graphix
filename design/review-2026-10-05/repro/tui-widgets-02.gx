@@ -1,0 +1,32 @@
+// tui-widgets-02: chart: a y axis with exactly one label divides by zero in ratatui
+//
+// AxisV::from_value (stdlib/graphix-package-tui/src/chart.rs:73) hands any
+// label list to Axis::labels. The locked ratatui-widgets 0.3.0 renders y
+// labels with `dy = i * (graph_area.height - 1) / (labels_len - 1)`
+// (chart.rs:956) and no `labels_len < 2` guard (render_x_labels has one), so
+// a single y label is an integer division by zero: it panics in every build
+// profile. ratatui-widgets 0.3.2 (required by ratatui 0.30.2) adds the guard.
+//
+// command: run in a terminal (it needs a tty):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets-02.gx
+//
+// expected: the chart draws (the line from (0,0) to (1,1), the y axis with
+//   "top" or no label), as it does with two labels
+//   `#labels: [line("bot"), line("top")]`; Ctrl-C exits.
+// observed (HEAD c722befe, debug build, 80x24 pty): on the first frame
+//   thread 'tokio-rt-worker' panicked at
+//   .../ratatui-widgets-0.3.0/src/chart.rs:956:22:
+//   attempt to divide by zero
+//   The display task is dead and nothing fires the stop signal: the process
+//   keeps running with no display, and Ctrl-C (now SIGINT, caught by the
+//   shell's interrupt handler) no longer exits it; it must be killed.
+use tui::{line, chart::{axis, chart, dataset}};
+
+let pts: Array<(f64, f64)> = [(0.0, 0.0), (1.0, 1.0)];
+let ds = dataset(&pts);
+
+chart(
+    #x_axis: &axis({min: 0.0, max: 1.0}),
+    #y_axis: &axis(#labels: [line("top")], {min: 0.0, max: 1.0}),
+    &[ds]
+)

@@ -108,6 +108,11 @@ bytes. The type correspondence is,
 There are a few sets of number types that classify numbers into various kinds.
 `Number` being the most broad, it contains all the number types. `Int` contains
 only integers, `Real` contains only reals (decimal plus the two float types),
+<!-- CR claude for eric: [doc-drift] The core interface defines these sets as `Sint` and
+`Uint` (stdlib/graphix-package-core/src/graphix/mod.gxi:1-2; typ/print.rs:37-38 prints
+them so). `SInt` and `UInt` name nothing: `'a: SInt` is refused with "undefined type
+SInt". The graphix-lang skill (ide/skills/graphix-lang/SKILL.md:141) and
+../netidx/AGENTS.md:237 repeat the wrong names. (x-expr-walks.r2-15) -->
 `SInt` contains signed integers, `UInt` contains unsigned integers.
 
 ## Bool

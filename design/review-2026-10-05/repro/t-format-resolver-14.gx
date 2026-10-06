@@ -1,0 +1,27 @@
+// t-format-resolver-14: `graphix fmt` moves an attribute from a parenthesized
+// callee to the call, the guard passes it, and the program's verdict flips.
+// The parser keeps no ExplicitParens around a postfix base
+// (graphix-types/src/expr/parser/arithexp.rs:200-206) and the printer writes a
+// decorated base bare, so the reparse hangs the decoration on the enclosing
+// postfix expression. format_source compares the ornaments of both parses as
+// one flat preorder list (graphix-types/src/expr/format.rs:354-389, 432-442)
+// and Expr equality ignores `dec`, so a decoration that moves to the
+// neighbouring node is not refused. The same layout puts `(// c\n a)[0]`'s
+// comment on `a[0]`.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-format-resolver-14.gx
+//          graphix fmt --stdout design/review-2026-10-05/repro/t-format-resolver-14.gx > /tmp/f.gx
+//          graphix --no-cache /tmp/f.gx; graphix fmt --stdout /tmp/f.gx
+// expected: fmt keeps `#[native]` on `f` (keeps the parentheses) or refuses.
+// observed (HEAD c722befe, debug build):
+//   the source is refused: "#[native] annotates a computation or a call, not
+//   a function"; fmt exits 0 with `let y = #[native]\nf(\n    1\n);`, which
+//   runs and prints 2; formatting that output again changes it
+//   (`let y =\n    #[native]\n    f(1);`): not idempotent.
+let f = |x: i64| x + 1;
+let y = (
+    #[native]
+    f
+)(1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+y

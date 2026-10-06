@@ -390,6 +390,20 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 {
                     return Ok(Type::Primitive(*p));
                 }
+                // CR claude for eric: [perf] A two-member primitive union with null
+                // freezes only when the other member is a string or a register scalar.
+                // So [duration, null] (and datetime, bytes, decimal or a varint with
+                // null) is Unsupported, while the wider [duration, i64, null] freezes
+                // as an opaque Value at line 405. Struct fields freeze one at a time,
+                // so a record with one such field de-fuses every region that carries
+                // it, even one that never reads the field, and #[native] refuses it: a
+                // map of |r| r.n * 2 over Array<{n: i64, t: [duration, null]}> fails,
+                // and the same map with t: [duration, i64, null] fuses. abi_kind (214),
+                // nullable_error_marked (270) and nullable_inner (588) repeat this
+                // test, each with its own idea of the inner type. One predicate should
+                // call such a union Nullable only when the inner member has a register
+                // or string form, and AbiKind::Value otherwise. probe:
+                // design/review-2026-10-05/repro/f-kernel-04.gx (f-kernel-04)
                 if p.contains(Typ::Null) && p.iter().count() == 2 {
                     let other = p.iter().find(|f| *f != Typ::Null).ok_or(Unsupported)?;
                     if other == Typ::String || PrimType::from_typ(other).is_some() {
@@ -717,6 +731,13 @@ pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
 /// the disc's tag byte); the kinds differ in entry binding and body
 /// emission, not on the wire.
 #[derive(Debug, Clone, Copy)]
+// CR claude for eric: [structure] AbiParamKind is ParamKind with the payloads stripped,
+// kept in step by hand through ParamKind::abi() (line 682). Its three users
+// (emit/jit.rs:637, emit/body.rs:100, emit/lower.rs:103) only turn it into a LocalKind
+// or a payload CLIF type. Delete it and give AbiParamDesc the &ParamKind (matching
+// ParamKind::Array { .. } and so on), or map ParamKind straight to LocalKind as
+// LocalKind::of does for AbiKind, so a new parameter kind is added in one place.
+// (f-kernel-08)
 pub enum AbiParamKind {
     Scalar(PrimType),
     Array,

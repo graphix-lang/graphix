@@ -598,6 +598,14 @@ let result = data_table(
 async fn sort_subscribes_newly_visible_rows() -> Result<()> {
     // cpu = row index; the window is 30 rows, so a descending sort shows
     // mostly rows outside the initial subscription set.
+    // CR claude for eric: [test-gap] This test cannot fail on the property it names.
+    // Its only column, cpu, is also the sort column, so subscribe_sort_column puts
+    // (row, cpu) into `cells` for all 40 rows; update_subscriptions then finds every
+    // row already subscribed and never calls subscribe_row, and data_table_snapshot
+    // reads each cell from that sort subscription. The first window (rows 0..30 plus
+    // ROW_BUFFER 50) covers all 40 rows anyway, so the comment above is wrong too. Add
+    // a displayed column that is not sorted (mem, published per row), use more than 80
+    // rows, and assert the mem cells of the first 30 displayed rows. (tests-ui.r2-03)
     let n_rows: usize = 40;
     let mut publishes = String::new();
     let mut rows = String::new();
@@ -610,6 +618,13 @@ async fn sort_subscribes_newly_visible_rows() -> Result<()> {
         }
         rows.push_str(&format!("\"/local/dt_sub_resort/r{i}\""));
     }
+    // CR claude for eric: [test-gap] This test cannot fail. cpu is both the only column
+    // and the sort column, and subscribe_sort_column (subscriptions.rs:479) subscribes
+    // every absolute row and indexes it in `cells`, so all 40 rows show values whatever
+    // update_subscriptions does with the visible window. Emptying update_subscriptions
+    // leaves it green. Publish a second, non-sort column per row (r{i}/mem) and add it
+    // to columns. After the descending sort, assert that the 30 visible rows' mem cells
+    // are non-empty. (tests-ui-05)
     let code = format!(
         r#"
 use gui::*; use gui::data_table::{{self, *}}; use sys::*;
@@ -812,6 +827,11 @@ let result = data_table(
 /// A numeric edit buffer commits as an i64, not a string.
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column_parses_number() -> Result<()> {
+    // CR claude for eric: [test-gap] This test cannot tell an i64 commit from a string
+    // commit: interpolation prints the string "42" and the i64 42 the same way, so
+    // `log` reads "r0/c0=42" even if parse_or_quote always returns a string. Record the
+    // value itself, as button_column_passes_typed_raw_value does (`let got: Any =
+    // null`, `got <- value`), and assert test::got is Value::I64(42). (tests-ui.r2-04)
     let code = r#"
 use gui::*; use gui::data_table::{self, *}; use sys::*;
 let log = "";
@@ -834,6 +854,14 @@ let result = data_table(
     h.dt_mut().handle_cell_edit_submit();
     h.drain().await?;
     let log = h.get_watched("test::log");
+    // CR claude for eric: [test-gap] This assertion cannot tell a typed commit from a
+    // string. The callback interpolates `value` into `log`, and "[value]" renders
+    // String("42") and I64(42) alike (probe: `let s: Any = "42"; let n: Any = 42; "[s]"
+    // == "[n]"` is true), so the test passes even if parse_or_quote (types.rs:472)
+    // returns a string for every buffer. Record the raw value instead (`let committed:
+    // Any = null; let edit = |#path: string, #value: Any| { committed <- value; null
+    // }`), watch test::committed and assert Some(&Value::I64(42)), as
+    // button_column_passes_typed_raw_value does. (tests-ui-04)
     assert_eq!(
         log,
         Some(&Value::String(arcstr::literal!("r0/c0=42"))),
@@ -1335,6 +1363,14 @@ let result = data_table(
 /// and spaced past subscriber setup.
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_accumulates() -> Result<()> {
+    // CR claude for eric: [risk] This test races its one-shot timers against harness
+    // setup. The timers start at the program's first cycle, but the table subscribes
+    // only after GuiTestHarness::new has received the initial value and compiled the
+    // widget, and BEGIN_WITH_LAST delivers only the value current then. If setup takes
+    // more than about 450 ms under load, 1.0 is never seen and wait_until times out.
+    // Publish `let c = 0`, then after dt() set test::c to 1, 2 and 3 with
+    // compile_ref(..).set, waiting for each to land, as
+    // sort_by_subscribed_column_reorders_on_update does at :577-578. (tests-ui-16)
     let code = r#"
 use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};
 let c = 0;

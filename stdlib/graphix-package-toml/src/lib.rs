@@ -117,6 +117,16 @@ enum ReadInput {
     Bytes(Bytes),
 }
 
+// CR claude for eric: [structure] JsonReadEv, TomlReadEv, PackReadEv and sqlite's
+// SqliteQueryEv repeat the same init, typecheck1 and map_value around `cast_typ`,
+// differing only in the error tag, and each overrides typecheck0 with the trait
+// default's own body. json and toml also copy ReadInput and prepare_args, and each
+// package's fc_write_str and fc_write_bytes differ only in the final String or Bytes
+// conversion. A fix to the cast path has to be made four times: map_value casts eval's
+// own parse error to the target, so `let n: i64 = json::read("{")?` and the toml
+// equivalent both give 0. One typed reader in graphix-package-core that takes a parse
+// fn and an error tag, plus one encode-to-buffer fn per format with str and bytes
+// wrappers, would leave each package only its parser and encoder. (small-pkgs-17)
 #[derive(Debug, Default, netidx_derive::Pack)]
 struct TomlReadEv {
     cast_typ: Option<Type>,

@@ -4,6 +4,13 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
+// CR claude for eric: [test-gap] This fixture and RECTYPES2 (line 216) fail in the
+// parser, so their `Err(_)` predicates pass before any type rule runs. `{ "foo" + 1 }`
+// is a one-element block, and `List` is a reserved type name, so `type List<'a> = ..`
+// does not parse. Neither test can fail on what it names. Drop the braces here, rename
+// the typedef (e.g. `Lst`), and assert the refusals "cannot compute string + i64" and
+// "Lst<string> does not contain `Cons(i64". probe: `graphix --check` of `let result = {
+// "foo" + 1 }` reports "a block must contain at least 2 expressions". (tests-lang-b-04)
 const SIMPLE_TYPECHECK: &str = r#"
 {
   "foo" + 1
@@ -111,6 +118,14 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The ASPIRE comment above says the body does not fuse,
+// but this fixture asserts FuseExpect::Jit and its body fuses whole (graphix-fuzz run:
+// fused=1; the only failure is the harness's module statement). typed_arrays0 (line
+// 139) is the same. The same sentence sits above 76 FuseExpect::Jit fixtures across
+// graphix-tests, and each of those fixtures asserts that a kernel ran. traits.rs:459
+// also names the wrong blocker for poly_value_two_types; the real one is interpolating
+// an Array into a string. Delete these comments; where a remaining de-fuse matters,
+// name its real blocker or pin it with `shape:`. (tests-lang-b-08)
 run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
@@ -229,6 +244,16 @@ run!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
+// CR claude for eric: [bug] This test pins acceptance of an unsound typedef. 'c is
+// declared nowhere: Env::deftype (graphix-types/src/env.rs:1451) refuses only
+// declared-but-unused variables, and every expansion of T gives 'c a fresh cell. So a
+// function stored at c: i64 can be called with a string. `let t: T<i64, i64> = { foo:
+// 1, bar: 2, f: |a: i64, b: i64, c: i64| a + b + c }; let g = t.f; g(1, 2, "x")` passes
+// --check, and both engines compute 3 + "x"; the run-time bind logs "did not type" and
+// runs it anyway. The plain form `type R = { v: 'a }` makes the engines disagree: the
+// JIT reads "s" as 0. Once deftype refuses the variable (see the CR at env.rs:1451),
+// make this a refusal pin and add a pin that uses such a type. probe:
+// design/review-2026-10-05/repro/tests-lang-b-01.gx (tests-lang-b-01)
 const TYPEDEF_TVAR_OK: &str = r#"
 {
   type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn(a: 'a, b: 'b, c: 'c) -> 'a };
@@ -312,6 +337,17 @@ const MIXED_OPERAND_ACCEPT: &str = r#"
 
 // `|a, b| a + b` aliases both formals into one cell, so an i64 x f64
 // call rejects.
+// CR claude for eric: [readability] `mixed_operand_accept`, `obs4_def_fact_accepts`
+// (357) and `promo_obligation_f64_ok` (383) all assert a refusal, and 'obs4' and
+// 'promo' are campaign labels. The last two pin that the refusal happens at the
+// definition: a body checked per call would type at an f64 call. Their failure
+// therefore means an f64 call was accepted, and a name ending in accepts/ok invites
+// flipping the predicate. Name them for the rule, e.g.
+// `rigid_tvar_body_refused_at_f64_call`. The comment on `derived_result_not_narrowable`
+// (318) describes distinct operand cells with a derived result cell, but line 313 says
+// `|a, b| a + b` puts both formals in one cell. That test is now
+// `same_cell_annotation_conflict` with two arguments (both are refused with 'f64 does
+// not contain i64'), so fix its comment or delete it. (tests-lang-b-09)
 run!(mixed_operand_accept, MIXED_OPERAND_ACCEPT, |v: Result<&Value>| matches!(v, Err(_));
      graphix_package_core::testing::FuseExpect::None);
 
@@ -838,6 +874,15 @@ run!(
 
 // Unifying an inferred `List<'a>` against a value whose deep tail is a
 // Fn rejects at every depth.
+// CR claude for eric: [test-gap] This test cannot fail. `list::find` takes the native
+// `List<'a>`, and a `Cons variant is never a List, so every source is refused whatever
+// its tail holds. The Fn-free control `{let l = `Cons(i64:0, `Nil); list::find(l, |x|
+// true)}` gets the same "List<'a> does not contain `Cons(..)" refusal. The rule it is
+// meant to pin, that the contains cycle memo (probe_key/ref_id in
+// graphix-types/src/typ/mod.rs) must not let a Fn deep in a recursive tail through, has
+// no other pin. Rewrite it over a user typedef `type L<'a> = [`Cons('a, L<'a>), `Nil]`
+// with a recursive `find(l: L<'a>, f)`. At HEAD that version refuses Fn tails at depths
+// 1 to 3 and accepts the `Nil tail; assert both. (tests-lang-b-05)
 #[tokio::test]
 async fn recursive_fn_tail_rejected_at_every_depth() {
     for src in [

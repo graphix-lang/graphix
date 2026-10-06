@@ -1,0 +1,29 @@
+// f-kernel-06: a recursive callee called in a fused loop keeps every slot's
+// activation tree at its peak depth (no shrink = delete).
+//
+// f's activation tree for slot i is rooted in that slot's call-site block
+// (a SiteLeaf in the region's slot_table_words). FusedKernel::update
+// (graphix-compiler/src/fusion/kernel.rs:371) stamps, counts and reclaims only
+// trees rooted in the parent's state words (state_self_blocks), and
+// reclaim_self_block_tree never descends into anchors, so a slot's 60000
+// activations stay allocated after the slot drops back to depth 1, until the
+// slot is truncated or the kernel drops. Here slot t goes deep at cycle t
+// only, so the live blocks grow by 60000 a cycle; with shrink = delete (what
+// the node-walk does, and what the root-level tree gets) at most one slot's
+// 60000 are live.
+//
+// command: systemd-run --user --scope -p MemoryMax=250M -p MemorySwapMax=0 \
+//            graphix --no-cache design/review-2026-10-05/repro/f-kernel-06.gx
+//   expected: 60099 for each of the 100 deep cycles, then 100, then exit 0
+//   observed (debug binary): OOM-killed after 57 deep cycles (18 under
+//   MemoryMax=120M); it finishes under 1G.
+// control: replace the init callback's test with `i == 0 && t % 2 == 0`
+//   (slot 0 goes deep every other cycle, same work per deep cycle): it
+//   finishes under MemoryMax=120M.
+let rec f = |k: i64| -> i64 select k { 0 => 0, _ => 1 + f(k - 1) };
+let clock = sys::time::timer(duration:1.ms, true);
+let t = 0;
+t <- clock ~ t + 1;
+let ys = array::map(array::init(100, |i| select i == t { true => 60000, false => 1 }), |x| f(x));
+sys::exit(select t >= 101 { true => 0, false => never() });
+array::fold(ys, 0, |a, b| a + b)

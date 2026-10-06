@@ -143,6 +143,19 @@ pub(super) fn compile_into_function<'a>(
         v
     };
 
+    // CR claude for eric: [bug] The loop head is built whenever has_tail_loop is set
+    // (analysis.rs:672, pure && structural_tail_loop, where MapQ/FoldQ count as pure).
+    // But every word the body claims on the site channel is one word that every pass of
+    // the loop reads and overwrites: a collection loop's prev-length/entered word, a
+    // callee's block, a self-call's block root. So pass k sees pass k-1's length and
+    // the next cycle's first pass sees the last pass's. The result then fires on inputs
+    // no activation reads, and slots that already exist count as new: a constant error
+    // in a map callback raises again, 6 raises in the node-walk vs 9 in the JIT. The
+    // node-walk gives every depth its own activation, and recursive_activations.md
+    // allows the loop only where it gives the same answers, so a body that claims site
+    // words should recurse natively instead. probe:
+    // design/review-2026-10-05/repro/f-call-flow-03.gx (the node-walk prints 6 once,
+    // the JIT twice). (f-call-flow-03)
     let loop_head = if kernel.has_tail_loop {
         // Sealed after the body: each TailCall adds a predecessor.
         let head = b.create_block();
@@ -279,6 +292,13 @@ pub(super) struct EmittedBody {
 /// the callee body is defined and read by every caller to size the
 /// block it supplies. A caller with no layout is on a recursive
 /// back-edge and passes 0.
+// CR claude for eric: [doc-drift] This doc says a caller with no layout is on a
+// recursive back-edge and passes 0, and so do lower.rs:93-94, 291-293, 441-442,
+// kernel_abi.rs:835-837, body.rs:419, 569, 650, 660 and scaffold.rs:464, 547. A missing
+// layout is a self-call, which roots a per-activation child block
+// (graphix_site_child_block, call.rs:411-443), and any other miss is refused. The block
+// a body receives is therefore 0 only when that body claims no site words. Reword them
+// all to that rule, as body.rs:719-722 already does. (f-call-flow-09)
 #[derive(Debug, Clone)]
 pub(crate) struct SiteLayout {
     pub(crate) words: u32,
@@ -291,6 +311,15 @@ pub(crate) struct SiteLayout {
 /// A per-slot state word's address. `Guarded` words ride a base
 /// that is 0 on recursive back-edges; the consumer takes the
 /// no-memory path when the base is null.
+// CR claude for eric: [readability] SelWord, slot_select_word and the sel_sites
+// parameters are named for the selection memory strict fusion deleted (strict_fusion.md
+// lists SelWord claims as deleted). The words they carry are prev-length words,
+// first-call words and in-loop call-site block anchors. The comments at body.rs:357,
+// body.rs:420, body.rs:501, lower.rs:338 and lower.rs:348 still describe selects
+// reading these tables. This doc says per-slot, but root-level instance and call-site
+// words use the type too. Rename (e.g. StateWord, slot_word, state_sites), rewrite
+// those comments, and update kernel_instance_state.md:122 and 158, which cite the old
+// names. (f-scaffold-body-07)
 #[derive(Clone, Copy)]
 pub(crate) enum SelWord {
     Sure(ClifValue),

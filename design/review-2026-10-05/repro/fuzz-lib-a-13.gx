@@ -1,0 +1,22 @@
+// fuzz-lib-a-13: a subject's sys::exit sets check-one's verdict and ends any
+// process that runs the subject in-process.
+//
+// check-one reports its verdict as its exit status (graphix-fuzz/src/main.rs
+// check-one: 0 agree, 7 agree and both ran, 10 diverge), which
+// check_isolated_in reads (graphix-fuzz/src/lib.rs:4398). sys::exit calls
+// std::process::exit in whatever process runs the subject
+// (stdlib/graphix-package-sys/src/lib.rs:596), and nothing screens a subject
+// for it.
+//
+// command: graphix-fuzz check-one < design/review-2026-10-05/repro/fuzz-lib-a-13.gx; echo $?
+//          graphix-fuzz check design/review-2026-10-05/repro/fuzz-lib-a-13.gx; echo $?
+//
+// expected: check-one's status is the oracle's verdict on the program (both
+//   engines run it alike: an agreement, 0 or 7), and `check` prints AGREE
+//   or DIVERGENCE.
+// observed (HEAD c722befe, debug build): check-one exits 10. A campaign
+//   parent reads that as a divergence and re-runs check(prog) in its own
+//   process (lib.rs:4403); `check` on this file exits 10 and prints
+//   nothing, so that re-check ends the campaign with status 10. With
+//   sys::exit(7) check-one exits 7, an agreement that ran (ring admission).
+sys::exit(10)

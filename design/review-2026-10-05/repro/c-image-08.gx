@@ -1,0 +1,25 @@
+// c-image-08: StructWith::image_decode (graphix-compiler/src/node/data.rs:228)
+// preallocates Vec::with_capacity(n) from an unchecked image count, as do
+// callsite.rs:1868, traits.rs:594, bind.rs:908 and
+// stdlib/graphix-package-map/src/lib.rs:218.
+//
+// command (bash, in an empty scratch directory holding this file):
+//   export XDG_CACHE_HOME=$PWD/cache
+//   graphix --no-fusion --warm c-image-08.gx
+//   python3 -c 'import glob; p = bytes.fromhex("01010000000000000000016104"); f = [f for f in glob.glob("cache/graphix/registration/*/*.img") if p in open(f, "rb").read()][0]; b = bytearray(open(f, "rb").read()); i = b.find(p); b[i:i + 9] = bytes.fromhex("ffffffffffffffff7f"); open(f, "wb").write(b)'
+//   graphix --no-fusion c-image-08.gx
+// The pattern is the StructWith's replace count (01), the field's index
+// Some(0), its name "a" and the Constant tag; the patch overwrites the
+// count with the varint 2^63-1 and nothing after it is read.
+//
+// expected: the program entry fails to read, the session starts cold and
+// prints {a: 3, b: 2}.
+// observed (HEAD c722befe, debug build): thread 'tokio-rt-worker' panicked
+// at library/alloc/src/raw_vec/mod.rs: capacity overflow, then
+// "Error: loading initial modules / Caused by: channel closed", exit 1, on
+// this and every later start. Patching 808080808020 (2^40) instead:
+// "memory allocation of 43980465111040 bytes failed", SIGABRT. Control:
+// patching the StructWith tag byte (0x2d) to 0xff fails the read and the
+// program runs cold, printing {a: 3, b: 2}.
+let s = {a: 1, b: 2};
+{s with a: 3}

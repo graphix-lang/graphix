@@ -275,6 +275,16 @@ bool tree_sitter_graphix_external_scanner_scan(
     }
 
     // Pattern 3: starts with ident char, must contain = + / somewhere
+    // CR claude for eric: [structure] After its first advance, this pattern (283-302)
+    // is scan_bare_ident_tail (67-84) line for line, so a change to one, such as
+    // limiting bare values to `bytes:`, misses the other and the raw-string fallback
+    // (215) lexes differently; the body can be `lexer->advance(lexer, false); return
+    // scan_bare_ident_tail(lexer);`. The ident-char test is written out three times
+    // (77-78, 278-280, 294-295), and consume_value_chars returns a count no caller
+    // reads. The comment at 235-236 says the VALUE_EXTENSION branch never returns a
+    // zero-length token, but a first char of '.', '-' or ':' with nothing valid after
+    // it (`a[i64:1..i64:3]`, `i64:1-x`) returns true at zero length; both parse
+    // correctly, so the comment is what is wrong. (ide-tooling-16)
     if ((first >= 'a' && first <= 'z') ||
         (first >= '0' && first <= '9') ||
         first == '_') {

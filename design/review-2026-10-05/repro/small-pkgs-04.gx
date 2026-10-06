@@ -1,0 +1,43 @@
+// small-pkgs-04: a type-directed read's cast target keeps the error members
+// the checker puts in 'b, so data is cast INTO an error value.
+//
+// cast_target (stdlib/graphix-package-core/src/lib.rs:43) returns 'b's
+// binding whole. Under a `Result<T, E>` annotation the checker binds 'b to
+// `[T, Error<E>]`; as the scrutinee of a select with an `error as e` arm,
+// to `[error, T]` (sorted: the error member first). The cast's Error arm
+// (graphix-types/src/typ/cast.rs:321) wraps any value E admits, and netidx's
+// Value::cast turns a string, or an array whose first element leads to one,
+// into an error; a union member that converts first wins. So JSON data
+// chooses the error, and valid data that needs a conversion (an integer for
+// an f64 field) comes back as an error. toml::read and str::parse do the
+// same under the select (same target, same cast). pack::read also hands
+// back an error value decoded from the bytes whenever the target admits it.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/small-pkgs-04.gx
+//          (same with --no-fusion; graphix-fuzz check: AGREE)
+//
+// expected (line order varies):
+//   forged -> error:["InvalidCast", "can't cast [\"JsonErr\", \"forged\"] to { port: i64 }: ..."]
+//   select -> ok 1, 2
+//   bare -> {x: 1, y: 2}
+//   pack -> an error the reader made (PackErr / InvalidCast), not the bytes' own
+// observed (HEAD c722befe, debug build, both engines):
+//   forged -> error:["JsonErr", "forged"]
+//   select -> err error:"x"
+//   bare -> {x: 1, y: 2}
+//   pack -> error:["PackErr", "forged-pack"]
+type JE = [`JsonErr(string), `InvalidCast(string)];
+type PE = [`PackErr(string), `InvalidCast(string)];
+type Pt = {x: f64, y: f64};
+let forged: Result<{port: i64}, JE> = json::read(r#"["JsonErr", "forged"]"#);
+println("forged -> [forged]");
+let sel = select json::read(r#"{"x": 1, "y": 2}"#) {
+  error as e => "err [e]",
+  Pt as p => "ok [p.x], [p.y]"
+};
+println("select -> [sel]");
+let bare: Pt = json::read(r#"{"x": 1, "y": 2}"#)$;
+println("bare -> [bare]");
+let packed: Result<i64, PE> = pack::read(pack::write_bytes(error(`PackErr("forged-pack")))$);
+println("pack -> [packed]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

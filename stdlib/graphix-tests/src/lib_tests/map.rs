@@ -71,6 +71,15 @@ const MAP_CHANGE_PRESENT: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The `ASPIRE: Jit — the body does not fuse into a
+// kernel yet` line above is false here: this body fuses whole today (it compiles under
+// `#[native]`), and so do map.rs:87, 101, 117 and str.rs:317, 335. In typecheck.rs (27,
+// 62, 75, 87, 139, 151, 243) the bodies call json::read or pack::read, which are async
+// and never fuse under strict fusion, so 'yet' promises something the design rules out.
+// FuseExpect::Jit itself means only that some kernel ran. The same line sits above
+// FuseExpect::Jit in 76 fixtures across stdlib/graphix-tests and above FuseExpect::None
+// in 15 more. Delete them; a fixture that must fuse whole says so with `#[native]` on
+// its body. (tests-lib-b2-09)
 run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(12)) => true,
     _ => false,
@@ -280,6 +289,17 @@ const MAP_MAP_KEY_COLLISION: &str = r#"
   (map::len(collided), map::get(collided, "same"))
 }
 "#;
+// CR claude for eric: [test-gap] The predicate accepts 1 or 2. run! checks each mode
+// against the predicate separately and never compares one mode's value with another's,
+// so this test cannot see the engines disagree, which is what the comment above says it
+// pins. For loose predicates like this one, CLAUDE.md's 'asserting equal values' for
+// run! does not hold. The policy also differs by constructor: a literal `{k => 1, k =>
+// 2}` keeps the last value, while map::map and map::filter_map keep the first when two
+// keys collapse, through CMap::from_iter in pairs_to_map
+// (graphix-compiler/src/node/collection.rs:205). Choose one policy, then pin the exact
+// value (`Ok(Ok((1, 1)))` today). Probe: `let k = "same"; (map::get({k => 1, k => 2},
+// k), map::get(map::map({"a" => 1, "b" => 2}, |(kk, v)| (k, v)), k))` gives (2, 1) in
+// both engines. (tests-lib-b2-03)
 run!(map_map_key_collision, MAP_MAP_KEY_COLLISION, |v: Result<&Value>| {
     matches!(
         v.map(|v| v.clone().cast_to::<(i64, i64)>()),

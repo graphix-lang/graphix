@@ -1,0 +1,42 @@
+// c-collection-02: MapQ forks its slots without the ORDERED rule, so slots
+// sharing one queuefn queue push into it in thread order.
+//
+// r[j].0 is the value of i when slot j's queued call q(x) was released. At
+// i == 30 every source element changes and all 64 slots call the one shared
+// q in the same cycle. Serially they push in slot order, the FIFO queue
+// releases them in slot order, and the last line (the first j whose release
+// came before its predecessor's) is null. The per-slot fold makes the slots
+// costly, so the default Auto cost model forks the standing slots.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-collection-02.gx
+//          (default: GRAPHIX_PAR=auto, fusion on), then again with
+//          GRAPHIX_PAR=off
+//
+// expected: the last line is null in every mode. A forked cycle computes
+// what the serial node-walk does, and two subtrees that both reach an
+// ordered call keep their serial order (design/parallel_eval.md §1, §3.2, §6).
+//
+// observed: GRAPHIX_PAR=off: null (5 of 5 runs). Default: 14, 14, 7, 24, 17,
+// 4, 20, null, 35, 11, 15 (10 of 11 runs out of order).
+//
+// Smaller, through the fuzzer's forced-parallel pair (the fresh-slot path):
+//   let trig = array::iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+//   let n = count(trig);
+//   let q = queuefn(#trigger: trig, |x: i64| -> i64 x);
+//   array::map([1, 2, 3, 4, 5, 6, 7, 8], |x| q(x) ~ n)
+// graphix-fuzz check prog.gx (3 of 3 runs, a new permutation each time):
+//   DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+//     interp: Trace([8:[i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, i64:7, i64:8]])
+//     interp/par: Trace([8:[i64:2, i64:4, i64:3, i64:8, i64:1, i64:6, i64:5, i64:7]])
+let i = 0;
+let clock = sys::time::timer(duration:2.ms, true);
+i <- clock ~ i + 1;
+let q = queuefn(#trigger: clock, |x: i64| -> i64 x);
+let go = 0;
+go <- select i { 30 => 1, _ => never() };
+let r = array::map(array::init(64, |j| j + go * 1000), |x| {
+  let w = array::fold(array::init(60, |j| j), 0, |a, j| a + j * x * i);
+  (q(x) ~ i, w)
+});
+sys::exit(select i { 250 => 0, _ => never() });
+array::find(array::init(63, |j| j), |j| r[j + 1]$.0 < r[j]$.0)

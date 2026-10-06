@@ -245,6 +245,18 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
 // An undetermined key is a bottom reference: a write through it lands
 // nowhere; when the key returns the reference retargets (and, as at
 // every retarget, the pending write lands there).
+// CR claude for eric: [risk] place_bottom_key, place_removed_element,
+// place_through_deref, place_through_bottom_deref, deref_moved_to_undelivered and
+// place_payload order their phases with one-shot timers 30-40 ms apart. The run loop
+// (graphix-rt/src/gx.rs `run`) puts every finished task into one cycle, so if the
+// runtime thread does not run during that gap, both timers fire together and the second
+// phase acts before the first phase's `<-` lands. Under CPU throttling, 16 to 23 of
+// their 24 test functions fail per run with exactly those values (place_through_deref
+// gives [10, 10], place_removed_element's obs is 20); ordinary load on a 16-core box
+// did not trigger it. Fix: drive the phases by cycles (the `step <- select step { .. }`
+// counter in printing.rs), or arm each timer off the previous phase's landed effect
+// (`timer(k ~ duration:0.03s, false)`). probe:
+// design/review-2026-10-05/repro/tests-lang-d-08.sh (tests-lang-d-08)
 const PLACE_BOTTOM_KEY: &str = r#"
 {
   let a = [10, 20];

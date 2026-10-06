@@ -169,6 +169,15 @@ async fn native_structwith_string_field_ok() {
 
 // A connect inside a map callback.
 #[tokio::test]
+// CR claude for eric: [readability] This test asserts the 'did not fully fuse' compile
+// error, so its name says the opposite of what it pins; call it
+// native_connect_in_callback_is_error. The must-reject tests at lines 22-66 (and
+// neg.rs:26) assert only `r.is_err()`, which a parse error or eval's own 5 s no-result
+// timeout also satisfies; match each on its message, as this test does. Several
+// assertion messages narrate history ('now that nested cross-statement calls fuse
+// (#203)', 'now that Stage 2 delivers transitive-callee DynCalls', 'now that StructWith
+// has an emit_clif', 'must fully fuse now', 'now that `_` infers a fresh TVar'); say
+// what must hold instead. (tests-lib-b2-10)
 async fn native_connect_composite_rhs_ok() {
     let prog = "{ let last = { v: i64:0 }; \
                 array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); \

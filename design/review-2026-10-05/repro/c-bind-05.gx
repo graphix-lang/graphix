@@ -1,0 +1,31 @@
+// c-bind-05: a destructuring let's non-target siblings lose the wake
+// refresh when any sibling is a `<-` target.
+//
+// Bind::update (graphix-compiler/src/node/bind.rs:340-347) decides
+// keep_connect_target_value once for the whole pattern: if any id the
+// pattern binds is in ctx.connect_targets, no id is published at the wake,
+// so the non-target `b` keeps its pre-sleep value. Arm 1 reads `z`, so
+// z's 0 -> 5 fire is consumed there; at arm 0's wake (n = 2, 4) the
+// initializer recomputes (0, 105) and only `a`, the target, should be held
+// back (design/wake_catchup.md, "The value channel re-reaches the store").
+// `q` is the same arm written as two lets, and refreshes.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-bind-05.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off|force, a cold or warm
+//          image; graphix-fuzz check: AGREE, both engines are wrong alike)
+//
+// expected: [(100, 100), (5, 5), (105, 105), (5, 5), (105, 105)]
+// observed (HEAD c722befe, debug build, every mode):
+//           [(100, 100), (5, 5), (100, 105), (5, 5), (100, 105)]
+//
+// GXDBG_LETBIND=1 shows the `(a, b)` let at the wake with val [0, 105],
+// keep_connect_target_value=true, publishing=false. The quiet path loses it
+// too: `let (a, b) = p` over an outer `let p = (z, z + 100)` recomputes
+// STALE [5, 105] at the wake and is held back the same way (b stays 100).
+let n = array::iter([0, 1, 2, 3, 4]);
+let z = uniq(select n { 0 => 0, _ => 5 });
+let r = select n % 2 { 0 => { let (a, b) = (0, z + 100); a <- n ~ a + 1; b }, _ => z };
+let q = select n % 2 { 0 => { let a = 0; let b = z + 100; a <- n ~ a + 1; b }, _ => z };
+let out = array::group((r, q), |i, _| i == 5);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

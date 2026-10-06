@@ -1,0 +1,19 @@
+// x-panics-15: rand::rand panics the runtime when the float range is not finite.
+//
+// stdlib/graphix-package-rand/src/lib.rs:62-63 guards only `start < end`
+// before rand's `random_range`, which unwraps `Err(NonFinite)` when a bound
+// is infinite or `end - start` overflows (f32 and f64 alike).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-panics-15.gx
+//
+// expected: no value (as for an empty range) or a logged refusal; the
+//   program exits 0 after 100ms.
+// observed: panicked at stdlib/graphix-package-rand/src/lib.rs:73:54:
+//   called `Result::unwrap()` on an `Err` value: NonFinite
+//   Error: runtime did not respond (exit 1). `#start: 0.0, #end: 1e308 * 10.0`
+//   (an infinite bound) and `#start: f32:-3e38, #end: f32:3e38` do the same;
+//   `#start: 0.0, #end: 1e308` works.
+let big = 1e308;
+let r = rand::rand(#start: 0.0 - big, #end: big, #clock: null);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

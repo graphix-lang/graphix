@@ -38,4 +38,16 @@ args = ["lsp"]
 # --- Option B: build from the published git repo ---
 [[grammar]]
 name = "graphix"
+# CR claude for eric: [bug] `rev = "main"` never moves past the first fetch. `helix
+# --grammar fetch` runs `git fetch --depth 1 origin main` and then `git checkout main`,
+# and after the first install the local `main` already exists, so the checkout stays on
+# the first-fetched commit while helix prints "graphix now on main". install.sh links
+# the queries to the checkout and says to re-run it after a grammar change, but the
+# re-run keeps the old grammar ("already built"). The first query that names a newer
+# node then fails to compile (helix.log: invalid node type "abort"), and .gx files lose
+# all syntax coloring while `helix --health` still shows a check mark. Pinning `rev` to
+# a commit SHA that is bumped with the grammar fixes the fetch. Making the path source
+# (Option A, filled in by install.sh) the default instead keeps the compiled grammar and
+# the linked queries on the same checkout. probe:
+# design/review-2026-10-05/repro/ide-tooling-04.sh (ide-tooling-04)
 source = { git = "https://github.com/graphix-lang/graphix", rev = "main", subpath = "ide/tree-sitter-graphix" }

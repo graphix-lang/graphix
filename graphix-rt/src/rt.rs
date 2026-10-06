@@ -31,6 +31,14 @@ pub struct GXRt<X: GXExt> {
     /// Bumped once at the top of each `do_cycle`; also the trace
     /// recorder's cycle number.
     pub(super) cycle: u64,
+    // CR claude for eric: [perf] Every referenced variable gets an inner hash table of
+    // its own. ref_var's first insert allocates a minimum-size table and unref_var
+    // frees it when the last reference goes. Yet under a script every reference comes
+    // from the one root expression, so the table holds a single key. For 6000 trivial
+    // array::init/array::map slots that is 1.6 MB of inner tables beside a 1.3 MB outer
+    // table (massif, about 4% of the peak), plus an allocation and a free per variable
+    // whenever a collection's slots come and go. A `SmallVec<[(ExprId, u32); 1]>` per
+    // variable, searched linearly, keeps the common case inline. (x-alloc-05)
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
     pub(super) var_updates: VecDeque<(BindId, VarUpdate)>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).

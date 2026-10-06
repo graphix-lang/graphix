@@ -1,0 +1,31 @@
+// tests-lib-b2-08: process_graceful_kill can send SIGTERM before the shell
+// installs its trap.
+//
+// The fixture (stdlib/graphix-tests/src/lib_tests/process.rs:197-214) kills
+// with `sys::time::timer(duration:100.ms, false) ~ child.proc`. The timer
+// starts at init, and `~` banks a fire that finds child.proc absent, so a
+// spawn that completes after 100 ms gets its SIGTERM the moment the Proc
+// arrives, before /bin/sh has run `trap 'exit 0' TERM`; sh then dies by the
+// signal and `status.success` is false. Below, the fixture is verbatim
+// except that the spawn is delayed 200 ms, standing in for a spawn that is
+// slow under a saturated `cargo test`. With a 50 ms delay it passes.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/tests-lib-b2-08.gx
+//          (--no-fusion prints the same)
+//
+// expected (what the fixture asserts): {code: 0, success: true}
+// observed (HEAD c722befe, debug build, 3 of 3 runs, both engines):
+//   {code: null, success: false}
+let r = {
+  let options = sys::process::options(
+    #args: ["-c", "trap 'exit 0' TERM; sleep 10 & wait"],
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  let child = sys::process::spawn(sys::time::after_idle(duration:200.ms, options))?;
+  let status = sys::process::wait(child.proc)?;
+  sys::process::kill(#grace: duration:5.s, sys::time::timer(duration:100.ms, false) ~ child.proc);
+  status
+};
+sys::exit(sys::time::after_idle(duration:300.ms, r ~ 0));
+r

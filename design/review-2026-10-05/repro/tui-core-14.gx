@@ -1,0 +1,37 @@
+// tui-core-14: every display start and resume stacks another ratatui
+// panic hook, for the life of the process.
+//
+// ratatui::try_init (ratatui-0.30.0/src/init.rs:330-331) calls
+// set_panic_hook, which wraps the current hook in one that calls
+// restore() first. The display calls try_init at every start
+// (stdlib/graphix-package-tui/src/lib.rs:730) and every resume (lib.rs:839).
+// The program suspends and resumes until `rounds` reaches 60, then sets
+// a padding whose left + right overflows u16, which panics in ratatui's
+// Block::inner in a debug build (the panic is only the trigger).
+//
+// command: in a pty (60x10) for 10 s, with a DEBUG build:
+//   graphix --no-cache design/review-2026-10-05/repro/tui-core-14.gx
+//
+// expected: one restore (one ESC[?1049l) before the panic message.
+// observed: as many consecutive ESC[?1049l right before "thread ...
+//   panicked" as the stream holds ESC[?1049h (the start plus each resume
+//   that reached the display): 10 and 10, 8 and 8 in two runs.
+use tui::{block::block, paragraph::paragraph};
+let suspended = false;
+let rounds = 0;
+let r = tui::suspend(suspended);
+select r {
+  error as e => suspended <- e ~ false,
+  b => select b {
+    true => suspended <- b ~ false,
+    false => {
+      rounds <- b ~ rounds + 1;
+      suspended <- select rounds { n if n < 60 => b ~ true, _ => never() }
+    }
+  }
+};
+let pad = select rounds {
+  n if n < 60 => {top: 0, bottom: 0, left: 0, right: 0},
+  _ => {top: 0, bottom: 0, left: 40000, right: 40000}
+};
+block(#padding: &pad, &paragraph(&"rounds: [rounds]"))

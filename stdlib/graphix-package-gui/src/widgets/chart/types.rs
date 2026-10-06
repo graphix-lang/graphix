@@ -12,6 +12,16 @@ use poolshark::local::LPooled;
 pub struct ChartColor(pub f32, pub f32, pub f32, pub f32);
 
 impl ChartColor {
+    // CR claude for eric: [bug] to_plotters_rgb drops the alpha channel, and every
+    // chart colour goes through it. So color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 0.3) draws
+    // an opaque (255, 0, 0) line even though IcedBackend honours alpha (an area fill
+    // made with mix(0.3) comes out pale); return plotters' RGBAColor instead. The
+    // From<ChartColor> for iced_core::Color impl below has no users. chart.gxi and the
+    // book give scatter and scatter3d a #stroke_width and error_bar a #point_size that
+    // draw.rs never reads: scatter draws filled circles, and error_bar sizes its
+    // average marker from stroke_width, so changing either draws the same pixels. Wire
+    // them up or drop them from the API. probe:
+    // design/review-2026-10-05/repro/gui-chart-20.rs (gui-chart-20)
     pub fn to_plotters_rgb(self) -> plotters::style::RGBColor {
         plotters::style::RGBColor(
             (self.0 * 255.0) as u8,
@@ -371,6 +381,18 @@ impl FromValue for OptXAxisRange {
         if v == Value::Null {
             return Ok(Self(None));
         }
+        // CR claude for eric: [bug] A datetime range never reaches the DateTime branch
+        // below. f64::from_value casts a DateTime to epoch seconds, so `{min: datetime,
+        // max: datetime}` decodes here as XAxisRange::Numeric. The TimeSeries draw
+        // (draw.rs:534-537) honours only XAxisRange::DateTime, so it silently falls
+        // back to the data's automatic range. Trying the DateTime decode first does not
+        // help, because netidx also casts any number to a DateTime. Decide by the
+        // variant of the min field's Value instead, as datetime_x (line 110) does for
+        // OHLC points; chart_test.rs pins only a numeric x_range. probe:
+        // design/review-2026-10-05/repro/gx-ui-05.rs (copy to
+        // stdlib/graphix-package-gui/tests/review_gx_ui_05.rs): the range decodes as
+        // Numeric { min: 1704412800, max: 1704499200 }, and a time series with #x_range
+        // 2024-01-05..06 is drawn over the same range as one with no range. (gx-ui-05)
         if let Ok(AxisRange { min, max }) = v.clone().cast_to() {
             return Ok(Self(Some(XAxisRange::Numeric { min, max })));
         }

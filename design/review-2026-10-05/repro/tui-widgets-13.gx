@@ -1,0 +1,21 @@
+// tui-widgets-13: scrollbar: an omitted content_length becomes a made-up 50
+//
+// ScrollbarW::compile (stdlib/graphix-package-tui/src/scrollbar.rs:160-167)
+// starts its ScrollbarState at content_length 50 when the caller passes none
+// (`?#content_length` defaults to `&null`). Nothing measures the child,
+// though book/src/ui/tui/scroll.md:37 says the length is auto-detected; two
+// of the book's three scroll examples omit it (scroll_basic, scroll_list).
+//
+// command (a TUI: run it in an 80x24 terminal; Ctrl-C exits):
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets-13.gx
+//
+// expected: the single line is all the content, so the thumb fills the
+//   track, as it does with `#content_length: &1` (or no bar, with `&0`).
+// observed (HEAD c722befe, debug build, 80x24 pty): an 8-cell thumb
+//   (U+2588) in column 80, rows 1-8, sized as if 50 rows were behind the 24
+//   visible ones. book/src/examples/tui/scroll_list.gx (5 items) draws the
+//   same 8-cell thumb.
+use tui::{paragraph::paragraph, scrollbar::scrollbar};
+
+let position = 0;
+scrollbar(#position: &position, &paragraph(&"one line, all of it visible"))

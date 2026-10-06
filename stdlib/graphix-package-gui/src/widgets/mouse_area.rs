@@ -147,6 +147,16 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         Ok(changed)
     }
 
+    // CR claude for eric: [bug] mouse_area.gx defaults all five handlers to `|_| null`,
+    // so view installs every one of them whatever the program asked for. Each cursor
+    // move over the area then sends a `Message::Call` carrying a fresh {x, y} struct
+    // and runs a runtime cycle for a no-op: ten moves over an on_press-only area made
+    // ten calls. Every left, right or middle press is also captured, so a hover-only
+    // mouse_area stacked above a button swallows the button's clicks. The other
+    // widgets' `|_| null` defaults install their handlers the same way; scrollable's
+    // on_scroll calls the runtime on every scroll step. Make the handler types nullable
+    // with a null default and install only the handlers given. probe:
+    // design/review-2026-10-05/repro/gui-widgets-b-09.rs (gui-widgets-b-09)
     fn view(&self) -> IcedElement<'_> {
         let mut ma = widget::MouseArea::new(self.child.view());
         if let Some(c) = &self.on_press_callable {

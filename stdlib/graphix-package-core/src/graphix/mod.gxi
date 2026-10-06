@@ -24,6 +24,12 @@ trait Eq {
     val eq: fn(self, other: self) -> bool
 };
 
+// CR claude for eric: [doc-drift] This says `array::sort`, `min`/`max` and map keys
+// stay structural, but they consult the implementation exactly as `<` does
+// (design/traits.md "THE VALUE SEAM", book/src/udt/traits.md). With a reversed `impl
+// Ord for Rev`, `min(Rev(1), Rev(2))` is `Rev(2)`, `array::sort([Rev(1), Rev(2)])` is
+// `[Rev(2), Rev(1)]` and `{Rev(1) => "a", Rev(2) => "b"}` orders `Rev(2)` first. The
+// LSP shows this text on hover. (x-builtin-effects-12)
 /// Ordering. `<`, `>`, `<=` and `>=` consult the implementation the
 /// way `==` consults `Eq`; `array::sort`, `min`/`max` and map keys
 /// stay structural. Implicitly `#[sync]`.
@@ -67,6 +73,19 @@ trait Collection {
         = |c, f| {
             let init: Option<'a> = null;
             fold(c, init, |acc, x| select acc {
+                // CR claude for eric: [bug] The defaults use null to mean "no element".
+                // map and filter (lines 61, 64) go through filter_map, whose Option<'b>
+                // collapses when the element type holds null. This arm also can't tell
+                // a null match from "not found yet". So over nullable elements, map and
+                // filter drop elements and find returns a later one: for `m:
+                // Map<string, [i64, null]> = {"a" => null, "b" => 1}`, `len(filter(m,
+                // |v| opt::is_none(v)))` is 0 and `find(m, |v| true)` is 1, where
+                // Array's and List's intrinsics keep the null. Map's impl (mod.gx:51)
+                // overrides neither filter nor find, every user collection gets all
+                // three defaults, and line 48 ("the built-in collections override all
+                // of them") is false: Map lacks filter/find/find_map and List lacks
+                // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
+                // (gx-stdlib-04)
                 null as _ => select f(x) { true => x, false => null },
                 found => found
             })
@@ -110,6 +129,17 @@ type ErrChain<'a> = {
     pos: Pos
 };
 
+// CR claude for eric: [structure] Three signatures here are looser than their builtins.
+// `all` returns one of its equal arguments but is typed `fn(@args: Any) -> Any`, so
+// `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -> 'a`, as max/min have, gives it a
+// real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
+// - 1, e)` with count = 0 passes every event (-1 wraps to usize::MAX) and skip(-1)
+// passes none. A string count is parsed, and a non-number leaves the count unset (take
+// passes nothing, skip passes everything); `#n: i64` with a negative read as 0 fixes
+// that. sum/product/divide (123, 181, 184) return the union Number, so `sum(1, 2) + 1`
+// and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
+// would type the result, but it would also refuse the mixed-number array that
+// graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
 /// return the first argument when all arguments are equal, otherwise return nothing
 val all: fn(@args: Any) -> Any;
 
@@ -159,6 +189,15 @@ val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;
 
+// CR claude for eric: [bug] bit_and, bit_or, bit_xor, shl and shr below are `fn<'a:
+// Int>`, so 'a can settle to a union such as [i64, u8]. int_binop!/int_shift!
+// (lib.rs:1456-1494) return None when the two values are different integer types. Such
+// a call passes --check and never produces anything: no value, no error, no log. The
+// node-walk re-delivers its last result as stale while the JIT bottoms (graphix-fuzz
+// check: DIVERGENCE). `x + y` over the same operands is refused at check time. Declare
+// these five `fn<'a: Int + Singleton>`, as arithmetic is, here, in mod.gx:17-22 and in
+// book/src/stdlib/core.md; bit_not works per variant and can stay. probe:
+// design/review-2026-10-05/repro/gx-stdlib-11.gx (gx-stdlib-11)
 /// bitwise AND
 val bit_and: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
 

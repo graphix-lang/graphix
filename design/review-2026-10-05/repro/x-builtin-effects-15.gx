@@ -1,0 +1,20 @@
+// x-builtin-effects-15: log prefixes every line with core's internal lambda
+// scope, not anything of the caller's.
+//
+// Log::update writes `self.scope.lexical` (stdlib/graphix-package-core/src/
+// lib.rs:2563), the scope BuiltIn::init receives: the builtin definition's
+// own body scope inside core. Every log line from every call site carries
+// the same `core::#fn<id>: ` prefix. dbg (lib.rs:2421) takes the call
+// site's argument spec and prints its position.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-15.gx
+//
+// expected: the two log lines name where they were called (the top level,
+//   the body of f), as the dbg line does.
+// observed: "core::#fn4611686018427387938: 5" and
+//   "core::#fn4611686018427387938: 7", one prefix for both sites, then
+//   "line: 20, column: 52 dbg(x): 5".
+let x = 5;
+let f = |y| log(#dest: `Stdout, y);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(log(#dest: `Stdout, x), f(7), dbg(#dest: `Stdout, x))

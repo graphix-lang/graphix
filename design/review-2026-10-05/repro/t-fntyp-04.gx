@@ -1,0 +1,46 @@
+// t-fntyp-04: sig_matches treats distinct unbound signature variables as
+// equal when they sit inside a type.
+//
+// Type::sig_matches (graphix-types/src/typ/matches.rs:366) compares a later
+// use of an implementation variable with `sig_type == prev_sig_type`, and
+// Type's Eq compares TVars by binding, so two distinct unbound signature
+// cells are equal inside a composite: `Array<'a>` == `Array<'b>`. The
+// implementation below is less general than its signature and passes.
+// The top-level form, `val f: fn(x: 'a, y: 'b) -> 'a` over the same
+// source, is refused: "type variable usage mismatch: expected 'a: unbound,
+// got 'b: unbound".
+//
+// command: graphix --check design/review-2026-10-05/repro/t-fntyp-04.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/t-fntyp-04.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-fntyp-04.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/t-fntyp-04.gx
+//
+// expected: the check refuses the module: signature mismatch "val f: ...",
+// type variable usage mismatch: expected Array<'a>, got Array<'b>.
+//
+// observed: --check exits 0. The call returns ["a", "b"] typed Array<i64>:
+//   default (JIT): [["a", "b"], 140122571160529]  (the string's heap
+//     address read as an i64, plus 1; the number varies per run)
+//   --no-fusion: arith error .. "Parse error at line: 1, column: 1 ..", no value
+//   graphix-fuzz check: DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([])
+//     jit: Trace([0:[["a", "b"], i64:140512875144017]])
+// With the arguments swapped, `inner::f(["a", "b"], [1, 2])`, and
+// `(r, str::len(r[0]$))` as the value, the JIT run aborts the process:
+//   misaligned pointer dereference: address must be a multiple of 0x8 but is 0x1
+//   (arcstr arc_str.rs:1293: the i64 1 read as an ArcStr; exit 134)
+// With a static module (inner.gxi holding the same val, inner.gx the same
+// source) --check exits 0 and the run refuses the direct call at
+// elaboration: "an instance at fn(x: Array<i64>, y: Array<string>) ->
+// Array<i64> of a definition typed fn(x: 'c, y: 'c) -> 'c"
+// (GRAPHIX_ELAB_AUDIT=1 reports it); a call through a function value,
+// `[inner::f][0]$([1, 2], ["a", "b"])`, runs and returns ["a", "b"].
+mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: Array<'a>, y: Array<'b>) -> Array<'a> };
+    source "let f = |x: 'c, y: 'c| -> 'c y"
+};
+
+let r = inner::f([1, 2], ["a", "b"]);
+
+(r, r[0]$ + 1)

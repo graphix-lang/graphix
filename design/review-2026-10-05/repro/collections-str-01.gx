@@ -1,0 +1,33 @@
+// collections-str-01: Value's Map order pairs entries from the end: it is
+// intransitive, so sorts give order-dependent results or panic and map keys
+// are lost.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-01.gx
+//
+// expected (lexicographic over the entries in key order, length as the
+// tiebreak, as the Array arm and the comment in op.rs say):
+//   "lt: true true false | sort lens: [3, 2, 1] [3, 2, 1] | get: 3 a b c"
+//
+// observed (graphix c722befe, netidx 497e6082; the same with --no-fusion):
+//   "lt: true true true | sort lens: [3, 2, 1] [2, 1, 3] | get: 3 a null null"
+//
+// PartialOrd for Value (../netidx/netidx-value/src/op.rs:300-311) steps both
+// maps with next_back() in lockstep, so maps of unequal length are compared
+// on their LAST min(len) entries: a vs b compares {0, 1, 8}'s tail {1, 8}
+// with {5, 6}, c vs a compares {7} with {8}, and a < b < c < a. The map m
+// holds all three keys but finds only the first one it inserted.
+//
+// crash variant: replace the last line with
+//   array::len(array::sort(array::init(400, |i| array::fold(array::init(i % 5 + 1, |j| j), {}, |m, j| map::insert(m, (i * 7919 + j * 104729) % 97, 0)))))
+// observed: panic at core/src/slice/sort/shared/smallsort.rs:854 "user-provided
+// comparison function does not correctly implement a total order", then
+// "Error: runtime did not respond", exit 1. The same 400 maps produced as
+// keys by map::map(src, |(k, v)| (mk(k), v)) inside a fused kernel abort the
+// process ("failed to initiate panic, error 5, aborting", exit 134).
+let a = {0 => 0, 1 => 0, 8 => 0};
+let b = {5 => 0, 6 => 0};
+let c = {7 => 0};
+let lens = |xs: Array<Map<i64, i64>>| array::map(xs, |m| map::len(m));
+let m = map::insert(map::insert(map::insert({}, a, "a"), b, "b"), c, "c");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+"lt: [a < b] [b < c] [c < a] | sort lens: [lens(array::sort([a, b, c]))] [lens(array::sort([c, b, a]))] | get: [map::len(m)] [map::get(m, a)] [map::get(m, b)] [map::get(m, c)]"

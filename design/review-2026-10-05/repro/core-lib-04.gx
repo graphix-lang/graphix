@@ -1,0 +1,21 @@
+// core-lib-04: range and array::iter deliver in O(N^2): the runtime
+// re-scans every queued set_var each cycle (graphix-rt/src/gx.rs:470).
+//
+// command: time graphix --no-cache design/review-2026-10-05/repro/core-lib-04.gx
+//
+// range(0, N) queues all N elements as set_vars of one id in one cycle.
+// Each cycle the delivery loop pops every queued write and pushes back
+// each one whose id was already delivered this cycle, so the drain costs
+// N + (N - 1) + ... + 1 queue operations.
+//
+// expected: about the cost of N cycles of a self-loop counter, which for
+//   N = 40000 (`x <- select x { v if v < 40000 => v + 1, _ => never() }`)
+//   runs in 0.38 s.
+// observed (debug build, HEAD c722befe): N = 5000 0.35 s, 10000 1.03 s,
+//   20000 4.0 s, 40000 15.4 s (about 4x per doubling).
+//   array::iter(array::init(N, |i| i)): N = 10000 1.9 s, 20000 4.4 s.
+let r = range(0, 40000)$;
+let c = count(r);
+let done = select c { 40000 => true, _ => never() };
+sys::exit(done ~ 0);
+c

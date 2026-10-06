@@ -1,0 +1,24 @@
+// x-panics-11: sys::time::timer(d, 0) underflows its repeat count.
+// Timer::update's (Some(timeout), Some(repeat)) arm (stdlib/graphix-package-sys/
+// src/time.rs:343) schedules without asking repeat.will_repeat(), so a count of
+// 0 arms a timer; at the fire, `self.repeat -= 1` (time.rs:357) runs
+// `*n -= rhs` (time.rs:178) on 0. A count that drops to 0 while a fire is
+// pending reaches the same subtraction through the repeat-only arm
+// (time.rs:325), e.g. `let r = 3; r <- sys::time::timer(duration:10.ms, false) ~ 0;`
+// and `sys::time::timer(duration:50.ms, r)`. A fractional count below 1 (0.5)
+// casts to 0 and does the same.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/x-panics-11.gx
+// expected: 0 fires (the gxi: "a number n ... do this n times"; repeat 1 fires
+//   once, 2 twice): prints 0, exits 0 at 500 ms.
+// observed, debug build: prints 0, then
+//   panicked at stdlib/graphix-package-sys/src/time.rs:178:29:
+//   attempt to subtract with overflow
+//   Error: graphix runtime is dead        (exit 1)
+// observed, quick profile (release, no overflow checks): the count wraps to
+//   u64::MAX and the timer fires every 10 ms: prints 0..45, exit 45.
+let t = sys::time::timer(duration:10.ms, 0);
+let n = 0;
+n <- t ~ n + 1;
+sys::exit(sys::time::timer(duration:500.ms, false) ~ n);
+n

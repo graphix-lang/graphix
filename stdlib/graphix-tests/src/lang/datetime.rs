@@ -154,6 +154,15 @@ run!(datetime_arith11, DATETIME_ARITH11, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
+// CR claude for eric: [test-gap] arith12 to arith16 annotate `x: duration` over
+// `datetime OP i64`, and the annotation alone refuses them ('duration does not contain
+// datetime'). They would still pass if the operator rule started accepting datetime
+// arithmetic with an integer. arith18's comment says duration is not a Number, but the
+// one-type operand rule is what refuses it ('cannot compute duration *? i64'). Nothing
+// pins that datetime is not a Number, which is the reason `datetime - datetime` is
+// refused. Drop the annotations and match the error message. Change arith18 to
+// `duration:1.s *? duration:2.s` ('Number does not contain duration'), and add a test
+// that subtracts two datetimes ('Number does not contain datetime'). (tests-lang-d-07)
 const DATETIME_ARITH12: &str = r#"
 {
     let x: duration = datetime:"2024-11-05T00:00:00Z" - 1;

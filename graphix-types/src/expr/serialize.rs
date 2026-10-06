@@ -9,6 +9,22 @@
 //! There is no version field and no parse fallback: the same compiler
 //! build writes and reads a blob, so a decode error is an internal bug.
 
+// CR claude for eric: [doc-drift] The module doc above says this file holds the
+// hand-written Pack impls for Expr, AbstractId, TVar and FnType, but only Expr's is
+// here (AbstractId: typ/mod.rs:2345 via `uuid_id_codec!`; TVar: typ/tvar.rs:1620;
+// FnType: typ/fntyp.rs:1493), and AbstractId's own doc (typ/mod.rs:225-227) points back
+// here. Design docs have drifted the same way: design/list_native.md:17 puts the List
+// rep in `node/list.rs`, but it is graphix-types/src/list.rs.
+// design/nominal_abstract_types.md:98-103 puts GxAbstract in graphix-compiler as (id,
+// name, payload) with hash and Pack derived from (id, payload), and says Type::Abstract
+// carries only the id. In fact the box is in graphix-types/src/abstract_value.rs,
+// carries params, hashes the id alone and packs every field, and Type::Abstract carries
+// params. design/program_image.md:3-4 calls the kernel cache and the program image
+// proposals though slices (a)-(d) are built; :183-186 keys function types by address
+// where :342-347 keys them by content; and :529-530 says netidx's `atomic_id!` needs a
+// reserve API where ids.rs's `image_id!` already has one. A reader who follows them
+// looks in the wrong crate for a codec and misreads how abstract values hash.
+// (t-expr-core-09)
 use crate::{
     SourcePosition,
     expr::{

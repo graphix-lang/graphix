@@ -1,0 +1,36 @@
+// gx-stdlib-07: str::parse returns an `InvalidCast` error that its declared
+// error type, `ParseError(string), omits (str/src/graphix/mod.gxi:110,
+// mod.gx:35; produced at str/src/lib.rs:822, typ.cast_value).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-07.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/gx-stdlib-07.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/gx-stdlib-07.gx  (AGREE)
+//
+// --check passes: handler `a` is ascribed ParseError only, and handler `b`'s
+// select over (e.0).error is exhaustive with its one `ParseError arm.
+// Adding `InvalidCast(s) => .. (or _ => ..) to b's select is refused:
+//   "unreachable arm: the earlier arms already cover the whole scrutinee".
+//
+// expected: every error a handler receives inhabits the type the check gave
+// it, so b prints a line for each of its two failures.
+//
+// observed, both engines, all image modes:
+//   ascribed: ["InvalidCast", "can't cast \"abc\" to i64: no primitive conversion"]
+//   handled: Parse error at line: 1, column: 1
+//   Unexpected `x`
+//   Expected u8, u16, ... error or duration
+// `a`'s e, typed Error<ErrChain<`ParseError(string)>>, holds an InvalidCast;
+// b's exhaustive select matches nothing for "\"abc\"" and that failure is
+// lost without a trace.
+let a = {
+  catch(e: Error<ErrChain<`ParseError(string)>>) println("ascribed: [(e.0).error]");
+  let x: i64 = str::parse("\"abc\"")?;
+  x
+};
+let b = {
+  catch(e) println(select (e.0).error { `ParseError(s) => "handled: [s]" });
+  let x: i64 = str::parse("\"abc\"")?;
+  let y: i64 = str::parse("x")?;
+  x + y
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

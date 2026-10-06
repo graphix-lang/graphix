@@ -33,6 +33,20 @@ struct CellV {
 #[derive(FromValue)]
 struct RowV {
     cells: Vec<CellV>,
+    // CR claude for eric: [bug] This field, top_margin, bottom_margin and
+    // column_spacing (line 72) are read as u16, but the gxi types them i64. A negative
+    // or >65535 value therefore fails the cast, which fails the table's compile and,
+    // through the `?` in layout/block/overlay, the root's compile: the whole screen
+    // stays blank, and nothing is printed unless --log-dir is set. Rgb/Indexed colors
+    // (u8, lib.rs:143-151) fail the same way. The u32/usize/u64 fields wrap a negative
+    // instead (list selected/scroll, tabs selected, table
+    // selected/selected_cell/selected_column, layout focused, sparkline max):
+    // list(#selected: &-1) highlights the last item, tabs(#selected: &-1) draws no
+    // body, and sparkline(#max: &-1) draws nothing. The stated policy is validate.rs's
+    // clamp-and-warn, which bar_chart, paragraph and scrollbar already use ("a negative
+    // must clamp, not wrap", panic_test.rs:62); read these fields as i64 and clamp at
+    // draw time. probe: design/review-2026-10-05/repro/tui-widgets-12.sh
+    // (tui-widgets-12)
     height: Option<u16>,
     style: Option<StyleV>,
     top_margin: Option<u16>,
@@ -291,6 +305,16 @@ impl<X: GXExt> TuiWidget for TableW<X> {
             table = table.flex(f.0);
         }
         if let Some(Some(widths)) = &widths.t {
+            // CR claude for eric: [bug] These widths reach ratatui's Table::widths
+            // unclamped, and it asserts that every Percentage is at most 100 (an
+            // assert!, so release builds too). ConstraintV's `p as u16` (layout.rs:35)
+            // also turns a negative percentage into 65535. A written or computed
+            // `Percentage(101)` or `Percentage(-1)` panics the display task. The
+            // terminal is restored, but the program keeps running with no display and
+            // Ctrl-C no longer ends it, because the task died without firing the
+            // shell's stop signal. Clamp percentages to 0..=100 with a warning, as
+            // validate.rs does for the other widgets, and pin it in test/panic_test.rs.
+            // probe: design/review-2026-10-05/repro/tui-widgets-03.gx (tui-widgets-03)
             table = table.widths(widths.iter().map(|c| c.0));
         }
         if let Some(Some(s)) = column_spacing.t {
@@ -314,6 +338,16 @@ impl<X: GXExt> TuiWidget for TableW<X> {
         if let Some(Some(s)) = &style.t {
             table = table.style(s.0);
         }
+        // CR claude for eric: [bug] Setting a selection ref back to null never
+        // deselects. The three blocks below copy selected_cell, selected_column and
+        // selected into the persistent TableState only when they hold a value, so after
+        // `sel <- null` the old row, column or cell stays highlighted. ListW applies
+        // with_selected(None) on the update and clears. probe:
+        // design/review-2026-10-05/repro/gx-ui-06.sh (row 1 selected, then null: the
+        // header redraws as sel=null and >>cc stays). The three refs write the same two
+        // TableState fields, so applying all three unconditionally here would let a
+        // default-null `selected` erase a `selected_cell`; apply each one, None
+        // included, when it updates (in handle_update), as ListW does. (gx-ui-06)
         if let Some(Some(s)) = selected_cell.t {
             *state = state.clone().with_selected_cell((s.y, s.x));
         }

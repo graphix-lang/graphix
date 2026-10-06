@@ -1,0 +1,45 @@
+// tui-widgets.r2-13: tabs: an out-of-range selected index blanks the body and
+// drops input
+//
+// TabsW keeps `selected` as `TRef<Option<u32>>` (stdlib/graphix-package-tui/
+// src/tabs.rs:26); netidx's u32 FromValue casts an i64 with `as`, so -1 is
+// 4294967295 and 4294967296 is 0. draw (lines 186-188, 199-207) and
+// handle_event (lines 119-122) use the index without clamping it to the tab
+// count: past the end, no body is drawn, no child gets an event and ratatui
+// highlights no title. list clamps the same index to its last item.
+//
+// command: run in an 80x24 terminal (it needs a tty), watch 1 s, Ctrl-C exits:
+//   graphix --no-cache design/review-2026-10-05/repro/tui-widgets.r2-13.gx
+//
+// expected after 0.5 s (index clamped, the list's behaviour):
+//    A │ B        row 1: B highlighted, "body B" below
+//    A │ B        row 2 (-1): A highlighted, "body A" below
+//    A │ B        row 3 (4294967296): B highlighted, "body B" below
+//   >> item b     the list clamps
+// observed (HEAD c722befe, debug build, 80x24 pty):
+//    A │ B        row 1: no highlight, no body (before the shrink: C and
+//                 "body C")
+//    A │ B        row 2: no highlight, no body
+//    A │ B        row 3: A highlighted, "body A" (the index wrapped to 0)
+//   >> item b
+use tui::{
+  Line, Tui, line,
+  layout::{child, layout},
+  list::list,
+  paragraph::paragraph,
+  tabs::tabs
+};
+
+let a = (line("A"), paragraph(&"body A"));
+let b = (line("B"), paragraph(&"body B"));
+let c = (line("C"), paragraph(&"body C"));
+let shrinking: Array<(Line, Tui)> = [a, b, c];
+shrinking <- sys::time::after_idle(duration:500.ms, [a, b]);
+let items = [line("item a"), line("item b"), line("item c")];
+items <- sys::time::after_idle(duration:500.ms, [line("item a"), line("item b")]);
+layout(#direction: &`Vertical, &[
+  child(#constraint: `Length(3), tabs(#selected: &2, &shrinking)),
+  child(#constraint: `Length(3), tabs(#selected: &-1, &[a, b])),
+  child(#constraint: `Length(3), tabs(#selected: &4294967296, &[a, b])),
+  child(#constraint: `Length(3), list(#selected: &2, #highlight_symbol: &">> ", &items))
+])

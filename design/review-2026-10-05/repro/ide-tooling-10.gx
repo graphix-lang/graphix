@@ -1,0 +1,19 @@
+// ide-tooling-10: valid code the tree-sitter grammar marks ERROR: a
+// non-ASCII value name, an operator glued to a typed literal, and an empty
+// `bytes:` literal.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/ide-tooling-10.gx
+//          cd ide/tree-sitter-graphix && npx tree-sitter parse ../../design/review-2026-10-05/repro/ide-tooling-10.gx
+// expected: the program prints (1, 2, 3, true, ); tree-sitter parses it with
+//           no ERROR or MISSING node, `i64:1==x` as a comparison.
+// observed: it prints (1, 2, 3, true, ); tree-sitter gives ERROR at the `é`
+//           of `café` (both lines), a MISSING identifier after `bytes:`, one
+//           type_ascription over `i64:4/i64` and over `i64:1+i64` with the
+//           `:2` after each an ERROR, and one type_ascription over the whole
+//           of `i64:1==x`.
+let café = 1;
+let x = i64:1;
+let b = bytes:;
+let r = (café, i64:4/i64:2, i64:1+i64:2, i64:1==x, b);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

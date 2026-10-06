@@ -344,6 +344,12 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         .and_then(|t| kernel_abi::scalar_prim(t));
     // Mixed scalar types take the Value path below: the node-walk orders
     // them by `Typ` first.
+    // CR claude for eric: [doc-drift] The comment above says mixed scalar types take
+    // the Value path, but operand_type (node/op.rs:197) makes both operands one type:
+    // `|x: i32, y: i64| x < y` is a check error, so lp != rp never reaches here. The
+    // error texts at 363 and 371 cite a kernel_abi::cmp that does not exist, and
+    // FusionStats.failed reports them verbatim. The comment at 237 explains not calling
+    // prim_of, which no longer exists. Delete all three references. (f-nodes-scalar-08)
     if let (Some(lp), Some(rp)) = (lprim, rprim)
         && lp == rp
     {
@@ -354,6 +360,14 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         return Ok(CompiledExpr::new(disc, value));
     }
+    // CR claude for eric: [perf] Ordering (<, >, <=, >=) lowers only for register
+    // scalars, so comparing strings, nullables or other Value-shaped operands de-fuses
+    // the whole region: `array::filter(names, |n| n < "m")` node-walks its loop.
+    // Unchecked arithmetic on decimal, z32/z64 and v32/v64 de-fuses the same way at 239
+    // ("arith operand of non-scalar type"), while `x *? y` on the same operands fuses
+    // through graphix_value_checked_*. A Value ordering helper beside graphix_value_eq,
+    // and an unchecked Value-arith helper whose failure bottoms fresh as the
+    // node-walk's set_bottom(trig) does, would lower both. (f-nodes-scalar-05)
     let ne = match op {
         CmpOp::Eq => false,
         CmpOp::Ne => true,
@@ -626,6 +640,17 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     buf: ClifValue,
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
+    // CR claude for eric: [perf] This classifies the field by its raw abi_kind, which
+    // answers None for an un-flattened union, while arith (239), interpolation (494),
+    // owned operands (534) and widen_to_declared_repr (190) classify the normalized
+    // freeze. So with `let pick = |b, x, y| select b { true => x, false => y }`,
+    // `pick(b, 1, 2) + 1` fuses but `{a: pick(b, 1, 2) + 1, c: 0}` de-fuses ("producer
+    // field of shape None"), and the raw checks at 368 and 1151 refuse `pick(b, "a",
+    // "b") == "a"` and `pick(b, [1, 2], [3])[0]`, though the callee's kernel returns
+    // the normalized shape. call_result_needs_value_widening (611) reads the same None
+    // as "no widening needed" instead of refusing. One node classifier (the normalized
+    // freeze with freeze_node_typ's resolve retry) used by every consumer would make
+    // producers and consumers agree by construction. (f-nodes-scalar-06)
     let helper_name: &str = match kernel_abi::abi_kind(field.typ()) {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
@@ -1020,6 +1045,17 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
     let wrap = cx.helper("graphix_abstract_wrap")?;
+    // CR claude for eric: [bug] This interns the abstract type with its params still
+    // type variables, because resolve_node_typ leaves Abstract params alone.
+    // graphix_abstract_wrap then stores params like [TVar _N -> string], where
+    // Construct::update stores typ.resolve_tvars(), which is [string]. A kernel-built
+    // value packs and casts to string with the cell's name in it, so pack::write_bytes
+    // differs per engine. coretraits::take_site also sees a kernel-built and a
+    // node-walked Box<string> as two instantiations, so a user Eq/Ord impl is skipped
+    // and the values are compared structurally. Resolve the params the same way for
+    // both engines, e.g. intern resolve_node_typ(..).resolve_tvars() or pass
+    // Construct's params in. probe: design/review-2026-10-05/repro/f-nodes-scalar-01.gx
+    // (graphix-fuzz check: interp true, jit false at cycle 2). (f-nodes-scalar-01)
     let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ))?;
     let name_ptr = cx.interned_str(name)?;
     let call = cx.b.ins().call(wrap, &[typ_ptr, name_ptr, cv.disc, cv.payload]);
@@ -1085,6 +1121,16 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
 }
 
 /// `t.<idx>`: a statically-valid index read through `compile_element_read`.
+// CR claude for eric: [structure] This and emit_struct_ref_node (1115) are one body
+// apart from (AbiKind::Tuple, ElementRead::ArrayIndex) vs (AbiKind::Struct,
+// ElementRead::StructField). emit_abstract_ref_node (1038) repeats
+// emit_guarded_element_read's taint-guarded three-block read (981) line for line, only
+// the read itself differing, and emit_struct_with_node (799-807, 842-845) re-implements
+// scaffold.rs's adopt_owned_src/drop_owned_src. A fix to one copy (the taint guard, the
+// ownership pop) silently misses its twin. Merge the field reads into one function
+// taking the kind and read family, give the guarded read a closure for the read, share
+// adopt/drop with scaffold.rs, and replace the 10 four-line inst_results pair blocks
+// with one helper. (f-nodes-scalar-07)
 pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1153,6 +1199,19 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // and the source's taint folds into the result below.
         let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
+        // CR claude for eric: [bug] While the index is emitted, an owned source array
+        // (an array::map result, say) lives only in the SSA value arr_ptr. When the
+        // index runs a loop or lambda call whose abort check fires (an interrupt),
+        // emit_pending_cleanup drops in-flight bufs, owned_input_stack and env locals
+        // but not arr_ptr, so the array leaks. The bytes path (1169), emit_map_ref_node
+        // (1202), emit_array_slice_node (1234), emit_checked_arith_node (310),
+        // emit_cmp_node's Value path (375) and emit_builtin_call_node's drops list
+        // (call.rs) hold an owned operand across a sibling's emission the same way.
+        // Register every owned value held across a sibling's emission for the pending
+        // cleanup, as emit_struct_with_node and scaffold's adopt_owned_src already do
+        // for arrays. probe: design/review-2026-10-05/repro/f-nodes-scalar-03.gx (REPL,
+        // 30 interrupts: +456 MB, about 16 MB each; +29 MB with none).
+        // (f-nodes-scalar-03)
         let idx_cv = idx.emit_clif(cx)?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;

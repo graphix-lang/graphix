@@ -37,6 +37,14 @@ impl GpuState {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("failed to create GPU device")?;
+        // CR claude for eric: [bug] This takes the first format the backend lists, but
+        // iced packs colors as linear values (GAMMA_CORRECTION, no web-colors feature)
+        // and needs an sRGB target. iced_wgpu's own compositor picks an is_srgb format
+        // for exactly this reason. wgpu-hal lists Bgra8Unorm first on Metal and
+        // Rgba8Unorm first on GL, and Vulkan uses the driver's order. So on macOS (a
+        // release target) and under GL the whole UI, text included, renders too dark.
+        // The test harness hardcodes Rgba8UnormSrgb, so no test can see it. Pick the
+        // first format with is_srgb(), falling back to the first. (gui-core-13)
         let format = surface
             .get_capabilities(&adapter)
             .formats
@@ -55,6 +63,17 @@ impl GpuState {
             self.queue.clone(),
             self.format,
             None,
+            // CR claude for eric: [bug] This shell's notifier does nothing, but
+            // iced_wgpu decodes a path or bytes image on a worker thread and announces
+            // the finished load only through this shell (invalidate_layout, or
+            // request_redraw for a large upload). The frame that starts a load cannot
+            // show the image and asks for no further render, so the event loop goes
+            // idle and the image appears only when unrelated input next causes a frame.
+            // With no input, an image source swapped on a timer among three files
+            // showed nothing in any of 6 rendered frames. Give the engine a Shell whose
+            // notifier sends ToGui::Redraw, as RedrawWaker::wake does. probe:
+            // design/review-2026-10-05/repro/gui-core-05.rs (an integration test,
+            // command in its header). (gui-core-05)
             Shell::headless(),
         );
         iced_wgpu::Renderer::new(

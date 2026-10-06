@@ -1,0 +1,26 @@
+// c-node-mod-06: a trailing `catch` in a block's value slot is accepted;
+// the block silently never produces.
+//
+// compile_statement (graphix-compiler/src/node/mod.rs:840) matches
+// ExprKind::Catch before the value-slot guard at 849, so the catch below
+// compiles as a statement that covers nothing, and the block is bottom.
+// The same shape ending in `use array::map` or `type T = i64` is refused
+// ("... is not an expression").
+//
+// command: graphix --check design/review-2026-10-05/repro/c-node-mod-06.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-node-mod-06.gx
+//
+// expected: refused, as compile_statement's doc says of a declaration
+// other than `let` in a block's value slot (the handler can cover nothing
+// there).
+//
+// observed: --check exits 0; the run prints only
+//   outer caught error:[["cause", null], ["error", "Boom"], ...]
+// The inner catch covers nothing and "x is ..." never prints.
+catch(e) println("outer caught [e]");
+let x = {
+  let a: i64 = error(`Boom)?;
+  catch(e) println("inner caught [e]")
+};
+println("x is [x]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

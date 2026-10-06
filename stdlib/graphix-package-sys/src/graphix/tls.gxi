@@ -11,6 +11,13 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
+// CR claude for eric: [doc-drift] "A failed upgrade leaves it untouched" holds only for
+// failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
+// handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
+// which drops it. The caller's TcpStream then reads IOError "stream unavailable". The
+// code is right, since a socket partway through a handshake cannot carry plaintext.
+// This doc and the comment at tls.rs:81-83 ("A failed upgrade puts the socket back")
+// are wrong. probe: design/review-2026-10-05/repro/sys-io-13.gx (sys-io-13)
 /// Upgrade a TCP stream to a TLS client connection.
 ///
 /// The upgrade CONSUMES the TCP stream: on success the session lives

@@ -362,6 +362,22 @@ impl<X: GXExt> DataTableW<X> {
                 .into();
             header_row = header_row.push(cell);
         }
+        // CR claude for eric: [dead] Dead: this binding; `let _ = row_idx;` below
+        // (row_idx is used); render_cell's `_can_select` (its one caller passes false);
+        // handle_column_resize_start's `_cursor_x` (fed by the only read of
+        // MessageShell::cursor_position, mod.rs:525); and test_access.rs's
+        // `dt_snapshot_value_at` (no callers). compile_column_refs
+        // (subscriptions.rs:374) returns Result but discards every compile error, so a
+        // column whose on_edit fails to compile is silently read-only. Four comments
+        // contradict the code. Handle::block_on panics whenever it is called inside a
+        // runtime context, whether or not the future is ready
+        // (subscriptions.rs:272-274, 359-361). The event loop's message drain does not
+        // filter on is_column_resizing; DataTableW::on_message does
+        // (render.rs:471-473). The dispatch task reads the on_update id under the lock
+        // and calls it after unlocking (subscriptions.rs:249-255), so it can call an id
+        // that mod.rs:363-366 has just dropped. A row path listed twice gives one SubId
+        // two Grid roles (subscriptions.rs:525), so on_update fires twice per change
+        // and each sparkline point is recorded twice. (gui-datatable-20)
         let _has_on_select = self.on_select.is_some();
         let row_h = self.row_height();
         let spark_bounds_by_col = self.compute_sparkline_bounds();
@@ -474,6 +490,18 @@ impl<X: GXExt> DataTableW<X> {
     fn wrap_resize_drag<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
         widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(content)
             .on_move(|pt| Message::ColumnResizeMove(pt.x))
+            // CR claude for eric: [bug] A column-resize drag ends only through this
+            // on_release. iced's MouseArea publishes on_release and on_move only while
+            // the cursor is over its bounds, so a left release past the table's edge,
+            // onto a sibling widget, or outside the window never sends ColumnResizeEnd.
+            // resize_drag stays set, and every later hover over the table with no
+            // button held resizes the column and calls its on_resize. The first move
+            // jumps by the re-entry distance, and this goes on until the next left
+            // release inside the table. The drag has to end on any left release,
+            // wherever the cursor is. probe:
+            // design/review-2026-10-05/repro/gui-datatable-09.rs (copy it to
+            // stdlib/graphix-package-gui/tests/review_gui_datatable_09.rs and run it
+            // with cargo test). (gui-datatable-09)
             .on_release(Message::ColumnResizeEnd)
             .into()
     }
@@ -508,6 +536,22 @@ impl<X: GXExt> DataTableW<X> {
                         Key::Named(keyboard::key::Named::Escape) => {
                             Message::TableKey(TableKeyAction::Escape)
                         }
+                        // CR claude for eric: [bug] Every key this mapper does not use
+                        // becomes Message::Nop, and KeyboardArea captures every key it
+                        // maps (iced_keyboard_area.rs:139-143). So once the table has
+                        // been clicked, an enclosing keyboard_area, such as one
+                        // handling app shortcuts like Ctrl+S, hears nothing. The edit
+                        // TextInput in render_cell has no id and nothing focuses it.
+                        // After Space or the CellEdit button, typed keys fall through
+                        // to this area as Nop, and Enter becomes TableKey(Enter), which
+                        // fires on_activate (events.rs:122) instead of CellEditSubmit,
+                        // so the book's Space, type, Enter edit never commits. Capture
+                        // only the keys this mapper uses, and focus the editor when an
+                        // edit starts. probe:
+                        // design/review-2026-10-05/repro/gui-datatable-14.rs (headless:
+                        // Ctrl+D publishes [Nop]; Space then "4", "2" publish [Nop],
+                        // [Nop]; Enter sets activated="r0" and on_edit never runs).
+                        // (gui-datatable-14)
                         _ => Message::Nop,
                     }
                 }

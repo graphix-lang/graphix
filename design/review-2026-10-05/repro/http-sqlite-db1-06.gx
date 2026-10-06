@@ -1,0 +1,42 @@
+// http-sqlite-db1-06: http::serve in a select arm stays down after
+// sleep/wake unless an argument constant re-fires.
+//
+// HttpServe::sleep (stdlib/graphix-package-http/src/lib.rs:920) aborts the
+// server and clears its output, and HttpServe::update (lib.rs:772) starts a
+// server only when addr/cert/key/max_connections FIRES. At a wake the arm's
+// constants fire but a standing variable read from outside the arm is
+// delivered stale, so with every argument a variable nothing restarts it.
+// Omit cert/key/max_connections (their default constants fire at the wake),
+// or write the literals inline, and the same program comes back up; with
+// the second timer writing `true` instead of `false` (no sleep) r1 is 200.
+// sys::net subscribe/publish/publish_rpc re-establish on a `slept` bit for
+// exactly this case (net.rs:1103, 1112, 1276; pins net_*_arm_rewake).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-06.gx
+//          (same with --no-fusion, GRAPHIX_PAR=off|force, cold and warm image)
+// expected: after `on = true` the second time, `srv = serving
+//           127.0.0.1:48746` again and `r1 = 200 ok /after-wake`
+// observed: no srv line after the wake (srv stays bottom), and
+//           r1 = ERR error:["HTTPError", "request failed: error sending
+//           request for url (http://127.0.0.1:48746/after-wake)"]
+let addr = "127.0.0.1:48746";
+let cert: [bytes, null] = null;
+let key: [bytes, null] = null;
+let maxc = 768;
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let handler = |req: http::Request| -> http::Response { body: "ok [req.path]", headers: [], status: u16:200, url: "" };
+let srv = select on {
+  true => http::serve(#addr: addr, #cert: cert, #key: key, #max_connections: maxc, #handler: handler),
+  false => never()
+};
+let show = |r: Result<http::Response, `HTTPError(string)>| select r { error as e => "ERR [e]", v => "[v.status] [v.body]" };
+let showsrv = |s: Result<http::Server, `HTTPError(string)>| select s { error as e => "SERVE ERR [e]", v => "serving [http::server_addr(v)]" };
+println("on = [on]");
+println("srv = [showsrv(srv)]");
+let c0 = http::client(#timeout: duration:1.s, null)$;
+println("r0 = [show(http::get(c0, "http://[addr]/before"))]");
+let c1 = http::client(#timeout: duration:1.s, sys::time::timer(duration:900.ms, false))$;
+println("r1 = [show(http::get(c1, "http://[addr]/after-wake"))]");
+sys::exit(sys::time::after_idle(duration:2.s, 0))

@@ -1,0 +1,39 @@
+// db2-18: db::txn::insert/remove report an undecodable previous value as
+// null, which means the key was absent.
+//
+// TxnCtx::insert and TxnCtx::remove (stdlib/graphix-package-db/src/txn.rs:150,
+// 161) map a decode failure to Value::Null; db::insert/db::remove (tree.rs:
+// 600-603, 632-635) and TxnCtx::get (txn.rs:138-139) return DbErr for the
+// same bytes. The program makes a tree whose values are not packed Values by
+// renaming the meta tree in a db::export file (the bytes are ASCII here).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/db2-18.gx
+// expected: both removes report DbErr "failed to decode previous value"
+// observed (HEAD c722befe, debug build): db::remove(a) reports the DbErr;
+//   db::txn::remove(b) reports null although key b was present before and
+//   is gone after the commit
+let td = sys::fs::tempdir::create(null)$;
+let dir = sys::fs::tempdir::path(td);
+let src = db::open("[dir]/src.db")$;
+let a: db::Tree<string, string> = db::tree(src, "a")$;
+let b: db::Tree<string, string> = db::tree(src, a ~ "b")$;
+let ex = db::export(b ~ src, "[dir]/export.bin")$;
+let raw = sys::fs::read_all(ex ~ "[dir]/export.bin")$;
+let renamed = str::replace(#pat: "$$__graphix_meta__$$", #rep: "$$__graphix_xeta__$$", raw);
+let wr = sys::fs::write_all(#path: "[dir]/renamed.bin", renamed)$;
+let db = db::open(wr ~ "[dir]/dst.db")$;
+let im = db::import(db, "[dir]/renamed.bin")$;
+let name = "$$__graphix_xeta__$$";
+let x: db::Tree<string, string> = db::tree(db, im ~ name)$;
+let before = db::contains_key(x, x ~ "b")$;
+let r1 = db::remove(x, before ~ "a");
+println("db::remove(a): [r1]");
+let txn = db::txn::begin(r1 ~ db)$;
+let tx: db::txn::TxnTree<string, string> = db::txn::tree(txn, name)$;
+let r2 = db::txn::remove(tx, tx ~ "b");
+println("key b present before: [before]; db::txn::remove(b): [r2]");
+let c = db::txn::commit(r2 ~ txn)$;
+let after = db::contains_key(x, c ~ "b")$;
+println("key b present after the commit: [after]");
+sys::exit(sys::time::after_idle(duration:300.ms, after ~ 0));
+after

@@ -68,6 +68,18 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     }
     let mut lo = 0usize;
     let mut hi = text.len();
+    // CR claude for eric: [bug] This search never ends when [lo, hi] narrows to one
+    // multi-byte character: mid rounds down to lo, that prefix fits, `lo = mid` changes
+    // nothing, and the same state repeats forever. It runs in layout (render_with_size
+    // inside responsive) on the GUI thread, so the window freezes at 100% CPU. An
+    // ordinary auto-width (300px) column holding a long Japanese or Greek string hits
+    // it, and so does "Zürich-Österreich" at column widths 33-45. The same rounding
+    // shows "..." when only a multi-byte first character fits. Searching over char
+    // boundaries (e.g. partition_point over char_indices) fixes both. probe:
+    // design/review-2026-10-05/repro/gui-datatable-01.rs (copy to
+    // stdlib/graphix-package-gui/tests/review_gui_datatable_01.rs, run cargo test -p
+    // graphix-package-gui --test review_gui_datatable_01 -- --nocapture).
+    // (gui-datatable-01)
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
         let mid = if mid >= text.len() {
@@ -232,6 +244,20 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
         Ok(Repr::Progress) => (ColumnType::Progress, None),
         Ok(Repr::Button { on_click }) => (ColumnType::Button, on_click),
         Ok(Repr::Sparkline { history_seconds, min, max }) => {
+            // CR claude for eric: [bug] Any finite positive history_seconds is kept
+            // here. Both cutoffs compute `now - Duration::from_secs_f64(hs)`
+            // (subscriptions.rs:207 in the dispatch task, subscriptions.rs:665 in
+            // push_defaults_to_sparklines), which panics above about 9.2e18 s on Linux
+            // (Instant underflow), above about 4.6e9 s on Windows, and above 1.8e19 s
+            // everywhere (from_secs_f64). With a numeric default the panic happens in
+            // widget compile on the GUI event-loop thread and ends the process; with a
+            // netidx source it kills the dispatch task, and every cell of the table
+            // silently stops updating. Compute the cutoff in one helper used at both
+            // sites, with try_from_secs_f64 and checked_sub (None keeps everything).
+            // probe: design/review-2026-10-05/repro/tests-ui-03.rs (copy to
+            // stdlib/graphix-package-gui/tests/review_tests_ui_03.rs, then cargo test
+            // -p graphix-package-gui --test review_tests_ui_03 -- --nocapture).
+            // (tests-ui-03)
             let history_seconds = if history_seconds.is_finite() && history_seconds > 0.0
             {
                 history_seconds
@@ -457,6 +483,19 @@ impl std::fmt::Display for NakedValue<'_> {
     }
 }
 
+// CR claude for eric: [structure] format_value is value_to_display (types.rs:246) line
+// for line. ROW_NAME_SENTINEL_KEY and ROW_NAME_SENTINEL_KEY_ARC (mod.rs:67-68) spell
+// one literal twice where one const ArcStr would do, as VALUE_COL_KEY does, and
+// render.rs:299 re-spells ROW_NAME_HEADER_LABEL. displayed_columns,
+// displayed_column_at, displayed_index_of and displayed_count (mod.rs:152-177) only
+// forward to self.columns. Callables are compiled three ways: update_cb! (mod.rs:347)
+// and the on_update branch recompile through compile_callable_opt on every fire of
+// their ref; column callbacks call compile_callable (subscriptions.rs:399); and only
+// on_resize goes through GXHandle::update_callable, which keeps the call site when the
+// same lambda arrives again. One null-aware wrapper of update_callable would serve all
+// of them. The Value-mode cell is keyed VALUE_COL_KEY in cells but "value" for widths,
+// keyboard and selection, so for the same cell on_select reports "<row>/value" while
+// on_update reports "<row>". (gui-datatable-19)
 pub(super) fn format_value(v: &Value) -> ArcStr {
     // Strings are shown without quotes; Combo's value lookup matches
     // raw ids.
@@ -494,6 +533,18 @@ pub(crate) fn decimate_sparkline(history: &mut VecDeque<(Instant, f64)>) {
         if i + 1 < points.len() {
             let a = &points[i];
             let b = &points[i + 1];
+            // CR claude for eric: [bug] Both points of a pair are |a - b| / 2 from the
+            // pair's mean, so `da >= db` is a tie that keeps the first point; the
+            // second wins only by rounding. This is plain 2:1 subsampling, not the
+            // peak-preserving rule the doc states. A one-sample spike or valley in the
+            // second slot of its pair is deleted from the history that the sparkline
+            // draws and that its column's shared y-axis auto-scales from. In a 10 Hz
+            // feed with a 60 s window, 692 of 1200 spike positions are deleted while
+            // still inside the window. The pin sparkline_decimation_preserves_extremes
+            // feeds a ramp, which plain keep-first subsampling also passes, and the
+            // canvas draw (render.rs:84-94) also skips points by stride when the
+            // history is longer than the cell is wide. probe:
+            // design/review-2026-10-05/repro/gui-datatable-13.sh (gui-datatable-13)
             let mean = (a.1 + b.1) / 2.0;
             let da = (a.1 - mean).abs();
             let db = (b.1 - mean).abs();

@@ -1,0 +1,28 @@
+// tests-shell-compiler-07: trait declaration sites answer no LSP query, and a
+// method call's definition lands on the trait's name.
+//
+// Env::deftrait (graphix-types/src/env.rs:951-957) binds every method's
+// dispatcher at `pos`, the TRAIT's name (node/traits.rs:166), and
+// graphix-lsp/src/query.rs has no target for a trait name; binds match only
+// when the word under the cursor is the bind's own name.
+//
+// command: open this file in an editor running `graphix lsp` (or any LSP
+//   client) and query hover / definition / references at the marked words.
+//
+// expected: `Show` in `trait Show` answers like a typedef name (hover, its
+//   references include `impl Show for`); `show` in `val show` is the method's
+//   definition, hover gives its type and references list every `Show::show`
+//   call; definition at a call lands on `val show`.
+// observed (HEAD c722befe): hover, definition and references are all null at
+//   `trait |Show`, at `val |show` and at `impl |Show for`; definition at
+//   `Show::|show(c)` is `trait |Show`; references at the impl's `let |show`
+//   are that site alone. The typedef `Counter` answers all three.
+type Counter = Abstract<i64>;
+trait Show {
+    val show: fn(self) -> string;
+    val twice: fn(self) -> string = |s| "[Show::show(s)] [Show::show(s)]"
+};
+impl Show for Counter { let show = |c| "[c.0]" };
+let c = Counter(1);
+let t = Show::twice(c);
+Show::show(c)

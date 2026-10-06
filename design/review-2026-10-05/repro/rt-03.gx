@@ -1,0 +1,21 @@
+// callable-v1: handler=m0::handler; cx0=i64:7
+// rt-03: compile_callable runs the callee's init outside a cycle; its let
+// publications re-fire next cycle.
+// Command (from the repo root):
+//   graphix-fuzz run design/review-2026-10-05/repro/rt-03.gx
+// `a` is counted on a body `let`, `b` on the same constant written inline.
+// A let is a name for its node, so a == b on every route. The dispatch
+// route has two instances (the in-language driver and the callable), each
+// init adds one to each counter.
+// Expected, every Dispatch line: Trace([0:[i64:0, i64:0] 1:[i64:1, i64:1]]; [0:[i64:2, i64:2]])
+// Observed, every Dispatch line (Interp and Jit; nocache, cold, warm):
+//   Trace([0:[i64:0, i64:0] 1:[i64:1, i64:1]]; [0:[i64:2, i64:2] 1:[i64:3, i64:2]])
+// The callable's `k` is stamped with the cycle about to run, so that cycle
+// reads it as delivered (GXDBG_REF=1: `REF k ... DELIVERED` beside
+// `LETBIND ... publishing=false`) and `a` is incremented a second time.
+{ let o = m0::observe; o }
+// file-v1: m0.gx
+let a = 0;
+let b = 0;
+let handler = |x: i64| -> null { let k = 10; a <- k ~ a + 1; b <- 10 ~ b + 1; null };
+let observe = (a, b)

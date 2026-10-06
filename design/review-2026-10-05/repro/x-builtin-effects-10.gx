@@ -1,0 +1,46 @@
+// x-builtin-effects-10: divide/sum/product yield Error values under their
+// error-free return type `Number`.
+//
+// stdlib/graphix-package-core/src/graphix/mod.gx:4/23/24 (mod.gxi:123/181/184)
+// declare `-> Number`; the builtins (stdlib/graphix-package-core/src/lib.rs
+// SumEv/ProductEv/DivideEv) fold with netidx's Value `+ * /`, whose failures
+// are `Value::Error`, and return them as the result. The `/` operator logs
+// and bottoms the same failure (graphix-compiler/src/node/op.rs arith_op).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-10.gx
+//          (same with --no-fusion; graphix-fuzz check on the same lets with
+//          a tuple as the last expression: AGREE, every mode shows the errors)
+//
+// The checker treats the result as error-free, so the error cannot be handled:
+//   `{ catch(e) println(e); divide(1, z)? }` is refused: "cannot use the ?
+//     operator on '_: [Int, Real], it has no error and no null"
+//   `select divide(1, z) { error as e => "err", n => "num" }` is refused:
+//     "pattern error will never match '_: [Int, Real], unused match cases"
+//   `select n { Int as _ => .., Real as _ => .. }` passes as exhaustive and
+//     bottoms on the error (no "kind(q)" line below)
+//   `sum(1, 2) + 1` is refused ("both operands must be one numeric type (cast
+//     one side explicitly)"), and the cast turns the error into 0.
+//
+// expected: q, s and p are each a number, bottom (logged, like `1 / z`), or
+//   an error their declared type carries.
+// observed (HEAD c722befe, debug build, interp and jit alike):
+//   q = error:"arithmetic error", is_err true
+//   s = error:"decimal arithmetic error", is_err true
+//   p = error:"decimal arithmetic error", is_err true
+//   kind(1) = int
+//   cast<i64>(divide(10, z))$ + 1 = 1
+//   null
+let z = 0;
+let d = decimal:7922816251426433759354395033.5;
+let q = divide(1, z);
+let s = sum(d, d, d, d, d, d, d, d, d, d, d, d);
+let p = product(d, d);
+let kind = |n: Number| select n { Int as _ => "int", Real as _ => "real" };
+println("q = [q], is_err [is_err(q)]");
+println("s = [s], is_err [is_err(s)]");
+println("p = [p], is_err [is_err(p)]");
+println("kind(1) = [kind(1)]");
+println("kind(q) = [kind(q)]");
+println("cast<i64>(divide(10, z))$ + 1 = [cast<i64>(divide(10, z))$ + 1]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+null

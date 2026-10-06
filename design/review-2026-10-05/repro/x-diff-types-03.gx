@@ -1,0 +1,39 @@
+// x-diff-types-03: trait method signatures skip Type::rewrite_trait_args, so a
+// trait-typed parameter (or a constructor-trait quantifier) in a trait method
+// makes every impl of it fail.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-diff-types-03.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-diff-types-03.gx
+//
+// expected: `c: Display` is the shorthand for a fresh bounded quantifier (as
+//   in a lambda, a let annotation or a .gxi val), the impl is accepted and
+//   the program prints `1:J(a)`; the same trait written
+//   `fn<'a: Display>(self, c: 'a) -> string` does exactly that.
+// observed (exit 1):
+//   method sh of impl Sh for K has type fn(self: K, c: Display) -> string,
+//     the trait declares fn(self: K, c: Display) -> string
+//   type mismatch fn(self: K, c: Display) -> string does not contain
+//     fn(self: K, c: '#c: unbound within Display) -> string
+//
+// The same root cause, one program each (all under --check):
+// - a default body and `impl Sh for K { }`: the call `Sh::sh(K(1), J("a"))`
+//   is refused with `undefined type Display in`.
+// - `val sz: fn<'c: Collection>(self, c: 'c) -> i64` with
+//   `impl Sz for K { let sz = |k, c| Collection::fold(c, k.0, |n, _| n + 1) }`:
+//   `'self within Collection<'a> does not contain 'c within Collection`;
+//   with the impl written `'c: Collection |k: K, c: 'c| -> i64 ..` it is
+//   refused at the signature comparison instead; a default body of that
+//   shape is refused at the trait declaration.
+// - `val sz: fn(self, c: Collection) -> i64`: refused like the Display case.
+// - the .gxi path (`trait Sh { val sh: fn(self, c: Display) -> string }` in
+//   m.gxi, impl in m.gx): refused like the Display case.
+// - `trait Sh { val sh: fn(self) -> Display }` is accepted, while
+//   `let f: fn(x: i64) -> Display = |x| x` is refused with
+//   `trait Display used as a type`.
+type K = Abstract<i64>;
+type J = Abstract<string>;
+impl Display for J { let fmt = |j| "J([j.0])" };
+trait Sh { val sh: fn(self, c: Display) -> string };
+impl Sh for K { let sh = |k, c| "[k.0]:[c]" };
+println(Sh::sh(K(1), J("a")));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

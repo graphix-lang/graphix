@@ -1,0 +1,18 @@
+// gx-ui.r2-11: gui::menu::shortcut refuses every non-ASCII key, because it
+// checks "exactly one character" with str::len, which counts bytes
+// (stdlib/graphix-package-gui/src/graphix/menu.gx:6; str mod.gxi:98).
+// ShortcutV::from_value (stdlib/graphix-package-gui/src/types.rs:494) takes any
+// key string, and menu.gxi:5 promises one character.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-ui.r2-11.gx
+//
+// expected: ["N: ok", "é: ok", "€: ok", "ß: ok", "NN: error..", ": error.."]
+// observed (HEAD c722befe, debug build): "é", "€" and "ß" each give
+//   error:["InvalidKey", "shortcut key must be exactly one character, got: é"]
+//   ("got: €", "got: ß"); "N" is ok; "NN" and "" are refused as expected.
+let show = |k: string| select gui::menu::shortcut(#ctrl: true, k) {
+    error as e => "[k]: [e]",
+    _ => "[k]: ok"
+};
+println("[[show("N"), show("é"), show("€"), show("ß"), show("NN"), show("")]]");
+sys::exit(sys::time::after_idle(duration: 100.ms, 0))

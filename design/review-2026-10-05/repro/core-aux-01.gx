@@ -1,0 +1,60 @@
+// core-aux-01: opt::map/flat_map/filter/is_some_and/is_none_or emit f(stale x)
+// while the input is null.
+//
+// HofState::tick_unary (stdlib/graphix-package-core/src/opt.rs:302-327) feeds
+// `x` only for a non-null input and passes on every FIRED production of the
+// inner call `f(x)` (`direct.or(inner_out)`, line 325-326). After the input
+// goes null, `x` keeps the last non-null value, so a fire of the callback on
+// its own (a captured variable changes, the `f` value changes, or an async
+// callback answers late) is emitted as the result although v is null.
+// mymap, the same function written as a select, stays null.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-aux-01.gx
+//   (same output with --no-fusion; graphix-fuzz check: AGREE, both engines
+//   run the builtin)
+// expected (opt.gxi: map/flat_map/filter give null, is_some_and false and
+//   is_none_or true when v is null; "a new input supersedes the pending one"):
+//   after the n=1 lines, no line for map, flat_map, filter, is_some_and,
+//   is_none_or or async_map (like mymap), or at least only null/false/true.
+// observed (HEAD c722befe, debug build, fused and --no-fusion), after the
+// n=1 null lines:
+//   n=1 v=null async_map=10
+//   n=2 v=null offset=10 map=15
+//   n=2 v=null offset=10 flat_map=15
+//   n=2 v=null lim=1 filter=null
+//   n=2 v=null lim=1 is_some_and=true
+//   n=2 v=null lim=1 is_none_or=true
+//   n=3 v=null offset=20 map=25
+//   n=3 v=null offset=20 flat_map=25
+//   n=3 v=null lim=10 filter=null
+//   n=3 v=null lim=10 is_some_and=false
+//   n=3 v=null lim=10 is_none_or=false
+let mymap = |x: [i64, null], f: fn(x: i64) -> i64| -> [i64, null] select x {
+  null as _ => null,
+  v => f(v)
+};
+let clock = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let v: [i64, null] = 5;
+v <- select n { 1 => null, _ => never() };
+let offset = 0;
+let lim = 0;
+offset <- select n { 2 => 10, 3 => 20, _ => never() };
+lim <- select n { 2 => 1, 3 => 10, _ => never() };
+sys::exit(select n { 5 => 0, _ => never() });
+let mine = mymap(v, |x| x + offset);
+let m = opt::map(v, |x| x + offset);
+let fm = opt::flat_map(v, |x| -> [i64, null] x + offset);
+let fl = opt::filter(v, |x| x > lim);
+let sa = opt::is_some_and(v, |x| x > lim);
+let no = opt::is_none_or(v, |x| x > lim);
+let am = opt::map(v, |x| sys::time::after_idle(duration:70.ms, x * 2));
+println(mine ~ "n=[n] v=[v] offset=[offset] mymap=[mine]");
+println(m ~ "n=[n] v=[v] offset=[offset] map=[m]");
+println(fm ~ "n=[n] v=[v] offset=[offset] flat_map=[fm]");
+println(fl ~ "n=[n] v=[v] lim=[lim] filter=[fl]");
+println(sa ~ "n=[n] v=[v] lim=[lim] is_some_and=[sa]");
+println(no ~ "n=[n] v=[v] lim=[lim] is_none_or=[no]");
+println(am ~ "n=[n] v=[v] async_map=[am]");
+null

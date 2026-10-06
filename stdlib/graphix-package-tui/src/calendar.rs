@@ -24,6 +24,15 @@ use tokio::try_join;
 /// panicking on user input that came from unchecked arithmetic.
 fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)>) {
     let mut clamped = false;
+    // CR claude for eric: [bug] The year is clamped only to i32, but `time` holds years
+    // -9999..=9999 only. A year past that falls through to the 1970-01-01 fallback with
+    // `clamped` still false, so date(20000, 6, 15) shows January 1970 and logs nothing.
+    // A valid date in December 9999 or January -9999 makes ratatui's Monthly step past
+    // Date::MAX or Date::MIN, which panics the display task. The process then hangs
+    // with no display, and Ctrl-C does not end it. Clamp the year to Date::MIN.year() +
+    // 1 ..= Date::MAX.year() - 1 and mark it clamped; month_length then becomes
+    // `m.length(y)`, and its fallback comments are wrong anyway. probe:
+    // design/review-2026-10-05/repro/tui-widgets-06.gx (tui-widgets-06)
     let y = year.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     if y as i64 != year {
         clamped = true;
@@ -207,6 +216,17 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
             show_weekday,
             default_style,
         } = self;
+        // CR claude for eric: [bug] display_date.t.unwrap() panics when the date has no
+        // value yet. TRef::new leaves t as None when the referent has not produced by
+        // the time the widget is built (a date loaded by a seq, from a file or the
+        // network, or never()), and the first frame is drawn before the date arrives.
+        // The panic also wedges the process. It skips the stop signal (src/lib.rs:656
+        // fires it only on an Err), and dropping the display task drops the root
+        // CompExp, which deletes the whole program. The terminal is restored, but
+        // nothing runs again: a gated sys::exit never fires and Ctrl-C does nothing,
+        // and any widget panic does the same. Draw nothing until a date arrives, the
+        // way the other widgets default a missing value. probe:
+        // design/review-2026-10-05/repro/x-panics-10.gx (x-panics-10)
         let mut cal = Monthly::new(display_date.t.unwrap().0, &*events);
         if let Some(Some(s)) = &show_surrounding.t {
             cal = cal.show_surrounding(s.0);

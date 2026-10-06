@@ -1,0 +1,20 @@
+// fuzz-lib-b-08: the node-walk retains an activation per CALL, so a tree
+// recursion's memory is ~15KB x its whole call tree, not x its depth.
+//
+// command: graphix --no-cache --no-fusion design/review-2026-10-05/repro/fuzz-lib-b-08.gx
+//          (peak RSS read from a parent's RUSAGE_CHILDREN, e.g. python's
+//          resource.getrusage after subprocess.run), then the same without
+//          --no-fusion
+//
+// expected (design/recursive_activations.md section 5 "the interp's constant
+//   is fine: ~8us and ~15KB per activation"; book functions/recursion.md
+//   sizes recursion memory by level and depth): memory a reader would size
+//   by the 22 levels of depth
+// observed (HEAD c722befe, debug build): prints 17711; node-walk peak RSS
+//   937MB for fib(22)'s 57313 calls (fib(12) 63MB, fib(16) 106MB, fib(18)
+//   184MB: ~15.5KB per call). Fused, fib(25) peaks at 74MB. Node-walked,
+//   fib(25) would need ~3.7GB and fib(26) ~6GB.
+let rec f = |n: i64| -> i64 select n { 0 => 0, 1 => 1, _ => f(n - 1) + f(n - 2) };
+let r = f(22);
+println("[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

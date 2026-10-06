@@ -1,0 +1,20 @@
+// x-panics-16: http::serve(#max_connections) above tokio's Semaphore::MAX_PERMITS
+// panics the runtime.
+//
+// stdlib/graphix-package-http/src/lib.rs:796 accepts any positive i64 and
+// line 841 passes it to tokio::sync::Semaphore::new, which asserts
+// permits <= MAX_PERMITS (usize::MAX >> 3 = 2305843009213693951 on 64-bit).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-panics-16.gx
+//
+// expected: an `HTTPError` value (as for max_connections <= 0) or a clamped
+//   limit; prints "serve: ..." and exits 0 after 300ms, as it does with
+//   #max_connections: 2305843009213693951.
+// observed: panicked at tokio-1.52.2/src/sync/batch_semaphore.rs:141:9:
+//   a semaphore may not have more than MAX_PERMITS permits (2305843009213693951)
+//   Error: runtime did not respond (exit 1).
+let handler = |req: http::Request| { body: "hi [req.method]", headers: [], status: u16:200, url: "" };
+let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 2305843009213693952, #handler: handler);
+println("serve: [server]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

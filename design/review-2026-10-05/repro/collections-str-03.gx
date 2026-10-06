@@ -1,0 +1,17 @@
+// collections-str-03: str::join drops the separator after every leading empty part
+//
+// fc_join (stdlib/graphix-package-str/src/lib.rs:332) takes `buf.is_empty()`
+// to mean "no part pushed yet", so a leading "" (or a run of them) leaves the
+// buffer empty and the next part is pushed without its separator. Empty parts
+// in the middle or at the end keep theirs, so the separator count depends on
+// the contents, and split/join no longer round-trips an absolute path.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-03.gx
+// (--no-fusion prints the same; graphix-fuzz run: both engines agree, both wrong)
+//
+// expected: (",b,c", ",,x", ",", "a,,b", "/usr/bin", true)
+// observed: ("b,c", "x", "", "a,,b", "usr/bin", false)
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let p = "/usr/bin";
+let back = str::join(#sep: "/", str::split(#pat: "/", p));
+(str::join(#sep: ",", "", "b", "c"), str::join(#sep: ",", ["", "", "x"]), str::join(#sep: ",", "", ""), str::join(#sep: ",", "a", "", "b"), back, back == p)

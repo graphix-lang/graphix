@@ -51,6 +51,19 @@ fn build_id() -> String {
         .and_then(|p| elf_build_id(&p).or_else(|| pe_build_id(&p)))
     {
         Some(id) => id,
+        // CR claude for eric: [bug] Every Mach-O executable lands here (its magic is
+        // neither "\x7fELF" nor "MZ"), and aarch64-apple-darwin is a release target, so
+        // on macOS every build of one graphix-shell version shares one cache directory.
+        // The registration key is only the image format plus the package names, and the
+        // header checks only magic, format and ISA. A source rebuild after a stdlib
+        // edit, or the package manager's same-version rebuild after an external package
+        // update, therefore restores the previous build's definitions without warning,
+        // along with program entries whose kernel bytes link by helper name against the
+        // new binary. Read the Mach-O LC_UUID the way the ELF note is read, and when no
+        // per-build id exists, disable the cache rather than key it by version. probe:
+        // design/review-2026-10-05/repro/x-image-09.sh (Linux, binaries without a build
+        // id: the stdlib-edited build prints the old pi = 3.141592653589793 from the
+        // cache, pi = 3 with --no-cache). (x-image-09)
         None => format!("v{}", env!("CARGO_PKG_VERSION")),
     }
 }
@@ -133,6 +146,18 @@ impl RegistrationCache {
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
         let registration = hex(&make_sha3_token([&format[..], root.as_bytes()])[..16]);
+        // CR claude for eric: [bug] The program entry is keyed by the root file's bytes
+        // alone. The modules the compile read (`mod m;` files beside the script,
+        // GRAPHIX_MODPATH, netidx) and the script's path are not in the key, and
+        // nothing re-checks them on load. A warm start therefore runs stale module code
+        // after an edit, and it hides a type error, parse error or deleted module that
+        // --no-cache and --check refuse. A byte-identical main.gx in another directory
+        // runs the first project's modules and reports the first project's path in its
+        // error origins. design/program_image.md specifies a depfile re-verified on the
+        // next run: record (path, hash) of every source the compile read plus the
+        // canonical script path, treat any mismatch as a miss, and hash the bytes
+        // RootFile::load parsed, not the separate read at lib.rs:255. probe:
+        // design/review-2026-10-05/repro/x-image-01.sh (x-image-01)
         let program = program.map(|p| {
             hex(&make_sha3_token([&format[..], root.as_bytes(), &flags[..], p])[..16])
         });
@@ -190,6 +215,16 @@ impl RegistrationCache {
         let dir = self.dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
+        // CR claude for eric: [risk] The temp name is `{key}.img.{pid}`. Two Shells in
+        // one process that store one entry at once open, truncate and write the same
+        // file, and the first rename installs whatever interleaving landed; the
+        // parallel #[test]s of check_whole_script.rs and check_numeric_singleton.rs do
+        // this on a fresh build id. Images differ from run to run (three --warm runs:
+        // 1519550, 1522275 and 1519802 bytes), so the installed entry can be a mix. A
+        // mixed entry restores as InvalidFormat ('compiling cold'), and a failed load
+        // is never rewritten, so every later start of that binary compiles the root
+        // cold. Give each writer its own temp name (pid plus a process-wide counter, or
+        // tempfile::NamedTempFile::new_in(dir) then persist). (shell-13)
         let tmp = dir.join(format!(
             "{}.img.{}",
             self.key(entry).unwrap_or_default(),
@@ -197,6 +232,20 @@ impl RegistrationCache {
         ));
         fs::write(&tmp, image).with_context(|| format!("writing {}", tmp.display()))?;
         fs::rename(&tmp, &path).with_context(|| format!("renaming {}", tmp.display()))?;
+        // CR claude for eric: [perf] Every cold write deletes every other build id's
+        // directory, so executables that share the cache evict each other and
+        // alternating runs always start cold. That covers a dev and a quick graphix,
+        // two standalone package builds, and every `cargo test`: its ShellBuilder tests
+        // (check_runs_analyze.rs, examples_compile.rs) write under their own build ids
+        // and delete the user's graphix entries. Within one build id nothing is
+        // collected: each edit of a script adds a program entry holding the whole
+        // session (1.5 MB for a one-line script, debug build).
+        // design/program_image.md:60 says only build ids older than the current few are
+        // collected. Collect by recency instead (touch an entry on load, remove what
+        // has gone unused longest past a bound), and give the tests a cache directory
+        // of their own. probe: a registration/<other-id>/ directory is gone after one
+        // cold run of graphix or of the check_runs_analyze test executable; four
+        // one-line edits of a script left four 1.5 MB program entries. (x-image-08)
         if let Ok(entries) = fs::read_dir(&self.root) {
             for entry in entries.flatten() {
                 if entry.file_name() != self.build.as_str() {

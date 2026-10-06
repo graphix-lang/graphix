@@ -1,0 +1,34 @@
+// callable-v1: handler=m0::handler; cx0=i64:200000
+// fuzz-lib-a-07: check_callable drops a timeout-involved disagreement at 4x
+// (graphix-fuzz/src/lib.rs:1694), then hands the first in-language interp
+// outcome `ia` to check_par (lib.rs:1810), whose contract is a serial
+// node-walk the serial JIT agreed with. A dropped engine-pair disagreement on
+// the in-language route comes back as a Pair::Par(JitPar) divergence, and a
+// node-walk stack-budget containment that check_verdict rules CONTAINED is
+// recorded. With the forced-fork pair off the drop is final; on the dispatch
+// route it is always final (check_par reruns only the in-language route).
+//
+// command: GRAPHIX_STACK_BUDGET=64M graphix-fuzz check design/review-2026-10-05/repro/fuzz-lib-a-07.gx
+//   (64M lets the debug node-walk reach the stack budget before the 10 s
+//   deadline; at the 1G default the debug interp hits the deadline instead)
+//
+// expected: AGREE after a CONTAINED line, which is what the same computation
+//   without the callable header gets:
+//   { let rec count = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => count(n - 1, acc + 1) }; count(200000, 0) }
+//   -> "CONTAINED - interp exceeded the stack budget; jit's value stands
+//      unrefuted, not recorded" / AGREE (exit 0)
+//
+// observed (HEAD c722befe, debug build, twice):
+//   callable check: timeout-involved disagreement at 4x - dropped
+//   DIVERGENCE - asymmetric timeout (interp exceeded 8x budget; JIT produced a value ...)
+//     interp: Timeout(StackBudget)
+//     jit/par: Trace([0:i64:0]; [1:i64:200000])
+//   (exit 1). With GRAPHIX_FUZZ_PAR=0 as well: the "dropped" line, then AGREE.
+//   graphix-fuzz run: Interp/InLanguage Timeout(StackBudget), Jit/InLanguage
+//   Trace([0:i64:0]; [1:i64:200000]), both dispatch runs Timeout(StackBudget).
+{ let o = m0::observe; o }
+// file-v1: m0.gx
+let rec count = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => count(n - 1, acc + 1) };
+let state = 0;
+let handler = |x: i64| -> null { state <- count(x, 0); null };
+let observe = state

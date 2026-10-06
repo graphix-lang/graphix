@@ -1,0 +1,31 @@
+// c-select-seq-06: a later arm's binds are not narrowed by a `null` literal
+// arm (nor by a true/false pair, a completed literal pool or a complete slice
+// ladder), although check_coverage and check_dead_arms count each as covering
+// its member. typecheck0_with (graphix-compiler/src/node/select.rs:1273)
+// subtracts only irrefutable atoms from what reaches the next arm.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-select-seq-06.gx
+//   (graphix --no-cache, with or without --no-fusion, refuses it the same way)
+//
+// expected: accepted, `v` is i64 (the null arm took null; the dead-arm check
+//   already reads what reaches `v` as i64); running it prints 4.
+//
+// observed: exit 1
+//   cannot compute '_N: [i64, null] + i64: arithmetic is fn('a: Number, 'a) -> 'a
+//   — both operands must be one numeric type (cast one side explicitly)
+//
+// With `null as _ => 0` in place of `null => 0` it is accepted and prints 4.
+// The other coverage forms are refused the same way (--check, exit 1):
+//   let x: [i64, bool] = 3; select x { true => 0, false => 1, v => v + 1 }
+//   type S = {c: string, d: [`A, `B]}; let s: [i64, S] = 3;
+//     select s { {d: `A, ..} => 10, {d: `B, ..} => 20, n => n + 1 }
+//   let a: [Array<i64>, string] = "xyz";
+//     select a { [] => 0, [x, tl..] => x, s => str::len(s) }
+//     (type mismatch string does not contain [string, Array<i64>])
+//   let f = |o: [i64, null]| -> i64 select o { null => 0, n => n }
+//     (type mismatch i64 does not contain [i64, null])
+//   let x: [i64, null] = 3; select x { null => 0, v => select v { i64 as n => n } }
+//     (missing match cases: the inner select must cover a null the outer
+//     dead-arm check proved cannot reach `v`)
+let x: [i64, null] = 3;
+select x { null => 0, v => v + 1 }

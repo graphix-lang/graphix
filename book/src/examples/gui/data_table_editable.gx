@@ -10,6 +10,18 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
+// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
+// (two hosts times four fields) plus eight state lets, differing only in host and
+// field. A new host or column means four or eight more copies, and a typo in one path
+// or variable silently publishes the wrong cell. data_table_basic.gx and
+// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
+// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
+// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
+// name <- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
+// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
+// passes graphix --check at 90 lines instead of 131. A parameter written by its own
+// #on_write republishes the new value: in a probe, the published name went from alpha
+// to beta after a sys::net::write. (examples.r2-18)
 let host_01_name = "alpha";
 let host_01_enabled = true;
 let host_01_zone = "us-east-1";

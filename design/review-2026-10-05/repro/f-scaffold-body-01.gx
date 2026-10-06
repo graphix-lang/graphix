@@ -1,0 +1,50 @@
+// f-scaffold-body-01: under a tainted (bottom) source every JIT collection
+// loop runs as many iterations as the source's placeholder holds; the
+// node-walk builds no slot under a bottom source and runs exactly the
+// slots it already had (MapQ/FoldQ::update, node/collection.rs).
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-scaffold-body-01.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/f-scaffold-body-01.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/f-scaffold-body-01.gx
+//
+// phantom: before t arrives the inner map is bottom but its JIT value is a
+// real 2-element array, so the outer loop runs 2 iterations as new slots
+// (entered = 0) under an init view and the constant error raises twice; the
+// tainted run leaves the entered count at 0, so when t = 0 makes the source
+// valid both slots are new again and raise twice more. The node-walk has no
+// slot until t = 0 and raises twice.
+// retained: at t = 1 the source is bottom (never arm). The node-walk still
+// runs the 2 slots it built at t = 0 and each raises; a bottom source is an
+// empty placeholder in the JIT, so its loop runs 0 iterations.
+//
+// expected (both engines): final value (2, 2)
+// observed: interp (2, 2) [trace 0:(0,0) 2:(1,0) 3:(2,1) 4:(2,2)]
+//           jit    (4, 0) [trace 0:(0,0) 1:(1,0) 2:(2,0) 3:(3,0) 4:(4,0)]
+//           graphix-fuzz check: DIVERGENCE — fusion/JIT bug (interp != jit);
+//           same with GRAPHIX_PAR=off and with GRAPHIX_NO_OUTLINE=1.
+// The over-run also shows with `array::init(k + 3, ..)` over an absent k
+// (the count's placeholder is 3: interp 3 raises, jit 6), with `array::fold`
+// as the outer loop (2 vs 4), and as a fire: a map over a never-valid
+// source whose callback reads k fires on every k in the JIT (an enclosing
+// fold re-fires its value), never in the node-walk.
+{
+  let t = array::iter([0, 1, 2]);
+  let phantom = 0;
+  let retained = 0;
+  let a = {
+    catch(e) phantom <- e ~ phantom + 1;
+    array::map(array::map([1, 2], |z| z + t), |x| {
+      let e: [i64, Error<`E>] = error(`E);
+      e? + x
+    })
+  };
+  let b = {
+    catch(e) retained <- e ~ retained + 1;
+    let src = select t { 1 => never<Array<i64>>(), _ => [1, 2] };
+    array::map(src, |x| {
+      let e: [i64, Error<`E>] = select t { 1 => error(`E), n => n };
+      e? + x
+    })
+  };
+  (phantom, retained)
+}

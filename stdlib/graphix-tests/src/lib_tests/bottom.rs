@@ -8,6 +8,13 @@ use graphix_package_core::testing::init_with_flags_and_setup;
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
 
+// CR claude for eric: [test-gap] strict_bottom, strict_sample and
+// bottom_scrutinee_consults_no_guard are the only tests that assert the fired/bottom
+// tags step by step, and none of them forks. The default Auto mode does not fork
+// programs this small, and run!'s par variants check values, not tags. Add a node-walk
+// variant whose setup closure calls ctx.control.set_par_mode(ParMode::Force). The
+// operands and fields here then read their tagged inputs through forked branches
+// (branch::fork_join). (tests-lib-b1-13)
 async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags =

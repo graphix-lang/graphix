@@ -1,0 +1,27 @@
+// t-seq-07: an annotated let over a seq `try` ignores its annotation unless
+// its pattern is a single name.
+//
+// lower_try (graphix-types/src/expr/seq.rs:669) types the join cell `seqjN`
+// from the let's annotation only for StructurePattern::Bind. For a tuple,
+// struct or `_` pattern the cell is an unannotated `let seqjN = never()`,
+// which takes the try body's type from its first writer and refuses a with
+// body the annotation admits. book/src/core/seq.md: "The with body's value
+// must fit the try body's type; annotate the let to recover into a wider
+// one".
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-seq-07.gx
+//
+// expected: (null, 0), what the single-name form prints:
+//   let p: ([i64, null], i64) = try { (f(1)?, 1) } with(_) { (null, 0) }; p
+// observed (HEAD c722befe, debug build, with or without --no-fusion):
+//   refused at the generated connect `seqj.. <- seqv..` with
+//   type mismatch '_..: ('_..: i64, i64) does not contain '_..: (null, i64)
+//   The same refusal for `let {a, b}: {a: [i64, null], b: i64} = try ..`
+//   and for `let _: [i64, null] = try { f(1)? } with(_) { null }`.
+let f = |v: i64| -> [i64, Error<`Oops>] error(`Oops);
+let r = seq {
+  let (v, n): ([i64, null], i64) = try { (f(1)?, 1) } with(_) { (null, 0) };
+  (v, n)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

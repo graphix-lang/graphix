@@ -164,6 +164,19 @@ impl Type {
         params[i] = p0.union_int(env, hist, p1)?;
         let merged = Type::Ref(t0.with_params(Arc::from_iter(params.drain(..))));
         let probe = BitFlags::empty();
+        // CR claude for eric: [bug] Holding both inputs does not make the merge exact.
+        // A parameter that recurses, sits under a collection or occurs twice in the
+        // body merges to more than the two inputs: L<i64> ∪ L<string> becomes L<[i64,
+        // string]> for `type L<'a> = [`Nil, `Cons('a, L<'a>)]`, and A<i64> ∪ A<string>
+        // becomes A<[i64, string]> for `type A<'a> = Array<'a>`, both admitting mixed
+        // values. Select coverage unions arm predicates with this
+        // (graphix-compiler/src/node/select.rs:292, 338). So with `type Ints = L<i64>;
+        // type Strs = L<string>`, `select x { Ints as _ => .., Strs as _ => .. }` over
+        // x: L<[i64, string]> is accepted as exhaustive and matches nothing for a mixed
+        // list, in every engine. The same arms written inline are refused only because
+        // their refs carry two block scopes and expand. Merge only a parameter that
+        // occurs once outside any collection or recursion, else keep the two members.
+        // probe: design/review-2026-10-05/repro/t-cast-setops-14.gx (t-cast-setops-14)
         if merged.contains_with_flags(probe, env, self)?
             && merged.contains_with_flags(probe, env, t)?
         {
@@ -526,6 +539,16 @@ impl Type {
                     Ok(Type::Primitive(*p))
                 }
             }
+            // CR claude for eric: [bug] A nullary variant is a Value::String at runtime
+            // (Type::is_a, cast.rs:764), but this arm makes `Foo - array empty,
+            // contains.rs:638 says array contains `Foo, and the union arm at line 255
+            // folds `Foo into array. So select x { array as _ => .., i64 as _ => .. }
+            // over [`Foo, i64, Array<i64>] checks as exhaustive yet produces nothing
+            // for `Foo in both engines; a `Foo arm placed after array as _ is refused
+            // as dead although it is taken; and let x: array = `Foo is accepted while
+            // Array<Any> refuses `Foo. In all three places only a Variant with a
+            // payload is array-shaped. probe:
+            // design/review-2026-10-05/repro/t-cast-setops-09.gx (t-cast-setops-09)
             (
                 Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
                 Type::Primitive(p),

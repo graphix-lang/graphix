@@ -1,0 +1,25 @@
+// collections-str-08: split_escaped: a separator right after an escaped
+// separator is not split
+//
+// escaping 0.2.3's is_sep (the registry crate behind str::split_escaped,
+// str::splitn_escaped and GRAPHIX_MODPATH parsing) never clears its escape
+// flag on a separator: after `\,` the next `,` does not split, and a `\`
+// after it reads as escaped, so the escaped `,` that follows does split.
+// The last two values round trip fields through the default str::escape,
+// a "/" join, split_escaped and str::unescape: fields merge and appear.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/collections-str-08.gx
+//   (same output with --no-fusion; graphix-fuzz check says AGREE)
+//
+// expected: [["a\\,", "b"], ["a\\,\\,b"], ["x\\,", "y", "z"], ["a/", "b"], ["a//b"]]
+// observed: [["a\\,,b"], ["a\\,\\", "b"], ["x\\,,y", "z"], ["a//b"], ["a/", "b"]]
+let enc = |fields: Array<string>| str::join(#sep: "/", array::map(fields, |f| str::escape(f)$));
+let dec = |s: string| array::map(str::split_escaped(#esc: "\\", #sep: "/", s)$, |f| str::unescape(f)$);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+[
+  str::split_escaped(#esc: "\\", #sep: ",", "a\\,,b")$,
+  str::split_escaped(#esc: "\\", #sep: ",", "a\\,\\,b")$,
+  str::splitn_escaped(#n: 5, #esc: "\\", #sep: ",", "x\\,,y,z")$,
+  dec(enc(["a/", "b"])),
+  dec(enc(["a//b"]))
+]

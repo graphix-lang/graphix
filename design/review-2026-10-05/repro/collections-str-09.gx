@@ -1,0 +1,24 @@
+// collections-str-09: array::dedup is quadratic over abstract values. Every
+// value of one abstract type hashes to its type id alone
+// (graphix-types/src/abstract_value.rs:157), so fc_dedup's AHashSet<Value>
+// (stdlib/graphix-package-array/src/lib.rs:198) keeps them in one bucket and
+// each lookup compares against every element seen so far.
+//
+// command: GRAPHIX_PAR=off timeout -s KILL 60 graphix --no-cache design/review-2026-10-05/repro/collections-str-09.gx
+//
+// expected: both dedups O(N), as array/mod.gxi:65 says ("O(N) expected"), the
+//           abstract one a small constant factor slower than the i64 one.
+// observed (debug build): abstract 8000 in 3.4-3.8s, i64 8000 in 1.1-1.3ms; with
+//           n = 2000/4000/8000 the abstract dedup takes 0.23s/0.93s/3.78s,
+//           x4 per doubling, and the runtime is held for all of it.
+type T = Abstract<i64>;
+let xs = array::init(8000, |i| T(i));
+let t0 = sys::time::now(xs);
+let d = array::dedup(xs);
+let t1 = sys::time::now(d);
+let ys = array::init(8000, |i| i);
+let t2 = sys::time::now(ys);
+let e = array::dedup(ys);
+let t3 = sys::time::now(e);
+println("abstract [array::len(d)] in [sys::time::diff(t1, t0)], i64 [array::len(e)] in [sys::time::diff(t3, t2)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -1,0 +1,29 @@
+// x-engine-firing-07: the restart builtins (count, once, take, skip, uniq,
+// hold) clear their latch in sleep() but keep their output, so a re-selected
+// arm whose input does not fire at the wake emits the previous activation's
+// value, and a restarted builtin is not a fresh one.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-engine-firing-07.gx
+//
+// Arm 1 counts in1 twice (1, 2). in0=2 selects arm 2, whose count is fresh;
+// in0=1 re-selects arm 1, whose count restarted at 0 in sleep(). in1's fires
+// were consumed while arm 1 was awake, so at both wakes count's input
+// arrives STALE and nothing counts.
+//
+// expected: a restarted count behaves as arm 2's fresh count does at epoch 3,
+// nothing (then 1):
+//   Trace([0:i64:-1]; [0:i64:1]; [0:i64:2]; []; []; [0:i64:1])
+// (under pause it would be 2 and then 3; it is never 2 and then 1)
+// observed, every mode (interp, jit, no cache, cold, warm; `check` says AGREE):
+//   Trace([0:i64:-1]; [0:i64:1]; [0:i64:2]; []; [0:i64:2]; [0:i64:1])
+// the wake shows the pre-restart 2, and the next fire counts 1.
+//
+// The same arm shape with once(in1), epochs in0=1; in1=5; in0=0; in0=1;
+// in1=6; in1=7, gives [-1]; [0]; []; [-1]; [0]; [6]; []: the second
+// activation of once emits twice (the first activation's 0, then 6).
+// uniq(in1), epochs in0=1; in1=5; in0=0; in0=1; in1=5, gives [-1]; [0]; [5];
+// [-1]; [5]; [5]: the woken uniq shows 5, then emits 5 again.
+// take(#n: 1, ..), skip(#n: 1, ..) and hold(#clock, ..) show the same
+// pre-restart value at the wake.
+// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:5; in0=i64:2; in0=i64:1; in1=i64:6
+{let v0 = select in0 {i64:0 => i64:-1, i64:1 => count(in1), _ => count(in1) + i64:100}; v0}

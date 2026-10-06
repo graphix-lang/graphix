@@ -1,0 +1,38 @@
+// c-select-seq-05: guard evaluation writes an untaken arm's pattern binds
+// into the store; unbind_event clears only the overlay.
+//
+// The guard loop (graphix-compiler/src/node/select.rs:906) calls
+// PatternNode::bind_event for every guarded arm whose shape admits the
+// scrutinee. bind_event writes the overlay AND the store
+// (pattern.rs:1263-1264); unbind_event (pattern.rs:1268) removes only the
+// overlay entries. The store keeps the value, stamped this cycle with the
+// scrutinee's tag, so a closure made in the arm reads `k` as a fresh fire
+// of every value the arm's structure admits, although the arm is taken
+// only at n == 2 (k = 2). `f` is the arm written with a guard, `g` the same
+// test written as structure. Each row is (call(n), call(0), fires of
+// call(0)).
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/c-select-seq-05.gx
+// (exits by itself; --no-fusion, GRAPHIX_PAR=force and graphix-fuzz check
+// (AGREE) print the same: every engine and image mode shares the answer)
+//
+// expected (k is 2 in every call; f(0) fires once, like g(0)):
+//   ((203, 200, 1), (203, 200, 1))
+//   ((204, 200, 1), (204, 200, 1))
+//   ((205, 200, 1), (205, 200, 1))
+//   ((206, 200, 1), (206, 200, 1))
+//
+// observed (f's k follows n, and f(0) fires on every n although neither
+// f nor 0 fires again):
+//   ((303, 300, 1), (203, 200, 1))
+//   ((404, 400, 2), (204, 200, 1))
+//   ((505, 500, 3), (205, 200, 1))
+//   ((606, 600, 4), (206, 200, 1))
+let n = 0;
+n <- select n { k if k < 6 => k + 1, _ => never() };
+let f: fn(u: i64) -> i64 = never();
+let g: fn(u: i64) -> i64 = never();
+f <- select (n, n == 2) { (k, b) if b => |u: i64| k * 100 + u, _ => never() };
+g <- select (n, n == 2) { (k, true) => |u: i64| k * 100 + u, _ => never() };
+sys::exit(sys::time::after_idle(duration:100.ms, n ~ 0));
+((f(n), f(0), count(f(0))), (g(n), g(0), count(g(0))))

@@ -1,0 +1,54 @@
+// x-diff-par-02: closures and references order by ids minted in parallel, so
+// sort and `<` over them vary from run to run.
+//
+// A function value compares by its LambdaId (LambdaDef's PartialOrd/Ord,
+// graphix-compiler/src/node/lambda.rs:552) and a reference is
+// Value::U64(BindId) (graphix-compiler/src/node/bind.rs:1282). Both ids come
+// from global atomics and are minted while an instance is built, which now
+// happens in parallel: the per-statement compile tasks
+// (typecheck1_statements, node/mod.rs:1089), slot builds in compile tasks
+// (build_fresh, node/collection.rs:927) and forked branches. The order of
+// the ids is the threads' schedule. design/parallel_eval.md §8 lists both
+// sites as "to fix before phase 4".
+//
+// command (default env: Auto, all cores; run it several times):
+//   graphix --no-cache design/review-2026-10-05/repro/x-diff-par-02.gx
+//   (the same with GRAPHIX_PAR=off: still varies; the compile tasks race)
+//   RAYON_NUM_THREADS=1 GRAPHIX_PAR=off graphix --no-cache <this file>: stable
+//
+// expected: ([1, 2, 3, 4], [1, 2, 3, 4]) on every run (statement order, what
+//   one compile thread gives).
+// observed (HEAD c722befe, debug build), four default runs:
+//   ([1, 2, 3, 4], [4, 1, 2, 3])
+//   ([1, 2, 3, 4], [1, 2, 4, 3])
+//   ([2, 1, 3, 4], [1, 4, 3, 2])
+//   ([1, 4, 3, 2], [1, 2, 3, 4])
+//   GRAPHIX_PAR=off: ([1, 2, 4, 3], [1, 4, 2, 3]), ([3, 4, 1, 2], [1, 2, 4, 3])
+//   RAYON_NUM_THREADS=1 GRAPHIX_PAR=off: ([1, 2, 3, 4], [1, 2, 3, 4]) x3
+//
+// graphix-fuzz check does not see this variant: its serial node-walk
+// disagrees with itself and check drops that as nondeterminism (AGREE);
+// graphix-fuzz run shows a different order in nearly every mode.
+//
+// The slot variant (the reviewer's), ids minted by forked slot builds:
+//   let fs = array::map(array::init(16, |i| i), |x| |y: i64| -> i64 x + y);
+//   array::map(array::sort(fs), |f| f(0))
+// GRAPHIX_PAR=off prints [0, 1, .., 15]; GRAPHIX_PAR=force a new permutation
+// each run, e.g. [0, 5, 2, 10, 3, 11, 8, 9, 4, 12, 14, 15, 13, 7, 6, 1];
+// graphix-fuzz check: "DIVERGENCE — parallel evaluation bug (forked
+// node-walk != serial node-walk)". With 3000 elements in the default Auto
+// mode the count of misplaced elements was 0, 2993, 2995 over three runs
+// (closures) and 2995, 0, 0 (references, `|x| { let v = x; &v }`).
+// `fs[i]$ < fs[i + 1]$` varies the same way.
+let mk = |x: i64| |y: i64| -> i64 x + y;
+let mkr = |x: i64| { let v = x; &v };
+let a = mk(1);
+let b = mk(2);
+let c = mk(3);
+let d = mk(4);
+let ra = mkr(1);
+let rb = mkr(2);
+let rc = mkr(3);
+let rd = mkr(4);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(array::map(array::sort([d, c, b, a]), |f| f(0)), array::map(array::sort([rd, rc, rb, ra]), |r| *r))

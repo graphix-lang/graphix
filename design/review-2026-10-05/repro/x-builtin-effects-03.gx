@@ -1,0 +1,45 @@
+// x-builtin-effects-03: dependency summaries miss writes and reads through
+// references nested in a builtin's data argument.
+//
+// local_summary (graphix-compiler/src/analysis.rs:924-932) makes a builtin
+// call opaque only when an argument's TOP-LEVEL type is &T, fn or Any.
+// buffer::decode takes `spec: Array<Decode>` and writes (set_var), and reads
+// lengths (store_value), through the &T payloads inside its variants, so
+// its call touches nothing in the summary. plan_machines then enters the
+// next step in the cycle the decode completes, before its write lands
+// (write_side), or enters the decode in the cycle a write to a length it
+// reads is still pending (read_side). `control` is the same write as
+// write_side made through `*r <-`, which the summary sees.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-03.gx
+//          (same with --no-fusion, GRAPHIX_PAR=off, a cold or warm image;
+//          graphix-fuzz check: AGREE, the engines share the plan)
+// expected: (7, 7, "hello"): a statement starts in the first cycle its
+//   predecessor's effect can be seen, and a read or write through a
+//   reference counts as every variable (CLAUDE.md, seq; book core/seq.md).
+// observed (HEAD c722befe, debug build, every mode): (0, 7, "h").
+//   --expand: write_side "S0 -> S1 same", control "S0 -> S1 next",
+//   read_side "S0 -> S1 same, S1 -> S2 next".
+let x: u8 = u8:0;
+let b = buffer::encode([`U8(u8:7)]);
+let write_side = seq {
+  buffer::decode(b, [`U8(&x)])$;
+  x
+};
+let y: u8 = u8:0;
+let ry = &y;
+let control = seq {
+  *ry <- u8:7;
+  y
+};
+let n: u64 = u64:1;
+let s: string = "";
+let rs = &s;
+let spec = [`UTF8(&n, &s)];
+let read_side = seq {
+  n <- u64:5;
+  buffer::decode(buffer::from_string("hello"), spec)$;
+  *rs
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(write_side, control, read_side)

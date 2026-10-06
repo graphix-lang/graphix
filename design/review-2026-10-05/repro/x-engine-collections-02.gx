@@ -1,0 +1,34 @@
+// x-engine-collections-02: instance typing by substitution refuses a
+// well-typed array::flat_map whose callback returns an array of arrays;
+// `graphix --check` (and so the LSP) accepts it.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-engine-collections-02.gx
+//          graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-02.gx
+//          graphix-fuzz check design/review-2026-10-05/repro/x-engine-collections-02.gx
+//
+// expected: the check and the build agree. The check binds 'b := Array<i64>
+// (the callback returns Array<'b>) and flat_map splices the outer array, so
+// the program prints [[1], [2]] and exits 0 (as it does with
+// GRAPHIX_NO_SUBST=1).
+//
+// observed: --check exits 0. The run exits 1, giving no reason:
+//   in the instance of array::flat_map([1, 2], |x| [[x]]) at this call site
+//   an instance at fn(a: Array<i64>, f: fn(x: i64) -> [Array<i64>,
+//   Array<Array<i64>>] throws _) -> Array<Array<i64>> throws _ of a
+//   definition typed fn(a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>]
+//   throws 'e) -> Array<'b> throws 'e
+// graphix-fuzz check: "DIVERGENCE — the check accepted what the build
+// refused". GRAPHIX_DBG_BIND=1 (warm registration image) shows
+// InstanceTypes::new binding 'b := i64: contains.rs's Set ⊇ Set arm commits
+// `Array<'b> ⊇ Array<i64>` before the residue Array<Array<i64>> reaches the
+// bare 'b, which then cannot hold it.
+// Refused the same way: `array::flat_map([[[1], [2]], [[3]]], |g| g)`,
+// `array::flat_map(xs, |x| [[x, x * 2]])`, `list::flat_map([<1, 2>], |x|
+// [<[<x>]>])`, a generic wrapper `|xs: Array<'a>, f: fn(x: 'a) -> Array<'b>|
+// -> Array<'b> array::flat_map(xs, |x| f(x))` called with `|x| [[x]]`, and
+// the book's `Bag` Collection impl (udt/traits.md) flat_mapped to a bag of
+// arrays. The same coverage makes `--check` refuse a callback declared
+// `|x: i64| -> [Array<i64>, Array<Array<i64>>] [[x]]`.
+let r = array::flat_map([1, 2], |x| [[x]]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

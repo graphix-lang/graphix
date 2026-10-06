@@ -23,6 +23,19 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ => filter_err(chunk),
+            // CR claude for eric: [bug] This completion test reads `acc`, so it fires
+            // again when the false arm's `acc <-` lands. At that point the next read is
+            // still in flight and `b` still holds the previous chunk, so over an
+            // asynchronous `read` that returns 4 of 6 bytes, read_exact answers the
+            // first chunk twice (8 bytes) before the right 6. `write_exact` (line 114)
+            // has the same shape: `n >= buffer::len(rest)` re-fires when `rest <-`
+            // lands, so it answers `null` with bytes still unwritten and then the real
+            // result, which may be an error. A seq step takes the first answer, so it
+            // gets corrupt bytes or a false success; a Graphix stream that wraps a
+            // system stream reads and writes asynchronously, which is the case these
+            // defaults exist for. Testing completion only when the reply fires fixes
+            // both: `select b ~ (..)` and `select n ~ (n >= buffer::len(rest))`. probe:
+            // design/review-2026-10-05/repro/gx-stdlib-05.gx (gx-stdlib-05)
             bytes as b => select buffer::len(b) == u64:0
                 || buffer::len(acc) + buffer::len(b) >= n {
                 true => buffer::concat(acc, b),
@@ -45,6 +58,17 @@ trait Read {
     /// produces.
     val read_all: fn(self) -> Result<bytes, `IOError(string)> = |s| {
         let want: u64 = u64:65536;
+        // CR claude for eric: [bug] acc's initializer is a constant, so acc is set
+        // once, when the call site is built, and nothing clears it when `s` fires
+        // again. Any second request at the same site (a new file, the next accepted
+        // connection, a seq re-run, a file seeked back to 0) returns everything read
+        // before, with the new stream's bytes appended. A TCP server that reads each
+        // accepted connection here gives client 2's request with client 1's bytes in
+        // front of it. No system stream overrides read_all, so the documented
+        // `json::read(Read::read_all(f)?)` idiom hits this. read_exact's default (line
+        // 22) keeps acc the same way, and its `want` keeps the last remainder when only
+        // `s` fires, so all of a request's state must reset on every new request.
+        // probe: design/review-2026-10-05/repro/gx-stdlib-01.gx (gx-stdlib-01)
         let acc: bytes = buffer::from_string("");
         let chunk = read(s, want);
         select chunk {
@@ -53,6 +77,16 @@ trait Read {
                 true => acc,
                 false => {
                     // gated on the chunk: see `read_exact`
+                    // CR claude for eric: [perf] Each 64 KiB chunk copies the whole
+                    // accumulator (core_bytes_concat builds a fresh buffer), so
+                    // read_all is quadratic in the stream's length. No system stream
+                    // overrides it: io.gx, fs.gx, tcp.gx, tls.gx and process.gx bind
+                    // only read and read_exact. A 32 MiB file took 3.06 s (16 MiB 0.79
+                    // s, 8 MiB 0.26 s), where sys::fs::read_all_bin took 0.010 s. That
+                    // is the cost of every read_all the book shows, and of collecting a
+                    // child's stdout. Bind a native read_all (read_to_end into one
+                    // growing buffer) in each system stream's impl Read, as read_exact
+                    // is. (sys-io-11)
                     acc <- b ~ buffer::concat(acc, b);
                     want <- b ~ u64:65536;
                     never()

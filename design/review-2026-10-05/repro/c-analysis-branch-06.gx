@@ -1,0 +1,25 @@
+// c-analysis-branch-06: the #[parallel] assertion accepts a block whose only
+// run pairs a constant `let` (or a typedef) with a call, and a #[parallel]
+// inside a seq step, where nothing can fork.
+//
+// check_parallel (graphix-compiler/src/analysis.rs:1265) accepts any block run
+// of two statements, while every other fork point needs two children that are
+// more than a constant or a variable read (analysis.rs:1295-1298). Separately,
+// ForkControl::update keeps `seq` from its context (node/fork_control.rs:95), and
+// fork_mode() is Off under `seq` (lib.rs:1507), so a #[parallel] lexically inside
+// a seq body never forks; the check does not know it.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-analysis-branch-06.gx
+//
+// expected: refused like the tuple form below, since the only fork it can make
+//   puts a constant beside the call.
+// observed (HEAD c722befe, debug build): builds and prints 7 (forced, the run
+//   [let k = 1, let a = g(n)] forks into two branches).
+//   `let r = #[parallel] (1, g(n)); r` is refused: "#[parallel] has nothing to
+//   run in parallel". `#[parallel] { type T = i64; let a: T = g(n); a }` builds
+//   (prints 6). `seq { let v = #[parallel] (g(n), h(n)); v }` builds and prints
+//   (6, 9), and nothing in it can fork.
+let g = |x: i64| { let c = count(x); x * 2 + c * 0 };
+let n = 3;
+let r = #[parallel] { let k = 1; let a = g(n); a + k };
+r

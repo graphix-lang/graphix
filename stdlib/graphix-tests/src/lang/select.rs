@@ -323,6 +323,15 @@ run!(select_slice_empty, SELECT_SLICE_EMPTY, |v: Result<&Value>| {
 
 // A named rest binding de-fuses the select (pinned by
 // `native_select_named_rest_defuses`); sibling regions still fuse.
+// CR claude for eric: [doc-drift] The comment above names a test that does not exist,
+// and its claim is false: `#[native]` on this select holds today, and CLAUDE.md lists
+// owned binds of a slice's rest as fused. The same goes for the de-fusion claims at
+// lines 81-82 (never() arms) and 163-164 (`_ => never()` is syntax, not async), and for
+// the ASPIRE notes at 372-373 and 798-799: `#[native]` holds on the lambda-wrapped
+// slice-cover selects and on `m * 2 + 1`. At 1577-1579 the selects do interpret, but
+// both tests assert Jit, not None. FuseExpect::Jit passes on any kernel, so none of
+// these tests would catch its select de-fusing. Delete the false comments, and put
+// `#[native]` on the select wherever the point is that it fuses. (tests-lang-a-08)
 const SELECT_SLICE_NAMED_REST: &str = r#"
 {
   let a = [1, 2, 3];
@@ -459,6 +468,15 @@ const SELECT_SLICE_HOLE: &str = r#"
 "#;
 
 run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, |v: Result<&Value>| {
+    // CR claude for eric: [test-gap] This predicate accepts any refusal, a parse error
+    // included, as do about 19 others in this file and 20 in functions.rs (`Err(_) =>
+    // true`, `matches!(v, Err(_))`, `v.is_err()`). The eval-based ones
+    // (free_union_arm_is_not_inferred_from_sibling,
+    // labeled_only_callback_is_compile_error) also pass on eval's 5 s timeout.
+    // callsite_rejects_heterogeneous_return (a parse error) and or_equal_types_err
+    // (another rule) already pass for the wrong reason. Match the refusal's message, as
+    // the newer tests do. Here the comment promises the message names the hole, and it
+    // does: "the slice arms leave array length 1 uncovered". (tests-lang-a-11)
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
@@ -750,6 +768,11 @@ run!(select_ignore_sorts_first, SELECT_IGNORE_SORTS_FIRST, |v: Result<&Value>| {
 // An Array local defined by a never()-gated select threads into the
 // downstream fold region as a kernel input (the `#[native]` on the fold
 // is the assertion). Final fold = 9.0.
+// CR claude for eric: [test-gap] The comment says the `#[native]` on the fold is the
+// assertion, but the fold carries none. So nothing checks that the gated `w` reaches
+// the fold's kernel: FuseExpect::Jit passes on any kernel the program runs. Restore
+// `let total = #[native] array::fold(w, 0.0, |a, x| a + x);`, which holds today in both
+// engines and every image mode. (tests-lang-a-05)
 const GATED_WINDOW_FOLD: &str = r#"
 {
   let tick = array::iter([1.0, 2.0, 3.0, 4.0]);
@@ -1129,6 +1152,14 @@ run!(
 );
 
 // In a callee body: 5 (init + 4).
+// CR claude for eric: [readability] The comment above says 5 (init + 4), but the test
+// expects 4, and 4 is right: at init m has not produced, the consulted guard is
+// unknown, and the select emits nothing. Separately, the comment at lines 2575-2576 ("A
+// nested variant head is a pooled position...") sits on NULL_LITERAL_COVERS_NULL but
+// describes POOL_NESTED_VARIANT_PARTIAL (line 2605). SELECT_IGNORE_SORTS_FIRST (line
+// 736) is the same program as SELECT_NESTED_STRUCT_SLICE (line 627), so it adds no
+// coverage. Fix the count, move the comment, and delete one of the two fixtures.
+// (tests-lang-a-14)
 const GUARDED_SELECT_IN_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -1698,6 +1729,17 @@ run!(or_same_binds_err, OR_SAME_BINDS_ERR, |v: Result<&Value>| v.is_err();
  graphix_package_core::testing::FuseExpect::None);
 
 // Payload binds must have exactly equal types across alternatives.
+// CR claude for eric: [test-gap] This test and or_payload_unequal_rejected (line 1868)
+// are the same program. Both are refused by the dead-alternative check ("unreachable
+// or-pattern alternative: (string, string) will never match (i64, string)"), not by the
+// exactly-equal-types rule at graphix-compiler/src/node/pattern.rs:139, and since both
+// accept any error, no test reaches that rule. The rule fires only under an explicit
+// type predicate: `select (1, "a") { (i64, string) as (1, y) | (y, "b") => 1, _ => 0 }`
+// gives "must bind y at exactly equal types". Make this test that form, match the
+// message, and delete the duplicate. Under an inferred predicate the same mistake is
+// reported as an unreachable alternative, so design/or_patterns.md's "checked at
+// pattern compile, before coverage math" holds only for the explicit form.
+// (tests-lang-a-03)
 const OR_EQUAL_TYPES_ERR: &str = r#"
 select (1, "a") { (1, y) | (y, "b") => 1, _ => 0 }
 "#;
@@ -2132,6 +2174,12 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
 "#;
 
 run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| match v {
+    // CR claude for eric: [test-gap] This predicate checks only that err is `Bad at
+    // step 3. A handler that also wrote `Bad without an error (at init, say) would
+    // pass, so the "only" in the test's name is never checked. Assert the history
+    // instead: `array::group((step, err), |n, _| n == 4)` expecting [[0, `None], [1,
+    // `None], [2, `None], [3, `Bad]]. That holds today, and an extra write shows up as
+    // [1, `Bad]. (tests-lang-a-10)
     Ok(Value::Array(a)) => matches!(&a[..], [Value::String(t), _] if &**t == "Bad"),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -2555,6 +2603,15 @@ run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>|
 
 // While a consulted guard stands bottom the selection is undecidable on
 // every cycle, quiet ones included: the held arm does not run.
+// CR claude for eric: [test-gap] No fixture gives `&&` or `||` a bottomed operand, so
+// nothing pins the strict rule (`false && ⊥ = ⊥`, `true || ⊥ = ⊥`) that decides a
+// consulted guard. If either engine short-circuited, a guard would take a different arm
+// and no test would fail. Add a fixture beside this one: `let f = |k: i64, z: i64| ->
+// i64 select k { 0 if false && ((1 / z) > 0) => 1, _ => 2 }; let g = |k: i64, z: i64|
+// -> i64 select k { 0 if true || ((1 / z) > 0) => 1, _ => 2 }; (any(f(0, 0), -1),
+// any(g(0, 0), -1))` expecting [-1, -1], plus the value forms `false && ((1 / z) > 0)`
+// and `true || ((1 / z) > 0)`. Both engines give bottom today, with f and g fused.
+// (tests-lang-a-06)
 const SELECT_UNDECIDABLE_QUIET: &str = r#"
 {
   let clock = sys::time::timer(duration:0.01s, true);
@@ -2788,6 +2845,13 @@ const PATTERN_ERROR_SITE: &str = r#"select 1 {
 run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
     Err(e) => e
         .downcast_ref::<graphix_compiler::expr::ErrorSite>()
+        // CR claude for eric: [bug] A pattern error is sited at the arm's body, not at
+        // the pattern. graphix-compiler/src/node/select.rs:230 wraps the pattern
+        // compile in `.at(body)` because `Pattern` has no position, and this test pins
+        // the body's (2, 13). The language server uses the site's [pos, end), so a
+        // mistake like `(a, a) => { .. }` underlines the whole body block. Site pattern
+        // errors at the pattern (or at the offending bind's `Name`), and pin (2, 3).
+        // probe: design/review-2026-10-05/repro/tests-lang-a-12.gx (tests-lang-a-12)
         .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 13)),
     Ok(_) => false,
 }; graphix_package_core::testing::FuseExpect::None);

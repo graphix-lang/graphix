@@ -1,0 +1,34 @@
+// x-engine-seq-errors-01: a trait default that calls an EARLIER default
+// bare binds that default statically, so an implementation's override of
+// the callee is ignored, and the meaning depends on declaration order.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-01.gx
+//   (same with --no-fusion; graphix-fuzz check says AGREE: every engine,
+//   image mode and fork mode gives the same wrong value)
+//
+// Trait::compile (graphix-compiler/src/node/traits.rs:170-192) compiles
+// every default as `let <method> = <body>` in one block whose only route to
+// the dispatchers is a glob import, and an own declaration beats a glob
+// (Env::lookup_at). In `after`, `twice` is the default's let binding; in
+// `before` it is not bound yet, so it is the dispatcher.
+//
+// expected (B overrides twice; book/src/udt/traits.md: a default is
+// inherited only by implementors that do not override it, and the trait's
+// other methods are visible bare in a default body):
+//   ("BBy+By", "BBy+By", "BBy+By")
+// observed (both engines):
+//   ("BBy+By", "By+By+By", "BBy+By")
+trait Show {
+  val show: fn(self) -> string;
+  val before: fn(self) -> string = |s| "[twice(s)]+[show(s)]";
+  val twice: fn(self) -> string = |s| "[show(s)]+[show(s)]";
+  val after: fn(self) -> string = |s| "[twice(s)]+[show(s)]";
+  val qualified: fn(self) -> string = |s| "[Show::twice(s)]+[show(s)]"
+};
+type B = Abstract<string>;
+impl Show for B {
+  let show = |b| "B[b.0]";
+  let twice = |b| "BB[b.0]"
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(Show::before(B("y")), Show::after(B("y")), Show::qualified(B("y")))

@@ -37,6 +37,11 @@ pub enum BinOp {
     Mod,
 }
 
+// CR claude for eric: [structure] symbol() repeats five of expr::BinOp::token()'s
+// strings. Its only use is arith_rule's message (line 741), which rebuilds the checked
+// token by appending "?". arith_op!'s $name is already the matching expr::BinOp variant
+// (Add, CheckedAdd, ..), and arith_rule uses op for nothing but that message. Pass
+// crate::expr::BinOp::$name, print its token(), and delete symbol(). (c-error-op-07)
 impl BinOp {
     fn symbol(self) -> &'static str {
         match self {
@@ -269,6 +274,14 @@ macro_rules! compare_op {
                 self.resident.set(TagValue::tagged(v, tag))
             }
 
+            // CR claude for eric: [structure] typecheck0 and typecheck1 here are
+            // repeated word for word in bool_op! (lines 342-360) and arith_op!
+            // (795-817), and typecheck0_instance is repeated in bool_op!. Arith's
+            // typecheck0_instance differs only by its settle tail. Move the three into
+            // binary_node! next to the operand plumbing, with each operator giving
+            // typecheck_own and an instance tail (nothing for compare and bool, the
+            // settle for arith). Then correct binary_node!'s doc, which says the
+            // operator supplies typecheck0 and typecheck1. (c-error-op-08)
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
@@ -295,6 +308,17 @@ macro_rules! compare_op {
         });
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            // CR claude for eric: [bug] `<`, `>`, `<=` and `>=` accept references. A
+            // reference's value is its bind id, and parallel compile mints ids in
+            // thread order, so `r1 < r2` over two instances' `&v` prints true on some
+            // runs and false on others, in both engines, with nothing fused. This
+            // breaks the rule that a reference is not a number, and the rule in
+            // design/parallel_compile.md that "anything that iterates by id must not
+            // change output". Refuse the ordering operators when the operand type
+            // `holds_ref`, as `TypeCast` does. A generic `|a, b| a < b` called with
+            // references needs the same refusal at the call (a bound, as `Singleton`
+            // is), and `array::sort` and map keys over references flip in the same way.
+            // probe: design/review-2026-10-05/repro/c-error-op-04.gx (c-error-op-04)
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
@@ -650,6 +674,16 @@ fn wrap_arith_error(result: Value) -> Value {
 /// operators fold `v32`/`z32`/`v64`/`z64` into their fixed-width twins).
 /// Unchecked `+ - *` wrap, matching the JIT; any other overflow and a
 /// zero divisor are an error value. `None` for every other shape.
+// CR claude for eric: [doc-drift] The docs disagree with this function. CLAUDE.md says
+// "unchecked wraps, integer div0 bottoms", but unchecked / and % also bottom on MIN /
+// -1 and MIN % -1 (checked_div/checked_rem below; the JIT tests for this case in
+// fusion/emit/nodes.rs). book/src/core/fundamental_types.md:28 and :56 say unchecked
+// operators bottom on overflow, but + - * wrap (MAX + 1 gives MIN in both engines), and
+// fused code logs nothing. The book's ArithError strings ("attempt to divide by zero"
+// and "attempt to subtract with overflow" at fundamental_types.md:70 and :86,
+// error.md:93) are produced nowhere: every integer failure is "arithmetic error" (line
+// 669), which names neither cause. Fix the three docs, or decide that unchecked / and %
+// wrap too. Either way, have line 669 say which failure happened. (c-error-op-06)
 fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
     macro_rules! int {
         ($va:ident, $a:expr, $b:expr) => {{
@@ -661,6 +695,18 @@ fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
                 (BinOp::Add, true) => a.checked_add(b),
                 (BinOp::Sub, true) => a.checked_sub(b),
                 (BinOp::Mul, true) => a.checked_mul(b),
+                // CR claude for eric: [doc-drift] Unchecked / and % bottom on MIN / -1
+                // here and in the JIT guard (fusion/emit/nodes.rs:262-276).
+                // CLAUDE.md:518 says unchecked arithmetic wraps. The book says
+                // unchecked + bottoms on overflow (core/fundamental_types.md:28 and
+                // :56, functions/polymorphism.md:61 and :184,
+                // core/reading_types.md:303), but + - * wrap. x % -1 is 0 for every x,
+                // so MIN % -1 bottoming and MIN %? -1 returning ArithError refuse a
+                // representable result. Settle the rule (e.g. + - * wrap, % by -1 is 0,
+                // / bottoms on a zero divisor and on MIN / -1) and state it in
+                // CLAUDE.md and the book. probe:
+                // design/review-2026-10-05/repro/x-engine-collections-07.gx
+                // (x-engine-collections-07)
                 (BinOp::Div, _) => a.checked_div(b),
                 (BinOp::Mod, _) => a.checked_rem(b),
             };
@@ -734,6 +780,12 @@ pub(crate) fn arith_rule(
     // A declared `'a: Number` formal is rigid while its def gate is
     // open: `x + f64:0.` must reject, not bind 'a.
     let Some(t) = operand_type(env, lt, rt)? else {
+        // CR claude for eric: [doc-drift] This refusal and arith_rule's doc comment
+        // (line 724) give arithmetic as `fn('a: Number, 'a) -> 'a`, which is neither
+        // the rule nor a parseable fn type. CLAUDE.md and the book
+        // (core/reading_types.md:281) give `fn<'a: Number + Singleton>(x: 'a, y: 'a) ->
+        // 'a`. `let x = 1; x + "s"` shows the user the wrong form. State the current
+        // signature in both places. (t-parser-b-16)
         return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             bail!(
                 "cannot compute {lt} {}{} {rt}: arithmetic is fn('a: Number, 'a) -> 'a — \

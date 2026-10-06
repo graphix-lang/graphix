@@ -1,0 +1,15 @@
+// gui-widgets-a-03: a handler with a labeled default type-checks but compile_callable refuses it
+// command: graphix-fuzz check design/review-2026-10-05/repro/gui-widgets-a-03.gx
+// expected: AGREE; the embedder dispatch fills #k's default as the in-language call does (107, then 109)
+// observed: DIVERGENCE (route bug); in-language Trace([0:i64:0]; [1:i64:107]; [1:i64:109]),
+//   dispatch RuntimeErr(compile_callable: can't call lambda with an optional argument from rust)
+// `handler` reaches the embedder through a parameter typed fn(x: i64) -> null, as a GUI
+// widget's #on_press: fn(e: null) -> Any does; `graphix --check` accepts both shapes.
+// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9
+{ let o = m0::observe; o }
+// file-v1: m0.gx
+let seen = 0;
+let f = |#k = 100, x: i64| -> null { seen <- x + k; null };
+let pass = |#on_press: fn(x: i64) -> null = |_| null| on_press;
+let handler = pass(#on_press: f);
+let observe = seen

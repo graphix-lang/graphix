@@ -1,0 +1,27 @@
+// db2-04: db::subscription::new drops its #prefix when the tree arrives after
+// the prefix.
+//
+// DbSubscribe::update (stdlib/graphix-package-db/src/subscribe.rs:169) reads
+// the prefix with seam_tick (fired only) and keeps nothing; a prefix that
+// fires while tree_val is None is discarded by the early return at 177-179.
+// A constant #prefix fires only at init and db::open/db::tree are async, so
+// when the tree arrives the prefix is not fired, 185-186 take the empty
+// prefix, and the subscription sees every key. The same happens whenever the
+// tree re-fires without the prefix firing.
+//
+// command: cd "$(mktemp -d)" && timeout -s KILL 10 graphix --no-cache \
+//            /home/eric/proj/graphix/design/review-2026-10-05/repro/db2-04.gx
+//   (same with --no-fusion)
+// expected: on_insert: [{key: "aa1", value: 2}]
+// observed: on_insert: [{key: "bb", value: 1}]
+//           on_insert: [{key: "aa1", value: 2}]
+// control: `#prefix: t ~ "aa"` (the prefix fires in the tree's cycle) prints
+//          only the expected line.
+let db = db::open("db2-04.db")$;
+let t: db::Tree<string, i64> = db::tree(db, "a")?;
+let sub = db::subscription::new(#prefix: "aa", t);
+let i1 = db::insert(t, sys::time::timer(duration:300.ms, false) ~ "bb", 1)$;
+let i2 = db::insert(t, i1 ~ "aa1", 2)$;
+let r = db::subscription::on_insert(sub)?;
+println("on_insert: [r]");
+sys::exit(sys::time::timer(duration:1500.ms, false) ~ 0)

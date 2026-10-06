@@ -1,0 +1,33 @@
+// c-error-op-04: `<`/`>`/`<=`/`>=` accept references and compare their
+// bind ids. Parallel compile mints those ids from a global counter in
+// thread order, so a program with no input prints a different value from
+// run to run.
+//
+// command (run it ten times):
+//   graphix --no-cache design/review-2026-10-05/repro/c-error-op-04.gx
+//   graphix-fuzz run design/review-2026-10-05/repro/c-error-op-04.gx
+//
+// expected: the same answer on every run. CLAUDE.md says a reference is not
+// a number (a cast of one is refused), and design/parallel_compile.md says
+// "anything that iterates by id must not change output". So the check
+// should refuse an ordering comparison over a type that can hold a
+// reference, as it refuses the cast.
+//
+// observed: `--check` exits 0. Two sets of ten runs printed `false` 7 and
+// 3 times, `true` the rest (`--no-fusion` flips too). With
+// RAYON_NUM_THREADS=1 every run prints `true`. Nothing fuses
+// (`graphix-fuzz run`: fused=0), yet its sessions disagree within one run:
+//   Interp: false, Jit: true, Interp/nocache: false, Interp/cold: true
+// `graphix-fuzz check` reported DIVERGENCE in 2 of 12 runs, labelled
+// "image bug: writing the program image changed the program". A generic
+// `|a, b| a < b` called with references, `array::sort` over references and
+// a Map keyed by references flip in the same way.
+let mk = |x: i64| {
+    let v = x;
+    &v
+};
+let r1 = mk(5);
+let r2 = mk(6);
+let out = r1 < r2;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+out

@@ -142,6 +142,14 @@ is insufficient; the forced recompute republishes `p2` at the present
 
 ## Mechanics
 
+<!-- CR claude for eric: [doc-drift] The tracker lives in node/wake.rs, where Select and
+the seq machine share it, not in node/select.rs. The per_arm bullet below says pattern
+binds are dropped through Env::is_pattern_bind. In fact wake.rs:45-49 routes them into
+`consumes` through Env::pattern_inputs (the facet rule at :58-80), and nothing calls
+is_pattern_bind any more (graphix-types/src/env.rs:1671). The `slept: bool` at :171 is
+now `WakeBit`. dependency_summaries.md:107-108 says the tracker was "moved out of
+select.rs", which is history that an as-built doc should not carry. (c-select-seq-13)
+-->
 ### The tracker (`node/select.rs`, `TrackedFires`)
 
 - `per_arm`: each arm body's free refs (`Refs` referenced minus bound

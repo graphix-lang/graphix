@@ -1,0 +1,35 @@
+// t-tvar-08: the occurs-check refusal in contains_tvars' (None, None) arm
+// (graphix-types/src/typ/contains.rs:1081) runs before OpenPair::Distinct
+// and answers true, so two rigid declared vars whose bounds reach each
+// other pass as one type.
+//
+// 'b: Array<'a> puts 'a in 'b's conjuncts, so the def gate's
+// check_contains_rigid of the return ('b ⊇ 'a) finds a "cycle" and
+// refuse() returns Ok(true): the body `y: 'a` is accepted as 'b. Nothing
+// reports it later: the marked cells are the signature's, exempt from the
+// terminal settle. The instance substitutes the definition's types, so the
+// kernel for f returns Array<i64> while its body returns the i64 12345.
+//
+// graphix --check design/review-2026-10-05/repro/t-tvar-08.gx
+//   expected: refused at the definition ('b does not contain 'a), as it is
+//             with 'b: Any ("type mismatch 'a ... does not contain 'b")
+//   observed: exit 0
+// graphix --no-cache design/review-2026-10-05/repro/t-tvar-08.gx
+//   observed: Segmentation fault (exit 139), 3 runs of 3; GRAPHIX_DBG_KERNELS
+//   shows "KERNEL BUILT f: ret=Array<i64> kind=Some(Array)"
+// graphix --no-cache --no-fusion: prints nothing (array::len of an i64)
+// GRAPHIX_NO_SUBST=1: the instance re-check refuses it, "type mismatch
+//   Array<i64> does not contain i64"
+// variants:
+//   `|x: 'a, y: 'b| -> 'a y` with `let r: i64 = f(1, [1])`: node-walk gives
+//   r = [1], the JIT prints pointer bits (graphix-fuzz check: DIVERGENCE
+//   interp [i64:1] vs jit i64:139728911141104)
+//   `'a: Any, 'b: 'a |x: 'a, y: 'b| -> 'b x` passes the same way ('b ⊇ 'a
+//   is not implied by 'b ⊆ 'a): f(v, 2) with v: [i64, string] = "hello"
+//   gives an i64 r of "hello" (node-walk) or pointer bits (JIT)
+//   `'a: Any, 'b: Array<'a> |x: 'a, y: 'b| x == y`: f(1, [1]) checks and
+//   prints false, an i64 compared with an Array<i64>
+let f = 'a: Any, 'b: Array<'a> |x: 'b, y: 'a| -> 'b y;
+let r: Array<i64> = f([1], 12345);
+println("[array::len(r)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

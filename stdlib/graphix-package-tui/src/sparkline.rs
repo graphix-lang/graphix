@@ -40,6 +40,19 @@ impl FromValue for SparklineBarV {
                     value: Option<f64>,
                 }
                 let Fields { style, value } = v.cast_to()?;
+                // CR claude for eric: [bug] `v as u64` here and at line 47 truncates
+                // each value before ratatui scales it with integer math (`value *
+                // height * 8 / max`, ratatui-widgets sparkline.rs:392). Data in [0, 1)
+                // becomes 0, so `sparkline(&[0.2, 0.5, 0.9, 0.4])` draws nothing, and
+                // 1.2 and 1.9 draw equal bars. `inf` becomes u64::MAX, and any value
+                // above about 2^64/(8*rows) overflows that product: a dev build panics
+                // in the display task (the display dies and the process ignores
+                // Ctrl-C), and a release build wraps and blanks every bar. Scale in f64
+                // in `draw`, where the max (the finite data max or `#max`) is known:
+                // clamp to [0, 1], multiply by a fixed scale, pass that scale as the
+                // max, and treat NaN as absent. `#max` is i64, so it cannot express a
+                // fractional scale either. probe:
+                // design/review-2026-10-05/repro/tui-widgets-04.gx (tui-widgets-04)
                 let value = value.map(|v| v as u64);
                 Ok(Self(SparklineBar::from(value).style(style.map(|s| s.0))))
             }

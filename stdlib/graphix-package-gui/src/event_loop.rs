@@ -123,6 +123,18 @@ struct GuiHandler<X: GXExt> {
     gpu: Option<GpuState>,
     rt: tokio::runtime::Handle,
     stop: Option<Stop>,
+    // CR claude for eric: [structure] Per-window state lives in four maps that must
+    // agree: windows and win_to_bid, plus surfaces and ui_caches keyed by WindowId.
+    // CloseRequested and reconcile_windows each repeat the four-map removal, Stop
+    // clears them all, and reconcile_windows takes nine parameters to borrow the
+    // pieces. Move the WindowSurface and the ui cache into TrackedWindow so there is
+    // one map plus the WindowId index, one removal, and reconcile as a method. The
+    // redraw cadence (needs_redraw, pending_resize, resize_render_timer_armed,
+    // last_render) is likewise four pub fields written from two files, and they already
+    // disagree. Input pushed while the resize timer is armed, after a frame already
+    // took pending_resize, does not set needs_redraw, and ResizeRenderTick sets it only
+    // if pending_resize is still set. That input then waits for ResizeSettled (about
+    // 200 ms) or the next input event. (gui-core-17)
     windows: IntMap<BindId, TrackedWindow<X>>,
     win_to_bid: AHashMap<WindowId, BindId>,
     surfaces: AHashMap<WindowId, WindowSurface>,
@@ -249,6 +261,22 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     if let Some(tw) = self.windows.get_mut(&bid) {
                         if tw.size.t.as_ref() != Some(&sz) {
                             tw.last_set_size = Some(sz);
+                            // CR claude for eric: [bug] This writes the cell the `&`
+                            // minted, not what the reference names. For `window(#size:
+                            // &sz, ..)` that cell only mirrors `sz`, and `*w.size`
+                            // reads `sz` through the byref chain, so after an OS resize
+                            // `sz`, `*w.size` and any label built from `sz` keep the
+                            // old size while `tw.size.t` holds the new one. A place
+                            // `#size: &st.size` loses the resize the same way; only the
+                            // default `&{..}` literal keeps it. Write through the
+                            // reference instead: a place patches its root, a chained
+                            // reference sets its bind, a chainless one sets the cell
+                            // (`Ref::set_deref`, which the TUI uses, has no target for
+                            // a place). probe:
+                            // design/review-2026-10-05/repro/gui-core-10.rs, run as
+                            // stdlib/graphix-package-gui/tests/review_gui_core_10.rs
+                            // (sz stays 800 x 600 after ResizeSettled to 1024 x 768).
+                            // (gui-core-10)
                             if let Err(e) = tw.size.set(sz) {
                                 error!("failed to set window size: {e:?}");
                             }
@@ -344,6 +372,22 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
                 let theme = tw.iced_theme();
                 let style = Style { text_color: theme.palette().text };
+                // CR claude for eric: [bug] This frame never passes
+                // window::Event::RedrawRequested(now) to ui.update before ui.draw. iced
+                // 0.14 widgets set the status they draw with only on that event, and
+                // view() rebuilds them every frame, so the status is always None. So
+                // every button, text_input, checkbox and toggler draws with its
+                // Disabled style even when it has a callback, and looks the same as
+                // #disabled: &true. A ButtonSpec background is always dimmed, typed
+                // text uses the placeholder colour, no widget shows hover, focus or
+                // pressed, and the text cursor never blinks. iced's own shell calls
+                // ui.update(&[Event::Window(window::Event::RedrawRequested(Instant::now()))],
+                // ..) right before draw and folds that update's redraw request into the
+                // next wakeup. probe: design/review-2026-10-05/repro/gui-core-01.rs
+                // (copy it to stdlib/graphix-package-gui/tests/review_gui_core_01.rs,
+                // then cargo test -p graphix-package-gui --test review_gui_core_01): an
+                // enabled button renders [62,72,178], the disabled colour, where Active
+                // is [88,101,242]. (gui-core-01)
                 ui.draw(&mut ws.renderer, &theme, &style, tw.cursor());
 
                 self.ui_caches.insert(win_id, ui.into_cache());
@@ -354,6 +398,20 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         let view = frame
                             .texture
                             .create_view(&wgpu::TextureViewDescriptor::default());
+                        // CR claude for eric: [bug] present(None) makes iced_wgpu load
+                        // the freshly acquired surface texture (LoadOp::Load), which
+                        // wgpu zero-fills, so the theme's background is never painted.
+                        // Every window is black whatever its theme or palette
+                        // background says, contrary to the book's "background -- window
+                        // and container backgrounds". Under a light theme the default
+                        // text is dark on that black; Light is black text on black, so
+                        // the text is invisible. iced's own compositor passes
+                        // Some(background_color); pass
+                        // Some(Base::base(&theme.inner).background_color) here. probe:
+                        // design/review-2026-10-05/repro/gui-core-03.rs (a headless
+                        // test; copy it to
+                        // stdlib/graphix-package-gui/tests/review_gui_core_03.rs and
+                        // run it as its header says). (gui-core-03)
                         ws.renderer.present(None, gpu.format, &view, &ws.viewport);
                         frame.present();
                         tw.last_render = Instant::now();
@@ -404,6 +462,20 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                 }
                 other => {
+                    // CR claude for eric: [bug] Every non-Call message goes to every
+                    // window's content. The data-table messages (CellClick, CellEdit,
+                    // CellEditInput, CellEditSubmit, CellEditCancel, TableKey, Scroll,
+                    // ColumnResizeStart; widgets/mod.rs:105-126) name no widget, so
+                    // every DataTableW in the program acts on every one of them. A
+                    // click, arrow key or scroll in one table also selects, moves or
+                    // scrolls every other table. An edit submitted in one table calls
+                    // every other table's on_edit with that table's own cell path and
+                    // the typed text, which is a write to a path the user never touched
+                    // (on_edit is typically sys::net::write). Fix: carry the table's
+                    // identity in these messages, as EditorAction carries its ExprId,
+                    // and drop messages addressed to another table. probe:
+                    // design/review-2026-10-05/repro/gui-core-04.rs (editing A's row 1
+                    // also yields eb="b1/price=42" and ec="c1/price=42"). (gui-core-04)
                     for tw in self.windows.values_mut() {
                         let mut shell = MessageShell::new(tw.cursor_position);
                         if tw.content.on_message(&other, &mut shell) {
@@ -415,6 +487,18 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             }
         }
 
+        // CR claude for eric: [bug] The windows are drawn before the messages are
+        // drained. A message that on_message applies sets needs_redraw (line 410) but
+        // schedules no wake: wake comes only from deferred_until and next_redraw. The
+        // loop goes back to ControlFlow::Wait with the window dirty, so the change
+        // shows only at the next unrelated OS event. One wheel notch over an editable
+        // text_editor stays unscrolled until the mouse moves, because Action::Scroll
+        // makes no graphix call that would wake the loop. probe:
+        // design/review-2026-10-05/repro/gui-core-06.py (headless kwin: the capture 2.5
+        // s after the wheel equals the one before it; a 1 px motion then shows the
+        // scroll). A window still dirty after the drain needs a wake (WaitUntil(now)),
+        // or the messages must be applied and the UI rebuilt before the draw, as iced
+        // does. (gui-core-06)
         let wake = match (deferred_until, next_redraw) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -434,6 +518,14 @@ pub(crate) fn run<X: GXExt>(
     stop: Stop,
     rt: tokio::runtime::Handle,
 ) {
+    // CR claude for eric: [bug] Every GUI session builds a new winit EventLoop here,
+    // but winit allows only one per process. build() sets a process-wide flag before it
+    // touches the platform and never clears it, so every later build returns
+    // RecreationAttempt. In the REPL, a second GUI (after the first window closes, or
+    // after a failed start) fails with "creating the event loop: EventLoop can't be
+    // recreated" until the shell is restarted. Build the loop once on the main thread
+    // and run each session with run_app_on_demand; REDRAW_WAKER then stays valid.
+    // probe: design/review-2026-10-05/repro/gui-core-11.py (gui-core-11)
     let event_loop = match EventLoop::<ToGui>::with_user_event().build() {
         Ok(el) => el,
         Err(e) => {
@@ -534,11 +626,30 @@ fn reconcile_windows<X: GXExt>(
     }
 
     for &bid in new_bids.iter() {
+        // CR claude for eric: [bug] A window the user closed is missing from `windows`
+        // as well, because CloseRequested (line 203) removes it only from the loop's
+        // maps. The program's root array still lists it, and the program is never told.
+        // So the next root update, whatever causes it, reopens every window the user
+        // closed. The fix is either to tell the program (an on_close callback or a
+        // closed ref in Window), or to keep user-closed bids out of this loop until
+        // they leave the array. probe: design/review-2026-10-05/repro/gui-core-09.sh
+        // (close gxprobe-a, then the program adds gxprobe-b to the root, and gxprobe-a
+        // comes back with a new X window id). (gui-core-09)
         if windows.contains_key(&bid) {
             continue;
         }
         let wref =
             rt.block_on(gx.compile_ref(bid)).context("compile_ref for window bind id")?;
+        // CR claude for eric: [bug] If a window's value is still bottom when the root
+        // array fires, the window is lost for good. Its Ref is dropped here, and `[&w]`
+        // does not fire again when `w` arrives, because a reference fires its id only
+        // at init. Nothing retries it, so unless the root array changes for another
+        // reason the GUI runs with no window. Every child widget ref with no value is
+        // kept and shown as EmptyW until it arrives (compile_child/update_child, and
+        // ResolvedWindow::compile for content). Keep this Ref pending and create the
+        // window on its first update. probe:
+        // design/review-2026-10-05/repro/gui-core-12.gx (needs a desktop; its header
+        // has the text-mode run showing the root fires only once). (gui-core-12)
         let window_value = match wref.last.as_ref() {
             Some(v) => v.clone(),
             None => {

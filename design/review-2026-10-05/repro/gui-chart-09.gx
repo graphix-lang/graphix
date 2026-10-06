@@ -1,0 +1,25 @@
+// gui-chart-09: an inline array/list/map literal is refused for a union-of-collections
+// parameter, while the same literal is accepted let-bound or under a let annotation.
+//
+// command: graphix --check design/review-2026-10-05/repro/gui-chart-09.gx
+//
+// expected: exit 0. `["a"]` is `Array<string>`, a member of the formal's union; the
+// annotated let and the let-bound call on the lines above the last one pass.
+//
+// observed: exit 1, at the last line:
+//   type mismatch Array<'_N: f64> does not contain Array<string>
+// The call site pre-unifies the formal into the literal's still-open element cell
+// (callsite.rs typecheck_arg -> Type::pre_unify_arg -> contains -> set_commit), which
+// commits it to the first union member in canonical order (f64) before the literal's
+// elements are typed. Member order in the source changes nothing; with
+// `[Array<i64>, Array<f64>]`, `g([1])` passes and `g([1.0])` is refused. List
+// (`[<"a">]`) and Map (`{"a" => "b"}`) literals fail the same way.
+// The GUI chart API hits it:
+//   use gui::chart; chart::line(&[(datetime:"2026-01-01T00:00:00Z", 1.0)])
+// is refused ("Array<'_: (f64, f64)> does not contain Array<(datetime, f64)>").
+// candlestick and error_bar with datetime points are refused the same way.
+let g = |x: [Array<f64>, Array<string>]| 0;
+let v: [Array<f64>, Array<string>] = ["a"];
+let d = ["a"];
+let r = g(d);
+g(["a"])

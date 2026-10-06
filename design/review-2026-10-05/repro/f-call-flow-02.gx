@@ -1,0 +1,37 @@
+// f-call-flow-02: an always-error (or always-null) `?`/`$` emits a Value
+// placeholder whatever its own type; a scalar consumer fails the JIT link.
+//
+// emit_qop_always_bad (graphix-compiler/src/fusion/emit/flow.rs:579) always
+// returns emit_bottom_of_kind(cx, AbiKind::Value): an i64 zero payload. The
+// qop's own type is a bottom-fed cell that took its consumer's type (f64
+// here), and every consumer classifies on abi_kind(node.typ())
+// (nodes.rs:180), so the f64 add gets an i64 operand:
+// GRAPHIX_DUMP_CLIF=1 shows `v72 = iconst.i64 0` ... `fadd.f64 v15, v72`.
+// node_is_bottom does not see it: the node's type derefs to f64, not bottom.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-call-flow-02.gx
+//
+// expected (what --no-fusion prints, exit 0): caught
+// observed (HEAD c722befe, debug build, fusion on): exit 1,
+//   thread 'tokio-rt-worker' panicked at graphix-compiler/src/fusion/emit/jit.rs:1187:13:
+//   the JIT could not link emitted code: compile: Verifier errors
+//   (graphix-fuzz check aborts the same way, exit 134)
+//
+// The same panic, each inside `|v: f64| ..` called on a changing f64:
+//   `error(`Boom)$ + v`, `v + null$`, `g(error(`Boom)$) + v` with
+//   `g = |v: f64| v * 2.0`, `select v > 0.0 { true => v * 2.0, false =>
+//   error(`Neg)$ }`, an uncaught `select v { n if n > 0.0 => n, _ =>
+//   error(`Neg)? }`; over i32 (`v + error(`Boom)$`) and bool
+//   (`v && error(`Boom)$`) too; `{ let y: f64 = error(`Boom)$; v + y }`
+//   panics in cranelift-frontend ("declared type of variable var4 doesn't
+//   match type of value v58"). Over i64 the payload width matches and the
+//   run agrees.
+let x = 1.5;
+x <- 2.5;
+let f = |v: f64| v * 2.0 + error(`Boom)?;
+let r = {
+  catch(e) println("caught");
+  f(x)
+};
+println("r = [r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

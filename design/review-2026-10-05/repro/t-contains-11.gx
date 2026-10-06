@@ -1,0 +1,37 @@
+// t-contains-11: Set ⊇ multi-bit Primitive commits one primitive at a time,
+// so a bare free member refuses a valid widening and leaks a partial binding.
+//
+// contains.rs:910-926: for `[.., 'a] ⊇ Primitive(p)` with two or more bits,
+// every primitive is probed (set_admits), then committed one at a time
+// (set_commit). The first primitive no structural member covers binds the
+// free 'a to itself; the next such primitive is not admitted by the now
+// bound 'a, and the arm returns Ok(false) without trying the whole set
+// (line 930) and without undoing the binding. A probe (empty flags) of the
+// same pair returns true, so a probe and a commit disagree.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-contains-11.gx
+//          (graphix --check gives the same error)
+//
+// expected: prints (true, true) and exits 0; `['a, null] ⊇ [i64, null,
+//   string]` holds with 'a := [i64, string], as `['a, null] ⊇ [i64, null,
+//   Array<i64>]` (a Set, handled by the residue arm at 824) does.
+// observed (HEAD c722befe, debug build): refused at `v`:
+//   type mismatch [null, 'a: i64] does not contain [i64, null, string]
+//   Deleting `opt::is_some(v)` leaves the `w` call alone: prints true.
+//
+// The same arm, other shapes:
+//   let f = |x: ['a, string]| x; let c = 0; f(select c { 0 => 1, _ => 2.0 })
+//     refused: [string, 'a: i64] does not contain [i64, f64]; `|x: 'a| x` and
+//     `f(select c { 0 => 1, 1 => [1], _ => 2.0 })` are accepted.
+//   The leaked binding, when an outer set accepts through another member:
+//   let f = |x: [Array<['a, null]>, Array<'c>], y: 'a| y;
+//   let v: Array<[bool, null, string]> = ["s"];
+//   f(v, "t")
+//     refused at "t": type mismatch 'a: bool does not contain string.
+//     GRAPHIX_DBG_BIND=1 shows `BIND 'a := Bool` from x's first member, whose
+//     commit then fails, then `BIND 'c := Bool | Null | String` and x's check
+//     Ok(true): the failed member's binding stays and refuses y.
+let v: [i64, string, null] = 1;
+let w: [i64, Array<i64>, null] = 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(opt::is_some(w), opt::is_some(v))

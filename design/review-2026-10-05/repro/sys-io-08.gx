@@ -1,0 +1,48 @@
+// sys-io-08: lines() ignores every stream after the first and never stops
+// its reader.
+//
+// IoLines::update (stdlib/graphix-package-sys/src/io.rs:181-191) starts one
+// detached reader for the first stream delivered and latches `started`. A
+// later delivery of a DIFFERENT stream is ignored, and the first reader keeps
+// delivering its own stream's lines as this call's output. Here `s` switches
+// from child a's stdout to child b's at 350 ms.
+//
+// command: timeout -s KILL 30 graphix --no-cache design/review-2026-10-05/repro/sys-io-08.gx
+//   (the same with --no-fusion, GRAPHIX_PAR=off, GRAPHIX_PAR=force, and with
+//   the image cache on; Lines::lines_batched behaves the same)
+//
+// expected: "a1" .. "a4", then b's lines once `s` is b's stream ("b1" ..
+//   "b8": b's pipe holds what b printed before the switch)
+//
+// observed (HEAD c722befe, debug build, 10/10 runs, every mode):
+//   use_b = false "a1" "a2" "a3" "a4" use_b = true "a5" "a6" "a7" "a8"
+//   and never a b line.
+//
+// control: with the last line replaced by
+//   str::trim(buffer::to_string(sys::io::Read::read(s, u64:4096)$)$)
+//   it prints: use_b = false "a1" use_b = true "b1\nb2\nb3\nb4"
+//   (read follows its argument; lines does not).
+//
+// A restarted child is the same: when spawn re-fires with new options,
+// Lines::lines(child.stdout) prints the first child's lines and nothing from
+// the new one. A deleted instance's reader also keeps running and races a
+// fresh one for the bytes: see x-node-contract-03.gx.
+use sys::io::Lines;
+
+let spawn = |tag| sys::process::spawn(sys::process::options(
+    #args: ["-c", "for i in 1 2 3 4 5 6 7 8; do echo [tag]$i; sleep 0.1; done"],
+    #stdio: sys::process::stdio(#stdout: `Pipe),
+    #kill_on_drop: true,
+    "/bin/sh"
+))$;
+let a = spawn("a");
+let b = spawn("b");
+let use_b = false;
+use_b <- sys::time::timer(duration:350.ms, false) ~ true;
+let s = select use_b {
+    false => opt::ok_or(a.stdout, `NoStdout)$,
+    true => opt::ok_or(b.stdout, `NoStdout)$
+};
+println("use_b = [use_b]");
+sys::exit(sys::time::timer(duration:1200.ms, false) ~ 0);
+Lines::lines(s)$

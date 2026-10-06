@@ -70,6 +70,13 @@ impl syn::parse::Parse for BuiltinEntry {
     }
 }
 
+// CR claude for eric: [risk] is_custom and init_custom are independent Options, so
+// defpackage! accepts either one alone. With is_custom alone, __init_custom's body is
+// `unreachable!()` (line 344): the first value the predicate claims panics the shell at
+// display time instead of failing the package's build. With init_custom alone,
+// __is_custom is `false` and the display never runs. A repeated key also silently keeps
+// the last value. Hold the pair as one `custom: Option<(ExprClosure, ExprClosure)>` and
+// return a syn::Error when only one is given or a key repeats. (shell-14)
 struct DefPackage {
     builtins: Vec<BuiltinEntry>,
     is_custom: Option<syn::ExprClosure>,
@@ -147,6 +154,16 @@ fn collect_package_deps(
 
 /// Collect graphix-package-* deps from [dependencies] only; register()
 /// must compile without dev-dependencies.
+// CR claude for eric: [structure] runtime_deps, package_deps and graphix_deps_ordered
+// each read and parse Cargo.toml again. One defpackage! expansion parses it three times
+// (cargo_toml at line 21, plus toml_edit in package_deps and runtime_deps).
+// graphix_deps_ordered also repeats collect_package_deps' loop just to read `optional`.
+// One parse per expansion and one walker returning (name, optional) would serve all
+// three. The expansion also names ::anyhow, ::ahash, ::arcstr, ::netidx_core, ::tokio,
+// ::graphix_rt, ::graphix_compiler and ::graphix_package directly, so every package
+// must depend on all eight at versions that unify with the shell's
+// (graphix-package/src/skel/Cargo.toml.hbs lists them for that reason). Re-exporting
+// what the expansion needs from graphix_package removes that requirement. (shell-15)
 fn runtime_deps() -> Vec<String> {
     let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
         .expect("failed to read Cargo.toml");

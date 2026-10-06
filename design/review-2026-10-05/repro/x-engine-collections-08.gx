@@ -1,0 +1,23 @@
+// x-engine-collections-08: map::map and map::filter_map keep the FIRST pair
+// of colliding output keys; a map literal and map::insert keep the LAST.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-collections-08.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-engine-collections-08.gx
+//
+// expected: one collision rule, e.g. last wins everywhere:
+//   lit {1 => "b"} map {1 => "b"} filter_map {1 => "b"} fold-insert {0 => "", 1 => "b"}
+//
+// observed (both engines):
+//   lit {1 => "b"} map {1 => "a"} filter_map {1 => "a"} fold-insert {0 => "", 1 => "b"}
+//
+// pairs_to_map (graphix-compiler/src/node/collection.rs:206) builds with
+// CMap::from_iter, chunkmap's insert_many: a stable sort, then dedup_by,
+// which keeps the first pair of each equal-key run.
+let lit = |a: string, b: string| {1 => a, 1 => b};
+let viamap = |m: Map<string, i64>| map::map(m, |(k, v)| (1, k));
+let viafm = |m: Map<string, i64>| map::filter_map(m, |(k, v)| (1, k));
+let viafold = |m: Map<string, i64>| map::fold(m, {0 => ""}, |acc, (k, v)| map::insert(acc, 1, k));
+let m = {"a" => 1, "b" => 2};
+let l = lit("a", "b");
+println("lit [l] map [viamap(m)] filter_map [viafm(m)] fold-insert [viafold(m)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

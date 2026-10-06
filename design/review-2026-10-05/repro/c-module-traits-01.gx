@@ -1,0 +1,43 @@
+// c-module-traits-01: a sandboxed dynamic module defines and calls any
+// host builtin by putting the `'builtin` stub inside a lambda body.
+//
+// Module::compile_inner (graphix-compiler/src/node/module.rs:829-841)
+// holds ctx.builtins_allowed = false only around compile_block_children
+// and restores it before check_body. Every lambda body is compiled later:
+// at its definition check (Lambda::typecheck0, BindMode::Definition,
+// lambda.rs:1766), a labeled default's check (check_defaults,
+// lambda.rs:1702), each instance's elaboration and run-time binds. The
+// guard in Lambda::compile (lambda.rs:1441) therefore only sees stubs at
+// the loaded source's top level. `sandbox blacklist [sys]` escapes the
+// same way, and 'sys_fs_write_all through the same wrapper wrote a file.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-module-traits-01.gx
+//          (the same with --no-fusion)
+//
+// expected (both modules refused):
+//   direct: refused: error:["DynamicLoadError", "compile error defining builtins is not allowed in this context"]
+//   wrapped: refused: error:["DynamicLoadError", "compile error defining builtins is not allowed in this context"]
+// observed (the wrapped module loads and reads the file):
+//   direct: refused: error:["DynamicLoadError", "compile error defining builtins is not allowed in this context"]
+//   wrapped: loaded: Linux
+let direct = mod direct dynamic {
+    sandbox whitelist [core];
+    sig { val s: string };
+    source "let rd = |path: string| -> Result<string, `IOError(string)> 'sys_fs_read_all; let s = rd(\"/proc/sys/kernel/ostype\")$"
+};
+let wrapped = mod wrapped dynamic {
+    sandbox whitelist [core];
+    sig { val s: string };
+    source "let outer = |p: string| -> string { let rd = |path: string| -> Result<string, `IOError(string)> 'sys_fs_read_all; rd(p)$ }; let s = outer(\"/proc/sys/kernel/ostype\")"
+};
+let d = select direct {
+    error as e => "direct: refused: [e]",
+    null as _ => "direct: loaded: [direct::s]"
+};
+let w = select wrapped {
+    error as e => "wrapped: refused: [e]",
+    null as _ => "wrapped: loaded: [wrapped::s]"
+};
+println(d);
+println(w);
+sys::exit(sys::time::after_idle(duration:300.ms, (d, w) ~ 0))

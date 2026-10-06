@@ -1,0 +1,24 @@
+// f-select-04: `error as e` over a scalar Result de-fuses; the same arm
+// over `[string, Error<E>]` fuses.
+//
+// The single-primitive predicate over a Nullable scrutinee
+// (graphix-compiler/src/fusion/emit/select.rs:1006-1011) requires
+// scalar_prim(nullable_inner) == PrimType::from_typ(pt). For pt = Error
+// the right side is None, so the Error test (:1035) is reached only when
+// the success type has no register form either. Over [i64, Error<`E>]
+// the arm refuses and the whole select node-walks.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/f-select-04.gx
+//   expected: f and g both fuse; no select refusal.
+//   observed: values agree (graphix-fuzz check: AGREE); fusion lists
+//     "emit_clif: type predicate Primitive(.. Error) over scrutinee
+//     Set([Primitive(.. I64), Error(..)]) not lowerable" 4x, every one
+//     for f's select; nothing names g's select.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:0; in0=i64:42
+{
+  let f = |x: [i64, Error<`E>]| select x { error as e => i64:-1, v => v + i64:100 };
+  let g = |x: [string, Error<`E>]| select x { error as e => i64:-1, v => str::len(v) };
+  let r: [i64, Error<`E>] = select in0 { i64:0 => error(`E), n => n };
+  let s: [string, Error<`E>] = select in0 { i64:0 => error(`E), n => "x[n]" };
+  f(r) + g(s)
+}

@@ -1,0 +1,32 @@
+// sys-net-07: the sys::net pump drops all but the last update per
+// subscription in each netidx batch.
+//
+// NetState's pump (stdlib/graphix-package-sys/src/netstate.rs:293-297)
+// keeps one event per SubId per batch read from the netidx subscriber
+// channel. When the publisher commits faster than the subscriber
+// connection reads, one batch carries several updates of the path and all
+// but the last are discarded. netidx sends every queued update
+// (Val::update, UpdateBatch::commit) and the runtime re-queues repeated
+// deliveries to one variable, so nothing else drops them.
+//
+// command: graphix --no-cache --no-netidx design/review-2026-10-05/repro/sys-net-07.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off, or a cached image)
+//
+// The burst (one update per cycle) starts only after the subscription
+// delivered its first value, so the subscriber should see all of 0..200.
+// expected: last line (201, 200)
+// observed (HEAD c722befe, debug build): last line (179, 200), (185, 200),
+//   (189, 200), (177, 200), (190, 200), (192, 200) on successive runs; the
+//   delivered values are in order with gaps (0, 4, 13, 14, ..).
+//   Spacing the updates 2 ms apart (one per batch) delivers all 201.
+//   Against a local resolver, a `netidx subscriber` CLI on the same burst
+//   printed 0..200 in order while this subscription received 66 of 201.
+let x = i64:0;
+sys::net::publish("/local/burst", x);
+let s: i64 = sys::net::subscribe("/local/burst")$;
+let go = false;
+go <- once(s) ~ true;
+x <- select (go, x) { (true, n) if n < i64:200 => n + i64:1, _ => never() };
+let c = count(s);
+sys::exit(sys::time::after_idle(duration:1.s, c ~ 0));
+(c, s)

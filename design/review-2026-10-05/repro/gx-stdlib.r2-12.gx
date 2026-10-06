@@ -1,0 +1,35 @@
+// gx-stdlib.r2-12: a cast of an error value to a primitive yields 0/false/null
+// instead of InvalidCast, so typed net reads turn failures into plausible values.
+//
+// Type::cast_inner's Primitive arm (graphix-types/src/typ/cast.rs:312) hands
+// the value to netidx Value::cast, which maps every Value::Error to
+// Value::Bool(false).cast(typ) (netidx-value/src/lib.rs:983): 0 for a number,
+// false for bool, null for null, [0] through the Array arm's wrap. A null,
+// bytes or abstract value fails the same casts with InvalidCast. The typed
+// reads share cast_value: sys::net::subscribe after its publisher goes away
+// (the pump delivers error("unsubscribed"), netstate.rs:47), sys::net::call
+// whose handler returns an error, pack::read of a packed error. str::parse
+// alone guards a parsed error value before casting (str/src/lib.rs:815).
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache \
+//            design/review-2026-10-05/repro/gx-stdlib.r2-12.gx
+//          (the same with --no-fusion; graphix-fuzz run on the pure casts:
+//          every mode agrees on [0, false, 0.])
+// expected: InvalidCast errors in place of the 0/false values: cast<i64> and
+//   cast<bool> of the error, the call, and the subscribe on the second line
+//   (an Any-typed subscribe reads error:"unsubscribed" there, an Any-typed
+//   call error:"nope").
+// observed (HEAD c722befe, debug build, both engines):
+//   cast<i64>: 0, cast<bool>: false, subscribe: 42, call: 0
+//   cast<i64>: 0, cast<bool>: false, subscribe: 0, call: 0
+//   With `let v: i64 = sys::net::subscribe(p)?` under a catch, the catch
+//   never runs and v reads 0 when the publisher goes away.
+let bad: Any = error(5);
+let paths = ["/local/r212/sub"];
+paths <- sys::time::timer(duration:300.ms, false) ~ [];
+let pubs = array::map(paths, |p| sys::net::publish(p, 42));
+sys::net::rpc(#path:"/local/r212/rpc", #doc:"fails", #spec:null, #f:|a: null| a ~ error("nope"));
+let sub: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> = sys::net::subscribe("/local/r212/sub");
+let rpc: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/r212/rpc", null);
+println("cast<i64>: [cast<i64>(bad)], cast<bool>: [cast<bool>(bad)], subscribe: [sub], call: [rpc]");
+sys::exit(sys::time::after_idle(duration:1.s, 0))

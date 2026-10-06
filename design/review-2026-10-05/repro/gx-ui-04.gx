@@ -1,0 +1,44 @@
+// gx-ui-04: tui::form's Tab/Down (BackTab/Up) focus write re-fires on every
+// `fields` delivery.
+//
+// form.gx:23-24 write `focus <- (k ~ focus + 1) % n`: only the left operand
+// is sampled, so `% n` (n = array::len(fields)) is a trigger too. The
+// handler's instance (here a call site, in a TUI the input_handler's
+// Callable) lives between keys and keeps its last arm, so while Tab/Down
+// (BackTab/Up) was the last key it handled, a `fields` delivery fires that
+// arm again with the focus sampled at that key, in the same cycle as the
+// reset `focus <- fields ~ 0` (form.gx:21); the stale write lands after
+// the reset and the re-seeded form keeps the old focus.
+//
+// Script: Tab, re-seed with three new empty fields, type "x", Enter.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-ui-04.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off|force, and from a
+//          cold or a warm image)
+//
+// expected: ["x", "", ""]  (form.gxi: "A new `fields` delivery re-seeds the
+//           editors", and form.gx:21 resets focus to 0; that is what runs
+//           when the last key was not Tab: make the script
+//           [null, k(`Tab), k(`Right), ..] and it prints ["x", "", ""])
+// observed: ["", "x", ""]  (both engines)
+// With `focus <- k ~ (focus + 1) % n` and `focus <- k ~ (focus + n - 1) % n`
+// a copy of the form prints ["x", "", ""].
+use tui::{form::{Field, form}, input_handler::{Event, KeyCode}};
+let k = |c: KeyCode| -> Event `Key({code: c, kind: `Press, modifiers: [], state: []});
+let i = 0;
+let fields: Array<Field> = [{label: "a", value: ""}, {label: "b", value: ""}, {label: "c", value: ""}];
+fields <- select i {
+  3 => [{label: "p", value: ""}, {label: "q", value: ""}, {label: "r", value: ""}],
+  _ => never()
+};
+let submitted: Array<string> = never();
+let f = form(#title: "t", #on_submit: |v| { submitted <- v; null }, fields);
+let h = f.handle;
+let ev: Event = never();
+let r = h(ev);
+let script: Array<[Event, null]> = [null, k(`Tab), null, null, null, k(`Char("x")), null, k(`Enter)];
+let clock = sys::time::timer(duration:40.ms, true);
+i <- clock ~ i + 1;
+ev <- script[i]$$;
+sys::exit(sys::time::timer(duration:600.ms, false) ~ 0);
+submitted

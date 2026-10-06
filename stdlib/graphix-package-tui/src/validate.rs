@@ -9,6 +9,15 @@ pub(crate) const VISUAL_DIMENSION_CAP: i64 = 1024;
 
 /// Clamp an `i64` into `[0, VISUAL_DIMENSION_CAP]`. ratatui's layout
 /// arithmetic overflows u16 well before `u16::MAX`.
+// CR claude for eric: [structure] clamp_u16 caps at VISUAL_DIMENSION_CAP (1024), not at
+// u16::MAX as its name and its call sites suggest; name it for what it bounds
+// (clamp_visual_size). Every clamp here, and gauge.rs's clamp_ratio, threads a `last`
+// slot only because the widgets clamp in draw. Draw runs after every update, every
+// terminal event and the 1 s liveness tick, and would warn each time without the slot.
+// That costs 12 last_warned_*/last_clamp_warning fields across bar_chart, paragraph,
+// scrollbar, gauge and line_gauge, plus their `_` destructures. Clamping once when the
+// value is delivered warns once per bad value, needs no slot, and leaves each widget
+// holding only valid values. (tui-widgets.r2-16)
 pub(crate) fn clamp_u16(
     widget: &str,
     label: &str,

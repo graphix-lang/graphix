@@ -302,6 +302,20 @@ impl LoopFrame {
             cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
         let new = cx.b.ins().uextend(types::I64, new);
         let init = cx.init_flag();
+        // CR claude for eric: [bug] The slot's init view reaches only constants, the
+        // builtin stale mask and the callee first-call word. A read of a local bound
+        // outside the loop keeps its STALE disc: a capture, a kernel param or an outer
+        // let, read through emit_ref_node or as a capture in marshal_args. A new fold
+        // slot's acc likewise carries the STALE of the init or of the previous slot.
+        // The node-walk runs a new slot under event.init, where a standing read is
+        // FIRED (node/mod.rs standing_view), and it seeds a fresh fold slot's acc FIRED
+        // (node/collection.rs FoldQ::update). So `err?` over a standing error bound
+        // outside the callback, or `acc?` in a fold, raises once per new slot in the
+        // node-walk and never in the JIT. Under a genuine slot init (new slot, no wake)
+        // those reads need STALE cleared with TAINT kept, and a new fold slot's acc
+        // must read FIRED; probe: design/review-2026-10-05/repro/f-scaffold-body-02.gx
+        // (graphix-fuzz check: interp (3, 3) then (4, 4), jit (0, 0)).
+        // (f-scaffold-body-02)
         cx.env.slot_init = Some(cx.b.ins().bor(init, new));
         let r = bind(cx, self.i).and_then(|bound| {
             emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
@@ -504,6 +518,12 @@ impl SlotFlags {
     /// available (a state word, a call-site word, or in a loop the
     /// enclosing slot's chain word); a nested loop without a chain word
     /// falls back to the conservative source-or-slot rule.
+    // CR claude for eric: [structure] apply borrows the SlotFlags, so nothing stops a
+    // second application, which would compare against the len + 1 the first one just
+    // stored and miss a resize. Take self: SlotFlags is not Copy, so reusing it would
+    // then fail to compile. finish_loop_result (node/collection.rs:607) only forwards
+    // here; its two callers (emit_loop and emit_init_kind) can call apply directly.
+    // (f-scaffold-body-08)
     pub fn apply(
         &self,
         cx: &mut BodyCx,
@@ -733,6 +753,20 @@ fn emit_slots(
     sel_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
+    // CR claude for eric: [bug] Under a tainted source this runs `len` iterations over
+    // the source's placeholder. emit_fold_loop (line 1160) does the same, and so does
+    // emit_init_loop, which clamps only an oversize count (795). The node-walk builds
+    // no slot under a bottom source and runs exactly the slots it kept
+    // (MapQ/FoldQ::update). When the placeholder is longer than the kept slots, the
+    // extra iterations are phantom slots: a tainted run leaves `entered` unchanged, so
+    // each one runs under an init view, a constant error under `?` raises there and
+    // raises again when the source turns valid, and its fires make the bottom result
+    // fresh. When it is shorter, kept slots are skipped: a missing input is staged as
+    // an empty array, so a kept slot's raise is lost. probe:
+    // design/review-2026-10-05/repro/f-scaffold-body-01.gx (interp (2, 2), jit (4, 0)).
+    // A fix also needs a ruling on the bottom-source firing rule: MapQ ignores its kept
+    // slots' fires (collection.rs:1082), while FoldQ counts them (1517).
+    // (f-scaffold-body-01)
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
         let lp = outline::Loop { kind, src, src_disc, len, entered, sel_sites };

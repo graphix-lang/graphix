@@ -1,0 +1,45 @@
+// x-builtin-effects-02: buffer::decode is Stateless(None) but writes through
+// its references, so re-entering its select arm re-issues the writes.
+//
+// core_buffer_decode (stdlib/graphix-package-core/src/buffer.rs:322) is
+// Effect::Stateless(None) while its eval writes every target with set_var.
+// x: the arm is judged pure (analysis::arm_sleeps_on_deselect), so each
+// re-selection is a birth and the standing b and spec_x read FIRED.
+// y: the arm sleeps (once), and CachedArgs re-runs a stateless eval at the
+// wake (graphix-package-core/src/lib.rs:785) though no argument fired.
+// z: the same write made by `*rz <- seven` lands once.
+// Nothing the decodes read fires after init. (A spec literal written inside
+// the arm, `[`U8(&x)]`, fires at every entry by itself: its `&x` fires at a
+// wake like a constant, so that form re-decodes whatever the Effect.)
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-02.gx
+//          (same with --no-fusion, GRAPHIX_PAR=off, a cold or warm image;
+//          graphix-fuzz check: AGREE, both engines)
+// expected: (2, 2, 2): the initial value plus one write at the first entry;
+//   a re-entry re-raises only fires no selected reader saw (wake catch-up).
+// observed (HEAD c722befe, debug build, every mode): (4, 4, 2).
+//
+// The writes also go out from CachedArgs' "nothing to re-surface" eval: with a
+// length ref still absent, `let len: u64 = never(); let d: bytes = never();
+// let r = buffer::decode(buffer::encode([`U8(u8:7), `U8(u8:1)]), [`U8(&x),
+// `Bytes(&len, &d)]); count(x)` rewrites x every cycle (count(x) passes 36000
+// within 400 ms, both engines): each write re-schedules the call, whose last
+// result is still bottom, and eval runs again.
+let clk = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let c = select n { 1 => true, 2 => false, 3 => true, 4 => false, 5 => true, _ => false };
+let b = buffer::encode([`U8(u8:7)]);
+let x: u8 = u8:0;
+let spec_x = [`U8(&x)];
+let r1 = select c { true => buffer::decode(b, spec_x), false => b };
+let y: u8 = u8:0;
+let spec_y = [`U8(&y)];
+let r2 = select c { true => { let q = once(c); buffer::decode(b, spec_y) }, false => b };
+let z: u8 = u8:0;
+let rz = &z;
+let seven = u8:7;
+let r3 = select c { true => { *rz <- seven; b }, false => b };
+let done = select n { 7 => true, _ => never() };
+sys::exit(select n { 8 => 0, _ => never() });
+done ~ (count(x), count(y), count(z))

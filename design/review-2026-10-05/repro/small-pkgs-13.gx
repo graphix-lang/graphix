@@ -1,0 +1,58 @@
+// small-pkgs-13: json::read refuses the datetime and bytes json::write_str
+// writes; toml::write_str refuses the Map toml::read reads, and a [T, null]
+// struct field can go through toml in neither direction.
+//
+// json::write_str writes bytes as an array of numbers and a datetime as an
+// RFC3339 string (stdlib/graphix-package-json/src/lib.rs:91-96); json::read
+// casts the parsed value to the target type (lib.rs:180) and the cast takes
+// neither back. toml::read reads a table into a Map<string, T>, but
+// toml::write_str refuses a Map (stdlib/graphix-package-toml/src/lib.rs:108)
+// and a null field (lib.rs:61), and a key the document omits does not read
+// into a [T, null] field (graphix-types/src/typ/cast.rs:483, struct size
+// mismatch), so no TOML document reads into a struct with an optional field.
+//
+// command: XDG_CACHE_HOME=<scratch> timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/small-pkgs-13.gx
+//          (the same with --no-fusion; graphix-fuzz check says AGREE)
+//
+// expected (line order may vary; the reads are async):
+//   json datetime back equal: true
+//   json bytes back equal: true
+//   toml map read: {deps: {"serde" => "1.0"}}
+//   toml map written: a [deps] table holding serde = "1.0"
+//   toml null field written: host = "h" with no port key
+//   toml absent key read: {host: "h", port: null}
+// observed (HEAD c722befe, debug build, both engines):
+//   toml null field written: error:["TomlErr", "cannot represent null in TOML"]
+//   json datetime CAUGHT `InvalidCast("can't cast \"2020-01-01T00:00:00+00:00\" to datetime: no primitive conversion")
+//   json bytes CAUGHT `InvalidCast("can't cast [104, 105] to bytes: no primitive conversion")
+//   toml map read: {deps: {"serde" => "1.0"}}
+//   toml map written: error:["TomlErr", "cannot represent map in TOML"]
+//   toml absent key CAUGHT `InvalidCast("can't cast [[\"host\", \"h\"]] to { host: string, port: [i64, null] }: struct size mismatch")
+let t0 = datetime:"2020-01-01T00:00:00Z";
+let t1: datetime = {
+  catch(e) println("json datetime CAUGHT [(e.0).error]");
+  json::read(json::write_str(t0)$)?
+};
+println("json datetime back equal: [t1 == t0]");
+let b0 = buffer::from_string("hi");
+let b1: bytes = {
+  catch(e) println("json bytes CAUGHT [(e.0).error]");
+  json::read(json::write_str(b0)$)?
+};
+println("json bytes back equal: [b1 == b0]");
+let m: {deps: Map<string, string>} = {
+  catch(e) println("toml map CAUGHT [(e.0).error]");
+  toml::read("\[deps\]\nserde = \"1.0\"\n")?
+};
+println("toml map read: [m]");
+println("toml map written: [toml::write_str(m)]");
+type C = {host: string, port: [i64, null]};
+let c: C = {host: "h", port: null};
+println("toml null field written: [toml::write_str(c)]");
+let c2: C = {
+  catch(e) println("toml absent key CAUGHT [(e.0).error]");
+  toml::read("host = \"h\"\n")?
+};
+println("toml absent key read: [c2]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

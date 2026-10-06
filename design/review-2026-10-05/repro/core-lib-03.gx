@@ -1,0 +1,28 @@
+// core-lib-03: range has no bottom gate: a missing argument yields
+// RangeError, and a bottomed argument re-issues the old range
+// (stdlib/graphix-package-core/src/lib.rs, Seq::update).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-lib-03.gx
+//          (same output with --no-fusion; graphix-fuzz check: AGREE)
+//
+// i is absent at init (n has not produced), 0 at n = 1, and bottom
+// (the never arm, a FreshBottom per tick) at n = 2 and n = 3.
+//
+// expected (design/dense_delivery.md R3 and ruled delta 13: a builtin
+// bottoms on any bottomed argument):
+//   0
+//   1
+//
+// observed, both engines:
+//   error:["RangeError", "invalid args i must be <= j"]   (init: i absent)
+//   0
+//   1
+//   0      (n = 2: i is bottom, the range 0..2 is issued again)
+//   1
+//   0      (n = 3: again)
+//   1
+let c = sys::time::timer(duration:100.ms, true);
+let n = count(c);
+let i = select n { 1 => 0, _ => never() };
+sys::exit(sys::time::after_idle(duration:350.ms, 0));
+range(i, 2)

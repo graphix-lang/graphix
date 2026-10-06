@@ -1,0 +1,55 @@
+// sys-net-10: the cached rpc client Proc keeps a stale argument list after
+// the server changes its spec.
+//
+// NetState::call_rpc (stdlib/graphix-package-sys/src/netstate.rs:487-505)
+// reuses one netidx client Proc per path, shared by every call site of the
+// runtime, until the path has gone 60 s without a call. That Proc reads the
+// procedure's argument names once, into a OnceCell, and refuses every later
+// call naming an argument outside that set
+// (../netidx/netidx-protocols/src/rpc.rs:498-533, "no such argument").
+// Here r1 calls /local/ver while it publishes spec {a}; the server is then
+// torn down and republished with spec {b}, and every b=2 call fails, for as
+// long as calls keep arriving within 60 s of each other.
+//
+// command: GXDBG_RPC=1 timeout -s KILL 40 graphix --no-cache design/review-2026-10-05/repro/sys-net-10.gx
+//          (--no-fusion and GRAPHIX_PAR=off print the same)
+//
+// expected: the {b} handler answers every b=2 call:
+//   call a=1 under spec a: value 1
+//   call b=2 under spec b: value 20    (five lines)
+// observed:
+//   call a=1 under spec a: value 1
+//   call b=2 under spec b: value 0     (five lines)
+// and on stderr, five times:
+//   RPCDBG client: reply from /local/ver for BindId(..): error:"no such argument b"
+// (the error reaches the program as 0 through sys-net-01, the cast of an error
+// reply to the success type).
+//
+// controls (value 20 for every b=2 call, in every run):
+// - no Proc cached before the change: replace the r1 call with
+//   `let r1 = sys::time::timer(duration:200.ms, false);` and delete its println.
+// - the cache entry evicted: replace the tick with
+//   `let tick = sys::time::after_idle(duration:61.s, r1);` (one b=2 call).
+//
+// The flips wait for r1's reply, and the server stays down 300 ms between the
+// two specs, because a first call's subscription takes from milliseconds to
+// seconds, and republishing the path in the same cycle fails with
+// PublishRpcError "already published" (a separate defect).
+let ver: [`A, `Off, `B] = `A;
+select ver {
+  `A => sys::net::rpc(#path: "/local/ver", #doc: "v1", #spec: {a: {default: i64:0, doc: "a"}}, #f: |args: {a: i64}| args.a),
+  `Off => never(),
+  `B => sys::net::rpc(#path: "/local/ver", #doc: "v2", #spec: {b: {default: i64:0, doc: "b"}}, #f: |args: {b: i64}| args.b * i64:10)
+};
+let show = |r: Result<i64, [`RpcError(string), `InvalidCast(string)]>| select r {
+  error as e => "error [e]",
+  v => "value [v]"
+};
+let r1: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/ver", {a: i64:1});
+println("call a=1 under spec a: [show(r1)]");
+ver <- r1 ~ `Off;
+ver <- sys::time::after_idle(duration:300.ms, r1) ~ `B;
+let tick = sys::time::timer(sys::time::after_idle(duration:800.ms, r1) ~ duration:500.ms, 5);
+let r2: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call(tick ~ "/local/ver", {b: i64:2});
+println("call b=2 under spec b: [show(r2)]");
+sys::exit(sys::time::after_idle(duration:3.s, r2) ~ 0)

@@ -1,0 +1,21 @@
+// f-mod-lowering-08: fuse_each visits light parts first, so the error it
+// reports is not the first in source order, and not the serial walk's.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/f-mod-lowering-08.gx
+//     and: GRAPHIX_FUSE_SERIAL=1 graphix --no-cache <same file>
+//
+// expected: both report the first failing #[native] in order, line 17 (g(a)),
+// as fuse_each's doc ("the first error in order") and CLAUDE.md (the task
+// walk's decisions and output are the serial walk's) say.
+//
+// observed (HEAD c722befe, debug build): the default build reports line 18
+// (`builtin once has no fast-call entry`); GRAPHIX_FUSE_SERIAL=1 reports
+// line 17 (`lambda call site g(a) not discovered`).
+let a = i64:5;
+let g = |x: i64| { print(x); x + 1 };
+let r = {
+  #[native] g(a);
+  #[native] once(a);
+  0
+};
+r

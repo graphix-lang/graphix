@@ -54,6 +54,17 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
     // The stdlib layer, shared by every per-project check.
+    // CR claude for eric: [bug] base_resolvers holds only the stdlib VFS. GX::new adds
+    // the GRAPHIX_MODPATH entries, or $XDG_DATA_HOME/graphix, only to the runtime's own
+    // chain (graphix-rt/src/gx.rs:251-266), and every LSP check replaces that chain
+    // with resolvers_for (gx.rs:799-802). So a module the CLI finds through
+    // GRAPHIX_MODPATH or the init directory (the book's "Shared Libraries" setup) gets
+    // a "module ... could not be found" error in the editor while `graphix --check`
+    // passes, and the root has no check left for hover to use. The field doc at line 92
+    // says the opposite, and the workspace roots pushed below only reach that same
+    // unused chain. A fix should keep the CLI's order, the file's directory before
+    // MODPATH (main.rs:423-430). probe:
+    // design/review-2026-10-05/repro/t-format-resolver-04.py (t-format-resolver-04)
     let base_resolvers = resolvers.clone();
     for root in roots {
         resolvers.push(FilesResolver::new(root, None));

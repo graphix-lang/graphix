@@ -37,6 +37,12 @@ pub struct TwinShape {
 
 const FIELDS: [&str; 3] = ["a", "b", "c"];
 
+// CR claude for eric: [doc-drift] The comment in this function says an overflow bottoms
+// on both twins alike, but unchecked i64 arithmetic wraps: `i64:9223372036854775807 +
+// i64:1` is `-9223372036854775808` in both engines. Twin fields also stay far from
+// overflow. The only invariant worth keeping is that both twins evaluate the identical
+// expression. The local `chance(rng, pct: usize)` at line 19 duplicates
+// `generate::chance(rng, p: f64)` in other units; use the shared one. (fuzz-gen-b-12)
 fn gen_update(rng: &mut Rng, field: &str, arg: &str) -> String {
     // both twins evaluate the identical expression, so an
     // overflow-to-bottom hits both sides alike
@@ -77,6 +83,15 @@ fn gen_select_body(
 
 /// Generate one twin module + its dispatch plan. `nfields` state
 /// fields, 2 or 3 twin routes, 1-3 dispatch epochs.
+// CR claude for eric: [test-gap] Every twin route writes the whole St with `*st <-
+// {..}` or a capture, through a `&St` parameter, a capture or a nested call. The main
+// generator's references (gen_ref_stmts in funcs.rs, exprs.rs:664) are `&v`, `&literal`
+// or `&(expr)` over scalars. So no generated program takes a place reference (`&s.f`,
+// `&t.0`, `&a[i]`, `&m{k}`, or a moving one with a dynamic key), whose writes patch the
+// root at delivery. References de-fuse, so a wrong path patch is the same in both
+// engines, and only an in-program invariant like this verdict can see it. Add a route
+// that writes field by field through `&sd.a` and `&sd.b` and joins the verdict, and
+// draw place references over visible composites in gen_ref_stmts. (fuzz-gen-b-07)
 pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     let nfields = 1 + rng.below(3);
     let fields: Vec<Field> = FIELDS[..nfields]

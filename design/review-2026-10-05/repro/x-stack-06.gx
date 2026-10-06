@@ -1,0 +1,50 @@
+// x-stack-06: json/toml write a List as its nested cons pairs, and their
+// own readers refuse that output for a List of 127+ (JSON) or 80+ (TOML)
+// elements.
+//
+// value_to_json (stdlib/graphix-package-json/src/lib.rs:98) and
+// value_to_toml (stdlib/graphix-package-toml/src/lib.rs:88) see a List as
+// the 2-slot arrays of graphix-types/src/list.rs and write one nesting
+// level per element. serde_json refuses input deeper than 128 levels, the
+// toml parser deeper than 80, so the round trip fails past those lengths.
+// hbs::render reuses value_to_json, so #each over a List walks the cons
+// cell (head, then the tail as one item).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-stack-06.gx
+//          (same output with --no-fusion)
+//
+// expected: every round trip "OK true" whatever the length; the writers
+// emit a List as a flat array; the template renders "<a><b><c>".
+//
+// observed (HEAD c722befe, debug build):
+//   ((126, "[0,[1,[2,[3,[4,[", "OK true"),
+//    (127, "[0,[1,[2,[3,[4,[", "ERR error:[\"JsonErr\", \"recursion limit exceeded at line 1 column 526\"]"),
+//    (79, "a = [0, [1, [2, ", "OK true"),
+//    (80, "a = [0, [1, [2, ", "ERR max recursion depth met"),
+//    "<a><[b, [c, []]]>")
+let json_rt = |n: i64| {
+  let l = list::init(n, |i| i);
+  let s = json::write_str(l)$;
+  let back: [List<i64>, Error<[`JsonErr(string), `InvalidCast(string)]>] = json::read(s);
+  (n, str::sub(#start: 0, #len: 16, s)$, select back { error as e => "ERR [e]", v => "OK [v == l]" })
+};
+let toml_rt = |n: i64| {
+  let l = list::init(n, |i| i);
+  let s = toml::write_str({a: l})$;
+  let back: [{a: List<i64>}, Error<[`TomlErr(string), `InvalidCast(string)]>] = toml::read(s);
+  let r = select back {
+    error as e => {
+      let m = "[e]";
+      select str::contains(#part: "max recursion depth met", m) {
+        true => "ERR max recursion depth met",
+        false => m
+      }
+    },
+    v => "OK [v.a == l]"
+  };
+  (n, str::sub(#start: 0, #len: 16, s)$, r)
+};
+let each = hbs::render(r"{{#each items}}<{{this}}>{{/each}}", {items: [<"a", "b", "c">]})$;
+let out = (json_rt(126), json_rt(127), toml_rt(79), toml_rt(80), each);
+sys::exit(sys::time::after_idle(duration:200.ms, out ~ 0));
+out

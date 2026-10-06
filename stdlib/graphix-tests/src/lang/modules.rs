@@ -343,6 +343,15 @@ let y = super::x + 1
 );
 
 // A gxi signature spells a type through a `use … as` alias.
+// CR claude for eric: [readability] The section comment at line 280 ("Resolution is a
+// pure function of (module, name)...") describes the finding1_* tests starting here,
+// but the module_check_* tests now sit between it and them. The names
+// finding1_sig_alias, finding1_private_type_in_body, finding1_imported_body_annotation
+// and finding1_private_type_union_member are a campaign finding number, and "aieka" in
+// the message at line 443 is a fleet host name. Move or delete the comment and name the
+// tests by what they pin (e.g. sig_type_through_use_alias, private_type_in_public_body,
+// imported_type_in_body, private_type_union_member). Drop "aieka" and update the pin
+// list in design/module_system.md:4-6. (tests-lang-c-10)
 run!(
     finding1_sig_alias,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
@@ -425,6 +434,16 @@ async fn use_in_value_position_is_compile_error() {
         "{i64:1; use array::iter}",
         "array::len(use array::iter)",
     ] {
+        // CR claude for eric: [test-gap] eval also returns Err when a program compiles
+        // and produces nothing for 5 s, so `is_err()` cannot tell the intended refusal
+        // from a `use` compiled to a bottom value again; `{let tag = never(); tag}`
+        // passes it. The same holds for use_value_soundness_witness_rejected and
+        // bottom_connect_target_witness_rejected below. Compile with compile_error
+        // (line 641) and match the message, as
+        // declaration_in_value_position_is_compile_error does: "a use declaration is
+        // not an expression" here and for the witness, and "a type definition is not an
+        // expression" and "cannot compute" for the two connect-target sources.
+        // (tests-lang-c-04)
         let r = eval(src, crate::TEST_REGISTER).await;
         assert!(
             r.is_err(),

@@ -1,0 +1,50 @@
+// c-lambda-01: a lambda two instance levels deep gets fresh cells for its
+// enclosing definitions' generic types.
+//
+// InstanceTypes::lambda (graphix-compiler/src/node/lambda.rs:455) pairs a
+// nested lambda's table with the enclosing instance's map alone. The table's
+// rows hold the definitions' own cells (outer's `d`, middle's signature), but
+// that map is keyed by cells already renamed through its own outer map, so an
+// instance of `inner` renames none of them and `instantiate_with` copies them
+// fresh. Two levels (no `middle`) are fine. DefTable::imaged (line 212) copies
+// `lambdas` unrenamed, so images carry the same rows.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-lambda-01.gx
+//   and the same with GRAPHIX_NO_SUBST=1 (every instance checks its body)
+//
+// expected (GRAPHIX_NO_SUBST=1 prints this; str::parse("1") at f64 is 1.0;
+// the first line is g's initial value):
+//   (false, false)
+//   (true, true)
+// observed (HEAD c722befe, debug build), interp and JIT, cold and warm image
+// alike (graphix-fuzz check: AGREE):
+//   (false, false)
+//   (false, true)
+// and, with RUST_LOG=warn --log-dir <dir>, the log holds: a run-time bind's
+// settle at str::parse(z) refused: the type '_N must be fully known here, a
+// type-directed operation reads it: annotate it
+//
+// With `inner(y)` in place of `g(y)` (a static instance): --check exits 0,
+// the run refuses at str::parse(z) with the same "must be fully known" error
+// (graphix-fuzz check: DIVERGENCE, the check accepted what the build
+// refused); GRAPHIX_NO_SUBST=1 prints (true, true). The same holds for a
+// local helper in an array::map callback in a generic function, and for
+// middle's own generic parameter in place of d.
+//
+// Arithmetic de-fuses instead: with
+//   let outer = |d, s| { let middle = |y| { let inner = |z| z * d + y;
+//     inner(s) }; middle(s) };
+//   #[native] (outer(3, 4), outer(1.5, 2.0))
+// the build refuses: #[native] expression did not fully fuse (arith operand
+// of non-scalar type TVar); GRAPHIX_NO_SUBST=1 prints (16, 5).
+let outer = |d, s: string| {
+  let middle = |y: string| {
+    let inner = |z: string| str::parse(z)$ == d;
+    let g = |z: string| false;
+    g <- inner;
+    g(y)
+  };
+  middle(s)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(outer(1.0, "1"), outer(7, "7"))

@@ -85,6 +85,19 @@ pub(crate) fn reserve_above(
     spans: IdSpans,
 ) -> Option<IdRelocation> {
     use std::sync::atomic::Ordering::Relaxed;
+    // CR claude for eric: [bug] A failed read has a side effect: this line lifts the
+    // process-wide minted counter to whatever minted extent the image's trailer claims,
+    // before the fit check below can refuse the block. IdCounts::decode
+    // (image/mod.rs:95) also accepts any floor and extent, so len (:55) can overflow
+    // too. With a corrupt trailer, the read panics in debug at :55, or the cold
+    // fallback mints ids near u64::MAX and writing the program image panics at :41.
+    // With an extent of 3*2^62 the fallback runs, but to_wire (:107) shifts the top bit
+    // out of its ids, so the program entry it writes never reads again and every later
+    // run is cold. This breaks the rule that an entry which fails to read leaves the
+    // session untouched and starts cold. Validate the counts before any counter moves
+    // (floor <= extent, reserved spans below MINT_BASE, minted extents well below
+    // 3*2^62, checked sum); probe: design/review-2026-10-05/repro/x-image-06.sh
+    // (x-image-06)
     minted.fetch_max(spans.minted.extent, Relaxed);
     let len = spans.len();
     if len == 0 {
@@ -170,6 +183,17 @@ macro_rules! image_id {
             /// typed value (e.g. a JIT'd kernel emitting `inner()` as a
             /// constant and reconstructing it on the other side). Do not
             /// use it to forge ids.
+            // CR claude for eric: [doc-drift] The doc above gives this function's use
+            // as a JIT kernel that emits `inner()` as a constant. No kernel does that,
+            // and one that did would break on a warm start: a record's machine code
+            // installs verbatim and only `Pack` relocates ids (kernels take ids through
+            // recipe constants such as `QopSite`'s `own_top`). The one caller is
+            // `synthesized_bind_ref` (graphix-compiler/src/node/bind.rs:527), which
+            // reads back the `#bind::N` path that `lower_trait_union` spells in the
+            // same compile (node/traits.rs:916-918). Cut the doc to that invariant: a
+            // raw id round-trips only within the compile that holds it, never through
+            // bytes an image keeps. Drop this `#[allow(dead_code)]` too: the method is
+            // used and the types are public. (t-expr-core-07)
             #[allow(dead_code)]
             pub fn from_inner(i: u64) -> Self {
                 $name(i)

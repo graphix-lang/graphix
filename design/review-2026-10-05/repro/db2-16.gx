@@ -1,0 +1,21 @@
+// db2-16: db::open is not idempotent: when its path re-fires with the same
+// value, the working handle is replaced by a lock error.
+//
+// DbOpenEv::eval (stdlib/graphix-package-db/src/tree.rs:264) calls sled::open
+// for every delivery; sled holds an exclusive lock on the database while any
+// handle lives, so a second open of a path this process has open fails. The
+// same for two db::open calls on one path, or two runtimes in one process.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/db2-16.gx
+// expected: db::open(p) yields a usable handle both times p fires
+// observed (HEAD c722befe, debug build): "abstract:" first, then
+//   error:["DbErr", "IO error: could not acquire lock on \".../p.db/db\":
+//   Os { code: 11, kind: WouldBlock, ... }"]
+let td = sys::fs::tempdir::create(null)$;
+let path = "[sys::fs::tempdir::path(td)]/p.db";
+let p = path;
+p <- sys::time::timer(duration:200.ms, false) ~ path;
+let db = db::open(p);
+println("db::open(p): [db]");
+sys::exit(sys::time::after_idle(duration:500.ms, db ~ 0));
+db

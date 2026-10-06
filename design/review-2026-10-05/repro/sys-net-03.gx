@@ -1,0 +1,41 @@
+// sys-net-03: an rpc server wedges forever once one call goes unanswered.
+//
+// PublishRpc answers calls strictly in order; dispatch sets `ready = false`
+// (stdlib/graphix-package-sys/src/net.rs:1176) and only a fire of `f` sets it
+// back (net.rs:1219). Here the first call's argument fails the cast to f's
+// parameter type, so `x` holds an InvalidCast error, `args.val` bottoms, `f`
+// never fires, and the later good call is queued and never dispatched
+// (net.rs:1206). The callers hang: netidx's client call has no timeout.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/sys-net-03.gx
+//          (the same with --no-fusion)
+// expected: bad call: <an error>; good call: 6
+// observed: bad call: no reply; good call: no reply
+// control: without the `let bad` and `b <- bad` lines it prints
+// "bad call: no reply; good call: 6".
+//
+// Other triggers, each observed to wedge the same way:
+// - a call that omits an argument, sys::net::call("/local/inc", null): the
+//   spec's defaults are never filled in, and `[]` fails the cast to
+//   {val: i64} ("struct size mismatch");
+// - a handler that throws, which rpc's type allows (`throws 'e`):
+//   #f: |args: {n: i64}| (i64:100 /? args.n)? called with {n: i64:0};
+// - a handler that bottoms for some input: #f: |args: {d: i64}| i64:100 /
+//   args.d called with {d: i64:0} (integer div0 bottoms).
+// GXDBG_RPC=1 shows "dispatch" for the first call, then every later call
+// "call queued (ready=false qlen=N)" with N growing.
+sys::net::rpc(
+  #path: "/local/inc",
+  #doc: "increment",
+  #spec: {val: {default: i64:0, doc: "the value"}},
+  #f: |args: {val: i64}| args.val + i64:1);
+let t = sys::time::timer(duration:300.ms, false);
+let bad: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call("/local/inc", {val: "abc"});
+let good: Result<i64, [`RpcError(string), `InvalidCast(string)]> = sys::net::call(t ~ "/local/inc", {val: i64:5});
+let b = "no reply";
+b <- bad ~ "[bad]";
+let g = "no reply";
+g <- good ~ "[good]";
+let deadline = sys::time::timer(duration:5.s, false);
+println(deadline ~ "bad call: [b]; good call: [g]");
+sys::exit(sys::time::after_idle(duration:100.ms, deadline ~ 0))

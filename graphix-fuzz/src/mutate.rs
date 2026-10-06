@@ -74,6 +74,14 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     e.map_children(&mut |c| replace_at(c, target, ctr, repl))
 }
 
+// CR claude for eric: [structure] binop_kind and try_swap_binop restate the BinOp table
+// (graphix-types/src/expr/binop.rs), once as strings and once as a variant list;
+// mustreject.rs in this crate already uses BinOp::of. An added or renamed operator is
+// no compile error here, and a typo in a class array panics at the unreachable!()
+// during a run. Make the classes &[BinOp], take the operator with BinOp::of(&e.kind)?,
+// pick from the class that holds it and build with BinOp::build, then delete
+// binop_kind; keeping each class's order keeps seeds replaying the same.
+// (x-expr-walks-07)
 fn binop_kind(name: &str, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
     use ExprKind::*;
     match name {
@@ -138,6 +146,14 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
         ExprKind::Constant(v) => v,
         _ => return None,
     };
+    // CR claude for eric: [test-gap] Edge perturbation covers only i64, u64, i32, u8,
+    // f64, f32 and bool, so the corpus's i8, i16, u16, u32, v32, v64, z32, z64 and
+    // duration literals never move in the fuzz lane. The generators' literal pools
+    // (generate/types.rs:131-155) carry most narrow-width edges themselves, but z32 and
+    // z64 have no MIN or MAX there and v64 no MAX, so those extremes reach no lane at
+    // all, and varints are the widths kernels carry as two-word opaque values. Add arms
+    // for every numeric width here (MIN, MAX, 0, 1, and -1 where signed), or add the
+    // missing edges to the pools. (fuzz-mutate-19)
     let nv = match v {
         Value::I64(_) => {
             Value::I64(*rng.pick(&[0, 1, -1, i64::MAX, i64::MIN, 2, 100, -100]))
@@ -375,6 +391,15 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
             };
         }
         1 => {
+            // CR claude for eric: [bug] Removing an epoch can drop the only epoch that
+            // carries an input, or the sole epoch of a one-epoch schedule (about a
+            // quarter of generated ones). The driver declares inputs from the epochs
+            // (Schedule::inputs), so the mutant reads an undeclared input and fails to
+            // compile the same way in every mode, which wastes the run. The doc above
+            // says epoch structure stays valid by construction, and reactive.rs:227-234
+            // re-adds a missing input for exactly this reason. Skip the removal when
+            // the epoch is the last one carrying some input. probe:
+            // design/review-2026-10-05/repro/fuzz-gen-b-10.gx (fuzz-gen-b-10)
             s.epochs.remove(rng.below(n));
         }
         // duplicate an epoch in place
@@ -428,6 +453,19 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
         }
         let mut arity = 0usize;
         e.for_each_child(&mut |_| arity += 1);
+        // CR claude for eric: [bug] AHasher::default() uses keys that ahash draws from
+        // getrandom once per process, so shape_stats gives the same shape a different
+        // signature in every process. In a soak, each work order's gen-batch child
+        // computes the signatures on its N lines, and run_aggregator's ring_sigs in the
+        // parent deduplicates them, so a shape from one order never matches the same
+        // shape from another. As a result the ring admits nearly every agreeing
+        // interesting mutant, becoming a FIFO of recent mutants rather than of novel
+        // shapes, and FuzzStats::novel counts almost all of them. Hash with fixed keys
+        // (ahash::RandomState::with_seeds(..).build_hasher()) so a child's signature
+        // means the same thing in the parent. probe:
+        // design/review-2026-10-05/repro/fuzz-mutate-03.sh (the same work order run
+        // twice prints the same program with two different signatures).
+        // (fuzz-mutate-03)
         let mut h = ahash::AHasher::default();
         std::mem::discriminant(&e.kind).hash(&mut h);
         arity.hash(&mut h);

@@ -413,6 +413,13 @@ pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option
     crate::stack::ensure_sufficient(|| node_const_value_inner(node))
 }
 
+// CR claude for eric: [perf] Variant and Struct nodes do not fold here. So a constant
+// map literal with a variant or struct key or value (`` {`A => 1, `B => 2} ``, `{"a" =>
+// {x: 1}}`, `` {"a" => `A} ``) is "non-constant" to emit_map_new_node, the only way a
+// map literal emits, and its whole region node-walks. `|k: i64| #[native] (k, {`A => 1,
+// `B => 2})` is refused with "map literal with non-constant entries", while the same
+// map with string keys fuses. Fold Variant (its tag, or `[tag, args..]`) and Struct
+// (`[[name, v]..]` in `names` order) the way their updates build them. (c-data-map-07)
 fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
@@ -713,6 +720,15 @@ fn expand_ref_d_inner<'a>(
     if let Some(k) = nkey
         && !frame.poisoned
     {
+        // CR claude for eric: [bug] This memo is keyed by `norm_key(typ)`, an
+        // allocation address, but `NodeEntry` does not keep `typ` alive. A typedef body
+        // built by `lookup_ref` (line 750) is recorded here and then dropped at line
+        // 754 once something under it expands. The next same-size instantiation in this
+        // resolve can get the freed address and take the first one's expansion.
+        // Example: with `type W<'a> = ['a, Inner]`, `[W<i64>, W<f64>]` freezes as
+        // Scalar(I64), and the runtime panics at kernel.rs:243 on an f64. Keep the
+        // key's owner in the entry, as `NormCx::memo` and `TypeMemo::by_id` do. probe:
+        // design/review-2026-10-05/repro/f-mod-lowering-01.gx (f-mod-lowering-01)
         cx.nodes.borrow_mut().insert(
             k,
             NodeEntry { deps: frame.deps, resolved: r.clone(), size: frame.size },
@@ -1224,6 +1240,18 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
             return;
         }
         for (i, formal_kt) in formal_slot_types_by_position.iter() {
+            // CR claude for eric: [bug] `i` is the formal's index among all formals
+            // (`by_position`, line 1091), but `arg_positional` counts positional
+            // arguments only, and labeled formals come first. For `|#k: i64, n: i64|`
+            // this reads `n`'s argument for `k` and finds nothing for `n`, so every
+            // self-recursive lambda with a labeled formal is refused with "a self-call
+            // passes a formal a value of another shape", and its calls never fuse. Look
+            // up labeled formals with `arg_named`, as `invariant_formals` does. Line
+            // 1066 skips an invariant fn formal only when it is positional, so a lambda
+            // with a labeled callback is refused with "not forwarded unchanged by its
+            // self-calls" even though it has no self-calls. probe:
+            // design/review-2026-10-05/repro/f-mod-lowering-06.gx (the #[native] fails;
+            // the positional twin prints (10, 7)). (f-mod-lowering-06)
             let Some(arg) = cs.arg_positional(*i) else {
                 ok = false;
                 return;

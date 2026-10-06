@@ -145,6 +145,19 @@ pub(crate) unsafe fn run(
     let (at, grain) = match loan.mode {
         ParMode::Off => unreachable!("an Off loan is filtered"),
         ParMode::Force => {
+            // CR claude for eric: [perf] Under #[parallel] the loaned mode is Force.
+            // For a callee's loop (no ROOT bit) this line keeps Force and drops only
+            // the grain, so cost::forced_grain(None, len) gives every slot a pool job
+            // of its own. That is GRAPHIX_PAR=force behaviour, while the node-walk runs
+            // a callee body under ForkFlags::body() (node/lambda.rs:754), which is the
+            // runtime's Auto: #[parallel] is meant to exclude callees (parallel_eval.md
+            // section 7 and section 10, CLAUDE.md). Two 1M-slot loops in a callee fork
+            // into 1M ranges each instead of Auto's 256, and the program takes 1.22 s
+            // instead of 0.32 s without the attribute (debug build, same results). Loan
+            // the callee-body mode next to the region's (ctx.fork_mode() under
+            // ctx.fork.body(): Off under #[serial] or past the depth limit, otherwise
+            // ctx.par) and use it for loops without the ROOT bit. probe:
+            // design/review-2026-10-05/repro/f-kernel-03.gx (f-kernel-03)
             let forced = if kind & ROOT != 0 { loan.forced } else { None };
             (0, Some(cost::forced_grain(forced, len)))
         }
@@ -154,6 +167,20 @@ pub(crate) unsafe fn run(
                     return unsafe { in_order(chunk, frame, len, find, out) };
                 };
                 let mut probes = Probes::new();
+                // CR claude for eric: [perf] Once its site has settled, each run times
+                // one slot, slot 0, as a one-slot chunk run. Every sample after the
+                // first four therefore carries the run's fixed costs (the loan swaps,
+                // with_qop_raises, the chunk's own buffer) and, after an idle gap, the
+                // cold start. The estimate inflates, and the first loop of a cycle
+                // looks costlier than an equally cheap later one. Probe:
+                // design/review-2026-10-05/repro/c-cost-misc-02.gx, a 100-slot init on
+                // a 2 ms timer, short enough that the bucket floor alone would not fork
+                // it: 1467-1479 of 1500 cycles forked at 8192 ticks a slot, with CPU at
+                // 1.3-1.8 s against 0.62 s under off. Two equally cheap loops in one
+                // cycle (150 and 170 slots, 20 ms timer) were estimated at 16384 and
+                // 2048 ticks a slot. Timing the probed slots as one run and recording
+                // elapsed / k would spread both costs across the slots.
+                // (c-cost-misc-02)
                 for i in 0..k {
                     let mut r = Run::new(i, i + 1);
                     let t0 = cost::ticks();
@@ -265,6 +292,14 @@ unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     match find {
         false => {
             let bufs = runs.iter().map(|r| r.out[2]);
+            // CR claude for eric: [perf] A forked chunk opens its value buf on a pool
+            // worker: emit/outline.rs:328-329 takes a VALUE_SHELLS box and an
+            // LPooled<Vec<Value>> from the worker's pools. This call gives both back to
+            // the invoking thread's pools. Nothing flows the other way, so the workers'
+            // pools drain and every forked chunk allocates a fresh box and Vec, while
+            // the invoking thread's pools sit at their caps and free the surplus. Hand
+            // each range a buf taken on the invoking thread before the fork, so take
+            // and give stay on one thread. (x-engine-collections-10)
             out[2] = unsafe { emit_helpers::value_bufs_finalize(bufs) };
         }
         true => {

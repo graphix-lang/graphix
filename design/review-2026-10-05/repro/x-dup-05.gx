@@ -1,0 +1,30 @@
+// x-dup-05: list::iter (and map::iter, list::iterq, map::iterq) never poll
+// the cooperative interrupt in their set_var loop; array::iter does.
+//
+// array::iter/iterq check ctx.interrupted() per element
+// (stdlib/graphix-package-array/src/lib.rs:538, 634); the list copies
+// (stdlib/graphix-package-list/src/lib.rs:565, 659) and the map copies
+// (stdlib/graphix-package-map/src/lib.rs:154, 269) do not, so an interrupt
+// (GXHandle::interrupt, Ctrl-C) that arrives during the loop waits for the
+// whole collection to be queued.
+//
+// command (from the repo root):
+//   GRAPHIX_PAR=off graphix --no-cache design/review-2026-10-05/repro/x-dup-05.gx
+//   and send SIGINT to it the moment it prints `built` (the iter loop starts
+//   right after that line, in the same cycle). Then the same with
+//   `let l = a;` and `array::iter(l)` in place of the two list calls.
+//
+// expected: `first` (the next cycle) prints within a few ms of the SIGINT,
+//   as it does for array::iter (observed 0.001 s): the loop stops at the
+//   next element.
+// observed (debug build, 2^22 elements): `first` prints 0.23 s after the
+//   SIGINT, exactly as long as without one: the whole loop ran.
+let rec dbl = |a: Array<i64>, k: i64| -> Array<i64> select k {
+  0 => a,
+  k => dbl(array::concat(a, a), k - 1)
+};
+let a = dbl([1], 22);
+let l = list::from_array(a);
+println(l ~ "built");
+println(once(list::iter(l)) ~ "first");
+null

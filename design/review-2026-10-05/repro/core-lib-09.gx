@@ -1,0 +1,22 @@
+// core-lib-09: print and println are declared Sync (printfn! in
+// stdlib/graphix-package-core/src/lib.rs) while dbg and log, the same shape,
+// are Stateless(None); design/strict_fusion.md lists print among the effects
+// kept Stateless(None) so that a tail loop reaching one stays one activation.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-lib-09.gx
+//
+// expected: accepted; prints 3, 2, 1 and the value 6, as it does with dbg or
+//   log in place of println.
+// observed (HEAD c722befe): refused, "#[tail_recursive]: this function's body
+//   is stateful or async (...)"; print is refused the same way. Without the
+//   assertion the loop runs, keeping one activation per iteration.
+#[tail_recursive]
+let rec f = |n: i64, acc: i64| -> i64 select n {
+    0 => acc,
+    _ => {
+        println(#dest: `Stderr, n);
+        f(n - 1, acc + n)
+    }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(3, 0)

@@ -1,0 +1,23 @@
+// sys-net-05: a write whose path arrives after its value delivers the value twice.
+//
+// The constant 7 fires at init while the path (read from a subscription) is
+// still bottom, so Write queues it. When the path arrives, Write::update drains
+// the queue into the new Dval (stdlib/graphix-package-sys/src/net.rs:151-155)
+// and then writes the standing value again (net.rs:158-161): the publisher's
+// on_write runs twice for one value event.
+//
+// run: graphix --no-cache design/review-2026-10-05/repro/sys-net-05.gx
+// expected (one write, as when the path is known at init):
+//   []
+//   [7]
+// observed (node-walk and JIT alike):
+//   []
+//   [7]
+//   [7, 7]
+let log: Array<i64> = [];
+sys::net::publish("/local/dw_target", "/local/dw");
+sys::net::publish(#on_write: |v: i64| log <- v ~ array::push(log, v), "/local/dw", i64:0);
+let p: string = sys::net::subscribe("/local/dw_target")$;
+sys::net::write(p, i64:7);
+sys::exit(sys::time::after_idle(duration:1.0s, 0));
+log

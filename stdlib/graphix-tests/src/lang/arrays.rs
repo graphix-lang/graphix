@@ -227,6 +227,19 @@ const ARRAY_INDEXING6: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
+// CR claude for eric: [doc-drift] The 'ASPIRE: Jit' comment above, like every one in
+// this unit's files, sits over a fixture that already asserts FuseExpect::Jit, and most
+// of them are wrong. Eight of these bodies fuse whole today (graphix-fuzz run shows
+// only the module statements failing): arrays.rs 292, 421, 453 and 459, errors.rs:20,
+// maps.rs:195, tuples_structs.rs:371 and variants.rs:39. So does list_pat_shapes, whose
+// comment at lists.rs:55 says the select de-fuses. The rest stop at iter, group, uniq,
+// any or a connect, which strict fusion never fuses (this one, arrays.rs:346, basics.rs
+// 174 and 189, errors.rs:105, tuples_structs.rs 244 and 277), or at a different blocker
+// from the one named: tuples_structs.rs 64 and 139 stop at a destructuring let and 80
+// at a string literal pattern, and none of them calls a lambda; maps.rs:177 stops at a
+// map literal with non-constant entries. Delete these comments and the `+?` clause of
+// basics.rs:225-226 (wrap_overflow has no checked operator); functions.rs, select.rs
+// and types.rs have the same stale lines. (tests-lang-d-12)
 run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
     Ok(Value::Array(a))
         if &a[..]
@@ -407,6 +420,13 @@ const FOLD_OVER_OVERSIZE_INIT_BOTTOMS: &str = r#"
 }
 "#;
 
+// CR claude for eric: [test-gap] run! stops at the first update, which is 1 (from n =
+// 0). The comment above is about the second cycle, where the oversize init must bottom
+// the fold. With n = [0, 1] the program emits 1 then 2 and this predicate still passes.
+// So an oversize init that yields [] or a truncated array instead of bottom would go
+// unnoticed, and nothing else pins it: init_runaway_local_bottom discards the init's
+// value. Collect every delivery with run_delta (dense_deltas.rs) and expect exactly [1]
+// in both modes. (tests-lang-d-09)
 run!(fold_over_oversize_init_bottoms, FOLD_OVER_OVERSIZE_INIT_BOTTOMS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);

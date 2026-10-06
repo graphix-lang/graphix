@@ -1,0 +1,22 @@
+// x-image-12: materialize registers a failed lazy decode's references
+// (callsite.rs:1848 calls apply_deferred before `decoded?`).
+// command (debug build, a fresh XDG_CACHE_HOME):
+//   graphix -n --no-fusion x-image-12.gx   (cold: writes the program entry)
+//   flip the LAST byte of the program entry's heap, which holds f's one
+//   instance: its body decodes, its lexical env does not. heap_at is the
+//   first big-endian u64 after "GXIM", the format byte and the ISA string;
+//   the log line "registration image: .. heap 121 .." gives its length.
+//   GRAPHIX_DBG_VARS=1 RUST_LOG=warn graphix -n --no-fusion --log-dir L x-image-12.gx
+// expected: the warning "decoding the instance of f(1) .. resolving it
+//   afresh" and 14 REF_VAR lines for the root statement, as a clean warm
+//   run has (the fresh instance's a, y and x among them).
+// observed: 17: the dropped partial body's a and y (image ids, never
+//   released) and a second registration of x, beside the fresh instance's.
+//   Prints 2 either way.
+let x = 0;
+let f = |a| {
+  let y = a + x;
+  y * 2
+};
+println(f(1));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

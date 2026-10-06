@@ -1,5 +1,13 @@
 # Parallel and incremental compilation
 
+<!-- CR claude for eric: [doc-drift] The `parallel-compile` branch is merged into main,
+and this doc's own sections mark module checks, fusion tasks, compile tasks and
+instances by substitution BUILT. Yet this Status line says 'partly BUILT on branch' and
+'the phases and the caches are the plan', two later lines say 'BUILT on the branch', and
+design/README.md indexes the doc as 'the plan for instances and module bodies'. A reader
+of the index concludes that substitution and parallel module checks are proposals. The
+Status line should say what is built on main and what is open: the audits as fuzz
+findings, the instance cache and the per-unit image caches. (x-doc-drift-06) -->
 Status: partly BUILT on branch `parallel-compile` (2026-09-29): parallel
 code generation, the compile context split from the runtime, statement
 elaboration in parallel compile tasks, and instances typed by

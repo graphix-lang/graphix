@@ -266,6 +266,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Prefer this over `helper()` + `ins().call()`: cranelift's
     /// verifier rejects a mismatched call as a whole-function failure,
     /// so the region would silently node-walk instead of failing a test.
+    // CR claude for eric: [doc-drift] This note is stale: a mismatched call does not
+    // make the region node-walk. cranelift's verifier is on by default, a verifier
+    // error fails the link, and a failed link panics (jit.rs:1187). What call_helper
+    // actually adds is the debug assert that names the helper at emission. Dozens of
+    // direct helper() + ins().call() sites skip that assert (e.g. body.rs:485-490,
+    // call.rs:440-441). Separately, design/distributed_jit.md:163-169 (contract 3) says
+    // the first-call word is shared across loop iterations. In a loop the word belongs
+    // to the slot (emit_callee_context_word, call.rs:338-347), as
+    // kernel_instance_state.md and CLAUDE.md say. (f-scaffold-body-09)
     pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
         let f = self.helper(name)?;
         debug_assert_eq!(
@@ -300,6 +309,17 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         match word {
             None => init,
             Some(SelWord::Sure(addr)) => first(self, addr),
+            // CR claude for eric: [structure] This null-guarded diamond (branch on base
+            // != 0, compute from addr, merge with a fallback) is written out six times:
+            // here, open_slot_tables (body.rs:428-450), emit_slot_truncates
+            // (body.rs:580-618, no result), SlotFlags::new (scaffold.rs:484-497),
+            // SlotFlags::guarded_exact_stale (scaffold.rs:548-574) and emit_site_block
+            // (call.rs:543-560). One SelWord method would replace them: for Sure it
+            // runs f on the address, for Guarded it builds the diamond with a fallback
+            // value. With a unit form for the truncate walk, each site becomes one
+            // call. guarded_exact_stale fits because its conservative arm is pure and
+            // can be computed first as the fallback, and a TruncAnchor maps onto a
+            // SelWord. (f-scaffold-body-06)
             Some(SelWord::Guarded { base, addr }) => {
                 let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
                 let word_bl = self.b.create_block();
@@ -887,6 +907,14 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 /// pending flag, drop the in-flight owned set, and jump to
 /// `pending_exit` (so `FusedKernel::update` returns `None`). Terminates the
 /// block.
+// CR claude for eric: [doc-drift] This is the kernel's abort path (an interrupt at a
+// loop head, or a forked loop's abort), not a bottom. FusedKernel::update sees
+// KERNEL_ABORT, discards the out words and rides its resident (kernel.rs:460), as the
+// node-walk's interrupted dispatch does (node/lambda.rs:747). The doc above ('bottom
+// the kernel ... so FusedKernel::update returns None', when update returns a &TagValue)
+// and lower.rs:195 ('A wedged native loop aborts to bottom on interrupt') both say
+// otherwise. Rename it emit_kernel_abort, which is what body.rs:142 already calls it,
+// and fix both comments. (f-kernel-09)
 pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
     let pending_set = cx.helper("graphix_abort_set")?;
     let exit = pending_exit_block(cx.b, cx.ctx);

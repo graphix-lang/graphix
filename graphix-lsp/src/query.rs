@@ -142,6 +142,14 @@ impl<'a> Query<'a> {
     /// The target under the cursor and the name it is written by.
     fn target(&self) -> Option<(Target, CompactString)> {
         let Checked { env, ide } = self.checked;
+        // CR claude for eric: [bug] `on` takes a reference or a type reference when the
+        // cursor is on any segment of its written path, and the caller answers with the
+        // item, so on `util` in `util::bump` hover shows `util::bump: fn(n: i64) ->
+        // i64`, definition goes to `let bump` and references lists bump's uses; a type
+        // path does the same. A non-final segment should answer `Target::Module` for
+        // its prefix, as use_segments does for a `use` item, and references on `mod
+        // util` miss these segments today. probe:
+        // design/review-2026-10-05/repro/lsp-11.py (lsp-11)
         let on = |ori: &Origin, pos: SourcePosition, name: &ModPath| {
             let written = format_compact!("{name}");
             let hit = in_file(ori, self.file)

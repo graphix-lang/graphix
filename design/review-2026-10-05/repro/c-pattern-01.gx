@@ -1,0 +1,41 @@
+// c-pattern-01: slice rest, all@ and element binds are typed narrower
+// than the scrutinee's element type.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/c-pattern-01.gx
+//          (or graphix --no-cache FILE, and the same with --no-fusion)
+//
+// infer_slice (graphix-types/src/expr/pattern.rs:201) types `[0, rest..]`
+// as Array<i64>, from the literal alone. The select's narrowing never
+// widens that to the scrutinee's Array<[i64, null]>, so bind_captures
+// types `rest` Array<i64>. At run time the arm tests only Array<Any>
+// (GXDBG_SHALLOW=1 prints "SHALLOW Array<i64> => Array<Any>"), so the
+// null reaches `a + x` with x: i64.
+//
+// expected: refused by the check, as it is when rest is typed from the
+//   scrutinee: `|rest: Array<[i64, null]>| array::fold(rest, 0, |a, x|
+//   a + x)` gives "cannot compute i64 + [i64, null]".
+// observed: --check passes; DIVERGENCE, interp Trace([]) (logs "can't
+//   add null"), jit Trace([0:i64:12]) (the null read as 0).
+//
+// Other witnesses, all passing --check:
+// - `w@ [1, ..]` types w Array<i64>; `[<1, t..>]` over List<[i64, null]>
+//   types t List<i64>; `[h.., "end"]` over Array<[string, i64]> types h
+//   Array<string>. A fold over each diverges (jit 5, 12, 3; interp
+//   nothing).
+// - `[1, x]` over Array<[i64, string, f64]> types x [i64, f64], so
+//   `select x { i64 as n => "i", f64 as d => "d" }` passes as
+//   exhaustive and f([1, "q"]) prints nothing in either engine.
+// - `type Tok = [`Open, `Close, `Num(i64)]`: `[`Open, rest..]` types
+//   rest Array<`Open>, so `select rest { [t, ..] => select t { `Open =>
+//   "open" }, [] => "empty" }` passes, and [`Open, `Num(3), `Close]
+//   prints nothing in either engine. The natural `select rest {
+//   [`Num(n), ..] => n, _ => 0 }` is refused: "pattern Array<`Num(..)>
+//   will never match Array<`Open>, unused match cases".
+// - Over [Array<[i64, null]>, `A(i64)] the arm is tested deeply, and
+//   `[0, rest..]` does not match [0, 5, null, 7] (gives -1): whether
+//   the arm matches depends on the scrutinee's static type.
+let f = |xs: Array<[i64, null]>| select xs {
+  [0, rest..] => array::fold(rest, 0, |a, x| a + x),
+  _ => 0 - 1
+};
+f([0, 5, null, 7])

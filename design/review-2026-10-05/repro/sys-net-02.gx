@@ -1,0 +1,38 @@
+// sys-net-02: a write that fails on_write's cast reaches the callback as an
+// InvalidCast error value; the JIT panics and the runtime dies.
+//
+// Publish::update (stdlib/graphix-package-sys/src/net.rs:807-812) casts each
+// written value to the on_write parameter type and stores the result in the
+// parameter unconditionally. When the cast fails, cast_value returns the
+// `InvalidCast` error value, so a parameter typed i64 (annotated or inferred)
+// holds an error. The program passes --check.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/sys-net-02.gx
+//          RUST_LOG=warn graphix --no-cache --no-fusion design/review-2026-10-05/repro/sys-net-02.gx
+//
+// expected: the write is refused (the writer is answered with the cast
+//   error); x stays 0, nothing but an i64 reaches `y`; prints 0, 0, exits 0.
+//
+// observed (JIT, the default):
+//   0
+//   0
+//   error:["InvalidCast", "can't cast \"abc\" to i64: no primitive conversion"]
+//   panicked at graphix-compiler/src/fusion/kernel.rs:243:13: kernel param `x`:
+//     runtime Error(.. InvalidCast ..) does not match the compiled Scalar(I64) slot
+//   Error: graphix runtime is dead            (exit 1)
+// observed (--no-fusion): the same three lines, then
+//   arith error .. line: 38 .. "can't add error types"   (x * 2 bottoms, exit 0)
+//
+// The writer need not be the program: with the two write lines removed, the
+// same crash follows when another process on the machine-local resolver runs
+// `sys::net::write("/local/review-sys-net-02/ow", t ~ "abc")`.
+// graphix-fuzz check says AGREE only because its run ends before the timed
+// write lands (every mode traces just the initial 0).
+let x = i64:0;
+sys::net::publish(#on_write: |v: i64| x <- v, "/local/review-sys-net-02/ow", x);
+let t = sys::time::timer(duration:200.ms, false);
+sys::net::write("/local/review-sys-net-02/ow", t ~ "abc");
+sys::exit(sys::time::after_idle(duration:500.ms, t ~ 0));
+let y: i64 = x;
+println(y);
+x * i64:2

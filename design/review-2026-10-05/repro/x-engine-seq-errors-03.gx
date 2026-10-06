@@ -1,0 +1,45 @@
+// x-engine-seq-errors-03: a trait method passed by name as a collection
+// callback produces nothing when the prototype's call is lowered (a core
+// trait, or a user trait over a union element type).
+//
+// graphix = a debug build of HEAD c722befe. From the repo root:
+//   graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-engine-seq-errors-03.gx
+//   graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-03.gx
+//
+// expected, both engines (lines in any order):
+//   1 core lambda: ["1", "2"]
+//   2 core value: ["1", "2"]
+//   3 union lambda: ["A1", "Bx"]
+//   4 union value: ["A1", "Bx"]
+//   5 forwarded: ["1", "2"]
+// observed, --no-fusion:
+//   1 core lambda: ["1", "2"]
+//   3 union lambda: ["A1", "Bx"]
+// observed, default (JIT): the two lines above and
+//   5 forwarded: ["1", "2"]
+// `--check` exits 0 and nothing is logged; GXDBG_SLOT=1 shows every slot
+// of 2 and 4 (and of 5 in the node-walk) producing bottom.
+//
+// 2, 4: resolve_trait_call lowers the prototype (lower_core_call,
+// lower_trait_union), so CallKind::slot returns Slot(None) and each slot
+// calls through the callback parameter, bound to the dispatcher, which
+// never holds a value. array::fold(.., Eq::eq), array::init(3,
+// Display::fmt) and list::map(.., Display::fmt) behave the same.
+// 5: the prototype's instance of |x| f(x) is elaborated while f is in
+// trait_methods; a slot's instance is built at run time, after
+// unregister_fn_params removed f, so its f(x) calls f's absent value. The
+// JIT's slots take the prototype's fused kernel. graphix-fuzz check on
+// line 5 alone: DIVERGENCE, interp Trace([]) vs jit Trace([0:["1", "2"]]).
+trait Show { val show: fn(self) -> string };
+type A = Abstract<i64>;
+type B = Abstract<string>;
+impl Show for A { let show = |a| "A[a.0]" };
+impl Show for B { let show = |b| "B[b.0]" };
+let ys: Array<[A, B]> = [A(1), B("x")];
+let app = |f: fn(x: i64) -> string, xs: Array<i64>| array::map(xs, |x| f(x));
+println("1 core lambda: [array::map([1, 2], |x| Display::fmt(x))]");
+println("2 core value: [array::map([1, 2], Display::fmt)]");
+println("3 union lambda: [array::map(ys, |y| Show::show(y))]");
+println("4 union value: [array::map(ys, Show::show)]");
+println("5 forwarded: [app(Display::fmt, [1, 2])]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

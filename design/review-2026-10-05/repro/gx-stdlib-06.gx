@@ -1,0 +1,30 @@
+// gx-stdlib-06: sum/product/divide over an array that becomes empty keep
+// reporting the previous total.
+//
+// SumEv/ProductEv/DivideEv::eval (stdlib/graphix-package-core/src/lib.rs
+// 1284, 1310, 1336) fold the flattened arguments from None, so an argument
+// list that flattens to nothing returns None, and CachedArgs::update_inner
+// (lib.rs:779) answers a fired None with `last_result.ride()`: the previous
+// total is re-delivered STALE as a valid value. A sum over an array that
+// starts empty is the phantom (bottom), so the whole tuple is bottom.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/gx-stdlib-06.gx
+//          (the same with --no-fusion and GRAPHIX_PAR=force;
+//          graphix-fuzz check: AGREE, every engine and image mode agrees)
+//
+// expected (dense_delivery.md R1: the resident is the function of the
+//   current inputs; organic firing: a fired input fires the node): the
+//   rows for [] never carry the previous totals; sum([]) and product([])
+//   are their identities (0, 1) or a bottom/error, divide([]) an error or
+//   bottom as mean's MeanError, and the first row is not withheld because
+//   the first array is empty.
+// observed (HEAD c722befe, debug build, every mode):
+//   (2, 10, 16, 4)
+//   (0, 10, 16, 4)
+//   (1, 6, 6, 6)
+//   (0, 6, 6, 6)
+//   The first [] prints nothing (sum/product/divide are bottom), each later
+//   [] pairs length 0 with the totals of the array before it.
+let xs = array::iter([[], [8, 2], [], [6], []]);
+sys::exit(sys::time::after_idle(duration:100.ms, xs ~ 0));
+(array::len(xs), sum(xs), product(xs), divide(xs))

@@ -217,6 +217,15 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     for _ in 0..n_epochs {
         let mut ep = Vec::new();
         for (name, ty) in &inputs {
+            // CR claude for eric: [test-gap] in0 is always pushed because `ep` is still
+            // empty when it is drawn, so every epoch injects in0 and in1 never fires
+            // without it. mutate_schedule never changes an epoch's set of inputs, so
+            // mutants cannot make an in1-only epoch either: `gen 2000 11 --reactive`
+            // has 0 of 3239 epochs in its two-input programs. So `abort(in1)` or
+            // `flush(in1)` on a ceremony driven by in0, and anything triggered or
+            // accumulated on in1, never runs while in0 holds still. Pick a random
+            // anchor input per epoch and include each other input at 70%.
+            // (fuzz-gen-b-08)
             if !ep.is_empty() && !chance(rng, 0.7) {
                 continue;
             }
@@ -441,6 +450,14 @@ fn sample_chain(
 /// parity, so epochs flip which arm is live, and the `once(...)` arm is
 /// async, which keeps the select on the node-walk. The live arm's
 /// builtin variant carries a per-epoch bottoming arg.
+// CR claude for eric: [doc-drift] The doc says the `once(..)` arm is async, but
+// `core_once` is `Effect::Sync` (stdlib/graphix-package-core/src/lib.rs:1056). The
+// select node-walks because a Sync builtin does not fuse, and the arm exercises once's
+// restart in its own sleep(), not an async output cleared on sleep. Line 499 says the
+// select fires on "its fires_per_injection-arm epochs"; it means the live arm's epochs.
+// In nested_connect the mark/truncate pair (lines 296 and 302) brackets no push and
+// does nothing. The format strings at lines 300, 551 and 556 put 10-space runs into
+// every generated program. (fuzz-gen-b-11)
 fn slept_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -547,6 +564,18 @@ fn dyn_reload(
     let srcs_name = ctx.fresh();
     stmts.push(format!("let {srcs_name} = [{}]", srcs.join(", ")));
     let status = ctx.fresh();
+    // CR claude for eric: [bug] `sandbox whitelist [core]` leaves out the array, str
+    // and map packages. So every block source built above fails to load with
+    // `array::len not defined` (about half of all sources; each one calls array::len),
+    // and so does any organic body that draws str::len or map::len. The select below
+    // then takes its `i64:-1` arm, and a reload swap never tears down a loaded body
+    // with live statements: in `graphix-fuzz gen 3000 31 --reactive` none of the 245
+    // block sources can load. Whitelist what the bodies reach: `[core, array, str,
+    // map]`. A loaded body is never fused (graphix-compiler/src/node/module.rs:1110),
+    // so the module-body kernel that the block branch's comment promises will not exist
+    // even after the fix; gen_dynamic_module's broad `[core, array, str]` likewise
+    // refuses bodies that draw map::, list:: or re::. probe:
+    // design/review-2026-10-05/repro/fuzz-gen-b-03.gx (fuzz-gen-b-03)
     stmts.push(format!(
         "let {status} = mod {dname} dynamic {{ sandbox whitelist [core];          sig {{ val f: fn(x: i64) -> i64 }};          source {srcs_name}[{iname} % i64:{n_srcs}]$ }}"
     ));
@@ -768,6 +797,17 @@ fn ceremony(
         head.push_str(&format!("; flush({})", run_event(ctx, stmts, &mut body, rng)));
     }
     let done = ctx.fresh();
+    // CR claude for eric: [test-gap] This is the generator's only seq: a top-level `let
+    // vN = seq|seqq <input or burst>[; abort(..)][; flush(..)] { .. }`. It never draws
+    // `seq let pat = trigger`, a triggerless `seq { .. }`, a seq inside a lambda
+    // (per-instance machines in imaged instance bodies) or a seq inside a select arm
+    // (the reset on the arm's sleep). No step calls a function that writes a variable
+    // or reads through a reference: `h` and `bad` are pure and no `&T` is in scope
+    // here. These shapes reach the soak only through mutated fixtures: `graphix-fuzz
+    // gen 2000 11 --reactive` has 413 programs with a seq and none of these shapes.
+    // Draw `seq let`, a writing callee (`|v: i64| -> i64 { acc <- v; v }`) followed by
+    // a step that reads acc, a `*r` step, and the ceremony inside a lambda and inside a
+    // parity-keyed arm. (fuzz-gen-b-04)
     stmts.push(format!(
         "let {done} = {} {head} {{ {} }}",
         if queued { "seqq" } else { "seq" },

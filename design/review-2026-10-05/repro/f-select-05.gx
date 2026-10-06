@@ -1,0 +1,23 @@
+// f-select-05: a whole-value bind de-fuses its select. A catch-all
+// `x =>` over a variant, array, tuple, struct or string scrutinee
+// refuses (graphix-compiler/src/fusion/emit/select.rs:1553), as does
+// `x@` on a tuple (:405), struct (:517), variant (:1592) or list
+// (:1133, :1139). `all@ [x, ..]` over an array already lowers its
+// capture as Subslice{0, 0}, a whole-array owned clone.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/f-select-05.gx
+//   expected: every select fuses, like the control `c`.
+//   observed: values agree; fusion lists "non-scalar scrutinee bind
+//     pattern not yet lowerable" (g, h), "whole-tuple @ binding not
+//     lowerable" (t) and "whole-struct @ binding not lowerable" (s);
+//     nothing names c, whose `all@ [x, ..]` binds the same whole array.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:0
+{
+  let g = |v: [`A, `B(i64)]| select v { `A => i64:0, other => select other { `B(n) => n } };
+  let h = |a: Array<i64>| select a { [] => i64:0, all => array::len(all) };
+  let c = |a: Array<i64>| select a { [] => i64:0, all@ [x, ..] => x + array::len(all) };
+  let t = |p: (i64, i64)| select p { all@ (x, y) => x + y + all.0 };
+  let s = |p: {x: i64, y: i64}| select p { all@ {x, y} => x + y + all.x };
+  let v: [`A, `B(i64)] = select in0 { i64:0 => `A, n => `B(n) };
+  g(v) + h([in0, in0]) + c([in0]) + t((in0, in0)) + s({x: in0, y: in0})
+}

@@ -73,6 +73,14 @@ pub fn set_stack_budget(bytes: usize) {
 /// the one exit for both the node-walk and the kernel stack check.
 #[doc(hidden)]
 pub fn budget_abort() {
+    // CR claude for eric: [bug] A budget abort is reported only here, and the shell
+    // writes the log only under --log-dir with RUST_LOG set. The user sees "Error:
+    // runtime did not respond" (graphix-rt/src/lib.rs:681, a request pending when the
+    // run loop stopped) or "Error: graphix runtime is dead"
+    // (graphix-shell/src/lib.rs:472), exit 1, and nothing in the shell reads
+    // GXHandle::budget_aborted. Those errors should name the stack budget when
+    // control.budget_aborted() is set. probe: GRAPHIX_STACK_BUDGET=64M graphix
+    // --no-cache --no-fusion design/review-2026-10-05/repro/t-misc-05.gx (t-misc-05)
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
          (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
@@ -100,6 +108,18 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 /// Whether one more segment would put the runtime running on this
 /// thread over its budget.
 #[doc(hidden)]
+// CR claude for eric: [bug] What this charges depends on the thread and the fork
+// schedule, not on the program. The serial cycle runs on a 2 MB tokio worker and pays a
+// 32 MB segment after about 1 MB of recursion; a forked part runs on a 16 MB eval-pool
+// stack and pays nothing until about 15 MB; and parts running at the same time add up
+// on the Control. So GRAPHIX_PAR, GRAPHIX_EVAL_THREADS and auto-mode timing change
+// which programs the budget stops, in both directions. Under 16M, f(1000) aborts
+// serially and finishes forced. Under 64M, a 4-slot map of f(15000) finishes serially
+// and aborts forced, and a timer-driven copy in the default auto mode dies at cycle 5-7
+// once the cost model forks it. Summing is the per-cycle rule (parallel_eval.md §13),
+// but the stack-size difference is not, and graphix-fuzz check_par has no containment
+// exemption like check_verdict's, so it records either direction as a parallel
+// evaluation bug. probe: design/review-2026-10-05/repro/t-misc-01.sh (t-misc-01)
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
         // SAFETY: see `current_control`.
@@ -328,6 +348,13 @@ impl Control {
         self.stack_budget.store(bytes, Ordering::Relaxed)
     }
 
+    // CR claude for eric: [doc-drift] The interrupt is cleared when the next cycle
+    // starts (graphix-rt/src/gx.rs:495), not at the end of this one, so an interrupt
+    // sent while the runtime is idle is dropped. stack_budget's doc (lines 321-322)
+    // makes the budget per thread, but grow_exceeds_budget (line 103) charges every
+    // thread of a cycle to the one Control. DEFAULT_BUDGET's doc (line 22) links
+    // crate::Control, which graphix-types does not have; the type is
+    // crate::stack::Control. (t-misc-09)
     /// Request that in-flight loops abort this cycle; cleared at the
     /// end of the cycle.
     pub fn interrupt(&self) {
@@ -393,6 +420,21 @@ pub struct InterruptScope {
 }
 
 impl InterruptScope {
+    // CR claude for eric: [risk] This fn is safe, but InterruptScope has no lifetime,
+    // so safe code can free the Control while CURRENT still points at it in three ways:
+    // return the scope past its control, mem::forget the scope, or drop two nested
+    // scopes out of order (the inner one then restores a pointer to the outer's
+    // control). After that, interrupted(), record_self_blocks and the stack guard in
+    // ensure_sufficient (every deep parse, compile, print or drop on that thread) read
+    // and write freed memory. The probe shows record_self_blocks and one deep recursion
+    // writing 0x5eed and the Abort|Budget bits into an unrelated live Vec. The six
+    // in-tree uses are scope-shaped and correct today. A PhantomData<&'a Control> would
+    // still compile the forget and out-of-order cases; a closure form such as
+    // InterruptScope::with(control, || ..), restoring through an internal guard so an
+    // unwind also restores, closes all three. probe:
+    // design/review-2026-10-05/repro/t-misc-03.rs (copy to
+    // graphix-types/tests/review_t_misc_03.rs, then cargo test -p graphix-types --test
+    // review_t_misc_03). (t-misc-03)
     pub fn new(control: &Control) -> Self {
         let prev = CURRENT.with(|c| c.replace(control as *const Control));
         Self { prev }

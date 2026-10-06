@@ -3,6 +3,14 @@
 //! through `TuiTestHarness`, so a ratatui panic on default inputs
 //! surfaces here. Content assertions only where output is stable.
 
+// CR claude for eric: [test-gap] The module doc above promises a smoke test for every
+// widget, but tui::form and tui::browser have none. form has real key handling:
+// Tab/Down and BackTab/Up move focus, Enter calls on_submit with every field in order,
+// Esc calls on_cancel, and a new fields delivery re-seeds. Only netidx-admin's tui
+// tests reach it, and this repo's gate does not run them. Add a form test through
+// TuiTestHarness (type into two fields, Tab, Enter, assert on_submit's values, Esc
+// calls on_cancel) and a browser smoke test over the internal netidx, or narrow the
+// doc. (tests-ui-17)
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
@@ -495,6 +503,16 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
     Ok(())
 }
 
+// CR claude for eric: [test-gap] No test in this crate or in stdlib/graphix-tests runs
+// tui::browser or tui::form (the book's browser examples are only compile-checked by
+// graphix-shell/tests/examples_compile.rs), and both line_edit tests type ASCII only.
+// Confirmed bugs in all three pass cargo test: #selected_path never fires without
+// #selected_row, which is browser_basic.gx's shape (gx-ui-03); a re-seed after Tab
+// keeps the old focus (gx-ui-04); an empty form stalls its input_handler (gx-ui-11);
+// line_edit steps by bytes on "héé" and masks "é" as "**" (collections-str-07); repros
+// under design/review-2026-10-05/repro/. Pin them here with TuiTestHarness: a browser
+// with only #selected_path, a form re-seed after Tab, Enter and Esc, an empty form
+// answering keys, and line_edit editing and masking a non-ASCII value. (gx-ui.r2-09)
 #[tokio::test]
 async fn line_edit_types_moves_and_deletes() -> Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent};

@@ -206,6 +206,16 @@ fn feature_report(progs: &[String], ok: &[bool]) {
         ("variant", "`"),
         ("connect", "<-"),
         ("cast", "cast<"),
+        // CR claude for eric: [test-gap] `&` also matches the `&&` operator: in `gen
+        // 2000 7`, 842 programs contain `&` but only 620 contain a reference, so this
+        // row overstates ref coverage. FEATURES is shared by gen-check and
+        // reactive-check. So every gen-check run reports `reactive` as absent ("arm not
+        // firing?"), and every reactive-check run does the same for the seven
+        // static-only rows (trait-union-call, bounded-hof-call,
+        // collection-generic-call, use-super, use-main, path-super, path-package),
+        // which means the warning fires on every run. `modules` (`mod `) counts only
+        // dynamic modules. Use a pattern that excludes `&&`, give each lane its own row
+        // list, and count from GenStats where it exists. (fuzz-gen-a-12)
         ("refs", "&"),
         ("modules", "mod "),
         ("files", "file-v1"),
@@ -409,6 +419,17 @@ async fn main() -> Result<()> {
                             );
                             let _ = std::fs::write(p, body);
                         }
+                        // CR claude for eric: [structure] This reject-bucket key (last
+                        // non-blank line, trimmed, truncate(120)) is copied in
+                        // reactive-check, and the default corpus directory is computed
+                        // twice (generate/fuzz and soak). String::truncate panics when
+                        // byte 120 falls inside a multibyte char, and compile errors
+                        // can carry one (a recursive type variable prints `…`). Under
+                        // gen-check's abort hook that kills the run before the report.
+                        // One reject_key helper that cuts at a char boundary and one
+                        // corpus_dir helper remove the copies. The `worker panicked`
+                        // bucket below is unreachable under that abort hook.
+                        // (fuzz-main-aux-17)
                         let mut key = err
                             .lines()
                             .rev()
@@ -453,6 +474,15 @@ async fn main() -> Result<()> {
             // records every pin's verdict, each untrusted one retried
             // alone (rebuild afterward: the compare reads the embedded copy)
             let r = regress(true).await;
+            // CR claude for eric: [bug] These rows come from r.verdicts, which has no
+            // entry for a pin that regressed. The file is written before r.regressions
+            // is checked, so blessing while any pin regresses deletes that pin's row,
+            // and every later regress reports it as unrecorded. fusecheck --bless
+            // refuses to write when a count is unreadable; this should likewise refuse
+            // while r.regressions is non-empty. The plain regress path has the same
+            // hole: outcome_mismatches lists a regressed pin's row as a stale row to
+            // 'bless to drop', counting it twice and advising the wrong fix.
+            // (fuzz-main-aux-14)
             let out: String =
                 r.verdicts.iter().map(|(n, v)| format!("{v}\t{n}\n")).collect();
             let path = orig_cwd.join("graphix-fuzz/outcome.manifest");
@@ -501,6 +531,20 @@ async fn main() -> Result<()> {
                     let b = vm_rss_kb(pid);
                     let _ = child.kill();
                     let _ = child.wait();
+                    // CR claude for eric: [bug] A dead child only leaves this mode's
+                    // slope at 0, because the `continue` is in the mode loop. The
+                    // witness is still scored and printed as a measurement. A shell
+                    // whose fused mode segfaults on every witness, or one that compiles
+                    // none of them, reports `leakcheck: 16 witnesses, 0 leaks` and
+                    // exits 0; a dead child should fail the witness. Also, `bin` (line
+                    // 479) is not canonicalized before the sandbox chdir the way the
+                    // `check`/`run` path is (line 322), so `leakcheck ./graphix` fails
+                    // with a bare `No such file or directory`. And `minimize` is not in
+                    // the sandboxed set (line 315), so its checks run the program in
+                    // the caller's cwd, where a relative `sys::fs::write_all` lands.
+                    // probe: FAST=1 FUZZ=<graphix-fuzz> bash
+                    // design/review-2026-10-05/repro/fuzz-main-aux-09.sh
+                    // (fuzz-main-aux-09)
                     let (Some(a), Some(b)) = (a, b) else {
                         eprintln!("  {name}: child died early — skipping");
                         continue;
@@ -1056,6 +1100,18 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                // CR claude for eric: [bug] `check` prints AGREE for every None, but
+                // check_verdict also returns None without comparing values in two
+                // cases. One is an Excluded-tier program: anything naming rand::,
+                // sys::time, sys::net or the rest of oracle_tier's list, so every probe
+                // gated by `sys::exit(sys::time::after_idle(..))`. The other is a
+                // node-walk that disagrees with its own rerun. The message then says
+                // 'interp and jit, no cache, cold and warm produce the same result'
+                // about engines that produced different values. probe:
+                // design/review-2026-10-05/repro/x-typecheck-patterns-15.gx (check
+                // prints AGREE; run shows eight different values). Print
+                // check_verdict's Verdict (EXCLUDED, UNSURE) and keep AGREE for Ran,
+                // Contained and Rejected. (x-typecheck-patterns-15)
                 "check" => match check(code, timeout()).await {
                     None => println!(
                         "AGREE — interp and jit, no cache, cold and warm produce the same result"
@@ -1100,6 +1156,14 @@ fn vm_rss_kb(pid: u32) -> Option<u64> {
 
 /// Long-running leak witnesses for `leakcheck`. The control rows keep
 /// the gate honest: a shared baseline drift fails nothing.
+// CR claude for eric: [test-gap] No witness drives a fused select's or-arm, whose owned
+// binds are forwarded through the or-chain's done block
+// (graphix-compiler/src/fusion/emit/select.rs:1868-1888), or a guard that goes bottom
+// with owned binds in scope (the ubdrop edge, select.rs:814-819); every guard below is
+// total. design/distributed_jit.md item 7 says these witnesses pin every arm exit, so a
+// leak on either edge would pass leakcheck. Add one: `` `A(s, a) | `B(s, a) if (i64:10
+// / d) > k => str::len(s) + array::len(a) `` over a timer-fed `d = x % i64:5`, which
+// fuses today. (f-select-11)
 const LEAK_WITNESSES: &[(&str, &str)] = &[
     (
         // fused handler-less `$` minting an owned error every tick

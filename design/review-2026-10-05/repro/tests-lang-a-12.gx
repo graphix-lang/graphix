@@ -1,0 +1,13 @@
+// tests-lang-a-12: a select-arm pattern error is sited at the arm's body, not at its pattern
+// command: graphix --check design/review-2026-10-05/repro/tests-lang-a-12.gx
+// expected: "bound variables must have unique names" sited at the pattern `(a, a)`
+//   (line 11, column 3), so the language server underlines the pattern.
+// observed: sited at the body block `{ let q = 1; q + 1 }` (line 11, column 13);
+//   graphix-lsp/src/diagnostics.rs takes the site's [pos, end), so the diagnostic
+//   underlines the whole body. Cause: graphix-compiler/src/node/select.rs:230 wraps
+//   the pattern compile in `.at(body)`, because `Pattern` carries no position.
+//   stdlib/graphix-tests/src/lang/select.rs:2791 pins the body position (2, 13).
+select 1 {
+  (a, a) => { let q = 1; q + 1 },
+  _ => 1
+}

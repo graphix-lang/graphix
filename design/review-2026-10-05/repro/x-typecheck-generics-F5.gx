@@ -1,0 +1,34 @@
+// x-typecheck-generics-F5: a Fn nested in an explicit type-test predicate is
+// not refused (graphix-compiler/src/node/pattern.rs:1199-1200 refuses only a
+// top-level Fn), and at run time Type::is_a (graphix-types/src/typ/cast.rs:786)
+// accepts any lambda for a Fn position, so an arm binds a function at a
+// signature it does not have.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F5.gx
+//     (and again with --no-fusion)
+//
+// expected: refused at compile time, as `fn(x: i64) -> i64 as f` is
+// ("can't match on Fn type"); or, if accepted, the second arm runs (u holds
+// (fs, 1), a value of the second member) and 0 is printed.
+//
+// observed: --check accepts. At run time the first arm is taken and f = fs, a
+// fn(x: string) -> string, is called with 1; the run-time bind logs "did not
+// type: an instance at fn(x: i64) -> i64 of a definition typed fn(x: string)
+// -> .." (graphix-fuzz run prints it; the shell only under --log-dir) and runs
+// anyway, and "1!" flows into dbl's i64 y.
+//   default (fusion): exit 1
+//     panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//     kernel param `y`: runtime String("1!") does not match the compiled Scalar(I64) slot
+//     Error: runtime did not respond
+//   --no-fusion: exit 0, nothing printed, `arith error .. "Parse error at
+//     line: 1, column: 2\nUnexpected `!`.."` logged from `y * 2` over "1!".
+// The same holds through a struct field, an array element, a union member
+// (`[fn(x: string) -> string, null] as f`) and a typedef of a tuple.
+let fs = |x: string| "[x]!";
+let dbl = |y: i64| y * 2;
+let u: [(fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)] = (fs, 1);
+println(select u {
+  (fn(x: i64) -> i64, i64) as (f, n) => dbl(f(n)),
+  (fn(x: string) -> string, i64) as (f, n) => 0
+});
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

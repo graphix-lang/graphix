@@ -94,7 +94,30 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
+        // CR claude for eric: [bug] Any text size reaches cosmic-text unchecked. A size
+        // of 0, or a positive one that becomes 0 as f32 (1e-50), trips its "line height
+        // cannot be 0" / "font size cannot be 0" asserts on the main thread, and the
+        // program exits; a negative size hangs layout forever in
+        // Buffer::shape_until_scroll. A zoom slider whose min is 0 is enough. The same
+        // gap exists at text.rs:83, canvas.rs:307 (the panic comes at present),
+        // text_input.rs:172 and text_editor.rs:156. Check the size once where it is
+        // read (positive and finite after the f32 conversion, for example one text-size
+        // type these widgets share) and refuse anything else with a logged error.
+        // probe: design/review-2026-10-05/repro/gui-widgets-a-02.rs (headless cargo
+        // test; md_drop renders at 16 and then dies when the program writes 0).
+        // (gui-widgets-a-02)
         let text_size = self.text_size.t.flatten().unwrap_or(16.0) as f32;
+        // CR claude for eric: [bug] view() never reads self.spacing, so
+        // Settings::spacing stays at with_text_size's text_size * 0.875 and the
+        // documented #spacing (book/src/ui/gui/markdown.md:20) does nothing. The Style
+        // comes from iced_core::Theme::Dark, so links are drawn in Dark's primary
+        // (#5865F2) under every window theme, while the paragraph text follows the
+        // window's theme. view() has no theme to build the Style from. probe:
+        // design/review-2026-10-05/repro/gui-widgets-a-07.rs (copy into
+        // stdlib/graphix-package-gui/tests/ and run cargo test -p graphix-package-gui
+        // --test review_gui_widgets_a_07). The default, #spacing 40 and #spacing 2 all
+        // lay out 90.4 px tall. Under CustomPalette(primary red) and Dracula the link
+        // has 0 px in the theme's primary and 343/418 px in #5865F2. (gui-widgets-a-07)
         let settings =
             widget::markdown::Settings::with_text_size(text_size, iced_core::Theme::Dark);
         let on_link_id = self.on_link_callable.as_ref().map(|c| c.id());

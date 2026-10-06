@@ -1,0 +1,26 @@
+// t-contains-13: a probe through app_contains binds the receiver's open
+// cells (Type::app_split_for commits on the real receiver whatever the
+// caller's flags).
+//
+// command: timeout -s KILL 30 graphix --check design/review-2026-10-05/repro/t-contains-13.gx
+//
+// expected: accepted (and `graphix --no-cache` prints 0). The argument
+// `C("a", y) is not a 'c<i64> for any constructor (L<i64> holds `C(i64, ..)
+// only), so the free member 'z takes it and y stays open until g(1).
+// observed: refused at g(1): "type mismatch '_N: [`C('_M: string,
+// L<'_M: string>), `N] does not contain i64". set_commit probes the
+// 'c<i64> member first (free members go last); app_contains ->
+// app_split_for -> fits(&im.target, &t) runs a committing contains on the
+// real receiver `C(string, 'y) and binds 'y := L<string>; the probe then
+// fails (i64 vs string), 'z is chosen, and the binding stays.
+// GRAPHIX_DBG_BIND=1 shows the APP-SPLIT line and no commit of the member.
+//
+// Controls: delete the `impl Ctor for L<'_>` line (L is then no head of
+// Ctor) and the program is accepted and prints 0; so it is with
+// `|y: i64|`, or with `f(`C("a", 1))` in place of g.
+type L<'a> = [`C('a, L<'a>), `N];
+trait Ctor { val size: fn(self<'a>) -> i64 };
+impl Ctor for L<'_> { let size = |l| 0 };
+let f = 'c: Ctor |x: ['c<i64>, 'z]| 0;
+let g = |y| f(`C("a", y));
+g(1)

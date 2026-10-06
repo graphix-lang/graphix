@@ -1,0 +1,42 @@
+// t-contains-10: a union holding the very cell it is asked to contain binds
+// that cell to a sibling member.
+//
+// `(Self::Set(s), t)` (graphix-types/src/typ/contains.rs:906) has no identity
+// pre-pass, unlike the Set ⊇ Set arms (own-cell check 843-852, identity
+// pre-pass 889-900), and set_commit (1124-1127) tries structural members
+// before free ones. The TVar arms are skipped because 'y occurs in the set,
+// so `[i64, 'y] ⊇ 'y` commits through `i64 ⊇ 'y` and binds 'y := i64.
+// GRAPHIX_DBG_BIND=1 prints `SET-T [i64, '_N] >= '_N` then
+// `BIND rhs '_N(..) := Primitive(.. I64)`.
+// An identical structural member loses the same way:
+// `[{v: i64}, {v: 'y}] ⊇ {v: 'y}` binds 'y := i64.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-contains-10.gx
+//
+// expected: accepted. `[y, 1]` is Array<[i64, 'y]> and pushing y into it
+//   needs nothing of 'y; `let f = |y| [y, 1]; f("s")` is accepted.
+// observed (HEAD c722befe, debug build): refused at the call, far from the
+//   cause:
+//   in: "s"
+//   type mismatch '_N: i64 does not contain string
+//
+// Other shapes, same bind (all refused, all accepted without the write):
+//   let f = |y| array::concat([y, 1], [y]); f("s")
+//   let f = |y, c: bool| { let x = select c { true => y, false => null };
+//     x <- y; x }; f(1, true)         -- 'y := null
+//   let f = |y, c: bool| { let x = select c { true => {v: y}, false => {v: 1} };
+//     x <- {v: y}; x }; f("s", true)  -- the struct member case
+// Declaring the parameter `|y: 'a|` (a rigid cell) is accepted.
+//
+// The bind can also make the checker ACCEPT a program it must refuse:
+//   let c = 0;
+//   let y = str::parse("42")$;
+//   let x = select c { 0 => y, _ => null };
+//   x <- y;
+//   x
+// `x <- y` binds parse's target to null, the sibling member, so the program
+// runs and parse yields null (graphix-fuzz check: AGREE). Without `x <- y`
+// it is refused: "the type 'b must be fully known here, a type-directed
+// operation reads it: annotate it".
+let f = |y| array::push([y, 1], y);
+f("s")

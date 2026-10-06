@@ -1,0 +1,29 @@
+// x-diff-types-07: under instances by substitution, elaboration binds
+// cells the instance's check left open, from a forked statement task.
+//
+// CallSite::typecheck0_instance (graphix-compiler/src/node/callsite.rs:
+// 2159-2194) takes the site's formals from the definition's table and
+// only pre-unifies a lambda argument's parameters (callsite.rs:2174);
+// the full check's typecheck_arg (callsite.rs:309-333) also runs
+// `formal.contains(arg)`. A formal whose row holds open cells
+// (`fn(zz: '_N) -> '_M` for filter's callback) stays open until
+// CallSite::typecheck1 statically binds the builtin and
+// BuiltInLambda::typecheck0's check_contains_rigid (node/lambda.rs:1145)
+// binds it, inside the task typecheck1_statements (node/mod.rs:1089)
+// forked for the statement. The seq lowering's
+// `filter(trigger, |x| x ~ idle)` puts such a call in every seq in a
+// function body.
+//
+// command: GRAPHIX_TASK_AUDIT=1 graphix --no-cache design/review-2026-10-05/repro/x-diff-types-07.gx 2>&1 | grep -c 'to a cell'
+// expected: 0 (statement elaboration writes no cell an earlier task created)
+// observed: 3, one per instance below (`FOREIGN-WRITE by task N to a cell
+//           of task M`, TVar::bind under BuiltInLambda::typecheck0);
+//           0 with GRAPHIX_NO_SUBST=1. The printed value is right.
+let step = |v| seq { let q = v; q };
+let keep = |v: i64| {
+  let k = filter(v, |zz| zz > 0);
+  let j = k + 1;
+  j
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(step(1), step("x"), keep(2))

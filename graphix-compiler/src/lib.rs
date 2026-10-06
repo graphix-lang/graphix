@@ -145,6 +145,15 @@ pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>
 /// for later cycles.
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
+    // CR claude for eric: [structure] `init` and `wake_init` are two bools for three
+    // views (ordinary cycle, birth, wake); `wake_init` without `init` means nothing and
+    // is never built. Every view change saves and restores them by hand, eight times
+    // (select.rs:1010, seq_machine.rs:299, callsite.rs:1242 and 1667, collection.rs:975
+    // with 1073, collection.rs:1477, error.rs:344, module.rs:992), and a birth inside a
+    // wake keeps the wake view only because those sites leave `wake_init` alone. One
+    // `enum View { Cycle, Birth, Wake }` with a scoped setter makes the meaningless
+    // pair unrepresentable and states the birth-inside-wake rule once.
+    // (x-invalid-states-07)
     pub init: bool,
     /// Set alongside `init` when the forced init view is a select arm's
     /// wake rather than a birth: a `<-` target that already holds a
@@ -213,6 +222,15 @@ impl<E: UserEvent> Event<E> {
         *init = false;
         *wake_init = false;
         wake_phantoms.clear();
+        // CR claude for eric: [perf] The overlay keeps the capacity of the cycle that
+        // delivered the most. A hashbrown clear of a non-empty table memsets every
+        // control byte and scans every bucket, so after one big fire every later cycle
+        // that delivers anything pays O(peak). Probe, --no-fusion, beside a 100us timer
+        // counter: `let size = select n { 0 => 100000, _ => 0 }; let xs =
+        // array::init(size, |i| i)`. Once the slots are gone, each cycle costs 0.22 ms
+        // of CPU against 0.16 ms with size 0 (0.19 ms after 25000 slots, 0.24 ms after
+        // 200000). Layered::clear (branch.rs:442) could shrink a map whose capacity far
+        // exceeds what the cycle used. (x-alloc-13)
         variables.clear();
         custom.lock().clear();
         user.clear();
@@ -329,6 +347,18 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
+    // CR claude for eric: [bug] Node has no inherent typecheck0_instance, so every
+    // child.typecheck0_instance call (op.rs:283, callsite.rs:2169, node/mod.rs:319, and
+    // lambda.rs:782 for the body) reaches the trait through DerefMut with no
+    // stack::ensure_sufficient. Checking an instance body is therefore a recursion as
+    // deep as the body, and the doc comment on Node above no longer holds. The parser
+    // does not bound that depth: every paren level may hold a 1000-operator chain, and
+    // --check accepts 300 such levels. A function whose body is 30 nested parenthesized
+    // 1000-term `+` chains passes --check, then aborts with a stack overflow when
+    // called or under --expand, while GRAPHIX_NO_SUBST=1 runs it. Add the guarded
+    // shadow here beside typecheck0, plus a deep_nesting case that builds instances
+    // (those cases run Mode::Check, which never elaborates). probe:
+    // design/review-2026-10-05/repro/x-stack-03.sh (x-stack-03)
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         stack::ensure_sufficient(|| self.0.typecheck0(ctx))
     }
@@ -589,6 +619,18 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 }
 
 /// A regular graph node, as opposed to a function application (Apply).
+// CR claude for eric: [structure] Node has no child enumeration, unlike Expr's
+// for_each_child/map_children. Every Update impl lists its children again by hand in
+// refs, delete, sleep, fuse, typecheck0/1 and the image codecs (Not and Neg in
+// node/op.rs, and Qop and OrNever in node/error.rs, are line-for-line copies), so a
+// child added to refs but missed in sleep compiles without complaint. Two NodeView
+// walkers list them a third time and disagree. fusion::for_each_node_inner visits
+// select guards, a static module's nodes and impl prototype sites;
+// node_shape::node_children skips all three, and it descends FusedKernel feeders that
+// fusion treats as opaque. So a NodeShape::contains(..) pin cannot see a kernel inside
+// a guard, a module with an interface or an impl prototype. One
+// for_each_child/for_each_child_mut on Update would drive both walkers and could be the
+// default body of the forwarding methods. (x-dup-03)
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// Update the node with the event and return its production,
     /// borrowed from the node's own resident slot. Every awake node
@@ -827,6 +869,20 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
+        // CR claude for eric: [bug] Any FusedKernel passes here, including one that
+        // try_fuse_feeding_args built around arguments left on the node-walk. So
+        // `#[native] f(throttle(i64:5))` compiles, while `#[native] throttle(i64:5)`
+        // and `#[native] { let a = throttle(i64:5); f(a) }` are refused. Feeding only
+        // takes an argument that fails builtin discovery, so the verdict depends on an
+        // unrelated builtin: with `h` a loop that cannot fuse, `#[native] f(h(1000, 0,
+        // &one))` is refused, but `#[native] f(h(once(1000), 0, &one))` passes while
+        // h's recursion runs on the node-walk. CLAUDE.md says #[native] asserts zero
+        // node-walk residue, but lang::fusion::call_fed_by_node_walked_args relies on
+        // this pass, so this needs a ruling. One option: report the recorded blockers
+        // of every feeder that is not a plain variable read, and take #[native] off
+        // that pin's fed calls. The other: document that a call's arguments are inputs,
+        // and feed every argument that does not fuse. probe:
+        // design/review-2026-10-05/repro/f-mod-lowering-04.sh (f-mod-lowering-04)
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
         }
@@ -1112,6 +1168,19 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
+    // CR claude for eric: [bug] Nothing removes an entry from lowered_seqs, and the
+    // key's scope is minted fresh on many compiles: a try/with body scope is named by
+    // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
+    // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
+    // lambda literal in a function, lowers again at every instance under fresh
+    // expression ids, and every lowering is kept for good. The DefTable has no rows for
+    // those ids, so those nodes check again instead of substituting, which breaks the
+    // comment above. Each re-parse also adds entries that keep that parse's whole
+    // source text alive: an LSP check of a 512 KB script with one seq grows RSS by
+    // about 0.5 MB per check (it levels off without the seq), and REPL lines and
+    // dynamic-module reloads do the same. probe:
+    // design/review-2026-10-05/repro/c-lib-01.gx (RSS grows ~34 MB per 350 instances;
+    // it levels off when the inner seq is moved above the try). (c-lib-01)
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1241,6 +1310,19 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
             def_gate_depth: self.def_gate_depth,
+            // CR claude for eric: [perf] Every statically resolved call site forks the
+            // context (callsite.rs:1287), and each fork copies resolving_lambdas whole:
+            // an IntMap holding an FnType by value for every instantiation still
+            // resolving. The forks nest along a static call chain and each lives until
+            // its child returns, so elaborating a chain of depth N holds O(N^2) copies;
+            // TrackedMap::join (graphix-types/src/tracked.rs:150) also re-appends the
+            // whole subtree's touched keys at every level. For `f_i = |a| f_{i-1}(a) +
+            // 1`, peak RSS (debug, --no-fusion) is 169 MB at N=500, 478 MB at 1000 and
+            // 967 MB at 1500, against 73 MB for a flat program of 1000 lambdas and 75
+            // MB under --check; N=4000 is killed at a 6 GB cap. A resolution stack
+            // shared by forks (a persistent list, each task pushing its own entry)
+            // makes a fork O(1). probe: design/review-2026-10-05/repro/f-jit-04.sh
+            // (f-jit-04)
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             lowered_seqs: self.lowered_seqs.fork(),
@@ -1344,6 +1426,17 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
+        // CR claude for eric: [bug] At run time this set only grows. Every instance
+        // built after the batch (a collection slot, an activation, a seq machine's pc
+        // and result) inserts its fresh `<-` target ids here. Bind::delete prunes
+        // connect_targets and bind_to_lambda but not this set, and only the embedder's
+        // next compile or load clears it, so a script keeps one entry for every `<-` of
+        // every instance it ever built. Churning 60 instances, each with 20
+        // never-firing `<-`, every 10 ms grows a script from ~100 to ~310 MB in 60 s;
+        // the same `<-` aimed at one outer variable stays flat, and the first REPL line
+        // after the churn takes 0.41 s to walk the set. Remove the ids here in
+        // Bind::delete too, or drop this set and guard static resolution with
+        // connect_targets. probe: design/review-2026-10-05/repro/c-lib-02.py (c-lib-02)
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
     }
@@ -1545,6 +1638,17 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
+        // CR claude for eric: [perf] In a forked branch whose compile view has not
+        // forked yet, `get_mut` here goes through CxView::deref_mut. That boxes a whole
+        // CompileCtx::fork() (env, tracked maps, fusion), which the merge then joins
+        // back, only to find pending_refs empty: fork_each and fork_join assert that
+        // nothing is pending at a fork. ctx.unref_var runs on the update and sleep
+        // paths: the sleep of the array/list/map iter builtins, throttle's update, and
+        // Deref::release on a moving reference. Each such branch therefore pays an
+        // allocation and a fork/join per cycle where the serial walk pays one hash
+        // lookup, against parallel_eval.md's rule that a branch that compiles nothing
+        // pays nothing. Look the pair up through Deref first and call self.rt.unref_var
+        // directly when it is absent. (c-lib-08)
         match self.cx.pending_refs.get_mut(&(id, top_id)) {
             Some(n) => {
                 *n -= 1;
@@ -1971,6 +2075,18 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     info!("typecheck time {:?}", st.elapsed());
     analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
+    // CR claude for eric: [risk] check_and_fuse takes `flags` but decides fusion from
+    // ctx.fusion.enabled, which only compile_top sets from its own flags.
+    // compile_callable (begin_runtime_node, then check_and_fuse) inherits whatever the
+    // last compile_top left. After a warm start no compile_top has run, so the field is
+    // still FusionCtx::new's `true`, and every GUI widget callback's compile runs the
+    // fusion pass under --no-fusion and on Windows. Nothing fuses there today only
+    // because the callable's call site has a constant function node and binds
+    // dynamically. Decide from `!flags.contains(CFlag::FusionDisabled) &&
+    // cfg!(not(windows))` here and in compile_top's attribute check, and delete
+    // FusionCtx::enabled (only lib.rs reads it). Open the compile frame for compile_top
+    // and begin_runtime_node through one function, since today they reset different
+    // scratch. (c-lib-09)
     if ctx.fusion.enabled {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
@@ -2035,6 +2151,17 @@ pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
             continue;
         };
         if !ctx.env.import_target_exists(e) {
+            // CR claude for eric: [readability] This error and bind_sig's
+            // (graphix-compiler/src/node/module.rs:177) use ParserContext only to carry
+            // a position, and its Display prints "parse error at …". So `let x =
+            // 1;\nuse array::nosuch;\n1` reports "parse error at line: 2, column: 1 …
+            // use: no `nosuch` in `array` (checked again after the enclosing statement
+            // finished compiling)", and a second `type T` in a .gxi reports "parse
+            // error at line: 3 … T is already defined in scope m". A real parse error
+            // already says "Parse error at …" in its own message, so ParserContext's
+            // Display (graphix-types/src/expr/context.rs:124) can print just the
+            // position. The parenthetical describes the compiler, not the user's
+            // mistake: the message is "use: no `nosuch` in `array`". (x-errors-15)
             return Err(::anyhow::anyhow!(
                 "use: no `{}` in `{}` (checked again after the enclosing \
                  statement finished compiling)",
@@ -2115,6 +2242,15 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
 
 /// The registries a compile or a registration read writes, as they were
 /// before it, so a failure puts them back.
+// CR claude for eric: [structure] Saved is the only list of the tracked registries that
+// the compiler does not check. fork, join and ExecState::new are struct literals or
+// destructures, but Saved is written by hand, and it has drifted: it omits
+// lowered_seqs, which fork and join treat as program state. A failed compile (a REPL
+// line, a dynamic module's source) therefore keeps every seq it lowered, each entry
+// pinning its expression and source text, and the doc above no longer says what Saved
+// holds. Group the forked-and-joined registries in one struct with fork, join and
+// Clone. Saved then becomes a clone of it and cannot drift, and fork, join and new each
+// handle it in one line. (c-lib-07)
 pub(crate) struct Saved {
     env: Env,
     lambda_defs: TrackedMap<LambdaId, Value>,
@@ -2176,6 +2312,16 @@ fn compile_top<R: Rt, E: UserEvent>(
     // System V (a 16-byte `TagValue` is two
     // registers); Win64 passes it by hidden pointer, so on Windows the
     // graph is interpreted.
+    // CR claude for eric: [risk] `not(windows)` turns fusion on for every other
+    // cranelift host. The helper seam passes and returns the 16-byte TagValue by value,
+    // which matches the two-I64 CLIF signatures only where the C ABI uses two registers
+    // for it: SysV x86_64 and AAPCS64 (design/helper_abi_portability.md). On s390x
+    // Linux, which passes such a struct by reference and returns it through a hidden
+    // pointer, the first helper call that takes or returns a TagValue reads a word as a
+    // pointer. Until the out-pointer rule lands, gate on the hosts known to match:
+    // `all(any(target_arch = "x86_64", target_arch = "aarch64"), not(windows))`. The
+    // same doc's last paragraph says a registration image that fails to decode is
+    // fatal, but graphix-rt/src/gx.rs:300 warns and compiles cold. (f-helpers-08)
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows));
     ctx.attr_census.lock().clear();
     ctx.attr_dispatched.lock().clear();
@@ -2242,6 +2388,18 @@ fn abandon_stmt<R: Rt, E: UserEvent>(
     saved: Saved,
     e: anyhow::Error,
 ) -> anyhow::Error {
+    // CR claude for eric: [risk] This drops the deferred references before deleting the
+    // node, and check_and_fuse has already dropped them on Err (line 1934). The failed
+    // statement's references therefore reach rt.unref_var as pairs the runtime never
+    // registered, instead of cancelling in pending_refs. Module::compile_source and
+    // read_registration delete first and then call drop_deferred, which is the order
+    // that is right when the top id is live. GXRt ignores an unknown pair and a
+    // statement's top id is fresh, so nothing shows today; an Rt that counts strictly,
+    // or a reused top id, would lose a live registration. Leave the Err cleanup to
+    // check_and_fuse's callers and unwind here as delete, drop_deferred, restore;
+    // compile_callable (gx.rs:946) should then delete `n` instead of dropping it with
+    // `?`. probe: design/review-2026-10-05/repro/c-lib-06.gx (with GRAPHIX_DBG_VARS=1
+    // it prints two UNREF_VAR lines and no matching REF_VAR). (c-lib-06)
     ctx.drop_deferred();
     node.delete(ctx);
     saved.restore(ctx);

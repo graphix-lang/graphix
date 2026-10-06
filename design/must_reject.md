@@ -283,6 +283,16 @@ differential run that adjudicates a LEAK.
 
 ## Integration
 
+<!-- CR claude for eric: [doc-drift] Four statements disagree with the code. Here and at
+lines 45-48: an accepted must-accept probe is not a base for must-reject probes, since
+typemorph_subject runs must_reject on the subject's body only
+(graphix-fuzz/src/lib.rs:2916). Lines 52-55: the type map is keyed by body span, not by
+preorder index, and nodes sharing a span answer with the first type recorded
+(mustreject.rs:83, `of(..).first()`). graphix_fuzz.md:46-48 calls corpus mutation
+type-directed with a type-aware transplant, but mutate.rs is type-blind (a random donor
+at a random node, and the compile filters); and typemorph.rs:11-12 grades only
+parens-wrap sound where lines 232-233 here also grade label-permute sound.
+(fuzz-mutate-13) -->
 The families run inside the typemorph source: a subject yields its
 must-accept probes as now and its must-reject probes on the same base;
 an accepted must-accept probe is itself a base for must-reject probes.

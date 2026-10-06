@@ -1,0 +1,24 @@
+// t-misc-05: a stack-budget abort reaches the shell user as
+// "runtime did not respond" or "graphix runtime is dead", never as the budget.
+//
+// budget_abort (graphix-types/src/stack.rs:75-82) reports only through
+// log::error!, which the shell writes only under --log-dir with RUST_LOG set
+// (graphix-shell/src/main.rs:346). The abort stops the run loop
+// (graphix-rt/src/gx.rs:1024); a pending request then fails in
+// GXHandle::exec (graphix-rt/src/lib.rs:681), and a later one in the shell's
+// event loop (graphix-shell/src/lib.rs:472). Nothing reads
+// GXHandle::budget_aborted.
+//
+// command: GRAPHIX_STACK_BUDGET=64M graphix --no-cache --no-fusion \
+//            design/review-2026-10-05/repro/t-misc-05.gx
+//
+// expected: stderr says the stack budget (67108864 bytes) was exceeded, exit 1.
+// observed: stderr is only "Error: runtime did not respond", exit 1 (also with
+//   RUST_LOG=error). With GRAPHIX_STACK_BUDGET=4G it prints 40000. Firing the
+//   call from a timer, `let r = f(sys::time::timer(duration:300.ms, false) ~
+//   40000)`, gives "Error: graphix runtime is dead" instead. The fused build
+//   stays under 64M at this depth and prints 40000.
+let rec f = |n: i64| -> i64 select n { 0 => 0, n => f(n - 1) + 1 };
+let r = f(40000);
+sys::exit(sys::time::after_idle(duration:100.ms, r ~ 0));
+r

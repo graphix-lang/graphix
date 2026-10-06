@@ -36,6 +36,12 @@ run!(json_array, r#"{
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
+// CR claude for eric: [test-gap] The predicate accepts any two-element array and never
+// looks at x = 42 or y = "hi"; json_struct_cast's x + y would not notice swapped fields
+// either. Compare the decoded value exactly: [["x", 42], ["y", "hi"]]. json_nested
+// (line 80) accepts any array and json_no_concrete_type (line 146) any compile error.
+// Compare the nested pairs, and match the "must be fully known" refusal as types.rs:473
+// does. (tests-lib-b1-12)
 run!(json_struct, r#"{
     type S = {x: i64, y: string};
     let obj: S = json::read(json::write_str({x: 42, y: "hi"})$)?;
@@ -81,6 +87,17 @@ run!(json_nested, r#"{
 }; graphix_package_core::testing::FuseExpect::None);
 
 // json over a tcp stream, read back from the other end.
+// CR claude for eric: [risk] write_exact and shutdown both fire when `client` fires and
+// run as two spawned tasks with nothing ordering them, so the shutdown can lock the
+// stream first: the write fails with EPIPE and the server reads EOF. run! passes only
+// because tokio's current_thread runtime polls tasks in spawn order; the same program
+// on the shell's multi-thread runtime fails 5 to 12 runs in 50, probe:
+// design/review-2026-10-05/repro/tests-lib-b1-03.gx. Sequence the shutdown on the
+// write, `let written = Write::write_exact(client, ..)?; Socket::shutdown(written ~
+// client)?` (50 of 50 pass), here, in json_stream_nested (line 101), toml_stream_tcp
+// (toml.rs:68) and pack_stream_tcp (pack.rs:61). book/src/stdlib/sys/io.md:13-15 has
+// the same shape (read_all and close on one fire of `f`) and fails every run with
+// `stream unavailable`. (tests-lib-b1-03)
 run!(json_stream_tcp, r#"{
     use sys::io::{Read, Write};
     use sys::tcp::Socket;

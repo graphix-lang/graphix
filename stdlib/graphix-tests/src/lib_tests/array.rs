@@ -1,5 +1,13 @@
 use anyhow::Result;
 use arcstr::ArcStr;
+// CR claude for eric: [style] array.rs, core.rs and list.rs spell out
+// `graphix_package_core::testing::FuseExpect::` 145 times, and graphix-tests does the
+// same in 42 other files. Import it once with `use graphix_package_core::{run,
+// testing::FuseExpect};`, as lift.rs and lang/fusion.rs do. The `use sys::*;` in
+// core.rs's QUEUEFN_NET_SUBSCRIBE (557) and QUEUEFN_DELTA_PER_CYCLE (594) is unused:
+// both fixtures spell `sys::net::` and `sys::time::` in full and check without it, so
+// delete it. callable.rs spells graphix_compiler::expr::VfsEntry and
+// arcstr::ArcStr::from 8 times each; import them. (tests-lib-a-15)
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
@@ -529,6 +537,16 @@ run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
 
 // A scalar `array::fold` result flowing into a `connect` sets `s` once
 // and quiesces.
+// CR claude for eric: [test-gap] This fixture only checks s's initial 0, which a
+// connect that never writes also gives, so 'sets s once and quiesces' is not tested
+// here. Its stream twin, lift.rs fold_into_connect_quiesces, cannot see a spin either,
+// because collect_n (lift.rs:18) returns after n values. `{ let a = [1, 2, 3]; let s =
+// 0; s <- s ~ array::fold(a, 0, |acc, e| acc + e); s }` streams 0, 6, 6, 6, ... and
+// still passes assert_stream(&[0, 6]). connect_const_then_quiesces,
+// array_connect_const_quiesces and fold_captured_*_fires_then_quiesces have the same
+// gap. After the n-th value, collect_n should wait for idle under a timeout that fails
+// the test and assert no further result update. Here, assert `filter(s, |v| v == 6)` or
+// drop the claim. (tests-lib-a-13)
 const FOLD_INTO_CONNECT: &str = r#"
 { let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }
 "#;

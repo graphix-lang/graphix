@@ -192,6 +192,19 @@ parser! {
                         let base = base.ending(end);
                         // The iterative postfix loop escapes `grow`'s depth
                         // counter, but the fold builds an N-deep AST.
+                        // CR claude for eric: [bug] This cap counts only this run of
+                        // postfix ops. A parenthesized base followed by any op other
+                        // than ?/$ loses its parens in the fold below, so it joins the
+                        // run. `(t.0 x501).0 x500` therefore parses and typechecks. But
+                        // `graphix fmt` prints it as one 1001-op run, and its own
+                        // reparse refuses that ("formatter bug: ... expression nesting
+                        // too deep"), so a valid file cannot be formatted. Operator
+                        // chains are not affected, since their parens survive as
+                        // ExplicitParens. Either count the base's own bare postfix
+                        // chain against the limit here, or have the printer break runs
+                        // longer than the limit. probe:
+                        // design/review-2026-10-05/repro/t-parser-a-01.gx (--check
+                        // exits 0, fmt exits 1). (t-parser-a-01)
                         if ops.len() > max_nesting() {
                             note_refused(chain_end);
                             return Err(<StreamErrorFor<I>>::message_static_message(

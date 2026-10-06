@@ -1,0 +1,21 @@
+// tui-core-17: a diagnostic written to stderr lands inside the TUI and is
+// gone when it exits.
+//
+// report_failure! (graphix-compiler/src/node/error.rs:567-573) writes every
+// unhandled error and hot-operator failure to stderr. While the display
+// owns the terminal (stdlib/graphix-package-tui/src/lib.rs:730) those bytes
+// are written at ratatui's cursor inside the alternate screen; ratatui
+// never repaints the cells, and leaving the alternate screen discards them.
+//
+// command: in a terminal (or a pty, 80x6); Ctrl-C after 2 s:
+//   graphix --no-cache design/review-2026-10-05/repro/tui-core-17.gx
+//
+// expected: the display stays intact and the error is readable, during the
+//   run or after exit.
+// observed: at 1 s "unhandled error in file ... "Boom"" is written right
+//   after "the display" on the TUI's first row; after Ctrl-C the normal
+//   screen shows only the compile-time WARNING, the runtime error is gone.
+use tui::paragraph::paragraph;
+let t = sys::time::timer(duration:1.s, false);
+let boom = error(t ~ `Boom)?;
+paragraph(&"the display")

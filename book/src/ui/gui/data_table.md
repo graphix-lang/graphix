@@ -134,6 +134,19 @@ val text_column: fn(
 - **`#on_header_click`** -- Fired when the user clicks a data
   column's header label. Receives the column name.
 
+<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
+subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
+again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
+cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
+the window: either subscribe on_update table-wide or document its scope. The interface
+block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
+(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
+`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
+but Enter fires for the selected cell's row whatever its column, and for row 0 when
+nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
+column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
+outside the subscription window contribute only their fallback (layout.rs:309-317).
+(gui-datatable-21) -->
 - **`#on_update`** -- Fired once per subscription update on every
   cell — useful when you want to mirror live values into graphix
   state (e.g. re-derive an aggregate) without subscribing separately.

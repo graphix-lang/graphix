@@ -1,0 +1,26 @@
+// c-bind-12: Bind::input_fired walks the initializer's whole ref closure,
+// callee instance bodies included, at every wake: O(D^2) for a recursion.
+//
+// Under wake_init (a woken arm, a seq step's entry) every Bind calls
+// input_fired (graphix-compiler/src/node/bind.rs:140-147), which builds a
+// fresh Refs and walks its initializer; CallSite::refs descends into the
+// callee's instance body (node/callsite.rs:2228-2235), so `let s = f(k - 1)`
+// in activation d walks every activation below d. One wake of f(D) costs
+// O(D^2). `uniq` keeps f out of fusion, so the default mode node-walks it.
+//
+// command: time graphix --no-cache design/review-2026-10-05/repro/c-bind-12.gx
+//   control: the same with the arm body `uniq(f(k - 1)) + 1` (no let)
+//   (n runs 0..20; the arm sleeps at odd n and wakes at even n: 10 wakes)
+//
+// expected: the let costs about what the control costs.
+// observed (HEAD c722befe, debug build, wall incl. the 300 ms idle exit):
+//   default:      D=500 1.35 s vs 0.56 s, D=1000 4.68 s vs 0.51 s
+//   --no-fusion:  (same program without uniq) D=250 0.49 vs 0.41 s,
+//                 D=500 0.98 vs 0.44 s, D=1000 3.17 vs 0.46 s
+//   A let whose initializer has no call (`let s = k - 1; f(s) + 1`) costs
+//   what the control does (0.51 s at D=1000): the walk through f is the cost.
+let n = range(0, 21)$;
+let rec f = |k: i64| -> i64 select k { 0 => 0, k => { let s = f(k - 1); uniq(s) + 1 } };
+let r = select n % 2 { 0 => f(1000), _ => -1 };
+sys::exit(sys::time::after_idle(duration:300.ms, n));
+r

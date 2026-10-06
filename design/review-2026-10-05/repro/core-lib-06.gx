@@ -1,0 +1,25 @@
+// core-lib-06: CachedArgsAsync re-surfaces its pre-bottom reply while an
+// argument stays a standing bottom.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-lib-06.gx
+//   (identical with --no-fusion: async builtins never fuse, both engines run
+//   the wrapper, so graphix-fuzz sees no divergence)
+//
+// `sel` turns null at n=3 and stays null (uniq), so from n=3 on `sel$` is a
+// bottom, fresh at n=3 and standing after. Every async builtin call over it
+// should be bottom, and so should every record that consumes the call.
+//
+// expected: each dbg prints at n=1 and n=2 only.
+// observed (HEAD c722befe): sync and letbound print at n=1, 2 only; inline
+//   also prints {inline: "/", n: 4}, {inline: "/", n: 5}, {inline: "/", n: 6}.
+//   GXDBG_CS=1: is_dir delivers Tag(64) (FreshBottom) at n=3, then Tag(32)
+//   (Stale, the old "/") at every later cycle. The let stays bottom because
+//   it published the fresh bottom and does not republish a stale production.
+let c = sys::time::timer(duration:100.ms, true);
+let n = count(c);
+let sel = select uniq(n >= 3) { false => "/", true => null };
+let r = sys::fs::is_dir(sel$);
+dbg(#dest: `Stdout, {sync: str::len(sel$), n});
+dbg(#dest: `Stdout, {letbound: r, n});
+dbg(#dest: `Stdout, {inline: sys::fs::is_dir(sel$), n});
+sys::exit(select n { 6 => 0, _ => never() })

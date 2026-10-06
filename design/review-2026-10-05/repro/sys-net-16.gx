@@ -1,0 +1,27 @@
+// sys-net-16: every graphix run, --check and --no-netidx included, loads
+// the netidx config, and without one it daemonizes a machine-local
+// resolver that outlives the run.
+//
+// main (graphix-shell/src/main.rs:472-475) calls
+// Config::load_default_or_local_only() before any flag is consulted. With
+// no default netidx config, Config::local_only binds 127.0.0.1:59200 (or
+// $NETIDX_LOCAL_ONLY_RESOLVER_PORT) and, when the port is free, daemonizes
+// a re-exec of the graphix binary as the resolver
+// (../netidx/netidx/src/config/local_only.rs:127-165). Without
+// --no-netidx, tokio_main (main.rs:360-365) then also builds a Publisher
+// and Subscriber up front whether or not the program touches sys::net.
+// design/netidx_extraction.md: "A runtime that never touches sys::net has
+// no network at all: tests, fuzz children, --check and the LSP construct
+// nothing."
+//
+// command (on a machine with no ~/.config/netidx config):
+//   NETIDX_LOCAL_ONLY_RESOLVER_PORT=59291 graphix --no-netidx --check design/review-2026-10-05/repro/sys-net-16.gx
+//   ss -ltnp | grep 59291
+//
+// expected: the check exits 0 and nothing listens on 127.0.0.1:59291.
+// observed (HEAD c722befe, debug build): the check exits 0, then a
+//   `graphix` process (reparented to the user's systemd) listens on
+//   127.0.0.1:59291 and keeps running until killed by hand. The same with
+//   plain --check and with a run. A daemon left this way by an earlier
+//   run had been listening on 127.0.0.1:59200 for 14 h.
+1 + 1

@@ -35,6 +35,14 @@ fn pbytes() -> impl Strategy<Value = PBytes> {
 }
 
 fn arcstr() -> impl Strategy<Value = ArcStr> {
+    // CR claude for eric: [test-gap] proptest's `any::<String>()` draws from `\PC*`,
+    // which excludes every control character, `\n`, `\r`, `\t` and `\0` included. So
+    // expr_round_trip and expr_pp_round_trip never print a multi-line string, a
+    // control-character escape or a doc that spans lines. A strategy that mixes those
+    // characters in finds that a string holding BEL prints as `"\u{7}"`, which does not
+    // parse. Seq triggers are generated only as bare references (line 1420), so the
+    // head printer's parenthesization of prefix operators, brace forms in a `let`
+    // trigger and a `flush` call is never round-tripped. (t-print-14)
     any::<String>().prop_map(ArcStr::from)
 }
 
@@ -1177,6 +1185,14 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
     ]
 }
 
+// CR claude for eric: [test-gap] check_trait and check_module_sig (1672) never compare
+// `comments`, and Comments' PartialEq is always true. Yet trait_decl! and
+// module_sigitem() generate comments and both printers write them. A printer that
+// dropped the `//` lines above a trait method or a dynamic module's interface item
+// would still pass expr_round_trip and expr_pp_round_trip; the only pin is one
+// format.rs example, comments_above_interface_items_and_trait_methods_stay. Compare
+// `m0.comments.lines() == m1.comments.lines()` here and `s0.comments.lines() ==
+// s1.comments.lines()` for every item kind in check_module_sig. (tests-types-06)
 fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
     (t0.name == t1.name)
         && (t0.methods.len() == t1.methods.len())
@@ -1279,6 +1295,17 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
         | ExprKind::Impl(_)
         | ExprKind::Catch(_)
         | ExprKind::TryWith(_) => Some(true),
+        // CR claude for eric: [test-gap] A prefix operator's operand is an arith_term
+        // that takes the postfix operators (parser/arithexp.rs:26), so `*x?` is
+        // `*(x?)`, not `(*x)?` as the doc comment on loose_needs_parens says. Over `x:
+        // [i64, Error<`E>]`, `let y: i64 = -x$` checks and `(-x)$` is refused. This arm
+        // adds parens the printer does not need. So does the Neg(Constant) case in
+        // add_parens (1324), whose premise is false: the printer writes a negated
+        // constant as `- 5` (print.rs:2288), which reads back as a Neg. Both wrap in
+        // ExplicitParens shapes the printer prints bare, so the proptests never
+        // round-trip `*x?` or `- 5`. Delete both rules and the wrong sentence; OrNever,
+        // which has the same precedence, is already generated bare and round-trips.
+        // (tests-types-07)
         ExprKind::Qop(_) => Some(parent_prec == UNARY_PREC),
         _ => None,
     }
@@ -1387,6 +1414,17 @@ fn expr() -> impl Strategy<Value = Expr> {
     decorated(undecorated_expr())
 }
 
+// CR claude for eric: [test-gap] The round-trip generators never draw several forms the
+// printer must reproduce. No generator builds StringInterpolate (every `"..[x].."`), so
+// the proptests never reach write_interpolation. typexp() (327) has no `Error<T>`,
+// `Map<K, V>` or applied constructor (`'c<i64>`), and nothing draws `'_` in an impl
+// header or a Concrete/Function/Singleton/OneNumber bound in a constraint. seq_item!
+// (828) never decorates a seq or try/with statement, though the parser keeps those
+// decorations (parser/test.rs:2336). qop! (743) never wraps MapRef, ArraySlice, Qop or
+// OrNever, so `m{k}?` and `x?$` never appear. A printer regression in any of these
+// passes every proptest and shows only when `graphix fmt` meets a real file or someone
+// runs the corpus harness. Add strategies for each, in the positions where the parser
+// accepts them. (tests-types-05)
 fn undecorated_expr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![
         constant(),
@@ -1500,6 +1538,14 @@ fn check_type_opt(t0: &Option<Type>, t1: &Option<Type>) -> bool {
 
 fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> bool {
     match (pat0, pat1) {
+        // CR claude for eric: [dead] This arm and its mirror (Literal(Array) against
+        // Slice) cannot match. value() never builds an array, and the pattern parser
+        // tries slice_pattern, which commits on `[`, before literal_pattern
+        // (patternexp.rs:279-286), so neither side ever holds an array literal. The 23
+        // lines suggest an equivalence the parser never produces; delete them. In
+        // parser/test.rs, pattern0 (943) only dbg!s its parse and cannot see a
+        // mis-parse of `i64 as a if a < 10`, so assert the expected Pattern or delete
+        // it. Also drop the leftover eprintln! in `array` (1013). (tests-types-09)
         (
             StructurePattern::Literal(Value::Array(a)),
             StructurePattern::Slice { list: false, all: None, binds },
@@ -1742,6 +1788,20 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
+        // CR claude for eric: [test-gap] `check` compares constants (and pattern
+        // literals at 1529) with netidx `approx_eq`. It treats U32/V32, I32/Z32,
+        // U64/V64 and I64/Z64 as equal, compares any other numeric pair as f64 (`i16:5`
+        // equals `5`), treats floats within an absolute f64::EPSILON as equal (`1e-300`
+        // equals `0.0`) and compares durations by `as_secs_f64`. So expr_round_trip and
+        // expr_pp_round_trip cannot see a printer that changes a literal's numeric type
+        // (`v32:5` printed as `u32:5`) or loses a small float's digits; only fmt's
+        // exact reparse guard or the manual corpus harness would. Compare with `==`
+        // here and at 1529; netidx's approx_eq then has no user. The tolerance is
+        // load-bearing only for `duration()`, whose `Duration::new(any u64, ns)` values
+        // no literal can denote because a duration literal goes through f64: draw
+        // seconds below 2^23, where an f64 still resolves a nanosecond, or whole
+        // seconds. Add pairs such as (`v32:1`, `u32:1`), (`i16:1`, `1`) and (`1e-300`,
+        // `0.0`) to check_sees_a_lost_element. (tests-types-03)
         (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
         | (ExprKind::List { args: a0 }, ExprKind::List { args: a1 })
@@ -2170,6 +2230,14 @@ proptest! {
     /// `map_children` rebuilds from exactly the children `for_each_child`
     /// visits, in the same order, at every node.
     #[test]
+    // CR claude for eric: [test-gap] `expr()` draws only parseable syntax, so this test
+    // never sees Rethrow, SeqGuard, SeqAbort, SeqMachine, SeqCapture, a Catch with the
+    // Machine or Try role, or a resolved Module. Seq lowering and module resolution
+    // build those kinds, and seq lowering rewrites its output through `map_children`
+    // (seq.rs:1462). Their arms agree today (mod.rs:819-915 vs 1426-1600), but a child
+    // added to one walk and not the other would still pass. Add a case that hand-builds
+    // one of each with distinct children and compares the same id lists.
+    // (t-expr-core-10)
     fn children_agree(s in expr()) {
         let mut disagree = None;
         s.fold((), &mut |(), e| {
@@ -2383,6 +2451,17 @@ mod tree_sitter_compat {
         assert!(sexp.contains("attribute"), "no attribute node in {sexp}");
     }
 
+    // CR claude for eric: [test-gap] These proptests and assert_ts_parses only check
+    // that a printed expression has no ERROR or MISSING node, so a wrong tree passes:
+    // the generator emits `~!` through BinOp::ALL and tree-sitter reads `a ~! b` as `a
+    // ~ (!b)`. The type generator never builds Type::App and trait_method_sig always
+    // takes a bare `self`, so `self<'a>` is never tried, and no test parses the repo's
+    // own sources: at HEAD stdlib/graphix-package-core/src/graphix/mod.gxi has 18 ERROR
+    // nodes (the Collection trait's `self<'a>`), the only failure among the stdlib,
+    // book/src and bench files. A test over the directories
+    // graphix-compiler/tests/expr_spans.rs walks, plus tree-shape pins for `a ~! b`,
+    // `&|x| x + 1`, `` `A(x) `` and `t.0.1`, would make this the gate
+    // ide/README.md:142-145 says it is. (ide-tooling-07)
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1024))]
 

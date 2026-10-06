@@ -1,0 +1,28 @@
+// x-typecheck-generics-F11: check_defaults commits `conjunct ⊇ default`
+// (lambda.rs:1707-1710), so a default whose type is an open cell is bound to
+// the parameter's whole bound (`Number`) instead of being narrowed by it.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F11.gx
+//
+// expected: accepted; running it prints 6. The same helper reading `k` in its
+// body, `let mul = |x| x * k`, is accepted and prints 6, and so is
+// `|#by: i64 = k, x| x * by`.
+//
+// observed: refused at the default `k`:
+//   type mismatch Singleton does not contain '_N: Number
+// GRAPHIX_DBG_BIND=1 shows `BIND rhs '_N := Primitive(..Number..)` for the
+// cell, then `Singleton >= '_N -> false`.
+//
+// The same arm binds an outer `never()` let to the whole bound:
+//   let d = never(); let f = |#x = d, y| x + y; d <- 2; f(1)
+//     refused: Singleton does not contain '_N: Number
+//     (accepted, printing 3, when `d <- 2` comes before `let f`)
+//   let d = never(); let f = 'a: Number |#x: 'a = d, y: 'a| [x, y]; d <- 2; f(3)
+//     refused at f(3): 'a: i64 does not contain '_N: [Int, Real]
+//   let d = never(); let f = 'a: Number |#x: 'a = d, y: 'a| [x, y]; d <- 2; d + 1
+//     refused: cannot compute '_N: [Int, Real] + i64
+let scale = |k| {
+  let mul = |#by = k, x| x * by;
+  mul(3)
+};
+scale(2)

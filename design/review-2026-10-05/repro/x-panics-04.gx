@@ -1,0 +1,22 @@
+// x-panics-04: a panic inside an async builtin wedges that call site forever.
+// CachedArgsAsync::update (stdlib/graphix-package-core/src/lib.rs:904) sets
+// `running` and spawns the eval; the panic becomes a JoinError the runtime
+// drops (graphix-rt/src/gx.rs:1098), no reply ever arrives, `running` stays
+// true and every later call is queued and never run.
+// run: graphix --no-cache design/review-2026-10-05/repro/x-panics-04.gx < /dev/null
+// expected: an r= line after every n= line (n=1 answers with an error or a value)
+// observed: n=0 r= ; n=1 and the panic "capacity overflow" on stderr ;
+// then n=2 n=3 n=4 with no r= line ; exit code 4. With u64:1 in place of the huge
+// count every n gets its r= line. The same wedge through pack::read: input
+// bytes:C///////////O5rKAA== at n=1 (Duration::new overflow), which also
+// stalls a seqq around the read forever.
+let s = sys::io::stdin(null);
+let clk = sys::time::timer(duration:100.ms, 4);
+let n = 0;
+n <- clk ~ n + 1;
+let want = select n { 1 => u64:18446744073709551615, _ => cast<u64>(n)$ };
+let r = sys::io::Read::read(s, want);
+println("n=[n]");
+println("r=[r]");
+sys::exit(sys::time::after_idle(duration:600.ms, n));
+0

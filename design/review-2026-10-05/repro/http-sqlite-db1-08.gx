@@ -1,0 +1,59 @@
+// http-sqlite-db1-08: stopping an http::serve aborts only its accept loop;
+// open keep-alive connections keep running.
+//
+// stdlib/graphix-package-http/src/lib.rs:640 spawns each connection as a
+// detached task holding the server's BindId and channel sender. Sleep (924),
+// delete (911), restart (773) and ServerHandle::drop (97) abort only
+// serve_loop, so a client's pooled connection outlives the server:
+//   a: the arm sleeps (300ms) and wakes (600ms); the woken server has a new
+//      id, the old connection feeds the old one, no node takes the event, the
+//      cycle drops it with its reply channel: 500 on every request.
+//   b: the address moves at 300ms; the old connection is still served by the
+//      handler on the port the server left.
+//   d: the array::map slot holding the server shrinks away at 300ms (delete);
+//      the old connection gets 500.
+// `kept` reuses client c's pooled connections at 900ms; `new` is a fresh
+// client at the same moment.
+//
+// command (ports 51873-51877 must be free):
+//   graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-08.gx
+//   (the same with --no-fusion and GRAPHIX_PAR=off)
+//
+// expected: kept matches new, the stopped servers' connections closed:
+//   (("200 ok /a", "200 ok /b", "200 ok /d"),
+//    ("200 ok /a", "ERR", "ERR"),
+//    ("200 ok /a", "ERR", "ERR"))
+// observed (HEAD c722befe, debug build):
+//   (("200 ok /a", "200 ok /b", "200 ok /d"),
+//    ("500 Internal Server Error", "200 ok /b", "500 Internal Server Error"),
+//    ("200 ok /a", "ERR", "ERR"))
+let handler = |req: http::Request| -> http::Response { body: "ok [req.path]", headers: [], status: u16:200, url: "" };
+let stop = sys::time::timer(duration:300.ms, false);
+let a = "127.0.0.1:51873";
+let on = true;
+on <- stop ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let sa = select on {
+  true => http::serve(#addr: a, #handler: handler),
+  false => never()
+};
+let b = "127.0.0.1:51874";
+let baddr = b;
+baddr <- stop ~ "127.0.0.1:51875";
+let sb = http::serve(#addr: baddr, #handler: handler);
+let d = "127.0.0.1:51877";
+let daddrs = ["127.0.0.1:51876", d];
+daddrs <- stop ~ ["127.0.0.1:51876"];
+let sd = array::map(daddrs, |x| http::serve(#addr: x, #handler: handler));
+let show = |r: Result<http::Response, `HTTPError(string)>| select r {
+  error as _ => "ERR",
+  v => "[v.status] [v.body]"
+};
+let c = http::client(#timeout: duration:1.s, null)$;
+let before = (show(http::get(c, "http://[a]/a")), show(http::get(c, "http://[b]/b")), show(http::get(c, "http://[d]/d")));
+let t = sys::time::timer(duration:900.ms, false);
+let kept = (show(http::get(t ~ c, "http://[a]/a")), show(http::get(t ~ c, "http://[b]/b")), show(http::get(t ~ c, "http://[d]/d")));
+let fresh = http::client(#timeout: duration:1.s, t)$;
+let new = (show(http::get(fresh, "http://[a]/a")), show(http::get(fresh, "http://[b]/b")), show(http::get(fresh, "http://[d]/d")));
+sys::exit(sys::time::after_idle(duration:2.s, 0));
+(before, kept, new)

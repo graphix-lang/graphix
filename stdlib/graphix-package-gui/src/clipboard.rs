@@ -54,6 +54,16 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
     }
 }
 
+// CR claude for eric: [risk] The doc comment on ClipboardBuiltin says
+// arboard::Clipboard is !Send, but arboard 3.6 asserts Clipboard: Send + Sync. This
+// opens and drops an instance on every call. Without the wayland-data-control feature
+// arboard always uses X11 on Linux, and dropping the last instance destroys the
+// selection owner after at most a 100 ms clipboard-manager handoff. So outside a
+// running GUI, whose event-loop instance keeps the context alive, write_text returns
+// null yet nothing can paste the text unless a clipboard manager took it. Every call
+// also connects to X and spawns and joins arboard's server thread. Keep one long-lived
+// instance shared with the event loop's Clipboard, drop it at shutdown so the handoff
+// still runs, and delete the false comment. (gui-core-15)
 fn with_clipboard(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<Value, arboard::Error>,
 ) -> Value {

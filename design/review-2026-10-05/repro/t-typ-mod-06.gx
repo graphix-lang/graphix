@@ -1,0 +1,58 @@
+// t-typ-mod-06: the Ref name fast path's "same definition?" test
+// (TypeRef::cells_agree, ResolvedRef::same_def) accepts a different typedef
+// of the same name, so a function throws a type it does not declare and the
+// JIT then reads a value at the wrong type.
+//
+// A definition's inferred throws are re-scoped into its own scope
+// (graphix-compiler/src/node/lambda.rs:1808, Type::scope_refs) and keep their
+// filled cells: f's thrown P<i64, string> (f's block: (i64, string)) becomes a
+// ref with g's scope and the name P. contains' Ref x Ref fast path
+// (graphix-types/src/typ/contains.rs:549, union_identical's Ref arm at
+// setops.rs:98) relates two refs by scope, name and cells_agree
+// (graphix-types/src/typ/mod.rs:586-591). cells_agree answers true when
+// either cell is empty (g's written P is never resolved before this
+// comparison) or dead, and when both are filled it compares the definitions
+// with Type::eq (same_def, mod.rs:402-405), under which any two open type
+// variables are equal, so ('a, 'b) and ('b, 'a) are one definition.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-typ-mod-06.gx
+//
+// expected: refused at g: g's Error<ErrChain<P<i64, string>>> ((string, i64))
+//   does not contain f's ((i64, string)), as it is refused when g writes
+//   `throws Error<ErrChain<(string, i64)>>`.
+// observed (HEAD c722befe, debug build): --check exit 0. The run aborts in
+//   the fused str::len: "misaligned pointer dereference: address must be a
+//   multiple of 0x8 but is 0x1" (arcstr), the i64 1 read as a string.
+//   --no-fusion prints nothing; graphix-fuzz check aborts the same way. With
+//   `got: [i64, null]`, `got <- n` and `got$ * 2 + 1` the JIT prints a heap
+//   address (k = 280820668005313) and the node-walk an arith error parsing
+//   "one".
+// variants (all --check exit 0):
+//   g's `type P<'a, 'b> = {x: 'a, y: 'b}` (any body, through the empty cell);
+//   `type E = `A(string)` in f, `type E = `B(i64)` in g (arity 0).
+//   Both cells filled, same_def alone: in g add `type T = Error<ErrChain<P<i64,
+//   string>>>; let probe = |e: T| ((e.0).error); let fill: P<i64, string> =
+//   probe(never());` and declare `throws T`: the swapped tuple is still
+//   accepted and aborts the same way, the struct body is now refused.
+let f = {
+  type P<'a, 'b> = ('a, 'b);
+  |x: i64| -> i64 throws Error<ErrChain<P<i64, string>>> select x {
+    0 => error((1, "one"))?,
+    n => n
+  }
+};
+let g = {
+  type P<'a, 'b> = ('b, 'a);
+  |x: i64| -> i64 throws Error<ErrChain<P<i64, string>>> f(x)
+};
+let got: [string, null] = null;
+let r = {
+  catch(e) {
+    let (s, n) = (e.0).error;
+    got <- s
+  };
+  g(0)
+};
+let k = str::len(got$) + 1;
+println("k = [k]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

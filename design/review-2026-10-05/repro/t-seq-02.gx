@@ -1,0 +1,49 @@
+// t-seq-02: a named callback passed to a call in a seq step goes into the
+// issue snapshot, so the callee sees it as a tuple projection with no
+// static target: seqq captures go live, the step costs a cycle, the loop
+// de-fuses.
+//
+// issue_call (graphix-types/src/expr/seq.rs:1227) keeps only inline lambda
+// literals at the call site; `inc` is moved into `seqargs = (pc, xs, inc)`
+// and the call becomes `array::map(seqissued.1, seqissued.2)`. Nothing
+// resolves `seqissued.2` (callsite.rs lambda_literal / fn_arg_identity /
+// register_fn_params see a TupleRef), so local_summary marks the step
+// opaque (reads all, writes all) and plan_machines sets every SeqCapture
+// of the machine live. The same happens with a user HOF
+// (`let apply = |f: fn(x: i64) -> i64, x: i64| f(x)` called `apply(inc, 1)`).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-seq-02.gx
+//          (same with --no-fusion and GRAPHIX_PAR=force; graphix-fuzz check
+//          says AGREE: both engines run the same plan)
+//
+// expected: (([2, 3, 4], 0), ([2, 3, 4], 0)). `k` is a seqq capture no step
+//   writes, so each run reads its request's snapshot (k was 0 when `go`
+//   fired); book/src/core/seq.md: only "a call whose function is only known
+//   at run time (one stored in a struct or an array)" counts as touching
+//   every variable, and a capture stays live only when the block writes it.
+// observed (HEAD c722befe, debug build): (([2, 3, 4], 100), ([2, 3, 4], 0)).
+//   GXDBG_SEQPLAN=1: the named machine prints `opaque call ... static=false`,
+//   `S0 reads all writes all`, `S0 -> S1 next`, `capture ... live true`; the
+//   inline one `S0 -> S1 same` and `live false`.
+//
+// The same lowering, two more ways:
+// - plain seq timing: `seq go { let a = array::map(xs, inc); let s = step;
+//   (a, s) }` (step/go as below) prints ([2, 3, 4], 3); with `|x| x + 1`
+//   inline it prints ([2, 3, 4], 2).
+// - fusion: `let inc = |x: i64| x * 2 + 1; let xs = [1, 2, 3];
+//   seq { let a = #[native] array::map(xs, inc); a }` is a compile error
+//   ("#[native] expression did not fully fuse ... lambda call site
+//   `array::map(seqissued.1, seqissued.2)` not discovered"); the same
+//   outside a seq, or with the callback inline, compiles and prints
+//   [3, 5, 7].
+let inc = |x| x + 1;
+let xs = [1, 2, 3];
+let step = 0;
+step <- select step { n if n < 20 => n + 1, _ => never() };
+let go = select step { 1 => step, _ => never() };
+let k = 0;
+k <- select step { 3 => 100, _ => never() };
+let named = seqq go { let a = array::map(xs, inc); until step > 6; (a, k) };
+let inline = seqq go { let a = array::map(xs, |x| x + 1); until step > 6; (a, k) };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(named, inline)

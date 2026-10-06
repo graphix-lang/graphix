@@ -40,6 +40,18 @@ pub(crate) mod queuefn;
 /// The success member `T` of a `Result<T, E>` return type, in either the
 /// named form or the expanded `[T, Error<E>]` form. Shape only; the
 /// typecheck-time validation is [`extract_cast_type`].
+// CR claude for eric: [bug] The checker can bind 'b to a union that holds an error
+// member: `[T, Error<E>]` under a `Result<T, E>` annotation, `[error, T]` under a
+// select with an `error as e` arm. This function returns that union whole, so the read
+// casts data into an error: `Error<E>` wraps any value E admits, and `error` takes any
+// string, or an array whose first element leads to one. So JSON `["JsonErr", "forged"]`
+// read as `Result<{port: i64}, JE>` returns the input's own JsonErr instead of
+// InvalidCast. `select json::read(r#"{"x": 1, "y": 2}"#) { error as e => .., {x: f64,
+// y: f64} as p => .. }` takes the error arm with error:"x", because the error member
+// sorts first and wins whenever T needs a conversion. json, toml, pack, sqlite and
+// sys::net (through extract_cast_type) and str::parse all take their target here, and
+// pack::read also returns an error decoded from the bytes whenever the target admits
+// one. probe: design/review-2026-10-05/repro/small-pkgs-04.gx (small-pkgs-04)
 pub fn cast_target(rtype: &Type) -> Option<Type> {
     rtype.with_deref(|t| match t? {
         Type::Ref(TypeRef { name, params, .. })
@@ -54,6 +66,19 @@ pub fn cast_target(rtype: &Type) -> Option<Type> {
     })
 }
 
+// CR claude for eric: [structure] json::read, toml::read, pack::read and sqlite::query
+// all wrap this the same way. Each has a cast_typ field set in init and again in
+// typecheck1, a typecheck0 override equal to the EvalCachedAsync default, and a
+// map_value that casts or returns a per-crate 'no concrete return type' error.
+// sys::net's Subscribe, RpcCall, Publish and PublishRpc keep the same field but pass
+// the value through uncast on a miss. extract_publish_cast_type detects a type variable
+// by formatting the type and looking for a quote, where this function calls
+// has_unbound(). A small cast-target type here (built from the resolved FnType, with
+// Pack and one cast that carries the missing-target policy) would leave each builtin
+// one field and two one-line calls. Nearby copies: json_to_value and toml_to_value
+// build the sorted struct-pair array identically (the inverse of is_struct), their
+// write_str/write_bytes fast fns differ only in the last conversion, and db's DbTreeEv
+// and DbTxnTreeEv are copies of each other. (x-dup-10)
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
     let typ = cast_target(&resolved_typ?.rtype)?;
     if typ.has_unbound() {
@@ -173,6 +198,12 @@ macro_rules! impl_no_pack {
 /// whose identity is determined by `Arc::as_ptr(&self.inner)`.
 #[macro_export]
 macro_rules! impl_abstract_arc {
+    // CR claude for eric: [dead] This raw-UUID arm has no caller: the six uses (db
+    // cursor, tree and txn, sqlite) all take the path form, and ../netidx has none. It
+    // repeats the @identity arm's PartialEq/Eq/PartialOrd/Ord/Hash/impl_no_pack bodies,
+    // and it registers the wrapper under a caller-chosen UUID instead of
+    // abstract_uuid(path), the identity a nominal type test (`T as t`) compares
+    // against. Delete the arm. (core-lib-12)
     ($name:ident, $wrapper_vis:vis static $wrapper:ident = [$($uuid:expr),* $(,)?]) => {
         impl PartialEq for $name {
             fn eq(&self, other: &Self) -> bool {
@@ -259,6 +290,17 @@ pub use memo::FastMemo;
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
+// CR claude for eric: [bug] is_struct decides from the value alone, but a struct, an
+// Array<(string, T)> and an array of one-payload variants share one encoding. So json
+// and toml write_str/write_bytes and hbs::render write one type as an object or as an
+// array depending on its contents. `[("a", 1), ("b", 2)]` writes `{"a":1,"b":2}` and
+// `[("b", 1), ("a", 2)]` writes `[["b",1],["a",2]]`; toml::write_str accepts the first
+// and refuses the second; and the hbs template `{{#each
+// p}}{{this.[0]}}={{this.[1]}};{{/each}}` renders `=;=;` for the first. The writers
+// take `value: Any` and a FastCall sees no argument type, so they need the site's
+// argument type to serialize by type, as the readers use the return type; that would
+// also write a List as a flat array instead of its cons cells. probe:
+// design/review-2026-10-05/repro/small-pkgs-11.gx (small-pkgs-11)
 pub fn is_struct(arr: &ValArray) -> bool {
     if arr.is_empty() {
         return false;
@@ -442,6 +484,18 @@ impl CachedVals {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> bool {
+        // CR claude for eric: [bug] This answers true for a FreshBottom while the slot
+        // keeps its old value. rand (graphix-package-rand/src/lib.rs:70), range
+        // (Seq::update, line 1984), WatchStream (sys/src/watch.rs:625), the db
+        // subscription accessors (db/src/subscribe.rs:320), the bench builtins and
+        // netidx-admin's ceremony.rs:834 act on it without checking any_bottom(). So a
+        // bottomed argument re-runs them from stale slots: rand draws again and range
+        // re-emits the old sequence. R3 of design/dense_delivery.md says the invocation
+        // bottoms instead, as CachedArgs does. Returning update_full's tag instead of a
+        // bool would make every caller handle the taint. probe:
+        // design/review-2026-10-05/repro/x-builtin-effects-06.gx (hi$ bottom at n=2 and
+        // n=4: rand drew 6 times and range emitted 18 values; R3 gives 4 and 12).
+        // (x-builtin-effects-06)
         self.update_full(ctx, from).is_some_and(|t| t.triggers())
     }
 
@@ -460,6 +514,15 @@ impl CachedVals {
             if tag.is_bottom() {
                 self.1[i] = Tag::STALE_BOTTOM;
             } else {
+                // CR claude for eric: [perf] Every update stores a fresh clone of each
+                // argument that is not bottom, stale ones included. So in a quiet cycle
+                // every builtin call bumps and drops the refcount of each string, bytes
+                // or array argument just to store the value its slot already holds. A
+                // stale production whose value_words (graphix-compiler/src/tval.rs:104)
+                // equal the slot's can leave the slot alone. fast_eval then clones
+                // every slot once more into an LPooled<Vec<Value>> on each eval
+                // (fast_args, line 524), because the slots are Option<Value> and a fast
+                // fn takes &[Value]. (x-alloc-10)
                 self.0[i] = Some(tv.value_cloned());
                 self.1[i] = tag;
             }
@@ -565,6 +628,20 @@ pub fn sort_values(
         v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
     }
     let mut buf: LPooled<Vec<Value>> = vals.collect();
+    // CR claude for eric: [bug] A user `impl Ord` that is not a total order
+    // (antisymmetric but intransitive, which the checker accepts) makes these std sorts
+    // panic with "does not correctly implement a total order", and nothing contains it.
+    // array::sort and list::sort kill the runtime in both engines: in a kernel,
+    // fast_dispatch catches the panic and FusedKernel::update resumes it. Map HOFs
+    // build their result through pairs_to_map
+    // (graphix-compiler/src/node/collection.rs:205), whose CMap::from_iter sorts the
+    // same way. Under the JIT that runs in graphix_valarray_into_cmap
+    // (graphix-compiler/src/fusion/emit_helpers.rs:1104), which has no catch_unwind, so
+    // the unwind meets the kernel's frames and the process aborts with a core dump
+    // (exit 134, against exit 1 on the node-walk). design/traits.md accepts wrong
+    // results from such an impl ("corrupts its maps"), not a dead runtime or an aborted
+    // process. probe: design/review-2026-10-05/repro/collections-str-02.sh (21 values).
+    // (collections-str-02)
     match (dir, numeric) {
         ("Ascending", true) => buf.sort_by(|a, b| cn(a).cmp(&cn(b))),
         ("Ascending", false) => buf.sort(),
@@ -776,6 +853,24 @@ impl<T> CachedArgs<T> {
             }
             Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
                 Some(v) => last_result.set(TagValue::fired(v)),
+                // CR claude for eric: [bug] When eval returns None on a fired join,
+                // this arm keeps the previous result as STALE, and the wake re-eval
+                // below does the same. FastFn's doc, the kernel trampoline
+                // (graphix-compiler/src/fusion/emit_helpers.rs:598) and the book's
+                // fast-call contract all say None means no value this cycle. So the
+                // node-walk shows a value the builtin no longer produces and disagrees
+                // with the JIT. probe:
+                // design/review-2026-10-05/repro/x-engine-firing-02.gx (graphix-fuzz
+                // check: after Pad(u64 max) the interp re-emits the old encode length
+                // when t fires, and the JIT emits nothing); `all(a, b)` read after a !=
+                // b shows the stale equal value on both engines, since it node-walks. A
+                // None should leave last_result bottom (set_bottom(true) here,
+                // set_bottom(false) on the wake path), and the any_bottom arm should
+                // set last_result the way dense_gate! does instead of returning a
+                // temporary bottom.
+                // graphix-fuzz/findings/dyncall-pending-taint-jul2026/03_pend_chain_cached_downstream.gx
+                // expects the old ride and never runs, because the harness refuses its
+                // u64 schedule inputs. (x-engine-firing-02)
                 None => last_result.ride(),
             },
             Some(_) if !last_result.tag().is_bottom() => {
@@ -872,6 +967,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.image_encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
+        // CR claude for eric: [risk] `running` is true only while a spawned eval is in
+        // flight, state an image cannot carry, yet it is written here while a non-empty
+        // `queued` is refused. A restored `true` has no task behind it, so no reply
+        // ever clears it and every later request queues forever. Images are written
+        // before any cycle, so it is always false today; refuse a true `running` with
+        // NOT_QUIESCENT, stop encoding it, and decode it as false.
+        // (x-builtin-effects-18)
         self.running.encode(buf)?;
         self.t.image_encode(buf)
     }
@@ -896,15 +998,49 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             self.running = false;
             self.t.map_value(ctx, tv.value())
         });
+        // CR claude for eric: [bug] A call site runs one request at a time, FIFO, and
+        // nothing cancels or replaces the one in flight. spawn_var keeps no abort
+        // handle, and sleep and delete only drop the reply id. So a request whose args
+        // are already stale blocks every later one for as long as it waits on a peer or
+        // a resource. wait on a replaced Proc reports nothing until the old child
+        // exits, then reports the old child's status while c names the new one. accept
+        // on a replaced listener keeps the old port bound and never accepts on the new
+        // listener until something connects to the old port. One client that never
+        // sends a ClientHello stalls every later tls::accept at the call site, and
+        // there is no handshake timeout. probe:
+        // design/review-2026-10-05/repro/sys-io-03.gx (sys-io-03)
         if !self.running
             && let Some(args) = self.queued.pop_front()
         {
             self.running = true;
             let id = self.id;
+            // CR claude for eric: [bug] If `T::eval` panics, this spawn never answers.
+            // tokio turns the panic into a JoinError, and graphix-rt/src/gx.rs:1098
+            // (and 1029/1034/1104) drops it. So `running` stays true, every later call
+            // is pushed onto `queued` and never run, and a seq/seqq step waiting on the
+            // call stalls forever. The only sign is the panic hook's line on stderr.
+            // This applies to every EvalCachedAsync builtin and to whatever their
+            // dependencies panic on. Catch the unwind around `T::eval` so the call
+            // answers with an error value and `running` clears, and log JoinErrors in
+            // gx.rs instead of dropping them. probe:
+            // design/review-2026-10-05/repro/x-panics-04.gx (stdin from /dev/null).
+            // (x-panics-04)
             ctx.rt.spawn_var(async move { (id, T::eval(args).await) });
         }
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
+            // CR claude for eric: [bug] `bottomed` is set only when an argument
+            // triggers (the `cached.update` test above), and `bottom_null` leaves `out`
+            // holding the last reply. So on every later cycle where the argument is a
+            // standing bottom, `out.ride()` below re-delivers the pre-bottom reply as a
+            // valid STALE value. CachedArgs and dense_gate! keep a standing bottom
+            // bottom (R1/R3 in design/dense_delivery.md). A `let` over the same call
+            // stays bottom because it published the fresh bottom, so `f(x$)` inline and
+            // `let r = f(x$)` disagree for every async builtin (fs, json, pack, http,
+            // tcp, db). Testing any_bottom on every cycle, as CachedArgs does, and
+            // setting `out` bottom with set_bottom when no reply arrived would keep the
+            // standing bottom. probe: design/review-2026-10-05/repro/core-lib-06.gx
+            // (core-lib-06)
             None if bottomed => TagValue::bottom_null(true),
             None => self.out.ride(),
         }
@@ -1163,6 +1299,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         }
     }
 
+    // CR claude for eric: [bug] sleep() clears the configured #n together with the
+    // running count, and update reloads n only from a FIRED #n (line 1147). A level #n
+    // (a let, a parameter, a callee's argument) is therefore lost for good once the arm
+    // sleeps: take passes nothing ever again, and Skip (1215, 1234) passes everything.
+    // A literal #n restarts only because a constant re-fires at the wake. The
+    // fired-only seed also leaves take dead from birth when a sibling arm consumed #n's
+    // fire before this arm's first selection. Keep the last #n read through seam_value
+    // across sleep and have sleep() reset only the remaining count; Throttle::sleep
+    // zeroes its #rate the same way. probe:
+    // design/review-2026-10-05/repro/x-engine-firing-05.gx (x-engine-firing-05)
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.n = None
     }
@@ -1277,10 +1423,33 @@ struct SumEv;
 unit_image_state!(SumEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
+    // CR claude for eric: [bug] sum, product, min, max, and, or and mean are declared
+    // Sync here and at lines 1306, 1350, 1381, 1411, 1436 and 2238. Each is a pure
+    // function of its slots with no state of its own. CachedArgs re-runs eval at a wake
+    // only for Stateless builtins (line 785), so when an arm wakes after its inputs
+    // moved, and another arm already consumed those fires, it shows the result from
+    // before the sleep. Example: in `select c { true => (max(x, y), sum(x, y)), false
+    // => x }`, after x goes from 5 to 10 the woken arm shows max 5 and sum 6, while `x
+    // + y` and `divide(x, y)` (the same eval shape as sum, declared Stateless(None))
+    // both recompute. Both engines agree, so the fuzzer cannot see it. Declare these
+    // Stateless(None) or give them fast fns, and fix CLAUDE.md's "a wrong Sync only
+    // costs the loop", which leaves out the recompute a wrong Sync skips at a wake.
+    // probe: design/review-2026-10-05/repro/x-engine-firing-06.gx (x-engine-firing-06)
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_sum";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        // CR claude for eric: [bug] When every argument flattens to nothing (an empty
+        // array), this fold returns None, and so do the same folds in ProductEv and
+        // DivideEv. CachedArgs::update_inner answers a fired None by riding its last
+        // result (line 779). So an array that becomes empty keeps reporting the
+        // previous total as a valid stale value. An array that starts empty gives
+        // bottom, so any tuple or struct built from it shows nothing: `(array::len(xs),
+        // sum(xs))` fires (0, 10) after xs goes from [8, 2] to []. This breaks R1 (the
+        // resident is the function of the current inputs) and organic firing (the input
+        // fired, the output did not); give an empty input its own answer: 0 for sum, 1
+        // for product, an error for divide as mean does, or at least bottom. probe:
+        // design/review-2026-10-05/repro/gx-stdlib-06.gx (gx-stdlib-06)
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => add_vals(res, v.clone()),
@@ -1513,6 +1682,16 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
     int_shift!(&args[0], &args[1], wrapping_shr)
 }
 
+// CR claude for eric: [structure] Twelve fast-fn builtins in this file repeat one shell
+// (unit struct, unit_image_state!, an EvalCached impl whose eval is fast_eval of the
+// fast fn, a CachedArgs alias): IsErr, ToError, All, BitAnd, BitOr, BitXor, BitNot,
+// Shl, Shr, ArrayLen, MapLen and MapUnion; math.rs's three macros and str's split_fn!
+// generate the same shell. One exported macro here, `fast_builtin!(Ev, Alias, "core_x",
+// fc_x)`, would replace them all. In the same file Take and Skip differ only in their
+// match on n, add_vals/prod_vals/div_vals and the Sum/Product/Divide evals only in the
+// operator, and MinEv/MaxEv only in `<` against `>`. One parameterized copy of each
+// would stop the pairs drifting, as Divide (Stateless) and Sum/Product (Sync) already
+// have. (core-lib-13)
 #[derive(Debug, Default)]
 struct BitAndEv;
 unit_image_state!(BitAndEv);
@@ -1981,6 +2160,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        // CR claude for eric: [bug] range never checks `self.args.any_bottom()` after
+        // `update`, so a bottom reaches its match. R3 and ruled delta 13 in
+        // design/dense_delivery.md say a bottomed argument bottoms the invocation. An
+        // argument not delivered yet falls to the `_` arm: `range(0, j)` with `j`
+        // arriving later emits `RangeError` at init, and `range(0, j)?` raises it to
+        // the catch handler. A bottomed argument keeps its old value in the slot, so
+        // every fresh bottom issues the old range again. When `any_bottom()` holds,
+        // bottom the output and issue nothing, as the `CachedArgs` wrappers and
+        // `array::iter` (seam_tick) do. probe:
+        // design/review-2026-10-05/repro/core-lib-03.gx (expected `0 1`; both engines
+        // print a RangeError at init, then `0 1` again on each later tick).
+        // (core-lib-03)
         if self.args.update(ctx, from) {
             let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
@@ -2226,6 +2417,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
+        // CR claude for eric: [bug] sleep() restarts the count but keeps `out`. When a
+        // re-selected arm's input does not fire at the wake, the arm emits the previous
+        // activation's count, and the next fire counts 1, so the arm shows 2 and then
+        // 1. Once, Take, Skip, Uniq and Hold do the same in their sleep: a woken
+        // once(x) emits the old value and then the next x, and a woken uniq(x) emits a
+        // duplicate. A fresh count in the same position shows nothing, so a restarted
+        // builtin is not a fresh one; this goes against wake_catchup.md (at a wake,
+        // residents are refreshed, not surfaced) and against the reasoning of
+        // async_sleep_outputs.md. Either clear `out` to TagValue::phantom() in each
+        // restart builtin's sleep (check the seq lowering's once, uniq and hold first),
+        // or rule the surfacing intended in CLAUDE.md. probe:
+        // design/review-2026-10-05/repro/x-engine-firing-07.gx (x-engine-firing-07)
         self.count = 0
     }
 }
@@ -2406,6 +2609,19 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
         Ok(Box::new(Dbg { spec, dest, typ, buf: buf_, out: TagValue::phantom() }))
     }
 
+    // CR claude for eric: [bug] dbg is an effect but is declared Stateless(None), as
+    // are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
+    // arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
+    // call skips sleep, and each re-selection enters it as a birth where the standing
+    // argument reads FIRED: dbg and log print again and now resamples although the
+    // argument never fired, while println in the same arm shape prints once. Whether
+    // the arm sleeps also depends on fusion, so the engines disagree: `{ dbg(#dest:
+    // `Stdout, z); 100 }` prints once under the JIT (the fused `100` is a FusedKernel,
+    // counted ASYNC) and at every entry under --no-fusion. Declaring them Sync, as
+    // print/println are, makes both engines print once; the Effect::Stateless doc and
+    // CLAUDE.md's "`None` for effects" say the opposite and need the same correction.
+    // probe: design/review-2026-10-05/repro/x-builtin-effects-05.gx
+    // (x-builtin-effects-05)
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_dbg";
 
@@ -2560,6 +2776,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
             return self.out.ride();
         };
         self.buf.clear();
+        // CR claude for eric: [bug] `self.scope` is the scope init receives, the
+        // builtin definition's own body inside core, so every log line from every call
+        // site starts with the same `core::#fn<id>: ` (core::#fn4611686018427387938
+        // here), which says nothing about where it came from. Dbg keeps the call site's
+        // argument spec (`from[1].spec()`, line 2421) and prints its position; do the
+        // same here, or drop the prefix. probe:
+        // design/review-2026-10-05/repro/x-builtin-effects-15.gx (x-builtin-effects-15)
         write!(self.buf, "{}: ", self.scope.lexical).unwrap();
         let typ = from[1].typ().clone();
         let buf = &mut self.buf;
@@ -2583,6 +2806,18 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
+            // CR claude for eric: [perf] print and println are declared Sync, while dbg
+            // and log, which have the same shape (a #dest config, a scratch buffer,
+            // emit_line), are Stateless(None), and design/strict_fusion.md lists print
+            // among the effects kept Stateless(None) so a tail loop that prints stays
+            // one activation. As Sync, a tail recursion that calls println keeps an
+            // activation per iteration, and #[tail_recursive] on it is refused as
+            // stateful, while the same loop with dbg or log is accepted. Declare both
+            // Stateless(None). Dbg, Log and printfn repeat one update body (dest from
+            // arg 0, seam_tick on arg 1, format into buf, emit_line), which is how
+            // their effects drifted apart; one shared body would also stop all four
+            // imaging their scratch buffer. probe:
+            // design/review-2026-10-05/repro/core-lib-09.gx (core-lib-09)
             const EFFECT: Effect = Effect::Sync;
             const NAME: &str = $name;
 
@@ -2708,6 +2943,19 @@ type MapLen = CachedArgs<MapLenEv>;
 fn fc_map_union(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
         (Value::Map(a), Value::Map(b)) => {
+            // CR claude for eric: [bug] chunkmap's Map::union does not always pass f
+            // its values in (self, other) order. When `a` is not taller than `b`,
+            // Tree::union (chunkmap avl.rs:1278-1281) calls merge_root_to(&t1, &t0), so
+            // f gets (k, b's value, a's value) and this closure keeps a's value. Which
+            // map wins a shared key therefore depends on tree heights and can differ
+            // between keys of one call, contrary to map/mod.gxi's "b's value".
+            // Collection::flat_map over Map (core mod.gx:54) inherits this and keeps
+            // the earlier element's value on a shared key. Fix the argument order in
+            // chunkmap's Tree::union, or build the b-wins union here without relying on
+            // it, and pin collisions in both argument orders and at different sizes.
+            // probe: design/review-2026-10-05/repro/x-engine-collections-04.gx
+            // (`map::union({1 => "a"}, {1 => "b"})` is `{1 => "a"}`).
+            // (x-engine-collections-04)
             Some(Value::Map(a.union(b, |_, _, v| Some(v.clone()))))
         }
         _ => None,

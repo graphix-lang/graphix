@@ -272,6 +272,14 @@ start() {
         export GRAPHIX_FUZZ_MEM_LIMIT=0
         export ASAN_OPTIONS="hard_rss_limit_mb=${SOAK_ASAN_RSS_MB:-2048}"
     else
+        # CR claude for eric: [doc-drift] design/graphix_fuzz.md §9 rules out
+        # release-profile fuzzing because the debug asserts catch JIT bugs. This line
+        # builds the soak binary --release, so every fleet child runs with debug_assert
+        # and overflow checks compiled out. This build is also the deploy's release gate
+        # (the regress run below). Either the doc's entry is stale and should say the
+        # fleet trades the asserts for release codegen, or the fleet should build a
+        # release-derived profile with debug-assertions and overflow-checks on.
+        # (fuzz-main-aux-04)
         cargo build --release -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
         binary="$build/release/graphix-fuzz"
     fi

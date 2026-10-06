@@ -1,0 +1,37 @@
+// http-sqlite-db1-03: db keys of f32/f64, datetime, bool, decimal and
+// compound types are not order-preserving.
+//
+// encode_key (stdlib/graphix-package-db/src/encoding.rs:113) encodes only
+// string, bytes and integer keys in the language's order; every other key
+// type is Pack-encoded, so sled's byte order is not Value's Ord and
+// first/last/get_lt/cursor::range (minimum/maximum/strictly less per
+// mod.gxi) answer wrongly. Pack bytes also split 0.0 and -0.0, one key to
+// the language (`0.0 == -0.0`; `{0.0 => "zero"}{-0.0}` is "zero").
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-03.gx
+//          (same output with --no-fusion)
+// expected: (((-3, "-3"), (2, "2"), (-1, "-1"), [(-3, "-3"), (-1, "-1")], "0"),
+//            ((1969-07-20 20:17:00 UTC, "1969"), (2020-01-01 00:00:00 UTC, "2020")),
+//            (false, "false"),
+//            [(("alice", -1), "a-1"), (("alice", 3), "a3"), (("bob", 1), "b")])
+// observed: (((0, "0"), (-3, "-3"), null, [], null),
+//            ((2020-01-01 00:00:00 UTC, "2020"), (1969-07-20 20:17:00 UTC, "1969")),
+//            (true, "true"),
+//            [(("bob", 1), "b"), (("alice", 3), "a3"), (("alice", -1), "a-1")])
+let td = sys::fs::tempdir::create(null)$;
+let db = db::open("[sys::fs::tempdir::path(td)]/db")$;
+let f: db::Tree<f64, string> = db::tree(db, "f")$;
+let fi = db::batch(f, [`Insert(-1.0, "-1"), `Insert(0.5, "0.5"), `Insert(2.0, "2"), `Insert(-3.0, "-3"), `Insert(0.0, "0")])$;
+let fc = db::cursor::range(#start: `Included(-5.0), #end: `Excluded(0.0), fi ~ f);
+let floats = (db::first(fi ~ f)$, db::last(fi ~ f)$, db::get_lt(fi ~ f, 0.0)$, db::cursor::read_many(fc, fc ~ 10)$, db::get(fi ~ f, -0.0)$);
+let d: db::Tree<datetime, string> = db::tree(db, "d")$;
+let di = db::batch(d, [`Insert(datetime:"2020-01-01T00:00:00Z", "2020"), `Insert(datetime:"1969-07-20T20:17:00Z", "1969")])$;
+let dates = (db::first(di ~ d)$, db::last(di ~ d)$);
+let b: db::Tree<bool, string> = db::tree(db, "b")$;
+let bools = db::first(db::batch(b, [`Insert(false, "false"), `Insert(true, "true")])$ ~ b)$;
+let t: db::Tree<(string, i64), string> = db::tree(db, "t")$;
+let ti = db::batch(t, [`Insert(("bob", 1), "b"), `Insert(("alice", 3), "a3"), `Insert(("alice", -1), "a-1")])$;
+let tc = db::cursor::new(ti ~ t);
+let tuples = db::cursor::read_many(tc, tc ~ 10)$;
+sys::exit(sys::time::after_idle(duration:1.s, 0));
+(floats, dates, bools, tuples)

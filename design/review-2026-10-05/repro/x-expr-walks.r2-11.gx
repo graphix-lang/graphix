@@ -1,0 +1,24 @@
+// x-expr-walks.r2-11: a partial struct `let` over a value whose struct type
+// is known is refused by Bind's shape check, with a type mismatch.
+//
+// Bind::compile (graphix-compiler/src/node/bind.rs:203-211) compares the
+// pattern's un-completed predicate ({x: 'a} for {x, ..}) with the value's
+// type. StructPatternNode::compile (node/pattern.rs:632) accepts that type,
+// and select completes the same predicate against its scrutinee
+// (node/select.rs:1240), so only the let refuses.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-expr-walks.r2-11.gx
+//
+// expected: accepted (prints 1 when run), as are
+//   `let {x, ..}: {x: i64, y: i64} = p; x` and `select p { {x, ..} => x }`;
+//   or, if a partial let must be annotated, the one annotation message.
+// observed (HEAD c722befe, debug build):
+//   0: at: line: 23, column: 1 .., in: let { x, .. } = p
+//   1: match error { x: i64, y: i64 } can't be matched by { x: '_N: unbound }
+// Over a call's cell, `let f = |a: i64| {x: a, y: a + 1}; let {x, ..} = f(1)`
+// is refused with pattern.rs:641's "non exhaustive struct matches require
+// type annotations", while `select f(1) { {x, ..} => x }` is accepted.
+// Nested, `let (a, {x, ..}) = (1, p)` is refused with the mismatch form.
+let p = {x: 1, y: 2};
+let {x, ..} = p;
+x

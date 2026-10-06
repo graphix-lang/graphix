@@ -7,6 +7,14 @@ type Connection;
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
 val open: fn(path: string) -> Result<Connection, `SqliteError(string)>;
 
+// CR claude for eric: [risk] exec, exec_batch and query take SQL text, and an ordinary
+// Graphix string interpolates every [..] in it, which these docs and
+// book/src/stdlib/sqlite.md never say. "SELECT json_extract(?, '$.items[0]') AS x"
+// compiles and runs with the path '$.items0' and returns null, and "... WHERE name =
+// '[name]'" splices the value into the SQL (name = x' OR '1'='1 returns every row). Say
+// here and in the book that values go through the ? params and that SQL containing [ is
+// written as r"..." or a """template""". probe:
+// design/review-2026-10-05/repro/http-sqlite-db1-19.gx (http-sqlite-db1-19)
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
 val exec: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
 

@@ -16,6 +16,15 @@ fn assert_tree_type(v: &Value, expected_key: &str, expected_val: &str) {
     }
 }
 
+// CR claude for eric: [test-gap] In db_open, `db::flush(db$)$;` is a discarded
+// statement whose error `$` drops, and `is_err(db)` fires as soon as open completes. So
+// 'expected open+flush to succeed' cannot fail on flush; flush is only covered by
+// db_introspection, where a failure shows up as a timeout. Return the flush result,
+// e.g. `(is_err(db), is_err(db::flush(db$)))`. More generally, the db fixtures end in
+// an uncaught `?` or `$`, so a failing operation's DbErr is logged at warn (which
+// env_logger's default filter hides), and the test fails with run_with_tempdir!'s bare
+// 2 s 'timeout waiting for result'. Catching errors into the result value would name
+// the DbErr. (tests-lib-a-18)
 run_with_tempdir!(
     name: db_open,
     code: r#"{{

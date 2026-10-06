@@ -127,6 +127,14 @@ fn every_span_reads_back_as_its_node() {
         (f, text)
     });
     for (file, text) in texts.chain([fixture]) {
+        // CR claude for eric: [test-gap] A file that does not parse is skipped without
+        // a word, and the floors cannot notice: files.len() counts files found, not
+        // files parsed. All 344 corpus files parse and all 122 examples type-check
+        // today, so the skip tolerates nothing real and can only hide a parser
+        // regression (bench/ has no other parse gate). Make a parse failure a test
+        // failure, drop file_exprs' note that 'an example may be a snippet', and
+        // correct CLAUDE.md's 'Some are snippets that reference undefined names on
+        // purpose'. (tests-shell-compiler-13)
         let Some(exprs) = file_exprs(&file, &text) else { continue };
         let mut found = vec![];
         for top in exprs.iter() {

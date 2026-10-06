@@ -100,6 +100,22 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         if let Some(new_text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {
+            // CR claude for eric: [bug] `last_set_text` holds only the last text pushed
+            // through on_edit, and the next content update of any kind takes it, so
+            // every other update rebuilds `Content` with the cursor at (0,0). With
+            // `#on_edit: |s| c <- s`, two keys handled before the first echo arrives
+            // (one event-loop batch, or an echo slower than the next key) make that
+            // echo rebuild the editor: typing "ab" then "c" gives "cab", and a "c"
+            // typed between the two echoes gives "ca", losing the "b". Delivering the
+            // unchanged text again also rebuilds: `&doc.text` re-fires on every write
+            // to `doc`, so writing another field of `doc` sends the cursor to the
+            // start. An on_edit that rewrites the text (`str::to_upper`) types
+            // backwards: "abc" becomes "CBA". An update equal to `self.content.text()`,
+            // or to a push not yet echoed, should not rebuild, and a real change can
+            // keep the cursor with `move_to`. probe:
+            // design/review-2026-10-05/repro/gui-widgets-b-04.rs (copy into
+            // stdlib/graphix-package-gui/tests/ and run `cargo test -p
+            // graphix-package-gui --test review_gui_widgets_b_04`). (gui-widgets-b-04)
             if self.last_set_text.take().as_ref() != Some(new_text) {
                 self.content = text_editor::Content::with_text(new_text.as_str());
                 changed = true;
@@ -132,6 +148,17 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut te = widget::TextEditor::new(&self.content);
+        // CR claude for eric: [bug] `on_edit_callable` is always Some because
+        // text_editor.gx defaults #on_edit to `|_| null`, so every enabled editor is
+        // editable, against the doc on line 11. Without #on_edit, what the user types
+        // changes the local Content but never `content`, and the next `content` update
+        // throws it away. A disabled editor gets no on_action, and iced's
+        // TextEditor::update returns at once without one (iced_widget 0.14.2
+        // text_editor.rs:689). So it cannot scroll, select or copy: in
+        // `text_editor(#disabled: &true, #height: &200.0, &long_log)` the text below
+        // 200 px is unreachable. A scrollable read-only editor needs on_action
+        // installed, with `action.is_edit()` actions dropped in on_message; iced then
+        // no longer draws it as disabled. (gui-widgets-b-11)
         if !self.disabled.t.unwrap_or(false) && self.on_edit_callable.is_some() {
             let content_id = self.content_ref.r.id;
             te = te.on_action(move |a| Message::EditorAction(content_id, a));

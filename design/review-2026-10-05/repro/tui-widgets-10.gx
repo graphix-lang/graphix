@@ -1,0 +1,47 @@
+// tui-widgets-10: paragraph: wrapping is always on, so the documented
+// scroll.x never takes effect.
+//
+// ParagraphW::draw (stdlib/graphix-package-tui/src/paragraph.rs:78) sets
+// `Wrap { trim }` whenever `trim` has a value, and `#trim: &bool` defaults
+// to `&true`, so every paragraph wraps. ratatui-widgets 0.3.0 applies the
+// horizontal offset only on its non-wrapping path (paragraph.rs:430-443,
+// `set_horizontal_offset` sits in the else branch), so `scroll.x`, which
+// paragraph.gxi documents as "in chars", is ignored with either trim value.
+// Row D is the control: a trim reference that never has a value leaves the
+// wrap unset, and the same scroll then shifts the line.
+//
+// command (needs a terminal; headless, via a private tmux server):
+//   tmux -L r new -d -x 60 -y 10 'graphix --no-cache design/review-2026-10-05/repro/tui-widgets-10.gx'
+//   tmux -L r capture-pane -p   (after a second or two)
+//   tmux -L r kill-server
+//
+// expected: rows B and C show "56789abcdefghij" (shifted 5 chars), as row D does.
+// observed (HEAD c722befe, debug build, 60x14 tmux pane):
+//   A: default trim, scroll x=0
+//   0123456789abcdefghij
+//   B: default trim, scroll x=5
+//   0123456789abcdefghij
+//   C: trim false, scroll x=5
+//   0123456789abcdefghij
+//   D: trim never (no wrap), scroll x=5
+//   56789abcdefghij
+use tui::{
+  layout::{child, layout},
+  paragraph::paragraph
+};
+
+let s = "0123456789abcdefghij";
+
+layout(
+  #direction: &`Vertical,
+  &[
+    child(#constraint: `Length(1), paragraph(&"A: default trim, scroll x=0")),
+    child(#constraint: `Length(1), paragraph(&s)),
+    child(#constraint: `Length(1), paragraph(&"B: default trim, scroll x=5")),
+    child(#constraint: `Length(1), paragraph(#scroll: &{x: 5, y: 0}, &s)),
+    child(#constraint: `Length(1), paragraph(&"C: trim false, scroll x=5")),
+    child(#constraint: `Length(1), paragraph(#trim: &false, #scroll: &{x: 5, y: 0}, &s)),
+    child(#constraint: `Length(1), paragraph(&"D: trim never (no wrap), scroll x=5")),
+    child(#constraint: `Length(1), paragraph(#trim: &never<bool>(), #scroll: &{x: 5, y: 0}, &s))
+  ]
+)

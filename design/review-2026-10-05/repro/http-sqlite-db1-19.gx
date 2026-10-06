@@ -1,0 +1,30 @@
+// http-sqlite-db1-19: sqlite docs never warn that "[x]" in an SQL string is
+// interpolation.
+//
+// sqlite::exec/exec_batch/query (stdlib/graphix-package-sqlite/src/graphix/
+// mod.gxi:10-18, book/src/stdlib/sqlite.md) take SQL text, and an ordinary
+// Graphix string interpolates every [..] in it. Brackets are ordinary SQL
+// (JSON paths, [identifier] quoting), and an interpolated value is spliced
+// into the SQL text, not bound.
+//
+// command: XDG_CACHE_HOME=<scratch> graphix --no-cache design/review-2026-10-05/repro/http-sqlite-db1-19.gx
+//
+// expected (what a reader of the docs would assume):
+//   q1: [{x: 10}]   q3: []
+// observed (HEAD c722befe, debug build):
+//   q1 (ordinary string): [{x: null}]   the SQL ran with the path '$.items0'
+//   q2 (raw string):      [{x: 10}]
+//   q3: [{name: "alice", secret: "s1"}, {name: "bob", secret: "s2"}]
+//       (name = x' OR '1'='1 spliced into the WHERE clause)
+type SqlVal = [i64, f64, string, bytes, null];
+let db = sqlite::open(":memory:")$;
+let doc = r#"{"items": [10, 20]}"#;
+let q1: Result<Array<{x: SqlVal}>, [`SqliteError(string), `InvalidCast(string)]> = sqlite::query(db, "SELECT json_extract(?, '$.items[0]') AS x", [doc]);
+println("q1 ordinary string, path '$.items\[0\]': [q1]");
+let q2: Result<Array<{x: SqlVal}>, [`SqliteError(string), `InvalidCast(string)]> = sqlite::query(q1 ~ db, r"SELECT json_extract(?, '$.items[0]') AS x", [doc]);
+println("q2 raw string, path '$.items\[0\]':      [q2]");
+let name = "x' OR '1'='1";
+let setup = sqlite::exec_batch(q2 ~ db, "CREATE TABLE u(name TEXT, secret TEXT); INSERT INTO u VALUES('alice', 's1'), ('bob', 's2');")$;
+let q3: Result<Array<{name: string, secret: string}>, [`SqliteError(string), `InvalidCast(string)]> = sqlite::query(setup ~ db, "SELECT name, secret FROM u WHERE name = '[name]'", []);
+println("q3 WHERE name = '\[name\]' with name = [name]: [q3]");
+sys::exit(sys::time::after_idle(duration:1.s, q3 ~ 0))

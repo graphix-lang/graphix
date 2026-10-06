@@ -198,6 +198,13 @@ run!(
 // resolve by the element type.
 run!(
     trait_method_as_callback,
+    // CR claude for eric: [test-gap] This predicate checks only the length, so dispatch
+    // to the wrong impl, or the wrong strings, passes in every mode, and run! never
+    // compares the modes. Every engine produces ["int 1", "int 2"] (graphix-fuzz run),
+    // so assert that. Separately, the comment at 166 opens with the `[⊥, Counter]`
+    // never-arm rule, which describes trait_dispatch_never_arm_union (184), but it sits
+    // above collection_generic_interface_declared; move that sentence.
+    // (tests-lang-b-13)
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };

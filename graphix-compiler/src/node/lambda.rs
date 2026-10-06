@@ -426,6 +426,10 @@ impl InstanceTypes {
     /// definition's check widened (`d.domain` born `string` where the
     /// check unified it with a formal's `[Array<i64>, string]`): the
     /// instance's knowledge stands.
+    // CR claude for eric: [readability] `settle` cannot fail: both arms are `Ok`, and
+    // `Type::take_row` returns a plain bool. Return `bool` and drop the `wrap!(..)?` at
+    // its five callers (node/mod.rs:487, bind.rs:456, callsite.rs:2189, op.rs:612 and
+    // 808), which read as if a row could refuse. (c-lambda-07)
     pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> Result<bool> {
         match self.typ(id) {
             None => Ok(false),
@@ -452,6 +456,20 @@ impl InstanceTypes {
     /// The tables of the lambda literal at `id` of this instance's body.
     pub(crate) fn lambda(&self, id: ExprId) -> Option<Tables> {
         let table = self.tables.table.lambdas.get(&id)?.clone();
+        // CR claude for eric: [bug] Instances of a lambda defined here rename its rows
+        // through `self.known` alone. That map is keyed by cells already renamed
+        // through `self.tables.outer`, so two instance levels deep (outer > middle >
+        // inner) outer's generic cells and middle's signature cells are never renamed,
+        // and `instantiate_with` copies them fresh. A static instance then refuses what
+        // --check accepted (`str::parse(z)$ == d` in inner: "must be fully known
+        // here"). Arithmetic there silently loses fusion (#[native] is refused), and a
+        // run-time bind only logs its refused settle and computes a wrong value in both
+        // engines. Rename through every enclosing map, outermost first: for example,
+        // rename the nested table, its own `lambdas` included, through
+        // `self.tables.outer` before pairing it with `self.known`. `DefTable::imaged`
+        // needs the same fix, since it copies `lambdas` unrenamed (line 212). probe:
+        // design/review-2026-10-05/repro/c-lambda-01.gx prints (false, true) where
+        // GRAPHIX_NO_SUBST=1 prints (true, true). (c-lambda-01)
         Some(Tables { table, outer: Some(self.known.clone()) })
     }
 }
@@ -472,6 +490,17 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// Intrinsic sync/async effect, computed by `analysis::infer_effects`
     /// after all lambdas are compiled. Calls through fn-typed parameters
     /// do not contribute; the call site joins the resolved arg's effect.
+    // CR claude for eric: [bug] This doc says calls through fn-typed parameters do not
+    // contribute, but they do. A resolved callback's instance joins the HOF instance's
+    // facts (analysis.rs `callee_facts`), an unresolved parameter call counts as
+    // `Async`, and every instance joins the definition's facts (`infer_effects`), as
+    // `lang::attributes::sync_on_async_instance` pins. `check_def_assertions` retires
+    // an assertion at the first analysis that reaches its definition. So `#[sync]` on a
+    // HOF misses an async instance bound later at run time, while the same instance
+    // fails the compile when its call is static and is reported when the run-time call
+    // is the only one. Fix the doc, and keep a HOF's assertion live for the instances
+    // later analyses reach. probe: design/review-2026-10-05/repro/c-lambda-04.gx
+    // (c-lambda-04)
     pub intrinsic_effect: Mutex<EffectKind>,
     /// The body holds no per-activation state: every builtin it reaches
     /// is `Effect::Stateless`, no `<-` targets its own binding, every
@@ -549,6 +578,17 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
+// CR claude for eric: [bug] A function value orders by its LambdaId here and a
+// reference by its BindId (`Value::U64`, bind.rs:1282), but both ids are now minted in
+// parallel: in the per-statement compile tasks (`typecheck1_statements`,
+// node/mod.rs:1089), in slot builds (`build_fresh`, collection.rs:927) and in forked
+// branches. So `array::sort`, `<` and map key order over functions, references or
+// values holding them change from run to run in the default configuration, even with
+// GRAPHIX_PAR=off (RAYON_NUM_THREADS=1 makes them stable), and the forked node-walk
+// diverges from the serial one. design/parallel_eval.md §8 still lists both sites as to
+// fix. graphix-fuzz check misses the compile-task case because it drops a serial run
+// that disagrees with itself as nondeterminism. probe:
+// design/review-2026-10-05/repro/x-diff-par-02.gx (x-diff-par-02)
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))
@@ -991,6 +1031,16 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_bind: Mutex::new(None),
             resident: TagValue::phantom(),
             first_dispatch: true,
+            // CR claude for eric: [perf] This snapshot is taken after the formals are
+            // bound, so each instance pins its own version of the binds trie's path to
+            // the definition's scope, the copy bind_variable made to bind them. That is
+            // about 1.4 KB per instance: 8.5 MB of the 69 MB peak for 6000 trivial
+            // array::init/array::map slots (--no-fusion, massif). The instance's checks
+            // use this env only for type names (per the field's doc, typedefs the
+            // caller may lack); no value name is looked up in it after compile. Taking
+            // `binds` from before the formals (the definition's version, an Arc bump)
+            // and the rest after the body (which may define types) lets every instance
+            // share it. (x-alloc-04)
             env: ctx.env.lexical(),
             typing,
         })
@@ -1258,6 +1308,20 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                     None if ctx.env.ide.is_lsp() => UnknownBuiltIn::init as _,
                     None => bail!("unknown builtin function {name}"),
                 };
+                // CR claude for eric: [bug] The builtin arm types its instance at
+                // `mode.resolved()`, which is the site's view. But `prepare_bind`
+                // passes one argument per formal of the definition, defaulted labels
+                // included, so a builtin bound where the view omits a defaulted label
+                // gets more arguments than its type lists. `array::map([1, 2, 3],
+                // dbg)`, and `apply(array::rotate, a)` through `f: fn(a: Array<i64>) ->
+                // Array<i64>`, pass `--check` and then fail the build with `expected 1
+                // arguments got 2` (graphix-fuzz: the check accepted what the build
+                // refused). The same bind at run time logs `did not type` and skips the
+                // builtin's own typecheck0. Lambdas avoid this because `instantiate()`
+                // types them at `instance`, or at a fitted copy of the definition for a
+                // dynamic view with other parameters. Type the builtin the same way;
+                // then `BindMode::Static` no longer needs `site`. probe:
+                // design/review-2026-10-05/repro/c-lambda-02.gx (c-lambda-02)
                 let resolved = mode.resolved();
                 let typ =
                     resolved.map_or_else(|| def_typ.clone(), |r| Arc::new(r.clone()));
@@ -1342,6 +1406,16 @@ impl Lambda {
                 TVar::empty_named(format_compact!("{}#elem", tv.name).as_str().into());
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
+        // CR claude for eric: [bug] The written-type chain
+        // `scope_refs(..).rewrite_trait_args(..)?.apply_ctor_quantifiers(..)` is
+        // spelled out for the return type, the throws type and each argument
+        // constraint, and this variadic copy drops `rewrite_trait_args`. A trait in a
+        // builtin's variadic type is then neither rewritten nor refused. `|@args: fn(x:
+        // Eq) -> i64| -> Any 'core_all` refuses `f(|x| 1, |x| 2)` with a type mismatch
+        // that the positional twin accepts. `@args: Eq` reports "undefined type Eq" at
+        // the call instead of "trait Eq used as a type". One closure for the chain,
+        // used by all four, removes the repetition and the gap. probe:
+        // design/review-2026-10-05/repro/c-lambda-08.gx (c-lambda-08)
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
@@ -1493,6 +1567,17 @@ impl Lambda {
         // alias same-named leaves onto the declared quantifier tvars first
         // so each constraint lands in the one cell every occurrence shares
         {
+            // CR claude for eric: [structure] This block and the quantifiers field
+            // above re-implement declared_fn_type
+            // (graphix-types/src/expr/parser/typexp.rs:259-274): quantifier names,
+            // same-named tvars aliased across the signature, and each conjunct seeded
+            // on its quantifier's cell. The two copies already differ (insert vs
+            // or_insert_with, tv vs known[&tv.name]); they agree only because `scoped`
+            // above gave every same-named constraint tvar one TVar. Make the rule an
+            // FnType constructor in typ/fntyp.rs, call it here and from fntype(), and
+            // drop the parser's #[doc(hidden)] pub quantifier_names. impl_head runs the
+            // same alias-and-seed loop over an impl target (traits.rs:425-430).
+            // (t-parser-b-09)
             let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for (tv, _) in constraints.iter() {
                 known.insert(tv.name.clone(), tv.clone());
@@ -1704,6 +1789,24 @@ fn check_defaults<R: Rt, E: UserEvent>(
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
             match &at.typ {
+                // CR claude for eric: [bug] Each conjunct is committed against the
+                // default's type, so an open cell there is bound to the whole bound:
+                // `Number ⊇ 'k` binds the cell to Number, and the next conjunct,
+                // Singleton, then refuses it. `let scale = |k| { let mul = |#by = k, x|
+                // x * by; mul(3) }; scale(2)` is refused at `k` with "Singleton does
+                // not contain Number", while the same helper reading `k` in its body
+                // runs and prints 6. The cell that gets bound belongs to the
+                // environment: after `let d = never(); let f = 'a: Number |#x: 'a = d,
+                // y: 'a| [x, y]; d <- 2`, `d` stays Number, so `d + 1` is refused, and
+                // so is every call that omits `#x` (`f(3)`). This arm also matches
+                // inferred parameter cells (`by` is not a declared tvar), and a
+                // declared variable nested in the parameter type gets no conjunct
+                // treatment at all (`|#x: Array<'a> = [1], y: 'a| -> 'a y` is refused
+                // at the definition). Narrowing the default's open cells by the
+                // conjuncts (`TVar::narrow_cell`, as `op::constrain_operand` does)
+                // would check them without deciding the cell. probe:
+                // design/review-2026-10-05/repro/x-typecheck-generics-F11.gx
+                // (x-typecheck-generics-F11)
                 Type::TVar(tv) if !tv.is_bound() => tv
                     .cell_constraints()
                     .iter()
@@ -1817,6 +1920,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // GRAPHIX_RIGID_AUDIT=1 is a cataloging tool: a rejected def that
         // continues may compile to a different shape, so never trust its
         // value output
+        // CR claude for eric: [dead] GRAPHIX_RIGID_AUDIT turns every refusal of a
+        // definition's check into success, not only a rigid-tvar one, and nothing in
+        // the repo sets it or lists it. A refused body then fails at its first call
+        // with "whose definition's check recorded no types". A refused throws clause,
+        // checked after the table is recorded, compiles and runs: with the knob set,
+        // `graphix --check` exits 0 on 'let f = |x: i64| -> i64 throws `A
+        // error(`B("no"))?; f(1)'. Delete the knob and its dbgenv flag. (c-lambda-09)
         if let Err(e) = &res
             && dbgenv::graphix_rigid_audit()
         {

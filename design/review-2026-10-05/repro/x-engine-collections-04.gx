@@ -1,0 +1,23 @@
+// x-engine-collections-04: map::union keeps a's or b's value depending on
+// tree shape, though map/mod.gxi documents b's value on a shared key.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-engine-collections-04.gx
+//
+// fc_map_union (stdlib/graphix-package-core/src/lib.rs:2711) passes
+// |_, _, v| v to immutable-chunkmap's Map::union, assuming f(k, self, other).
+// Tree::union (chunkmap 2.1.4 avl.rs:1278-1281) calls merge_root_to(&t1, &t0)
+// when t0 is not taller, which calls f(k, other, self): there a's value wins.
+// Collection::flat_map over Map (core mod.gx:54) folds with map_union(acc, f(v))
+// and so keeps the EARLIER element's value on a key two elements produce.
+//
+// expected (b's value on every shared key; the later element in flat_map):
+//   Trace([0:[{i64:1 => "b"}, "b", "b", {"k" => i64:20, "z1" => i64:1, "z2" => i64:2}]])
+// observed (every mode alike: interp, jit, nocache, cold, warm):
+//   Trace([0:[{i64:1 => "a"}, "a", "b", {"k" => i64:10, "z1" => i64:1, "z2" => i64:2}]])
+// Swapping the arguments (a small map of "a" against a 200-key map of "b")
+// gives "b" at 5 and "a" at 150.
+let big_a = array::fold(array::init(200, |i| i), {}, |m, i| map::insert(m, i, "a"));
+let small_b: Map<i64, string> = {5 => "b", 150 => "b"};
+let u = map::union(big_a, small_b);
+let fm = Collection::flat_map({"a" => 1, "b" => 2}, |v| {"k" => v * 10, "z[v]" => v});
+(map::union({1 => "a"}, {1 => "b"}), map::get(u, 5), map::get(u, 150), fm)

@@ -1,0 +1,33 @@
+// x-typecheck-patterns-01: a select type test `&T as r` matches any reference
+// (and any u64/v64): Type::is_a decides a ByRef predicate by the value being a
+// u64 (graphix-types/src/typ/cast.rs:738) and never looks at the referent,
+// while the check narrows the arm's bind to `&T` and subtracts it from the
+// later arms. No `Any` and no cast is involved.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-typecheck-patterns-01.gx
+//     (and again with --no-fusion; and without --no-cache twice, cold then warm)
+//
+// expected (b is an i64):
+//   which(&b) = i64 arm
+//   leak(&b) = ref 42
+//   show(&b) = 42
+//
+// observed: --check exits 0.
+//   which(&b) = string arm
+//   leak(&b) = num 4611686018427391915   (the session's bind id, which varies
+//     by mode; a warm image start prints num 4011 instead)
+//   default (fusion), then exit 1:
+//     panicked at graphix-compiler/src/fusion/kernel.rs:243:13: kernel param
+//     `arg`: runtime I64(42) does not match the compiled String slot
+//     Error: runtime did not respond
+//   --no-fusion: the show(&b) line never prints (exit 0)
+let b = 42;
+let which = |r: [&string, &i64]| -> string select r { &string as s => "string arm", &i64 as n => "i64 arm" };
+println("which(&b) = [which(&b)]");
+let leak = |x: [&i64, u64]| select x { u64 as n => "num [n]", &i64 as r => "ref [*r]" };
+println("leak(&b) = [leak(&b)]");
+let width = |s: string| -> i64 str::len(s);
+let show = |r: [&string, &i64]| -> i64 select r { &string as s => width(*s), &i64 as n => *n };
+println("show(&b) = [show(&b)]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

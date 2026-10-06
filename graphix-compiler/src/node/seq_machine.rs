@@ -130,6 +130,14 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         });
         let at = pc.update(ctx);
         let target = match at.is_fired().then(|| at.value_cloned()) {
+            // CR claude for eric: [structure] The idle label is spelled four times
+            // across two crates: the desugar's private IDLE
+            // (graphix-types/src/expr/seq.rs:35), this match, the write at :163 and
+            // Catch::sleep's reset (error.rs:371). Renaming it in the desugar still
+            // compiles. After that, the end of every run writes a label that the
+            // desugar's idle test (idle_of) never matches, so every seq wedges after
+            // its first run. Make seq::IDLE pub and use it in all three places.
+            // (c-select-seq-10)
             Some(Value::String(l)) if l == "Idle" => Some(None),
             Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
             _ => None,
@@ -192,6 +200,21 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         for (i, parent) in m.scopes.iter().enumerate() {
             let s = match i {
                 0 => scope.clone(),
+                // CR claude for eric: [bug] Each try or with body scope gets a fresh
+                // ExprId on every compile. So the lowered_seqs key (seq id, lexical
+                // scope) misses for a seq nested there, and every compile of the
+                // enclosing definition lowers it again with new expression ids. Each
+                // instance's copy then has no DefTable rows and is checked again
+                // instead of substituted. lowered_seqs also gains an entry per instance
+                // that is never removed: a collection callback of this shape grows
+                // memory about 5x faster while its slots are re-created. A lambda
+                // literal there gets a new source id per instance, so a recursive call
+                // passing it never matches the resolving instance's FnArgIdentity, and
+                // elaboration builds instances until memory runs out; the same body
+                // with the inner seq moved out of the try prints 13 in 0.3 s. Name the
+                // scope from data that stays the same across compiles of the definition
+                // (the machine's id and the scope index), as blocks and selects use
+                // spec.id. probe: design/review-2026-10-05/repro/t-seq-09.gx (t-seq-09)
                 _ => scopes[*parent as usize].append_block("seq", ExprId::new().inner()),
             };
             scopes.push(s);

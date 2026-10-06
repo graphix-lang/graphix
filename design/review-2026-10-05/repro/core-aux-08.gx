@@ -1,0 +1,86 @@
+// core-aux-08: the queuefn wrapper and the opt HOFs turn a bottom they consume
+// into a STALE ride of their previous result.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-aux-08.gx
+// (--no-fusion prints the same; graphix-fuzz check says AGREE because both
+// engines run the same builtin code)
+//
+// parse("x") is bottom (cast<i64>("x")$). s becomes "x" at c = 2, n becomes
+// null at c = 3, and b is bottom at c = 2 only. Each builtin line follows the
+// spelling it must agree with (the select, or the direct call), and must be
+// silent wherever that line is: a consumed bottom bottoms the production (R3 in
+// design/dense_delivery.md; delta 13 for the bottomed input b).
+//
+// expected after the c = 0 lines:
+//   dbg(c): 1
+//   dbg((select b { null as _ => null, t => parse(t) }, c)): (5, 1)
+//   dbg((opt::map(b, parse), c)): (5, 1)
+//   dbg(c): 2
+//   dbg(c): 3
+//   dbg((select b { null as _ => null, t => parse(t) }, c)): (5, 3)
+//   dbg((opt::map(b, parse), c)): (5, 3)
+//
+// observed, besides those:
+//   at c = 2 (the callback's FreshBottom, or b's, rides as STALE 5):
+//   dbg((opt::map(s, parse), s)): (5, "x")
+//   dbg((opt::filter(s, |t: string| parse(t) > 0), s)): ("5", "x")
+//   dbg((qparse(s$), s)): (5, "x")
+//   dbg((opt::map(b, parse), c)): (5, 2)
+//   at c = 3 (OrElseShared's last_f outlives f's bottom):
+//   dbg((opt::or_else(n, || -> [i64, null] parse(s$)), n)): (5, null)
+//
+// GXDBG_CS=1 --no-fusion shows the callback's CallSite delivering Tag(64)
+// (FreshBottom) and opt::map / qparse answering Tag(32) (STALE).
+let c = 0;
+
+c <- select c {
+    n if n < 3 => n + 1,
+    _ => never()
+};
+
+let s: [string, null] = "5";
+
+s <- select c {
+    1 => "x",
+    _ => never()
+};
+
+let n: [i64, null] = 7;
+
+n <- select c {
+    2 => null,
+    _ => never()
+};
+
+let b: [string, null] = select c {
+    2 => never(),
+    _ => "5"
+};
+
+let parse = |t: string| -> i64 cast<i64>(t)$;
+
+let qparse = queuefn(#trigger: c, parse);
+
+dbg(c);
+
+dbg((select s { null as _ => null, t => parse(t) }, s));
+
+dbg((opt::map(s, parse), s));
+
+dbg((select s { null as _ => null, t if parse(t) > 0 => t, _ => null }, s));
+
+dbg((opt::filter(s, |t: string| parse(t) > 0), s));
+
+dbg((parse(s$), s));
+
+dbg((qparse(s$), s));
+
+dbg((select n { null as _ => parse(s$), x => x }, n));
+
+dbg((opt::or_else(n, || -> [i64, null] parse(s$)), n));
+
+dbg((select b { null as _ => null, t => parse(t) }, c));
+
+dbg((opt::map(b, parse), c));
+
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

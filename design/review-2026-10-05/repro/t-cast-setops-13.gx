@@ -1,0 +1,29 @@
+// t-cast-setops-13: a union cast takes a member's tagless payload reading over
+// the member whose tag the value carries.
+//
+// Type::cast_inner's Variant arm (graphix-types/src/typ/cast.rs:555-563) also
+// reads an array of exactly the payload's length as a tagless payload, and the
+// Set arm (cast.rs:590-601) keeps the first member a value converts to, in the
+// union's sorted member order. A value that carries one member's tag but needs
+// a payload conversion is claimed by an earlier member's tagless reading, so
+// the answer depends on how the tags sort.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-13.gx
+//
+// expected: (`Zed(5), `Abc(5), `Zed(5), `Zed(5))
+// observed (HEAD c722befe, debug build):
+//   (`Abc("Zed", 5), `Abc(5), `Abc("Zed", 5), `Zed(5))
+//   The mirrored case (second, the tagged member sorts first) is right; an i32
+//   payload (third, an integer width a non-Graphix publisher may send) is
+//   wrong too; an exact inhabitant (fourth) wins, as it should.
+let v: Array<string> = ["Zed", "5"];
+let w: Array<string> = ["Abc", "5"];
+let n = ["Zed", i32:5];
+let e = ["Zed", 5];
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(
+  cast<[`Abc(string, i64), `Zed(i64)]>(v),
+  cast<[`Yyy(string, i64), `Abc(i64)]>(w),
+  cast<[`Abc(string, i64), `Zed(i64)]>(n),
+  cast<[`Abc(string, i64), `Zed(i64)]>(e)
+)

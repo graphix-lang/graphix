@@ -1,0 +1,51 @@
+// db2-06: dropping the last handle of a sled database runs sled's flush (and,
+// for the whole Db, its flusher-thread join and fsync) synchronously on the
+// graphix runtime thread, inside a cycle; under an open db::txn it freezes the
+// runtime for good.
+//
+// DbValue (stdlib/graphix-package-db/src/tree.rs:23-26) owns an Arc<sled::Db>
+// and has no Drop of its own, so the last one dies wherever its last Value
+// does: here a Ref node's TagValue replaced in GX::update_nodes. sled 0.34.7's
+// TreeInner::drop (src/tree.rs:98-112) loops on pagecache.flush(), which takes
+// concurrency_control::read() (src/pagecache/iobuf.rs:1012). An open
+// transaction holds that process-global lock's write side (db2-01), and only
+// the runtime can send the commit that releases it: deadlock.
+//
+// command: timeout -s KILL 30 graphix --no-cache \
+//            design/review-2026-10-05/repro/db2-06.gx
+//   (same with --no-fusion, GRAPHIX_PAR=off)
+// expected: tick 0, opened B: .../b1.db, txn insert done, tick 1, tick 2,
+//   opened B: .../b2.db (~300 ms), a tick every 100 ms, committed (~1 s),
+//   exit 0 at 2 s.
+// observed: tick 0, opened B: .../b1.db, txn insert done, tick 1, tick 2
+//   (by ~290 ms), then nothing until SIGKILL (exit 137): b2 is never
+//   reported, the ticks stop, the commit is never sent.
+// gdb at the hang: the tokio worker running GX::do_cycle -> block_in_place ->
+//   GX::update_nodes -> ... Sample::update -> bind::Ref::update ->
+//   drop_glue<TagValue> -> Arc<AbstractInner>::drop_slow ->
+//   Arc<sled::Db>::drop_slow -> drop_glue<sled::Db> ->
+//   <sled::TreeInner as Drop>::drop -> iobuf::flush ->
+//   concurrency_control::read -> RawRwLock::lock_shared_slow; thread
+//   graphix-db-txn parked in mpsc recv under [Tree]::transaction.
+// controls (each ticks through, prints committed, exits 0): the old B handle
+//   kept alive by `let keep = once(dbb);` after the `opened B` line; no txn
+//   data op (`let ins = tt;`); no path switch.
+let td = sys::fs::tempdir::create(null)$;
+let dir = sys::fs::tempdir::path(td);
+let dba = db::open("[dir]/a.db")$;
+let ta: db::Tree<string, i64> = db::tree(dba, "a")$;
+let pre = db::insert(ta, "x", 1)$;
+let txn = db::txn::begin(pre ~ dba)$;
+let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+let ins = db::txn::insert(tt, "k", 7)$;
+println(ins ~ "txn insert done");
+let pb = "[dir]/b1.db";
+pb <- sys::time::timer(duration:300.ms, false) ~ "[dir]/b2.db";
+let dbb = db::open(pb)$;
+println(dbb ~ "opened B: [pb]");
+let n = 0;
+n <- sys::time::timer(duration:100.ms, true) ~ n + 1;
+println("tick [n]");
+let c = db::txn::commit(sys::time::timer(duration:1.s, false) ~ txn)$;
+println(c ~ "committed");
+sys::exit(sys::time::timer(duration:2.s, false) ~ 0)

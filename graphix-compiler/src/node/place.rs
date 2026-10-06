@@ -167,6 +167,17 @@ pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
         (Step::Key(k), Value::Map(m)) => {
             let inner = match m.get(k) {
                 Some(cur) => write_path(cur, rest, v)?,
+                // CR claude for eric: [doc-drift] A write through `&m{k}` to a key the
+                // map lacks inserts it here. design/place_references.md:21-23 says a
+                // write into a place that does not exist is dropped and logged with the
+                // root untouched, and the comment above place_move_siblings_bad
+                // (stdlib/graphix-tests/src/lang/byref.rs:142-144) says the same. Only
+                // the array case is pinned. Either state the insert rule in the doc and
+                // pin it beside place_read_write, or drop the write the way an
+                // out-of-range index's write is dropped. probe: `let m = {"a" => 1};
+                // let rm = &m{"b"}; *rm <- t ~ 5` leaves m = {"a" => 1, "b" => 5} in
+                // both engines, while `*(&a[5]) <- t ~ 5` leaves a = [1, 2].
+                // (c-bind-15)
                 None if rest.is_empty() => v,
                 None => bail!("no key {k}"),
             };

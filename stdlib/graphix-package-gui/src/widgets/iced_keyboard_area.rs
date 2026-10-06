@@ -14,6 +14,16 @@ use super::{Message, Renderer};
 ///
 /// Gains focus on mouse click inside bounds, loses focus on click
 /// outside. Participates in tab-order focus traversal.
+// CR claude for eric: [doc-drift] This area takes keys only after a left click inside
+// it (update, lines 113-120), and nothing in the GUI runs a focus operation, so the doc
+// comment's "Participates in tab-order focus traversal" is false: Tab focuses nothing.
+// keyboard_area.md never mentions focus, and its example, a whole-window area reading
+// "Press any key...", ignores every key until the window is clicked. Document
+// click-to-focus (or start focused when the area is the window's only keyboard
+// consumer) and drop the tab-order sentence, or run focus_next on Tab in the event
+// loop. probe: design/review-2026-10-05/repro/gui-widgets-a-15.rs (with no click, or
+// after Tab, a key publishes nothing; after a click it publishes the Call).
+// (gui-widgets-a-15)
 pub(crate) struct KeyboardArea<'a> {
     content: Element<'a, Message, crate::theme::GraphixTheme, Renderer>,
     on_key_press: Option<Box<dyn Fn(&keyboard::Event) -> Message + 'a>>,
@@ -135,6 +145,18 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         }
 
         match event {
+            // CR claude for eric: [bug] A focused area publishes and captures every
+            // press and release it has a closure for, whether anything uses the key or
+            // not, so an enclosing keyboard_area never sees it. keyboard_area.gx always
+            // installs both closures through its `|_| null` defaults. So an inner
+            // `keyboard_area(#on_key_release: f, ..)` swallows every press, and
+            // data_table's area (data_table/render.rs:511,514) captures every key it
+            // does not use as Message::Nop. App shortcuts wrapped around a table stop
+            // working once a cell is clicked. Capture only what a handler takes: have
+            // the closures return Option<Message>, make the Graphix callbacks nullable
+            // as data_table's are, and return None for the table's unused keys. probe:
+            // design/review-2026-10-05/repro/gui-widgets-a.r2-09.rs
+            // (gui-widgets-a.r2-09)
             Event::Keyboard(kb_event) if state.is_focused => match kb_event {
                 keyboard::Event::KeyPressed { .. } => {
                     if let Some(f) = &self.on_key_press {

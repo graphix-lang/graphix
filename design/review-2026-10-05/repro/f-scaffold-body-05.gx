@@ -1,0 +1,40 @@
+// f-scaffold-body-05: node-walk FoldQ with zero slots and a bottom init
+// ignores a fired source.
+//
+// command: graphix-fuzz check design/review-2026-10-05/repro/f-scaffold-body-05.gx
+//          timeout -s KILL 5 graphix --no-cache design/review-2026-10-05/repro/f-scaffold-body-05.gx
+//          timeout -s KILL 5 graphix --no-cache --no-fusion design/review-2026-10-05/repro/f-scaffold-body-05.gx
+//
+// The fold's source is empty and fires at each k; its init 1 / z is a
+// standing bottom. FoldQ::update's empty arm
+// (graphix-compiler/src/node/collection.rs:1467) returns
+// set_bottom(t.triggers()), the init's fire alone, so the fold stays a
+// stale bottom. The valid-init arm under it joins the source's tag
+// (tag.join(t)), and the kernel fires on a fired empty source
+// (graphix-compiler/src/fusion/emit/scaffold.rs:602-604). A fired
+// production of v's initializer re-publishes v and eats the write that
+// lands in the same cycle, so the missing fire shows as writes that survive.
+//
+// expected (both engines): only the last write survives, 40 at epoch 5. The
+// JIT gives that here, and both engines give Trace([1:0 2:0 3:0 4:0 5:40])
+// with init `z` in place of `1 / z`.
+// observed: graphix-fuzz check exits 1, "DIVERGENCE — fusion/JIT bug
+// (interp != jit)", interp Trace([2:i64:10 3:i64:20 4:i64:30 5:i64:40]),
+// jit Trace([5:i64:40]). graphix prints 40 fused and 10 20 30 40 with
+// --no-fusion (both then killed by the timeout, exit 137).
+//
+// Second witness: count the fold's fires through an outer fold whose callback
+// ignores its acc (slot 0's bottom fire re-fires it with slot 1's value 2).
+//   let k = array::iter([1, 2, 3]); let z = 0;
+//   let f = array::fold([1, 2], 0, |acc, x| select x {
+//     1 => array::fold(array::init(k - k, |i| i), 1 / z, |a, y| a + y),
+//     _ => x
+//   });
+//   let c = 0; c <- f ~ c + 1; c
+// Fused prints 0 1 2 3 4, --no-fusion prints 0 1. With init z, both engines
+// print 0 1 2 3 4.
+let k = array::iter([1, 2, 3, 4]);
+let z = 0;
+let v = array::fold(array::init(k - k, |i| i), 1 / z, |a, y| a + y);
+v <- k ~ k * 10;
+v

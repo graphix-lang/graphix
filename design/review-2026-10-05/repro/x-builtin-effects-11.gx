@@ -1,0 +1,35 @@
+// x-builtin-effects-11: queuefn #count and buffer::decode ignore place
+// references (&s.f, &a[i]).
+//
+// Both resolve a reference cell only through env.byref_chain
+// (stdlib/graphix-package-core/src/queuefn.rs:357,
+// stdlib/graphix-package-core/src/buffer.rs:273). A place reference is
+// registered with Rt::set_ref_path and is not in the chain;
+// ConnectDeref::resolve (graphix-compiler/src/node/mod.rs:1616) and
+// Deref::address (node/bind.rs:1388) read ref_path first.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-11.gx
+//
+// expected: decode writes 7 and 9 into st.a and st.b exactly as it does into
+//   pa and pb (r is the empty remainder), and st.depth counts the queue depth
+//   1, 2, 3 exactly as plain does.
+// observed: r = error:["DecodeError", "ref does not point to a let binding"],
+//   st stays {a: 0, b: 0, depth: -1}; plain counts 1, 2, 3 and pa, pb are 7, 9.
+let st = {a: u8:0, b: u8:0, depth: -1};
+let pa = u8:0;
+let pb = u8:0;
+let plain = -1;
+let buf = buffer::encode([`U8(u8:7), `U8(u8:9)]);
+let r = buffer::decode(buf, [`U8(&st.a), `U8(&st.b)]);
+let r2 = buffer::decode(buf, [`U8(&pa), `U8(&pb)]);
+let clock = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let held = never();
+let f1 = queuefn(#count: &st.depth, #trigger: held, |x: i64| x);
+let f2 = queuefn(#count: &plain, #trigger: held, |x: i64| x);
+let q1 = f1(n);
+let q2 = f2(n);
+let stop = select n { k if k >= 4 => k, _ => never() };
+sys::exit(stop ~ 0);
+(r, st, r2, pa, pb, n, plain)

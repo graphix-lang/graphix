@@ -1,0 +1,23 @@
+// x-typecheck-patterns-11: an impl whose target is an inline union of
+// primitives ([i64, string], [i64, null]) is accepted. The union normalizes
+// to one Type::Primitive with several flags, so check_target
+// (graphix-compiler/src/node/traits.rs:361) never reaches its Type::Set arm
+// ("a union is never an implementation target") and lets it through as a
+// structural target in the trait's own package. `impl Show for Number` and
+// `impl Show for [`A, `B]` are refused as unions.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-patterns-11.gx
+//
+// expected: refused at the first impl: "impl Show for [i64, string]: a union
+//   is never an implementation target; implement each member".
+// observed: the first impl is accepted (alone, --check exits 0); the member
+//   impl after it is refused: "conflicting implementation: Show is already
+//   implemented for [i64, string] at line: 20, column: 1". The accepted impl
+//   is never callable either: with only it, `let v: [i64, string] = 1;
+//   Show::show(v)` is refused, "type mismatch 'self: unbound within Show does
+//   not contain [i64, string]". `[i64, null]` behaves the same.
+trait Show { val show: fn(self) -> string };
+impl Show for [i64, string] { let show = |p| "union" };
+impl Show for i64 { let show = |p| "i64" };
+let v: i64 = 1;
+Show::show(v)

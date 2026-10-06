@@ -1,0 +1,62 @@
+// c-error-op-01: ErrChain chaining is decided twice, by type (error.rs
+// fix_echain_typ) and by value (wrap_error's is_a), and the two disagree,
+// so a handler's e holds a value outside its checked type.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-error-op-01.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-error-op-01.gx
+//
+// --check passes and types the three handlers as:
+//   alias: (e2.0).error : MyChain = {cause: [null, ErrChain<`A>], error: `A,
+//          ori: Ori, pos: Pos}  (the alias expands one level, to a Ref, so
+//          Error<MyChain> is wrapped)
+//   union: (e3.0).error : [{cause: .., error: `A, ori: Ori, pos: Pos}, `B]
+//          (a union payload is wrapped whole), so the select is exhaustive
+//   shape: e4 : Error<{cause: i64, error: i64, ori: i64, pos: i64}>, not
+//          wrapped (four field names count as a chain), so (e4.0).error : i64
+//
+// expected: every handler sees a value of the type the check gave it (or the
+// check refuses the handler).
+//
+// observed, both engines: the runtime chains the alias and union payloads and
+// wraps the shape one, the opposite of the check:
+//   alias: A            (n = 1..4: a variant where the check says a struct)
+//   union: B            (n = 1 only; for n = 2..4 the value is `A, which the
+//                        exhaustive select matches with no arm: nothing)
+//   at n = 3, default (JIT): thread 'tokio-rt-worker' panicked at
+//     graphix-compiler/src/fusion/kernel.rs:243:13: kernel param `x`: runtime
+//     Array(..) does not match the compiled Scalar(I64) slot
+//     Error: graphix runtime is dead   (exit 1)
+//   at n = 3, --no-fusion:
+//     shape: [[error:"can't add error types", 1], [error:"can't add error types", 20], ..]
+type MyChain = ErrChain<`A>;
+
+let saved: Error<MyChain> = never();
+
+let r = {
+  catch(e) saved <- e;
+  error(`A)?
+};
+
+let n = count(sys::time::timer(duration:20.ms, true));
+
+let f = |x: i64| x * 2 + 1;
+
+let alias = {
+  catch(e2) println("alias: [(e2.0).error]");
+  (n ~ saved)?
+};
+
+let union = {
+  catch(e3) println(select (e3.0).error {
+    `B => "union: B",
+    {pos, ..} => "union: chain at line [pos.line]"
+  });
+  error(select n { 1 => `B, _ => n ~ (saved.0) })?
+};
+
+let shape = {
+  catch(e4) println("shape: [f((e4.0).error)]");
+  error(select n { 3 => {cause: 1, error: 20, ori: 3, pos: 4}, _ => never() })?
+};
+
+sys::exit(select n { 4 => n ~ 0, _ => never() })

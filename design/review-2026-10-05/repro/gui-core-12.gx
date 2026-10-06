@@ -1,0 +1,39 @@
+// gui-core-12: a window whose value is bottom when the root array fires
+// is skipped for good.
+//
+// reconcile_windows (stdlib/graphix-package-gui/src/event_loop.rs:540-548)
+// runs only on a root update (event_loop.rs:265-278). It compiles a Ref to
+// each new window bind id; `w` is bottom then, so `wref.last` is None
+// (graphix-rt/src/gx.rs compile_ref: `last: store_value(&id)`, None for a
+// bottom cell), the window is logged "has no initial value, skipping" and
+// the Ref dropped. `&w` fires its id only at init (graphix-compiler/src/
+// node/bind.rs:1281), so the root never fires again and nothing retries
+// the window. Every child widget ref with no value is kept and shown as
+// EmptyW until it arrives (widgets/mod.rs compile_child/update_child,
+// window.rs:48-51 for a window's content); only the window ref is dropped.
+//
+// command (a desktop session; not run by the review, which may not open
+// windows):
+//   RUST_LOG=error graphix --no-cache --log-dir /tmp/gxlog \
+//     design/review-2026-10-05/repro/gui-core-12.gx
+// expected: a window showing "hi" opens about 2 s after start.
+// observed (by the code above): no window ever opens; the log in /tmp/gxlog
+//   has "window bind id BindId(..) has no initial value, skipping"; the
+//   process stays up with no window.
+//
+// The runtime half, run at HEAD c722befe (debug build): replace the last
+// line with
+//   println(w ~ "w has a value");
+//   sys::exit(sys::time::after_idle(duration:3.s, 0));
+//   ([&w], 0)
+// (a tuple root prints instead of starting the GUI) and run
+//   env -u WAYLAND_DISPLAY -u DISPLAY graphix --no-cache <file>
+// observed, with the time since start:
+//   0.09s ([&ref], 0)
+//   2.09s w has a value
+// and nothing more before the exit at 3 s: the root fires once, at init,
+// while `w` is bottom. The same with --no-fusion, GRAPHIX_PAR=force and a
+// cold or warm image.
+let ready = sys::time::after_idle(duration:2.s, true);
+let w = select ready { true => gui::window(&gui::text::text(&"hi")), false => never() };
+[&w]

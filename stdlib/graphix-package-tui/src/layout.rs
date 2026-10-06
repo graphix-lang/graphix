@@ -239,6 +239,14 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
         if let Some(Some(f)) = flex.t {
             layout = layout.flex(f.0);
         }
+        // CR claude for eric: [bug] ratatui's `margin(m)` sets both axes, so applying
+        // it between the two per-axis margins makes `#margin` override
+        // `#horizontal_margin` but not `#vertical_margin`. Probe:
+        // `layout(#horizontal_margin: &10, #margin: &1, #vertical_margin: &3, ..)` puts
+        // its child's corner at row 4, column 2 (vertical 3, horizontal 1), while
+        // without `#margin` it lands at column 11
+        // (design/review-2026-10-05/repro/tui-core-13.gx). Apply `margin` first, then
+        // the per-axis margins. (tui-core-13)
         if let Some(Some(m)) = horizontal_margin.t {
             layout = layout.horizontal_margin(m);
         }

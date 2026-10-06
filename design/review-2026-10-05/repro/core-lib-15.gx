@@ -1,0 +1,28 @@
+// core-lib-15: take and skip type #n as Any, so a nonsense count type-checks
+// and misbehaves without a word (stdlib/graphix-package-core/src/graphix/
+// mod.gx:13-14; Take/Skip::update seed n with cast_to::<usize>()).
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-lib-15.gx | sort -V
+//
+// expected: --check refuses every take/skip below except the #n: 2 pair,
+//   and a negative count counts as 0.
+// observed (HEAD c722befe): --check is clean, and n ticks 1..7:
+//   take -1  : every n (-1 as usize is usize::MAX)
+//   skip -3  : nothing (every n swallowed)
+//   take "x" : nothing (the cast fails, n stays None)
+//   skip "x" : every n
+//   take null: nothing
+//   take [1, 2]: n=1 only; take "2" and take 2.7: n=1 and 2
+//   take 2: n=1, 2; skip 2: n=3..7
+let n = count(sys::time::timer(duration:50.ms, true));
+println(#dest: `Stdout, "take -1: n=[take(#n: -1, n)]");
+println(#dest: `Stdout, "skip -3: n=[skip(#n: -3, n)]");
+println(#dest: `Stdout, "take x: n=[take(#n: "x", n)]");
+println(#dest: `Stdout, "skip x: n=[skip(#n: "x", n)]");
+println(#dest: `Stdout, "take null: n=[take(#n: null, n)]");
+println(#dest: `Stdout, "take array: n=[take(#n: [1, 2], n)]");
+println(#dest: `Stdout, "take string 2: n=[take(#n: "2", n)]");
+println(#dest: `Stdout, "take 2.7: n=[take(#n: 2.7, n)]");
+println(#dest: `Stdout, "take 2: n=[take(#n: 2, n)]");
+println(#dest: `Stdout, "skip 2: n=[skip(#n: 2, n)]");
+sys::exit(sys::time::after_idle(duration:400.ms, 0))

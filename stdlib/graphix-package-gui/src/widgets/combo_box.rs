@@ -74,6 +74,16 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         if let Some(opts) =
             self.options.update(id, v).context("combo_box update options")?
         {
+            // CR claude for eric: [bug] Every fire of `options` replaces the iced
+            // State, which holds the text being typed and the filtered list. A re-fire
+            // with unchanged contents (from a timer, a recomputed array or a struct
+            // field that re-fires) therefore erases what the user is typing and resets
+            // the dropdown. Rebuild only when the new options differ from
+            // self.state.options(). The TRef's copy of the Vec is then never read
+            // (view() uses only the State), so a plain Ref will do. probe:
+            // design/review-2026-10-05/repro/gui-widgets-a-11.rs (after typing "ban"
+            // and three same-value fires of options, Enter selects "apple" instead of
+            // "banana"). (gui-widgets-a-11)
             self.state = combo_box::State::new(opts.0.clone());
             changed = true;
         }
@@ -100,6 +110,15 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
     fn view(&self) -> IcedElement<'_> {
         let selected = self.selected.t.as_ref().and_then(|o| o.as_ref());
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
+        // CR claude for eric: [doc-drift] combo_box.md says a disabled combo box cannot
+        // be interacted with, but this code only turns the selection into Message::Nop.
+        // iced's ComboBox always wires on_input, so a disabled box still takes focus
+        // and typing, opens its list and silently drops the pick, with no disabled
+        // styling. When disabled, either render a text_input without on_input (iced
+        // draws it as disabled) showing the selection, or correct the book.
+        // pick_list.rs:105 has the same pattern, against pick_list.md's "the dropdown
+        // cannot be opened". probe: design/review-2026-10-05/repro/gui-widgets-a-11.rs
+        // (disabled case: all 3 keys captured, Enter publishes Nop). (gui-widgets-a-13)
         let on_select_id = if self.disabled.t.unwrap_or(false) {
             None
         } else {

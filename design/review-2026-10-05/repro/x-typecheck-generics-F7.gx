@@ -1,0 +1,41 @@
+// x-typecheck-generics-F7: a labeled default is never checked when its
+// function is passed as a value through a fn type that hides the label
+// (or names it with another type), so the instance runs with an argument
+// of the wrong type.
+//
+// graphix = a debug build of HEAD c722befe. From the repo root:
+//   graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F7.gx
+//   graphix --no-cache design/review-2026-10-05/repro/x-typecheck-generics-F7.gx
+//   graphix --no-cache --no-fusion design/review-2026-10-05/repro/x-typecheck-generics-F7.gx
+//
+// expected: refused by the check, as the direct call g("seven") is:
+//   in: 4096: type mismatch string does not contain i64
+// (every call through h omits #x, so x is a string whose default is i64)
+//
+// observed: --check exits 0. Default (JIT): exit 139, SIGSEGV. The apply
+// kernel passes `iconst.i64 4096` into h's string slot and the kernels
+// treat it as a string pointer (with `#x = 7` the debug build stops at
+// "misaligned pointer dereference: address must be a multiple of 0x8 but
+// is 0x7" in arcstr). Same with the image cache and GRAPHIX_PAR=off.
+// --no-fusion prints false.
+//
+// The same hole, other shapes (each passes --check):
+//   let scale = |#by = 2, x| x * by; array::map([1.5, 2.5], scale)
+//     JIT: panicked at fusion/kernel.rs:243: kernel param `by`: runtime
+//     I64(2) does not match the compiled Scalar(F64) slot; --no-fusion [3, 5]
+//   let pick = |#d = "none", xs| array::push(xs, d);
+//   let r: Array<Array<i64>> = array::map([[1, 2], [3]], pick); r
+//     --no-fusion [[1, 2, "none"], [3, "none"]]; JIT panics at kernel.rs:243
+//   let g = |#x = 1, y| x + y; let h: fn(y: f64) -> f64 = g; h(f64:2.5)
+//     both engines 3.5
+//   let g = |#x = 1, y| x + y;
+//   let apply = |h: fn(?#x: f64, y: f64) -> f64| h(f64:5.0); apply(g)
+//     elaboration refuses "f64 does not contain i64" (GRAPHIX_ELAB_AUDIT=1
+//     reports it); called through a run-time value instead
+//     (let gs = [g]; apply(gs[0]$)) the call is bottom forever and only the
+//     log says "binding the callee failed".
+// With GRAPHIX_NO_SUBST=1 elaboration refuses this program and the
+// array::map shapes; the let shape still prints 3.5.
+let g = |#x = 4096, y| x == y;
+let apply = |h: fn(y: string) -> bool| h("seven");
+apply(g)

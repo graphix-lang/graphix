@@ -1,0 +1,19 @@
+// core-lib-08: #[sync] accepts a function whose filter predicate is async.
+// graphix-compiler/src/analysis.rs callee_facts: a builtin call contributes
+// its declared EFFECT (filter is Sync) and the lambda passed to it counts as
+// a PURE literal, so the predicate's effect never reaches g's facts.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/core-lib-08.gx
+//
+// expected: refused with "#[sync]: this function is async", as
+//   `#[sync] let g = |v: i64| sys::time::after_idle(duration:10.ms, v)` is.
+// observed (HEAD c722befe): accepted, and g answers every n a cycle late:
+//   (1, 1) (1, 2) (2, 2) (2, 3) (3, 3) (3, 4) ...
+// The same g under #[async] is refused: "#[async]: this function is sync".
+// `#[sync] let g = |v: [i64, null]| opt::map(v, |x| sys::time::after_idle(
+// duration:10.ms, x + 1))` is accepted the same way.
+let n = count(sys::time::timer(duration:100.ms, true));
+#[sync]
+let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms, x > 0));
+sys::exit(sys::time::after_idle(duration:550.ms, 0));
+dbg(#dest: `Stdout, (g(n), n))

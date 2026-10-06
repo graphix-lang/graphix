@@ -1,0 +1,30 @@
+// x-builtin-effects-06: rand::rand and range treat a bottomed argument as
+// a fire and re-run from the stale slots.
+//
+// Rand::update (stdlib/graphix-package-rand/src/lib.rs:70) and Seq::update,
+// the builtin behind range (stdlib/graphix-package-core/src/lib.rs:1984),
+// act on CachedVals::update's bool, which is true for a FreshBottom while
+// the slot keeps its old value, and neither checks any_bottom(). R3 of
+// design/dense_delivery.md (ruled delta 13): a bottomed argument bottoms
+// the invocation.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-builtin-effects-06.gx
+//          (the same with --no-fusion; graphix-fuzz check: AGREE, both
+//          engines run the same builtin)
+//
+// expected: hi$ is bottom at n=2 and n=4, so rand draws and range runs only
+//   when hi$ fires; the n=5 line reads
+//   "hi$ fired 4 times, rand drew 4 times, range emitted 12 values"
+// observed: rand draws and range re-emits range(0, 3) at n=2 and n=4 too:
+//   "n=2 hi=null: hi$ fired 2 times, rand drew 3 times, range emitted 9 values"
+//   "n=5 hi=3: hi$ fired 4 times, rand drew 6 times, range emitted 18 values"
+let clk = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let hi = select n { 2 => null, 4 => null, _ => 3 };
+let c = hi$;
+let cc = count(c);
+let cr = count(rand::rand(#start: 0, #end: 1000, #clock: c));
+let cs = count(range(0, c));
+sys::exit(select n { 6 => 0, _ => never() });
+clk ~ "n=[n] hi=[hi]: hi$ fired [cc] times, rand drew [cr] times, range emitted [cs] values"

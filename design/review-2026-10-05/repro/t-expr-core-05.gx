@@ -1,0 +1,34 @@
+// t-expr-core-05: an abstract value's structural print shows its payload's
+// wire form: a struct payload as its pair array, a tuple as an array, a
+// variant as [tag, args] (a nullary one as a quoted string), a List as its
+// private nested-array rep.
+//
+// GxAbstract's Debug (graphix-types/src/abstract_value.rs:115-117) prints
+// the payload with the type-blind fmt_naked, and TVal sends every
+// Type::Abstract there (graphix-types/src/typ/tval.rs:143), so the typed
+// printers (interpolation, println, dbg, Display::fmt's structural default,
+// the shell's echo) all lose the payload's type.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-expr-core-05.gx
+// (and with --no-fusion: the same output)
+//
+// expected (the structural case prints Graphix syntax, type-directed:
+// book/src/udt/traits.md, design/traits.md "The rule"):
+//   P({x: 1, y: 2}) T((1, "a")) V(`A(3)) V(`B) L([<1, 2>])
+//   ({x: 1, y: 2}, (1, "a"), `A(3), `B, [<1, 2>])
+//
+// observed (both engines):
+//   P([["x", 1], ["y", 2]]) T([1, "a"]) V(["A", 3]) V("B") L([1, [2, []]])
+//   ({x: 1, y: 2}, (1, "a"), `A(3), `B, [<1, 2>])
+type P = Abstract<{x: i64, y: i64}>;
+type T = Abstract<(i64, string)>;
+type V = Abstract<[`A(i64), `B]>;
+type L = Abstract<List<i64>>;
+let p = P({x: 1, y: 2});
+let t = T((1, "a"));
+let v: V = V(`A(3));
+let w: V = V(`B);
+let l = L([<1, 2>]);
+println("[p] [t] [v] [w] [l]");
+println((p.0, t.0, v.0, w.0, l.0));
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

@@ -1,0 +1,28 @@
+// x-typecheck-generics-F2: two refusals that are right but report a false
+// reason.
+//
+// 1. `?` on an operand whose type is an unbound cell (a parameter no caller
+// types). Strip::of (graphix-compiler/src/node/error.rs:474) takes the error
+// form without binding the cell, the result type is the cell itself, and the
+// raised type (error.rs:1365) is the cell minus itself, the empty set, which
+// fix_echain_typ (error.rs:619) reports as `expected error not []`.
+//
+// command: graphix --check design/review-2026-10-05/repro/x-typecheck-generics-F2.gx
+//
+// expected: refused with a message that names `x` and asks for its type
+// (`|x: [i64, Error<`E>]| x?` is accepted, and so is `array::map(xs, |x| x?)`
+// over a typed `xs`).
+//
+// observed: refused at `x?`: `expected error not []`.
+//
+// 2. `let f = |b: bool, x: 'a| -> 'a select b { true => x, false => 1 }`
+// expected: a mismatch, as `|x: 'a| -> 'a 1` reports
+// (`type mismatch 'a: unbound does not contain i64`).
+// observed: `cannot infer a finite type here: unification requires a type that
+// contains itself ...; declare a named recursive type and annotate the
+// binding`. contains_mismatch (graphix-types/src/typ/contains.rs:418) takes the
+// open rigid 'a inside ['a, i64] for a cycle (open_cell_reaches, :169);
+// `|b: bool, x: 'a, y: 'b| -> 'a select b { true => x, false => y }` says the
+// same while `|x: 'a, y: 'b| -> 'a y` gets the plain mismatch.
+let f = |x| x?;
+f(1)

@@ -1,0 +1,23 @@
+// c-error-op-09: Qop::compile (graphix-compiler/src/node/error.rs:727) warns
+// "error raised by ? will not be caught" each time an instance of a function
+// is compiled under a call site with no catch, so the run repeats a warning
+// the call site already gave, once per instance and, under the node-walk,
+// once per collection slot while the program runs.
+//
+// command: graphix --check design/review-2026-10-05/repro/c-error-op-09.gx
+//          graphix --no-cache design/review-2026-10-05/repro/c-error-op-09.gx
+//          graphix --no-cache --no-fusion design/review-2026-10-05/repro/c-error-op-09.gx
+//
+// expected: the two warnings --check prints (line 19 column 9, "raised from
+//   function call f"; line 21 column 10, "raised from function call
+//   array::map"), each once.
+// observed (HEAD c722befe, debug build): --check prints those two. The run
+//   adds `at line: 18, column: 31 error raised by ? will not be caught` twice
+//   (fused), or 22 times with --no-fusion: one per array slot, each printed
+//   in the cycle its slot is created, between the values (2, 1) .. (2, 20).
+let f = |v: [i64, Error<`E>]| v? + 1;
+let a = f(1);
+let c = count(sys::time::timer(duration:5.ms, true));
+let xs = array::map(array::init(c, |i| i), |x| f(x));
+sys::exit(select c { 20 => c ~ 0, _ => never() });
+(a, array::len(xs))

@@ -1,0 +1,22 @@
+// t-cast-setops-04: a cast whose source is a union holding a List reads the
+// list's cons cells as array elements: `[<1, 2, 3>]` becomes `[1, 2]`.
+//
+// src_head (graphix-types/src/typ/cast.rs:61) returns None for any union, so
+// the Array arm (cast.rs:340) takes a list typed `[List<i64>, null]` for an
+// array: the rep `[1, [2, [3, []]]]` casts element by element, the cell
+// `[2, [3, []]]` converts to i64 by netidx's first-element rule
+// (netidx-value/src/lib.rs:821) and the tail is lost without an error. The
+// List arm falls back to the value's shape instead, so an array typed
+// `[Array<Array<i64>>, null]` that ends in `[]` is read as a spine and loses
+// that element. Both engines and every image session share cast_from:
+// graphix-fuzz check says AGREE.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/t-cast-setops-04.gx
+//          (the same with --no-fusion)
+// expected: ([1, 2, 3], [1, 2, 3], [2, 3, 4], [<[1], []>])
+// observed: ([1, 2], [1, 2, 3], [2, 3], [<[1]>])
+let opt = |x: [List<i64>, null]| cast<Array<i64>>(x);
+let bare = |x: List<i64>| cast<Array<i64>>(x);
+let rev = |x: [Array<Array<i64>>, null]| cast<List<Array<i64>>>(x);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(opt([<1, 2, 3>]), bare([<1, 2, 3>]), cast<Array<i64>>(list::tail([<1, 2, 3, 4>])), rev([[1], []]))

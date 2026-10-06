@@ -1,0 +1,45 @@
+// x-engine-seq-errors-06: seqq flush drops a request that arrives in the
+// flush event's own cycle; the book and the design doc say it is kept.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/x-engine-seq-errors-06.gx
+//   (same with --no-fusion, GRAPHIX_PAR=off|force; graphix-fuzz check on
+//   the program without the sys::exit line says AGREE: every engine and
+//   image mode loses the request)
+//
+// Both machines start a run on request 1 that waits for `ready` (step 11).
+// `cancel` aborts that run and flushes the queue at step 6. Machine `ra`
+// gets a second request at step 6, the flush's own cycle; `rb` gets it at
+// step 7.
+//
+// The flush reaches core::queue's #flush through a connect
+// (graphix-types/src/expr/seq.rs:376), so the clear lands at step 7, after
+// the queue already pushed the step-6 request (it pushes in the request's
+// cycle; Queue::update, stdlib/graphix-package-core/src/lib.rs:1814).
+//
+// expected (book/src/core/seq.md:358 "A request that arrives with the
+// flush or after it is kept"; design/seq_blocks.md:633-634):
+//   ([6], [7])
+// observed (both engines, every image and fork mode):
+//   ([], [7])
+//
+// The latest-wins idiom runs nothing at all: with
+//   let query = select step { 1 | 4 => step, _ => never() };
+//   let newer = query;
+//   seqq query; flush(newer) { until step > query + 5; query }
+// the request at step 4 flushes run 1 and is flushed with it, so the seqq
+// never produces (expected [4], observed []).
+let step = 0;
+step <- select step { s if s < 20 => s + 1, _ => never() };
+let cancel = select step { 6 => true, _ => never() };
+let ready = false;
+ready <- select step { 10 => true, _ => never() };
+let a = select step { 1 | 6 => step, _ => never() };
+let b = select step { 1 | 7 => step, _ => never() };
+let ra = seqq a; flush(cancel) { until ready; a };
+let rb = seqq b; flush(cancel) { until ready; b };
+let la = [];
+la <- ra ~ array::push(la, ra);
+let lb = [];
+lb <- rb ~ array::push(lb, rb);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select step { 20 => (la, lb), _ => never() }

@@ -1,0 +1,39 @@
+// c-analysis-branch-01: seqq capture liveness is keyed by the seq's expr id,
+// so a definition's instances overwrite each other's verdict.
+//
+// walk_static_graph files every SeqCapture under `c.machine`
+// (graphix-compiler/src/analysis.rs:116), the seq expression's id
+// (graphix-types/src/expr/seq.rs:985), which every instance of the
+// definition shares. plan_machines (analysis.rs:1177-1184) stores each
+// machine's verdict into every instance's captures, so the machine planned
+// last decides them all. Each instance's step plan is right; only its
+// capture choice (SeqCapture::chosen) is overwritten.
+//
+// command: graphix --no-cache design/review-2026-10-05/repro/c-analysis-branch-01.gx
+//          (the same with --no-fusion, GRAPHIX_PAR=off|force, a cold or warm
+//          image; graphix-fuzz check: AGREE, the engines share the plan)
+//
+// expected: (5, 5). One call alone (`let a = mk(1); a`) prints 5, as the pin
+//   seq_steps::seqq_callee_write_is_live says: a variable only a callee
+//   writes is live under seqq.
+// observed (HEAD c722befe, debug build, every mode): (5, 0). With
+//   GXDBG_SEQPLAN=1 each pass sets its own capture of `n` live and the other
+//   instance's not live; the second pass wins.
+//
+// The other direction, a snapshot capture made live (expected (100, 0)):
+//   let x = 0;
+//   let run = |go: i64, f: fn(v: i64) -> i64| seqq go { f(1); x };
+//   let a = run(1, |v| { x <- v * 100; v });
+//   let b = run(1, |v| sys::time::after_idle(duration:50.ms, v));
+//   (a, b)
+// prints (100, 100), and (0, 0) with the two lets swapped; with `b` calling
+// a textually identical second definition it prints (100, 0).
+let mk = |go: i64| {
+  let n = 0;
+  let put = |v| { n <- v; v };
+  seqq go { put(5); n }
+};
+let a = mk(1);
+let b = mk(1);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a, b)

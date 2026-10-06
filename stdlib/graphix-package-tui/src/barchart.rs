@@ -328,6 +328,19 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
                 gap,
             ));
         }
+        // CR claude for eric: [bug] ratatui-widgets 0.3.0's BarChart overflows on
+        // values that draw passes to it unchecked. A bar value above u64::MAX / (8 *
+        // chart height, or width for horizontal bars), which is 1e17 on 24 rows,
+        // overflows `value * height * 8` (its barchart.rs:456). A group whose `n *
+        // bar_width + (n - 1) * bar_gap` exceeds u16::MAX (32769 bars at default
+        // widths, or 64 at bar_width 1024) overflows its barchart.rs:436, and the 1024
+        // cap in validate.rs cannot bound a sum that grows with the bar count. A debug
+        // build panics and the display never draws again. A release build draws the
+        // tallest bar as a 7/8 cell, and for the wide group admits every bar and panics
+        // with `index outside of buffer`. ratatui-widgets 0.3.2 computes ticks in u128,
+        // which fixes the values; the width sum needs this loop to pass only the bars
+        // the rect can show. probe: design/review-2026-10-05/repro/tui-widgets-05.py
+        // (tui-widgets-05)
         for group in data.iter_mut() {
             let mut bars: SmallVec<[Bar; 8]> = smallvec![];
             let mut g = BarGroup::default();

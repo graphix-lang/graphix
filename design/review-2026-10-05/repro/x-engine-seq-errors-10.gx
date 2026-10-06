@@ -1,0 +1,48 @@
+// x-engine-seq-errors-10: a dynamic-module reload that changes a hidden
+// abstract type's representation feeds mistyped values to well-typed code.
+//
+// AbstractId is path-derived (AbstractId::of), so `foo::C` keeps its id
+// across reloads, and a reload is accepted whatever the new body's
+// `Abstract<..>` is (check_sig only checks that a hidden type is Abstract;
+// Env::deftype overwrites abstract_reps). `held` was minted by `one`
+// (payload String "v41") and survives the reload; `two`'s `get` returns
+// its payload as i64, so the consumer's `r: i64` holds a string.
+//
+// command: graphix --no-cache -n design/review-2026-10-05/repro/x-engine-seq-errors-10.gx
+//          graphix --no-cache -n --no-fusion design/review-2026-10-05/repro/x-engine-seq-errors-10.gx
+//
+// expected: the reload refused (status an error), or `held` no longer a
+//   `foo::C` of the new body; never a string in an i64 slot.
+// observed (fusion on, the default): `7`, then the runtime panics and dies
+//   thread 'tokio-rt-worker' panicked at graphix-compiler/src/fusion/kernel.rs:243:13:
+//   kernel param `r`: runtime String("v41") does not match the compiled Scalar(I64) slot
+//   Error: graphix runtime is dead            (exit 1)
+// observed (--no-fusion): `7`, then
+//   arith error ... line: 45, column: 9 "Parse error at line: 1, column: 1\nUnexpected `4`\n"
+//
+// The same hole with the payload kept inside the loaded code is silent: an
+// i64 -> string reload whose impl is `|c| "[str::len(c.0)]"` never produces
+// for `held` and logs nothing; i64 -> f64 with `c.0 == 41.0` gives false.
+let one = """
+    type C = Abstract<string>;
+    let make = |x| C("v[x]");
+    let get = |c: C| -> i64 str::len(c.0)
+""";
+let two = """
+    type C = Abstract<i64>;
+    let make = |x| C(x);
+    let get = |c: C| -> i64 c.0
+""";
+let source = one;
+sys::net::publish("/local/dynrepr", source)?;
+let status = mod foo dynamic {
+    sandbox whitelist [core, str];
+    sig { type C; val make: fn(x: i64) -> C; val get: fn(c: C) -> i64 };
+    source sys::net::subscribe("/local/dynrepr")?
+};
+let held = once(select status { error as e => never(dbg(e)), null as _ => foo::make(41) });
+let r = foo::get(held);
+let n = r * 2 + 1;
+println("[n]");
+source <- sys::time::timer(duration:200.ms, false) ~ two;
+sys::exit(sys::time::after_idle(duration:800.ms, 0))

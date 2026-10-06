@@ -244,6 +244,18 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let mut ok = true;
             // a later binder of the name shadows the use; a later binder
             // of a name the value references, at any depth, captures it
+            // CR claude for eric: [bug] let-inline moves the value's check from its
+            // `let` to its one use, past every read in between. But a let over ⊥ takes
+            // its type from its first reader, the rule stmt-permute's `open` set
+            // encodes. When the value and another reader of such a let are checked in a
+            // different order after the inline, the other reader decides the cell and
+            // the moved value is refused. This files a false let-inline typeflip. The
+            // other reader can be any statement up to the use, including the use's own
+            // statement before the use (`let x = k(g); h(g) + x`). Skip the inline when
+            // the value reads an open let that any statement from si+1 through the use
+            // also reads, using the same openness test as stmt-permute. probe:
+            // design/review-2026-10-05/repro/fuzz-mutate-07.gx (`graphix-fuzz
+            // typemorph` on it reports let-inline#3). (fuzz-mutate-07)
             for later in &stmts[si + 1..] {
                 later.fold((), &mut |(), n| match &n.kind {
                     ExprKind::Ref { name } if name.to_string() == nm => uses += 1,
@@ -267,6 +279,15 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
             };
             // a name under `&` may be a place root; a seq body refuses a `catch`
+            // CR claude for eric: [bug] let-inline can move a value that raises (`x?`,
+            // or a call whose callee raises) to a use that sits after a `catch` in an
+            // enclosing block, so the raise reaches that handler instead of its old
+            // one; a handler typed for other errors then refuses the mutant by language
+            // rule, a false typeflip. The guard below covers only the reverse move (a
+            // value holding a `catch` into a seq body). Skip the inline when the value
+            // can raise and a `catch` statement stands between the `let` and the use in
+            // a block enclosing the use. probe:
+            // design/review-2026-10-05/repro/fuzz-mutate-10.gx (fuzz-mutate-10)
             let holds_catch = b
                 .value
                 .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
@@ -294,6 +315,19 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     {
         // a let over ⊥ takes its type from its first use, so two
         // readers of one do not commute
+        // CR claude for eric: [bug] `open` only holds lets whose value is a bare
+        // `never()`. The first reader also decides the type of a let over `(never())`,
+        // a block ending in `never()`, or a select whose only arm is `never()`, and
+        // `let xs = []` flips the same way through its element cell. stmt-permute still
+        // swaps two readers of these, so the reader moved to the front decides the cell
+        // and the other is refused: a false stmt-permute flip filed for triage.
+        // let-inline's guard (line 235) uses the same bare test, and the pin
+        // readers_of_a_bottom_let_do_not_commute covers only the bare form. Fix: decide
+        // openness from the subject's checked types (`ExprTypeSite::cell`, or a let
+        // type that holds a cell), or at least look through parens, block tails and
+        // all-`never()` selects. probe:
+        // design/review-2026-10-05/repro/fuzz-mutate-08.gx (graphix-fuzz typemorph on
+        // it prints a stmt-permute#1 TYPEFLIP). (fuzz-mutate-08)
         let open: HashSet<String> = stmts
             .iter()
             .filter_map(|st| match &st.kind {
@@ -491,6 +525,15 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
 /// test binds it, coverage reads it), or a field read or a `with` update
 /// on it. Only the call supplies that type, so a `let` of the
 /// `e` under any parentheses.
+// CR claude for eric: [readability] The doc above (489-493) is the head of
+// reads_param_type's doc spliced onto the tail of unparen's own, and reads_param_type
+// keeps only its last line (501); mustreject.rs:197-198 is widen's doc sitting on
+// binds_outward, and widen (mustreject.rs:214) has none. Move each block back above its
+// function. The comment at line 83 is also wrong: mutate::replace rebuilds the path
+// with `with_kind`, which keeps `dec`. Attributes are lost where a transform rebuilds
+// its target from the kind (`to_expr_nopos`) and moved where it relocates a node, and
+// the reparse check sees neither because Expr equality ignores `dec`; that is the
+// reason to skip `#[`. (fuzz-mutate-17)
 pub(crate) fn unparen(mut e: &Expr) -> &Expr {
     while let ExprKind::ExplicitParens(inner) = &e.kind {
         e = inner;
@@ -516,6 +559,20 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
                 ExprKind::StructRef { source, .. }
                 | ExprKind::TupleRef { source, .. } => is_param(source),
                 ExprKind::StructWith(w) => is_param(&w.source),
+                // CR claude for eric: [bug] Like the field read above, a call through
+                // an unannotated parameter (`|g| g(2)`) or a deref of one (`|r| *r +
+                // 1`) needs the parameter's type before the body checks. A `let` of
+                // either lambda is refused at its definition ("type must be known,
+                // annotations needed" / "expected reference"). Both fall through to
+                // `false` here, so let-extract hoists them and typemorph files a
+                // typeflip for a language rule. Flips dedup by kind and head, so that
+                // class then also hides any real let-extract flip with the same head.
+                // Add `ExprKind::Apply(ap) => is_param(&ap.function)` and
+                // `ExprKind::Deref(x) => is_param(x)`, and pin both shapes in
+                // extract_skips_param_type_reads. probe: graphix-fuzz typemorph
+                // design/review-2026-10-05/repro/fuzz-mutate-09.gx (the generators
+                // never emit these shapes; hand-run typemorph and mutants can).
+                // (fuzz-mutate-09)
                 _ => false,
             }
     })

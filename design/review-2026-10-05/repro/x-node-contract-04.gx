@@ -1,0 +1,41 @@
+// x-node-contract-04: MapQ/FoldQ::refs leave out their slots, so wake
+// catch-up and Bind's wake test miss inputs that only slot instances read.
+//
+// command: graphix-fuzz run design/review-2026-10-05/repro/x-node-contract-04.gx
+//
+// The map's callback is chosen at run time, so its prototype call never
+// binds, and MapQ::refs (graphix-compiler/src/node/collection.rs:1151) does
+// not report what the slot instances read. `a <- 7` lands at n=7 while the
+// arm sleeps. At the wake (n=9) the select does not track `a`, the slot reads
+// it standing (GXDBG_REF=1 with --no-fusion: "REF a @line: 36, column: 32 ..
+// STANDING (ei=true wi=true) .. val=I64(7)"), and `a ~ x` never fires.
+//
+// expected: Trace([9:[i64:9]]), what `[g(n)]` in place of the map gives. A
+//   fire that no selected reader saw is re-raised once at the wake
+//   (design/wake_catchup.md; pin findings/wake-catchup-sep2026/04).
+// observed: Trace([]) in every mode, interp and jit alike.
+//
+// Variants, all with graphix-fuzz run:
+//   array::map([n], |x| a ~ x)              Trace([2:[i64:2] 3:[i64:2] 9:[i64:9]])
+//   [g(n)]                                  Trace([9:[i64:9]])
+//   dummy <- n + a (another reader tracks a) Trace([2:[i64:2] 3:[i64:2] 9:[i64:9]])
+//   array::map([n], |x| g(x))               Trace([])
+//   array::fold([n], 0, g), g's arms |acc, x| a ~ (acc + x) / |acc, x| acc + x:
+//     Trace([]); with the literal callback, Trace([2:i64:2 3:i64:2 9:i64:9])
+//
+// Bind::input_fired (node/bind.rs:140) reads the same refs, so a live fire
+// is lost too. With g = select mode { 0 => |x| a ~ (a + x), _ => |x| x },
+// a <- select n { 2 => 5, 8 => 7, _ => never() } and the arm
+//   { let t = array::map([1], g); t <- select n { 100 => [0], _ => never() }; t }
+// a fires in the wake cycle (n=9) and the slot produces a FIRED [8], but
+// `let t` keeps [6] (GXDBG_LETBIND=1: keep_connect_target_value=true
+// publishing=false): Trace([3:[i64:6] 9:[i64:6]]). With the literal callback
+// it is 9:[i64:8], and so it is with [g(1)] (parameters annotated i64).
+let a = 0;
+let mode = 0;
+let g = select mode { 0 => |x| a ~ x, _ => |x| x };
+let n = 0;
+let dummy = 0;
+n <- select n { k if k < 12 => k + 1, _ => never() };
+a <- select n { 6 => 7, _ => never() };
+select n { 2 | 3 | 9 => { dummy <- n; array::map([n], g) }, _ => never() }

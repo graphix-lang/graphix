@@ -405,6 +405,20 @@ impl ImageSourceV {
                 if pixels.is_empty() {
                     return Ok(None);
                 }
+                // CR claude for eric: [risk] Nothing checks width and height against
+                // pixels.len() before this call. winit computes width * height in u32,
+                // so an icon like `Rgba({width: u32:65536, height: u32:65536, pixels:
+                // ..})` overflows. In a dev build that panics on the GUI main thread,
+                // and main.rs runs the event loop without catch_unwind, so the shell
+                // exits. In release the product wraps and the platform gets an icon
+                // header that disagrees with its buffer. clipboard.rs
+                // image_args_from_value has the same gap: on X11 a length mismatch hits
+                // the image crate's assert_eq in the PNG encoder and returns as
+                // ClipboardError("spawn_blocking: ... panicked"), and that function
+                // also copies the pixels twice. Check u64 width * height * 4 ==
+                // pixels.len() where the value is decoded (the "Rgba" arm of
+                // ImageSourceV::from_value and image_args_from_value) and refuse the
+                // rest. Not run: needs a window. (gui-core-14)
                 Ok(Some(winit::window::Icon::from_rgba(
                     pixels.to_vec(),
                     *width,

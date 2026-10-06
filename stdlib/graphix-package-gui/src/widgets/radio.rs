@@ -105,6 +105,15 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         } else {
             self.on_select_callable.as_ref().map(|c| c.id())
         };
+        // CR claude for eric: [bug] Until `value` arrives the radio stays clickable,
+        // and a click sends null to on_select, whose parameter the checker typed from
+        // the value (`'a`). GXHandle::call checks only the arity, so the null lands in
+        // a typed slot. `|x| chosen <- x` with `chosen: i64` then stores null in an
+        // i64, and a fused reader such as `triple(chosen)` panics the runtime ('kernel
+        // param `chosen`: runtime Null does not match the compiled Scalar(I64) slot'),
+        // which ends the program. Without fusion the reader logs an arith error and
+        // bottoms. Install on_select only once `self.value.last` is Some. probe:
+        // design/review-2026-10-05/repro/gui-widgets-b-16.rs (gui-widgets-b-16)
         let value_for_callback = self.value.last.clone().unwrap_or(Value::Null);
         // iced's Radio needs a Copy + Eq value type; selection is computed here.
         let mut r =

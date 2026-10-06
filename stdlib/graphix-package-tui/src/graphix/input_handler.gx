@@ -1,3 +1,14 @@
+// CR claude for eric: [bug] input_handler is typed `throws 'e` with the handler's
+// errors, but the TUI calls the handler through a Callable compiled under Scope::root()
+// (graphix-rt/src/gx.rs:944), so a `?` in the handler finds no handler and is only
+// logged as unhandled. The checker treats a catch around input_handler(..) as covering
+// those errors (it refuses a narrower ascription), but that catch never fires, and
+// neither does a file-level catch. This definition typechecks only because storing the
+// handler in InputHandler.handle, which has no throws, commits `⊥ ⊇ 'e` on the rigid
+// 'e, and the gate then reopens it as vacuous (contains.rs:585, lambda.rs:1816). Either
+// drop `throws 'e` here and in the .gxi, so a throwing handler is refused like a GUI
+// callback, or deliver handler errors to this call's handlers. probe:
+// design/review-2026-10-05/repro/gx-ui-08.py (gx-ui-08)
 let input_handler = |
   #enabled: &[bool, null] = &null,
   #handle: &fn(e: Event) -> [`Stop, `Continue] throws 'e,

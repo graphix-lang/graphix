@@ -1,0 +1,48 @@
+// t-fntyp-03: rank-2 rigidity applies only to a formal's whole type;
+// elsewhere a quantified fn type accepts a monomorphic function.
+//
+// FnType::contains_int (graphix-types/src/typ/fntyp.rs:939) binds the
+// container's open quantifier 'b like any cell; only quantified_formal
+// (graphix-compiler/src/node/callsite.rs:244) holds it rigid, and only for
+// a formal whose whole type is the quantified function. `let h: F = g`
+// checks a fresh expansion of F (contains.rs expand_ref: reset_tvars), so
+// 'b := i64 is thrown away, and the call h(1.5) expands F again and picks
+// 'b = f64.
+//
+// command: graphix --check design/review-2026-10-05/repro/t-fntyp-03.gx
+//          timeout -s KILL 10 graphix --no-cache design/review-2026-10-05/repro/t-fntyp-03.gx
+//          timeout -s KILL 10 graphix --no-cache --no-fusion design/review-2026-10-05/repro/t-fntyp-03.gx
+//
+// expected: --check refuses `let h: F = g`. g is fn(x: i64) -> i64, which
+//   does not hold for every 'b: Number; passed to a formal `|f: F|` the same
+//   g is refused (pin NESTED_QUANTIFIER_MONO, stdlib/graphix-tests/src/lang/types.rs).
+// observed (HEAD c722befe, debug build):
+//   --check: accepted (exit 0).
+//   fusion on: thread 'tokio-rt-worker' panicked at
+//     graphix-compiler/src/fusion/kernel.rs:243:13: kernel param `v`: runtime
+//     I64(7) does not match the compiled Scalar(F64) slot
+//     Error: runtime did not respond (exit 1)
+//   --no-fusion: 7.5 (v, typed f64, holds the i64 7).
+//   The log (--log-dir, or GRAPHIX_ELAB_AUDIT=1) says: a run-time bind at
+//     h(1.5) did not type: an instance at fn(x: f64) -> f64 of a definition
+//     typed fn(x: i64) -> i64. The bind is logged, not refused, and runs.
+//   graphix-fuzz check: the fuzzer process aborts (SIGABRT, exit 134).
+//
+// The same hole in a formal's nested positions, each accepted by --check:
+//   let apply = |o: {f: fn<'b: Number>(x: 'b) -> 'b}| { let v = (o.f)(1.5); v + 0.5 };
+//   apply({f: g})          (same JIT panic; a tuple element
+//                           `(fn<'b: Number>(x: 'b) -> 'b, i64)` the same)
+//   |o: [null, fn<'b: Number>(x: 'b) -> 'b]|, |fs: Array<fn<'b: Number>(x: 'b) -> 'b>|
+//   and `let fs: Array<F> = [g]` (through the typedef): accepted too.
+// With `g = |x: i64| -> i64 x / 2`, h(1.5) is 0.75 in both engines
+// (graphix-fuzz run: Trace([0:f64:0.75]) in every mode).
+// The inline annotation `let h: fn<'b: Number>(x: 'b) -> 'b = g` instead
+// binds 'b to i64 for good (h(3) is accepted, h(1.5) refused), while
+// `let f: fn<'a: Number>(x: 'a) -> 'a = |x| x; (f(1), f(1.5))` is
+// polymorphic: the same type means two things by how it is written.
+type F = fn<'b: Number>(x: 'b) -> 'b;
+let g = |x: i64| -> i64 x ~ 7;
+let h: F = g;
+let v = h(1.5);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+v + 0.5

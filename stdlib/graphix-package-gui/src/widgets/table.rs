@@ -74,6 +74,14 @@ async fn compile_columns<X: GXExt>(
 async fn compile_rows<X: GXExt>(gx: &GXHandle<X>, v: Value) -> Result<Vec<Vec<GuiW<X>>>> {
     let rows = v.cast_to::<SmallVec<[Value; 8]>>()?;
     let mut result = Vec::with_capacity(rows.len());
+    // CR claude for eric: [perf] Rows are compiled one after another, and so are
+    // columns (line 44), menu groups and menu items (menu_bar.rs:123 and 87). Each
+    // element's compile_ref and compile_callable requests wait for the previous
+    // element's, one pass of the runtime loop apiece, all inside `rt.block_on` on the
+    // GUI thread. A 500-row table update costs at least 500 sequential round trips and
+    // a 5x10 menu about 105, each waiting out any cycle in progress, and input and
+    // drawing stop meanwhile. `futures::future::try_join_all`, which compile_children
+    // already uses, would send each level's requests together. (gui-widgets-b-14)
     for row in rows {
         let cells = compile_children(gx.clone(), row).await.context("table row")?;
         result.push(cells);
@@ -171,6 +179,19 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         Ok(changed)
     }
 
+    // CR claude for eric: [bug] TableW forwards on_message to its headers and cells by
+    // hand but not before_view. It also keeps the default empty children_mut, so the
+    // event loop's before_view (event_loop.rs:317) never reaches a widget inside a
+    // table. TooltipW (tooltip.rs:53) lists only child, so its tip gets neither
+    // before_view nor on_message. A data_table in a table cell therefore never applies
+    // its live sort at a frame (sort_col_dirty, data_table/mod.rs:294), nor the
+    // subscription reconcile that layout requests: its rows stay in table order until
+    // some unrelated graphix update reaches it through handle_update. One child visitor
+    // used by the default on_message and before_view (headers then cells here, child
+    // then tip in tooltip) would replace the slice accessors and this hand forwarding.
+    // probe: design/review-2026-10-05/repro/gui-widgets-b-08.rs (a column-wrapped
+    // control sorts at every frame; the table cell stays unsorted until an unrelated
+    // text update; the tooltip's tip never sees a click). (gui-widgets-b-08)
     fn on_message(
         &mut self,
         msg: &super::Message,
