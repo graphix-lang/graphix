@@ -57,7 +57,7 @@ static bool scan_bare_ident_tail(TSLexer *lexer) {
   }
 }
 
-// A literal's unit in a non-bytes ascription: letters (`ms`, `s`),
+// A literal's unit in a non-bytes ascription: letters (`ms`, `s`, `M`),
 // optionally after one dot (`500.ms`), or a lone trailing dot (`0.`)
 // that does not begin a `..` range.
 static bool scan_unit_extension(TSLexer *lexer) {
@@ -67,7 +67,8 @@ static bool scan_unit_extension(TSLexer *lexer) {
     if (lexer->lookahead == '.') return false;
     any = true;
   }
-  while (lexer->lookahead >= 'a' && lexer->lookahead <= 'z') {
+  while ((lexer->lookahead >= 'a' && lexer->lookahead <= 'z') ||
+         (lexer->lookahead >= 'A' && lexer->lookahead <= 'Z')) {
     lexer->advance(lexer, false);
     any = true;
   }

@@ -6,9 +6,9 @@ authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
-description = "A dataflow language for UIs and network programming, compiler"
+description = "The tree-sitter grammar for Graphix, a dataflow language for UIs and network programming"
 documentation = "https://docs.rs/tree-sitter-graphix"
-categories = ["network-programming", "compilers", "gui"]
+categories = ["parser-implementations", "text-editors"]
 
 [lib]
 path = "lib.rs"

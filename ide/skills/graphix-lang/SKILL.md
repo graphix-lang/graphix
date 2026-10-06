@@ -157,7 +157,7 @@ allocation per construction: handles and newtypes, not hot data.
 r"verbatim"  r#"has "quotes""#
 [1, 2, 3]  [<1, 2>]  {"a" => 1}  (1, "two")  {x: 10, y: 20}  {x, y}
 `Foo  `Bar(42)
-datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns us ms s ONLY
+datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns us ms s m h d M y
 {s with field: v}               // functional update
 ```
 
@@ -189,8 +189,8 @@ chain (`(k ~ sel)$.name`). On an untyped parameter they read as the
 error form, so a nullable one is annotated: `|t, scope: [Scope, null]|
 .. (t ~ scope)$`.
 `datetime - datetime` is refused: use `sys::time::diff(later, earlier)
--> duration`, `add`/`sub` for datetime ± duration. Durations print as
-`1800.s`; format your own "30m".
+-> duration`, `add`/`sub` for datetime ± duration. A duration prints in
+its largest whole-ish unit (`duration:1800.s` prints `30.m`).
 
 Access: `s.f`, `t.0`, `a[i]`, `a[-1]`, `a[1..3]`, `m{"k"}` (Result),
 `mod::name`.

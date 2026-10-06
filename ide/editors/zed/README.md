@@ -30,13 +30,8 @@ programming language in Zed editor.
 ## Maintenance
 
 The query files under `languages/graphix/` (`highlights.scm`,
-`indents.scm`, `locals.scm`) are copies of the canonical queries in
-`ide/tree-sitter-graphix/queries/`. Zed packages each extension as a
-self-contained directory, so symlinks pointing outside the extension
-tree don't survive packaging. When the upstream queries change,
-re-copy them:
-
-```bash
-cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
-   ide/editors/zed/languages/graphix/
-```
+`indents.scm`, `locals.scm`) are symlinks to the canonical queries in
+`ide/tree-sitter-graphix/queries/`, so a dev extension always reads the
+current queries. Zed packages a published extension as a self-contained
+directory, where a symlink pointing outside it does not survive:
+dereference them when packaging (`cp -rL`).

@@ -29,20 +29,17 @@ cargo install --path graphix-shell
 
 #### Neovim
 
-1. Copy `editors/nvim/ftdetect/graphix.lua` to `~/.config/nvim/ftdetect/`
-2. Add to your config:
-   ```lua
-   -- Requires nvim-lspconfig
-   local lspconfig = require('lspconfig')
-   local configs = require('lspconfig.configs')
-   configs.graphix = {
-     default_config = {
-       cmd = { 'graphix', 'lsp' },
-       filetypes = { 'graphix' },
-     }
-   }
-   lspconfig.graphix.setup({})
-   ```
+`editors/nvim/` is a runtime directory (`lua/graphix/`, `ftdetect/`,
+`queries/graphix/`). Put it on the runtimepath, through your plugin
+manager (lazy.nvim: `{ dir = "/path/to/graphix/ide/editors/nvim" }`) or
+`vim.opt.runtimepath:append(..)`, then:
+
+```lua
+require('graphix').setup()
+```
+
+and `:TSInstall graphix` for the grammar. See the header of
+`editors/nvim/lua/graphix/init.lua` for the options.
 
 #### Emacs
 
@@ -61,10 +58,11 @@ cargo install --path graphix-shell
 cd editors/helix && ./install.sh
 ```
 
-The install script copies tree-sitter queries to
-`~/.config/helix/runtime/queries/graphix/`, appends the language/server/
-grammar blocks to `~/.config/helix/languages.toml`, and runs
-`helix --grammar build`. See `editors/helix/README.md` for details.
+The install script links the tree-sitter queries into
+`~/.config/helix/runtime/queries/graphix/` (copies them with `--copy`),
+appends the language/server/grammar blocks to
+`~/.config/helix/languages.toml` with the grammar built from this
+checkout, and runs `hx --grammar build`. See `editors/helix/README.md` for details.
 
 #### Zed
 
@@ -100,10 +98,12 @@ Provides syntax highlighting for:
 The LSP server runs as a subcommand of the `graphix` binary (`graphix lsp`).
 
 Currently supports:
-- **Diagnostics**: Parse error reporting
+- **Diagnostics**: the check's errors and warnings
 - **Completions**: Symbol completion from the environment
 - **Hover**: Type and documentation display
-- **Go to Definition**: Navigate to symbol definitions
+- **Go to Definition** and **References**
+- **Document and Workspace Symbols**
+- **Formatting**: `graphix fmt` as one whole-document edit
 
 ## Building Tree-sitter Grammar
 
@@ -113,7 +113,7 @@ The tree-sitter grammar requires Node.js and tree-sitter-cli:
 cd tree-sitter-graphix
 npm install
 npm run generate
-npm test
+npm test        # ./check.sh: parse every .gx/.gxi here (and in ../netidx), compile the queries
 ```
 
 ## Changing the language syntax
@@ -140,9 +140,12 @@ colors at all — the whole query is refused), the regex ones die quiet
    rule that was missing rather than wrong, add the rule.
 
 The gate for 1–3 is `cargo test -p graphix-types queries_compile`
-(every query compiles against the built grammar) plus the ts-compat
-proptests in the same module (the grammar parses what the compiler
-parses). 4 and 5 have no gate; check them by eye.
+(every query compiles against the built grammar), the ts-compat
+proptests in the same module (the grammar parses the printer's
+canonical output) and `tree-sitter-graphix/check.sh` (every program in
+the repo; its count of files with errors should only go down). None of
+these sees a wrong tree shape or syntax the compiler refuses, so check
+new forms by eye with `tree-sitter parse`. 4 and 5 have no gate.
 
 ## Architecture
 
@@ -167,26 +170,5 @@ ide/
     └── graphix-lang/       # Claude Code skill: the language reference
 ```
 
-<!-- CR claude for claude: [doc-drift] graphix-shell/src/lsp/ does not exist: the server
-is graphix-lsp/, and its backend is graphix-shell/src/lsp_backend.rs. The feature list
-(102-106) describes diagnostics as parse errors, though the server publishes the check's
-errors and warnings. It also omits references, document and workspace symbols, and
-formatting. `npm test` (116) runs `tree-sitter test` with no test/corpus, so it passes
-on zero tests. The gate paragraph (142-145) says the ts-compat proptests show the
-grammar parses what the compiler parses. They parse only the printer's canonical output,
-so removed syntax the grammar still accepts, glued forms like `i64:1+x` and wrong tree
-shapes all pass. (ide-tooling.r2-17) -->
-<!-- CR claude for claude: [doc-drift] No such directory: the server is graphix-lsp/ and
-its backend graphix-shell/src/lsp_backend.rs. In this file, line 64 says install.sh
-copies the queries (it links them unless --copy), lines 102-106 list four features where
-the server also answers document and workspace symbols, references and formatting, and
-the Neovim section (30-45) never mentions editors/nvim/graphix.lua.
-editors/zed/README.md:32-41 calls the query files copies and gives a cp command, but
-they are symlinks. skills/graphix-lang/SKILL.md:160 says duration units are ns, us, ms
-and s only, and 192-193 that durations print as `1800.s`, but m, h, d, M and y parse
-(netidx-value parser.rs:497-507) and `duration:1800.s` prints as `30.m`. In
-tree-sitter-graphix, tree-sitter.json links a nonexistent
-github.com/tree-sitter/tree-sitter-graphix and lists c, go, node, python and swift
-bindings that do not exist, package.json's main is the missing bindings/node, and
-Cargo.toml has graphix-compiler's description and categories. (ide-tooling-17) -->
-The LSP server source lives in `graphix-shell/src/lsp/`.
+The LSP server source lives in `graphix-lsp/`; its backend is
+`graphix-shell/src/lsp_backend.rs`.

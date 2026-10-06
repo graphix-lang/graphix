@@ -69,8 +69,9 @@ up the LSP via `nvim-lspconfig` (with a fallback to the built-in
 `vim.lsp.start` when lspconfig is missing), and registers the
 tree-sitter grammar.
 
-Drop the `nvim/` directory into your config or your plugin manager,
-then call:
+`nvim/` is a runtime directory (`lua/graphix/`, `ftdetect/`,
+`queries/graphix/`): put it on the runtimepath through your plugin
+manager or `vim.opt.runtimepath:append(..)`, then call:
 
 ```lua
 require('graphix').setup()

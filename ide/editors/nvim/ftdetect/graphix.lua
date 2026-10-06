@@ -1,5 +1,4 @@
--- File type detection for Graphix
--- Place this file in: ~/.config/nvim/ftdetect/graphix.lua
+-- File type detection for Graphix (on the runtimepath with the plugin)
 
 vim.filetype.add({
     extension = {

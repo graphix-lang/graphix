@@ -2,8 +2,6 @@
   "name": "tree-sitter-graphix",
   "version": "1.0.0",
   "description": "Tree-sitter grammar for Graphix programming language",
-  "main": "bindings/node",
-  "types": "bindings/node",
   "keywords": [
     "tree-sitter",
     "graphix",
@@ -27,7 +25,7 @@
   },
   "scripts": {
     "generate": "tree-sitter generate",
-    "test": "tree-sitter test",
+    "test": "./check.sh",
     "build": "tree-sitter generate && tree-sitter build",
     "parse": "tree-sitter parse"
   },
