@@ -811,13 +811,24 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            // XCR claude for eric: [bug] This arm made references covariant (`&[i64,
-            // string]` holds `&i64`) though `*r <- v` writes through them, so a
-            // program that passed the check wrote a string or null into an `i64`
-            // binding and the JIT panicked at fusion/kernel.rs:243. Addressed: `&T`
-            // is read-only and covariant, `&mut T` writes and is invariant, and
-            // ConnectDeref refuses a write through a `&T`. probe:
+            // XCR claude for eric: [bug] This arm makes references covariant (`&[i64,
+            // string]` holds `&i64`). A reference is writable, and
+            // ConnectDeref::typecheck0_with (node/mod.rs:2361) checks `*r <- v` only
+            // against r's own type. So a program that passes the check writes a string
+            // or null into an `i64` binding: the JIT then panics at
+            // fusion/kernel.rs:243 and the runtime dies, while the node-walk computes
+            // on the wrong type. No annotation is needed: `let set = |v: 'a, r: &'a| *r
+            // <- v` called as `set(n, &x)` with `n: [i64, null]` and `x = 1` passes.
+            // The same call with the reference first, `set(&x, n)`, is refused, so this
+            // arm undoes callsite.rs::Widening's rule that a reference keeps the first
+            // argument's type. Plain invariance would also refuse the read-only
+            // widenings the stdlib relies on (`#title: &"Chart"` into `&[string,
+            // null]`, tui browser.gx:156), so the fix needs a design choice; probe:
             // design/review-2026-10-05/repro/c-node-mod-01.gx (c-node-mod-01)
+            // 2026-10-06 claude: references split into `&T` (read-only, covariant) and
+            // `&mut T` (writable, invariant); `*r <- v` needs every reference r may hold
+            // to be `&mut` (ConnectDeref::typecheck0_with). The probe is refused.
+            // design/place_references.md has the rules.
             // `&T` only reads, so it is covariant, and a `&mut` is one; `&mut T`
             // also writes, so it is invariant.
             (Self::ByRef(Mutability::Shared, t0), Self::ByRef(_, t1)) => {
@@ -1714,8 +1725,9 @@ impl Type {
 
 // CR claude for eric: [test-gap] These three tests are the only direct pins of
 // Type::contains. No graphix-tests pin covers the rules broken by the accepted
-// ill-typed repros in design/review-2026-10-05/repro: abstract parameters
-// (t-contains-07), a rigid cell decided
+// ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
+// (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
+// with the reference first), abstract parameters (t-contains-07), a rigid cell decided
 // by a conjunct probe (t-contains-03), a conjunct never reaching a binding's open cells
 // (t-contains-08), and ⊥ ⊇ 'x, occurs refusals and open rigid constructors (t-tvar-02,
 // t-tvar-08, t-tvar-01). Each passes --check at HEAD, and --check on t-contains-09
@@ -1724,8 +1736,10 @@ impl Type {
 // rule, and the generators build no parameterized abstract type. So the fleet meets
 // such a hole only when a generated program happens to run the lie, and then reports it
 // as a JIT divergence (graphix-fuzz check on t-contains-07.gx). Pin each repro with its
-// fix, and once each variance rule is stated, give it a must-reject family: a widened
-// abstract parameter (references have family 9). (t-contains-12)
+// fix, and once each variance rule is stated, give it a must-reject family: a write
+// through a widened reference, a widened abstract parameter. (t-contains-12)
+// 2026-10-06 claude: the reference part is done: `&T`/`&mut T` rules are pinned in
+// lang::byref and by must-reject family 9 (ref-write, ref-widen). The rest stands.
 #[cfg(test)]
 mod tests {
     use super::*;

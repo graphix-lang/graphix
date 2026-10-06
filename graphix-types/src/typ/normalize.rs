@@ -621,10 +621,11 @@ impl Type {
             // ConnectDeref::typecheck0_with (node/mod.rs:2361) accepts a write when any
             // member of r's type contains `&typeof(v)`, so the unmerged `[&i64,
             // &Array<i64>]` lets `*r <- [2, 3]` write into `x` too; a write has to fit
-            // every referent. Addressed: only `&T` (read-only) merges its referents,
-            // a `&mut` merges only with an identical one, and ConnectDeref requires
-            // `&mut` and checks the write against every member. probe:
-            // design/review-2026-10-05/repro/t-fntyp-01.gx (t-fntyp-01)
+            // every referent. probe: design/review-2026-10-05/repro/t-fntyp-01.gx
+            // (t-fntyp-01)
+            // 2026-10-06 claude: only two `&T` merge their referents; two `&mut` merge
+            // only when equal, and a write must be `&mut` and fit every member
+            // (ConnectDeref::typecheck0_with). The probe is refused.
             // Reading either of two references reads the union of their
             // referents; a writable one only merges with itself.
             (

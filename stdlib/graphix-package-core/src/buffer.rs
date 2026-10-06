@@ -186,14 +186,17 @@ fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
 
 // CR claude for eric: [bug] encode_spec reads every payload with get_as_unchecked,
 // trusting the SAFETY claim that the checker guarantees each tag's payload type, and
-// that claim does not hold today. A program that passes --check puts an i64 under
-// `Bytes with a nested pattern that matches a same-shaped member of a union (the
-// probe's second program; its reference route is now refused). The `Bytes arm then
+// that claim does not hold today. Two programs that pass --check put an i64 under
+// `Bytes: one writes through a reference widened to &Any, the other uses a nested
+// pattern that matches a same-shaped member of a union. The `Bytes arm then
 // dereferences the integer as a PBytes, and the process dies with SIGSEGV in both
 // engines. Every other builtin matches the Value shape and returns None on a mismatch.
 // Doing the same here, per tag, turns any checker hole into a bottom instead of
 // undefined behaviour. probe: design/review-2026-10-05/repro/x-unsafe-03.gx
 // (x-unsafe-03)
+// 2026-10-06 claude: the reference route (a write through `&Any`) is now refused: a write
+// needs `&mut`, which is invariant. The nested-pattern route still reaches this, so the
+// per-tag match is still wanted.
 fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
     let (tag, args) = variant_tag(v)?;
     let a = &args[0];

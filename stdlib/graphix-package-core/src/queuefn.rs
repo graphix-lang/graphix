@@ -400,11 +400,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // drained. A cycle that both pops and pushes leaves one more write in the
         // runtime's backlog, which every later cycle walks: 32000 such cycles take 12
         // s, against 1.1 s when push and pop alternate. Under GRAPHIX_PAR=force, 6
-        // calls with no pop ended at depth 5, 2 and 1 in three runs. Sleep
+        // calls with no pop ended at depth 5, 2 and 1 in three runs. The default
+        // `&null` is a reference, so the `_ => None` arm below never runs and every
+        // queuefn without #count makes these writes into a cell nothing reads; sleep
         // (line 439) empties the queue without writing 0, and a reference that arrives
         // or moves is never written (line 363), so the target keeps an old depth.
         // queuefn_count_ref (lib_tests/core.rs:444) pins the lag; probe:
         // design/review-2026-10-05/repro/core-aux-10.sh (core-aux-10)
+        // 2026-10-06 claude: the default is now `#count: [&mut i64, null] = null`, so the
+        // `_ => None` arm runs and a queuefn without #count writes nothing. The rest
+        // stands.
         if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
             let new_ref = match &v {
                 Value::U64(b) => {

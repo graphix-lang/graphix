@@ -468,10 +468,12 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
 // element [7] therefore gives [70] whether or not the HOF callback bypasses the queue:
 // using the plain lambda `|x: i64| -> i64 x * 10` in place of qf also gives [70]. This
 // test cannot fail for the static-resolution bypass it names. Two elements show the
-// queue: `{ let depth = 0; let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64|
+// queue: `{ let depth = 0; let qf = queuefn(#count: &depth, #trigger: never(), |x: i64|
 // -> i64 x * 10); let r = array::map([i64:7, i64:8], qf); depth }` reaches 1 through
 // the queue but stays 0 for a bypassed callback (whose map gives [70, 80]). Assert that
 // instead. (tests-lib-a-08)
+// 2026-10-06 claude: #count now takes `&mut`: the suggested program is `queuefn(#count:
+// &mut depth, ..)`.
 const QUEUEFN_HOF_CALLBACK: &str = r#"
 {
   let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
