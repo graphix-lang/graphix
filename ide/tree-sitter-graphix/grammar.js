@@ -53,9 +53,8 @@ module.exports = grammar({
     [$._binding_name, $._field_name],
     [$._seq_item, $.block],
     [$.boolean, $._field_name],
+    [$.self_param, $._field_name],
     [$.null, $._field_name],
-    [$._expression, $.apply],
-    [$._expression, $.array_ref, $.array_slice],
     [$._type, $.type_path],
     [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
@@ -83,7 +82,6 @@ module.exports = grammar({
     [$.type_path, $.construct_path],
     [$.string, $.value_string],
     [$.value_string, $.interpolation],
-    [$.module],
     // Top-level keywords that overlap between expression and sig form:
     // `mod foo` parses as either a bodyless module declaration
     // (expression form) or a sig_module (interface form). Likewise
@@ -874,7 +872,8 @@ module.exports = grammar({
         field('trigger', $._expression),
       )),
       optional(seq(optional(';'), 'abort', '(', field('abort', $._expression), ')')),
-      optional(seq(optional(';'), 'flush', '(', field('flush', $._expression), ')')),
+      // `flush(` is one token: a trigger may be a variable named flush
+      optional(seq(optional(';'), alias(token(seq('flush', /\s*/, '(')), 'flush('), field('flush', $._expression), ')')),
       '{',
       $._seq_items,
       '}',
@@ -1260,7 +1259,7 @@ module.exports = grammar({
     // nodes, and `i64:1==x` and `f64:1.5/x` collapse into one type_ascription. An empty
     // `bytes:` gives a MISSING or ERROR node. probe:
     // design/review-2026-10-05/repro/ide-tooling-10.gx (ide-tooling-10)
-    identifier: $ => /[a-z_][a-zA-Z0-9_]*/,
+    identifier: $ => /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_][\p{L}\p{N}_]*/,
 
     // Type-name keywords are legal BINDING names (2026-08-18): let,
     // params, labeled args, pattern binds, tvar names, module path
@@ -1282,20 +1281,11 @@ module.exports = grammar({
     // same relaxation as the reference parser: reserved-ness protects
     // bindings and type names, and a field is neither. Aliased so the
     // node stays an `identifier` for highlighting and queries.
-    // CR claude for claude: [bug] The grammar rejects four things the parser accepts.
-    // This list lacks seqq, trait, impl, pub, self, super and package, so `{seqq: 1, b:
-    // 2}` and `s.seqq` are ERROR. `identifier` and `type_identifier` (1285, 1320) are
-    // ASCII-only, while the parser takes any non-uppercase letter to start a value name
-    // and any uppercase letter to start a type name (`let café = 1`, `type Ñame =
-    // i64`). `do_block` (971-977) needs two expressions, so `{ a; }` gets a MISSING
-    // identifier, and `flush` lexes as a keyword after a seq head, so `seq flush { ..
-    // }` over a variable named flush errors. Editors show these valid programs as
-    // broken. Probe: design/review-2026-10-05/repro/ide-tooling.r2-10.gx.
-    // (ide-tooling.r2-10)
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until',
+        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'until',
+        'trait', 'impl', 'pub', 'self', 'super', 'package',
         'type',
         'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',
@@ -1305,7 +1295,7 @@ module.exports = grammar({
       ), $.identifier),
     ),
 
-    type_identifier: $ => /[A-Z][a-zA-Z0-9_]*/,
+    type_identifier: $ => /\p{Lu}[\p{L}\p{N}_]*/,
   },
 });
 

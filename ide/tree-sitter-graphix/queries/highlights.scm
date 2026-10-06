@@ -18,7 +18,7 @@
   "seqq"
   "until"
   "abort"
-  "flush"
+  "flush("
   "if"
   "catch"
 ] @keyword.control

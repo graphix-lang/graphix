@@ -5230,12 +5230,29 @@
                   ]
                 },
                 {
-                  "type": "STRING",
-                  "value": "flush"
-                },
-                {
-                  "type": "STRING",
-                  "value": "("
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "TOKEN",
+                    "content": {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "STRING",
+                          "value": "flush"
+                        },
+                        {
+                          "type": "PATTERN",
+                          "value": "\\s*"
+                        },
+                        {
+                          "type": "STRING",
+                          "value": "("
+                        }
+                      ]
+                    }
+                  },
+                  "named": false,
+                  "value": "flush("
                 },
                 {
                   "type": "FIELD",
@@ -6994,7 +7011,7 @@
     },
     "identifier": {
       "type": "PATTERN",
-      "value": "[a-z_][a-zA-Z0-9_]*"
+      "value": "[\\p{Ll}\\p{Lt}\\p{Lm}\\p{Lo}_][\\p{L}\\p{N}_]*"
     },
     "_binding_name": {
       "type": "CHOICE",
@@ -7137,7 +7154,35 @@
               },
               {
                 "type": "STRING",
+                "value": "seqq"
+              },
+              {
+                "type": "STRING",
                 "value": "until"
+              },
+              {
+                "type": "STRING",
+                "value": "trait"
+              },
+              {
+                "type": "STRING",
+                "value": "impl"
+              },
+              {
+                "type": "STRING",
+                "value": "pub"
+              },
+              {
+                "type": "STRING",
+                "value": "self"
+              },
+              {
+                "type": "STRING",
+                "value": "super"
+              },
+              {
+                "type": "STRING",
+                "value": "package"
               },
               {
                 "type": "STRING",
@@ -7268,7 +7313,7 @@
     },
     "type_identifier": {
       "type": "PATTERN",
-      "value": "[A-Z][a-zA-Z0-9_]*"
+      "value": "\\p{Lu}[\\p{L}\\p{N}_]*"
     }
   },
   "extras": [
@@ -7303,17 +7348,12 @@
       "_field_name"
     ],
     [
-      "null",
+      "self_param",
       "_field_name"
     ],
     [
-      "_expression",
-      "apply"
-    ],
-    [
-      "_expression",
-      "array_ref",
-      "array_slice"
+      "null",
+      "_field_name"
     ],
     [
       "_type",
@@ -7404,9 +7444,6 @@
     [
       "value_string",
       "interpolation"
-    ],
-    [
-      "module"
     ],
     [
       "module",
