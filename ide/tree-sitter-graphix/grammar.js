@@ -1187,16 +1187,8 @@ module.exports = grammar({
     ),
 
     // Variant
-    // CR claude for claude: [bug] Every payload variant parses as a call, `` `A(5) `` as
-    // (apply (variant) (apply_args 5)), so this rule's payload branch (1229) never
-    // matches. tuple_ref (1239) takes `$.number`, so in `t.0.1` the float `0.1` wins
-    // and one tuple_ref stands where the parser builds two. by_ref (980) puts 'unary'
-    // precedence over its whole operand, so `&|x| x + 1` is `(&|x| x) + 1` even at the
-    // end of input, where `|x| x + 1` alone parses right. None of these gives an ERROR
-    // node, so structural selection, navigation and any query over these nodes see the
-    // wrong tree. probe: design/review-2026-10-05/repro/ide-tooling-09.gx
-    // (ide-tooling-09)
-    variant: $ => prec.left(seq(
+    // right-associative: a `(` after the tag is its payload, not a call
+    variant: $ => prec.right(seq(
       '`',
       $.type_identifier,
       optional(seq('(', commaSep($._expression), ')')),
@@ -1209,10 +1201,11 @@ module.exports = grammar({
       $._field_name,
     ),
 
+    // the index is digits alone, so `t.0.1` is two accesses, not a float
     tuple_ref: $ => seq(
       $._primary_expression,
       '.',
-      $.number,
+      alias(token.immediate(/\d+/), $.number),
     ),
 
     array_ref: $ => seq(

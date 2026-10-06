@@ -6845,7 +6845,7 @@
       ]
     },
     "variant": {
-      "type": "PREC_LEFT",
+      "type": "PREC_RIGHT",
       "value": 0,
       "content": {
         "type": "SEQ",
@@ -6956,8 +6956,16 @@
           "value": "."
         },
         {
-          "type": "SYMBOL",
-          "name": "number"
+          "type": "ALIAS",
+          "content": {
+            "type": "IMMEDIATE_TOKEN",
+            "content": {
+              "type": "PATTERN",
+              "value": "\\d+"
+            }
+          },
+          "named": true,
+          "value": "number"
         }
       ]
     },
