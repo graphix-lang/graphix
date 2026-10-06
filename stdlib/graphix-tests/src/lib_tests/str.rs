@@ -428,6 +428,18 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A read can't forge a reference: `Concrete` excludes one.
+const STR_PARSE_REF_TARGET: &str = r#"{
+  let x = 41;
+  let r: &mut i64 = str::parse("u64:1")$;
+  *r <- 1;
+  x
+}"#;
+
+run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("Concrete"))
+}; graphix_package_core::testing::FuseExpect::None);
+
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.
 const STR_PARSE_STRUCT_NATIVE: &str = r#"{

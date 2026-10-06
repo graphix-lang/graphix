@@ -1758,6 +1758,16 @@ mod tests {
         }
     }
 
+    // a reference can't be read from data: the run-time cast refuses one
+    #[test]
+    fn parse_into_a_reference_is_refused_at_run_time() {
+        let env = Env::default();
+        for t in ["&i64", "&mut i64", "{a: &string}", "(&i64, i64)"] {
+            let v = parsed(t).cast_value(&env, netidx_value::Value::U64(1));
+            assert!(matches!(v, netidx_value::Value::Error(_)), "{t}: {v}");
+        }
+    }
+
     // covering `Array<i64>` binds the bare member first; the residue
     // `i64` must still reach it
     #[test]

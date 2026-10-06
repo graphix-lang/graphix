@@ -328,7 +328,7 @@ impl Type {
                     Err(self.cast_fail("not this abstract type", v))
                 }
             }
-            // CR claude for eric: [bug] This arm turns any u64/v64 into a live
+            // XCR claude for eric: [bug] This arm turns any u64/v64 into a live
             // reference. `cast<T>` never gets here, because check_cast refuses a `&T`
             // target, but the type-directed reads do. Their `'b: Concrete` admits `&T`
             // (concrete_holds), so `str::parse("u64:N")`, `pack::read`,
@@ -340,10 +340,15 @@ impl Type {
             // holds a reference, as check_cast does. probe:
             // design/review-2026-10-05/repro/x-typecheck-generics-F14.gx
             // (x-typecheck-generics-F14)
-            Type::ByRef(..) => match v {
-                Value::U64(_) | Value::V64(_) => Ok(None),
-                _ => Err(self.cast_fail("not a reference", v)),
-            },
+            // 2026-10-06 claude: `Concrete` now excludes references
+            // (concrete_holds), so every read refuses a reference target at check
+            // time, and this arm refuses at run time, which covers a publish
+            // `#on_write` or rpc `#f` typed with a reference. Pinned by
+            // lib_tests::str::parse_refuses_a_reference_target and
+            // typ::contains::tests::parse_into_a_reference_is_refused_at_run_time.
+            Type::ByRef(..) => {
+                Err(self.cast_fail("a reference can't be read from data", v))
+            }
             Type::Primitive(s) => {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);

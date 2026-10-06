@@ -201,13 +201,15 @@ An image carries each cell's level and each definition's depth.
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever
-binds the cell is fully known: no open cell and no ⊥ in it. The
+binds the cell is fully known: no open cell, no ⊥ and no reference in
+it (a value read from data can't be a reference: a number would become
+one to whatever variable has that id). The
 type-directed builtins declare it on their target (`str::parse`, the
 json/toml/pack/sqlite reads, `sys::net::subscribe`/`call`, the db
 trees); their `Apply::typecheck1` hooks only extract the type they cast
 to and never refuse.
 
-- `Concrete ⊇ t` is a probe: no ⊥ in `t`, bound cells judged by their
+- `Concrete ⊇ t` is a probe: no ⊥ and no `&T` in `t`, bound cells judged by their
   bindings, open cells admitted. A bind of a `Concrete` cell hands the
   conjunct to every open cell its binding reaches (`TVar::bind`), so the
   requirement is hereditary.

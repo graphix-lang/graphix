@@ -389,7 +389,8 @@ invocation before `eval`; raw `Apply` authors read args through
 from its args (a regex, a template registry) lives in a bounded
 thread-local `FastMemo`, never in state. A type-directed builtin
 (`str::parse`, the reads) declares its target `'b: Concrete`; the checker
-refuses the target where it settles open, and the builtin's
+refuses the target where it settles open or holds a reference (data
+can't be one; the run-time cast refuses one too), and the builtin's
 `typecheck1` only extracts the type, never refuses
 (`design/tvar_constraints.md`); a builtin that wraps a function
 (`queuefn`) declares it `'a: Function` the same way. A definition's call sites settle with

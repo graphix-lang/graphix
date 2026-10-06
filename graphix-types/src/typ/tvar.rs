@@ -1353,12 +1353,13 @@ impl Type {
         }
     }
 
-    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ anywhere,
-    /// bound cells judged by their bindings, open cells admitted (a bind
-    /// hands them the conjunct).
+    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ and no
+    /// reference anywhere (a value read from data can't be one), bound
+    /// cells judged by their bindings, open cells admitted (a bind hands
+    /// them the conjunct).
     pub(crate) fn concrete_holds(&self) -> bool {
         ensure_sufficient(|| match self {
-            Type::Bottom => false,
+            Type::Bottom | Type::ByRef(..) => false,
             Type::TVar(tv) => tv.binding().is_none_or(|b| b.concrete_holds()),
             Type::Fn(ft) => {
                 let mut holds = true;
