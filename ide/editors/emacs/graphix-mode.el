@@ -149,7 +149,8 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'keyword
      '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "until" "abort" "flush(" "if" "catch"
-        "cast" "any" "with" "throws" "as"] @font-lock-keyword-face)
+        "cast" "any" "with" "throws" "as" "trait" "impl" "for" "pub" "try" "never" "val"]
+       @font-lock-keyword-face)
 
      ;; Level 1: strings
      :language 'graphix

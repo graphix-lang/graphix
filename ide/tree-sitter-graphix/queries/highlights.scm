@@ -38,6 +38,10 @@
   "with"
   "throws"
   "as"
+  "trait"
+  "impl"
+  "for"
+  "pub"
 ] @keyword
 
 ; -- Operators ------------------------------------------------------
@@ -58,6 +62,11 @@
   "*"
   "/"
   "%"
+  "+?"
+  "-?"
+  "*?"
+  "/?"
+  "%?"
   "~"
   "~!"
   "?"
@@ -85,19 +94,6 @@
 (variant_pattern (type_identifier) @constructor)
 (variant_type  (type_identifier) @constructor)
 
-; -- Functions ------------------------------------------------------
-; A direct call: tag the leaf identifier of the callee path as @function.
-; A namespaced call (mod::name(...)) — the @namespace rule below runs
-; later and re-tags the leading module identifier, so we end up with
-; namespace::function. Order in this file matters: later wins.
-;
-; Note: the `apply` node has no named field for its callee, so we match
-; positionally — the reference is the first child by grammar definition.
-(apply
-  (reference
-    (module_path
-      (identifier) @function)))
-
 ; Builtin references ('foo)
 (builtin_ref) @function.builtin
 
@@ -124,26 +120,22 @@
 (catch_stmt binding: (identifier) @variable)
 (reference (module_path (identifier) @variable))
 
-; Module path: the FIRST identifier is a namespace; subsequent ones
-; remain @variable / @function from the rules above. use_path is the
-; use-tree twin of module_path (its `::` chain is inlined so the
-; parser never forks per segment).
-; CR claude for claude: [bug] The `.` anchor only requires the first named child, so this
-; also matches the only identifier of every one-segment path. Under this file's
-; later-wins order (tree-sitter 0.24.7 and Helix 25.07 both use it), every plain
-; reference and every unqualified call is colored @namespace. The @function rule at line
-; 95 always loses to the @variable rule at line 124, so `m::g(1)` comes out
-; namespace::variable and no call is ever colored as a function; the comments at lines
-; 88-91 and 126-129 describe results these rules do not give. Match only qualifiers with
-; `(module_path (identifier) @namespace . "::")`, and the same for use_path, then put
-; the call rule after it as `(apply (reference (module_path (identifier) @function
-; .)))`. The keyword lists also miss `trait`, `impl`, `for` and `pub`, and the operator
-; list misses `+?` `-?` `*?` `/?` `%?`; graphix-mode.el:151-152 misses those keywords
-; plus `try`, `never` and `val`. probe: design/review-2026-10-05/repro/ide-tooling-02.sh
-; (Helix prints `[ns:f]([ns:len]([ns:xs])) + [ns:array]::[var:len]([ns:xs])`).
-; (ide-tooling-02)
-(module_path . (identifier) @namespace)
-(use_path . (identifier) @namespace)
+; Module path: every identifier followed by `::` is a namespace; the
+; last one stays the @variable above. use_path is the use-tree twin of
+; module_path (its `::` chain is inlined so the parser never forks per
+; segment).
+(module_path (identifier) @namespace . "::")
+(use_path (identifier) @namespace . "::")
+
+; -- Functions ------------------------------------------------------
+; A call: the last identifier of the callee path. It comes after the
+; @variable and @namespace rules because later captures win. The
+; `apply` node has no named field for its callee, so the reference is
+; matched positionally, as its first child.
+(apply
+  (reference
+    (module_path
+      (identifier) @function .)))
 
 ; Module / type definitions
 (module name: (identifier) @namespace)
@@ -155,7 +147,7 @@
 (sig_bind name: (identifier) @variable)
 (sig_type_def name: (type_identifier) @type)
 (sig_module name: (identifier) @namespace)
-(sig_use path: (use_path . (identifier) @namespace))
+(sig_use path: (use_path (identifier) @namespace . "::"))
 
 ; -- Struct fields --------------------------------------------------
 (struct_field         name: (identifier) @variable.other.member)
