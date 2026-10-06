@@ -44,7 +44,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Open, Type},
+    typ::{FnType, Indiscernible, Open, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -53,7 +53,7 @@ pub use enumflags2::BitFlags;
 use expr::{Attr, Expr};
 use futures::channel::mpsc;
 use log::{info, warn};
-use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
+use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
 use node::compiler;
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
@@ -1592,6 +1592,27 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
+    /// `v`, a value of `t`, with each reference a comparison meets
+    /// replaced by what it names, `[root, step..]` (a reference's value
+    /// is its own cell): equal results mean equal values, references
+    /// equal when they name one place.
+    pub fn ref_targets(&self, t: &Type, v: &Value) -> Value {
+        use node::place::Step;
+        t.map_refs(&self.env, v, &mut |r| match r {
+            Value::U64(cell) | Value::V64(cell) => {
+                let (root, path) = node::bind::ref_target(self, BindId::from(*cell));
+                let steps = path.iter().map(|s| match s {
+                    Step::Index(i) => Value::I64(*i),
+                    Step::Field(f) => Value::String(f.clone()),
+                    Step::Key(k) => k.clone(),
+                });
+                let target = std::iter::once(Value::U64(root.inner())).chain(steps);
+                Value::Array(ValArray::from_iter(target))
+            }
+            r => r.clone(),
+        })
+    }
+
     /// How this view may fork: `Off` past the depth limit, inside a seq
     /// machine or under `#[serial]`; `Force` under `#[parallel]`.
     #[inline]
@@ -1751,10 +1772,13 @@ pub(crate) enum PendingSettle {
 
 /// What a [`PendingSettle::Discernible`] judges.
 pub(crate) enum Discerned {
-    Compared,
+    /// A compared type: ordered by `<` and the like, else by `==`/`!=`.
+    Compared {
+        ordered: bool,
+    },
     Keys,
-    /// A call's cell with the `Discernible` bound.
-    Bound(typ::TVar),
+    /// A call's cell with the bound (`Discernible` or `Ordered`).
+    Bound(typ::TVar, Type),
 }
 
 impl PendingSettle {
@@ -1835,7 +1859,9 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
         let Some(t) = tv.binding() else { continue };
         for c in tv.cell_constraints().iter() {
             match c {
-                Type::Discernible => discernible(env, &t, &Discerned::Bound(tv.clone()))?,
+                Type::Discernible | Type::Ordered => {
+                    discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
+                }
                 Type::Concrete => discernible(env, &t, &Discerned::Keys)?,
                 _ => (),
             }
@@ -1846,34 +1872,61 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
 
 fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     let found = match what {
-        Discerned::Compared | Discerned::Bound(_) => {
-            typ.rep_ambiguity(env, Open::Unknown)
+        Discerned::Compared { ordered } => {
+            typ.indiscernible(env, Open::Unknown, *ordered)
         }
-        Discerned::Keys => typ.map_key_ambiguity(env, Open::Unknown),
+        Discerned::Bound(_, bound) => {
+            typ.indiscernible(env, Open::Unknown, *bound == Type::Ordered)
+        }
+        Discerned::Keys => typ.map_key_failure(env, Open::Unknown),
     };
-    let Some((a, b)) = found else { return Ok(()) };
+    let Some(why) = found else { return Ok(()) };
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-    if open(&a) || open(&b) {
-        let known = if open(&a) { b } else { a };
+    if let Indiscernible::Pair(a, b) = &why
+        && (open(a) || open(b))
+    {
+        let known = if open(a) { b } else { a };
         let typ = typ.resolve_tvars();
         bail!(
             "the members of {typ} must have distinct runtime forms, but a type variable \
              in it isn't known here and may share {known}'s: annotate it"
         )
     }
+    if let Discerned::Bound(tv, bound) = what {
+        return Err(typ.not_discernible(bound, &tv.name, &why));
+    }
     format_with_flags(PrintFlag::DerefTVars, || {
         let typ = typ.resolve_tvars();
-        let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
-        match what {
-            Discerned::Compared => bail!(
-                "can't compare values of {typ}: {a} and {b} have the same runtime \
-                 form; wrap them in distinct variants"
+        match (what, why) {
+            (Discerned::Compared { .. }, Indiscernible::Pair(a, b)) => bail!(
+                "can't compare values of {typ}: {} and {} have the same runtime \
+                 form; wrap them in distinct variants",
+                a.resolve_tvars(),
+                b.resolve_tvars()
             ),
-            Discerned::Keys => bail!(
-                "{a} and {b} can't share a map key type: they have the same runtime \
-                 form; wrap them in distinct variants"
+            (Discerned::Compared { .. }, Indiscernible::Ref(r))
+                if r.resolve_tvars() == typ =>
+            {
+                bail!(
+                    "can't order references: they have no order (== and != compare them by \
+                 what they point to)"
+                )
+            }
+            (Discerned::Compared { .. }, Indiscernible::Ref(r)) => bail!(
+                "can't order values of {typ}: it holds the reference {}, and references \
+                 have no order (== and != compare them by what they point to)",
+                r.resolve_tvars()
             ),
-            Discerned::Bound(tv) => Err(typ.not_discernible(&tv.name, &a, &b)),
+            (_, Indiscernible::Pair(a, b)) => bail!(
+                "{} and {} can't share a map key type: they have the same runtime \
+                 form; wrap them in distinct variants",
+                a.resolve_tvars(),
+                b.resolve_tvars()
+            ),
+            (_, Indiscernible::Ref(r)) => bail!(
+                "a map key type can't hold the reference {}: references have no order",
+                r.resolve_tvars()
+            ),
         }
     })
 }

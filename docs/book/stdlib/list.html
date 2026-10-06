@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-695417b4.js";
+            window.path_to_searchindex_js = "../searchindex-a46bfca9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -260,7 +260,7 @@ val find_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws '
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn&lt;'a: Discernible&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn&lt;'a: Ordered&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;

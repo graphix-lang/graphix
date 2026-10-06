@@ -1333,6 +1333,19 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 }
 
+/// What the reference `cell` names: its registered place, else the
+/// binding at the end of its byref chain, else the cell itself (a
+/// chainless reference's own cell is its only storage).
+pub(crate) fn ref_target<'a, R: Rt, E: UserEvent>(
+    ctx: &'a ExecCtx<'_, R, E>,
+    cell: BindId,
+) -> (BindId, &'a [place::Step]) {
+    match ctx.rt.ref_path(&cell) {
+        Some((root, path)) => (*root, &path[..]),
+        None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ByRef, buf);
@@ -1518,10 +1531,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// cell is its only storage). Returns the binding and whether it
     /// changed.
     fn address(&mut self, ctx: &mut ExecCtx<'_, R, E>, cell: BindId) -> (BindId, bool) {
-        let (id, path) = match ctx.rt.ref_path(&cell) {
-            Some((root, path)) => (*root, &path[..]),
-            None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
-        };
+        let (id, path) = ref_target(ctx, cell);
         match &mut self.addr {
             Some((cur, p)) if *cur == id => {
                 // CR claude for eric: [bug] When the root stays the same and only the

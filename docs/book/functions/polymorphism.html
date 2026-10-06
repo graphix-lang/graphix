@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-695417b4.js";
+            window.path_to_searchindex_js = "../searchindex-a46bfca9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -274,6 +274,11 @@ which have the same runtime form; wrap them in distinct variants
 </code></pre>
 <p>Wrapping the members in variants of their own, <code>[`S(string), `A]</code>,
 tells them apart.</p>
+<p>What orders or hashes values (<code>&lt;</code> and the other orderings, map keys,
+<code>min</code>, <code>max</code>, the sorts, <code>array::dedup</code>) needs <code>Ordered</code>, which is
+<code>Discernible</code> and no references: a reference has no order, and <code>==</code>,
+<code>!=</code> and <code>uniq</code> compare one by what it points to (see
+<a href="../udt/references.html">References</a>).</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically

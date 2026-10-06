@@ -572,7 +572,7 @@ fn require_bounds(cons: &[Type], t: &Type) {
             Type::Concrete => t.require_concrete(),
             Type::Singleton => t.require_singleton(),
             Type::OneNumber => t.require_one_number(),
-            Type::Discernible => t.require_discernible(),
+            Type::Discernible | Type::Ordered => t.require_compared(c),
             _ => (),
         }
     }

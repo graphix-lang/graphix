@@ -1572,7 +1572,7 @@ const PRINTED_BOUNDS: &str = r#"{
 async fn declared_bounds_print_in_the_header() -> Result<()> {
     for (src, header) in [
         (PRINTED_BOUND, "fn<'a: Number + Singleton>("),
-        (PRINTED_BOUNDS, "fn<'a: Eq + Ord + Discernible>("),
+        (PRINTED_BOUNDS, "fn<'a: Eq + Ord + Ordered>("),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),

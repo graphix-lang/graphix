@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-695417b4.js";
+            window.path_to_searchindex_js = "searchindex-a46bfca9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2801,6 +2801,11 @@ which have the same runtime form; wrap them in distinct variants
 </code></pre>
 <p>Wrapping the members in variants of their own, <code>[`S(string), `A]</code>,
 tells them apart.</p>
+<p>What orders or hashes values (<code>&lt;</code> and the other orderings, map keys,
+<code>min</code>, <code>max</code>, the sorts, <code>array::dedup</code>) needs <code>Ordered</code>, which is
+<code>Discernible</code> and no references: a reference has no order, and <code>==</code>,
+<code>!=</code> and <code>uniq</code> compare one by what it points to (see
+<a href="#references">References</a>).</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically
@@ -3537,6 +3542,20 @@ it may or may not write, the parameter is an optional reference instead,
 knows the callee cannot change <code>x</code>. The same rule holds for a union of
 references: two read-only references may be one <code>&amp;[i64, string]</code>, but a write
 must fit every reference the value may hold.</p>
+<h2 id="comparing-references"><a class="header" href="#comparing-references">Comparing References</a></h2>
+<p><code>==</code> and <code>!=</code> ask whether two references point to the same thing: the
+same binding, or the same element or field of one. Two references made
+separately are equal when they name the same place,</p>
+<pre><code class="language-graphix">let x = 1;
+let a = [1, 2];
+let r = &amp;x;
+[&amp;x == r, &amp;a[0] == &amp;a[0], &amp;a[0] == &amp;a[1]]
+</code></pre>
+<p>is <code>[true, true, false]</code>. A reference made from a value rather than a
+binding, <code>&amp;mut 0</code>, is its own place, equal only to itself.</p>
+<p>References have no order, so <code>&lt;</code> and the other orderings refuse them,
+and so does anything that orders or hashes values: map keys, <code>min</code>,
+<code>max</code>, the sorts and <code>array::dedup</code>. <code>uniq</code> compares them as <code>==</code> does.</p>
 <h2 id="referencing-a-name-vs-referencing-an-expression"><a class="header" href="#referencing-a-name-vs-referencing-an-expression">Referencing a Name vs Referencing an Expression</a></h2>
 <p><code>&amp;</code> does slightly different things depending on what follows it, and the
 difference is observable in <em>when</em> a deref sees an update.</p>
@@ -5037,13 +5056,13 @@ val is_err: fn(v: Any) -&gt; bool;
 val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn&lt;'a: Discernible&gt;(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Ordered&gt;(x: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn&lt;'a: Discernible&gt;(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Ordered&gt;(x: 'a, @args:'a) -&gt; 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing
@@ -5514,7 +5533,7 @@ val flatten: fn(a: Array&lt;Array&lt;'a&gt;&gt;) -&gt; Array&lt;'a&gt;;
 /// return a new array with duplicate elements removed, preserving the order of
 /// first occurrence. Uses a hash set internally so the input does not need to
 /// be sorted. O(N) expected.
-val dedup: fn&lt;'a: Discernible&gt;(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val dedup: fn&lt;'a: Ordered&gt;(a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
@@ -5531,7 +5550,7 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn&lt;'a: Discernible&gt;(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
+val sort: fn&lt;'a: Ordered&gt;(?#dir:Direction, ?#numeric:bool, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.
@@ -5564,7 +5583,7 @@ val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 <h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
 <pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map
-val map: fn&lt;'k2: Discernible&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return a new map containing only the key-value pairs where f applied to
 /// (key, value) returns true
@@ -5572,7 +5591,7 @@ val filter: fn(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; bool throws 'e) -
 
 /// filter_map returns a new map containing the outputs of f
 /// that were not null
-val filter_map: fn&lt;'k2: Discernible&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
+val filter_map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; Option&lt;('k2, 'v2)&gt; throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;
 
 /// return the result of f applied to the init and every k, v pair of m in
 /// sequence. f(f(f(init, (k0, v0)), (k1, v1)), ...)
@@ -5582,22 +5601,22 @@ val fold: fn(m: Map&lt;'k, 'v&gt;, init: 'acc, f: fn(acc: 'acc, kv: ('k, 'v)) -&
 val len: fn(m: Map&lt;'k, 'v&gt;) -&gt; i64;
 
 /// get the value associated with the key k in the map m, or null if not present
-val get: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Option&lt;'v&gt;;
+val get: fn&lt;'k: Ordered&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Option&lt;'v&gt;;
 
 /// get the value associated with the key k in the map m, or return the
 /// default value if k is not present in m
-val get_or: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v) -&gt; 'v;
+val get_or: fn&lt;'k: Ordered&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v) -&gt; 'v;
 
 /// insert a new value into the map
-val insert: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, v: 'v) -&gt; Map&lt;'k, 'v&gt;;
+val insert: fn&lt;'k: Ordered&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, v: 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// update the value at k by applying f to the current value at k, or
 /// to the provided default if k is not present. returns the new map
 /// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
-val change: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v, f: fn(v: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
+val change: fn&lt;'k: Ordered&gt;(m: Map&lt;'k, 'v&gt;, k: 'k, default: 'v, f: fn(v: 'v) -&gt; 'v) -&gt; Map&lt;'k, 'v&gt;;
 
 /// remove the value associated with the specified key from the map
-val remove: fn&lt;'k: Discernible&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Map&lt;'k, 'v&gt;;
+val remove: fn&lt;'k: Ordered&gt;(m: Map&lt;'k, 'v&gt;, k: 'k) -&gt; Map&lt;'k, 'v&gt;;
 
 /// iter produces an update for every key-value pair in the map m.
 /// updates are produced in the order they appear in m.
@@ -6865,7 +6884,7 @@ val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -6978,7 +6997,7 @@ type TxnTree&lt;'k, 'v&gt;;
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-val tree: fn&lt;'k: Concrete + Discernible, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
+val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `DbErr(string)&gt;;
@@ -7099,7 +7118,7 @@ val find_map: fn(l: List&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws '
 type Direction = [`Ascending, `Descending];
 
 /// Return a sorted copy of the list.
-val sort: fn&lt;'a: Discernible&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
+val sort: fn&lt;'a: Ordered&gt;(?#dir: Direction, ?#numeric: bool, l: List&lt;'a&gt;) -&gt; List&lt;'a&gt;;
 
 /// Return a list of (index, element) pairs.
 val enumerate: fn(l: List&lt;'a&gt;) -&gt; List&lt;(i64, 'a)&gt;;

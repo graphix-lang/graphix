@@ -67,6 +67,28 @@ the writable ones exact, and shows the grant at the call site. Eric:
 "a &T and &mut T is perfect, most of our ref usage is not for writing
 anyway, and it gives an enhanced guarantee to the programmer."
 
+## Equality and order
+
+A reference's value is the cell its `&` minted, so two references to
+one binding (`&x` written twice, or `&x` and a parameter holding
+another `&x`) have different values. `==` and `!=` compare what they
+name: `bind::ref_target` resolves a cell to its registered place (root
+and path), else the binding at the end of its byref chain, else the
+cell itself (`&mut` over a value is its own place). A comparison whose
+operand type holds a reference (`Type::compares_refs`) rewrites each
+reference in both values to `[root, step..]` (`ExecCtx::ref_targets`
+over `Type::map_refs`, by the
+type, through unions by runtime test) and compares the results; it is
+decided at the node's first update and never fuses. A moving reference
+compares by where it points now. Paths are compared as written, so
+`&a[-1]` and `&a[1]` of a two-element array differ.
+
+References have no order: cells are numbered in whatever order
+compiling made them. The orderings, sorts, `min`/`max`, `dedup` and
+map keys take the `Ordered` bound, which refuses a reference
+(`design/tvar_constraints.md`). `uniq` compares as `==` does
+(`ExecCtx::ref_targets`, which `==` uses too).
+
 ## Two writes to one root in one cycle
 
 Each write is queued as a **patch** — path and value — and resolved

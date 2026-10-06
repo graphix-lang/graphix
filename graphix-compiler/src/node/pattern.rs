@@ -1344,6 +1344,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::Ordered
             | Type::Discernible => {
                 bail!("can't match on a constraint")
             }

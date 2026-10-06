@@ -543,3 +543,73 @@ const BYREF_PRINTS_OPAQUE: &str = r#"
 run!(byref_prints_opaque, BYREF_PRINTS_OPAQUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "&ref {a: 2, r: &ref}")
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// `==` and `!=` compare references by what they point to: a binding, or
+// a place's root and path. Each `&x` mints a cell of its own, so its
+// value can't say this; a reference made by `&mut` over a value is its
+// own place.
+const BYREF_EQ_COMPARES_TARGETS: &str = r#"
+{
+  let x = 1;
+  let y = 2;
+  let a = [1, 2];
+  let s = {f: 1, g: 2};
+  let r = &x;
+  let f = |p: &i64| p;
+  let eq = |p, q| p == q;
+  let t1 = {n: 1, r: &x};
+  let t2 = {n: 1, r: &x};
+  [
+    &x == &x, r == &x, f(&x) == r, &x == &y, &x != &y, &a[0] == &a[0],
+    &a[0] == &a[1], &s.f == &s.g, eq(&x, &x), eq(&x, &y), [&x, &y] == [&x, &y],
+    t1 == t2, &mut 0 == &mut 0
+  ]
+}
+"#;
+
+run!(byref_eq_compares_targets, BYREF_EQ_COMPARES_TARGETS, |v: Result<&Value>| {
+    let want = [true, true, true, false, true, true, false, false, true, false, true, true, false];
+    match v {
+        Ok(Value::Array(a)) => a.iter().map(|v| *v == Value::Bool(true)).eq(want),
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// References have no order: a reference's value is its cell, numbered in
+// whatever order compiling made it. The orderings, sorting, `min`/`max`
+// and map keys refuse them, a generic definition's at the call.
+#[tokio::test(flavor = "current_thread")]
+async fn byref_ordering_refused() -> Result<()> {
+    for src in [
+        "{ let x = 1; let y = 2; &x < &y }",
+        "{ let x = 1; array::len(array::sort([&x])) }",
+        "{ let x = 1; map::len({&x => 1}) }",
+        "{ let x = 1; let lt = |a, b| a < b; lt(&x, &x) }",
+        "{ let x = 1; *min(&x, &x) }",
+        "{ let x = 1; map::len(map::insert({}, &x, 1)) }",
+    ] {
+        match graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(msg.contains("no order"), "{src}: {msg}")
+            }
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+// `uniq` compares as `==` does: a second reference to `x` is no change.
+const BYREF_UNIQ_COMPARES_TARGETS: &str = r#"
+{
+  let x = 1;
+  let y = 2;
+  let r = array::iter([&x, &x, &y]);
+  let seen = array::group(uniq(r), |n, _| n == 2);
+  array::map(seen, |p| *p)
+}
+"#;
+
+run!(byref_uniq_compares_targets, BYREF_UNIQ_COMPARES_TARGETS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(2)])
+}; graphix_package_core::testing::FuseExpect::Jit);

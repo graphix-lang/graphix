@@ -336,6 +336,11 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
+    if [lhs.typ(), rhs.typ()].iter().any(|t| t.compares_refs(cx.ctx.type_env)) {
+        return Err(anyhow!(
+            "emit_clif: == over references compares what they name, which the runtime knows"
+        ));
+    }
     let lprim = kernel_abi::freeze_for_abi_normalized(lhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t));

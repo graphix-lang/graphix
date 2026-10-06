@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-695417b4.js";
+            window.path_to_searchindex_js = "../searchindex-a46bfca9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -260,6 +260,20 @@ it may or may not write, the parameter is an optional reference instead,
 knows the callee cannot change <code>x</code>. The same rule holds for a union of
 references: two read-only references may be one <code>&amp;[i64, string]</code>, but a write
 must fit every reference the value may hold.</p>
+<h2 id="comparing-references"><a class="header" href="#comparing-references">Comparing References</a></h2>
+<p><code>==</code> and <code>!=</code> ask whether two references point to the same thing: the
+same binding, or the same element or field of one. Two references made
+separately are equal when they name the same place,</p>
+<pre><code class="language-graphix">let x = 1;
+let a = [1, 2];
+let r = &amp;x;
+[&amp;x == r, &amp;a[0] == &amp;a[0], &amp;a[0] == &amp;a[1]]
+</code></pre>
+<p>is <code>[true, true, false]</code>. A reference made from a value rather than a
+binding, <code>&amp;mut 0</code>, is its own place, equal only to itself.</p>
+<p>References have no order, so <code>&lt;</code> and the other orderings refuse them,
+and so does anything that orders or hashes values: map keys, <code>min</code>,
+<code>max</code>, the sorts and <code>array::dedup</code>. <code>uniq</code> compares them as <code>==</code> does.</p>
 <h2 id="referencing-a-name-vs-referencing-an-expression"><a class="header" href="#referencing-a-name-vs-referencing-an-expression">Referencing a Name vs Referencing an Expression</a></h2>
 <p><code>&amp;</code> does slightly different things depending on what follows it, and the
 difference is observable in <em>when</em> a deref sees an update.</p>

@@ -353,6 +353,19 @@ as arithmetic hands it `Singleton`, so each call checks it.
 - Like `Singleton`, it is never a witness and refuses no open or ⊥ cell
   at the terminal settle.
 
+### `Ordered`: `Discernible` without references
+
+`'a: Ordered` (`Type::Ordered`) is `Discernible` and no reference where
+a comparison looks (`Type::indiscernible` with `ordered`). A
+reference's value is its own cell, numbered in whatever order compiling
+made it, so it neither orders nor says what the reference names. The
+orderings (`<` and the rest), map keys (the literal, the `map::`
+functions, `db` tree keys), `array::sort`, `list::sort`, `min`, `max`
+and `array::dedup` require it; `==`, `!=` and `uniq` require only
+`Discernible` and compare references by what they name
+(`design/place_references.md`). It travels, judges and settles as
+`Discernible` does.
+
 An interface must declare what its implementation requires: every
 conjunct of an implementation variable the signature leaves generic
 must follow from the signature variable's conjuncts, or from the bound

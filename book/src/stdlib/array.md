@@ -64,7 +64,7 @@ val flatten: fn(a: Array<Array<'a>>) -> Array<'a>;
 /// return a new array with duplicate elements removed, preserving the order of
 /// first occurrence. Uses a hash set internally so the input does not need to
 /// be sorted. O(N) expected.
-val dedup: fn<'a: Discernible>(a: Array<'a>) -> Array<'a>;
+val dedup: fn<'a: Ordered>(a: Array<'a>) -> Array<'a>;
 
 /// applies f to every element in a and returns the first element for which f
 /// returns true, or null if no element returns true
@@ -81,7 +81,7 @@ type Direction = [
 /// return a new copy of a sorted ascending (by default). If numeric is true then
 /// values will be cast to numbers before comparison, resulting in a numeric sort
 /// even if the values are strings.
-val sort: fn<'a: Discernible>(?#dir:Direction, ?#numeric:bool, a: Array<'a>) -> Array<'a>;
+val sort: fn<'a: Ordered>(?#dir:Direction, ?#numeric:bool, a: Array<'a>) -> Array<'a>;
 
 /// return an array of pairs where the first element is the index in
 /// the array and the second element is the value.

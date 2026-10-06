@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-695417b4.js";
+            window.path_to_searchindex_js = "../searchindex-a46bfca9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -243,13 +243,13 @@ val is_err: fn(v: Any) -&gt; bool;
 val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn&lt;'a: Discernible&gt;(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Ordered&gt;(x: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn&lt;'a: Discernible&gt;(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Ordered&gt;(x: 'a, @args:'a) -&gt; 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing

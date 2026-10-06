@@ -17,9 +17,9 @@ let filter_err = |e: Result<'a, 'b>| -> Error<'b> 'core_filter_err;
 let filter = |v: 'a, f: fn(v: 'a) -> bool throws 'e| -> 'a throws 'e 'core_filter;
 let is_err = |e: Any| -> bool 'core_is_err;
 let error = |e: 'a| -> Error<'a> 'core_error;
-let max = 'a: Discernible |a: 'a, @args: 'a| -> 'a 'core_max;
+let max = 'a: Ordered |a: 'a, @args: 'a| -> 'a 'core_max;
 let mean = |v: [Number, Array<Number>], @args: [Number, Array<Number>]| -> Result<f64, `MeanError(string)> 'core_mean;
-let min = 'a: Discernible |a: 'a, @args: 'a| -> 'a 'core_min;
+let min = 'a: Ordered |a: 'a, @args: 'a| -> 'a 'core_min;
 let once = |v: 'a| -> 'a 'core_once;
 // CR claude for eric: [risk] #n is typed Any and the builtins read it with
 // cast_to::<usize>, so any value type-checks and nothing is reported: a value that does

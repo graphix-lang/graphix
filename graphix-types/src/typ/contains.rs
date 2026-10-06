@@ -430,16 +430,19 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
-/// An open cell in `t` with the `Discernible` conjunct.
-fn discernible_cell(t: &Type) -> Option<TVar> {
+/// An open cell in `t` with the `Discernible` or `Ordered` conjunct, and
+/// the stronger of the two it holds.
+fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
     ensure_sufficient(|| match t {
         Type::TVar(tv) => match tv.binding() {
             Some(b) => discernible_cell(&b),
-            None => tv
-                .cell_constraints()
-                .iter()
-                .any(|c| matches!(c, Type::Discernible))
-                .then(|| tv.clone()),
+            None => {
+                let cons = tv.cell_constraints();
+                let has = |b: Type| cons.contains(&b).then_some(b);
+                has(Type::Ordered)
+                    .or_else(|| has(Type::Discernible))
+                    .map(|b| (tv.clone(), b))
+            }
         },
         Type::Fn(_) => None,
         t => {
@@ -500,12 +503,12 @@ impl Type {
         anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
     }
 
-    /// Why `self ⊇ t` fails when `self` holds an open `Discernible` cell
-    /// and `t` is not discernible.
+    /// Why `self ⊇ t` fails when `self` holds an open `Discernible` or
+    /// `Ordered` cell and `t` is not that.
     pub fn discernible_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
-        let (a, b) = t.rep_ambiguity(env, Open::Benign)?;
-        let tv = discernible_cell(self)?;
-        Some(t.not_discernible(&tv.name, &a, &b))
+        let (tv, bound) = discernible_cell(self)?;
+        let why = t.indiscernible(env, Open::Benign, bound == Type::Ordered)?;
+        Some(t.not_discernible(&bound, &tv.name, &why))
     }
 
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
@@ -615,8 +618,12 @@ impl Type {
             (_, Self::Singleton) => Ok(false),
             (Self::OneNumber, t) => t.one_number_holds(env, commit),
             (_, Self::OneNumber) => Ok(false),
-            (Self::Discernible, t) => Ok(t.rep_ambiguity(env, Open::Benign).is_none()),
+            (Self::Discernible, t) => {
+                Ok(t.indiscernible(env, Open::Benign, false).is_none())
+            }
             (_, Self::Discernible) => Ok(false),
+            (Self::Ordered, t) => Ok(t.indiscernible(env, Open::Benign, true).is_none()),
+            (_, Self::Ordered) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

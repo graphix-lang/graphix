@@ -36,7 +36,7 @@ val drop_tree: fn(db: Db, name: string) -> Result<bool, `DbErr(string)>;
 /// Pass null for the default (unnamed) tree. The key and value
 /// types are recorded on first open; reopening the same tree with
 /// different types returns a `DbErr`.
-val tree: fn<'k: Concrete + Discernible, 'v: Concrete>(db: Db, name: [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
+val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(db: Db, name: [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;

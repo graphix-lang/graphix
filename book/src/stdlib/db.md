@@ -20,7 +20,7 @@ val open: fn(path: string) -> Result<Db, `DbErr(string)>;
 
 /// Open or create a named tree with typed keys and values.
 /// Pass null for the default (unnamed) tree.
-val tree: fn<'k: Concrete + Discernible, 'v: Concrete>(db: Db, name: [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
+val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(db: Db, name: [string, null]) -> Result<Tree<'k, 'v>, `DbErr(string)>;
 
 /// Get the value for a key, or null if not found.
 val get: fn(t: Tree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;
@@ -141,7 +141,7 @@ type TxnTree<'k, 'v>;
 val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-val tree: fn<'k: Concrete + Discernible, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
+val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
 val get: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)>;

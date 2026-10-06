@@ -75,7 +75,7 @@ pub enum BoolOp {
 /// the operator supplies `update`, `typecheck0`, `typecheck1` and
 /// `emit_clif`.
 macro_rules! binary_node {
-    ($name:ident, $typ:expr, { $($methods:tt)* }) => {
+    ($name:ident, $typ:expr, $(state: $state:ty,)? { $($methods:tt)* }) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
@@ -86,6 +86,10 @@ macro_rules! binary_node {
             /// wake catch-up: set by `sleep()`, taken by the next update
             slept: WakeBit,
             fork: crate::cost::ForkSite,
+            $(
+                /// the operator's own
+                state: $state,
+            )?
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -123,6 +127,7 @@ macro_rules! binary_node {
                     resident: TagValue::phantom(),
                     slept: WakeBit::default(),
                     fork: Default::default(),
+                    $(state: <$state>::default(),)?
                 })
             }
         }
@@ -264,13 +269,23 @@ fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
 }
 
 macro_rules! compare_op {
-    ($name:ident, $op:tt) => {
-        binary_node!($name, Type::boolean(), {
+    ($name:ident, $op:tt, $ordered:literal) => {
+        binary_node!($name, Type::boolean(), state: Equality, {
             fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+                if !$ordered && matches!(self.state, Equality::Undecided) {
+                    self.state = Equality::of(&ctx.env, self.lhs.typ(), self.rhs.typ());
+                }
                 let (l, r, _, tag) = gated_operands!(self, ctx);
-                let v = coretraits::with_hooks(ctx, || {
-                    l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
-                });
+                let v = match &self.state {
+                    Equality::Targets(t) => {
+                        let lv = l.with_value(|v| ctx.ref_targets(t, v));
+                        let rv = r.with_value(|v| ctx.ref_targets(t, v));
+                        coretraits::with_hooks(ctx, || (lv $op rv).into())
+                    }
+                    Equality::Undecided | Equality::Values => coretraits::with_hooks(ctx, || {
+                        l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
+                    }),
+                };
                 self.resident.set(TagValue::tagged(v, tag))
             }
 
@@ -308,7 +323,7 @@ macro_rules! compare_op {
         });
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
-            // CR claude for eric: [bug] `<`, `>`, `<=` and `>=` accept references. A
+            // XCR claude for eric: [bug] `<`, `>`, `<=` and `>=` accept references. A
             // reference's value is its bind id, and parallel compile mints ids in
             // thread order, so `r1 < r2` over two instances' `&v` prints true on some
             // runs and false on others, in both engines, with nothing fused. This
@@ -325,14 +340,27 @@ macro_rules! compare_op {
             // up, so `&i64 < &i64` is still Discernible. Refusing ordering over
             // references could ride the same machinery (a second bound, or
             // Discernible refusing references under the orderings only).
+            // 2026-10-06 claude: done as a second bound, `Ordered` (Discernible and no
+            // reference where a comparison looks): the orderings require it, and so
+            // do array::sort, list::sort, min, max, array::dedup, map keys (the
+            // literal and the map:: functions) and db tree keys; a generic
+            // definition takes it from its body, so each call checks it. Eric also
+            // ruled that `==` and `!=` over references compare what they point to,
+            // not the cell (`Equality::Targets`, `ExecCtx::ref_targets`); `uniq`
+            // compares the same way. Pins: lang::byref::byref_ordering_refused,
+            // byref_eq_compares_targets, byref_uniq_compares_targets.
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => {
-                        t.require_discernible();
+                        let bound = match $ordered {
+                            true => Type::Ordered,
+                            false => Type::Discernible,
+                        };
+                        t.require_compared(&bound);
                         let judgment = crate::PendingSettle::Discernible {
                             typ: t.clone(),
-                            what: crate::Discerned::Compared,
+                            what: crate::Discerned::Compared { ordered: $ordered },
                             spec: Arc::new(self.spec.clone()),
                         };
                         super::defer_judgment(ctx, judgment);
@@ -353,12 +381,32 @@ macro_rules! compare_op {
     };
 }
 
-compare_op!(Eq, ==);
-compare_op!(Ne, !=);
-compare_op!(Lt, <);
-compare_op!(Gt, >);
-compare_op!(Lte, <=);
-compare_op!(Gte, >=);
+compare_op!(Eq, ==, false);
+compare_op!(Ne, !=, false);
+compare_op!(Lt, <, true);
+compare_op!(Gt, >, true);
+compare_op!(Lte, <=, true);
+compare_op!(Gte, >=, true);
+
+/// How `==` and `!=` compare, decided at the first update from the
+/// operand type: by value, or with each reference replaced by what it
+/// names (a reference's value is its own cell).
+#[derive(Debug, Default)]
+enum Equality {
+    #[default]
+    Undecided,
+    Values,
+    Targets(Type),
+}
+
+impl Equality {
+    fn of(env: &Env, lhs: &Type, rhs: &Type) -> Self {
+        match [lhs, rhs].into_iter().find(|t| t.compares_refs(env)) {
+            Some(t) => Self::Targets(t.clone()),
+            None => Self::Values,
+        }
+    }
+}
 
 macro_rules! bool_op {
     ($name:ident, $op:tt) => {

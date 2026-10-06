@@ -165,6 +165,7 @@ impl Type {
             Self::Singleton => write!(f, "Singleton"),
             Self::OneNumber => write!(f, "OneNumber"),
             Self::Discernible => write!(f, "Discernible"),
+            Self::Ordered => write!(f, "Ordered"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(TypeRef { scope: _, name, params, .. }) => {
@@ -247,6 +248,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible
+        | Type::Ordered
         | Type::Function => false,
     }
 }
@@ -281,6 +283,7 @@ impl PrettyDisplay for Type {
             | Self::Singleton
             | Self::OneNumber
             | Self::Discernible
+            | Self::Ordered
             | Self::Function => {
                 writeln!(buf, "{self}")
             }

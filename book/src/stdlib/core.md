@@ -70,13 +70,13 @@ val is_err: fn(v: Any) -> bool;
 val error: fn(x: 'a) -> Error<'a>;
 
 /// return the maximum value of any argument
-val max: fn<'a: Discernible>(x: 'a, @args: 'a) -> 'a;
+val max: fn<'a: Ordered>(x: 'a, @args: 'a) -> 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array<Number>], @args: [Number, Array<Number>]) -> Result<f64, `MeanError(string)>;
 
 /// return the minimum value of any argument
-val min: fn<'a: Discernible>(x: 'a, @args:'a) -> 'a;
+val min: fn<'a: Ordered>(x: 'a, @args:'a) -> 'a;
 
 /// return v only once, subsequent updates to v will be ignored
 /// and once will return nothing

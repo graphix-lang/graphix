@@ -130,6 +130,12 @@ which have the same runtime form; wrap them in distinct variants
 Wrapping the members in variants of their own, `` [`S(string), `A] ``,
 tells them apart.
 
+What orders or hashes values (`<` and the other orderings, map keys,
+`min`, `max`, the sorts, `array::dedup`) needs `Ordered`, which is
+`Discernible` and no references: a reference has no order, and `==`,
+`!=` and `uniq` compare one by what it points to (see
+[References](../udt/references.md)).
+
 ## Higher Order Functions
 
 Since functions are first class, they can take other functions as arguments, and

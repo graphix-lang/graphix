@@ -2469,31 +2469,43 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
 
 type Mean = CachedArgs<MeanEv>;
 
+/// The last value, as compared; the output; the argument type when it
+/// holds a reference, which compares by what it names.
 #[derive(Debug)]
-struct Uniq(Option<Value>, TagValue);
+struct Uniq(Option<Value>, TagValue, Option<Type>);
+
+impl Uniq {
+    fn new<R: Rt, E: UserEvent>(
+        ctx: &CompileCtx<R, E>,
+        last: Option<Value>,
+        from: &[Node<R, E>],
+    ) -> Self {
+        let refs = from.first().map(|n| n.typ()).filter(|t| t.compares_refs(&ctx.env));
+        Self(last, TagValue::phantom(), refs.cloned())
+    }
+}
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
+        from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = ctx;
-        Ok(Box::new(Uniq(Pack::decode(buf)?, TagValue::phantom())))
+        Ok(Box::new(Uniq::new(ctx, Pack::decode(buf)?, from)))
     }
 
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Uniq(None, TagValue::phantom())))
+        Ok(Box::new(Uniq::new(ctx, None, from)))
     }
 }
 
@@ -2511,9 +2523,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         let Some(v) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned()) else {
             return out.ride();
         };
-        let changed = coretraits::with_hooks(ctx, || Some(&v) != last.as_ref());
+        let cmp = match &self.2 {
+            Some(t) => ctx.ref_targets(t, &v),
+            None => v.clone(),
+        };
+        let changed = coretraits::with_hooks(ctx, || Some(&cmp) != last.as_ref());
         if changed {
-            *last = Some(v.clone());
+            *last = Some(cmp);
             out.set(TagValue::fired(v))
         } else {
             out.ride()

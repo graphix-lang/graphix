@@ -116,6 +116,26 @@ knows the callee cannot change `x`. The same rule holds for a union of
 references: two read-only references may be one `&[i64, string]`, but a write
 must fit every reference the value may hold.
 
+## Comparing References
+
+`==` and `!=` ask whether two references point to the same thing: the
+same binding, or the same element or field of one. Two references made
+separately are equal when they name the same place,
+
+```graphix
+let x = 1;
+let a = [1, 2];
+let r = &x;
+[&x == r, &a[0] == &a[0], &a[0] == &a[1]]
+```
+
+is `[true, true, false]`. A reference made from a value rather than a
+binding, `&mut 0`, is its own place, equal only to itself.
+
+References have no order, so `<` and the other orderings refuse them,
+and so does anything that orders or hashes values: map keys, `min`,
+`max`, the sorts and `array::dedup`. `uniq` compares them as `==` does.
+
 ## Referencing a Name vs Referencing an Expression
 
 `&` does slightly different things depending on what follows it, and the

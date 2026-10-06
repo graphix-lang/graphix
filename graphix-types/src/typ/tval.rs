@@ -174,6 +174,7 @@ impl<'a> TVal<'a> {
                 | Type::Singleton
                 | Type::OneNumber
                 | Type::Discernible
+                | Type::Ordered
                 | Type::Bottom
                 | Type::Any
                 | Type::Error(_),

@@ -33,7 +33,7 @@ use std::{
 use triomphe::Arc;
 
 mod cast;
-pub use cast::{IsAFlags, Open};
+pub use cast::{Indiscernible, IsAFlags, Open};
 mod contains;
 pub use contains::ContainsFlags;
 pub use contains::TypeMismatch;
@@ -83,6 +83,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible
+        | Type::Ordered
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -812,6 +813,12 @@ pub enum Type {
     /// ([`Type::rep_ambiguity`]), so its values compare and hash as their
     /// types do. Legal only as a constraint.
     Discernible,
+    /// The conjunct `'a: Ordered`: `Discernible`, and no reference where a
+    /// comparison looks ([`Type::ref_in`]): a reference's value is its
+    /// cell, which neither orders nor names what it points to, so values
+    /// of the type order, hash and compare by value alone. Legal only as
+    /// a constraint.
+    Ordered,
 }
 
 /// Whether a reference may be written through: `&T` reads, `&mut T`
@@ -866,6 +873,7 @@ mod tag {
     pub const ONE_NUMBER: u8 = 21;
     pub const BYREF_MUT: u8 = 22;
     pub const DISCERNIBLE: u8 = 23;
+    pub const ORDERED: u8 = 24;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -925,6 +933,7 @@ impl Type {
             Type::Singleton => out.put_u8(tag::SINGLETON),
             Type::OneNumber => out.put_u8(tag::ONE_NUMBER),
             Type::Discernible => out.put_u8(tag::DISCERNIBLE),
+            Type::Ordered => out.put_u8(tag::ORDERED),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -1019,6 +1028,7 @@ impl Type {
             | Type::Function
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Singleton => 0,
             Type::Primitive(p) => p.encoded_len(),
             Type::Ref(r) => r.encoded_len(),
@@ -1050,6 +1060,7 @@ impl Type {
             Type::Singleton => Ok(buf.put_u8(tag::SINGLETON)),
             Type::OneNumber => Ok(buf.put_u8(tag::ONE_NUMBER)),
             Type::Discernible => Ok(buf.put_u8(tag::DISCERNIBLE)),
+            Type::Ordered => Ok(buf.put_u8(tag::ORDERED)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -1130,6 +1141,7 @@ impl Type {
             tag::SINGLETON => Type::Singleton,
             tag::ONE_NUMBER => Type::OneNumber,
             tag::DISCERNIBLE => Type::Discernible,
+            tag::ORDERED => Type::Ordered,
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -1216,6 +1228,7 @@ impl PartialEq for Type {
             (Type::Singleton, _) => matches!(other, Type::Singleton),
             (Type::OneNumber, _) => matches!(other, Type::OneNumber),
             (Type::Discernible, _) => matches!(other, Type::Discernible),
+            (Type::Ordered, _) => matches!(other, Type::Ordered),
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -1241,6 +1254,7 @@ impl Type {
             Type::Singleton => matches!(other, Type::Singleton),
             Type::OneNumber => matches!(other, Type::OneNumber),
             Type::Discernible => matches!(other, Type::Discernible),
+            Type::Ordered => matches!(other, Type::Ordered),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1303,6 +1317,7 @@ impl Type {
             Type::Singleton => tag::SINGLETON,
             Type::OneNumber => tag::ONE_NUMBER,
             Type::Discernible => tag::DISCERNIBLE,
+            Type::Ordered => tag::ORDERED,
         }
     }
 
@@ -1352,6 +1367,7 @@ impl Ord for Type {
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Primitive(_) => self.cmp_fields(other),
             _ => ensure_sufficient(|| self.cmp_fields(other)),
         })
@@ -1369,6 +1385,7 @@ impl Hash for Type {
             | Type::Function
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Singleton => (),
             Type::Primitive(p) => p.hash(state),
             t => ensure_sufficient(|| match t {
@@ -1405,6 +1422,7 @@ impl Hash for Type {
                 | Type::Singleton
                 | Type::OneNumber
                 | Type::Discernible
+                | Type::Ordered
                 | Type::Primitive(_) => (),
             }),
         }
@@ -1439,6 +1457,7 @@ impl Drop for Type {
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Primitive(_)
             | Type::TVar(_) => false,
             Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
@@ -1468,6 +1487,7 @@ impl Drop for Type {
                 | Type::Singleton
                 | Type::OneNumber
                 | Type::Discernible
+                | Type::Ordered
                 | Type::Primitive(_) => (),
                 Type::Ref(r) => drop(ptr::read(r)),
                 Type::Fn(f) => drop(ptr::read(f)),
@@ -1529,6 +1549,7 @@ impl Type {
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Function => ControlFlow::Continue(()),
             Type::App(c, a) => {
                 f(c)?;
@@ -1631,6 +1652,7 @@ impl Type {
             | Type::Singleton
             | Type::OneNumber
             | Type::Discernible
+            | Type::Ordered
             | Type::Function => None,
             Type::App(c, a) => match (f(c), f(a)) {
                 (None, None) => None,
@@ -2299,6 +2321,7 @@ impl Type {
             | Self::Function
             | Self::Singleton
             | Self::Discernible
+            | Self::Ordered
             | Self::OneNumber => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }

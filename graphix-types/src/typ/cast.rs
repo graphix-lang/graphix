@@ -319,6 +319,7 @@ impl Type {
             | Type::Function
             | Type::Singleton
             | Type::OneNumber
+            | Type::Ordered
             | Type::Discernible => Err(self.cast_fail("a constraint", v)),
             Type::Bottom | Type::Any => Ok(None),
             Type::Fn(_) => match v {
@@ -769,6 +770,7 @@ impl Type {
             | Type::Function
             | Type::Singleton
             | Type::Discernible
+            | Type::Ordered
             | Type::OneNumber => false,
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
@@ -1080,6 +1082,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::Singleton
         | Type::OneNumber
         | Type::Discernible
+        | Type::Ordered
         | Type::Function => MemberFacts::EXACT,
     }
 }
@@ -1176,6 +1179,7 @@ fn rep_head(env: &Env, t: &Type) -> Option<Type> {
         | Type::Function
         | Type::Singleton
         | Type::Discernible
+        | Type::Ordered
         | Type::OneNumber => None,
         t => Some(t.clone()),
     })
@@ -1398,20 +1402,29 @@ impl Type {
     }
 }
 
+/// Why a type is not `Discernible` or not `Ordered`.
+pub enum Indiscernible {
+    /// Two members of one union with one runtime form.
+    Pair(Type, Type),
+    /// A reference, under `Ordered`.
+    Ref(Type),
+}
+
 fn rep_ambiguity(
     env: &Env,
     seen: &mut AHashSet<Type>,
     open: Open,
     keys_only: bool,
+    refs: bool,
     t: &Type,
-) -> Option<(Type, Type)> {
+) -> Option<Indiscernible> {
     ensure_sufficient(|| {
         if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
             return None;
         }
         let t = rep_head(env, t)?;
         let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
-            ts.map(|t| rep_ambiguity(env, seen, open, keys_only, t))
+            ts.map(|t| rep_ambiguity(env, seen, open, keys_only, refs, t))
                 .find(Option::is_some)
                 .flatten()
         };
@@ -1422,8 +1435,8 @@ fn rep_ambiguity(
                         for b in &ts[i + 1..] {
                             let c =
                                 rep_collision(env, &mut RepSeen::default(), open, a, b);
-                            if c.is_some() {
-                                return c;
+                            if let Some((a, b)) = c {
+                                return Some(Indiscernible::Pair(a, b));
                             }
                         }
                     }
@@ -1432,9 +1445,14 @@ fn rep_ambiguity(
             }
             Type::Map { key, value } => {
                 let keys = match keys_only {
-                    true => {
-                        rep_ambiguity(env, &mut AHashSet::default(), open, false, key)
-                    }
+                    true => rep_ambiguity(
+                        env,
+                        &mut AHashSet::default(),
+                        open,
+                        false,
+                        true,
+                        key,
+                    ),
                     false => None,
                 };
                 keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
@@ -1444,52 +1462,182 @@ fn rep_ambiguity(
             }
             Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
             Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
+            Type::ByRef(..) if refs && !keys_only => Some(Indiscernible::Ref(t.clone())),
             _ => None,
         }
     })
 }
 
 impl Type {
-    /// Two members of one union anywhere in this type (not under a
-    /// reference, a function or an abstract type) with one runtime form:
-    /// comparing values of this type can't tell them apart. `Discernible`
-    /// holds of a type without one.
-    pub fn rep_ambiguity(&self, env: &Env, open: Open) -> Option<(Type, Type)> {
-        rep_ambiguity(env, &mut AHashSet::default(), open, false, self)
+    /// Why this type is not `Discernible`: two members of one union
+    /// anywhere in it (not under a reference, a function or an abstract
+    /// type) with one runtime form, which comparing its values can't tell
+    /// apart; with `ordered`, why it is not `Ordered`: that, or a
+    /// reference in the same places.
+    pub fn indiscernible(
+        &self,
+        env: &Env,
+        open: Open,
+        ordered: bool,
+    ) -> Option<Indiscernible> {
+        rep_ambiguity(env, &mut AHashSet::default(), open, false, ordered, self)
     }
 
-    /// [`Self::rep_ambiguity`] of every map key type this type holds:
-    /// a map can't tell such keys apart.
-    pub fn map_key_ambiguity(&self, env: &Env, open: Open) -> Option<(Type, Type)> {
-        rep_ambiguity(env, &mut AHashSet::default(), open, true, self)
+    /// Why a map key type this type holds is not `Ordered`.
+    pub fn map_key_failure(&self, env: &Env, open: Open) -> Option<Indiscernible> {
+        rep_ambiguity(env, &mut AHashSet::default(), open, true, false, self)
     }
 
-    /// The refusal of `self` as a binding of `'name: Discernible`, where
-    /// [`Self::rep_ambiguity`] found `a` and `b`.
-    pub fn not_discernible(&self, name: &str, a: &Type, b: &Type) -> anyhow::Error {
+    /// The refusal of `self` as a binding of `'name: bound` (`Discernible`
+    /// or `Ordered`) for the reason `why`.
+    pub fn not_discernible(
+        &self,
+        bound: &Type,
+        name: &str,
+        why: &Indiscernible,
+    ) -> anyhow::Error {
         format_with_flags(PrintFlag::DerefTVars, || {
-            let (t, a, b) = (self.resolve_tvars(), a.resolve_tvars(), b.resolve_tvars());
+            let t = self.resolve_tvars();
             let what = match name.starts_with('_') {
-                true => format_compact!("{t} must be Discernible here, but it"),
-                false => format_compact!("'{name} must be Discernible, but {t}"),
+                true => format_compact!("{t} must be {bound} here, but it"),
+                false => format_compact!("'{name} must be {bound}, but {t}"),
             };
-            anyhow::anyhow!(
-                "{what} holds {a} and {b}, which have the same runtime form; wrap them \
-                 in distinct variants"
-            )
+            match why {
+                Indiscernible::Pair(a, b) => anyhow::anyhow!(
+                    "{what} holds {} and {}, which have the same runtime form; wrap \
+                     them in distinct variants",
+                    a.resolve_tvars(),
+                    b.resolve_tvars()
+                ),
+                Indiscernible::Ref(r) => {
+                    let r = r.resolve_tvars();
+                    let holds = match r == t {
+                        true => format_compact!("is a reference"),
+                        false => format_compact!("holds the reference {r}"),
+                    };
+                    anyhow::anyhow!(
+                        "{what} {holds}: references have no order, and only == and != \
+                         compare them, by what they point to"
+                    )
+                }
+            }
         })
     }
 
-    /// Hand the `Discernible` conjunct to every open cell a comparison
-    /// of this type reaches.
-    pub fn require_discernible(&self) {
+    /// Hand `bound` (`Discernible` or `Ordered`) to every open cell a
+    /// comparison of this type reaches.
+    pub fn require_compared(&self, bound: &Type) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_discernible(),
-                None => tv.add_cell_constraint(Type::Discernible),
+                Some(b) => b.require_compared(bound),
+                None => tv.add_cell_constraint(bound.clone()),
             },
             Type::ByRef(..) | Type::Fn(_) | Type::Abstract { .. } => (),
-            t => t.for_each_child(&mut |c| c.require_discernible()),
+            t => t.for_each_child(&mut |c| c.require_compared(bound)),
         })
+    }
+}
+
+/// Whether a comparison of values of `t` meets a reference: one where
+/// [`Type::indiscernible`] looks.
+fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
+    ensure_sufficient(|| {
+        if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
+            return false;
+        }
+        let Some(t) = rep_head(env, t) else { return false };
+        let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
+            Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t))
+        };
+        match &t {
+            Type::ByRef(..) => true,
+            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+                any(&mut ts.iter())
+            }
+            Type::Array(e) | Type::List(e) | Type::Error(e) => {
+                any(&mut std::iter::once(&**e))
+            }
+            Type::Struct(fs) => any(&mut fs.iter().map(|(_, t, _)| t)),
+            Type::Map { key, value } => any(&mut [&**key, &**value].into_iter()),
+            _ => false,
+        }
+    })
+}
+
+fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) -> Value {
+    ensure_sufficient(|| {
+        if !compared_ref(env, &mut AHashSet::default(), t) {
+            return v.clone();
+        }
+        let Some(t) = rep_head(env, t) else { return v.clone() };
+        let mut each = |ts: &mut dyn Iterator<Item = (&Type, &Value)>| {
+            let mut vs: LPooled<Vec<Value>> =
+                Iterator::map(&mut &mut *ts, |(t, v)| map_refs(env, t, v, f)).collect();
+            Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+        };
+        match (&t, v) {
+            (Type::ByRef(..), v) => f(v),
+            (Type::Set(ts), v) => match ts.iter().find(|m| m.is_a(env, v)) {
+                Some(m) => map_refs(env, m, v, f),
+                None => v.clone(),
+            },
+            (Type::Error(e), Value::Error(x)) => {
+                Value::Error(map_refs(env, e, x, f).into())
+            }
+            (Type::Array(e), Value::Array(x)) => each(&mut x.iter().map(|v| (&**e, v))),
+            (Type::List(e), v) => {
+                let vs: LPooled<Vec<Value>> =
+                    list::Iter::new(v.clone()).map(|v| map_refs(env, e, &v, f)).collect();
+                list::from_iter(vs.iter().cloned())
+            }
+            (Type::Tuple(ts), Value::Array(x)) if x.len() == ts.len() => {
+                each(&mut ts.iter().zip(x.iter()))
+            }
+            (Type::Variant(tag, ts, _), Value::Array(x)) if x.len() == ts.len() + 1 => {
+                let name =
+                    Type::Variant(tag.clone(), Arc::from_iter([]), WrittenAt::NOWHERE);
+                each(&mut std::iter::once(&name).chain(ts.iter()).zip(x.iter()))
+            }
+            (Type::Struct(fs), Value::Array(x)) if x.len() == fs.len() => {
+                let mut vs: LPooled<Vec<Value>> = fs
+                    .iter()
+                    .zip(x.iter())
+                    .map(|((_, t, _), field)| match field {
+                        Value::Array(nv) if nv.len() == 2 => {
+                            Value::Array(ValArray::from_iter_exact(
+                                [nv[0].clone(), map_refs(env, t, &nv[1], f)].into_iter(),
+                            ))
+                        }
+                        v => v.clone(),
+                    })
+                    .collect();
+                Value::Array(ValArray::from_iter_exact(vs.drain(..)))
+            }
+            (Type::Map { value, .. }, Value::Map(m)) => Value::Map(
+                m.into_iter()
+                    .map(|(k, v)| (k.clone(), map_refs(env, value, v, f)))
+                    .collect(),
+            ),
+            (_, v) => v.clone(),
+        }
+    })
+}
+
+impl Type {
+    /// Whether comparing values of this type meets a reference: `==`
+    /// compares such values by [`Self::map_refs`].
+    pub fn compares_refs(&self, env: &Env) -> bool {
+        compared_ref(env, &mut AHashSet::default(), self)
+    }
+
+    /// `v`, a value of this type, with each reference a comparison meets
+    /// replaced by `f` of it.
+    pub fn map_refs(
+        &self,
+        env: &Env,
+        v: &Value,
+        f: &mut dyn FnMut(&Value) -> Value,
+    ) -> Value {
+        map_refs(env, self, v, f)
     }
 }

@@ -49,6 +49,7 @@ impl TVar {
                     | Type::Singleton
                     | Type::OneNumber
                     | Type::Discernible
+                    | Type::Ordered
             ) || c.is_trait_ref(env)
                 || would_cycle_inner(addr, c)
             {
