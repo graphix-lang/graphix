@@ -43,4 +43,4 @@ let col = column(
     ]
 );
 
-[&window(#icon: &icon::icon, #title: &"Error Bars", #size: &{width: 900.0, height: 650.0}, &col)]
+[&window(#icon: &icon::icon, #title: &"Error Bars", #size: &mut {width: 900.0, height: 650.0}, &col)]

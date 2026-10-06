@@ -7,6 +7,14 @@ use gui::{
   text::text,
   text_input::text_input
 };
+// CR claude for eric: [readability] Unused import: the file calls array::filter
+// qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
+// filter. Three more examples import names they never use. gui/text.gx:1 imports style,
+// but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
+// nothing writes `rule::`. collection/native_array_ops.gx:5 has `use Collection::*` but
+// calls no Collection method. Each file checks with its import removed, and
+// native_array_ops still prints sum=15 found=4 mapped=[10, 20, 30, 40, 50]. Graphix
+// reports no unused import, so nothing else will catch these. (examples.r2-13)
 use array::filter;
 mod icon;
 
@@ -33,6 +41,18 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
+// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
+// and the connect below lands the filtered table a cycle later. So every time
+// list_table refires while a pattern is set, `tbl` (and the data_table holding `&tbl`)
+// gets every row for one cycle before the filtered rows replace it. Derive it instead,
+// `let tbl: Table = select str::len(pattern) { 0 => raw_tbl, _ => .. }`, as
+// data_table_dashboard.gx:99-112 does. The `opt::or_default(re::is_match(..)$, false)`
+// at line 41 never uses its default: `$` has already turned an invalid regex into
+// bottom, and is_match never returns null. So while the pattern is half typed
+// (`0[14](`) the filter is bottom and the table keeps the previous filter, even after
+// the picker switches to Exclude; select the Result to false as the dashboard does.
+// `use array::filter;` at line 10 is unused. probe:
+// design/review-2026-10-05/repro/examples-03.gx (run with --no-netidx). (examples-03)
 let tbl: Table = raw_tbl;
 tbl <- select str::len(pattern) {
     n if n == 0 => raw_tbl,

@@ -18,4 +18,4 @@
 // const-scrutinee-in-fold stays quiet: a const arm references no
 // fired delivery.
 // found: soak-jul12f generate divergence_000000 (2026-07-12).
-{let v1 = i64:5; let v7 = &v1; *v7 <- i64:1; array::filter([v1, v1, i64:100], |v9| true)}
+{let v1 = i64:5; let v7 = &mut v1; *v7 <- i64:1; array::filter([v1, v1, i64:100], |v9| true)}

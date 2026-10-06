@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -309,12 +309,25 @@ or presses Enter while a row is selected. Receives the row path.</p>
 <p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
 column’s header label. Receives the column name.</p>
 </li>
-<li>
-<p><strong><code>#on_update</code></strong> – Fired once per subscription update on every
+</ul>
+<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
+subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
+again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
+cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
+the window: either subscribe on_update table-wide or document its scope. The interface
+block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
+(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
+`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
+but Enter fires for the selected cell's row whatever its column, and for row 0 when
+nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
+column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
+outside the subscription window contribute only their fallback (layout.rs:309-317).
+(gui-datatable-21) -->
+<ul>
+<li><strong><code>#on_update</code></strong> – Fired once per subscription update on every
 cell — useful when you want to mirror live values into graphix
 state (e.g. re-derive an aggregate) without subscribing separately.
-Receives the cell path and new value.</p>
-</li>
+Receives the cell path and new value.</li>
 </ul>
 <h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
 <p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
@@ -466,6 +479,14 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
+// CR claude for eric: [readability] Unused import: the file calls array::filter
+// qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
+// filter. Three more examples import names they never use. gui/text.gx:1 imports style,
+// but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
+// nothing writes `rule::`. collection/native_array_ops.gx:5 has `use Collection::*` but
+// calls no Collection method. Each file checks with its import removed, and
+// native_array_ops still prints sum=15 found=4 mapped=[10, 20, 30, 40, 50]. Graphix
+// reports no unused import, so nothing else will catch these. (examples.r2-13)
 use array::filter;
 mod icon;
 
@@ -492,6 +513,18 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
+// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
+// and the connect below lands the filtered table a cycle later. So every time
+// list_table refires while a pattern is set, `tbl` (and the data_table holding `&amp;tbl`)
+// gets every row for one cycle before the filtered rows replace it. Derive it instead,
+// `let tbl: Table = select str::len(pattern) { 0 =&gt; raw_tbl, _ =&gt; .. }`, as
+// data_table_dashboard.gx:99-112 does. The `opt::or_default(re::is_match(..)$, false)`
+// at line 41 never uses its default: `$` has already turned an invalid regex into
+// bottom, and is_match never returns null. So while the pattern is half typed
+// (`0[14](`) the filter is bottom and the table keeps the previous filter, even after
+// the picker switches to Exclude; select the Result to false as the dashboard does.
+// `use array::filter;` at line 10 is unused. probe:
+// design/review-2026-10-05/repro/examples-03.gx (run with --no-netidx). (examples-03)
 let tbl: Table = raw_tbl;
 tbl &lt;- select str::len(pattern) {
     n if n == 0 =&gt; raw_tbl,
@@ -597,6 +630,18 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
+// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
+// (two hosts times four fields) plus eight state lets, differing only in host and
+// field. A new host or column means four or eight more copies, and a typo in one path
+// or variable silently publishes the wrong cell. data_table_basic.gx and
+// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
+// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
+// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
+// name &lt;- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
+// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
+// passes graphix --check at 90 lines instead of 131. A parameter written by its own
+// #on_write republishes the new value: in a probe, the published name went from alpha
+// to beta after a sys::net::write. (examples.r2-18)
 let host_01_name = "alpha";
 let host_01_enabled = true;
 let host_01_zone = "us-east-1";
@@ -761,6 +806,15 @@ let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 // widens each bare-string entry into the union element type before
 // concat. Without the explicit return type, inference leaves the
 // resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
+// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
+// own. `let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;` checks and builds,
+// and so does the map without `-&gt; [string, ColumnSpec]`; only dropping the annotation
+// is refused. The comment also says concat where the code uses push. The book includes
+// this example (ui/gui/data_table.md:283), so it teaches a per-row identity map as a
+// type workaround. Use the plain annotated let and drop the comment.
+// data_table_scrolling.gx:46-47 has the same kind of false comment: a bare
+// `array::map(host_ids, publish_host);` statement keeps its publishers live, so the `-&gt;
+// bool`, the `true` and the comment can go. (examples-13)
 let widened: Array&lt;[string, ColumnSpec]&gt; =
     array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
 let tbl: Table = {
@@ -1204,7 +1258,7 @@ widgets, no netidx subscriptions.</li>
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

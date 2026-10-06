@@ -19,7 +19,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    typ::{TVal, TVar, Type, TypeMismatch},
+    typ::{Mutability, TVal, TVar, Type, TypeMismatch},
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -2532,8 +2532,42 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind,
         };
-        let typ = Type::ByRef(Arc::new(self.rhs.typ().clone()));
-        wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
+        let rhs = self.rhs.typ();
+        let targets = bind.typ.with_deref(|t| match t {
+            None => Ok(None),
+            Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),
+            Some(Type::Set(ts)) => ts
+                .iter()
+                .map(|t| {
+                    t.with_deref(|t| match t {
+                        Some(Type::ByRef(m, t)) => Ok((*m, (**t).clone())),
+                        _ => bail!("can't write through {}: not a reference", bind.typ),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(Some),
+            Some(t) => bail!("can't write through {t}: not a reference"),
+        });
+        match wrap!(self, targets)? {
+            // an unbound reference is inferred writable at the written type
+            None => {
+                let typ = Type::ByRef(Mutability::Mut, Arc::new(rhs.clone()));
+                wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
+            }
+            // a write must fit every reference the binding may hold
+            Some(targets) => {
+                for (m, t) in targets {
+                    if m == Mutability::Shared {
+                        bail!(
+                            "can't write through a read-only reference ({}): take it with `&mut`",
+                            bind.typ
+                        )
+                    }
+                    wrap!(self, t.check_contains(&ctx.env, rhs))?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 

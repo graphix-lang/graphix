@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -305,6 +305,12 @@ let temp_source = 50.0;
 temp_source &lt;- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
 sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
 
+// CR claude for eric: [style] This `?` and four others with no catch
+// (gauge_threshold.gx:11, linegauge_colored.gx:11, paragraph_log_viewer.gx:21,
+// sparkline_rolling.gx:15) make each of these examples print 'error raised by ? will
+// not be caught' when checked or run. They are the only warnings in the example and
+// bench corpus. A handler-less `?` drops and logs the error just as `$` does, so `$`
+// keeps the behavior without the warning. (examples-15)
 let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
@@ -366,7 +372,7 @@ gauge(
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

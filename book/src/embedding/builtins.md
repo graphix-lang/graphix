@@ -353,8 +353,8 @@ A builtin that takes any function and reads its signature, such as
 `queuefn`, declares that parameter's type `Function`:
 
 ```graphix
-let queuefn = 'a: Function |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
-val queuefn: fn<'a: Function>(?#count:&[i64, null], #trigger:Any, f: 'a) -> 'a;
+let queuefn = 'a: Function |#count: [&mut i64, null] = null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
+val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger:Any, f: 'a) -> 'a;
 ```
 
 The type checker refuses every program that passes something else

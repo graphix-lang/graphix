@@ -27,8 +27,8 @@ async fn closure_write_is_seen(fusion_disabled: bool) -> Result<()> {
 async fn ref_write_through_a_variable_is_seen(fusion_disabled: bool) -> Result<()> {
     let code = r#"{
         let c = 0;
-        let r = &c;
-        let set = |p: &i64, v| { *p <- v; v };
+        let r = &mut c;
+        let set = |p: &mut i64, v| { *p <- v; v };
         let go = 1;
         seq go { set(r, 5); let s = c; s }
     }"#;
@@ -93,7 +93,7 @@ async fn until_true_at_entry(fusion_disabled: bool) -> Result<()> {
 async fn let_fire_reaches_a_later_cycle(fusion_disabled: bool) -> Result<()> {
     let code = r#"{
         let note = 0;
-        let r = &note;
+        let r = &mut note;
         let f = |x| x + 1;
         let go = 1;
         seq go { let v = f(go); *r <- v; v ~ 5 }

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -268,8 +268,13 @@ bytes. The type correspondence is,</p>
 <h3 id="number-sets"><a class="header" href="#number-sets">Number Sets</a></h3>
 <p>There are a few sets of number types that classify numbers into various kinds.
 <code>Number</code> being the most broad, it contains all the number types. <code>Int</code> contains
-only integers, <code>Real</code> contains only reals (decimal plus the two float types),
-<code>SInt</code> contains signed integers, <code>UInt</code> contains unsigned integers.</p>
+only integers, <code>Real</code> contains only reals (decimal plus the two float types),</p>
+<!-- CR claude for eric: [doc-drift] The core interface defines these sets as `Sint` and
+`Uint` (stdlib/graphix-package-core/src/graphix/mod.gxi:1-2; typ/print.rs:37-38 prints
+them so). `SInt` and `UInt` name nothing: `'a: SInt` is refused with "undefined type
+SInt". The graphix-lang skill (ide/skills/graphix-lang/SKILL.md:141) and
+../netidx/AGENTS.md:237 repeat the wrong names. (x-expr-walks.r2-15) -->
+<p><code>SInt</code> contains signed integers, <code>UInt</code> contains unsigned integers.</p>
 <h2 id="bool"><a class="header" href="#bool">Bool</a></h2>
 <p>Boolean literals are written as <code>true</code> and <code>false</code>, and the name of the boolean
 type is <code>bool</code>.</p>
@@ -610,7 +615,7 @@ handling.</p>
         <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

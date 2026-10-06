@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 const PROG: &str = r#"
 type St = { value: string, cursor: i64 };
 let ed: St = { value: "", cursor: 0 };
-let poke = |st: &St, tag: string| -> null select tag {
+let poke = |st: &mut St, tag: string| -> null select tag {
   "" => null,
   t => {
     let s = t ~ *st;
@@ -22,7 +22,7 @@ let poke = |st: &St, tag: string| -> null select tag {
     null
   }
 };
-let handle = |tag: string| -> null poke(&ed, tag);
+let handle = |tag: string| -> null poke(&mut ed, tag);
 let result = ed.value
 "#;
 

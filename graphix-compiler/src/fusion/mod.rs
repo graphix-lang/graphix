@@ -212,7 +212,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         Type::Fn(f) => (a(f), 0),
         Type::Set(ts) | Type::Tuple(ts) => (a(ts), 0),
         Type::Struct(fs) => (a(fs), 0),
-        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => (a(t), 0),
+        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => (a(t), 0),
         Type::Variant(tag, ts, _) => (tag.as_ptr() as usize, a(ts)),
         Type::Map { key, value } => (a(key), a(value)),
         Type::App(f, x) => (a(f), a(x)),

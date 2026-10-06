@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -253,6 +253,17 @@ block(
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
 
+// CR claude for eric: [readability] EventType, CalendarEntry and entries are never
+// read. Lines 13-17 rebuild the same four dates with hand-picked colours, so the book
+// section 'Color-coded Events by Type' (book/src/ui/tui/calendar.md:65) colours nothing
+// by type. Annotate `entries: Array&lt;CalendarEntry&gt;` and derive the events from it:
+// `array::map(entries, |e| calendar_event(style(#fg: select e.event_type { `Meeting =&gt;
+// `Blue, `Deadline =&gt; `Red, `Holiday =&gt; `Green, `Birthday =&gt; `Magenta }), e.date))`.
+// tui/table_interactive.gx has the same shape: User and users (lines 8-14) are never
+// read, row1..row3 (lines 21-35) copy them by hand, and the Down guard hard-codes
+// `selected &lt; 2` (line 45). `array::map(users, |u| &amp;row([cell(line(u.name)),
+// cell(line("[u.age]")), cell(line(u.city))]))` and `selected &lt; array::len(users) - 1`
+// fix both. Both rewrites pass graphix --check. (examples.r2-08)
 let entries = [
     {date: date(2024, 5, 5), event_type: `Meeting},
     {date: date(2024, 5, 10), event_type: `Deadline},
@@ -260,6 +271,14 @@ let entries = [
     {date: date(2024, 5, 25), event_type: `Birthday}
 ];
 
+// CR claude for eric: [readability] EventType, CalendarEntry and `entries` are never
+// read. These four hand-written events hard-code their colors and repeat the dates in
+// entries, so the book's 'Color-coded Events by Type' section
+// (ui/tui/calendar.md:65-68) never derives a color from the type. Annotate `let
+// entries: Array&lt;CalendarEntry&gt;`, map the type to a color with a select (`` `Meeting =&gt;
+// `Blue `` and so on), and build `events` with `array::map(entries, |e|
+// calendar_event(style(#fg: color_of(e.event_type)), e.date))`. That version checks and
+// builds. (examples-14)
 let event1 = calendar_event(style(#fg: `Blue), date(2024, 5, 5));
 let event2 = calendar_event(style(#fg: `Red), date(2024, 5, 10));
 let event3 = calendar_event(style(#fg: `Green), date(2024, 5, 15));
@@ -327,7 +346,7 @@ calendar(#events: &amp;events, &amp;date(2024, 5, 1))
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

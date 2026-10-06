@@ -23,7 +23,7 @@
 // ruled fully reactive (option (b) in 00), THIS trace changes to
 // [0:false, 1:true] in both engines and the file must be re-recorded.
 // Until the ruling, do not promote either file to findings/.
-{let v3 = &m0::k0; *v3 <- true; m0::f1(u8:2)}
+{let v3 = &mut m0::k0; *v3 <- true; m0::f1(u8:2)}
 // file-v1: m0.gxi
 val k0: bool;
 val f1: fn(a0: u8) -> bool;

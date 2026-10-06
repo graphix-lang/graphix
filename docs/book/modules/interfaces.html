@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -432,7 +432,7 @@ val make: fn(x: i64) -&gt; Counter;
 val get: fn(c: Counter) -&gt; i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, c: &amp;Counter) -&gt; null;
+val increment: fn(#trig: Any, c: &amp;mut Counter) -&gt; null;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
 <pre><code class="language-graphix">// We could change the representation later without breaking users
@@ -440,7 +440,7 @@ type Counter = Abstract&lt;i64&gt;;
 
 let make = |x: i64| -&gt; Counter Counter(x);
 let get = |c: Counter| -&gt; i64 c.0;
-let increment = |#trig: Any, c: &amp;Counter| -&gt; null {
+let increment = |#trig: Any, c: &amp;mut Counter| -&gt; null {
     *c &lt;- Counter((trig ~ *c).0 + 1);
     null
 }
@@ -449,7 +449,7 @@ let increment = |#trig: Any, c: &amp;Counter| -&gt; null {
 <pre><code class="language-graphix">mod counter;
 
 let c = counter::make(0);
-counter::increment(#trig:null, &amp;c);
+counter::increment(#trig:null, &amp;mut c);
 let value = counter::get(c)  // 1
 </code></pre>
 <h3 id="public-newtypes"><a class="header" href="#public-newtypes">Public Newtypes</a></h3>
@@ -578,7 +578,7 @@ users can still see and use directly.</p>
         <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

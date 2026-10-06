@@ -90,7 +90,7 @@ type ImageSource = [string, `Bytes(bytes), `Svg(string), `Rgba({width: u32, heig
 /// A window description
 type Window = {
   title: &string,
-  size: &Size,
+  size: &mut Size,
   theme: &Theme,
   icon: &ImageSource,
   content: &Widget
@@ -102,7 +102,7 @@ type Gui = Array<&Window>;
 
 val window: fn(
   ?#title: &string,
-  ?#size: &Size,
+  ?#size: &mut Size,
   ?#theme: &Theme,
   ?#icon: &ImageSource,
   content: &Widget

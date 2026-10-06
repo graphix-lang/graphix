@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -839,8 +839,13 @@ bytes. The type correspondence is,</p>
 <h3 id="number-sets"><a class="header" href="#number-sets">Number Sets</a></h3>
 <p>There are a few sets of number types that classify numbers into various kinds.
 <code>Number</code> being the most broad, it contains all the number types. <code>Int</code> contains
-only integers, <code>Real</code> contains only reals (decimal plus the two float types),
-<code>SInt</code> contains signed integers, <code>UInt</code> contains unsigned integers.</p>
+only integers, <code>Real</code> contains only reals (decimal plus the two float types),</p>
+<!-- CR claude for eric: [doc-drift] The core interface defines these sets as `Sint` and
+`Uint` (stdlib/graphix-package-core/src/graphix/mod.gxi:1-2; typ/print.rs:37-38 prints
+them so). `SInt` and `UInt` name nothing: `'a: SInt` is refused with "undefined type
+SInt". The graphix-lang skill (ide/skills/graphix-lang/SKILL.md:141) and
+../netidx/AGENTS.md:237 repeat the wrong names. (x-expr-walks.r2-15) -->
+<p><code>SInt</code> contains signed integers, <code>UInt</code> contains unsigned integers.</p>
 <h2 id="bool"><a class="header" href="#bool">Bool</a></h2>
 <p>Boolean literals are written as <code>true</code> and <code>false</code>, and the name of the boolean
 type is <code>bool</code>.</p>
@@ -1221,6 +1226,12 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 let r = &amp;s;      // r is a reference to s
 let v = *r;      // v is the value "Hello"
 </code></pre>
+<p><code>&amp;T</code> is read-only. A function that writes through a reference (<code>*r &lt;- v</code>) takes <code>&amp;mut T</code>, and you pass it <code>&amp;mut x</code>:</p>
+<pre><code class="language-graphix">let set = |r: &amp;mut i64, v: i64| *r &lt;- v;
+let x = 0;
+set(&amp;mut x, 1)   // x becomes 1
+</code></pre>
+<p>A <code>&amp;T</code> parameter accepts a <code>&amp;mut</code> too, and covers any narrower type: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> with <code>x: i64</code>. A <code>&amp;mut T</code> must refer to exactly a <code>T</code>.</p>
 <p>In function signatures, <code>&amp;T</code> in a parameter position means the function expects a reference. In widget examples, you’ll often see:</p>
 <pre><code class="language-graphix">block(#title: &amp;line("My Title"), &amp;my_widget)
 </code></pre>
@@ -3482,10 +3493,11 @@ reference refers to, instead of the reference itself (which we can also do). We
 can do that with,</p>
 <pre><code class="language-graphix">*r &lt;- "new value"
 </code></pre>
-<p>Consider,</p>
-<pre><code class="language-graphix">let f = |x: &amp;i64| *x &lt;- once(*x) + 1;
+<p>A reference made with <code>&amp;</code> is read-only; writing through one needs a writable
+reference, made with <code>&amp;mut</code> and typed <code>&amp;mut T</code>. Consider,</p>
+<pre><code class="language-graphix">let f = |x: &amp;mut i64| *x &lt;- once(*x) + 1;
 let v = 0;
-f(&amp;v);
+f(&amp;mut v);
 println("[v]")
 </code></pre>
 <p>Running this program will output,</p>
@@ -3495,6 +3507,18 @@ println("[v]")
 </code></pre>
 <p>We were able to pass <code>v</code> into <code>f</code> by reference and it was able to update it,
 even though the original bind of <code>v</code> isn’t even in a scope that <code>f</code> can see.</p>
+<h2 id="read-only-and-writable-references"><a class="header" href="#read-only-and-writable-references">Read-Only and Writable References</a></h2>
+<p><code>&amp;T</code> can only be read, so it may refer to anything that is a <code>T</code>: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> where <code>x: i64</code>, and a <code>&amp;mut T</code> can be passed where a <code>&amp;T</code> is
+expected. This is what lets a widget take an optional <code>&amp;[string, null]</code> that
+you hand <code>&amp;title</code>.</p>
+<p><code>&amp;mut T</code> can also be written, so it must refer to exactly a <code>T</code>. If <code>&amp;mut [i64, null]</code> accepted <code>&amp;mut x</code> with <code>x: i64</code>, writing <code>null</code> through it would
+put a <code>null</code> into <code>x</code>, so the checker refuses it. When a function wants a value
+it may or may not write, the parameter is an optional reference instead,
+<code>[&amp;mut i64, null]</code>, as <code>queuefn</code>’s <code>#count</code> is.</p>
+<p>The grant is visible where the reference is made: a caller that writes <code>&amp;x</code>
+knows the callee cannot change <code>x</code>. The same rule holds for a union of
+references: two read-only references may be one <code>&amp;[i64, string]</code>, but a write
+must fit every reference the value may hold.</p>
 <h2 id="referencing-a-name-vs-referencing-an-expression"><a class="header" href="#referencing-a-name-vs-referencing-an-expression">Referencing a Name vs Referencing an Expression</a></h2>
 <p><code>&amp;</code> does slightly different things depending on what follows it, and the
 difference is observable in <em>when</em> a deref sees an update.</p>
@@ -4343,7 +4367,7 @@ val make: fn(x: i64) -&gt; Counter;
 val get: fn(c: Counter) -&gt; i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, c: &amp;Counter) -&gt; null;
+val increment: fn(#trig: Any, c: &amp;mut Counter) -&gt; null;
 </code></pre>
 <p><strong>counter.gx</strong>:</p>
 <pre><code class="language-graphix">// We could change the representation later without breaking users
@@ -4351,7 +4375,7 @@ type Counter = Abstract&lt;i64&gt;;
 
 let make = |x: i64| -&gt; Counter Counter(x);
 let get = |c: Counter| -&gt; i64 c.0;
-let increment = |#trig: Any, c: &amp;Counter| -&gt; null {
+let increment = |#trig: Any, c: &amp;mut Counter| -&gt; null {
     *c &lt;- Counter((trig ~ *c).0 + 1);
     null
 }
@@ -4360,7 +4384,7 @@ let increment = |#trig: Any, c: &amp;Counter| -&gt; null {
 <pre><code class="language-graphix">mod counter;
 
 let c = counter::make(0);
-counter::increment(#trig:null, &amp;c);
+counter::increment(#trig:null, &amp;mut c);
 let value = counter::get(c)  // 1
 </code></pre>
 <h3 id="public-newtypes"><a class="header" href="#public-newtypes">Public Newtypes</a></h3>
@@ -5794,6 +5818,19 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
+            // CR claude for eric: [bug] This completion test reads `acc`, so it fires
+            // again when the false arm's `acc &lt;-` lands. At that point the next read is
+            // still in flight and `b` still holds the previous chunk, so over an
+            // asynchronous `read` that returns 4 of 6 bytes, read_exact answers the
+            // first chunk twice (8 bytes) before the right 6. `write_exact` (line 114)
+            // has the same shape: `n &gt;= buffer::len(rest)` re-fires when `rest &lt;-`
+            // lands, so it answers `null` with bytes still unwritten and then the real
+            // result, which may be an error. A seq step takes the first answer, so it
+            // gets corrupt bytes or a false success; a Graphix stream that wraps a
+            // system stream reads and writes asynchronously, which is the case these
+            // defaults exist for. Testing completion only when the reply fires fixes
+            // both: `select b ~ (..)` and `select n ~ (n &gt;= buffer::len(rest))`. probe:
+            // design/review-2026-10-05/repro/gx-stdlib-05.gx (gx-stdlib-05)
             bytes as b =&gt; select buffer::len(b) == u64:0
                 || buffer::len(acc) + buffer::len(b) &gt;= n {
                 true =&gt; buffer::concat(acc, b),
@@ -5816,6 +5853,17 @@ trait Read {
     /// produces.
     val read_all: fn(self) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s| {
         let want: u64 = u64:65536;
+        // CR claude for eric: [bug] acc's initializer is a constant, so acc is set
+        // once, when the call site is built, and nothing clears it when `s` fires
+        // again. Any second request at the same site (a new file, the next accepted
+        // connection, a seq re-run, a file seeked back to 0) returns everything read
+        // before, with the new stream's bytes appended. A TCP server that reads each
+        // accepted connection here gives client 2's request with client 1's bytes in
+        // front of it. No system stream overrides read_all, so the documented
+        // `json::read(Read::read_all(f)?)` idiom hits this. read_exact's default (line
+        // 22) keeps acc the same way, and its `want` keeps the last remainder when only
+        // `s` fires, so all of a request's state must reset on every new request.
+        // probe: design/review-2026-10-05/repro/gx-stdlib-01.gx (gx-stdlib-01)
         let acc: bytes = buffer::from_string("");
         let chunk = read(s, want);
         select chunk {
@@ -5824,6 +5872,16 @@ trait Read {
                 true =&gt; acc,
                 false =&gt; {
                     // gated on the chunk: see `read_exact`
+                    // CR claude for eric: [perf] Each 64 KiB chunk copies the whole
+                    // accumulator (core_bytes_concat builds a fresh buffer), so
+                    // read_all is quadratic in the stream's length. No system stream
+                    // overrides it: io.gx, fs.gx, tcp.gx, tls.gx and process.gx bind
+                    // only read and read_exact. A 32 MiB file took 3.06 s (16 MiB 0.79
+                    // s, 8 MiB 0.26 s), where sys::fs::read_all_bin took 0.010 s. That
+                    // is the cost of every read_all the book shows, and of collecting a
+                    // child's stdout. Bind a native read_all (read_to_end into one
+                    // growing buffer) in each system stream's impl Read, as read_exact
+                    // is. (sys-io-11)
                     acc &lt;- b ~ buffer::concat(acc, b);
                     want &lt;- b ~ u64:65536;
                     never()
@@ -6345,6 +6403,13 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
+// CR claude for eric: [doc-drift] "A failed upgrade leaves it untouched" holds only for
+// failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
+// handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
+// which drops it. The caller's TcpStream then reads IOError "stream unavailable". The
+// code is right, since a socket partway through a handshake cannot carry plaintext.
+// This doc and the comment at tls.rs:81-83 ("A failed upgrade puts the socket back")
+// are wrong. probe: design/review-2026-10-05/repro/sys-io-13.gx (sys-io-13)
 /// Upgrade a TCP stream to a TLS client connection.
 ///
 /// The upgrade CONSUMES the TCP stream: on success the session lives
@@ -6403,6 +6468,14 @@ val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
+<!-- CR claude for eric: [doc-drift] This page is a hand copy of time.gxi and lacks 6 of
+its 9 vals (add, sub, add_dur, sub_dur, diff, scale), and nothing else in the book
+documents them. Meanwhile book/src/core/fundamental_types.md:139-166 teaches `duration +
+duration`, `duration:1.0s * 50` and `datetime + duration`, all refused by the checker,
+so the book shows no working time arithmetic. Include the gxi as io.md, tcp.md and
+tls.md do. dirs.md, fs.md, net.md and process.md are hand copies too: net.md's subscribe
+and call lack their Concrete bounds, and process.md drops most of the gxi's docs.
+(sys-io-15) -->
 <pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
@@ -7290,6 +7363,12 @@ let temp_source = 50.0;
 temp_source &lt;- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
 sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
 
+// CR claude for eric: [style] This `?` and four others with no catch
+// (gauge_threshold.gx:11, linegauge_colored.gx:11, paragraph_log_viewer.gx:21,
+// sparkline_rolling.gx:15) make each of these examples print 'error raised by ? will
+// not be caught' when checked or run. They are the only warnings in the example and
+// bench corpus. A handler-less `?` drops and logs the error just as `$` does, so `$`
+// keeps the behavior without the warning. (examples-15)
 let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
 
 // Will display updates automatically when data changes
@@ -7703,8 +7782,8 @@ val browser: fn(
     ?#header_style: Style,
     ?#style: Style,
     ?#cursor: MoveCursor,
-    ?#selected_row: &amp;string,
-    ?#selected_path: &amp;string,
+    ?#selected_row: &amp;mut string,
+    ?#selected_path: &amp;mut string,
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
@@ -7726,7 +7805,7 @@ let selected_path: string = never();
 
 browser(
     #size: {width: 40, height: 10},
-    #selected_path: &amp;selected_path,
+    #selected_path: &amp;mut selected_path,
     // Start browsing from root
     "/"
 )
@@ -7757,8 +7836,8 @@ input_handler(
     &amp;browser(
         #size: {width: 80, height: 24},
         #cursor,
-        #selected_path: &amp;selected_path,
-        #selected_row: &amp;selected_row,
+        #selected_path: &amp;mut selected_path,
+        #selected_row: &amp;mut selected_row,
         path
     )
 )
@@ -7850,6 +7929,17 @@ block(
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
 
+// CR claude for eric: [readability] EventType, CalendarEntry and entries are never
+// read. Lines 13-17 rebuild the same four dates with hand-picked colours, so the book
+// section 'Color-coded Events by Type' (book/src/ui/tui/calendar.md:65) colours nothing
+// by type. Annotate `entries: Array&lt;CalendarEntry&gt;` and derive the events from it:
+// `array::map(entries, |e| calendar_event(style(#fg: select e.event_type { `Meeting =&gt;
+// `Blue, `Deadline =&gt; `Red, `Holiday =&gt; `Green, `Birthday =&gt; `Magenta }), e.date))`.
+// tui/table_interactive.gx has the same shape: User and users (lines 8-14) are never
+// read, row1..row3 (lines 21-35) copy them by hand, and the Down guard hard-codes
+// `selected &lt; 2` (line 45). `array::map(users, |u| &amp;row([cell(line(u.name)),
+// cell(line("[u.age]")), cell(line(u.city))]))` and `selected &lt; array::len(users) - 1`
+// fix both. Both rewrites pass graphix --check. (examples.r2-08)
 let entries = [
     {date: date(2024, 5, 5), event_type: `Meeting},
     {date: date(2024, 5, 10), event_type: `Deadline},
@@ -7857,6 +7947,14 @@ let entries = [
     {date: date(2024, 5, 25), event_type: `Birthday}
 ];
 
+// CR claude for eric: [readability] EventType, CalendarEntry and `entries` are never
+// read. These four hand-written events hard-code their colors and repeat the dates in
+// entries, so the book's 'Color-coded Events by Type' section
+// (ui/tui/calendar.md:65-68) never derives a color from the type. Annotate `let
+// entries: Array&lt;CalendarEntry&gt;`, map the type to a color with a select (`` `Meeting =&gt;
+// `Blue `` and so on), and build `events` with `array::map(entries, |e|
+// calendar_event(style(#fg: color_of(e.event_type)), e.date))`. That version checks and
+// builds. (examples-14)
 let event1 = calendar_event(style(#fg: `Blue), date(2024, 5, 5));
 let event2 = calendar_event(style(#fg: `Red), date(2024, 5, 10));
 let event3 = calendar_event(style(#fg: `Green), date(2024, 5, 15));
@@ -9960,12 +10058,12 @@ tabs(&amp;[
 </ul>
 <h2 id="the-window-type"><a class="header" href="#the-window-type">The Window Type</a></h2>
 <p>Every GUI program is built around windows. The <code>Window</code> type describes a window and its content:</p>
-<pre><code class="language-graphix">type Window = { title: &amp;string, size: &amp;Size, theme: &amp;Theme, content: &amp;Widget };
+<pre><code class="language-graphix">type Window = { title: &amp;string, size: &amp;mut Size, theme: &amp;Theme, content: &amp;Widget };
 type Gui = Array&lt;&amp;Window&gt;;
 
 val window: fn(
   ?#title: &amp;string,
-  ?#size: &amp;Size,
+  ?#size: &amp;mut Size,
   ?#theme: &amp;Theme,
   a: &amp;Widget
 ) -&gt; Window;
@@ -9990,6 +10088,18 @@ mod icon;
     &amp;[
       text(#size: &amp;24.0, &amp;"Hello, Graphix GUI!"),
       text(&amp;"A simple window with text and a button"),
+      // CR claude for eric: [readability] This button has no #on_press. ButtonW::view
+      // (stdlib/graphix-package-gui/src/widgets/button.rs:105-112) gives iced an
+      // on_press only when a callable exists, so iced draws the button disabled:
+      // half-alpha colours, no hover, no press. book/src/ui/gui/media/hello.png shows
+      // the dimmed 'Click me!'. row.gx:25-27, tooltip.gx:16 and 22,
+      // custom_palette.gx:30 and custom_styles.gx:94 have the same problem, and in the
+      // two theming demos the button is the widget meant to show the palette's primary
+      // colour and the stylesheet's button_style. book/src/ui/gui/button.md:20 says a
+      // button with no #on_press 'renders but does nothing when clicked', which hides
+      // that it looks exactly like `#disabled: true`. Give each button an #on_press, as
+      // button.gx does, and say on the button page that a button without one is
+      // disabled. (examples.r2-17)
       button(
         #padding: &amp;`All(10.0),
         &amp;text(&amp;"Click me!")
@@ -10101,7 +10211,7 @@ container(
 <p>A width/height pair used for window dimensions:</p>
 <pre><code class="language-graphix">type Size = { width: f64, height: f64 };
 </code></pre>
-<pre><code class="language-graphix">window(#size: &amp;{ width: 1024.0, height: 768.0 }, &amp;content)
+<pre><code class="language-graphix">window(#size: &amp;mut { width: 1024.0, height: 768.0 }, &amp;content)
 </code></pre>
 <h3 id="halign-and-valign"><a class="header" href="#halign-and-valign">HAlign and VAlign</a></h3>
 <p>Horizontal and vertical alignment for positioning content within a container:</p>
@@ -11454,7 +11564,7 @@ let col = column(
 [&amp;window(
     #icon: &amp;icon::icon,
     #title: &amp;"Scrollable",
-    #size: &amp;{ width: 400.0, height: 300.0 },
+    #size: &amp;mut { width: 400.0, height: 300.0 },
     &amp;scrollable(
         #height: &amp;`Fill,
         #width: &amp;`Fill,
@@ -11852,7 +11962,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Canvas", #size: &amp;{ width: 600.0, height: 450.0 }, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Canvas", #size: &amp;mut { width: 600.0, height: 450.0 }, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/canvas.png" alt="Canvas"></p>
 <h2 id="see-also-34"><a class="header" href="#see-also-34">See Also</a></h2>
@@ -12192,7 +12302,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Chart", #size: &amp;{ width: 900.0, height: 700.0 }, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Chart", #size: &amp;mut { width: 900.0, height: 700.0 }, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/chart.gif" alt="Chart"></p>
 <h3 id="bar-chart"><a class="header" href="#bar-chart">Bar Chart</a></h3>
@@ -12232,7 +12342,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Bar Chart", #size: &amp;{width: 800.0, height: 600.0}, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Bar Chart", #size: &amp;mut {width: 800.0, height: 600.0}, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/chart_bar.png" alt="Bar Chart"></p>
 <h3 id="candlestick"><a class="header" href="#candlestick">Candlestick</a></h3>
@@ -12308,7 +12418,7 @@ let col = column(
 [&amp;window(
     #icon: &amp;icon::icon,
     #title: &amp;"Candlestick",
-    #size: &amp;{width: 900.0, height: 650.0},
+    #size: &amp;mut {width: 900.0, height: 650.0},
     #theme: &amp;`CatppuccinMocha,
     &amp;col
 )]
@@ -12360,7 +12470,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Error Bars", #size: &amp;{width: 900.0, height: 650.0}, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Error Bars", #size: &amp;mut {width: 900.0, height: 650.0}, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/chart_error_bars.png" alt="Chart With Error Bars"></p>
 <h3 id="pie-chart"><a class="header" href="#pie-chart">Pie Chart</a></h3>
@@ -12395,7 +12505,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Pie Chart", #size: &amp;{width: 800.0, height: 600.0}, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"Pie Chart", #size: &amp;mut {width: 800.0, height: 600.0}, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/chart_pie.png" alt="Pie Chart"></p>
 <h3 id="3d-surface"><a class="header" href="#3d-surface">3D Surface</a></h3>
@@ -12434,7 +12544,7 @@ let col = column(
     ]
 );
 
-[&amp;window(#icon: &amp;icon::icon, #title: &amp;"3D Chart", #size: &amp;{width: 800.0, height: 600.0}, &amp;col)]
+[&amp;window(#icon: &amp;icon::icon, #title: &amp;"3D Chart", #size: &amp;mut {width: 800.0, height: 600.0}, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/chart_3d.png" alt="3d Chart"></p>
 <h3 id="styling-1"><a class="header" href="#styling-1">Styling</a></h3>
@@ -12519,7 +12629,7 @@ let col = column(
 [&amp;window(
     #icon: &amp;icon::icon,
     #title: &amp;"Chart Styles",
-    #size: &amp;{width: 900.0, height: 700.0},
+    #size: &amp;mut {width: 900.0, height: 700.0},
     #theme: &amp;`CatppuccinMocha,
     &amp;col
 )]
@@ -12928,6 +13038,18 @@ let col = column(
             #padding: &amp;`All(10.0),
             &amp;text(&amp;"Copy to clipboard")
         ),
+        // CR claude for eric: [bug] The on_press handler below pastes the previous
+        // read. read_text is async and re-delivers its last reply while a press's read
+        // is in flight, so `c ~ clipboard::read_text(c)$` writes the reply to the
+        // previous press, and the new reply fires with no `c` fire to sample it. Every
+        // paste after the first shows the clipboard as it was at the previous press
+        // (copy A, paste: A; copy B, paste: still A; paste again: B). read_text is
+        // already triggered by `c`, so write its reply: `#on_press: |c| pasted &lt;-
+        // clipboard::read_text(c)$`. The book teaches this example
+        // (book/src/ui/gui/clipboard.md). probe:
+        // design/review-2026-10-05/repro/examples-01.gx (the handler's shape over
+        // json::read through sys::net::publish's on_write trails by one event; the fix
+        // does not). (examples-01)
         button(
             #on_press: |c| pasted &lt;- c ~ clipboard::read_text(c)$,
             #padding: &amp;`All(10.0),
@@ -13345,12 +13467,25 @@ or presses Enter while a row is selected. Receives the row path.</p>
 <p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
 column’s header label. Receives the column name.</p>
 </li>
-<li>
-<p><strong><code>#on_update</code></strong> – Fired once per subscription update on every
+</ul>
+<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
+subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
+again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
+cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
+the window: either subscribe on_update table-wide or document its scope. The interface
+block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
+(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
+`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
+but Enter fires for the selected cell's row whatever its column, and for row 0 when
+nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
+column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
+outside the subscription window contribute only their fallback (layout.rs:309-317).
+(gui-datatable-21) -->
+<ul>
+<li><strong><code>#on_update</code></strong> – Fired once per subscription update on every
 cell — useful when you want to mirror live values into graphix
 state (e.g. re-derive an aggregate) without subscribing separately.
-Receives the cell path and new value.</p>
-</li>
+Receives the cell path and new value.</li>
 </ul>
 <h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
 <p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
@@ -13502,6 +13637,14 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
+// CR claude for eric: [readability] Unused import: the file calls array::filter
+// qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
+// filter. Three more examples import names they never use. gui/text.gx:1 imports style,
+// but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
+// nothing writes `rule::`. collection/native_array_ops.gx:5 has `use Collection::*` but
+// calls no Collection method. Each file checks with its import removed, and
+// native_array_ops still prints sum=15 found=4 mapped=[10, 20, 30, 40, 50]. Graphix
+// reports no unused import, so nothing else will catch these. (examples.r2-13)
 use array::filter;
 mod icon;
 
@@ -13528,6 +13671,18 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
+// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
+// and the connect below lands the filtered table a cycle later. So every time
+// list_table refires while a pattern is set, `tbl` (and the data_table holding `&amp;tbl`)
+// gets every row for one cycle before the filtered rows replace it. Derive it instead,
+// `let tbl: Table = select str::len(pattern) { 0 =&gt; raw_tbl, _ =&gt; .. }`, as
+// data_table_dashboard.gx:99-112 does. The `opt::or_default(re::is_match(..)$, false)`
+// at line 41 never uses its default: `$` has already turned an invalid regex into
+// bottom, and is_match never returns null. So while the pattern is half typed
+// (`0[14](`) the filter is bottom and the table keeps the previous filter, even after
+// the picker switches to Exclude; select the Result to false as the dashboard does.
+// `use array::filter;` at line 10 is unused. probe:
+// design/review-2026-10-05/repro/examples-03.gx (run with --no-netidx). (examples-03)
 let tbl: Table = raw_tbl;
 tbl &lt;- select str::len(pattern) {
     n if n == 0 =&gt; raw_tbl,
@@ -13633,6 +13788,18 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
+// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
+// (two hosts times four fields) plus eight state lets, differing only in host and
+// field. A new host or column means four or eight more copies, and a typo in one path
+// or variable silently publishes the wrong cell. data_table_basic.gx and
+// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
+// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
+// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
+// name &lt;- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
+// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
+// passes graphix --check at 90 lines instead of 131. A parameter written by its own
+// #on_write republishes the new value: in a probe, the published name went from alpha
+// to beta after a sys::net::write. (examples.r2-18)
 let host_01_name = "alpha";
 let host_01_enabled = true;
 let host_01_zone = "us-east-1";
@@ -13797,6 +13964,15 @@ let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 // widens each bare-string entry into the union element type before
 // concat. Without the explicit return type, inference leaves the
 // resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
+// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
+// own. `let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;` checks and builds,
+// and so does the map without `-&gt; [string, ColumnSpec]`; only dropping the annotation
+// is refused. The comment also says concat where the code uses push. The book includes
+// this example (ui/gui/data_table.md:283), so it teaches a per-row identity map as a
+// type workaround. Use the plain annotated let and drop the comment.
+// data_table_scrolling.gx:46-47 has the same kind of false comment: a bare
+// `array::map(host_ids, publish_host);` statement keeps its publishers live, so the `-&gt;
+// bool`, the `true` and the comment can go. (examples-13)
 let widened: Array&lt;[string, ColumnSpec]&gt; =
     array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
 let tbl: Table = {
@@ -14504,6 +14680,20 @@ directory:</p>
 </tbody>
 </table>
 </div>
+<!-- CR claude for eric: [doc-drift] This section shows the pre-v2 format (a bare
+[packages] table), but parse_packages reads any file without [stdlib] as legacy and
+migrate_old marks every stdlib package the file does not name as removed, so a file
+written from this example rebuilds a binary with core alone (probe: put this example in
+$XDG_DATA_HOME/graphix/packages.toml and run `graphix package list`; it rewrites the
+file with installed = ["core"] and the other 18 stdlib packages under removed). Updating
+(101-117) is stale too: update proposes external package updates (applied by --yes),
+prompts Y/e/n, refuses a non-terminal stdin without --yes, and queries no per-package
+stdlib version. Removing (71-79) omits the stdlib cascade prompt, step 3 of How the
+Rebuild Works (151) still generates deps.rs, and standalone.md:37 names the binary
+`graphix` where it is named after the package's short name. The doc comments at
+graphix-package/src/lib.rs:572 (the version comes from `graphix` on PATH, not the
+running binary), 1184 (deps.rs) and 1482 (package_dir/graphix) carry the same drift.
+(package-06) -->
 <p>The file is a simple TOML map of package names to versions:</p>
 <pre><code class="language-toml">[packages]
 mypackage = "1.2.0"
@@ -15316,8 +15506,8 @@ program that type checked has a known type there.</p>
 <h4 id="builtins-that-wrap-a-function"><a class="header" href="#builtins-that-wrap-a-function">Builtins that wrap a function</a></h4>
 <p>A builtin that takes any function and reads its signature, such as
 <code>queuefn</code>, declares that parameter’s type <code>Function</code>:</p>
-<pre><code class="language-graphix">let queuefn = 'a: Function |#count: &amp;[i64, null] = &amp;null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
-val queuefn: fn&lt;'a: Function&gt;(?#count:&amp;[i64, null], #trigger:Any, f: 'a) -&gt; 'a;
+<pre><code class="language-graphix">let queuefn = 'a: Function |#count: [&amp;mut i64, null] = null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
+val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
 </code></pre>
 <p>The type checker refuses every program that passes something else
 there, a value that is not a function or one whose type stays unknown,
@@ -15743,7 +15933,7 @@ for ev in batch.drain(..) {
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="theme/graphix-highlight-8f553dc2.js"></script>
 
         <script>
         window.addEventListener('load', function() {

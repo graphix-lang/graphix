@@ -14,7 +14,7 @@
   let mk = |x: i64| select x { i64:0 => true, _ => error(f64:2.5) };
   let bot = mk(i64:1)$;
   let flag: bool = array::fold(["hello"], bot, |a, b| a);
-  let r = &flag;
+  let r = &mut flag;
   *r <- true;
   select str::len("xyz") {
     i64:1 if (!false) => f64:3.14,

@@ -847,7 +847,7 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello world"),
     "/test.gx" => r#"
         use sys::io::Read;
-        type Mem = Abstract<&bytes>;
+        type Mem = Abstract<&mut bytes>;
         impl Read for Mem {
             let read = |s, n| {
                 let cell = s.0;
@@ -861,7 +861,7 @@ run!(
             }
         };
         let src = buffer::from_string("hello world");
-        let m = Mem(&src);
+        let m = Mem(&mut src);
         let result = buffer::to_string(Read::read_all(m)?)?
     "#
 );
@@ -873,7 +873,7 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
     "/test.gx" => r#"
         use sys::io::Read;
-        type Mem = Abstract<&bytes>;
+        type Mem = Abstract<&mut bytes>;
         // reads one byte at a time, so read_exact has to loop
         impl Read for Mem {
             let read = |s, n| {
@@ -888,7 +888,7 @@ run!(
             }
         };
         let src = buffer::from_string("hello world");
-        let m = Mem(&src);
+        let m = Mem(&mut src);
         let result = buffer::to_string(Read::read_exact(m, u64:5)?)?
     "#
 );

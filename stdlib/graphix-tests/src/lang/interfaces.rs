@@ -238,19 +238,19 @@ run!(
     "/test.gx" => r#"
         mod inner;
         let counter = inner::make(42);
-        inner::increment(&counter);
+        inner::increment(&mut counter);
         let result = array::group(inner::get(counter), |n, _| n == 2)
     "#,
     "/test/inner.gxi" => r#"
         type Counter;
         val make: fn(x: i64) -> Counter;
         val get: fn(c: Counter) -> i64;
-        val increment: fn(c: &Counter) -> null     "#,
+        val increment: fn(c: &mut Counter) -> null     "#,
     "/test/inner.gx" => r#"
         type Counter = Abstract<i64>;
         let make = |x: i64| -> Counter Counter(x);
         let get = |c: Counter| -> i64 c.0;
-        let increment = |c: &Counter| -> null { *c <- Counter(once(*c).0 + 1); null }
+        let increment = |c: &mut Counter| -> null { *c <- Counter(once(*c).0 + 1); null }
     "#);
 
 // A nested module with an abstract type.

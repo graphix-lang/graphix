@@ -15,7 +15,7 @@
         m => f(0)
     };
     let v = f(f(1));
-    let r = &v;
+    let r = &mut v;
     *r <- 1;
     v
 }

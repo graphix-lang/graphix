@@ -1,5 +1,5 @@
 //! Metamorphic twin generation: stateful handler modules whose state is
-//! written through several equivalent routes (a `&` parameter, a
+//! written through several equivalent routes (a `&mut` parameter, a
 //! capture, a reference passed through a nested call), with an
 //! in-program verdict that settles on `` `TwinDiverged `` when the
 //! routes disagree ([`crate::TWIN_TAG`]). A reference-plumbing bug that
@@ -113,23 +113,27 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     if three {
         m.push_str(&format!("let sc: St = {{ {init} }};\n"));
     }
-    // route 1: write through a & parameter
+    // route 1: write through a &mut parameter
     let body_ref = gen_select_body(rng, &fields, "*st", "*st", "x");
-    m.push_str(&format!("let inner_ref = |st: &St, x: i64| -> null {body_ref};\n"));
+    m.push_str(&format!("let inner_ref = |st: &mut St, x: i64| -> null {body_ref};\n"));
     // route 2: write through a capture; reuse route 1's body with the
     // targets swapped so the twins' select shapes stay identical
     let body_cap = body_ref.replace("*st", "sb");
     m.push_str(&format!("let inner_cap = |x: i64| -> null {body_cap};\n"));
-    // route 3: the & parameter passed through a nested call
+    // route 3: the &mut parameter passed through a nested call
     if three {
-        m.push_str(&format!("let inner_deep0 = |st: &St, x: i64| -> null {body_ref};\n"));
-        m.push_str("let inner_deep = |st: &St, x: i64| -> null inner_deep0(st, x);\n");
+        m.push_str(&format!(
+            "let inner_deep0 = |st: &mut St, x: i64| -> null {body_ref};\n"
+        ));
+        m.push_str(
+            "let inner_deep = |st: &mut St, x: i64| -> null inner_deep0(st, x);\n",
+        );
     }
     let calls = if three {
-        "let ra = inner_ref(&sa, x);\n  let rb = inner_cap(x);\n  \
-         let rc = inner_deep(&sc, x);\n  null"
+        "let ra = inner_ref(&mut sa, x);\n  let rb = inner_cap(x);\n  \
+         let rc = inner_deep(&mut sc, x);\n  null"
     } else {
-        "let ra = inner_ref(&sa, x);\n  let rb = inner_cap(x);\n  null"
+        "let ra = inner_ref(&mut sa, x);\n  let rb = inner_cap(x);\n  null"
     };
     m.push_str(&format!("let handler = |x: i64| -> null {{\n  {calls}\n}};\n"));
     let verdict = if three {

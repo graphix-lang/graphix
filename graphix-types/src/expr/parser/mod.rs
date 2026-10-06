@@ -112,7 +112,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     use Keyword::*;
     let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
-        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until",
+        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "mut",
     ];
     // CR claude for eric: [bug] `Error` and `Abstract` are compiler-known type names
     // that typ() matches as keywords (typexp.rs:427, 429), but they are missing from
@@ -1337,8 +1337,8 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('&').with(lambda()))
-        .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
+    (position(), token('&'), arithexp::mutability(), lambda())
+        .map(|(pos, _, m, expr)| ExprKind::ByRef(m, Arc::new(expr)).to_expr(pos))
 }
 
 parser! {

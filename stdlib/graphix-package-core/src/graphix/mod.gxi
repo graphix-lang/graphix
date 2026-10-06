@@ -254,7 +254,7 @@ val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -> 'a;
 /// Concurrent in-flight invocations are possible if #trigger fires before
 /// f finishes emitting a previous invocation's output — the wrapper
 /// emits whatever any in-flight invocation produces.
-val queuefn: fn<'a: Function>(?#count:&[i64, null], #trigger:Any, f: 'a) -> 'a;
+val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger:Any, f: 'a) -> 'a;
 
 /// hold the most recent value of v interally until clock updates. If v updates
 /// more than once before clock updates, older values of v will be discarded,

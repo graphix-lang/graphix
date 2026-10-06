@@ -1003,7 +1003,7 @@ fn local_summary<R: Rt, E: UserEvent>(
                             a.typ().with_deref(|t| {
                                 matches!(
                                     t,
-                                    Some(Type::ByRef(_) | Type::Fn(_) | Type::Any)
+                                    Some(Type::ByRef(..) | Type::Fn(_) | Type::Any)
                                 )
                             })
                         });

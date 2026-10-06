@@ -125,7 +125,8 @@ async fn until_waits_on_its_own_request(fusion_disabled: bool) -> Result<()> {
 }
 
 async fn live_writes(fusion_disabled: bool) -> Result<()> {
-    for body in ["n <- n + 1; n", "let target = &n; *target <- *target + 1; *target"] {
+    for body in ["n <- n + 1; n", "let target = &mut n; *target <- *target + 1; *target"]
+    {
         let code = format!(r#"{{ {BURST} let n = 0; seqq request {{ {body} }} }}"#);
         let (values, _) = run_delta(&code, fusion_disabled).await?;
         assert_eq!(as_i64s(&values), [1, 2, 3], "{body}");
@@ -219,7 +220,7 @@ async fn reference_inputs(fusion_disabled: bool) -> Result<()> {
         {BURST}
         let a = 0;
         let b = 0;
-        let target = select step {{ 1 => &a, _ => &b }};
+        let target = select step {{ 1 => &mut a, _ => &mut b }};
         let done = seqq request {{ *target <- request; request }};
         done ~ (a, b)
     }}"#

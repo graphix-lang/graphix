@@ -5,7 +5,7 @@ use crate::{
         ModuleKind, SelectExpr, SigKind, StructExpr, StructurePattern, UseItem,
         WrittenAt, print::PrettyDisplay,
     },
-    typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, Mutability, TVar, Type, TypeRef},
 };
 use arcstr::literal;
 use netidx_value::Typ;
@@ -2404,8 +2404,19 @@ fn comments_above_trait_methods_are_kept() {
 #[test]
 fn a_reference_to_a_lambda_parses() {
     let e = parse_one("&|x| x + 1").unwrap();
-    let ExprKind::ByRef(inner) = &e.kind else { panic!("{e:?}") };
+    let ExprKind::ByRef(Mutability::Shared, inner) = &e.kind else { panic!("{e:?}") };
     assert!(matches!(inner.kind, ExprKind::Lambda(_)));
+}
+
+#[test]
+fn mut_references_parse() {
+    let e = parse_one("&mut x").unwrap();
+    let ExprKind::ByRef(Mutability::Mut, inner) = &e.kind else { panic!("{e:?}") };
+    assert!(matches!(inner.kind, ExprKind::Ref { .. }));
+    let e = parse_one("&mutable").unwrap();
+    assert!(matches!(e.kind, ExprKind::ByRef(Mutability::Shared, _)), "{e:?}");
+    let e = parse_one("let f = |r: &mut [i64, null]| *r <- null").unwrap();
+    assert_eq!(e.to_string(), "let f = |r: &mut [i64, null]| *r <- null");
 }
 
 #[test]

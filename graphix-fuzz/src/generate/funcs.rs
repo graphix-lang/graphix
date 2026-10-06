@@ -475,7 +475,7 @@ pub(super) fn gen_ref_stmts(
     // struct-field deref candidate at exprs.rs:102-106 is dead because no generated
     // struct type has a Ref field. (fuzz-gen-a-06)
     let (val, var_target) = if !tgts.is_empty() && rng.below(3) != 0 {
-        (format!("&{}", tgts[rng.below(tgts.len())]), true)
+        (format!("&mut {}", tgts[rng.below(tgts.len())]), true)
     } else {
         (format!("&{}", types::literal(rng, &inner)), false)
     };

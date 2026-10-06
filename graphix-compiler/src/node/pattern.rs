@@ -1353,7 +1353,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Array(_)
             | Type::List(_)
             | Type::Map { .. }
-            | Type::ByRef(_)
+            | Type::ByRef(..)
             | Type::Tuple(_)
             | Type::Variant(_, _, _)
             | Type::Struct(_)

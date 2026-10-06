@@ -5700,6 +5700,8 @@ mod tests {
                 "{ let m = 1; let src = [m]; src <- [2]; let w = m + 1; (src, w) }",
                 "retype#",
             ),
+            ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-write#"),
+            ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-widen#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

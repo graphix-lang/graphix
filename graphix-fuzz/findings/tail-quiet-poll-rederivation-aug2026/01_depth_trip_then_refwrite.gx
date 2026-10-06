@@ -4,4 +4,4 @@
 // The JIT delivered the 1; the interp's quiet re-poll of the tripped
 // tail machinery clobbered/blocked the ref-write delivery and emitted
 // nothing. Fixed by the same quiet-poll resident ride.
-{let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => m / f(n - i64:1), m => f(i64:0)}; let v = f(i64:1); let r = &v; *r <- i64:1; v}
+{let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => m / f(n - i64:1), m => f(i64:0)}; let v = f(i64:1); let r = &mut v; *r <- i64:1; v}

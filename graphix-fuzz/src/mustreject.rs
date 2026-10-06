@@ -3,8 +3,8 @@
 //! the checker must refuse, and require the refusal where the mutation
 //! or its rigid consumer is. Families 1 (monomorphic reuse), 2 (rigid
 //! variables), 3 (a shared variable at a call), 4 (widening into a rigid
-//! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels) and 8
-//! (a function bound).
+//! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels), 8
+//! (a function bound) and 9 (writable references).
 
 use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
@@ -16,7 +16,7 @@ use graphix_compiler::{
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern,
     },
     ide::ExprTypeSite,
-    typ::{FnType, Type},
+    typ::{FnType, Mutability, Type},
 };
 use netidx_value::Typ;
 use triomphe::Arc;
@@ -34,6 +34,8 @@ pub enum Family {
     LabelMissing,
     LabelDefault,
     FunctionBound,
+    RefWrite,
+    RefWiden,
 }
 
 impl std::fmt::Display for Family {
@@ -49,6 +51,8 @@ impl std::fmt::Display for Family {
             Family::VariantWiden => "variant-widen",
             Family::Retype => "retype",
             Family::FunctionBound => "function-bound",
+            Family::RefWrite => "ref-write",
+            Family::RefWiden => "ref-widen",
         })
     }
 }
@@ -198,7 +202,60 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     variant_widen(&root, &pre, types, cap, &mut out);
     retype(&root, &pre, types, cap, &mut out);
     function_bound(&root, &pre, types, cap, &mut out);
+    references(&root, types, cap, &mut out);
     out
+}
+
+/// Family 9. A statement `let r = &mut x` over a binding `x`. (a) When a
+/// later statement writes `*r <- ..`, the `&mut` becomes `&`: a write
+/// needs a writable reference. Right site: the write. (b) When the map
+/// shows `x` a concrete primitive, the let is annotated `&mut Any`: a
+/// writable reference is invariant. Right site: the let.
+fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProbe>) {
+    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
+    let (mut writes, mut widens) = (0usize, 0usize);
+    for (si, stmt) in stmts.iter().enumerate() {
+        let ExprKind::Bind(b) = &stmt.kind else { continue };
+        let (StructurePattern::Bind(r), None) = (&b.pattern, &b.typ) else { continue };
+        let ExprKind::ByRef(Mutability::Mut, x) = &b.value.kind else { continue };
+        if !matches!(x.kind, ExprKind::Ref { .. }) {
+            continue;
+        }
+        let rebind = |typ: Option<Type>, value: Expr| {
+            let mut stmts = stmts.to_vec();
+            stmts[si] =
+                ExprKind::Bind(Arc::new(BindExpr { typ, value, ..(**b).clone() }))
+                    .to_expr(stmt.pos);
+            ExprKind::Block { exprs: Arc::from_iter(stmts) }.to_expr_nopos()
+        };
+        let later = &stmts[si + 1..];
+        let writer = later.iter().position(|s| {
+            matches!(&s.kind, ExprKind::Connect { name, deref: true, .. }
+                if name.to_string() == *r.name)
+        });
+        if let Some(w) = writer
+            && writes < cap
+            && !later[..w].iter().any(|s| typemorph::binds_after(s, &r.name))
+        {
+            let shared =
+                ExprKind::ByRef(Mutability::Shared, x.clone()).to_expr(b.value.pos);
+            let cand = rebind(None, shared);
+            out.extend(finish(Family::RefWrite, si, &cand, |back, _| {
+                vec![nth_stmt(back, si + 1 + w).and_then(span)]
+            }));
+            writes += 1;
+        }
+        let pinned =
+            types.of(x).first().is_some_and(|t| concrete(t) && primitive(t).is_some());
+        if pinned && widens < cap {
+            let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
+            let cand = rebind(Some(any), b.value.clone());
+            out.extend(finish(Family::RefWiden, si, &cand, |back, _| {
+                vec![nth_stmt(back, si).and_then(span)]
+            }));
+            widens += 1;
+        }
+    }
 }
 
 /// `e` widened by `u`: `select (i64:1 == i64:1) { true => e, false => u }`,

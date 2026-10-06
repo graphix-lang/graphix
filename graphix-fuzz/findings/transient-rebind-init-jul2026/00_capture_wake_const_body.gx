@@ -10,4 +10,4 @@
 // event, so firedness derives only from what actually fired.
 // interp emitted 157 at cycles 0 AND 1; jit once. Non-tail recursion
 // is load-bearing (the tail twin runs framed and always agreed).
-{let k = f64:1.0; let f = |a: f64, b: f64| -> i64 i64:42; let r = &k; *r <- f64:0.1; let rec g = |n: i64| -> i64 select n {m if m <= i64:0 => f(k, f64:3.14), m => m + g(m - i64:1)}; g(i64:5) + i64:100}
+{let k = f64:1.0; let f = |a: f64, b: f64| -> i64 i64:42; let r = &mut k; *r <- f64:0.1; let rec g = |n: i64| -> i64 select n {m if m <= i64:0 => f(k, f64:3.14), m => m + g(m - i64:1)}; g(i64:5) + i64:100}

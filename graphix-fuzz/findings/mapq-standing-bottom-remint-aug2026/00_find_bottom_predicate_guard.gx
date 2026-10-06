@@ -16,4 +16,4 @@
 // Tag(64)). Fix: both bottom mints in MapQ's finish gate on
 // tag.triggers(); a quiet production over standing poison rides
 // (StaleBottom).
-{let v47: [bool, null] = array::find([true, true, true], |v21| re::is_match(#pat: "((", "a")$); {let v61 = i64:3; let v67 = &v61; *v67 <- i64:0}; select i64:0 {i64:7 if select v47 {null as _ => false, bool as n => n} => true, v91 => true}}
+{let v47: [bool, null] = array::find([true, true, true], |v21| re::is_match(#pat: "((", "a")$); {let v61 = i64:3; let v67 = &mut v61; *v67 <- i64:0}; select i64:0 {i64:7 if select v47 {null as _ => false, bool as n => n} => true, v91 => true}}

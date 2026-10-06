@@ -79,7 +79,7 @@ let col = column(
 [&window(
     #icon: &icon::icon,
     #title: &"Chart Styles",
-    #size: &{width: 900.0, height: 700.0},
+    #size: &mut {width: 900.0, height: 700.0},
     #theme: &`CatppuccinMocha,
     &col
 )]

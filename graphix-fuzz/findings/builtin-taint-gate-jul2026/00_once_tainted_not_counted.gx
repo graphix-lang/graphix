@@ -19,4 +19,4 @@
 // mirrors the fused DynCall taint-the-slot protocol); lambda callees
 // keep it (formals poison). Both modes now emit [0, 400]: the
 // one-shot arms on the first CLEAN value.
-{let v = i64:0; let x = once({let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => (m / m), m => f(m - i64:1)}; let v = f(i64:1); let r = &v; *r <- i64:1; select v {x if true => i64:200, x => x}} * i64:2); [v, x]}
+{let v = i64:0; let x = once({let rec f = |n: i64| -> i64 select n {m if m <= i64:0 => (m / m), m => f(m - i64:1)}; let v = f(i64:1); let r = &mut v; *r <- i64:1; select v {x if true => i64:200, x => x}} * i64:2); [v, x]}

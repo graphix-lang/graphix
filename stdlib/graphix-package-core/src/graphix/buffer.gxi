@@ -36,19 +36,20 @@ type Encode = [
 
 /// Spec for decoding bytes into refs. Bare tags are
 /// big-endian (network byte order), LE suffix for little-endian.
-/// Variable-length fields take a &u64 for the length so that
+/// Each decoded field is written through its &mut. Variable-length
+/// fields take a &u64 for the length so that
 /// earlier decoded lengths can be resolved within the same call.
 type Decode = [
-  `I8(&i8), `U8(&u8),
-  `I16(&i16), `I16LE(&i16), `U16(&u16), `U16LE(&u16),
-  `I32(&i32), `I32LE(&i32), `U32(&u32), `U32LE(&u32),
-  `I64(&i64), `I64LE(&i64), `U64(&u64), `U64LE(&u64),
-  `F32(&f32), `F32LE(&f32), `F64(&f64), `F64LE(&f64),
-  `Bytes(&u64, &bytes),
-  `UTF8(&u64, &string),
+  `I8(&mut i8), `U8(&mut u8),
+  `I16(&mut i16), `I16LE(&mut i16), `U16(&mut u16), `U16LE(&mut u16),
+  `I32(&mut i32), `I32LE(&mut i32), `U32(&mut u32), `U32LE(&mut u32),
+  `I64(&mut i64), `I64LE(&mut i64), `U64(&mut u64), `U64LE(&mut u64),
+  `F32(&mut f32), `F32LE(&mut f32), `F64(&mut f64), `F64LE(&mut f64),
+  `Bytes(&u64, &mut bytes),
+  `UTF8(&u64, &mut string),
   `Skip(&u64),
-  `Varint(&u64),
-  `Zigzag(&i64)
+  `Varint(&mut u64),
+  `Zigzag(&mut i64)
 ];
 
 /// Encode values into bytes according to the spec.

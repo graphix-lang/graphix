@@ -18,4 +18,4 @@
 // the fired plane stops lying without touching cache behavior. Full
 // per-position site claiming (site-identity v2) remains the deeper
 // design item.
-{let v41 = u8:100; let v42 = true; let v8 = |v34: bool, v35: i64, v27: f64| -> i64 map::len(map::filter({"k1" => null, "k2" => null}, |kv| str::len(kv.0) > i64:1)); let v60 = &v41; *v60 <- u8:1; let v65 = *v60; let v17 = select v8(v42, i64:0, f64:0.) {v27 if (i32:-1 > i32:42) => v65 != u8:2, _ => v42}; let v79 = &v17; select v65 {u8:100 if *v79 => i64:7, _ => true}}
+{let v41 = u8:100; let v42 = true; let v8 = |v34: bool, v35: i64, v27: f64| -> i64 map::len(map::filter({"k1" => null, "k2" => null}, |kv| str::len(kv.0) > i64:1)); let v60 = &mut v41; *v60 <- u8:1; let v65 = *v60; let v17 = select v8(v42, i64:0, f64:0.) {v27 if (i32:-1 > i32:42) => v65 != u8:2, _ => v42}; let v79 = &v17; select v65 {u8:100 if *v79 => i64:7, _ => true}}

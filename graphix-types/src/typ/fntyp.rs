@@ -7,7 +7,7 @@ use crate::{
     },
     image,
     typ::{
-        TVar, Type,
+        Mutability, TVar, Type,
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::MatchHist,
@@ -1300,8 +1300,8 @@ impl fmt::Display for ArgPrefix<'_> {
 /// parenthesized, bare or behind a reference.
 enum Ret<'a> {
     Fn(&'a FnType),
-    RefFn(&'a FnType),
-    Ref(&'a Type),
+    RefFn(Mutability, &'a FnType),
+    Ref(Mutability, &'a Type),
     Plain(&'a Type),
 }
 
@@ -1309,9 +1309,9 @@ impl<'a> Ret<'a> {
     fn of(t: &'a Type) -> Self {
         match t {
             Type::Fn(ft) => Ret::Fn(ft),
-            Type::ByRef(t) => match &**t {
-                Type::Fn(ft) => Ret::RefFn(ft),
-                t => Ret::Ref(t),
+            Type::ByRef(m, t) => match &**t {
+                Type::Fn(ft) => Ret::RefFn(*m, ft),
+                t => Ret::Ref(*m, t),
             },
             t => Ret::Plain(t),
         }
@@ -1349,8 +1349,8 @@ impl fmt::Display for FnType {
         }
         match Ret::of(&self.rtype) {
             Ret::Fn(ft) => write!(f, ") -> ({ft})")?,
-            Ret::RefFn(ft) => write!(f, ") -> &({ft})")?,
-            Ret::Ref(t) => write!(f, ") -> &{t}")?,
+            Ret::RefFn(m, ft) => write!(f, ") -> {}({ft})", m.prefix())?,
+            Ret::Ref(m, t) => write!(f, ") -> {}{t}", m.prefix())?,
             Ret::Plain(t) => write!(f, ") -> {t}")?,
         }
         if self.suppress_throws() {
@@ -1414,14 +1414,14 @@ impl PrettyDisplay for FnType {
                 buf.kill_newline();
                 writeln!(buf, ")")?;
             }
-            Ret::RefFn(ft) => {
-                write!(buf, ") -> &(")?;
+            Ret::RefFn(m, ft) => {
+                write!(buf, ") -> {}(", m.prefix())?;
                 ft.fmt_pretty(buf)?;
                 buf.kill_newline();
                 writeln!(buf, ")")?;
             }
-            Ret::Ref(t) => {
-                write!(buf, ") -> &")?;
+            Ret::Ref(m, t) => {
+                write!(buf, ") -> {}", m.prefix())?;
                 t.fmt_pretty(buf)?;
             }
             Ret::Plain(t) => {

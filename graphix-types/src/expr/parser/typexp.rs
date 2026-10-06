@@ -413,7 +413,8 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow(spaces().with(choice((
-            token('&').with(typ()).map(|t| Type::ByRef(Arc::new(t))),
+            (token('&'), super::arithexp::mutability(), typ())
+                .map(|(_, m, t)| Type::ByRef(m, Arc::new(t))),
             token('_').map(|_| Type::Bottom),
             between(
                 token('['),

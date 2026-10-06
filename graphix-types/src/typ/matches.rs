@@ -151,7 +151,7 @@ impl Type {
                     .map(|(t0, t1)| t0.could_match_int(env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            (Type::ByRef(t0), Type::ByRef(t1)) => t0.could_match_int(env, hist, t1),
+            (Type::ByRef(_, t0), Type::ByRef(_, t1)) => t0.could_match_int(env, hist, t1),
             (t0, Self::Set(ts)) => {
                 for t1 in ts.iter() {
                     if t0.could_match_int(env, hist, t1)? {
@@ -202,8 +202,8 @@ impl Type {
             | (_, Type::Struct(_))
             | (Type::Variant(_, _, _), _)
             | (_, Type::Variant(_, _, _))
-            | (Type::ByRef(_), _)
-            | (_, Type::ByRef(_))
+            | (Type::ByRef(..), _)
+            | (_, Type::ByRef(..))
             | (Type::Array(_), _)
             | (_, Type::Array(_))
             | (Type::List(_), _)
@@ -299,7 +299,7 @@ impl Type {
             (Self::List(a0), Self::List(a1)) => {
                 a0.sig_matches_int(env, a1, tvar_map, hist)
             }
-            (Self::ByRef(b0), Self::ByRef(b1)) => {
+            (Self::ByRef(m0, b0), Self::ByRef(m1, b1)) if m0 == m1 => {
                 b0.sig_matches_int(env, b1, tvar_map, hist)
             }
             (Self::Tuple(t0), Self::Tuple(t1)) if t0.len() == t1.len() => {

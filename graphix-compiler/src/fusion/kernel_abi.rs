@@ -962,7 +962,10 @@ mod tests {
         .prop_recursive(4, 64, 4, |inner| {
             prop_oneof![
                 inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
-                inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
+                inner.clone().prop_map(|t| Type::ByRef(
+                    crate::typ::Mutability::Shared,
+                    Arc::new(t)
+                )),
                 inner.clone().prop_map(|t| Type::Error(Arc::new(t))),
                 inner.clone().prop_map(|t| Type::TVar(TVar::named(literal!("a"), t))),
                 inner.clone().prop_map(|t| unresolved_ref(Arc::from_iter([t]))),

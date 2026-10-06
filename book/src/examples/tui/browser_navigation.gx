@@ -22,8 +22,8 @@ input_handler(
     &browser(
         #size: {width: 80, height: 24},
         #cursor,
-        #selected_path: &selected_path,
-        #selected_row: &selected_row,
+        #selected_path: &mut selected_path,
+        #selected_row: &mut selected_row,
         path
     )
 )

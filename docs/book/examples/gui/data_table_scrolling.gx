@@ -79,6 +79,6 @@ let layout = column(
     #icon: &icon::icon,
     #title: &"Data Table — Scrolling",
     #theme: &`CatppuccinMocha,
-    #size: &{width: f64:900., height: f64:400.},
+    #size: &mut {width: f64:900., height: f64:400.},
     &layout
 )]

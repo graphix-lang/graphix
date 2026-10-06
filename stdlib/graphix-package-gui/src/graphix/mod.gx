@@ -16,7 +16,7 @@ let color = |#r: f64 = 0.0, #g: f64 = 0.0, #b: f64 = 0.0, #a: f64 = 1.0|
 
 let window = |
   #title: &string = &"Graphix",
-  #size: &Size = &{ width: 800.0, height: 600.0 },
+  #size: &mut Size = &mut { width: 800.0, height: 600.0 },
   #theme: &Theme = &`Dark,
   #icon: &ImageSource = &"",
   content: &Widget

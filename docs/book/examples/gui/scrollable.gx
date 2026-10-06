@@ -33,7 +33,7 @@ let col = column(
 [&window(
     #icon: &icon::icon,
     #title: &"Scrollable",
-    #size: &{ width: 400.0, height: 300.0 },
+    #size: &mut { width: 400.0, height: 300.0 },
     &scrollable(
         #height: &`Fill,
         #width: &`Fill,

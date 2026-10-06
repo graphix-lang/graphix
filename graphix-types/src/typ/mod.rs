@@ -72,7 +72,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),
         Type::Struct(a) => Some((**a).as_ptr().addr()),
         Type::Fn(f) => Some((&**f as *const FnType).addr()),
-        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
+        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(_, a) => {
             Some((&**a as *const Type).addr())
         }
         Type::Map { .. }
@@ -770,7 +770,7 @@ pub enum Type {
     /// The native linked list. The runtime rep is private to
     /// `node::list`.
     List(Arc<Type>),
-    ByRef(Arc<Type>),
+    ByRef(Mutability, Arc<Type>),
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type, WrittenAt)]>),
     Variant(ArcStr, Arc<[Type]>, WrittenAt),
@@ -808,6 +808,33 @@ pub enum Type {
     OneNumber,
 }
 
+/// Whether a reference may be written through: `&T` reads, `&mut T`
+/// also writes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, netidx_derive::Pack,
+)]
+pub enum Mutability {
+    Shared,
+    Mut,
+}
+
+impl Mutability {
+    fn tag(self) -> u8 {
+        match self {
+            Mutability::Shared => tag::BYREF,
+            Mutability::Mut => tag::BYREF_MUT,
+        }
+    }
+
+    /// The type and expression prefix: `&` or `&mut `.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Mutability::Shared => "&",
+            Mutability::Mut => "&mut ",
+        }
+    }
+}
+
 mod tag {
     pub const BOTTOM: u8 = 0;
     pub const ANY: u8 = 1;
@@ -831,6 +858,7 @@ mod tag {
     pub const FUNCTION: u8 = 19;
     pub const SINGLETON: u8 = 20;
     pub const ONE_NUMBER: u8 = 21;
+    pub const BYREF_MUT: u8 = 22;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -928,8 +956,8 @@ impl Type {
                 out.put_u8(tag::LIST);
                 key_one(t, out);
             }
-            Type::ByRef(t) => {
-                out.put_u8(tag::BYREF);
+            Type::ByRef(m, t) => {
+                out.put_u8(m.tag());
                 key_one(t, out);
             }
             Type::Struct(fs) => {
@@ -988,7 +1016,7 @@ impl Type {
             Type::Fn(f) => f.encoded_len(),
             Type::TVar(tv) => tv.encoded_len(),
             Type::Set(ts) | Type::Tuple(ts) => ts.encoded_len(),
-            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => {
+            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => {
                 t.encoded_len()
             }
             Type::Struct(fs) => fs.encoded_len(),
@@ -1048,8 +1076,8 @@ impl Type {
                 buf.put_u8(tag::LIST);
                 t.encode(buf)
             }
-            Type::ByRef(t) => {
-                buf.put_u8(tag::BYREF);
+            Type::ByRef(m, t) => {
+                buf.put_u8(m.tag());
                 t.encode(buf)
             }
             Type::Struct(fs) => {
@@ -1100,7 +1128,8 @@ impl Type {
             tag::ERROR => Type::Error(PackTrait::decode(buf)?),
             tag::ARRAY => Type::Array(PackTrait::decode(buf)?),
             tag::LIST => Type::List(PackTrait::decode(buf)?),
-            tag::BYREF => Type::ByRef(PackTrait::decode(buf)?),
+            tag::BYREF => Type::ByRef(Mutability::Shared, PackTrait::decode(buf)?),
+            tag::BYREF_MUT => Type::ByRef(Mutability::Mut, PackTrait::decode(buf)?),
             tag::STRUCT => Type::Struct(PackTrait::decode(buf)?),
             tag::VARIANT => {
                 let name = PackTrait::decode(buf)?;
@@ -1209,7 +1238,9 @@ impl Type {
             Type::Error(a) => matches!(other, Type::Error(b) if one_eq(a, b)),
             Type::Array(a) => matches!(other, Type::Array(b) if one_eq(a, b)),
             Type::List(a) => matches!(other, Type::List(b) if one_eq(a, b)),
-            Type::ByRef(a) => matches!(other, Type::ByRef(b) if one_eq(a, b)),
+            Type::ByRef(m, a) => {
+                matches!(other, Type::ByRef(n, b) if m == n && one_eq(a, b))
+            }
             Type::Tuple(a) => matches!(other, Type::Tuple(b) if slice_eq(a, b)),
             Type::Struct(a) => matches!(
                 other,
@@ -1246,7 +1277,7 @@ impl Type {
             Type::Error(_) => tag::ERROR,
             Type::Array(_) => tag::ARRAY,
             Type::List(_) => tag::LIST,
-            Type::ByRef(_) => tag::BYREF,
+            Type::ByRef(m, _) => m.tag(),
             Type::Tuple(_) => tag::TUPLE,
             Type::Struct(_) => tag::STRUCT,
             Type::Variant(..) => tag::VARIANT,
@@ -1272,7 +1303,7 @@ impl Type {
             (Type::Error(a), Type::Error(b))
             | (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b))
-            | (Type::ByRef(a), Type::ByRef(b)) => a.cmp(b),
+            | (Type::ByRef(_, a), Type::ByRef(_, b)) => a.cmp(b),
             (Type::Struct(a), Type::Struct(b)) => a.cmp(b),
             (Type::Variant(t0, a, w0), Type::Variant(t1, b, w1)) => {
                 t0.cmp(t1).then_with(|| a.cmp(b)).then_with(|| w0.cmp(w1))
@@ -1329,7 +1360,7 @@ impl Hash for Type {
                 Type::Fn(f) => f.hash(state),
                 Type::TVar(tv) => tv.hash(state),
                 Type::Set(ts) | Type::Tuple(ts) => ts.hash(state),
-                Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => {
+                Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => {
                     t.hash(state)
                 }
                 Type::Struct(fs) => fs.hash(state),
@@ -1396,7 +1427,7 @@ impl Drop for Type {
             Type::Fn(f) => f.is_unique(),
             Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.is_unique(),
             Type::Abstract { params, .. } => params.is_unique(),
-            Type::Error(a) | Type::Array(a) | Type::List(a) | Type::ByRef(a) => {
+            Type::Error(a) | Type::Array(a) | Type::List(a) | Type::ByRef(_, a) => {
                 a.is_unique()
             }
             Type::Struct(fs) => fs.is_unique(),
@@ -1423,7 +1454,7 @@ impl Drop for Type {
                 Type::Fn(f) => drop(ptr::read(f)),
                 Type::TVar(tv) => drop(ptr::read(tv)),
                 Type::Set(ts) | Type::Tuple(ts) => drop(ptr::read(ts)),
-                Type::Error(a) | Type::Array(a) | Type::List(a) | Type::ByRef(a) => {
+                Type::Error(a) | Type::Array(a) | Type::List(a) | Type::ByRef(_, a) => {
                     drop(ptr::read(a))
                 }
                 Type::Struct(fs) => drop(ptr::read(fs)),
@@ -1507,7 +1538,7 @@ impl Type {
                 }
                 ControlFlow::Continue(())
             }
-            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => f(t),
+            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => f(t),
             Type::Map { key, value } => {
                 f(key)?;
                 f(value)
@@ -1594,7 +1625,7 @@ impl Type {
             Type::Error(t) => f(t).map(|t| Type::Error(Arc::new(t))),
             Type::Array(t) => f(t).map(|t| Type::Array(Arc::new(t))),
             Type::List(t) => f(t).map(|t| Type::List(Arc::new(t))),
-            Type::ByRef(t) => f(t).map(|t| Type::ByRef(Arc::new(t))),
+            Type::ByRef(m, t) => f(t).map(|t| Type::ByRef(*m, Arc::new(t))),
             Type::Map { key, value } => match (f(key), f(value)) {
                 (None, None) => None,
                 (k, v) => Some(Type::Map {
@@ -2214,7 +2245,7 @@ impl Type {
             self.with_deref(|t| match t {
                 Some(Type::Bottom) => true,
                 Some(
-                    Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t),
+                    Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t),
                 ) => t.has_bottom(),
                 Some(Type::Map { key, value }) => key.has_bottom() || value.has_bottom(),
                 Some(Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts)) => {
@@ -2256,7 +2287,7 @@ impl Type {
             | Self::Error(_)
             | Self::Array(_)
             | Self::List(_)
-            | Self::ByRef(_)
+            | Self::ByRef(..)
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _, _)

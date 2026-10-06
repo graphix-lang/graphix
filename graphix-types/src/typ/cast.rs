@@ -201,7 +201,7 @@ impl Type {
                 Some(t) => t.check_cast_int(env, seen),
                 None => bail!("can't cast a value to a free type variable"),
             },
-            Type::ByRef(_) => bail!("can't cast a reference"),
+            Type::ByRef(..) => bail!("can't cast a reference"),
             Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
                 let shape = tr
@@ -248,7 +248,7 @@ impl Type {
 
     fn holds_ref_int(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
         ensure_sufficient(|| match self {
-            Type::ByRef(_) => true,
+            Type::ByRef(..) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
             // CR claude for eric: [bug] When an App's constructor is still an open
             // variable, it dereferences to itself: with_deref hands back the App when
@@ -340,7 +340,7 @@ impl Type {
             // holds a reference, as check_cast does. probe:
             // design/review-2026-10-05/repro/x-typecheck-generics-F14.gx
             // (x-typecheck-generics-F14)
-            Type::ByRef(_) => match v {
+            Type::ByRef(..) => match v {
                 Value::U64(_) | Value::V64(_) => Ok(None),
                 _ => Err(self.cast_fail("not a reference", v)),
             },
@@ -872,7 +872,7 @@ impl Type {
             // scrutinee that mixes references with u64/v64. probe:
             // design/review-2026-10-05/repro/x-typecheck-patterns-01.gx
             // (x-typecheck-patterns-01)
-            Type::ByRef(_) => matches!(v, Value::U64(_) | Value::V64(_)),
+            Type::ByRef(..) => matches!(v, Value::U64(_) | Value::V64(_)),
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {
                     elts.len() == ts.len()
@@ -1049,7 +1049,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         Type::Array(_) | Type::List(_) => MemberFacts::arr(None, ArrCon::AnyLen),
         Type::Map { .. } => MemberFacts { map: true, exact: false, ..MemberFacts::EXACT },
         Type::Error(_) => MemberFacts { error: true, exact: false, ..MemberFacts::EXACT },
-        Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(_) | Type::Bottom => {
+        Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(..) | Type::Bottom => {
             MemberFacts::EXACT
         }
         // `flatten_union_members` never yields these.

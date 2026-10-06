@@ -64,7 +64,7 @@ type Size = { width: f64, height: f64 };
 ```
 
 ```graphix
-window(#size: &{ width: 1024.0, height: 768.0 }, &content)
+window(#size: &mut { width: 1024.0, height: 768.0 }, &content)
 ```
 
 ### HAlign and VAlign

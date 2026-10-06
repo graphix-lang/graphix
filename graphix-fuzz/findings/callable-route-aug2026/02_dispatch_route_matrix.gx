@@ -10,9 +10,9 @@
 // file-v1: m0.gx
 type St = { value: i64, cursor: i64 };
 let state: St = { value: 0, cursor: 0 };
-let inner = |st: &St, x: i64| -> null select x {
+let inner = |st: &mut St, x: i64| -> null select x {
   0 => null,
   n => { let s = n ~ *st; *st <- { value: s.value + n, cursor: s.cursor + 1 }; null }
 };
-let handler = |x: i64| -> null inner(&state, x);
+let handler = |x: i64| -> null inner(&mut state, x);
 let observe = state

@@ -20,7 +20,7 @@ val step: fn(st: State, e: input_handler::Event) -> [State, null];
 /// `Continue for everything else — call it from an input_handler's
 /// handle function, typically as the fallback after the form's own
 /// keys (Enter, Tab, Esc) are handled.
-val handle: fn(st: &State, e: input_handler::Event) -> [`Stop, `Continue];
+val handle: fn(st: &mut State, e: input_handler::Event) -> [`Stop, `Continue];
 
 /// Render the editor as a Line: the value (each character replaced by
 /// `#mask` when given, for secrets) with the cursor cell reverse-video

@@ -1,7 +1,7 @@
 use crate::{
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{TVar, Type, TypeRef, setops::union_identical},
+    typ::{Mutability, TVar, Type, TypeRef, setops::union_identical},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -64,7 +64,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         Type::Set(a) | Type::Tuple(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Struct(a) => Some((d, (**a).as_ptr() as usize, 0)),
         Type::Fn(a) => Some((d, &**a as *const _ as usize, 0)),
-        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
+        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(_, a) => {
             Some((d, &**a as *const Type as usize, 0))
         }
         Type::Map { key, value } => {
@@ -335,8 +335,8 @@ impl Type {
                     }),
                 }
             }
-            Type::ByRef(t) => {
-                t.resolve_tvars_seen_int(cx).map(|t| Type::ByRef(Arc::new(t)))
+            Type::ByRef(m, t) => {
+                t.resolve_tvars_seen_int(cx).map(|t| Type::ByRef(*m, Arc::new(t)))
             }
             Type::Tuple(t) => {
                 Self::cow_slice(t, |t| t.resolve_tvars_seen_int(cx)).map(Type::Tuple)
@@ -428,7 +428,9 @@ impl Type {
                     }),
                 }
             }
-            Type::ByRef(t) => t.normalize_int(cx).map(|t| Type::ByRef(Arc::new(t))),
+            Type::ByRef(m, t) => {
+                t.normalize_int(cx).map(|t| Type::ByRef(*m, Arc::new(t)))
+            }
             Type::Tuple(t) => {
                 Self::cow_slice(t, |t| t.normalize_int(cx)).map(Type::Tuple)
             }
@@ -609,7 +611,7 @@ impl Type {
                     None
                 }
             }
-            // CR claude for eric: [bug] Merging two references' targets types `select c
+            // XCR claude for eric: [bug] Merging two references' targets types `select c
             // { true => &x, false => &y }` (x: i64, y: string) as `&[i64, string]`, a
             // reference to a variable that exists nowhere. So `*r <- "s"` passes the
             // check and stores a string in the i64 `x`. The fused read of `x` then
@@ -619,10 +621,22 @@ impl Type {
             // ConnectDeref::typecheck0_with (node/mod.rs:2361) accepts a write when any
             // member of r's type contains `&typeof(v)`, so the unmerged `[&i64,
             // &Array<i64>]` lets `*r <- [2, 3]` write into `x` too; a write has to fit
-            // every referent. probe: design/review-2026-10-05/repro/t-fntyp-01.gx
-            // (t-fntyp-01)
-            (Type::ByRef(t0), Type::ByRef(t1)) => {
-                t0.merge(t1).map(|t| Type::ByRef(Arc::new(t)))
+            // every referent. Addressed: only `&T` (read-only) merges its referents,
+            // a `&mut` merges only with an identical one, and ConnectDeref requires
+            // `&mut` and checks the write against every member. probe:
+            // design/review-2026-10-05/repro/t-fntyp-01.gx (t-fntyp-01)
+            // Reading either of two references reads the union of their
+            // referents; a writable one only merges with itself.
+            (
+                Type::ByRef(Mutability::Shared, t0),
+                Type::ByRef(Mutability::Shared, t1),
+            ) => t0.merge(t1).map(|t| Type::ByRef(Mutability::Shared, Arc::new(t))),
+            (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
+                if m0 == m1 && flat_eq(t0, t1) {
+                    Some(Type::ByRef(*m0, t0.clone()))
+                } else {
+                    None
+                }
             }
             (Type::Set(s0), Type::Set(s1)) => {
                 Some(Self::flatten_set(s0.iter().cloned().chain(s1.iter().cloned())))
@@ -683,8 +697,8 @@ impl Type {
             }
             (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t)),
             (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b)),
-            (Type::ByRef(_), _)
-            | (_, Type::ByRef(_))
+            (Type::ByRef(..), _)
+            | (_, Type::ByRef(..))
             | (Type::Abstract { .. }, _)
             | (_, Type::Abstract { .. })
             | (Type::Array(_), _)

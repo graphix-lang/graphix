@@ -194,6 +194,15 @@ argument replaced with a literal. Rule: `'a: Function` admits only a
 function type (`Type::function_holds`). Built (`function-bound`), right
 site the call.
 
+**9. Writable references.** Site: `let r = &mut x` over a binding.
+(a) A later `*r <- ..` and no rebinding of `r` between: the `&mut`
+becomes `&`. Rule: a write needs every reference it may go through to be
+`&mut` (`ConnectDeref::typecheck0_with`). Right site: the write. (b) The
+map shows `x` a concrete primitive: the let is annotated `&mut Any`.
+Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
+the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
+writes are the sites (`generate/funcs.rs`).
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have

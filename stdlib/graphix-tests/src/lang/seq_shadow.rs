@@ -67,7 +67,7 @@ async fn initializers_and_patterns(fusion_disabled: bool) -> Result<()> {
 }
 
 async fn writes(fusion_disabled: bool) -> Result<()> {
-    for body in ["let x = request; let a = &x; let x = 99; \
+    for body in ["let x = request; let a = &mut x; let x = 99; \
          *a <- *a + 10; x <- x + 1; *a"]
     {
         check(body, &[11, 12, 13], fusion_disabled).await?;

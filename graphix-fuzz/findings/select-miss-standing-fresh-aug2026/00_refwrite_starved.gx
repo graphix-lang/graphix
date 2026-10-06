@@ -13,4 +13,4 @@
 // disc inherits the SCRUTINEE's STALE bit (the interp's
 // arg_prod.triggers() rule) — standing taint misses quiet.
 // schedule-v1: cap=144 events=1152; in0=bool:true; in0=bool:false in1=bool:false; in0=bool:false in1=bool:false; in0=bool:true in1=bool:true; in0=bool:true in1=bool:false
-{ let v0 = i64:0; v0 <- in0 ~ (select in0 { true => v0 + i64:1, false => v0 }); let v3: i64 = { let v1 = select cast<i64>((u16:1 % u16:0))$ { i64:7 if in0 => (v0 / str::len("xyz")), in0 => i64:1 }; let v2 = &v1; *v2 <- i64:-1; select v0 { i64:100 if in0 => ((v0 + v1) % i64:-1), i64:100 => (v1 / map::len({"k0" => i64:42, "k2" => i64:0, "a" => i64:1})), v3 => *v2 } }; ((v0 * v0) + v3) }
+{ let v0 = i64:0; v0 <- in0 ~ (select in0 { true => v0 + i64:1, false => v0 }); let v3: i64 = { let v1 = select cast<i64>((u16:1 % u16:0))$ { i64:7 if in0 => (v0 / str::len("xyz")), in0 => i64:1 }; let v2 = &mut v1; *v2 <- i64:-1; select v0 { i64:100 if in0 => ((v0 + v1) % i64:-1), i64:100 => (v1 / map::len({"k0" => i64:42, "k2" => i64:0, "a" => i64:1})), v3 => *v2 } }; ((v0 * v0) + v3) }

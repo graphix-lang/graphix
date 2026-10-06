@@ -26,6 +26,7 @@
 [
   "let"
   "rec"
+  "mut"
   "mod"
   "use"
   "type"

@@ -134,7 +134,7 @@ Array<i64>  Map<string, i64>  List<i64>   // List: [<1, 2>] literals, O(1) tail
 {x: f64, y: f64}               // struct
 `Tag | `Tag(i64, string)       // variants
 [i64, string]                  // union; [T, null] is the option type
-Error<`MyErr>  &i64            // error; reference
+Error<`MyErr>  &i64  &mut i64  // error; read-only, writable reference
 fn(x: i64) -> string throws `E // positional params in fn TYPES must be named
 type Point = {x: f64, y: f64}; type Maybe<'a> = ['a, null]
 type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
@@ -434,8 +434,11 @@ sel)$`, which samples the null and drops it.
 
 ## References and places
 
-`&v`, `*r`, `*r <- new`. Widgets take `&` parameters so updates
-propagate without rebuilding the tree. `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
+`&v`, `*r`; writing is `*r <- new` and needs `r: &mut T`, made with
+`&mut v`. `&T` is read-only and covariant (`&[i64, null]` takes `&x`
+with `x: i64`, and takes a `&mut`); `&mut T` is invariant. An optional
+writable argument is `[&mut T, null]`, never `&mut [T, null]`. Widgets
+take `&` parameters so updates propagate without rebuilding the tree. `&a[i]`, `&s.f`, `&t.0`, `&m{k}`
 are places: reading follows the path, writing patches the root at
 delivery; a dynamic key (`&vals[focus]`) is a moving reference.
 

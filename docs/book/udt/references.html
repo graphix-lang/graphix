@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -234,10 +234,11 @@ reference refers to, instead of the reference itself (which we can also do). We
 can do that with,</p>
 <pre><code class="language-graphix">*r &lt;- "new value"
 </code></pre>
-<p>Consider,</p>
-<pre><code class="language-graphix">let f = |x: &amp;i64| *x &lt;- once(*x) + 1;
+<p>A reference made with <code>&amp;</code> is read-only; writing through one needs a writable
+reference, made with <code>&amp;mut</code> and typed <code>&amp;mut T</code>. Consider,</p>
+<pre><code class="language-graphix">let f = |x: &amp;mut i64| *x &lt;- once(*x) + 1;
 let v = 0;
-f(&amp;v);
+f(&amp;mut v);
 println("[v]")
 </code></pre>
 <p>Running this program will output,</p>
@@ -247,6 +248,18 @@ println("[v]")
 </code></pre>
 <p>We were able to pass <code>v</code> into <code>f</code> by reference and it was able to update it,
 even though the original bind of <code>v</code> isn’t even in a scope that <code>f</code> can see.</p>
+<h2 id="read-only-and-writable-references"><a class="header" href="#read-only-and-writable-references">Read-Only and Writable References</a></h2>
+<p><code>&amp;T</code> can only be read, so it may refer to anything that is a <code>T</code>: <code>&amp;[i64, null]</code> accepts <code>&amp;x</code> where <code>x: i64</code>, and a <code>&amp;mut T</code> can be passed where a <code>&amp;T</code> is
+expected. This is what lets a widget take an optional <code>&amp;[string, null]</code> that
+you hand <code>&amp;title</code>.</p>
+<p><code>&amp;mut T</code> can also be written, so it must refer to exactly a <code>T</code>. If <code>&amp;mut [i64, null]</code> accepted <code>&amp;mut x</code> with <code>x: i64</code>, writing <code>null</code> through it would
+put a <code>null</code> into <code>x</code>, so the checker refuses it. When a function wants a value
+it may or may not write, the parameter is an optional reference instead,
+<code>[&amp;mut i64, null]</code>, as <code>queuefn</code>’s <code>#count</code> is.</p>
+<p>The grant is visible where the reference is made: a caller that writes <code>&amp;x</code>
+knows the callee cannot change <code>x</code>. The same rule holds for a union of
+references: two read-only references may be one <code>&amp;[i64, string]</code>, but a write
+must fit every reference the value may hold.</p>
 <h2 id="referencing-a-name-vs-referencing-an-expression"><a class="header" href="#referencing-a-name-vs-referencing-an-expression">Referencing a Name vs Referencing an Expression</a></h2>
 <p><code>&amp;</code> does slightly different things depending on what follows it, and the
 difference is observable in <em>when</em> a deref sees an update.</p>
@@ -331,7 +344,7 @@ on what it depends on.</p>
         <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

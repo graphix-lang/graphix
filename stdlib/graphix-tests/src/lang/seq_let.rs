@@ -83,7 +83,9 @@ async fn destructured_snapshot(fusion_disabled: bool) -> Result<()> {
 // land on an idle machine and start the next run.
 async fn trigger_writes_reach_the_variable(fusion_disabled: bool) -> Result<()> {
     let hold = "sys::time::after_idle(duration:20.ms, 1)";
-    for body in [format!("t <- 10; {hold}; t"), format!("let q = &t; *q <- 10; {hold}")] {
+    for body in
+        [format!("t <- 10; {hold}; t"), format!("let q = &mut t; *q <- 10; {hold}")]
+    {
         let code = format!(
             r#"{{
                 let t = 0;

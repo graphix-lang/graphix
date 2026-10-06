@@ -10,4 +10,4 @@
 // This pin asserts the deterministic Timeout==Timeout agreement (and
 // costs one wall-clock timeout per mode in regress — the price of
 // pinning a runaway).
-{let f = |x: &i64| *x <- *x + i64:1; let v = i64:41; f(&v); "_test"}
+{let f = |x: &mut i64| *x <- *x + i64:1; let v = i64:41; f(&mut v); "_test"}

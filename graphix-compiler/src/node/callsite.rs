@@ -387,7 +387,7 @@ fn data_positions(
             }
         }
         Type::Fn(_)
-        | Type::ByRef(_)
+        | Type::ByRef(..)
         | Type::Ref(_)
         | Type::Abstract { .. }
         | Type::App(..) => t.for_each_child(&mut |c| data_positions(c, false, seen, out)),

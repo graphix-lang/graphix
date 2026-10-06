@@ -1383,7 +1383,7 @@ const SELECT_GUARD_AFTER_TAINTED_INIT: &str = r#"
     m => f(m - i64:1)
   };
   let v = f(i64:1);
-  let r = &v;
+  let r = &mut v;
   *r <- i64:1;
   select v {
     x if true => i64:200,

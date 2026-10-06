@@ -4,7 +4,7 @@ let selected_path: string = never();
 
 browser(
     #size: {width: 40, height: 10},
-    #selected_path: &selected_path,
+    #selected_path: &mut selected_path,
     // Start browsing from root
     "/"
 )

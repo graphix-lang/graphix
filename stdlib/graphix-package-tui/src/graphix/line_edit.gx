@@ -65,7 +65,7 @@ let step = |st: State, e: input_handler::Event| -> [State, null] select e {
     _ => null
 };
 
-let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue]
+let handle = |st: &mut State, e: input_handler::Event| -> [`Stop, `Continue]
     select step(e ~ *st, e) {
         null as _ => `Continue,
         s => { *st <- s; `Stop }

@@ -339,7 +339,7 @@ val make: fn(x: i64) -> Counter;
 val get: fn(c: Counter) -> i64;
 
 /// Increment the counter every time trig updates
-val increment: fn(#trig: Any, c: &Counter) -> null;
+val increment: fn(#trig: Any, c: &mut Counter) -> null;
 ```
 
 **counter.gx**:
@@ -349,7 +349,7 @@ type Counter = Abstract<i64>;
 
 let make = |x: i64| -> Counter Counter(x);
 let get = |c: Counter| -> i64 c.0;
-let increment = |#trig: Any, c: &Counter| -> null {
+let increment = |#trig: Any, c: &mut Counter| -> null {
     *c <- Counter((trig ~ *c).0 + 1);
     null
 }
@@ -360,7 +360,7 @@ let increment = |#trig: Any, c: &Counter| -> null {
 mod counter;
 
 let c = counter::make(0);
-counter::increment(#trig:null, &c);
+counter::increment(#trig:null, &mut c);
 let value = counter::get(c)  // 1
 ```
 

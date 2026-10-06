@@ -53,7 +53,7 @@ let form = |
     // design/review-2026-10-05/repro/gx-ui-11.gx (gx-ui-11)
     _ => {
       let i = k ~ focus;
-      line_edit::handle(&vals[i], e)
+      line_edit::handle(&mut vals[i], e)
     }
   });
   let width = array::fold(fields, 0, |w: i64, f: Field| max(w, str::len(f.label))) + 2;

@@ -627,7 +627,7 @@ fn frozen_may_be_null(t: &Type) -> bool {
             | Type::Error(_)
             | Type::Map { .. }
             | Type::Abstract { .. }
-            | Type::ByRef(_),
+            | Type::ByRef(..),
         ) => false,
         _ => true,
     })

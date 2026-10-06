@@ -442,7 +442,7 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
 const QUEUEFN_COUNT_REF: &str = r#"
 {
   let depth = 0;
-  let qf = queuefn(#count: &depth, #trigger: never(), |x: i64| -> i64 x * 10);
+  let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64| -> i64 x * 10);
   qf(1);  // immediate (pop_count=1), no push
   qf(2);  // push, depth -> 1
   qf(3);  // push, depth -> 2
@@ -468,7 +468,7 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
 // element [7] therefore gives [70] whether or not the HOF callback bypasses the queue:
 // using the plain lambda `|x: i64| -> i64 x * 10` in place of qf also gives [70]. This
 // test cannot fail for the static-resolution bypass it names. Two elements show the
-// queue: `{ let depth = 0; let qf = queuefn(#count: &depth, #trigger: never(), |x: i64|
+// queue: `{ let depth = 0; let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64|
 // -> i64 x * 10); let r = array::map([i64:7, i64:8], qf); depth }` reaches 1 through
 // the queue but stays 0 for a bypassed callback (whose map gives [70, 80]). Assert that
 // instead. (tests-lib-a-08)
@@ -860,7 +860,7 @@ const ONCE_TAINTED_NOT_COUNTED: &str = r#"
       m => f(m - i64:1)
     };
     let v = f(i64:1);
-    let r = &v;
+    let r = &mut v;
     *r <- i64:1;
     select v {
       x if true => i64:200,

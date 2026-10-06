@@ -77,12 +77,13 @@ can do that with,
 *r <- "new value"
 ```
 
-Consider,
+A reference made with `&` is read-only; writing through one needs a writable
+reference, made with `&mut` and typed `&mut T`. Consider,
 
 ```graphix
-let f = |x: &i64| *x <- once(*x) + 1;
+let f = |x: &mut i64| *x <- once(*x) + 1;
 let v = 0;
-f(&v);
+f(&mut v);
 println("[v]")
 ```
 
@@ -96,6 +97,24 @@ $ graphix test.gx
 
 We were able to pass `v` into `f` by reference and it was able to update it,
 even though the original bind of `v` isn't even in a scope that `f` can see.
+
+## Read-Only and Writable References
+
+`&T` can only be read, so it may refer to anything that is a `T`: `&[i64,
+null]` accepts `&x` where `x: i64`, and a `&mut T` can be passed where a `&T` is
+expected. This is what lets a widget take an optional `&[string, null]` that
+you hand `&title`.
+
+`&mut T` can also be written, so it must refer to exactly a `T`. If `&mut
+[i64, null]` accepted `&mut x` with `x: i64`, writing `null` through it would
+put a `null` into `x`, so the checker refuses it. When a function wants a value
+it may or may not write, the parameter is an optional reference instead,
+`[&mut i64, null]`, as `queuefn`'s `#count` is.
+
+The grant is visible where the reference is made: a caller that writes `&x`
+knows the callee cannot change `x`. The same rule holds for a union of
+references: two read-only references may be one `&[i64, string]`, but a write
+must fit every reference the value may hold.
 
 ## Referencing a Name vs Referencing an Expression
 

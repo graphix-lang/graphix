@@ -25,7 +25,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{
-        FnType, Type,
+        FnType, Mutability, Type,
         tvar::{AtLevel, Level},
     },
     wrap,
@@ -1242,6 +1242,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
+        mutability: Mutability,
         expr: &Expr,
     ) -> Result<Node<R, E>> {
         let id = BindId::new();
@@ -1261,15 +1262,25 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         let (referent, typ) = match Place::<R, E>::of(expr) {
             Some((root, specs)) => {
                 let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
-                (Referent::Place(place), Type::ByRef(Arc::new(Type::empty_tvar())))
+                (
+                    Referent::Place(place),
+                    Type::ByRef(mutability, Arc::new(Type::empty_tvar())),
+                )
             }
             None => {
                 let child = compile(ctx, flags, unparen(expr).clone(), scope, top_id)?;
-                if let Some(c) = (&*child as &dyn Any).downcast_ref::<Ref>() {
-                    ctx.env.byref_chain.insert(id, c.id);
-                }
-                let typ = Type::ByRef(Arc::new(child.typ().clone()));
-                (Referent::Channel(child), typ)
+                let named = match (&*child as &dyn Any).downcast_ref::<Ref>() {
+                    Some(c) => {
+                        ctx.env.byref_chain.insert(id, c.id);
+                        true
+                    }
+                    None => false,
+                };
+                let referent = match mutability {
+                    Mutability::Mut if !named => Type::empty_tvar(),
+                    _ => child.typ().clone(),
+                };
+                (Referent::Channel(child), Type::ByRef(mutability, Arc::new(referent)))
             }
         };
         Ok(Node::new(Self {
@@ -1662,11 +1673,38 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         if !check {
             return Ok(());
         }
-        let t = match &self.referent {
-            Referent::Channel(n) => n.typ().clone(),
-            Referent::Place(p) => wrap!(self, p.elem_type(ctx, &self.spec))?,
+        let Type::ByRef(mutability, cell) = &self.typ else {
+            bail!("BUG: a reference not typed as one")
         };
-        wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(t))))
+        let t = match &self.referent {
+            // A writable reference to a fresh cell only it reaches: the
+            // cell's type is any type the initializer fits, decided by the
+            // uses.
+            Referent::Channel(n)
+                if *mutability == Mutability::Mut && !(&**n as &dyn Any).is::<Ref>() =>
+            {
+                super::defer_settle(ctx, || crate::PendingSettle::Contains {
+                    outer: (**cell).clone(),
+                    inner: n.typ().clone(),
+                    spec: Arc::new(self.spec.clone()),
+                });
+                return Ok(());
+            }
+            Referent::Channel(n) => n.typ().clone(),
+            Referent::Place(p) => {
+                // a writable place through `*r` writes through `r`
+                if *mutability == Mutability::Mut
+                    && let Some(d) = (&*p.root as &dyn Any).downcast_ref::<Deref<R, E>>()
+                {
+                    let through =
+                        Type::ByRef(Mutability::Mut, Arc::new(Type::empty_tvar()));
+                    wrap!(self, through.check_contains(&ctx.env, d.child.typ()))?;
+                }
+                wrap!(self, p.elem_type(ctx, &self.spec))?
+            }
+        };
+        let t = Type::ByRef(*mutability, Arc::new(t));
+        wrap!(self, self.typ.check_contains(&ctx.env, &t))
     }
 }
 
@@ -1684,7 +1722,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         // A container read's type is a TVar bound to `&T`, not a bare
         // `Type::ByRef`.
         let typ = self.child.typ().with_deref(|t| match t {
-            Some(Type::ByRef(t)) => Some((**t).clone()),
+            Some(Type::ByRef(_, t)) => Some((**t).clone()),
             _ => None,
         });
         let typ = match typ {

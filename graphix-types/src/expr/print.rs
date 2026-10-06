@@ -8,7 +8,7 @@ use crate::{
     },
     print_as_written,
     stack::ensure_sufficient,
-    typ::Type,
+    typ::{Mutability, Type},
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -211,7 +211,7 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | ExplicitParens(_)
         | Module { value: ModuleKind::Dynamic { .. }, .. } => true,
         Variant { args, .. } => !args.is_empty(),
-        Qop(e) | OrNever(e) | Rethrow(e) | ByRef(e) | Deref(e) | Neg(e) => {
+        Qop(e) | OrNever(e) | Rethrow(e) | ByRef(_, e) | Deref(e) | Neg(e) => {
             opens_with_bracket(&e.kind)
         }
         Not { expr } => opens_with_bracket(&expr.kind),
@@ -256,7 +256,8 @@ fn head_min(e: &ExprKind) -> usize {
         },
         Module { name, .. } => "mod  dynamic {".len() + name.chars().count(),
         Qop(e) | OrNever(e) | Rethrow(e) => head_min(&e.kind),
-        ByRef(e) | Deref(e) | Neg(e) | Not { expr: e } => 1 + head_min(&e.kind),
+        ByRef(m, e) => m.prefix().len() + head_min(&e.kind),
+        Deref(e) | Neg(e) | Not { expr: e } => 1 + head_min(&e.kind),
         _ => 1,
     }
 }
@@ -1327,9 +1328,9 @@ impl LambdaExpr {
         match &self.rtype {
             None => (),
             Some(Type::Fn(ft)) => write!(f, " -> ({ft})")?,
-            Some(Type::ByRef(t)) => match &**t {
-                Type::Fn(ft) => write!(f, " -> &({ft})")?,
-                t => write!(f, " -> &{t}")?,
+            Some(Type::ByRef(m, t)) => match &**t {
+                Type::Fn(ft) => write!(f, " -> {}({ft})", m.prefix())?,
+                t => write!(f, " -> {}{t}", m.prefix())?,
             },
             Some(t) => write!(f, " -> {t}")?,
         }
@@ -1360,9 +1361,13 @@ impl LambdaExpr {
         if let Some(rtype) = &self.rtype {
             let (open, typ, close): (&str, &dyn PrettyDisplay, &str) = match rtype {
                 Type::Fn(ft) => (" -> (", &**ft, ")"),
-                Type::ByRef(t) => match &**t {
+                Type::ByRef(Mutability::Shared, t) => match &**t {
                     Type::Fn(ft) => (" -> &(", &**ft, ")"),
                     t => (" -> &", t, ""),
+                },
+                Type::ByRef(Mutability::Mut, t) => match &**t {
+                    Type::Fn(ft) => (" -> &mut (", &**ft, ")"),
+                    t => (" -> &mut ", t, ""),
                 },
                 t => (" -> ", t, ""),
             };
@@ -1733,8 +1738,8 @@ impl PrettyDisplay for ExprKind {
                     expr.fmt_pretty(buf)
                 }
             },
-            ByRef(e) => {
-                write!(buf, "&")?;
+            ByRef(m, e) => {
+                write!(buf, "{}", m.prefix())?;
                 e.fmt_pretty(buf)
             }
             Deref(e) => {
@@ -2387,7 +2392,7 @@ impl ExprKind {
             | ExprKind::CheckedMod { .. }
             | ExprKind::Sample { .. }
             | ExprKind::StrictSample { .. } => unreachable!("BinOp::of matched it"),
-            ExprKind::ByRef(e) => write!(f, "&{e}"),
+            ExprKind::ByRef(m, e) => write!(f, "{}{e}", m.prefix()),
             ExprKind::Deref(e) => write!(f, "*{e}"),
             // `-1` reads back as the literal: a negated one keeps the space
             ExprKind::Neg(e) => match &e.kind {

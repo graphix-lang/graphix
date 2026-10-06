@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -500,8 +500,8 @@ program that type checked has a known type there.</p>
 <h4 id="builtins-that-wrap-a-function"><a class="header" href="#builtins-that-wrap-a-function">Builtins that wrap a function</a></h4>
 <p>A builtin that takes any function and reads its signature, such as
 <code>queuefn</code>, declares that parameter’s type <code>Function</code>:</p>
-<pre><code class="language-graphix">let queuefn = 'a: Function |#count: &amp;[i64, null] = &amp;null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
-val queuefn: fn&lt;'a: Function&gt;(?#count:&amp;[i64, null], #trigger:Any, f: 'a) -&gt; 'a;
+<pre><code class="language-graphix">let queuefn = 'a: Function |#count: [&amp;mut i64, null] = null, #trigger: Any, f: 'a| -&gt; 'a 'core_queuefn;
+val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
 </code></pre>
 <p>The type checker refuses every program that passes something else
 there, a value that is not a function or one whose type stays unknown,
@@ -602,7 +602,7 @@ hard way (for now).</p>
         <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

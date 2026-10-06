@@ -104,8 +104,8 @@ fn union_identical_inner(t0: &Type, t1: &Type) -> bool {
         (Type::Set(s0), Type::Set(s1)) => all(s0, s1),
         (Type::Error(a), Type::Error(b))
         | (Type::Array(a), Type::Array(b))
-        | (Type::List(a), Type::List(b))
-        | (Type::ByRef(a), Type::ByRef(b)) => union_identical(a, b),
+        | (Type::List(a), Type::List(b)) => union_identical(a, b),
+        (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && union_identical(a, b),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
             union_identical(k0, k1) && union_identical(v0, v1)
         }
@@ -594,12 +594,13 @@ impl Type {
                     }
                 }
             }
-            (Type::ByRef(t0), Type::ByRef(t1)) => match t0.diff_int(env, hist, t1)? {
-                Type::Primitive(p) if p.is_empty() => {
+            (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
+                if m0 == m1 && union_identical(t0, t1) {
                     Ok(Type::Primitive(BitFlags::empty()))
+                } else {
+                    Ok(self.clone())
                 }
-                d => Ok(Type::ByRef(Arc::new(d))),
-            },
+            }
             (
                 Type::Abstract { id: id0, params: p0 },
                 Type::Abstract { id: id1, params: p1 },
@@ -618,8 +619,8 @@ impl Type {
             | (_, Type::Struct(_))
             | (Type::Variant(_, _, _), _)
             | (_, Type::Variant(_, _, _))
-            | (Type::ByRef(_), _)
-            | (_, Type::ByRef(_))
+            | (Type::ByRef(..), _)
+            | (_, Type::ByRef(..))
             | (Type::Error(_), _)
             | (_, Type::Error(_))
             | (Type::Primitive(_), _)

@@ -22,4 +22,4 @@
 // (aug08e) and the net::write path-switch flag. Whichever engine is
 // ruled right, the other needs the fix at the ByRef production /
 // static-resolve seam.
-{let v1 = 'a: Number|v0: 'a| -> 'a v0 - v0; let v2 = -((cast<i64>(u8:0)$ / v1(i64:0))); let v5 = &v2; *v5 <- i64:0; v2 % cast<i64>(z32:-1000)$}
+{let v1 = 'a: Number|v0: 'a| -> 'a v0 - v0; let v2 = -((cast<i64>(u8:0)$ / v1(i64:0))); let v5 = &mut v2; *v5 <- i64:0; v2 % cast<i64>(z32:-1000)$}

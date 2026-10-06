@@ -1329,8 +1329,8 @@ impl Type {
             (Type::Variant(ta, a, _), Type::Variant(tb, b, _)) if ta == tb => each(a, b),
             (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b))
-            | (Type::Error(a), Type::Error(b))
-            | (Type::ByRef(a), Type::ByRef(b)) => a.take_row(b),
+            | (Type::Error(a), Type::Error(b)) => a.take_row(b),
+            (Type::ByRef(m0, a), Type::ByRef(m1, b)) if m0 == m1 => a.take_row(b),
             (Type::Struct(a), Type::Struct(b))
                 if a.len() == b.len()
                     && a.iter().zip(b.iter()).all(|(a, b)| a.0 == b.0) =>

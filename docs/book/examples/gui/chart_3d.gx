@@ -33,4 +33,4 @@ let col = column(
     ]
 );
 
-[&window(#icon: &icon::icon, #title: &"3D Chart", #size: &{width: 800.0, height: 600.0}, &col)]
+[&window(#icon: &icon::icon, #title: &"3D Chart", #size: &mut {width: 800.0, height: 600.0}, &col)]

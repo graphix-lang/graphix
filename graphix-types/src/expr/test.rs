@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     expr::parser::parse_one,
     format_with_flags,
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, FnType, Mutability, TVar, Type, TypeRef},
 };
 use bytes::Bytes;
 use chrono::prelude::*;
@@ -365,7 +365,7 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::List(Arc::new(t))),
-            inner.clone().prop_map(|t| Type::ByRef(Arc::new(t))),
+            (mutability(), inner.clone()).prop_map(|(m, t)| Type::ByRef(m, Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
                     Type::Ref(TypeRef::synthetic(
@@ -1083,10 +1083,14 @@ macro_rules! structwith {
     };
 }
 
+fn mutability() -> impl Strategy<Value = Mutability> {
+    prop_oneof![Just(Mutability::Shared), Just(Mutability::Mut)]
+}
+
 macro_rules! byref {
     ($inner:expr) => {
-        $inner
-            .prop_map(|e| ExprKind::ByRef(Arc::new(e)).to_expr_nopos())
+        (mutability(), $inner)
+            .prop_map(|(m, e)| ExprKind::ByRef(m, Arc::new(e)).to_expr_nopos())
             .prop_map(add_parens)
     };
 }
@@ -1345,8 +1349,8 @@ fn add_parens(mut e: Expr) -> Expr {
         ExprKind::Deref(e) => {
             ExprKind::Deref(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
         }
-        ExprKind::ByRef(e) => {
-            ExprKind::ByRef(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
+        ExprKind::ByRef(m, e) => {
+            ExprKind::ByRef(m, Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
         }
         ExprKind::Neg(e) => {
             let inner = Arc::unwrap_or_clone(e);
@@ -2145,7 +2149,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Any { args: a0 }, ExprKind::Any { args: a1 }) => {
             a0.len() == a1.len() && a0.iter().zip(a1.iter()).all(|(a0, a1)| check(a0, a1))
         }
-        (ExprKind::ByRef(e0), ExprKind::ByRef(e1)) => check(e0, e1),
+        (ExprKind::ByRef(m0, e0), ExprKind::ByRef(m1, e1)) => m0 == m1 && check(e0, e1),
         (ExprKind::Deref(e0), ExprKind::Deref(e1)) => check(e0, e1),
         (ExprKind::Neg(e0), ExprKind::Neg(e1)) => check(e0, e1),
         (

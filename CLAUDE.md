@@ -716,9 +716,13 @@ cycle, across workers; the compiler never pins threads.
   decide; `design/parallel_compile.md`). Every cell of an interface
   `val`'s function type is generic, a constructor trait's element
   included: a call copies it.
-- **Place references** (`design/place_references.md`): `&a[i]`,
-  `&s.f`, `&t.0`, `&m{k}` are root + path; writes patch the root at
-  delivery; a dynamic key is a moving reference. References de-fuse.
+- **References** (`design/place_references.md`): `&e` is read-only
+  (`&T`, covariant); `&mut e` is writable (`&mut T`, invariant) and
+  `*r <- v` requires it of every reference `r` may hold. `&mut` of a
+  non-place expression is a fresh cell its uses type; an optional
+  writable argument is `[&mut T, null]`. `&a[i]`, `&s.f`, `&t.0`,
+  `&m{k}` are root + path; writes patch the root at delivery; a dynamic
+  key is a moving reference. References de-fuse.
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`

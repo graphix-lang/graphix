@@ -474,7 +474,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
                  a block or module body)"
             )
         }
-        ExprKind::ByRef(e) => ByRef::compile(ctx, flags, spec.clone(), scope, top_id, e),
+        ExprKind::ByRef(m, e) => {
+            ByRef::compile(ctx, flags, spec.clone(), scope, top_id, *m, e)
+        }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Ref { name } => Ref::compile(ctx, spec.clone(), scope, top_id, name),

@@ -9,17 +9,18 @@ use crate::expr::{
         sep_by1_tok, seq, spaces, sptoken, variant,
     },
 };
+use crate::typ::Mutability;
 use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice,
     error::StreamError,
-    many, not_followed_by,
+    many, not_followed_by, optional,
     parser::char::string,
     position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
     token, unexpected_any,
 };
-use netidx_value::parser::int;
+use netidx_value::parser::{int, not_prefix};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -37,6 +38,30 @@ where
 {
     (position(), token(op).with(arith_term(key)))
         .map(move |(pos, e)| mk(Arc::new(e)).to_expr(pos))
+}
+
+/// `&e` or `&mut e`.
+fn byref<I>(key: bool) -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), token('&'), mutability(), arith_term(key))
+        .map(|(pos, _, m, e)| ExprKind::ByRef(m, Arc::new(e)).to_expr(pos))
+}
+
+/// The `mut` after a `&`, and the space after it.
+pub(super) fn mutability<I>() -> impl Parser<I, Output = Mutability>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    optional(attempt(string("mut").skip(not_prefix()).skip(spaces()))).map(|m| match m {
+        Some(_) => Mutability::Mut,
+        None => Mutability::Shared,
+    })
 }
 
 /// A postfix operator applied to a primary in `arith_term`'s postfix loop.
@@ -153,7 +178,7 @@ where
         raw_string().map(|e| (e, None)),
         list_lit().map(|e| (e, None)),
         array().map(|e| (e, None)),
-        prefix('&', key, ExprKind::ByRef).map(|e| (e, None)),
+        byref(key).map(|e| (e, None)),
         prefix('*', key, ExprKind::Deref).map(|e| (e, None)),
         select().map(|e| (e, None)),
         seq().map(|e| (e, None)),

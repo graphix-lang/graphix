@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -257,6 +257,20 @@ directory:</p>
 </tbody>
 </table>
 </div>
+<!-- CR claude for eric: [doc-drift] This section shows the pre-v2 format (a bare
+[packages] table), but parse_packages reads any file without [stdlib] as legacy and
+migrate_old marks every stdlib package the file does not name as removed, so a file
+written from this example rebuilds a binary with core alone (probe: put this example in
+$XDG_DATA_HOME/graphix/packages.toml and run `graphix package list`; it rewrites the
+file with installed = ["core"] and the other 18 stdlib packages under removed). Updating
+(101-117) is stale too: update proposes external package updates (applied by --yes),
+prompts Y/e/n, refuses a non-terminal stdin without --yes, and queries no per-package
+stdlib version. Removing (71-79) omits the stdlib cascade prompt, step 3 of How the
+Rebuild Works (151) still generates deps.rs, and standalone.md:37 names the binary
+`graphix` where it is named after the package's short name. The doc comments at
+graphix-package/src/lib.rs:572 (the version comes from `graphix` on PATH, not the
+running binary), 1184 (deps.rs) and 1482 (package_dir/graphix) carry the same drift.
+(package-06) -->
 <p>The file is a simple TOML map of package names to versions:</p>
 <pre><code class="language-toml">[packages]
 mypackage = "1.2.0"
@@ -329,7 +343,7 @@ roughly the same time as compiling any Rust project of similar size.</p>
         <script src="../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

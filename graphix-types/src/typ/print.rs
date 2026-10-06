@@ -5,7 +5,7 @@ use crate::{
         print::{PrettyBuf, PrettyDisplay},
     },
     print_as_written,
-    typ::{Type, TypeRef},
+    typ::{Mutability, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use compact_str::format_compact;
@@ -181,7 +181,7 @@ impl Type {
             Self::Array(t) => write!(f, "Array<{t}>"),
             Self::List(t) => write!(f, "List<{t}>"),
             Self::Map { key, value } => write!(f, "Map<{key}, {value}>"),
-            Self::ByRef(t) => write!(f, "&{t}"),
+            Self::ByRef(m, t) => write!(f, "{}{t}", m.prefix()),
             Self::Tuple(ts) => {
                 write!(f, "(")?;
                 write_list(f, ts.iter())?;
@@ -233,7 +233,8 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Fn(_) => true,
         Type::Variant(_, args, _) => !args.is_empty(),
         Type::Ref(TypeRef { params, .. }) => !params.is_empty(),
-        Type::ByRef(t) => opens_with_bracket(t),
+        Type::ByRef(Mutability::Shared, t) => opens_with_bracket(t),
+        Type::ByRef(Mutability::Mut, _) => false,
         Type::Bottom
         | Type::Any
         | Type::Primitive(_)
@@ -306,8 +307,8 @@ impl PrettyDisplay for Type {
                 })?;
                 writeln!(buf, ">")
             }
-            Self::ByRef(t) => {
-                write!(buf, "&")?;
+            Self::ByRef(m, t) => {
+                write!(buf, "{}", m.prefix())?;
                 t.fmt_pretty(buf)
             }
             Self::Tuple(ts) => {

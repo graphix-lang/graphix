@@ -37,6 +37,36 @@ array-rebuilding twin, an API shaped by the hole. Eric: "not having
 this changed the way you wrote an API in tui; that qualifies as a now
 change."
 
+## `&T` and `&mut T`
+
+A reference is read-only (`&e`, typed `&T`) or writable (`&mut e`, typed
+`&mut T`); `Type::ByRef(Mutability, T)`, one runtime representation (a
+cell id). `*r <- v` requires every reference `r` may hold to be `&mut`,
+and `v` to fit each one's referent (`ConnectDeref::typecheck0_with`).
+
+- `&T ⊇ &U` and `&T ⊇ &mut U` iff `T ⊇ U` (a read-only reference is
+  covariant); `&mut T ⊇ &mut U` iff `T = U`; `&mut T ⊉ &U`.
+- A union merges two `&` into one over the union of their referents;
+  two `&mut` merge only when equal.
+- `&mut x` and a `&mut` place over a binding are pinned to the binding's
+  type. A `&mut` place rooted at `*r` requires `r: &mut`. `&mut e` over
+  any other expression mints a fresh cell only the reference reaches:
+  its type is a variable with the deferred lower bound `⊇ typeof(e)`,
+  decided by the uses (`&mut null` into `&mut [i64, null]`).
+- An optional writable argument is `[&mut T, null]` (queuefn's
+  `#count`): `&mut [T, null]` would refuse `&mut x` for `x: T`.
+
+### Why
+
+Covariance with writes let `&a` (`a: i64`) be typed `&[i64, string]`
+and `*r <- "s"` store a string in `a`; the JIT then panicked on the
+slot type (c-node-mod-01, t-fntyp-01). Plain invariance refused the
+optional props every widget takes (`&x` into `&[T, null]`). Most
+references are only read, so the split keeps those covariant, makes
+the writable ones exact, and shows the grant at the call site. Eric:
+"a &T and &mut T is perfect, most of our ref usage is not for writing
+anyway, and it gives an enhanced guarantee to the programmer."
+
 ## Two writes to one root in one cycle
 
 Each write is queued as a **patch** — path and value — and resolved

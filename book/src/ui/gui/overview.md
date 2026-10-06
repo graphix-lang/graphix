@@ -16,12 +16,12 @@ Graphix includes a GUI library built on the Rust [iced](https://iced.rs) framewo
 Every GUI program is built around windows. The `Window` type describes a window and its content:
 
 ```graphix
-type Window = { title: &string, size: &Size, theme: &Theme, content: &Widget };
+type Window = { title: &string, size: &mut Size, theme: &Theme, content: &Widget };
 type Gui = Array<&Window>;
 
 val window: fn(
   ?#title: &string,
-  ?#size: &Size,
+  ?#size: &mut Size,
   ?#theme: &Theme,
   a: &Widget
 ) -> Window;

@@ -122,10 +122,10 @@ async fn native_call(fusion_disabled: bool) -> Result<()> {
 // it that reads the variable starts the next cycle and sees the write.
 async fn reference_argument_writes(fusion_disabled: bool) -> Result<()> {
     for form in ["seq", "seqq"] {
-        for body in ["set(&b, 5); let s = b; s", "let r = &b; set(r, 5); b"] {
+        for body in ["set(&mut b, 5); let s = b; s", "let r = &mut b; set(r, 5); b"] {
             let code = format!(
                 r#"{{
-                    let set = |r: &i64, v: i64| {{ *r <- v; null }};
+                    let set = |r: &mut i64, v: i64| {{ *r <- v; null }};
                     let b = 0;
                     {form} {{ {body} }}
                 }}"#

@@ -597,7 +597,7 @@ module.exports = grammar({
 
     type_arguments: $ => seq('<', commaSep1($._type), '>'),
 
-    by_ref_type: $ => seq('&', $._type),
+    by_ref_type: $ => seq('&', optional('mut'), $._type),
 
     abstract_type: $ => seq('?', $.type_identifier),
 
@@ -1044,7 +1044,7 @@ module.exports = grammar({
     ),
 
     // By-reference and dereference
-    by_ref: $ => prec('unary', seq('&', $._expression)),
+    by_ref: $ => prec('unary', seq('&', optional('mut'), $._expression)),
 
     deref: $ => prec('unary', seq('*', $._expression)),
 

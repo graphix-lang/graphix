@@ -526,7 +526,7 @@ use tui::text::{self, *};
 let ed = line_edit::state("");
 let v = ed.value;
 let cur = ed.cursor;
-let handle = |e: Event| -> [`Stop, `Continue] line_edit::handle(&ed, e);
+let handle = |e: Event| -> [`Stop, `Continue] line_edit::handle(&mut ed, e);
 let result = input_handler(#handle: &handle, &text(&[line_edit::view(&ed)]))
 "#,
     )

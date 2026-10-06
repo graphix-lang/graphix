@@ -988,7 +988,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             stmt.fold(w, &mut |mut w, e| {
                 let target = match &e.kind {
                     ExprKind::Connect { name, deref: false, .. } => Some(name),
-                    ExprKind::ByRef(place) => place_root(place),
+                    ExprKind::ByRef(_, place) => place_root(place),
                     _ => None,
                 };
                 if let Some(n) = target.and_then(simple_name) {
@@ -1522,13 +1522,13 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             }
         }
         // a reference is to the variable, never to a snapshot of it
-        ExprKind::ByRef(x) => {
+        ExprKind::ByRef(m, x) => {
             let cells: LPooled<Names> = map
                 .iter()
                 .filter(|(_, r)| matches!(r, Redirect::Cell(_)))
                 .map(|(k, r)| (k.clone(), r.clone()))
                 .collect();
-            ExprKind::ByRef(Arc::new(rewrite_with(x, &cells, mode.deferred())))
+            ExprKind::ByRef(*m, Arc::new(rewrite_with(x, &cells, mode.deferred())))
         }
         ExprKind::Block { exprs } => {
             ExprKind::Block { exprs: rewrite_stmts(exprs, map, mode) }

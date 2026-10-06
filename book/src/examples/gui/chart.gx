@@ -40,4 +40,4 @@ let col = column(
     ]
 );
 
-[&window(#icon: &icon::icon, #title: &"Chart", #size: &{ width: 900.0, height: 700.0 }, &col)]
+[&window(#icon: &icon::icon, #title: &"Chart", #size: &mut { width: 900.0, height: 700.0 }, &col)]

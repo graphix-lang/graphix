@@ -5,8 +5,9 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AndAc, CoreTrait, Lazy, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef,
-        node_addr, probe_key, setops::union_identical, tvar::would_cycle_inner,
+        AndAc, CoreTrait, Lazy, Mutability, NormKey, RefHist, RefPair, TVar, TraitId,
+        Type, TypeRef, node_addr, probe_key, setops::union_identical,
+        tvar::would_cycle_inner,
     },
 };
 use ahash::AHashMap;
@@ -358,8 +359,8 @@ fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
         }
         (Type::Array(a), Type::Array(b))
         | (Type::List(a), Type::List(b))
-        | (Type::Error(a), Type::Error(b))
-        | (Type::ByRef(a), Type::ByRef(b)) => link_equal(a, b, commit),
+        | (Type::Error(a), Type::Error(b)) => link_equal(a, b, commit),
+        (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && link_equal(a, b, commit),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
             link_equal(k0, k1, commit) && link_equal(v0, v1, commit)
         }
@@ -420,8 +421,8 @@ fn same_content(a: &Type, b: &Type) -> bool {
         (Type::Fn(x), Type::Fn(y)) => Arc::ptr_eq(x, y),
         (Type::Array(x), Type::Array(y))
         | (Type::List(x), Type::List(y))
-        | (Type::Error(x), Type::Error(y))
-        | (Type::ByRef(x), Type::ByRef(y)) => Arc::ptr_eq(x, y),
+        | (Type::Error(x), Type::Error(y)) => Arc::ptr_eq(x, y),
+        (Type::ByRef(m0, x), Type::ByRef(m1, y)) => m0 == m1 && Arc::ptr_eq(x, y),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
             Arc::ptr_eq(k0, k1) && Arc::ptr_eq(v0, v1)
         }
@@ -810,21 +811,25 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            // CR claude for eric: [bug] This arm makes references covariant (`&[i64,
-            // string]` holds `&i64`). A reference is writable, and
-            // ConnectDeref::typecheck0_with (node/mod.rs:2361) checks `*r <- v` only
-            // against r's own type. So a program that passes the check writes a string
-            // or null into an `i64` binding: the JIT then panics at
-            // fusion/kernel.rs:243 and the runtime dies, while the node-walk computes
-            // on the wrong type. No annotation is needed: `let set = |v: 'a, r: &'a| *r
-            // <- v` called as `set(n, &x)` with `n: [i64, null]` and `x = 1` passes.
-            // The same call with the reference first, `set(&x, n)`, is refused, so this
-            // arm undoes callsite.rs::Widening's rule that a reference keeps the first
-            // argument's type. Plain invariance would also refuse the read-only
-            // widenings the stdlib relies on (`#title: &"Chart"` into `&[string,
-            // null]`, tui browser.gx:156), so the fix needs a design choice; probe:
+            // XCR claude for eric: [bug] This arm made references covariant (`&[i64,
+            // string]` holds `&i64`) though `*r <- v` writes through them, so a
+            // program that passed the check wrote a string or null into an `i64`
+            // binding and the JIT panicked at fusion/kernel.rs:243. Addressed: `&T`
+            // is read-only and covariant, `&mut T` writes and is invariant, and
+            // ConnectDeref refuses a write through a `&T`. probe:
             // design/review-2026-10-05/repro/c-node-mod-01.gx (c-node-mod-01)
-            (Self::ByRef(t0), Self::ByRef(t1)) => t0.contains_int(flags, env, hist, t1),
+            // `&T` only reads, so it is covariant, and a `&mut` is one; `&mut T`
+            // also writes, so it is invariant.
+            (Self::ByRef(Mutability::Shared, t0), Self::ByRef(_, t1)) => {
+                t0.contains_int(flags, env, hist, t1)
+            }
+            (Self::ByRef(Mutability::Mut, t0), Self::ByRef(Mutability::Mut, t1)) => {
+                Ok(t0.contains_int(flags, env, hist, t1)?
+                    && t1.contains_int(flags, env, hist, t0)?)
+            }
+            (Self::ByRef(Mutability::Mut, _), Self::ByRef(Mutability::Shared, _)) => {
+                Ok(false)
+            }
             // Two vars sharing one cell are already unified; the cycle
             // guard below would otherwise poison both.
             (Self::TVar(t0), Self::TVar(t1))
@@ -1135,8 +1140,8 @@ impl Type {
             | (_, Self::TVar(_))
             | (Self::TVar(_), _)
             | (Self::Fn(_), _)
-            | (Self::ByRef(_), _)
-            | (_, Self::ByRef(_))
+            | (Self::ByRef(..), _)
+            | (_, Self::ByRef(..))
             | (_, Self::Fn(_))
             | (Self::Tuple(_), Self::Array(_))
             | (Self::Tuple(_), Self::Primitive(_))
@@ -1709,9 +1714,8 @@ impl Type {
 
 // CR claude for eric: [test-gap] These three tests are the only direct pins of
 // Type::contains. No graphix-tests pin covers the rules broken by the accepted
-// ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
-// (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
-// with the reference first), abstract parameters (t-contains-07), a rigid cell decided
+// ill-typed repros in design/review-2026-10-05/repro: abstract parameters
+// (t-contains-07), a rigid cell decided
 // by a conjunct probe (t-contains-03), a conjunct never reaching a binding's open cells
 // (t-contains-08), and ⊥ ⊇ 'x, occurs refusals and open rigid constructors (t-tvar-02,
 // t-tvar-08, t-tvar-01). Each passes --check at HEAD, and --check on t-contains-09
@@ -1720,8 +1724,8 @@ impl Type {
 // rule, and the generators build no parameterized abstract type. So the fleet meets
 // such a hole only when a generated program happens to run the lie, and then reports it
 // as a JIT divergence (graphix-fuzz check on t-contains-07.gx). Pin each repro with its
-// fix, and once each variance rule is stated, give it a must-reject family: a write
-// through a widened reference, a widened abstract parameter. (t-contains-12)
+// fix, and once each variance rule is stated, give it a must-reject family: a widened
+// abstract parameter (references have family 9). (t-contains-12)
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -185,7 +185,7 @@ run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
 const DECODE_I64_ROUND_TRIP: &str = r#"{
   let x: i64 = never();
   let encoded = buffer::encode([`I64(i64:42)]);
-  buffer::decode(encoded, [`I64(&x)])?;
+  buffer::decode(encoded, [`I64(&mut x)])?;
   x
 }"#;
 
@@ -196,7 +196,7 @@ run!(decode_i64_round_trip, DECODE_I64_ROUND_TRIP, |v: Result<&Value>| {
 const DECODE_U32_ROUND_TRIP: &str = r#"{
   let x: u32 = never();
   let encoded = buffer::encode([`U32(u32:12345)]);
-  buffer::decode(encoded, [`U32(&x)])?;
+  buffer::decode(encoded, [`U32(&mut x)])?;
   x
 }"#;
 
@@ -214,7 +214,7 @@ const DECODE_LENGTH_PREFIXED: &str = r#"{
   ]);
   let name_len: u64 = never();
   let decoded_name: string = never();
-  buffer::decode(encoded, [`U64(&name_len), `UTF8(&name_len, &decoded_name)])?;
+  buffer::decode(encoded, [`U64(&mut name_len), `UTF8(&name_len, &mut decoded_name)])?;
   decoded_name
 }"#;
 
@@ -231,7 +231,7 @@ const DECODE_BYTES_ROUND_TRIP: &str = r#"{
   ]);
   let data_len: u64 = never();
   let decoded_data: bytes = never();
-  buffer::decode(encoded, [`U64(&data_len), `Bytes(&data_len, &decoded_data)])?;
+  buffer::decode(encoded, [`U64(&mut data_len), `Bytes(&data_len, &mut decoded_data)])?;
   buffer::to_string(decoded_data)?
 }"#;
 
@@ -243,7 +243,7 @@ run!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
 const DECODE_INSUFFICIENT: &str = r#"{
   let x: i64 = never();
   let short = buffer::encode([`U8(u8:1)]);
-  is_err(buffer::decode(short, [`I64(&x)]))
+  is_err(buffer::decode(short, [`I64(&mut x)]))
 }"#;
 
 run!(decode_insufficient, DECODE_INSUFFICIENT, |v: Result<&Value>| {
@@ -255,7 +255,7 @@ const DECODE_INVALID_UTF8: &str = r#"{
   let bad = buffer::encode([`U64(buffer::len(bad_bytes)), `Bytes(bad_bytes)]);
   let slen: u64 = never();
   let s: string = never();
-  is_err(buffer::decode(bad, [`U64(&slen), `UTF8(&slen, &s)]))
+  is_err(buffer::decode(bad, [`U64(&mut slen), `UTF8(&slen, &mut s)]))
 }"#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
@@ -267,7 +267,7 @@ const DECODE_SKIP: &str = r#"{
   let encoded = buffer::encode([`U8(u8:1), `U8(u8:2), `U8(u8:3)]);
   let skip_len = u64:1;
   let x: u8 = never();
-  buffer::decode(encoded, [`Skip(&skip_len), `U8(&x)])?;
+  buffer::decode(encoded, [`Skip(&skip_len), `U8(&mut x)])?;
   x
 }"#;
 
@@ -279,7 +279,7 @@ run!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
 const DECODE_REMAINING: &str = r#"{
   let encoded = buffer::encode([`U8(u8:1), `U8(u8:2), `U8(u8:3)]);
   let x: u8 = never();
-  let rest = buffer::decode(encoded, [`U8(&x)])?;
+  let rest = buffer::decode(encoded, [`U8(&mut x)])?;
   buffer::len(rest)
 }"#;
 
@@ -291,7 +291,7 @@ run!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
 const VARINT_ROUND_TRIP: &str = r#"{
   let x: u64 = never();
   let encoded = buffer::encode([`Varint(u64:300)]);
-  buffer::decode(encoded, [`Varint(&x)])?;
+  buffer::decode(encoded, [`Varint(&mut x)])?;
   x
 }"#;
 
@@ -322,7 +322,7 @@ run!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
 const ZIGZAG_NEGATIVE: &str = r#"{
   let x: i64 = never();
   let encoded = buffer::encode([`Zigzag(i64:-42)]);
-  buffer::decode(encoded, [`Zigzag(&x)])?;
+  buffer::decode(encoded, [`Zigzag(&mut x)])?;
   x
 }"#;
 
@@ -333,7 +333,7 @@ run!(zigzag_negative, ZIGZAG_NEGATIVE, |v: Result<&Value>| {
 const ZIGZAG_POSITIVE: &str = r#"{
   let x: i64 = never();
   let encoded = buffer::encode([`Zigzag(i64:42)]);
-  buffer::decode(encoded, [`Zigzag(&x)])?;
+  buffer::decode(encoded, [`Zigzag(&mut x)])?;
   x
 }"#;
 
@@ -357,7 +357,7 @@ const VARINT_LENGTH_PREFIXED: &str = r#"{
   let encoded = buffer::encode([`Varint(buffer::len(data)), `Bytes(data)]);
   let data_len: u64 = never();
   let decoded: bytes = never();
-  buffer::decode(encoded, [`Varint(&data_len), `Bytes(&data_len, &decoded)])?;
+  buffer::decode(encoded, [`Varint(&mut data_len), `Bytes(&data_len, &mut decoded)])?;
   buffer::to_string(decoded)?
 }"#;
 
@@ -369,7 +369,7 @@ run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
 // A ref to a literal in a decode spec is a runtime decode error.
 const DECODE_REF_TO_LITERAL: &str = r#"{
   let encoded = buffer::encode([`U8(u8:1)]);
-  is_err(buffer::decode(encoded, [`U8(&u8:0)]))
+  is_err(buffer::decode(encoded, [`U8(&mut u8:0)]))
 }"#;
 
 run!(decode_ref_to_literal, DECODE_REF_TO_LITERAL, |v: Result<&Value>| {
@@ -381,7 +381,7 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
   let encoded = buffer::encode([`U8(u8:1), `U8(u8:2), `U8(u8:3)]);
   let discard: u8 = never();
   let x: u8 = never();
-  buffer::decode(encoded, [`U8(&discard), `U8(&x)])?;
+  buffer::decode(encoded, [`U8(&mut discard), `U8(&mut x)])?;
   x
 }"#;
 

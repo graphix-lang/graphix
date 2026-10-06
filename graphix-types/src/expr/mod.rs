@@ -1,7 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
-    typ::{FnType, TVar, Type},
+    typ::{FnType, Mutability, TVar, Type},
 };
 use arcstr::{ArcStr, literal};
 pub use binop::BinOp;
@@ -717,7 +717,7 @@ pub enum ExprKind {
     SeqCapture(Arc<SeqCaptureExpr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
-    ByRef(Arc<Expr>),
+    ByRef(Mutability, Arc<Expr>),
     Deref(Arc<Expr>),
     Neg(Arc<Expr>),
     Eq {
@@ -833,7 +833,7 @@ impl ExprKind {
             | SeqGuard(x)
             | SeqAbort(x)
             | OrNever(x)
-            | ByRef(x)
+            | ByRef(_, x)
             | Deref(x)
             | Neg(x)
             | Until(x)
@@ -1501,7 +1501,7 @@ impl Expr {
             SeqGuard(x) => SeqGuard(a(f, x)),
             SeqAbort(x) => SeqAbort(a(f, x)),
             OrNever(x) => OrNever(a(f, x)),
-            ByRef(x) => ByRef(a(f, x)),
+            ByRef(m, x) => ByRef(*m, a(f, x)),
             Deref(x) => Deref(a(f, x)),
             Neg(x) => Neg(a(f, x)),
             Until(x) => Until(a(f, x)),

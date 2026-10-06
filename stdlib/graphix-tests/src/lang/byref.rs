@@ -47,7 +47,7 @@ run!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
 const CONNECT_DEREF0: &str = r#"
 {
   let v = 41;
-  let r = &v;
+  let r = &mut v;
   *r <- *r + 1;
   array::group(v, |n, _| n == 2)
 }
@@ -63,9 +63,9 @@ run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
 
 const CONNECT_DEREF1: &str = r#"
 {
-  let f = |x: &i64| *x <- *x + 1;
+  let f = |x: &mut i64| *x <- *x + 1;
   let v = 41;
-  f(&v);
+  f(&mut v);
   array::group(v, |n, _| n == 2)
 }
 "#;
@@ -117,11 +117,11 @@ const PLACE_READ_WRITE: &str = r#"
   let s = { x: 5, tags: ["p", "q"] };
   let t = (7, 8);
   let m = {"k" => 9};
-  let ra = &a[1];
-  let rs = &s.x;
-  let rn = &s.tags[0];
-  let rt = &t.1;
-  let rm = &m{"k"};
+  let ra = &mut a[1];
+  let rs = &mut s.x;
+  let rn = &mut s.tags[0];
+  let rt = &mut t.1;
+  let rm = &mut m{"k"};
   let before = once((*ra, *rs, *rn, *rt, *rm));
   let t1 = sys::time::timer(duration:0.05s, false);
   *ra <- t1 ~ 21;
@@ -146,10 +146,10 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
   let a = [1, 2, 3];
   let i = 0;
-  let r = &a[i];
-  let r0 = &a[0];
-  let r2 = &a[2];
-  let bad = &a[7];
+  let r = &mut a[i];
+  let r0 = &mut a[0];
+  let r2 = &mut a[2];
+  let bad = &mut a[7];
   let first = once(*r);
   let t1 = sys::time::timer(duration:0.05s, false);
   i <- t1 ~ 2;
@@ -174,14 +174,14 @@ const PLACE_THROUGH_PARAM: &str = r#"
 {
   type State = { value: string, cursor: i64 };
   let vals: Array<State> = [{ value: "a", cursor: 1 }, { value: "b", cursor: 1 }];
-  let bump = |st: &State, t: Any| -> null {
+  let bump = |st: &mut State, t: Any| -> null {
     let s = t ~ *st;
     *st <- { value: "[s.value]!", cursor: s.cursor + 1 };
     null
   };
   let t1 = sys::time::timer(duration:0.05s, false);
   let go = t1 ~ 1;
-  bump(&vals[go], go);
+  bump(&mut vals[go], go);
   let t2 = sys::time::timer(duration:0.2s, false);
   t2 ~ vals
 }
@@ -261,7 +261,7 @@ const PLACE_BOTTOM_KEY: &str = r#"
 {
   let a = [10, 20];
   let k: [i64, null] = 0;
-  let r = &a[k$];
+  let r = &mut a[k$];
   let t1 = sys::time::timer(duration:0.02s, false);
   k <- t1 ~ null;
   let t2 = sys::time::timer(duration:0.05s, false);
@@ -323,8 +323,8 @@ run!(place_error_field, PLACE_ERROR_FIELD, |v: Result<&Value>| {
 const PLACE_THROUGH_DEREF: &str = r#"
 {
   let a = {p: {x: 10, y: 1}};
-  let r: &{x: i64, y: i64} = &a.p;
-  let s = &(*r).x;
+  let r: &mut {x: i64, y: i64} = &mut a.p;
+  let s = &mut (*r).x;
   let t1 = sys::time::timer(duration:0.02s, false);
   *s <- t1 ~ 20;
   let t2 = sys::time::timer(duration:0.05s, false);
@@ -343,8 +343,8 @@ run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
 const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 {
   let a = [10, 20];
-  let r: [&Array<i64>, null] = &a;
-  let s = &(*r$)[0];
+  let r: [&mut Array<i64>, null] = &mut a;
+  let s = &mut (*r$)[0];
   let t1 = sys::time::timer(duration:0.02s, false);
   r <- t1 ~ null;
   let t2 = sys::time::timer(duration:0.05s, false);
@@ -352,7 +352,7 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
   let obs: [i64, null] = null;
   obs <- t2 ~ *s;
   let t3 = sys::time::timer(duration:0.08s, false);
-  r <- t3 ~ &a;
+  r <- t3 ~ &mut a;
   let t4 = sys::time::timer(duration:0.11s, false);
   *s <- t4 ~ 7;
   let t5 = sys::time::timer(duration:0.16s, false);
@@ -475,8 +475,8 @@ const PLACE_PAYLOAD: &str = r#"
   type C = Abstract<i64>;
   let c = C(5);
   let e: Error<i64> = error(1);
-  let rc = &c.0;
-  let re = &e.0;
+  let rc = &mut c.0;
+  let re = &mut e.0;
   let before = once((*rc, *re));
   let t1 = sys::time::timer(duration:0.02s, false);
   *rc <- t1 ~ 7;

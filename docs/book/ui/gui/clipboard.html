@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-5f387cde.js";
+            window.path_to_searchindex_js = "../../searchindex-68ef8cf7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -241,6 +241,18 @@ let col = column(
             #padding: &amp;`All(10.0),
             &amp;text(&amp;"Copy to clipboard")
         ),
+        // CR claude for eric: [bug] The on_press handler below pastes the previous
+        // read. read_text is async and re-delivers its last reply while a press's read
+        // is in flight, so `c ~ clipboard::read_text(c)$` writes the reply to the
+        // previous press, and the new reply fires with no `c` fire to sample it. Every
+        // paste after the first shows the clipboard as it was at the previous press
+        // (copy A, paste: A; copy B, paste: still A; paste again: B). read_text is
+        // already triggered by `c`, so write its reply: `#on_press: |c| pasted &lt;-
+        // clipboard::read_text(c)$`. The book teaches this example
+        // (book/src/ui/gui/clipboard.md). probe:
+        // design/review-2026-10-05/repro/examples-01.gx (the handler's shape over
+        // json::read through sys::net::publish's on_write trails by one event; the fix
+        // does not). (examples-01)
         button(
             #on_press: |c| pasted &lt;- c ~ clipboard::read_text(c)$,
             #padding: &amp;`All(10.0),
@@ -310,7 +322,7 @@ let col = column(
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-d71af7ae.js"></script>
+        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
 
 
 

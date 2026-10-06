@@ -116,7 +116,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // nor under `&`, where `e` may be a place's root
     {
         let under_ref = |i: usize| {
-            (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(_)) && i < j + sizes[j])
+            (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(..)) && i < j + sizes[j])
         };
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
@@ -291,7 +291,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let holds_catch = b
                 .value
                 .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
-            if under(|k| matches!(k, ExprKind::ByRef(_)))
+            if under(|k| matches!(k, ExprKind::ByRef(..)))
                 || (holds_catch && under(|k| matches!(k, ExprKind::Seq { .. })))
             {
                 continue;

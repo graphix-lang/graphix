@@ -148,6 +148,16 @@ let r = &s;      // r is a reference to s
 let v = *r;      // v is the value "Hello"
 ```
 
+`&T` is read-only. A function that writes through a reference (`*r <- v`) takes `&mut T`, and you pass it `&mut x`:
+
+```graphix
+let set = |r: &mut i64, v: i64| *r <- v;
+let x = 0;
+set(&mut x, 1)   // x becomes 1
+```
+
+A `&T` parameter accepts a `&mut` too, and covers any narrower type: `&[i64, null]` accepts `&x` with `x: i64`. A `&mut T` must refer to exactly a `T`.
+
 In function signatures, `&T` in a parameter position means the function expects a reference. In widget examples, you'll often see:
 
 ```graphix
