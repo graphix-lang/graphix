@@ -1,10 +1,11 @@
 use super::{Length, Widget};
+/// A radio of any value type: `on_select` is called with `value`.
 type Radio = {
   disabled: &bool,
-  value: &'a,
+  value: &Any,
   label: &string,
-  on_select: &[fn(v: 'a) -> Any, null],
-  selected: &['a, null],
+  on_select: &[fn(v: Any) -> Any, null],
+  selected: &[Any, null],
   width: &Length,
   size: &[f64, null],
   spacing: &[f64, null]

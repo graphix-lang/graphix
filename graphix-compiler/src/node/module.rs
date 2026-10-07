@@ -278,7 +278,7 @@ fn bind_sig_item(
             let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, si_ori);
             let sigs = t.methods.iter().map(|m| {
                 let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
-                (m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
+                (m.name.name.clone(), m.name.pos_or(si.pos), Arc::new(ft), m.self_index)
             });
             env.deftrait(
                 &scope.lexical,

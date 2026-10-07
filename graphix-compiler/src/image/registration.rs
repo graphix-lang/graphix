@@ -34,7 +34,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 25;
+pub const REGISTRATION_FORMAT: u8 = 26;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).

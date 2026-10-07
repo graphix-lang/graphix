@@ -643,26 +643,28 @@ impl TypeRef {
     /// What this ref's name means in `env`; never reads or writes the
     /// cell.
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
-        env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
-            env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| d.def.clone())
-        })
-        // CR claude for claude: [bug] This turns every structural error from
-        // resolve_visible (an ambiguous glob, `super` past the root, a missing module
-        // in a path) into a log::warn and None. The callers then report
-        // UnresolvableRef, so `let x: T = 1` under two globs that both provide T says
-        // "undefined type T in ". The same mistake on a value names the cause: "`v` is
-        // ambiguous: both `a` and `b` provide it". The shell installs a logger only
-        // under --log-dir, so the warning is invisible by default, which contradicts
-        // the comment below and design/module_system.md "Diagnostics". Return the error
-        // (Result<Option<_>>) and carry it into lookup_ref_with and check_pending_names
-        // instead of logging it. probe: design/review-2026-10-05/repro/x-errors-08.sh
-        // (x-errors-08)
-        .map_err(|e| {
-            // Logged so an ambiguous glob does not read as "undefined type".
-            log::warn!("resolving type `{}` in `{}`: {e:#}", self.name, self.scope)
-        })
-        .ok()
-        .flatten()
+        env.resolve_type_name(&self.scope, &self.name)
+            .map(|hit| match hit {
+                Some(crate::env::TypeName::Def(def)) => Some(def),
+                Some(crate::env::TypeName::Trait(_)) | None => None,
+            })
+            // CR claude for claude: [bug] This turns every structural error from
+            // resolve_visible (an ambiguous glob, `super` past the root, a missing module
+            // in a path) into a log::warn and None. The callers then report
+            // UnresolvableRef, so `let x: T = 1` under two globs that both provide T says
+            // "undefined type T in ". The same mistake on a value names the cause: "`v` is
+            // ambiguous: both `a` and `b` provide it". The shell installs a logger only
+            // under --log-dir, so the warning is invisible by default, which contradicts
+            // the comment below and design/module_system.md "Diagnostics". Return the error
+            // (Result<Option<_>>) and carry it into lookup_ref_with and check_pending_names
+            // instead of logging it. probe: design/review-2026-10-05/repro/x-errors-08.sh
+            // (x-errors-08)
+            .map_err(|e| {
+                // Logged so an ambiguous glob does not read as "undefined type".
+                log::warn!("resolving type `{}` in `{}`: {e:#}", self.name, self.scope)
+            })
+            .ok()
+            .flatten()
     }
 
     /// Resolve this ref's name in `env` and fill the cell if empty;

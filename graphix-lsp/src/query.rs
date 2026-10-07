@@ -13,7 +13,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     BindId, SourcePosition,
-    env::{Bind, TypeDef},
+    env::{Bind, TraitDef, TypeDef},
     expr::{ModPath, Origin, Source},
     ide::ModuleRefSite,
     typ::Type,
@@ -145,6 +145,17 @@ impl<'a> Query<'a> {
         self.checked.env.typedefs.get(scope).and_then(|defs| defs.get(name))
     }
 
+    /// The trait whose module-like scope is `path`, if one is.
+    fn trait_at(&self, path: &ModPath) -> Option<&'a TraitDef> {
+        let env = &self.checked.env;
+        let id = env.traits.get(&truncated(path, 1))?.get(basename(path))?;
+        env.trait_def(*id).map(|d| &**d)
+    }
+
+    fn trait_location(&self, def: &TraitDef) -> Option<Location> {
+        self.location(&def.ori, zero_based(def.pos), def.name.chars().count())
+    }
+
     /// What a canonical path names: a value before a type before a
     /// module (`tui::text` is a function and its module).
     fn named(&self, canonical: &ModPath) -> Option<Target> {
@@ -235,6 +246,19 @@ impl<'a> Query<'a> {
                 return Some((Target::Bind(b.id), b.name.clone()));
             }
         }
+        // a trait is the module its methods are in
+        for (_, defs) in &env.traits {
+            if let Some(id) = defs.get(&*self.ident)
+                && let Some(def) = env.trait_def(*id)
+                && in_file(&def.ori, self.file)
+                && here(zero_based(def.pos))
+            {
+                return Some((
+                    Target::Module(def.path.clone()),
+                    def.name.as_str().into(),
+                ));
+            }
+        }
         for (scope, defs) in &env.typedefs {
             if let Some(td) = defs.get(&*self.ident)
                 && in_file(td.ori(), self.file)
@@ -277,9 +301,21 @@ impl<'a> Query<'a> {
                     td.doc.as_ref(),
                 )
             }
-            Target::Module(canonical) => {
-                markdown(&format_compact!("mod {canonical}"), None)
-            }
+            Target::Module(canonical) => match self.trait_at(&canonical) {
+                Some(def) => {
+                    let mut code = format_compact!("trait {} {{\n", def.name);
+                    for m in def.methods.iter() {
+                        code.push_str(&format_compact!(
+                            "    val {}: {};\n",
+                            m.name,
+                            m.typ
+                        ));
+                    }
+                    code.push('}');
+                    markdown(&code, def.doc.as_ref())
+                }
+                None => markdown(&format_compact!("mod {canonical}"), None),
+            },
         })
     }
 
@@ -323,6 +359,9 @@ impl<'a> Query<'a> {
             }
             Target::Type(scope, name) => self.type_location(&scope, &name),
             Target::Module(canonical) => {
+                if let Some(def) = self.trait_at(&canonical) {
+                    return self.trait_location(def);
+                }
                 let ide = &self.checked.ide;
                 let ori = ide.module_references.iter().find_map(|m| {
                     (m.canonical == canonical).then_some(m.def_ori.as_ref()).flatten()
@@ -383,7 +422,9 @@ impl<'a> Query<'a> {
                 out.extend(match t {
                     Target::Bind(id) => self.bind_location(*id),
                     Target::Type(scope, name) => self.type_location(scope, name),
-                    Target::Module(_) => None,
+                    Target::Module(m) => {
+                        self.trait_at(m).and_then(|d| self.trait_location(d))
+                    }
                 });
             }
         }

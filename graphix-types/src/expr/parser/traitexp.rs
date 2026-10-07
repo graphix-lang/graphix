@@ -8,7 +8,7 @@ use super::{
 use crate::{
     expr::{
         Comments, Doc, Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr,
-        TraitMethod,
+        TraitMethod, WrittenPath,
     },
     typ::{FnArgKind, TVar, Type},
 };
@@ -20,6 +20,7 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token, value,
 };
+use netidx_core::path::Path;
 use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -179,8 +180,20 @@ where
                     )
                     .right();
                 }
+                // a path holds no space: each segment follows the last's `::`
+                let mut col = at_params.column;
+                let trait_at = WrittenPath(
+                    Path::parts(&trait_name.0)
+                        .map(|seg| {
+                            let at = SourcePosition { line: at_params.line, column: col };
+                            col += seg.chars().count() as i32 + 2;
+                            at
+                        })
+                        .collect(),
+                );
                 value(ImplExpr {
                     trait_name,
+                    trait_at,
                     params: tvs,
                     constraints: Arc::from_iter(constraints.drain(..)),
                     target,

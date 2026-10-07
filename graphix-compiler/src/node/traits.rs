@@ -24,6 +24,7 @@ use crate::{
         ImplExpr, LambdaExpr, ModPath, Origin, Pattern, SelectExpr, StructurePattern,
         TraitExpr, WrittenAt,
     },
+    ide::ModuleRefSite,
     image::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
@@ -157,14 +158,15 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
         let tref = trait_ref(&scope.lexical, &t.name, spec.pos, &spec.ori);
-        let mut sigs: LPooled<Vec<(ArcStr, Arc<FnType>, usize, bool)>> = LPooled::take();
+        let mut sigs: LPooled<Vec<(ArcStr, SourcePosition, Arc<FnType>, usize)>> =
+            LPooled::take();
         for m in t.methods.iter() {
             let ft = method_sig(&m.typ, &tref, &scope.lexical);
             sigs.push((
                 m.name.name.clone(),
+                m.name.pos_or(spec.pos),
                 Arc::new(ft),
                 m.self_index,
-                m.default.is_some(),
             ));
         }
         let def = ctx
@@ -516,6 +518,16 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let trait_def = ctx.env.trait_def(trait_id).cloned().ok_or_else(|| {
             anyhow!("trait {} has no definition", im.trait_name).at(&spec)
         })?;
+        if ctx.env.ide.is_lsp() {
+            ctx.env.push_module_reference(ModuleRefSite {
+                pos: im.trait_at.0.first().copied().unwrap_or(spec.pos),
+                ori: spec.ori.clone(),
+                name: im.trait_name.clone(),
+                canonical: trait_def.path.clone(),
+                def_ori: None,
+                segments: Some(im.trait_at.clone()),
+            });
+        }
         let (target, params) =
             impl_head(&ctx.env, &scope.lexical, &trait_def, im, false).at(&spec)?;
         let bscope = scope.append_block("impl", spec.id.inner());

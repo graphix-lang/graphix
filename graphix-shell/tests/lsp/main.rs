@@ -86,6 +86,37 @@ fn definition() {
     assert_ne!(def(&mut c, "p.|x"), Some(c.site("main.gx", "let |x = 1")));
 }
 
+const TRAITS: &str = "\
+type Counter = Abstract<i64>;
+trait Show {
+    val show: fn(self) -> string;
+    val twice: fn(self) -> string = |s| \"[Show::show(s)] [Show::show(s)]\"
+};
+impl Show for Counter { let show = |c| \"[c.0]\" };
+let c = Counter(1);
+let t = Show::twice(c);
+Show::show(c)
+";
+
+// A trait answers like the module its methods are in; a method like its
+// own binding.
+#[test]
+fn traits_and_methods_answer() {
+    let mut c = Client::start(&[("main.gx", TRAITS)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let def = |c: &mut Client, m: &str| c.definition("main.gx", m);
+    assert_eq!(def(&mut c, "Show::|show(c)"), Some(c.site("main.gx", "val |show")));
+    assert_eq!(def(&mut c, "|Show::show(c)"), Some(c.site("main.gx", "trait |Show")));
+    assert_eq!(def(&mut c, "impl |Show for"), Some(c.site("main.gx", "trait |Show")));
+    let hover = c.hover("main.gx", "trait |Show").expect("hover at a trait");
+    assert!(hover.contains("val show: fn(self) -> string"), "{hover}");
+    let show = c.references("main.gx", "trait |Show");
+    for m in ["trait |Show", "impl |Show for", "|Show::show(c)", "|Show::twice(c)"] {
+        assert!(show.contains(&c.site("main.gx", m)), "{m} missing from {show:?}");
+    }
+}
+
 #[test]
 fn stdlib_definitions_are_not_in_the_document() {
     let mut c = two_files();

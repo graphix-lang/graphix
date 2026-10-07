@@ -262,6 +262,8 @@ pub struct TraitMethod {
 #[pack(unwrapped)]
 pub struct ImplExpr {
     pub trait_name: ModPath,
+    /// Where each segment of `trait_name` was written.
+    pub trait_at: WrittenPath,
     pub params: Arc<[TVar]>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub target: Type,
@@ -1672,6 +1674,7 @@ impl Expr {
             })),
             Impl(im) => Impl(Arc::new(ImplExpr {
                 trait_name: im.trait_name.clone(),
+                trait_at: im.trait_at.clone(),
                 params: im.params.clone(),
                 constraints: im.constraints.clone(),
                 target: im.target.clone(),

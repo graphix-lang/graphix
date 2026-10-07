@@ -190,7 +190,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
-            Some(t) => Some(t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical)),
+            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
             None => None,
         };
         let compile_pattern = |ctx: &mut CompileCtx<R, E>, typ: &Type| {

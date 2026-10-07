@@ -1433,6 +1433,16 @@ impl Type {
         })
     }
 
+    fn check_parts_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
+        match self.try_for_each_child(&mut |c| match c.check_tvars_declared(declared) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(e) => ControlFlow::Break(e),
+        }) {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(e) => Err(e),
+        }
+    }
+
     pub fn check_tvars_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
@@ -1442,8 +1452,13 @@ impl Type {
                     Ok(())
                 }
             }
-            // Nested fn types quantify their own tvars.
-            Type::Fn(_) => Ok(()),
+            // a fn type's own quantifiers are declared within it
+            Type::Fn(ft) if !ft.quantifiers.is_empty() => {
+                let mut inner: LPooled<AHashSet<ArcStr>> = LPooled::take();
+                inner.extend(declared.iter().cloned());
+                inner.extend(ft.quantifiers.iter().cloned());
+                Type::Fn(ft.clone()).check_parts_declared(&inner)
+            }
             t => match t.try_for_each_child(&mut |c| match c
                 .check_tvars_declared(declared)
             {

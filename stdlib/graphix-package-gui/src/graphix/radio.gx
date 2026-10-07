@@ -7,4 +7,11 @@ let radio = |
   #spacing: &[f64, null] = &null,
   #disabled: &bool = &false,
   value: &'a
-| -> Widget `Radio({ value, label, on_select: &on_select, selected, width, size, spacing, disabled })
+| -> Widget {
+  // the widget calls back with its own value, which this radio holds typed
+  let on_select = select on_select {
+    null as _ => null,
+    f => |v: Any| f(*value)
+  };
+  `Radio({ value, label, on_select: &on_select, selected, width, size, spacing, disabled })
+}

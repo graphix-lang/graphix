@@ -2058,7 +2058,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
         let typ = match typ {
-            Some(t) => t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
+            Some(t) => t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?,
             None => Type::Bottom,
         };
         Ok(Node::new(Self { spec, typ, n }))

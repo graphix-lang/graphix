@@ -712,6 +712,7 @@ macro_rules! impl_decl {
                     });
                 ExprKind::Impl(Arc::new(ImplExpr {
                     trait_name,
+                    trait_at: WrittenPath::default(),
                     constraints: Arc::from_iter(constraints),
                     params: Arc::from_iter(params.iter().map(|(tv, _)| tv.clone())),
                     target,
