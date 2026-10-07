@@ -2,62 +2,46 @@ use super::{GuiW, GuiWidget, Handler, IcedElement, Message, disabled_choice};
 use crate::types::{LengthV, StringVec};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget::{self as widget, combo_box};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        disabled: bool,
+        options: StringVec,
+        placeholder: ArcStr,
+        selected: Option<String>,
+        width: LengthV,
+    }
+}
 
 pub(crate) struct ComboBoxW<X: GXExt> {
     gx: GXHandle<X>,
-    disabled: TRef<X, bool>,
-    options: TRef<X, StringVec>,
-    state: combo_box::State<String>,
-    selected: TRef<X, Option<String>>,
+    p: Props<X>,
     on_select: Handler<X>,
-    placeholder: TRef<X, ArcStr>,
-    width: TRef<X, LengthV>,
+    state: combo_box::State<String>,
 }
 
 impl<X: GXExt> ComboBoxW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            disabled: u64,
-            on_select: u64,
-            options: u64,
-            placeholder: u64,
-            selected: u64,
-            width: u64,
-        }
-        let Fields { disabled, on_select, options, placeholder, selected, width } =
-            source.cast_to().context("combo_box flds")?;
-        let (disabled, on_select, options, placeholder, selected, width) = try_join! {
-            gx.compile_ref(disabled),
-            gx.compile_ref(on_select),
-            gx.compile_ref(options),
-            gx.compile_ref(placeholder),
-            gx.compile_ref(selected),
-            gx.compile_ref(width),
-        }?;
-        let on_select =
-            Handler::compile(&gx, on_select).await.context("combo_box on_select")?;
-        let options_tref: TRef<X, StringVec> =
-            TRef::new(options).context("combo_box tref options")?;
-        let state = combo_box::State::new(
-            options_tref.t.as_ref().map(|v| v.0.clone()).unwrap_or_default(),
-        );
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            disabled: TRef::new(disabled).context("combo_box tref disabled")?,
-            options: options_tref,
-            state,
-            selected: TRef::new(selected).context("combo_box tref selected")?,
-            on_select,
-            placeholder: TRef::new(placeholder).context("combo_box tref placeholder")?,
-            width: TRef::new(width).context("combo_box tref width")?,
-        }))
+        let (p, on_select) = try_join!(
+            Props::compile(&gx, &source),
+            Handler::field(&gx, &source, "on_select"),
+        )
+        .context("combo_box")?;
+        let state = Self::state(&p);
+        Ok(Box::new(Self { gx, p, on_select, state }))
+    }
+}
+
+impl<X: GXExt> ComboBoxW<X> {
+    fn state(p: &Props<X>) -> combo_box::State<String> {
+        combo_box::State::new(
+            p.options.t.as_ref().map(|v| v.0.clone()).unwrap_or_default(),
+        )
     }
 }
 
@@ -68,25 +52,13 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        changed |=
-            self.disabled.update(id, v).context("combo_box update disabled")?.is_some();
-        if let Some(opts) =
-            self.options.update(id, v).context("combo_box update options")?
+        let changed = self.p.update(id, v).context("combo_box")?;
+        if id == self.p.options.r.id
+            && let Some(opts) = &self.p.options.t
+            && self.state.options() != opts.0.as_slice()
         {
-            if self.state.options() != opts.0.as_slice() {
-                self.state = combo_box::State::new(opts.0.clone());
-                changed = true;
-            }
+            self.state = Self::state(&self.p);
         }
-        changed |=
-            self.selected.update(id, v).context("combo_box update selected")?.is_some();
-        changed |= self
-            .placeholder
-            .update(id, v)
-            .context("combo_box update placeholder")?
-            .is_some();
-        changed |= self.width.update(id, v).context("combo_box update width")?.is_some();
         self.on_select
             .update(rt, &self.gx, id, v)
             .context("combo_box on_select recompile")?;
@@ -94,13 +66,13 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let selected = self.selected.t.as_ref().and_then(|o| o.as_ref());
-        let placeholder = self.placeholder.t.as_deref().unwrap_or("");
-        if self.disabled.t.unwrap_or(false) {
+        let selected = self.p.selected.t.as_ref().and_then(|o| o.as_ref());
+        let placeholder = self.p.placeholder.t.as_deref().unwrap_or("");
+        if self.p.disabled.t.unwrap_or(false) {
             return disabled_choice(
                 placeholder,
                 selected.map_or("", |s| s.as_str()),
-                self.width.t.as_ref(),
+                self.p.width.t.as_ref(),
             );
         }
         let on_select_id = self.on_select.id();
@@ -115,7 +87,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
                 None => Message::Nop,
             },
         );
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             cb = cb.width(w.0);
         }
         cb.into()

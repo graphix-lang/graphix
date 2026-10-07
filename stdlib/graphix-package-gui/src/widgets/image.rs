@@ -1,13 +1,12 @@
 use super::{GuiW, GuiWidget, IcedElement};
 use crate::types::{ContentFitV, ImageSourceV, LengthV};
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_core::{image, svg};
 use iced_widget as widget;
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
-use tokio::try_join;
 
 /// What iced draws a source with.
 enum ImageHandle {
@@ -33,40 +32,28 @@ impl ImageHandle {
     }
 }
 
+graphix_rt::props! {
+    struct Props {
+        content_fit: ContentFitV,
+        height: LengthV,
+        width: LengthV,
+    }
+}
+
 pub(crate) struct ImageW<X: GXExt> {
+    p: Props<X>,
     source: TRef<X, ImageSourceV>,
     handle: Option<ImageHandle>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    content_fit: TRef<X, ContentFitV>,
 }
 
 impl<X: GXExt> ImageW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            content_fit: u64,
-            height: u64,
-            source: u64,
-            width: u64,
-        }
-        let Fields { content_fit, height, source: src, width } =
-            source.cast_to().context("image flds")?;
-        let (content_fit, height, src, width) = try_join! {
-            gx.compile_ref(content_fit),
-            gx.compile_ref(height),
-            gx.compile_ref(src),
-            gx.compile_ref(width),
-        }?;
-        let source = TRef::new(src).context("image tref source")?;
+        let (p, src) =
+            try_join!(Props::compile(&gx, &source), gx.compile_field(&source, "source"),)
+                .context("image")?;
+        let source = TRef::new(src).context("image source")?;
         let handle = source.t.as_ref().map(ImageHandle::of);
-        Ok(Box::new(Self {
-            source,
-            handle,
-            width: TRef::new(width).context("image tref width")?,
-            height: TRef::new(height).context("image tref height")?,
-            content_fit: TRef::new(content_fit).context("image tref content_fit")?,
-        }))
+        Ok(Box::new(Self { p, source, handle }))
     }
 }
 
@@ -77,25 +64,21 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
+        let mut changed = self.p.update(id, v).context("image")?;
         let old = (id == self.source.r.id).then(|| self.source.t.clone()).flatten();
-        if let Some(new) = self.source.update(id, v).context("image update source")?
+        if let Some(new) = self.source.update(id, v).context("image source")?
             && !old.is_some_and(|o| o.same_as(new))
         {
             self.handle = Some(ImageHandle::of(new));
             changed = true;
         }
-        changed |= self.width.update(id, v).context("image update width")?.is_some();
-        changed |= self.height.update(id, v).context("image update height")?.is_some();
-        changed |=
-            self.content_fit.update(id, v).context("image update content_fit")?.is_some();
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let width = self.width.t.as_ref().map(|w| w.0);
-        let height = self.height.t.as_ref().map(|h| h.0);
-        let content_fit = self.content_fit.t.as_ref().map(|cf| cf.0);
+        let width = self.p.width.t.as_ref().map(|w| w.0);
+        let height = self.p.height.t.as_ref().map(|h| h.0);
+        let content_fit = self.p.content_fit.t.as_ref().map(|cf| cf.0);
         match &self.handle {
             Some(ImageHandle::Svg(h)) => {
                 let mut s = widget::Svg::new(h.clone());

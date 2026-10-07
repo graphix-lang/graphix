@@ -1,52 +1,36 @@
 use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        direction: ScrollDirectionV,
+        height: LengthV,
+        width: LengthV,
+    }
+}
 
 pub(crate) struct ScrollableW<X: GXExt> {
     gx: GXHandle<X>,
+    p: Props<X>,
     child: Child<X>,
-    direction: TRef<X, ScrollDirectionV>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
     on_scroll: Handler<X>,
 }
 
 impl<X: GXExt> ScrollableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            direction: u64,
-            height: u64,
-            on_scroll: u64,
-            width: u64,
-        }
-        let Fields { child, direction, height, on_scroll, width } =
-            source.cast_to().context("scrollable flds")?;
-        let (child_ref, direction, height, on_scroll, width) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(direction),
-            gx.compile_ref(height),
-            gx.compile_ref(on_scroll),
-            gx.compile_ref(width),
-        }?;
-        let child = Child::compile(&gx, child_ref).await.context("scrollable child")?;
-        let on_scroll =
-            Handler::compile(&gx, on_scroll).await.context("scrollable on_scroll")?;
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            child,
-            direction: TRef::new(direction).context("scrollable tref direction")?,
-            width: TRef::new(width).context("scrollable tref width")?,
-            height: TRef::new(height).context("scrollable tref height")?,
-            on_scroll,
-        }))
+        let (p, child, on_scroll) = try_join!(
+            Props::compile(&gx, &source),
+            Child::field(&gx, &source, "child"),
+            Handler::field(&gx, &source, "on_scroll"),
+        )
+        .context("scrollable")?;
+        Ok(Box::new(Self { gx, p, child, on_scroll }))
     }
 }
 
@@ -65,15 +49,7 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        changed |= self
-            .direction
-            .update(id, v)
-            .context("scrollable update direction")?
-            .is_some();
-        changed |= self.width.update(id, v).context("scrollable update width")?.is_some();
-        changed |=
-            self.height.update(id, v).context("scrollable update height")?.is_some();
+        let mut changed = self.p.update(id, v).context("scrollable")?;
         changed |= self
             .child
             .update(rt, &self.gx, id, v)
@@ -86,13 +62,13 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut sc = widget::Scrollable::new(self.child.w.view());
-        if let Some(dir) = self.direction.t.as_ref() {
+        if let Some(dir) = self.p.direction.t.as_ref() {
             sc = sc.direction(dir.0);
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             sc = sc.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.p.height.t.as_ref() {
             sc = sc.height(h.0);
         }
         if let Some(c) = &self.on_scroll.f {

@@ -4,7 +4,6 @@ use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -234,19 +233,6 @@ pub(crate) fn update_callable_blocking<X: GXExt>(
     }
 }
 
-// CR claude for claude: [structure] Every gui and tui widget names each property six or
-// more times: its field, the FromValue Fields struct, the destructure, the try_join! of
-// compile_ref, TRef::new(..).context(..), and the .update(id, v).context(..) chain in
-// handle_update. Across the two crates that is about 260 TRef constructions, 335
-// compile_ref calls and 257 update calls. A property that is compiled but left out of
-// handle_update never changes after startup, and nothing catches it. A declarative
-// macro beside this family would make that omission impossible: it takes one `name:
-// Type` list per widget and generates the decode, the joined compile_refs, the TRefs
-// and the update chain. context_menu.rs:84-118 and menu_bar.rs:195-230 also repeat one
-// menu-item update loop, which should be a single shared function. (x-dup-14)
-// 2026-10-07 claude: Handler, Child and Children below own the callback and child
-// properties, and MenuItemKind::update is the one menu-item loop. The property-list
-// macro for the gui and tui widgets is still open, for the TUI batch.
 /// A child widget property: its ref and the widget its value compiled
 /// to.
 pub struct Child<X: GXExt> {
@@ -255,6 +241,12 @@ pub struct Child<X: GXExt> {
 }
 
 impl<X: GXExt> Child<X> {
+    /// The child the widget value `v`'s field `name` refers to.
+    pub(crate) async fn field(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
+        let r = gx.compile_field(v, name).await?;
+        Self::compile(gx, r).await.with_context(|| format!("child {name}"))
+    }
+
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let w = match r.last.as_ref() {
             None => Box::new(EmptyW) as GuiW<X>,
@@ -291,6 +283,12 @@ pub struct Children<X: GXExt> {
 }
 
 impl<X: GXExt> Children<X> {
+    /// The children the widget value `v`'s field `name` refers to.
+    pub(crate) async fn field(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
+        let r = gx.compile_field(v, name).await?;
+        Self::compile(gx, r).await.with_context(|| format!("children {name}"))
+    }
+
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let vals = match r.last.as_ref() {
             None => vec![],
@@ -482,6 +480,12 @@ pub(crate) struct Handler<X: GXExt> {
 }
 
 impl<X: GXExt> Handler<X> {
+    /// The handler the widget value `v`'s field `name` refers to.
+    pub(crate) async fn field(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
+        let r = gx.compile_field(v, name).await?;
+        Self::compile(gx, r).await.with_context(|| format!("handler {name}"))
+    }
+
     pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
         let mut f = None;
         if let Some(v) = r.last.as_ref() {
@@ -545,49 +549,35 @@ impl<X: GXExt> GuiWidget<X> for EmptyW {
 
 /// Generate a flex layout widget (Row or Column).
 macro_rules! flex_widget {
-    ($name:ident, $label:literal, $align_ty:ty, $align:ident, $Widget:ident, $align_set:ident,
-     [$($f:ident),+]) => {
+    ($name:ident, $props:ident, $label:literal, $align_ty:ty, $align:ident, $Widget:ident,
+     $align_set:ident) => {
+        graphix_rt::props! {
+            struct $props {
+                height: LengthV,
+                padding: PaddingV,
+                spacing: f64,
+                width: LengthV,
+                $align: $align_ty,
+            }
+        }
+
         pub(crate) struct $name<X: GXExt> {
             gx: GXHandle<X>,
-            spacing: graphix_rt::TRef<X, f64>,
-            padding: graphix_rt::TRef<X, PaddingV>,
-            width: graphix_rt::TRef<X, LengthV>,
-            height: graphix_rt::TRef<X, LengthV>,
-            $align: graphix_rt::TRef<X, $align_ty>,
+            p: $props<X>,
             children: Children<X>,
         }
 
         impl<X: GXExt> $name<X> {
-            pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-                #[derive(FromValue)]
-                struct Fields {
-                    children: u64,
-                    $($f: u64),+
-                }
-                let fields: Fields = source.cast_to().context(concat!($label, " flds"))?;
-                let (children, spacing, padding, width, height, align) = tokio::try_join!(
-                    gx.compile_ref(fields.children),
-                    gx.compile_ref(fields.spacing),
-                    gx.compile_ref(fields.padding),
-                    gx.compile_ref(fields.width),
-                    gx.compile_ref(fields.height),
-                    gx.compile_ref(fields.$align),
-                )?;
-                Ok(Box::new(Self {
-                    children: Children::compile(&gx, children).await
-                        .context(concat!($label, " children"))?,
-                    gx,
-                    spacing: graphix_rt::TRef::new(spacing)
-                        .context(concat!($label, " tref spacing"))?,
-                    padding: graphix_rt::TRef::new(padding)
-                        .context(concat!($label, " tref padding"))?,
-                    width: graphix_rt::TRef::new(width)
-                        .context(concat!($label, " tref width"))?,
-                    height: graphix_rt::TRef::new(height)
-                        .context(concat!($label, " tref height"))?,
-                    $align: graphix_rt::TRef::new(align)
-                        .context(concat!($label, " tref ", stringify!($align)))?,
-                }))
+            pub(crate) async fn compile(
+                gx: GXHandle<X>,
+                source: Value,
+            ) -> Result<GuiW<X>> {
+                let (p, children) = futures::try_join!(
+                    $props::compile(&gx, &source),
+                    Children::field(&gx, &source, "children"),
+                )
+                .context($label)?;
+                Ok(Box::new(Self { gx, p, children }))
             }
         }
 
@@ -606,37 +596,29 @@ macro_rules! flex_widget {
                 id: ExprId,
                 v: &Value,
             ) -> Result<bool> {
-                let mut changed = false;
-                changed |= self.spacing.update(id, v)
-                    .context(concat!($label, " update spacing"))?.is_some();
-                changed |= self.padding.update(id, v)
-                    .context(concat!($label, " update padding"))?.is_some();
-                changed |= self.width.update(id, v)
-                    .context(concat!($label, " update width"))?.is_some();
-                changed |= self.height.update(id, v)
-                    .context(concat!($label, " update height"))?.is_some();
-                changed |= self.$align.update(id, v)
-                    .context(concat!($label, " update ", stringify!($align)))?.is_some();
-                changed |= self.children.update(rt, &self.gx, id, v)
-                    .context(concat!($label, " children"))?;
-                Ok(changed)
+                let changed = self.p.update(id, v).context($label)?;
+                Ok(self
+                    .children
+                    .update(rt, &self.gx, id, v)
+                    .context(concat!($label, " children"))?
+                    || changed)
             }
 
             fn view(&self) -> IcedElement<'_> {
                 let mut w = iced_widget::$Widget::new();
-                if let Some(sp) = self.spacing.t {
+                if let Some(sp) = self.p.spacing.t {
                     w = w.spacing(sp as f32);
                 }
-                if let Some(p) = self.padding.t.as_ref() {
+                if let Some(p) = self.p.padding.t.as_ref() {
                     w = w.padding(p.0);
                 }
-                if let Some(wi) = self.width.t.as_ref() {
+                if let Some(wi) = self.p.width.t.as_ref() {
                     w = w.width(wi.0);
                 }
-                if let Some(h) = self.height.t.as_ref() {
+                if let Some(h) = self.p.height.t.as_ref() {
                     w = w.height(h.0);
                 }
-                if let Some(a) = self.$align.t.as_ref() {
+                if let Some(a) = self.p.$align.t.as_ref() {
                     w = w.$align_set(a.0);
                 }
                 for child in &self.children.ws {
@@ -648,25 +630,9 @@ macro_rules! flex_widget {
     };
 }
 
-flex_widget!(
-    RowW,
-    "row",
-    VAlignV,
-    valign,
-    Row,
-    align_y,
-    [height, padding, spacing, valign, width]
-);
+flex_widget!(RowW, RowProps, "row", VAlignV, valign, Row, align_y);
 
-flex_widget!(
-    ColumnW,
-    "column",
-    HAlignV,
-    halign,
-    Column,
-    align_x,
-    [halign, height, padding, spacing, width]
-);
+flex_widget!(ColumnW, ColumnProps, "column", HAlignV, halign, Column, align_x);
 
 /// Compile a widget value into a GuiW. Returns a boxed future to
 /// avoid infinite-size futures from recursive async calls.

@@ -2,11 +2,10 @@ use super::{GuiW, GuiWidget, IcedElement, Renderer};
 use crate::types::{ColorV, Finite, LengthV, SizeV, TextSizeV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_core::{Point, Rectangle, mouse};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
-use tokio::try_join;
 
 use iced_widget::canvas as iced_canvas;
 
@@ -115,38 +114,24 @@ pub(crate) enum PathSegment {
 #[derive(Clone, Debug, FromValue)]
 pub(crate) struct ShapeVec(pub Vec<CanvasShape>);
 
+graphix_rt::props! {
+    struct Props {
+        background: Option<ColorV>,
+        height: LengthV,
+        shapes: ShapeVec,
+        width: LengthV,
+    }
+}
+
 pub(crate) struct CanvasW<X: GXExt> {
-    shapes: TRef<X, ShapeVec>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    background: TRef<X, Option<ColorV>>,
+    p: Props<X>,
     cache: iced_canvas::Cache<Renderer>,
 }
 
 impl<X: GXExt> CanvasW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            background: u64,
-            height: u64,
-            shapes: u64,
-            width: u64,
-        }
-        let Fields { background, height, shapes, width } =
-            source.cast_to().context("canvas flds")?;
-        let (background, height, shapes, width) = try_join! {
-            gx.compile_ref(background),
-            gx.compile_ref(height),
-            gx.compile_ref(shapes),
-            gx.compile_ref(width),
-        }?;
-        Ok(Box::new(Self {
-            shapes: TRef::new(shapes).context("canvas tref shapes")?,
-            width: TRef::new(width).context("canvas tref width")?,
-            height: TRef::new(height).context("canvas tref height")?,
-            background: TRef::new(background).context("canvas tref background")?,
-            cache: iced_canvas::Cache::new(),
-        }))
+        let p = Props::compile(&gx, &source).await.context("canvas")?;
+        Ok(Box::new(Self { p, cache: iced_canvas::Cache::new() }))
     }
 }
 
@@ -157,26 +142,19 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        if self.shapes.update(id, v).context("canvas update shapes")?.is_some() {
+        let changed = self.p.update(id, v).context("canvas")?;
+        if id == self.p.shapes.r.id || id == self.p.background.r.id {
             self.cache.clear();
-            changed = true;
         }
-        if self.background.update(id, v).context("canvas update background")?.is_some() {
-            self.cache.clear();
-            changed = true;
-        }
-        changed |= self.width.update(id, v).context("canvas update width")?.is_some();
-        changed |= self.height.update(id, v).context("canvas update height")?.is_some();
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut c = iced_canvas::Canvas::new(self);
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             c = c.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.p.height.t.as_ref() {
             c = c.height(h.0);
         }
         c.into()
@@ -197,10 +175,10 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
         _cursor: mouse::Cursor,
     ) -> Vec<iced_canvas::Geometry<Renderer>> {
         let geom = self.cache.draw(renderer, bounds.size(), |frame| {
-            if let Some(Some(bg)) = self.background.t.as_ref() {
+            if let Some(Some(bg)) = self.p.background.t.as_ref() {
                 frame.fill_rectangle(Point::ORIGIN, frame.size(), bg.0);
             }
-            if let Some(shapes) = self.shapes.t.as_ref() {
+            if let Some(shapes) = self.p.shapes.t.as_ref() {
                 for shape in &shapes.0 {
                     draw_shape(frame, shape);
                 }

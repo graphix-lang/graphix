@@ -5,12 +5,11 @@ use super::{
 use anyhow::{Context, Result};
 use arcstr::literal;
 use compact_str::format_compact;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use iced_core::keyboard;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
 
 pub(crate) struct KeyboardAreaW<X: GXExt> {
     gx: GXHandle<X>,
@@ -21,28 +20,13 @@ pub(crate) struct KeyboardAreaW<X: GXExt> {
 
 impl<X: GXExt> KeyboardAreaW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            on_key_press: u64,
-            on_key_release: u64,
-        }
-        let Fields { child, on_key_press, on_key_release } =
-            source.cast_to().context("keyboard_area flds")?;
-        let (child_ref, on_key_press, on_key_release) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(on_key_press),
-            gx.compile_ref(on_key_release),
-        }?;
-        let child =
-            Child::compile(&gx, child_ref).await.context("keyboard_area child")?;
-        let on_key_press = Handler::compile(&gx, on_key_press)
-            .await
-            .context("keyboard_area on_key_press")?;
-        let on_key_release = Handler::compile(&gx, on_key_release)
-            .await
-            .context("keyboard_area on_key_release")?;
-        Ok(Box::new(Self { gx: gx.clone(), child, on_key_press, on_key_release }))
+        let (child, on_key_press, on_key_release) = try_join!(
+            Child::field(&gx, &source, "child"),
+            Handler::field(&gx, &source, "on_key_press"),
+            Handler::field(&gx, &source, "on_key_release"),
+        )
+        .context("keyboard_area")?;
+        Ok(Box::new(Self { gx, child, on_key_press, on_key_release }))
     }
 }
 

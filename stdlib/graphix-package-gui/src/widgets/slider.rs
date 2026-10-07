@@ -1,12 +1,11 @@
 use super::{GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
 
 /// Helper: map a dimension kind tag to its TRef inner type.
 macro_rules! slider_dim_type {
@@ -17,12 +16,12 @@ macro_rules! slider_dim_type {
 /// Helper: apply a dimension value to the iced slider widget.
 macro_rules! slider_dim_set {
     (length, $self:ident, $sl:ident, $dim:ident) => {
-        if let Some(v) = $self.$dim.t.as_ref() {
+        if let Some(v) = $self.p.$dim.t.as_ref() {
             $sl = $sl.$dim(v.0);
         }
     };
     (scalar, $self:ident, $sl:ident, $dim:ident) => {
-        if let Some(Some(v)) = $self.$dim.t {
+        if let Some(Some(v)) = $self.p.$dim.t {
             $sl = $sl.$dim(v as f32);
         }
     };
@@ -32,19 +31,25 @@ macro_rules! slider_dim_set {
 /// alphabetical order with a kind tag: `length` (primary axis) or
 /// `scalar` (cross axis).
 macro_rules! slider_widget {
-    ($name:ident, $label:literal, $Widget:ident,
+    ($name:ident, $props:ident, $label:literal, $Widget:ident,
      $dim1:ident: $kind1:tt, $dim2:ident: $kind2:tt) => {
+        graphix_rt::props! {
+            struct $props {
+                disabled: bool,
+                max: f64,
+                min: f64,
+                step: Option<f64>,
+                value: f64,
+                $dim1: slider_dim_type!($kind1),
+                $dim2: slider_dim_type!($kind2),
+            }
+        }
+
         pub(crate) struct $name<X: GXExt> {
             gx: GXHandle<X>,
-            disabled: TRef<X, bool>,
-            value: TRef<X, f64>,
-            min: TRef<X, f64>,
-            max: TRef<X, f64>,
-            step: TRef<X, Option<f64>>,
+            p: $props<X>,
             on_change: Handler<X>,
             on_release: Handler<X>,
-            $dim1: TRef<X, slider_dim_type!($kind1)>,
-            $dim2: TRef<X, slider_dim_type!($kind2)>,
         }
 
         impl<X: GXExt> $name<X> {
@@ -52,77 +57,13 @@ macro_rules! slider_widget {
                 gx: GXHandle<X>,
                 source: Value,
             ) -> Result<GuiW<X>> {
-                #[derive(FromValue)]
-                struct Fields {
-                    disabled: u64,
-                    $dim1: u64,
-                    max: u64,
-                    min: u64,
-                    on_change: u64,
-                    on_release: u64,
-                    step: u64,
-                    value: u64,
-                    $dim2: u64,
-                }
-                let Fields {
-                    disabled,
-                    $dim1,
-                    max,
-                    min,
-                    on_change,
-                    on_release,
-                    step,
-                    value,
-                    $dim2,
-                } = source.cast_to().context(concat!($label, " flds"))?;
-                let (
-                    disabled,
-                    $dim1,
-                    max,
-                    min,
-                    on_change,
-                    on_release,
-                    step,
-                    value,
-                    $dim2,
-                ) = try_join! {
-                    gx.compile_ref(disabled),
-                    gx.compile_ref($dim1),
-                    gx.compile_ref(max),
-                    gx.compile_ref(min),
-                    gx.compile_ref(on_change),
-                    gx.compile_ref(on_release),
-                    gx.compile_ref(step),
-                    gx.compile_ref(value),
-                    gx.compile_ref($dim2),
-                }?;
-                let on_change = Handler::compile(&gx, on_change)
-                    .await
-                    .context(concat!($label, " on_change"))?;
-                let on_release = Handler::compile(&gx, on_release)
-                    .await
-                    .context(concat!($label, " on_release"))?;
-                Ok(Box::new(Self {
-                    gx: gx.clone(),
-                    disabled: TRef::new(disabled)
-                        .context(concat!($label, " tref disabled"))?,
-                    value: TRef::new(value).context(concat!($label, " tref value"))?,
-                    min: TRef::new(min).context(concat!($label, " tref min"))?,
-                    max: TRef::new(max).context(concat!($label, " tref max"))?,
-                    step: TRef::new(step).context(concat!($label, " tref step"))?,
-                    on_change,
-                    on_release,
-                    $dim1: TRef::new($dim1).context(concat!(
-                        $label,
-                        " tref ",
-                        stringify!($dim1)
-                    ))?,
-                    $dim2: TRef::new($dim2).context(concat!(
-                        $label,
-                        " tref ",
-                        stringify!($dim2)
-                    ))?,
-                }))
+                let (p, on_change, on_release) = try_join!(
+                    $props::compile(&gx, &source),
+                    Handler::field(&gx, &source, "on_change"),
+                    Handler::field(&gx, &source, "on_release"),
+                )
+                .context($label)?;
+                Ok(Box::new(Self { gx, p, on_change, on_release }))
             }
         }
 
@@ -133,42 +74,7 @@ macro_rules! slider_widget {
                 id: ExprId,
                 v: &Value,
             ) -> Result<bool> {
-                let mut changed = false;
-                changed |= self
-                    .disabled
-                    .update(id, v)
-                    .context(concat!($label, " update disabled"))?
-                    .is_some();
-                changed |= self
-                    .value
-                    .update(id, v)
-                    .context(concat!($label, " update value"))?
-                    .is_some();
-                changed |= self
-                    .min
-                    .update(id, v)
-                    .context(concat!($label, " update min"))?
-                    .is_some();
-                changed |= self
-                    .max
-                    .update(id, v)
-                    .context(concat!($label, " update max"))?
-                    .is_some();
-                changed |= self
-                    .step
-                    .update(id, v)
-                    .context(concat!($label, " update step"))?
-                    .is_some();
-                changed |= self
-                    .$dim1
-                    .update(id, v)
-                    .context(concat!($label, " update ", stringify!($dim1)))?
-                    .is_some();
-                changed |= self
-                    .$dim2
-                    .update(id, v)
-                    .context(concat!($label, " update ", stringify!($dim2)))?
-                    .is_some();
+                let changed = self.p.update(id, v).context($label)?;
                 self.on_change
                     .update(rt, &self.gx, id, v)
                     .context(concat!($label, " on_change"))?;
@@ -179,10 +85,10 @@ macro_rules! slider_widget {
             }
 
             fn view(&self) -> IcedElement<'_> {
-                let val = self.value.t.unwrap_or(0.0);
-                let min = self.min.t.unwrap_or(0.0);
-                let max = self.max.t.unwrap_or(100.0);
-                let disabled = self.disabled.t.unwrap_or(false);
+                let val = self.p.value.t.unwrap_or(0.0);
+                let min = self.p.min.t.unwrap_or(0.0);
+                let max = self.p.max.t.unwrap_or(100.0);
+                let disabled = self.p.disabled.t.unwrap_or(false);
                 let on_change_id = if disabled { None } else { self.on_change.id() };
                 let mut sl =
                     widget::$Widget::new(min..=max, val, move |v| match on_change_id {
@@ -192,7 +98,7 @@ macro_rules! slider_widget {
                         None => Message::Nop,
                     });
                 // no usable step is continuous: a millionth of the range
-                let step = match self.step.t {
+                let step = match self.p.step.t {
                     Some(Some(s)) if s.is_finite() && s > 0.0 => s,
                     _ => ((max - min) / 1e6).abs().max(f64::MIN_POSITIVE),
                 };
@@ -211,5 +117,5 @@ macro_rules! slider_widget {
     };
 }
 
-slider_widget!(SliderW, "slider", Slider, height: scalar, width: length);
-slider_widget!(VerticalSliderW, "vslider", VerticalSlider, height: length, width: scalar);
+slider_widget!(SliderW, SliderProps, "slider", Slider, height: scalar, width: length);
+slider_widget!(VerticalSliderW, VerticalSliderProps, "vslider", VerticalSlider, height: length, width: scalar);

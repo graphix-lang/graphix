@@ -6,20 +6,23 @@ use super::{
 use crate::types::{LengthV, ShortcutV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::Length;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    pub(crate) struct ActionProps {
+        disabled: bool,
+        label: ArcStr,
+        shortcut: Option<ShortcutV>,
+    }
+}
 
 pub(crate) enum MenuItemKind<X: GXExt> {
-    Action {
-        label: TRef<X, ArcStr>,
-        shortcut: TRef<X, Option<ShortcutV>>,
-        on_click: Handler<X>,
-        disabled: TRef<X, bool>,
-    },
+    Action { p: ActionProps<X>, on_click: Handler<X> },
     Divider,
 }
 
@@ -28,25 +31,17 @@ impl<X: GXExt> MenuItemKind<X> {
         #[derive(FromValue)]
         enum Repr {
             Divider,
-            Action { disabled: u64, label: u64, on_click: u64, shortcut: u64 },
+            Action(Value),
         }
         match v.cast_to::<Repr>().context("menu item")? {
             Repr::Divider => Ok(Self::Divider),
-            Repr::Action { disabled, label, on_click, shortcut } => {
-                let (disabled, label, on_click, shortcut) = try_join! {
-                    gx.compile_ref(disabled),
-                    gx.compile_ref(label),
-                    gx.compile_ref(on_click),
-                    gx.compile_ref(shortcut),
-                }?;
-                Ok(Self::Action {
-                    label: TRef::new(label).context("menu action tref label")?,
-                    shortcut: TRef::new(shortcut).context("menu action tref shortcut")?,
-                    on_click: Handler::compile(gx, on_click)
-                        .await
-                        .context("menu action on_click")?,
-                    disabled: TRef::new(disabled).context("menu action tref disabled")?,
-                })
+            Repr::Action(v) => {
+                let (p, on_click) = try_join!(
+                    ActionProps::compile(gx, &v),
+                    Handler::field(gx, &v, "on_click"),
+                )
+                .context("menu action")?;
+                Ok(Self::Action { p, on_click })
             }
         }
     }
@@ -58,25 +53,21 @@ impl<X: GXExt> MenuItemKind<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let Self::Action { label, shortcut, on_click, disabled } = self else {
+        let Self::Action { p, on_click } = self else {
             return Ok(false);
         };
         on_click.update(rt, gx, id, v).context("menu item on_click")?;
-        Ok(label.update(id, v).context("menu item label")?.is_some()
-            | shortcut.update(id, v).context("menu item shortcut")?.is_some()
-            | disabled.update(id, v).context("menu item disabled")?.is_some())
+        p.update(id, v).context("menu item")
     }
 
     fn desc(&self) -> MenuItemDesc<'_> {
         match self {
-            Self::Action { label, shortcut, on_click, disabled } => {
-                MenuItemDesc::Action {
-                    label: label.t.as_deref().unwrap_or(""),
-                    shortcut: shortcut.t.as_ref().and_then(|s| s.as_ref()),
-                    callable_id: on_click.id(),
-                    disabled: disabled.t.unwrap_or(false),
-                }
-            }
+            Self::Action { p, on_click } => MenuItemDesc::Action {
+                label: p.label.t.as_deref().unwrap_or(""),
+                shortcut: p.shortcut.t.as_ref().and_then(|s| s.as_ref()),
+                callable_id: on_click.id(),
+                disabled: p.disabled.t.unwrap_or(false),
+            },
             Self::Divider => MenuItemDesc::Divider,
         }
     }
@@ -133,13 +124,9 @@ struct CompiledMenuGroup<X: GXExt> {
 
 impl<X: GXExt> CompiledMenuGroup<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        #[derive(FromValue)]
-        struct Fields {
-            items: u64,
-            label: u64,
-        }
-        let Fields { items, label } = v.cast_to().context("menu group flds")?;
-        let (items, label) = try_join! { gx.compile_ref(items), gx.compile_ref(label) }?;
+        let (items, label) =
+            try_join!(gx.compile_field(&v, "items"), gx.compile_field(&v, "label"))
+                .context("menu group")?;
         Ok(Self {
             label: TRef::new(label).context("menu group tref label")?,
             items: MenuItems::compile(gx, items).await.context("menu group items")?,
@@ -157,14 +144,11 @@ pub(crate) struct MenuBarW<X: GXExt> {
 
 impl<X: GXExt> MenuBarW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            menus: u64,
-            width: u64,
-        }
-        let Fields { menus, width } = source.cast_to().context("menu_bar flds")?;
-        let (menus_ref, width) =
-            try_join! { gx.compile_ref(menus), gx.compile_ref(width) }?;
+        let (menus_ref, width) = try_join!(
+            gx.compile_field(&source, "menus"),
+            gx.compile_field(&source, "width"),
+        )
+        .context("menu_bar")?;
         let menus = match menus_ref.last.as_ref() {
             None => vec![],
             Some(v) => v.clone().cast_to::<Vec<Value>>()?,

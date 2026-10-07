@@ -12,15 +12,14 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref};
 use iced_widget::canvas as iced_canvas;
 use log::error;
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 use std::cell::Cell;
-use tokio::try_join;
 
 pub use dataset::*;
 #[cfg(test)]
@@ -29,21 +28,34 @@ pub use interact::{ChartState, PlotInfo, SnapPoint};
 pub use ranges::*;
 pub use types::*;
 
+graphix_rt::props! {
+    struct Drawn {
+        projection: OptProjection3D,
+        style: OptChartStyle,
+        title: Option<ArcStr>,
+        x_label: Option<ArcStr>,
+        x_range: OptXAxisRange,
+        y_label: Option<ArcStr>,
+        y_range: OptAxisRange,
+        z_label: Option<ArcStr>,
+        z_range: OptAxisRange,
+    }
+}
+
+graphix_rt::props! {
+    struct Size {
+        height: LengthV,
+        width: LengthV,
+    }
+}
+
 pub(crate) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     datasets_ref: Ref<X>,
     datasets: LPooled<Vec<DatasetEntry<X>>>,
-    title: TRef<X, Option<ArcStr>>,
-    x_label: TRef<X, Option<ArcStr>>,
-    y_label: TRef<X, Option<ArcStr>>,
-    z_label: TRef<X, Option<ArcStr>>,
-    x_range: TRef<X, OptXAxisRange>,
-    y_range: TRef<X, OptAxisRange>,
-    z_range: TRef<X, OptAxisRange>,
-    projection: TRef<X, OptProjection3D>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    style: TRef<X, OptChartStyle>,
+    /// What the plot is drawn from: a change redraws it.
+    drawn: Drawn<X>,
+    size: Size<X>,
     /// Which chart a `ChartState`'s view was taken on.
     id: ChartId,
     /// The mode the data asks for, `Empty` when datasets disagree.
@@ -56,62 +68,12 @@ pub(crate) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            datasets: u64,
-            height: u64,
-            projection: u64,
-            style: u64,
-            title: u64,
-            width: u64,
-            x_label: u64,
-            x_range: u64,
-            y_label: u64,
-            y_range: u64,
-            z_label: u64,
-            z_range: u64,
-        }
-        let Fields {
-            datasets,
-            height,
-            projection,
-            style,
-            title,
-            width,
-            x_label,
-            x_range,
-            y_label,
-            y_range,
-            z_label,
-            z_range,
-        } = source.cast_to().context("chart flds")?;
-        let (
-            datasets_ref,
-            height_ref,
-            projection_ref,
-            style_ref,
-            title_ref,
-            width_ref,
-            x_label_ref,
-            x_range_ref,
-            y_label_ref,
-            y_range_ref,
-            z_label_ref,
-            z_range_ref,
-        ) = try_join! {
-            gx.compile_ref(datasets),
-            gx.compile_ref(height),
-            gx.compile_ref(projection),
-            gx.compile_ref(style),
-            gx.compile_ref(title),
-            gx.compile_ref(width),
-            gx.compile_ref(x_label),
-            gx.compile_ref(x_range),
-            gx.compile_ref(y_label),
-            gx.compile_ref(y_range),
-            gx.compile_ref(z_label),
-            gx.compile_ref(z_range),
-        }?;
+        let (datasets_ref, drawn, size) = try_join!(
+            gx.compile_field(&source, "datasets"),
+            Drawn::compile(&gx, &source),
+            Size::compile(&gx, &source),
+        )
+        .context("chart")?;
         let entries = match datasets_ref.last.as_ref() {
             Some(v) => compile_datasets(&gx, v.clone()).await?,
             None => LPooled::take(),
@@ -120,17 +82,8 @@ impl<X: GXExt> ChartW<X> {
             gx: gx.clone(),
             datasets_ref,
             datasets: entries,
-            title: TRef::new(title_ref).context("chart tref title")?,
-            x_label: TRef::new(x_label_ref).context("chart tref x_label")?,
-            y_label: TRef::new(y_label_ref).context("chart tref y_label")?,
-            z_label: TRef::new(z_label_ref).context("chart tref z_label")?,
-            x_range: TRef::new(x_range_ref).context("chart tref x_range")?,
-            y_range: TRef::new(y_range_ref).context("chart tref y_range")?,
-            z_range: TRef::new(z_range_ref).context("chart tref z_range")?,
-            projection: TRef::new(projection_ref).context("chart tref projection")?,
-            width: TRef::new(width_ref).context("chart tref width")?,
-            height: TRef::new(height_ref).context("chart tref height")?,
-            style: TRef::new(style_ref).context("chart tref style")?,
+            drawn,
+            size,
             id: ChartId::new(),
             mode: ChartMode::Empty,
             conflict: None,
@@ -209,39 +162,20 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         if changed {
             self.refresh_mode();
         }
-        macro_rules! up {
-            ($f:ident) => {
-                if self
-                    .$f
-                    .update(id, v)
-                    .context(concat!("chart update ", stringify!($f)))?
-                    .is_some()
-                {
-                    self.dirty.set(true);
-                    changed = true;
-                }
-            };
+        if self.drawn.update(id, v).context("chart")? {
+            self.dirty.set(true);
+            changed = true;
         }
-        up!(title);
-        up!(x_label);
-        up!(y_label);
-        up!(z_label);
-        up!(x_range);
-        up!(y_range);
-        up!(z_range);
-        up!(projection);
-        up!(style);
-        changed |= self.width.update(id, v).context("chart update width")?.is_some();
-        changed |= self.height.update(id, v).context("chart update height")?.is_some();
+        changed |= self.size.update(id, v).context("chart size")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut c = iced_canvas::Canvas::new(self);
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.size.width.t.as_ref() {
             c = c.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.size.height.t.as_ref() {
             c = c.height(h.0);
         }
         c.into()

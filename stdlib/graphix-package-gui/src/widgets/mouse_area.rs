@@ -1,11 +1,10 @@
 use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
 
 fn mouse_button_value(button: &str) -> Value {
     Value::String(button.into())
@@ -23,45 +22,16 @@ pub(crate) struct MouseAreaW<X: GXExt> {
 
 impl<X: GXExt> MouseAreaW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            on_enter: u64,
-            on_exit: u64,
-            on_move: u64,
-            on_press: u64,
-            on_release: u64,
-        }
-        let Fields { child, on_enter, on_exit, on_move, on_press, on_release } =
-            source.cast_to().context("mouse_area flds")?;
-        let (child_ref, on_enter, on_exit, on_move, on_press, on_release) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(on_enter),
-            gx.compile_ref(on_exit),
-            gx.compile_ref(on_move),
-            gx.compile_ref(on_press),
-            gx.compile_ref(on_release),
-        }?;
-        let child = Child::compile(&gx, child_ref).await.context("mouse_area child")?;
-        let on_press =
-            Handler::compile(&gx, on_press).await.context("mouse_area on_press")?;
-        let on_release =
-            Handler::compile(&gx, on_release).await.context("mouse_area on_release")?;
-        let on_enter =
-            Handler::compile(&gx, on_enter).await.context("mouse_area on_enter")?;
-        let on_exit =
-            Handler::compile(&gx, on_exit).await.context("mouse_area on_exit")?;
-        let on_move =
-            Handler::compile(&gx, on_move).await.context("mouse_area on_move")?;
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            child,
-            on_press,
-            on_release,
-            on_enter,
-            on_exit,
-            on_move,
-        }))
+        let (child, on_press, on_release, on_enter, on_exit, on_move) = try_join!(
+            Child::field(&gx, &source, "child"),
+            Handler::field(&gx, &source, "on_press"),
+            Handler::field(&gx, &source, "on_release"),
+            Handler::field(&gx, &source, "on_enter"),
+            Handler::field(&gx, &source, "on_exit"),
+            Handler::field(&gx, &source, "on_move"),
+        )
+        .context("mouse_area")?;
+        Ok(Box::new(Self { gx, child, on_press, on_release, on_enter, on_exit, on_move }))
     }
 }
 

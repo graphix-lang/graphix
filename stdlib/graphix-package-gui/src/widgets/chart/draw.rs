@@ -471,7 +471,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             }
             let backend = IcedBackend::new(frame, w, h);
             let root = backend.into_drawing_area();
-            let chart_style = self.style.t.as_ref().and_then(|s| s.0.as_ref());
+            let chart_style = self.drawn.style.t.as_ref().and_then(|s| s.0.as_ref());
             let bg = chart_style
                 .and_then(|s| s.background)
                 .map_or(WHITE.to_rgba(), ChartColor::to_plotters);
@@ -479,9 +479,9 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                 error!("chart fill: {e:?}");
                 return;
             }
-            let title = self.title.t.as_ref().and_then(|o| o.as_deref());
-            let x_label = self.x_label.t.as_ref().and_then(|o| o.as_deref());
-            let y_label = self.y_label.t.as_ref().and_then(|o| o.as_deref());
+            let title = self.drawn.title.t.as_ref().and_then(|o| o.as_deref());
+            let x_label = self.drawn.x_label.t.as_ref().and_then(|o| o.as_deref());
+            let y_label = self.drawn.y_label.t.as_ref().and_then(|o| o.as_deref());
             let margin = chart_style.and_then(|s| s.margin).unwrap_or(10.0);
             let title_size = chart_style.and_then(|s| s.title_size).unwrap_or(16.0);
             let mesh_style = chart_style.and_then(|s| s.mesh.as_ref());
@@ -496,9 +496,10 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             let user = |r: Option<&OptAxisRange>| {
                 r.and_then(|r| r.0.as_ref()).and_then(|r| checked_range((r.min, r.max)))
             };
-            let user_y = user(self.y_range.t.as_ref());
+            let user_y = user(self.drawn.y_range.t.as_ref());
             let user_x = |time: bool| {
-                self.x_range
+                self.drawn
+                    .x_range
                     .t
                     .as_ref()
                     .and_then(|r| r.0.as_ref())
@@ -668,7 +669,8 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let (auto_x, auto_y, auto_z) = compute_3d_ranges(&self.datasets);
                     let x = user_x(false).unwrap_or(auto_x);
                     let y = user_y.unwrap_or(auto_y);
-                    let (z_min, z_max) = user(self.z_range.t.as_ref()).unwrap_or(auto_z);
+                    let (z_min, z_max) =
+                        user(self.drawn.z_range.t.as_ref()).unwrap_or(auto_z);
                     let size = |s: Option<f64>| s.map_or(30, |s| s as u32);
                     builder.x_label_area_size(size(
                         mesh_style.and_then(|m| m.x_label_area_size),
@@ -684,7 +686,8 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         Ok(c) => c,
                         Err(e) => return error!("chart build: {e:?}"),
                     };
-                    let proj = self.projection.t.as_ref().and_then(|o| o.0.as_ref());
+                    let proj =
+                        self.drawn.projection.t.as_ref().and_then(|o| o.0.as_ref());
                     chart.with_projection(|mut pb| {
                         if let Some(p) = proj {
                             pb.yaw = p.yaw.unwrap_or(pb.yaw);
@@ -731,7 +734,8 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                 axes.y_max_light_lines(ticks(n, 0));
                             }
                         }
-                        let z_label = self.z_label.t.as_ref().and_then(|o| o.as_deref());
+                        let z_label =
+                            self.drawn.z_label.t.as_ref().and_then(|o| o.as_deref());
                         let (x_fn, y_fn, z_fn) = (
                             axis_format(x_label),
                             axis_format(z_label),

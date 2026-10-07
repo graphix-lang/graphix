@@ -10,10 +10,9 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
 use iced_runtime::user_interface::Cache;
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
 use std::{sync::Arc, time::Instant};
 
-use tokio::try_join;
+use futures::try_join;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 /// Resolved window state — all refs compiled but no OS window yet.
@@ -30,24 +29,14 @@ pub struct ResolvedWindow<X: GXExt> {
 impl<X: GXExt> ResolvedWindow<X> {
     /// Compile a window struct value into resolved refs without creating an OS window.
     pub async fn compile(gx: GXHandle<X>, source: Value) -> Result<Self> {
-        #[derive(FromValue)]
-        struct Fields {
-            content: u64,
-            icon: u64,
-            size: u64,
-            theme: u64,
-            title: u64,
-        }
-        let Fields { content, icon, size, theme, title } =
-            source.cast_to().context("window flds")?;
-        let (content_ref, icon, size, theme, title) = try_join! {
-            gx.compile_ref(content),
-            gx.compile_ref(icon),
-            gx.compile_ref(size),
-            gx.compile_ref(theme),
-            gx.compile_ref(title),
-        }?;
-        let content = Child::compile(&gx, content_ref).await.context("window content")?;
+        let (content, icon, size, theme, title) = try_join!(
+            Child::field(&gx, &source, "content"),
+            gx.compile_field(&source, "icon"),
+            gx.compile_field(&source, "size"),
+            gx.compile_field(&source, "theme"),
+            gx.compile_field(&source, "title"),
+        )
+        .context("window")?;
         let icon = TRef::new(icon).context("window tref icon")?;
         let decoded_icon =
             icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {

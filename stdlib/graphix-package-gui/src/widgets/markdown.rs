@@ -2,61 +2,50 @@ use super::{GuiW, Handler, IcedElement, Message};
 use crate::types::{LengthV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
 
 // TODO: link hover underlines flicker between adjacent link spans;
 // upstream bug in `iced_widget::text::rich::update` (no redraw when
 // the hovered link index changes).
 
+graphix_rt::props! {
+    struct Props {
+        content: ArcStr,
+        spacing: Option<f64>,
+        text_size: Option<TextSizeV>,
+        width: LengthV,
+    }
+}
+
 pub(crate) struct MarkdownW<X: GXExt> {
     gx: GXHandle<X>,
-    content: TRef<X, ArcStr>,
+    p: Props<X>,
     on_link: Handler<X>,
-    spacing: TRef<X, Option<f64>>,
-    text_size: TRef<X, Option<TextSizeV>>,
-    width: TRef<X, LengthV>,
     items: Vec<widget::markdown::Item>,
 }
 
 impl<X: GXExt> MarkdownW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            content: u64,
-            on_link: u64,
-            spacing: u64,
-            text_size: u64,
-            width: u64,
-        }
-        let Fields { content, on_link, spacing, text_size, width } =
-            source.cast_to().context("markdown flds")?;
-        let (content_ref, on_link, spacing, text_size, width) = try_join! {
-            gx.compile_ref(content),
-            gx.compile_ref(on_link),
-            gx.compile_ref(spacing),
-            gx.compile_ref(text_size),
-            gx.compile_ref(width),
-        }?;
-        let on_link = Handler::compile(&gx, on_link).await.context("markdown on_link")?;
-        let content = TRef::new(content_ref).context("markdown tref content")?;
-        let items = match content.t.as_deref() {
+        let (p, on_link) = try_join!(
+            Props::compile(&gx, &source),
+            Handler::field(&gx, &source, "on_link"),
+        )
+        .context("markdown")?;
+        let items = Self::parse(&p);
+        Ok(Box::new(Self { gx, p, on_link, items }))
+    }
+}
+
+impl<X: GXExt> MarkdownW<X> {
+    fn parse(p: &Props<X>) -> Vec<widget::markdown::Item> {
+        match p.content.t.as_deref() {
             Some(s) => widget::markdown::parse(s).collect(),
             None => vec![],
-        };
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            content,
-            on_link,
-            spacing: TRef::new(spacing).context("markdown tref spacing")?,
-            text_size: TRef::new(text_size).context("markdown tref text_size")?,
-            width: TRef::new(width).context("markdown tref width")?,
-            items,
-        }))
+        }
     }
 }
 
@@ -67,31 +56,23 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        if let Some(_) = self.content.update(id, v).context("markdown update content")? {
-            self.items = match self.content.t.as_deref() {
-                Some(s) => widget::markdown::parse(s).collect(),
-                None => vec![],
-            };
-            changed = true;
+        let changed = self.p.update(id, v).context("markdown")?;
+        if id == self.p.content.r.id {
+            self.items = Self::parse(&self.p);
         }
-        changed |=
-            self.spacing.update(id, v).context("markdown update spacing")?.is_some();
-        changed |=
-            self.text_size.update(id, v).context("markdown update text_size")?.is_some();
-        changed |= self.width.update(id, v).context("markdown update width")?.is_some();
         self.on_link.update(rt, &self.gx, id, v).context("markdown on_link recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let text_size = self.text_size.t.flatten().map_or(16.0, |s| s.0);
+        let text_size = self.p.text_size.t.flatten().map_or(16.0, |s| s.0);
         let palette = crate::theme::view_theme().palette();
         let mut settings = widget::markdown::Settings::with_text_size(
             text_size,
             widget::markdown::Style::from_palette(palette),
         );
-        if let Some(Some(sp)) = self.spacing.t.filter(|s| s.is_some_and(f64::is_finite)) {
+        if let Some(Some(sp)) = self.p.spacing.t.filter(|s| s.is_some_and(f64::is_finite))
+        {
             settings.spacing = (sp as f32).into();
         }
         let on_link_id = self.on_link.id();
@@ -104,7 +85,7 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
             None => Message::Nop,
         });
         let mut container = iced_widget::Container::new(element);
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             container = container.width(w.0);
         }
         container.into()

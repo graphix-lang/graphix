@@ -1,54 +1,34 @@
 use super::{Child, GuiW, GuiWidget, IcedElement};
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        halign: HAlignV,
+        height: LengthV,
+        padding: PaddingV,
+        valign: VAlignV,
+        width: LengthV,
+    }
+}
 
 pub(crate) struct ContainerW<X: GXExt> {
     gx: GXHandle<X>,
-    padding: TRef<X, PaddingV>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    halign: TRef<X, HAlignV>,
-    valign: TRef<X, VAlignV>,
+    p: Props<X>,
     child: Child<X>,
 }
 
 impl<X: GXExt> ContainerW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            halign: u64,
-            height: u64,
-            padding: u64,
-            valign: u64,
-            width: u64,
-        }
-        let Fields { child, halign, height, padding, valign, width } =
-            source.cast_to().context("container flds")?;
-        let (child_ref, halign, height, padding, valign, width) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(halign),
-            gx.compile_ref(height),
-            gx.compile_ref(padding),
-            gx.compile_ref(valign),
-            gx.compile_ref(width),
-        }?;
-        let child = Child::compile(&gx, child_ref).await.context("container child")?;
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            padding: TRef::new(padding).context("container tref padding")?,
-            width: TRef::new(width).context("container tref width")?,
-            height: TRef::new(height).context("container tref height")?,
-            halign: TRef::new(halign).context("container tref halign")?,
-            valign: TRef::new(valign).context("container tref valign")?,
-            child,
-        }))
+        let (p, child) =
+            try_join!(Props::compile(&gx, &source), Child::field(&gx, &source, "child"),)
+                .context("container")?;
+        Ok(Box::new(Self { gx, p, child }))
     }
 }
 
@@ -67,16 +47,7 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        changed |=
-            self.padding.update(id, v).context("container update padding")?.is_some();
-        changed |= self.width.update(id, v).context("container update width")?.is_some();
-        changed |=
-            self.height.update(id, v).context("container update height")?.is_some();
-        changed |=
-            self.halign.update(id, v).context("container update halign")?.is_some();
-        changed |=
-            self.valign.update(id, v).context("container update valign")?.is_some();
+        let mut changed = self.p.update(id, v).context("container")?;
         changed |= self
             .child
             .update(rt, &self.gx, id, v)
@@ -86,19 +57,19 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut c = widget::Container::new(self.child.w.view());
-        if let Some(p) = self.padding.t.as_ref() {
+        if let Some(p) = self.p.padding.t.as_ref() {
             c = c.padding(p.0);
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             c = c.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.p.height.t.as_ref() {
             c = c.height(h.0);
         }
-        if let Some(a) = self.halign.t.as_ref() {
+        if let Some(a) = self.p.halign.t.as_ref() {
             c = c.align_x(a.0);
         }
-        if let Some(a) = self.valign.t.as_ref() {
+        if let Some(a) = self.p.valign.t.as_ref() {
             c = c.align_y(a.0);
         }
         c.into()

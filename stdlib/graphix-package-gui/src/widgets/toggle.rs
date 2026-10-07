@@ -4,12 +4,21 @@ use super::{
 use crate::types::{LengthV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        disabled: bool,
+        label: ArcStr,
+        size: Option<TextSizeV>,
+        spacing: Option<f64>,
+        width: LengthV,
+    }
+}
 
 /// Generate the struct, compile(), and handle_update helper for a boolean
 /// toggle widget; `$state` names the boolean field.
@@ -17,54 +26,30 @@ macro_rules! toggle_widget {
     ($name:ident, $label:literal, $state:ident) => {
         pub(crate) struct $name<X: GXExt> {
             gx: GXHandle<X>,
-            disabled: TRef<X, bool>,
+            p: Props<X>,
             $state: TRef<X, bool>,
-            label: TRef<X, ArcStr>,
             on_toggle: Handler<X>,
             /// What on_toggle sent that the state has not echoed yet.
             echoes: Echoes<bool>,
-            width: TRef<X, LengthV>,
-            size: TRef<X, Option<TextSizeV>>,
-            spacing: TRef<X, Option<f64>>,
         }
 
         impl<X: GXExt> $name<X> {
-            pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-                #[derive(FromValue)]
-                struct Fields {
-                    disabled: u64,
-                    $state: u64,
-                    label: u64,
-                    on_toggle: u64,
-                    size: u64,
-                    spacing: u64,
-                    width: u64,
-                }
-                let Fields { disabled, $state, label, on_toggle, size, spacing, width } =
-                    source.cast_to().context(concat!($label, " flds"))?;
-                let (disabled, $state, label, on_toggle, size, spacing, width) = try_join! {
-                    gx.compile_ref(disabled),
-                    gx.compile_ref($state),
-                    gx.compile_ref(label),
-                    gx.compile_ref(on_toggle),
-                    gx.compile_ref(size),
-                    gx.compile_ref(spacing),
-                    gx.compile_ref(width),
-                }?;
-                let on_toggle = Handler::compile(&gx, on_toggle)
-                    .await
-                    .context(concat!($label, " on_toggle"))?;
-                Ok(Box::new(Self {
-                    gx: gx.clone(),
-                    disabled: TRef::new(disabled).context(concat!($label, " tref disabled"))?,
-                    $state: TRef::new($state).context(concat!($label, " tref ", stringify!($state)))?,
-                    label: TRef::new(label).context(concat!($label, " tref label"))?,
-                    on_toggle,
-                    echoes: Echoes::new(),
-                    width: TRef::new(width).context(concat!($label, " tref width"))?,
-                    size: TRef::new(size).context(concat!($label, " tref size"))?,
-                    spacing: TRef::new(spacing).context(concat!($label, " tref spacing"))?,
-                }))
+            pub(crate) async fn compile(
+                gx: GXHandle<X>,
+                source: Value,
+            ) -> Result<GuiW<X>> {
+                let (p, $state, on_toggle) = try_join!(
+                    Props::compile(&gx, &source),
+                    gx.compile_field(&source, stringify!($state)),
+                    Handler::field(&gx, &source, "on_toggle"),
+                )
+                .context($label)?;
+                let $state = TRef::new($state).context(concat!(
+                    $label,
+                    " ",
+                    stringify!($state)
+                ))?;
+                Ok(Box::new(Self { gx, p, $state, on_toggle, echoes: Echoes::new() }))
             }
 
             fn do_update(
@@ -73,17 +58,18 @@ macro_rules! toggle_widget {
                 id: ExprId,
                 v: &Value,
             ) -> Result<bool> {
-                let mut changed = false;
-                changed |= self.disabled.update(id, v).context(concat!($label, " update disabled"))?.is_some();
-                if let Some(s) = self.$state.update(id, v).context(concat!($label, " update ", stringify!($state)))? {
+                let mut changed = self.p.update(id, v).context($label)?;
+                if let Some(s) = self.$state.update(id, v).context(concat!(
+                    $label,
+                    " ",
+                    stringify!($state)
+                ))? {
                     self.echoes.delivered(s);
                     changed = true;
                 }
-                changed |= self.label.update(id, v).context(concat!($label, " update label"))?.is_some();
-                changed |= self.width.update(id, v).context(concat!($label, " update width"))?.is_some();
-                changed |= self.size.update(id, v).context(concat!($label, " update size"))?.is_some();
-                changed |= self.spacing.update(id, v).context(concat!($label, " update spacing"))?.is_some();
-                self.on_toggle.update(rt, &self.gx, id, v).context(concat!($label, " on_toggle"))?;
+                self.on_toggle
+                    .update(rt, &self.gx, id, v)
+                    .context(concat!($label, " on_toggle"))?;
                 Ok(changed)
             }
 
@@ -123,10 +109,10 @@ impl<X: GXExt> GuiWidget<X> for CheckboxW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let label = self.label.t.as_deref().unwrap_or("");
+        let label = self.p.label.t.as_deref().unwrap_or("");
         let checked = self.shown();
         let mut cb = widget::Checkbox::new(checked).label(label);
-        if !self.disabled.t.unwrap_or(false) {
+        if !self.p.disabled.t.unwrap_or(false) {
             if let Some(callable) = &self.on_toggle.f {
                 let id = callable.id();
                 cb = cb.on_toggle(move |b| {
@@ -134,13 +120,13 @@ impl<X: GXExt> GuiWidget<X> for CheckboxW<X> {
                 });
             }
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             cb = cb.width(w.0);
         }
-        if let Some(Some(TextSizeV(sz))) = self.size.t {
+        if let Some(Some(TextSizeV(sz))) = self.p.size.t {
             cb = cb.size(sz);
         }
-        if let Some(Some(sp)) = self.spacing.t {
+        if let Some(Some(sp)) = self.p.spacing.t {
             cb = cb.spacing(sp as f32);
         }
         cb.into()
@@ -164,13 +150,13 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let label = self.label.t.as_deref().unwrap_or("");
+        let label = self.p.label.t.as_deref().unwrap_or("");
         let toggled = self.shown();
         let mut tg = widget::Toggler::new(toggled);
         if !label.is_empty() {
             tg = tg.label(label);
         }
-        if !self.disabled.t.unwrap_or(false) {
+        if !self.p.disabled.t.unwrap_or(false) {
             if let Some(callable) = &self.on_toggle.f {
                 let id = callable.id();
                 tg = tg.on_toggle(move |b| {
@@ -178,13 +164,13 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
                 });
             }
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             tg = tg.width(w.0);
         }
-        if let Some(Some(TextSizeV(sz))) = self.size.t {
+        if let Some(Some(TextSizeV(sz))) = self.p.size.t {
             tg = tg.size(sz);
         }
-        if let Some(Some(sp)) = self.spacing.t {
+        if let Some(Some(sp)) = self.p.spacing.t {
             tg = tg.spacing(sp as f32);
         }
         tg.into()

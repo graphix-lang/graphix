@@ -1,56 +1,37 @@
 use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
+use futures::try_join;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::FromValue;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        disabled: bool,
+        height: LengthV,
+        padding: PaddingV,
+        width: LengthV,
+    }
+}
 
 pub(crate) struct ButtonW<X: GXExt> {
     gx: GXHandle<X>,
-    disabled: TRef<X, bool>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    padding: TRef<X, PaddingV>,
+    p: Props<X>,
     on_press: Handler<X>,
     child: Child<X>,
 }
 
 impl<X: GXExt> ButtonW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            disabled: u64,
-            height: u64,
-            on_press: u64,
-            padding: u64,
-            width: u64,
-        }
-        let Fields { child, disabled, height, on_press, padding, width } =
-            source.cast_to().context("button flds")?;
-        let (child_ref, disabled, height, on_press, padding, width) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(disabled),
-            gx.compile_ref(height),
-            gx.compile_ref(on_press),
-            gx.compile_ref(padding),
-            gx.compile_ref(width),
-        }?;
-        let child = Child::compile(&gx, child_ref).await.context("button child")?;
-        let on_press =
-            Handler::compile(&gx, on_press).await.context("button on_press")?;
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            disabled: TRef::new(disabled).context("button tref disabled")?,
-            width: TRef::new(width).context("button tref width")?,
-            height: TRef::new(height).context("button tref height")?,
-            padding: TRef::new(padding).context("button tref padding")?,
-            on_press,
-            child,
-        }))
+        let (p, on_press, child) = try_join!(
+            Props::compile(&gx, &source),
+            Handler::field(&gx, &source, "on_press"),
+            Child::field(&gx, &source, "child"),
+        )
+        .context("button")?;
+        Ok(Box::new(Self { gx, p, on_press, child }))
     }
 }
 
@@ -69,21 +50,15 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        changed |=
-            self.disabled.update(id, v).context("button update disabled")?.is_some();
-        changed |= self.width.update(id, v).context("button update width")?.is_some();
-        changed |= self.height.update(id, v).context("button update height")?.is_some();
-        changed |= self.padding.update(id, v).context("button update padding")?.is_some();
-        self.on_press.update(rt, &self.gx, id, v).context("button on_press recompile")?;
-        changed |=
-            self.child.update(rt, &self.gx, id, v).context("button child recompile")?;
+        let mut changed = self.p.update(id, v).context("button")?;
+        self.on_press.update(rt, &self.gx, id, v).context("button on_press")?;
+        changed |= self.child.update(rt, &self.gx, id, v).context("button child")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.w.view());
-        if !self.disabled.t.unwrap_or(false) {
+        if !self.p.disabled.t.unwrap_or(false) {
             if let Some(callable) = &self.on_press.f {
                 btn = btn.on_press(Message::Call(
                     callable.id(),
@@ -91,13 +66,13 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
                 ));
             }
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.p.width.t.as_ref() {
             btn = btn.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.p.height.t.as_ref() {
             btn = btn.height(h.0);
         }
-        if let Some(p) = self.padding.t.as_ref() {
+        if let Some(p) = self.p.padding.t.as_ref() {
             btn = btn.padding(p.0);
         }
         btn.into()

@@ -3,58 +3,28 @@ use crate::types::{ColorV, FontV, HAlignV, LengthV, TextSizeV, VAlignV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, TRef};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
-use tokio::try_join;
 
-pub(crate) struct TextW<X: GXExt> {
-    content: TRef<X, ArcStr>,
-    size: TRef<X, Option<TextSizeV>>,
-    color: TRef<X, Option<ColorV>>,
-    font: TRef<X, Option<FontV>>,
-    width: TRef<X, LengthV>,
-    height: TRef<X, LengthV>,
-    halign: TRef<X, HAlignV>,
-    valign: TRef<X, VAlignV>,
+graphix_rt::props! {
+    struct Props {
+        color: Option<ColorV>,
+        content: ArcStr,
+        font: Option<FontV>,
+        halign: HAlignV,
+        height: LengthV,
+        size: Option<TextSizeV>,
+        valign: VAlignV,
+        width: LengthV,
+    }
 }
+
+pub(crate) struct TextW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> TextW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        #[derive(FromValue)]
-        struct Fields {
-            color: u64,
-            content: u64,
-            font: u64,
-            halign: u64,
-            height: u64,
-            size: u64,
-            valign: u64,
-            width: u64,
-        }
-        let Fields { color, content, font, halign, height, size, valign, width } =
-            source.cast_to().context("text flds")?;
-        let (color, content, font, halign, height, size, valign, width) = try_join! {
-            gx.compile_ref(color),
-            gx.compile_ref(content),
-            gx.compile_ref(font),
-            gx.compile_ref(halign),
-            gx.compile_ref(height),
-            gx.compile_ref(size),
-            gx.compile_ref(valign),
-            gx.compile_ref(width),
-        }?;
-        Ok(Box::new(Self {
-            content: TRef::new(content).context("text tref content")?,
-            size: TRef::new(size).context("text tref size")?,
-            color: TRef::new(color).context("text tref color")?,
-            font: TRef::new(font).context("text tref font")?,
-            width: TRef::new(width).context("text tref width")?,
-            height: TRef::new(height).context("text tref height")?,
-            halign: TRef::new(halign).context("text tref halign")?,
-            valign: TRef::new(valign).context("text tref valign")?,
-        }))
+        Ok(Box::new(Self(Props::compile(&gx, &source).await.context("text")?)))
     }
 }
 
@@ -65,40 +35,31 @@ impl<X: GXExt> super::GuiWidget<X> for TextW<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<bool> {
-        let mut changed = false;
-        changed |= self.content.update(id, v).context("text update content")?.is_some();
-        changed |= self.size.update(id, v).context("text update size")?.is_some();
-        changed |= self.color.update(id, v).context("text update color")?.is_some();
-        changed |= self.font.update(id, v).context("text update font")?.is_some();
-        changed |= self.width.update(id, v).context("text update width")?.is_some();
-        changed |= self.height.update(id, v).context("text update height")?.is_some();
-        changed |= self.halign.update(id, v).context("text update halign")?.is_some();
-        changed |= self.valign.update(id, v).context("text update valign")?.is_some();
-        Ok(changed)
+        self.0.update(id, v).context("text")
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let content = self.content.t.as_deref().unwrap_or("");
+        let content = self.0.content.t.as_deref().unwrap_or("");
         let mut t = widget::Text::new(content);
-        if let Some(Some(sz)) = self.size.t {
+        if let Some(Some(sz)) = self.0.size.t {
             t = t.size(sz.0);
         }
-        if let Some(Some(c)) = self.color.t.as_ref() {
+        if let Some(Some(c)) = self.0.color.t.as_ref() {
             t = t.color(c.0);
         }
-        if let Some(Some(f)) = self.font.t.as_ref() {
+        if let Some(Some(f)) = self.0.font.t.as_ref() {
             t = t.font(f.0);
         }
-        if let Some(w) = self.width.t.as_ref() {
+        if let Some(w) = self.0.width.t.as_ref() {
             t = t.width(w.0);
         }
-        if let Some(h) = self.height.t.as_ref() {
+        if let Some(h) = self.0.height.t.as_ref() {
             t = t.height(h.0);
         }
-        if let Some(a) = self.halign.t.as_ref() {
+        if let Some(a) = self.0.halign.t.as_ref() {
             t = t.align_x(a.0);
         }
-        if let Some(a) = self.valign.t.as_ref() {
+        if let Some(a) = self.0.valign.t.as_ref() {
             t = t.align_y(a.0);
         }
         t.into()
