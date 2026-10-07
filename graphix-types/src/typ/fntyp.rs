@@ -1598,14 +1598,10 @@ impl Pack for FnType {
 fn param_bounds_of(env: &Env, t: &Type, out: &mut IntMap<usize, SmallVec<[Type; 1]>>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::Ref(tr) => {
-            if let Some(resolved) = tr.resolve_in(env) {
-                let def_params = resolved.params();
-                let known: AHashMap<ArcStr, Type> = def_params
-                    .iter()
-                    .zip(tr.params.iter())
-                    .map(|((tv, _), arg)| (tv.name.clone(), arg.clone()))
-                    .collect();
-                for ((_, bound), arg) in def_params.iter().zip(tr.params.iter()) {
+            if let Some(resolved) = tr.resolve_in(env)
+                && let Some(known) = resolved.bindings(&tr.params)
+            {
+                for ((_, bound), arg) in resolved.params().iter().zip(tr.params.iter()) {
                     if let (Some(bound), Type::TVar(tv)) = (bound, arg)
                         && !tv.is_bound()
                     {

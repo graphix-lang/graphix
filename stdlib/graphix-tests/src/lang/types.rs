@@ -1934,3 +1934,50 @@ const GROWING_TYPEDEF_REFUSED: &str = r#"
 "#;
 
 run!(growing_typedef_refused, GROWING_TYPEDEF_REFUSED, refused("its parameters grow"); FuseExpect::None);
+
+/// A deep nominal value compares, and drops, without the thread stack.
+const DEEP_ABSTRACT_EQ: &str = r#"
+{
+    type N = Abstract<[`Nil, `Cons(i64, N)]>;
+    let rec build = |n: i64, acc: N| -> N select n {
+        0 => acc,
+        n => build(n - 1, N(`Cons(n, acc)))
+    };
+    let a = build(1000, N(`Nil));
+    let b = build(1000, N(`Nil));
+    a == b
+}
+"#;
+
+run!(deep_abstract_eq, DEEP_ABSTRACT_EQ, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
+
+/// Crafted bytes nesting a type's params past any sane depth are an
+/// error, not a stack overflow.
+const CRAFTED_ABSTRACT_PARAMS: &str = r#"
+{
+    type T = Abstract<i64>;
+    let t = T(1);
+    let s0 = "CAgI";
+    let s1 = "[s0][s0]";
+    let s2 = "[s1][s1]";
+    let s3 = "[s2][s2]";
+    let s4 = "[s3][s3]";
+    let s5 = "[s4][s4]";
+    let s6 = "[s5][s5]";
+    let s7 = "[s6][s6]";
+    let s8 = "[s7][s7]";
+    let s9 = "[s8][s8]";
+    let s10 = "[s9][s9]";
+    let s11 = "[s10][s10]";
+    let s12 = "[s11][s11]";
+    let s13 = "[s12][s12]";
+    let s14 = "[s13][s13]";
+    let s15 = "[s14][s14]";
+    let s16 = "[s15][s15]";
+    let input = "abstract:oIAMWgwxfpJLTmG4LW8TyaR9CAAAAAAAADA5AXgB[s16]ARA=";
+    let r: [i64, Error<`ParseError(string)>] = str::parse(t ~ input);
+    select r { error as _ => true, _ => false }
+}
+"#;
+
+run!(crafted_abstract_params, CRAFTED_ABSTRACT_PARAMS, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);

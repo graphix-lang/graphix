@@ -454,6 +454,22 @@ impl ResolvedRef {
         &self.typ
     }
 
+    /// The definition's parameters by name, bound to `args`; `None` when
+    /// the arity differs.
+    pub(crate) fn bindings(
+        &self,
+        args: &[Type],
+    ) -> Option<LPooled<AHashMap<ArcStr, Type>>> {
+        if self.params.len() != args.len() {
+            return None;
+        }
+        let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+        for ((tv, _), arg) in self.params.iter().zip(args.iter()) {
+            known.insert(tv.name.clone(), arg.clone());
+        }
+        Some(known)
+    }
+
     /// The definition's identity: every cell filled from one `TypeDef`
     /// shares its params allocation.
     pub(crate) fn def_key(&self) -> usize {
@@ -473,15 +489,12 @@ impl ResolvedRef {
     }
 }
 
-// CR claude for claude: [doc-drift] This doc says pos, ori and the resolution cell are
-// not part of the packed form. Under an image session the codec below (451-511) writes
-// all three and content_key (799-814) keys them, so a restored ref keeps its resolution
-// and never re-resolves. Only the syntax codec leaves them out. Say that here.
-// (t-typ-mod-09)
 /// A reference to a named typedef, e.g. `Foo` or `Result<i64, string>`.
 /// `pos`/`ori` are IDE metadata and `resolved` is the write-once name
 /// resolution cell ([`ResolvedRef`]); neither is part of type identity
-/// or the packed form. The cell depends on (scope, name, env) but not
+/// or of the syntax codec's packed form, while an image session writes
+/// all three (and keys them), so a restored ref keeps its resolution and
+/// never resolves again. The cell depends on (scope, name, env) but not
 /// `params`: [`TypeRef::with_params`] shares it, [`TypeRef::with_scope`]
 /// mints a new one. Never overwrite a filled cell — clones share it.
 #[derive(Debug, Clone)]
@@ -620,21 +633,7 @@ impl TypeRef {
     /// the arity mismatches. No constraint checks.
     pub fn expand_cell(&self) -> Option<Type> {
         let r = self.resolved()?;
-        if r.params.len() != self.params.len() {
-            return None;
-        }
-        // CR claude for claude: [structure] This zip of a definition's parameters with a
-        // ref's arguments into a name-to-type map is written four times: here, in
-        // reaches_unguarded (1911-1915), in lookup_ref_with (1976-1979) and in fntyp.rs
-        // param_bounds_of (1533-1537), where it is a plain heap AHashMap per ref. The
-        // copies disagree on arity: this one returns None, lookup_ref_with bails, and
-        // the other two silently zip the shorter list. One arity-checked ResolvedRef
-        // method returning the pooled map would serve all four. (t-typ-mod-08)
-        let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-        for ((tv, _), arg) in r.params.iter().zip(self.params.iter()) {
-            known.insert(tv.name.clone(), arg.clone());
-        }
-        Some(r.typ.replace_tvars(&known))
+        Some(r.typ.replace_tvars(&*r.bindings(&self.params)?))
     }
 
     /// The definition the cell holds; `None` when it is empty, or when
@@ -1239,27 +1238,16 @@ impl PackTrait for Type {
         }
     }
 
-    // CR claude for claude: [bug] Outside an image session this decode recurses once per
-    // nesting level (shape_decode -> Arc<Type>::decode -> decode) with no
-    // ensure_sufficient and no depth bound, and outside bytes reach it. GxAbstract
-    // packs its params. Once a program has built any abstract value (gui::color
-    // counts), its wrapper is registered, and from then on str::parse of
-    // `abstract:<base64>`, pack::read and every netidx subscription decode those
-    // params. Each level costs one byte, so a crafted string aborts the process with a
-    // stack overflow in both engines (13 KB is enough in a debug build), and a hostile
-    // publisher can kill a subscriber the same way inside netidx's decode_task. Guard
-    // or bound this walk, and consider keeping params off the wire outside an image
-    // session, since only in-process core-trait dispatch reads them; nested GxAbstract
-    // payloads (about 30 bytes per level, 1.5 MB through pack::read) also overflow, in
-    // netidx's nested Take::advance chain, so the bound belongs at the GxAbstract
-    // decode as well. probe: design/review-2026-10-05/repro/t-expr-core-01.gx
-    // (t-expr-core-01)
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        if image::is_decoding() {
-            image::object_decode(buf, |b| Self::shape_decode(b), |b| Self::decode(b))
-        } else {
-            Self::shape_decode(buf)
-        }
+        // outside bytes reach this (a value's abstract params): one level
+        // per byte
+        ensure_sufficient(|| {
+            if image::is_decoding() {
+                image::object_decode(buf, |b| Self::shape_decode(b), |b| Self::decode(b))
+            } else {
+                Self::shape_decode(buf)
+            }
+        })
     }
 }
 
@@ -2015,17 +2003,6 @@ impl Type {
         })
     }
 
-    // CR claude for claude: [readability] These six lines are seed_refs' doc, but they
-    // sit above unresolved_names and become the first paragraph of its doc. That
-    // paragraph says it fills every resolution cell, yet unresolved_names never writes
-    // one (it asks names_something), and seed_refs at 1835 is left undocumented. Move
-    // lines 1804-1809 down to pub fn seed_refs. (t-typ-mod-07)
-    /// Fill the resolution cell of every `Type::Ref` reachable from
-    /// this type against `env`, for a type about to outlive the env
-    /// that gives its names meaning. Names not visible are skipped
-    /// (they fill at their first in-context lookup) and make the
-    /// result false. Recurses through filled snapshot bodies and
-    /// through cells' bindings and conjuncts.
     /// Every name this written type holds that names nothing in `env`
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
@@ -2051,6 +2028,12 @@ impl Type {
         go(self, env, &mut LPooled::take(), out)
     }
 
+    /// Fill the resolution cell of every `Type::Ref` reachable from
+    /// this type against `env`, for a type about to outlive the env
+    /// that gives its names meaning. Names not visible are skipped
+    /// (they fill at their first in-context lookup) and make the
+    /// result false. Recurses through filled snapshot bodies and
+    /// through cells' bindings and conjuncts.
     pub fn seed_refs(&self, env: &Env) -> bool {
         self.seed_refs_seen(env, &mut LPooled::take())
     }
@@ -2157,10 +2140,7 @@ impl Type {
                     if (canon, base) == def {
                         return true;
                     }
-                    let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-                    for ((tv, _), arg) in r.params.iter().zip(tr.params.iter()) {
-                        known.insert(tv.name.clone(), arg.clone());
-                    }
+                    let Some(known) = r.bindings(&tr.params) else { return false };
                     go(&r.typ.replace_tvars(&known), env, def, depth + 1)
                 }
                 _ => false,
@@ -2235,10 +2215,7 @@ impl Type {
                         });
                     }
                 }
-                let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-                for ((tv, _), arg) in def_params.iter().zip(params.iter()) {
-                    known.insert(tv.name.clone(), arg.clone());
-                }
+                let known = resolved.bindings(params).expect("arity checked");
                 for ((_, constraint), arg) in def_params.iter().zip(params.iter()) {
                     let Some(constraint) = constraint else {
                         continue;

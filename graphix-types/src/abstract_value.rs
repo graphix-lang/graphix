@@ -4,7 +4,8 @@
 
 use crate::typ::{AbstractId, Type};
 use arcstr::ArcStr;
-use netidx_derive::Pack;
+use bytes::{Buf, BufMut};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
     cell::Cell,
@@ -81,8 +82,7 @@ fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
     f(unsafe { &*p })
 }
 
-#[derive(Clone, Pack)]
-#[pack(unwrapped)]
+#[derive(Clone)]
 pub struct GxAbstract {
     #[doc(hidden)]
     pub id: AbstractId,
@@ -119,18 +119,62 @@ impl fmt::Debug for GxAbstract {
     }
 }
 
-// CR claude for claude: [bug] eq here, cmp below, the derived Pack above and the drop of
-// a GxAbstract each re-enter netidx's Value walk once per abstract nesting level with
-// no ensure_sufficient, so a nested nominal value recurses on the thread stack. `a ==
-// b` over two 1000-deep `type N = Abstract<[`Nil, `Cons(i64, N)]>` lists aborts the
-// process. About 190 levels fill the 2 MiB runtime thread on the dev build and about
-// 500 on quick. `<`, array::sort, map keys and pack::write_bytes abort the same way at
-// 1000, and so does dropping a 100k-deep `type W = Abstract<[W, i64]>`: no ValArray
-// sits between its levels, so the deferred-drop guard never runs. Decode recurses the
-// same way under one bytes::Take per level, so 92 KB of crafted bytes through
-// pack::read or a netidx peer aborts any program that has built an abstract value; a
-// guard alone does not cover decode, which needs a depth bound. probe:
-// design/review-2026-10-05/repro/x-stack-02.gx (x-stack-02)
+/// How deeply abstract values may nest in bytes being decoded: each
+/// level is a reader around the last, which netidx walks recursively.
+const MAX_DECODE_DEPTH: usize = 1024;
+
+thread_local! {
+    static DECODE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The fields in order, as the derived codec wrote them; every walk of
+/// the payload, which may hold the next level, is guarded.
+impl Pack for GxAbstract {
+    fn encoded_len(&self) -> usize {
+        crate::stack::ensure_sufficient(|| {
+            self.id.encoded_len()
+                + self.name.encoded_len()
+                + self.params.encoded_len()
+                + self.payload.encoded_len()
+        })
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        crate::stack::ensure_sufficient(|| {
+            self.id.encode(buf)?;
+            self.name.encode(buf)?;
+            self.params.encode(buf)?;
+            self.payload.encode(buf)
+        })
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let depth = DECODE_DEPTH.with(|d| d.get());
+        if depth >= MAX_DECODE_DEPTH {
+            return Err(PackError::TooBig);
+        }
+        DECODE_DEPTH.with(|d| d.set(depth + 1));
+        let r = crate::stack::ensure_sufficient(|| {
+            Ok(GxAbstract {
+                id: Pack::decode(buf)?,
+                name: Pack::decode(buf)?,
+                params: Pack::decode(buf)?,
+                payload: Pack::decode(buf)?,
+            })
+        });
+        DECODE_DEPTH.with(|d| d.set(depth));
+        r
+    }
+}
+
+/// The payload may hold the next level: dropped under the guard.
+impl Drop for GxAbstract {
+    fn drop(&mut self) {
+        let payload = std::mem::replace(&mut self.payload, Value::Null);
+        crate::stack::ensure_sufficient(move || drop(payload))
+    }
+}
+
 impl PartialEq for GxAbstract {
     fn eq(&self, other: &Self) -> bool {
         if self.id != other.id {
@@ -139,7 +183,7 @@ impl PartialEq for GxAbstract {
         if let Some(b) = hooked(|h| (h.eq)(h.state, self, other)) {
             return b;
         }
-        self.payload == other.payload
+        crate::stack::ensure_sufficient(|| self.payload == other.payload)
     }
 }
 
@@ -160,7 +204,7 @@ impl Ord for GxAbstract {
         if let Some(o) = hooked(|h| (h.cmp)(h.state, self, other)) {
             return o;
         }
-        self.payload.cmp(&other.payload)
+        crate::stack::ensure_sufficient(|| self.payload.cmp(&other.payload))
     }
 }
 
