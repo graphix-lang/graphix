@@ -165,8 +165,8 @@ fn try_accessor(
                     ));
                 }
             }
-            // an option unwrapped via a two-arm type-match select (`?`
-            // is error-only)
+            // an option unwrapped: a two-arm type-match select, `$`, or a
+            // `?` whose null a catch takes
             GenType::Nullable(t) => {
                 if **t == *ty && ty.is_scalar() {
                     let dflt = gen_typed(ctx, rng, ty, depth);
@@ -174,6 +174,10 @@ fn try_accessor(
                         "select {name} {{ null as _ => {dflt}, {} as n => n }}",
                         ty.render()
                     ));
+                    cands.push(format!("{name}$"));
+                    if !ctx.no_catch {
+                        cands.push(format!("{{ catch(e) {dflt}; {name}? }}"));
+                    }
                 }
             }
             GenType::Num(_)

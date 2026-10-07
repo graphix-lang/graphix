@@ -422,21 +422,10 @@ pub(super) fn gen_ref_stmts(
     let rty = GenType::Ref(Box::new(inner.clone()));
     let mut stmts = Vec::new();
     let tgts = ctx.vars_of(&inner);
-    // CR claude for claude: [test-gap] No lane generates a place reference. This takes
-    // `&` of a whole scalar binding or of a literal only, so `&v.f`, `&v.0`, `&v[i]`
-    // and `&m{k}` with write-through patching (design/place_references.md) reach the
-    // oracle only through corpus mutation. The generators also never emit `$`/`?` on an
-    // option (try_accessor's comment at exprs.rs:172-173 that `?` is error-only is
-    // stale), and `gen 2000` (seeds 7 and 11) plus `gen 1500 --reactive` contain no
-    // `~!`, `never<T>()`, `name@` capture, partial struct pattern, attribute, `catch(e:
-    // T)`, parameterized or recursive typedef, or decimal/datetime/duration/bytes
-    // value. Place refs with write-through and option `$`/`?` both pass `graphix-fuzz
-    // check` (AGREE), so emitting them is cheap. Target a field, element or key of a
-    // visible struct, tuple, array or map binding here, with a literal write-through,
-    // and unwrap options in try_accessor with `name$` and a catch-covered `name?`. The
-    // struct-field deref candidate at exprs.rs:102-106 is dead because no generated
-    // struct type has a Ref field. (fuzz-gen-a-06)
-    let (val, var_target) = if !tgts.is_empty() && rng.below(3) != 0 {
+    let places = places_of(ctx, &inner);
+    let (val, var_target) = if !places.is_empty() && rng.below(2) == 0 {
+        (format!("&mut {}", places[rng.below(places.len())]), true)
+    } else if !tgts.is_empty() && rng.below(3) != 0 {
         (format!("&mut {}", tgts[rng.below(tgts.len())]), true)
     } else {
         (format!("&{}", types::literal(rng, &inner)), false)
@@ -464,6 +453,40 @@ pub(super) fn gen_ref_stmts(
         _ => {}
     }
     stmts
+}
+
+/// Places of type `ty` inside visible composite bindings: a struct field,
+/// a tuple element, an array element or a map entry (a write through the
+/// reference patches the root; a missing element or key addresses
+/// nothing).
+fn places_of(ctx: &GenCtx, ty: &GenType) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, t) in ctx.visible_entries() {
+        if name.contains("::") {
+            continue;
+        }
+        match t {
+            GenType::Struct(fs) => out.extend(
+                fs.iter().filter(|(_, ft)| ft == ty).map(|(f, _)| format!("{name}.{f}")),
+            ),
+            GenType::Tuple(es) => out.extend(
+                es.iter()
+                    .enumerate()
+                    .filter(|(_, e)| *e == ty)
+                    .map(|(i, _)| format!("{name}.{i}")),
+            ),
+            GenType::Array(e) if **e == *ty => {
+                out.push(format!("{name}[0]"));
+                out.push(format!("{name}[1]"));
+            }
+            GenType::Map(e) if **e == *ty => {
+                out.push(format!("{name}{{\"k0\"}}"));
+                out.push(format!("{name}{{\"a\"}}"));
+            }
+            _ => (),
+        }
+    }
+    out
 }
 
 /// A guaranteed-terminating `let rec` plus a call-site binding: the

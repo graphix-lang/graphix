@@ -71,15 +71,6 @@ fn gen_select_body(
 
 /// Generate one twin module + its dispatch plan. `nfields` state
 /// fields, 2 or 3 twin routes, 1-3 dispatch epochs.
-// CR claude for claude: [test-gap] Every twin route writes the whole St with `*st <-
-// {..}` or a capture, through a `&St` parameter, a capture or a nested call. The main
-// generator's references (gen_ref_stmts in funcs.rs, exprs.rs:664) are `&v`, `&literal`
-// or `&(expr)` over scalars. So no generated program takes a place reference (`&s.f`,
-// `&t.0`, `&a[i]`, `&m{k}`, or a moving one with a dynamic key), whose writes patch the
-// root at delivery. References de-fuse, so a wrong path patch is the same in both
-// engines, and only an in-program invariant like this verdict can see it. Add a route
-// that writes field by field through `&sd.a` and `&sd.b` and joins the verdict, and
-// draw place references over visible composites in gen_ref_stmts. (fuzz-gen-b-07)
 pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     let nfields = 1 + rng.below(3);
     let fields: Vec<Field> = FIELDS[..nfields]
@@ -94,12 +85,18 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
         .collect::<Vec<_>>()
         .join(", ");
     let three = chance(rng, 0.4);
+    let by_field = chance(rng, 0.5);
     let mut m = String::new();
     m.push_str(&format!("type St = {{ {st_ty} }};\n"));
-    m.push_str(&format!("let sa: St = {{ {init} }};\n"));
-    m.push_str(&format!("let sb: St = {{ {init} }};\n"));
+    let mut states = vec!["sa", "sb"];
     if three {
-        m.push_str(&format!("let sc: St = {{ {init} }};\n"));
+        states.push("sc");
+    }
+    if by_field {
+        states.push("sd");
+    }
+    for st in &states {
+        m.push_str(&format!("let {st}: St = {{ {init} }};\n"));
     }
     // route 1: write through a &mut parameter
     let body_ref = gen_select_body(rng, &fields, "*st", "*st", "x");
@@ -108,6 +105,7 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     // targets swapped so the twins' select shapes stay identical
     let body_cap = body_ref.replace("*st", "sb");
     m.push_str(&format!("let inner_cap = |x: i64| -> null {body_cap};\n"));
+    let mut calls = vec!["let ra = inner_ref(&mut sa, x)", "let rb = inner_cap(x)"];
     // route 3: the &mut parameter passed through a nested call
     if three {
         m.push_str(&format!(
@@ -116,21 +114,41 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
         m.push_str(
             "let inner_deep = |st: &mut St, x: i64| -> null inner_deep0(st, x);\n",
         );
+        calls.push("let rc = inner_deep(&mut sc, x)");
     }
-    let calls = if three {
-        "let ra = inner_ref(&mut sa, x);\n  let rb = inner_cap(x);\n  \
-         let rc = inner_deep(&mut sc, x);\n  null"
-    } else {
-        "let ra = inner_ref(&mut sa, x);\n  let rb = inner_cap(x);\n  null"
-    };
-    m.push_str(&format!("let handler = |x: i64| -> null {{\n  {calls}\n}};\n"));
-    let verdict = if three {
-        "select (sa, sb, sc) {\n  (a, b, c) if a == b && b == c => `Ok(a),\n  \
-         (a, b, c) => `TwinDiverged((a, b, c))\n}"
-    } else {
-        "select (sa, sb) {\n  (a, b) if a == b => `Ok(a),\n  \
-         (a, b) => `TwinDiverged((a, b))\n}"
-    };
+    // route 4: field by field through place references into sd, each
+    // write patching the root at delivery
+    if by_field {
+        for f in &fields {
+            m.push_str(&format!("let pf_{0} = &mut sd.{0};\n", f.name));
+        }
+        let writes = fields
+            .iter()
+            .map(|f| format!("*pf_{} <- {}", f.name, f.update))
+            .collect::<Vec<_>>()
+            .join(";\n    ");
+        let write = format!("let s = n ~ sd;\n    {writes};\n    null");
+        let body = if body_ref.contains("i64:0 => null") {
+            format!("select x {{\n  i64:0 => null,\n  n => {{\n    {write}\n  }}\n}}")
+        } else {
+            format!("select x {{\n  n => {{\n    {write}\n  }}\n}}")
+        };
+        m.push_str(&format!("let inner_fields = |x: i64| -> null {body};\n"));
+        calls.push("let rd = inner_fields(x)");
+    }
+    m.push_str(&format!(
+        "let handler = |x: i64| -> null {{\n  {};\n  null\n}};\n",
+        calls.join(";\n  ")
+    ));
+    let names: Vec<String> = (0..states.len()).map(|i| format!("t{i}")).collect();
+    let agree =
+        names.windows(2).map(|w| format!("{} == {}", w[0], w[1])).collect::<Vec<_>>();
+    let verdict = format!(
+        "select ({st}) {{\n  ({n}) if {agree} => `Ok(t0),\n  ({n}) => `TwinDiverged(({n}))\n}}",
+        st = states.join(", "),
+        n = names.join(", "),
+        agree = agree.join(" && ")
+    );
     m.push_str(&format!("let verdict = {verdict}\n"));
     let nepochs = 1 + rng.below(3);
     let epochs =
@@ -188,3 +206,4 @@ pub fn gen_twin_program(rng: &mut Rng) -> String {
         render_callable_form(&shape)
     }
 }
+
