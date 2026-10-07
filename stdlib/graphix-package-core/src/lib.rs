@@ -424,6 +424,10 @@ pub use memo::FastMemo;
 // argument type to serialize by type, as the readers use the return type; that would
 // also write a List as a flat array instead of its cons cells. probe:
 // design/review-2026-10-05/repro/small-pkgs-11.gx (small-pkgs-11)
+// 2026-10-07 claude: needs the site's argument type at the fast call: TypedFastFn
+// carries only the resolved return type, so this wants a fast-call form carrying the
+// argument types, in the emitter as well as the node-walk. Deferred to the fusion
+// batch.
 pub fn is_struct(arr: &ValArray) -> bool {
     if arr.is_empty() {
         return false;
@@ -1352,9 +1356,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     if let Some(tv) = seam_value(n)
         && (tv.is_fired() || left.is_none())
-        && let Ok(n) = tv.value_cloned().cast_to::<usize>()
+        && let Ok(n) = tv.value_cloned().cast_to::<i64>()
     {
-        *left = Some(n)
+        // a negative count is none
+        *left = Some(n.max(0) as usize)
     }
 }
 
@@ -1512,12 +1517,28 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
 
 type All = CachedArgs<AllEv>;
 
-fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
-    match (lhs, rhs) {
-        (None, None) | (Some(_), None) => None,
-        (None, r @ Some(_)) => r,
-        (Some(l), Some(r)) => Some(l + r),
+/// `op` over the flattened arguments, left to right. A failed step (a
+/// division by zero, an overflow) is logged and the result is nothing,
+/// as the `/` operator does, never an error the type does not admit.
+fn arith_fold(
+    name: &str,
+    from: &CachedVals,
+    op: fn(Value, Value) -> Value,
+) -> Option<Value> {
+    let mut acc: Option<Value> = None;
+    for v in from.flat_iter() {
+        let v = v?;
+        let next = match acc {
+            None => v,
+            Some(l) => op(l, v),
+        };
+        if let Value::Error(e) = &next {
+            log::error!("{name}: {e}");
+            return None;
+        }
+        acc = Some(next);
     }
+    acc
 }
 
 #[derive(Debug, Default)]
@@ -1529,10 +1550,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        from.flat_iter().fold(None, |res, v| match res {
-            res @ Some(Value::Error(_)) => res,
-            res => add_vals(res, v.clone()),
-        })
+        arith_fold("sum", from, |l, r| l + r)
     }
 }
 
@@ -1542,23 +1560,12 @@ type Sum = CachedArgs<SumEv>;
 struct ProductEv;
 unit_image_state!(ProductEv);
 
-fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
-    match (lhs, rhs) {
-        (None, None) | (Some(_), None) => None,
-        (None, r @ Some(_)) => r,
-        (Some(l), Some(r)) => Some(l * r),
-    }
-}
-
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_product";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        from.flat_iter().fold(None, |res, v| match res {
-            res @ Some(Value::Error(_)) => res,
-            res => prod_vals(res, v.clone()),
-        })
+        arith_fold("product", from, |l, r| l * r)
     }
 }
 
@@ -1568,23 +1575,12 @@ type Product = CachedArgs<ProductEv>;
 struct DivideEv;
 unit_image_state!(DivideEv);
 
-fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
-    match (lhs, rhs) {
-        (None, None) | (Some(_), None) => None,
-        (None, r @ Some(_)) => r,
-        (Some(l), Some(r)) => Some(l / r),
-    }
-}
-
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_divide";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        from.flat_iter().fold(None, |res, v| match res {
-            res @ Some(Value::Error(_)) => res,
-            res => div_vals(res, v.clone()),
-        })
+        arith_fold("divide", from, |l, r| l / r)
     }
 }
 

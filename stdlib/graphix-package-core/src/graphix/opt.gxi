@@ -49,28 +49,16 @@ val zip: fn(a: ['a, null], b: ['b, null]) -> [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -> (['a, null], ['b, null]);
 
-// CR claude for claude: [bug] opt::map, flat_map, filter, or_else, ok_or_else,
-// is_some_and and is_none_or (here and opt.gx:11-17), and map::change (map mod.gxi:36,
-// mod.gx:15), declare their callback with no throws variable. The array, list and
-// Collection HOFs, the other map HOFs and core filter all have one. A callback that
-// uses `?` is refused (`fn(x: 'a) -> 'b does not contain fn(n) -> i64 throws ...`), so
-// it cannot raise to the caller's catch and has to drop its error with `$` or a select.
-// The builtins already run the callback in the call site's scope, as core Filter does.
-// Bound with `f: fn(x: 'a) -> 'b throws 'e) -> ['b, null] throws 'e`, 'core_opt_map
-// (and 'core_opt_or_else, 'core_opt_ok_or_else) deliver the raise to the catch in both
-// engines. Add a throws variable to all eight; ok_or_else needs a fresh name, since its
-// 'e is the error payload. probe: design/review-2026-10-05/repro/gx-stdlib-12.gx
-// (gx-stdlib-12)
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
 /// return null. f is invoked at most once per update of v — fire-and-
 /// forget, no queueing. If v updates again before f produces a result,
 /// the new input supersedes the pending one.
-val map: fn(v: ['a, null], f: fn(x: 'a) -> 'b) -> ['b, null];
+val map: fn(v: ['a, null], f: fn(x: 'a) -> 'b throws 'e) -> ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
 /// unchanged. Same fire-and-forget semantics as map.
-val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null]) -> ['b, null];
+val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null] throws 'e) -> ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
 /// Otherwise (v is null, or pred is false) emit null. Same fire-and-
@@ -83,26 +71,26 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null]) -> ['b, null];
 /// gated on a verdict about the old one. Pure predicates (the
 /// expected case) are unaffected. Use `core::queue` if you need
 /// strict input-bool pairing.
-val filter: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> ['a, null];
+val filter: fn(v: ['a, null], f: fn(x: 'a) -> bool throws 'e) -> ['a, null] throws 'e;
 
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f is invoked eagerly and its latest value is cached so
 /// later updates to v can be resolved without re-invoking f. If v is
 /// null before f has produced its first value, no output is emitted
 /// until f fires.
-val or_else: fn(v: ['a, null], f: fn() -> ['a, null]) -> ['a, null];
+val or_else: fn(v: ['a, null], f: fn() -> ['a, null] throws 'e) -> ['a, null] throws 'e;
 
 /// ok_or_else(v, f): return v if non-null, otherwise return
 /// error(f()). Same eager-with-caching semantics as or_else; null v
 /// before f's first firing is silent until f produces.
-val ok_or_else: fn(v: ['a, null], f: fn() -> 'e) -> Result<'a, 'e>;
+val ok_or_else: fn(v: ['a, null], f: fn() -> 'e throws 'x) -> Result<'a, 'e> throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
 /// false when v is null or pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> bool;
+val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -> bool throws 'e) -> bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
 /// when v is non-null and pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -> bool) -> bool
+val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -> bool throws 'e) -> bool throws 'e

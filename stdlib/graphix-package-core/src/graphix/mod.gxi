@@ -24,15 +24,9 @@ trait Eq {
     val eq: fn(self, other: self) -> bool
 };
 
-// CR claude for claude: [doc-drift] This says `array::sort`, `min`/`max` and map keys
-// stay structural, but they consult the implementation exactly as `<` does
-// (design/traits.md "THE VALUE SEAM", book/src/udt/traits.md). With a reversed `impl
-// Ord for Rev`, `min(Rev(1), Rev(2))` is `Rev(2)`, `array::sort([Rev(1), Rev(2)])` is
-// `[Rev(2), Rev(1)]` and `{Rev(1) => "a", Rev(2) => "b"}` orders `Rev(2)` first. The
-// LSP shows this text on hover. (x-builtin-effects-12)
 /// Ordering. `<`, `>`, `<=` and `>=` consult the implementation the
-/// way `==` consults `Eq`; `array::sort`, `min`/`max` and map keys
-/// stay structural. Implicitly `#[sync]`.
+/// way `==` consults `Eq`, and so do `array::sort`, `min`/`max` and map
+/// keys. Implicitly `#[sync]`.
 trait Ord {
     /// the order of `self` relative to `other`
     val cmp: fn(self, other: self) -> Ordering
@@ -51,7 +45,9 @@ trait Display {
 /// program implements it for. `self<'a>` is the constructor applied to
 /// the element type. `fold`, `filter_map` and `flat_map` are required;
 /// the rest derive from them, and an implementation overrides what it
-/// can do better (the built-in collections override all of them).
+/// can do better. Over an element type that holds null, the derived
+/// `map` and `filter` drop the null elements (they go through
+/// `filter_map`'s `Option`); the built-in collections override both.
 /// `use Collection::*` makes the methods callable bare, and `map(c, f)`
 /// then does the same thing whatever `c` is. A parameter typed
 /// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
@@ -72,7 +68,6 @@ trait Collection {
     val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
         = |c, f| {
             let init: Option<'a> = null;
-            fold(c, init, |acc, x| select acc {
                 // CR claude for claude: [bug] The defaults use null to mean "no element".
                 // map and filter (lines 61, 64) go through filter_map, whose Option<'b>
                 // collapses when the element type holds null. This arm also can't tell
@@ -86,9 +81,17 @@ trait Collection {
                 // of them") is false: Map lacks filter/find/find_map and List lacks
                 // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
                 // (gx-stdlib-04)
-                null as _ => select f(x) { true => x, false => null },
-                found => found
-            })
+                // 2026-10-07 claude: Map overrides filter (map_filter) and List len;
+                // find carries a found flag, so a null match ends the search; the
+                // trait doc no longer says the built-ins override everything and names
+                // the limit. What stands: a user collection's derived map and filter
+                // still drop null elements (the repro's `bag map 1`); keeping them needs
+                // a singleton constructor the trait does not have.
+            let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
+                true => (done, acc),
+                false => select f(x) { true => (true, x), false => (false, acc) }
+            });
+            found
         };
     /// the first value `f` maps an element to
     val find_map: fn(self<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Option<'b> throws 'e
@@ -140,8 +143,11 @@ type ErrChain<'a> = {
 // and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
 // would type the result, but it would also refuse the mixed-number array that
 // graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
+// 2026-10-07 claude: all is fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a, and take/skip take
+// #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
+// result needs the Singleton bound, which the mixed-number fixture refuses.
 /// return the first argument when all arguments are equal, otherwise return nothing
-val all: fn(@args: Any) -> Any;
+val all: fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a;
 
 /// return true if all arguments are true, otherwise return false
 val and: fn(@args: bool) -> bool;
@@ -149,7 +155,8 @@ val and: fn(@args: bool) -> bool;
 /// return the number of times x has updated
 val count: fn(x: Any) -> i64;
 
-/// return the first argument divided by all subsuquent arguments
+/// return the first argument divided by all subsequent arguments; a
+/// failed division (by zero, an overflow) is logged and returns nothing
 val divide: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number;
 
 /// return e only if e is an error
@@ -177,11 +184,13 @@ val min: fn<'a: Ordered>(a: 'a, @args:'a) -> 'a;
 /// and once will return nothing
 val once: fn(v: 'a) -> 'a;
 
-/// take n updates from e and drop the rest. The internal count is reset when n updates.
-val take: fn(#n:Any, e: 'a) -> 'a;
+/// take n updates from e and drop the rest; a negative n takes none. The
+/// count restarts when n updates.
+val take: fn(#n: i64, e: 'a) -> 'a;
 
-/// skip n updates from e and return the rest. The internal count is reset when n updates.
-val skip: fn(#n:Any, e: 'a) -> 'a;
+/// skip n updates from e and return the rest; a negative n skips none.
+/// The count restarts when n updates.
+val skip: fn(#n: i64, e: 'a) -> 'a;
 
 /// range will update j - i times, starting at i and ending at j - 1
 val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
@@ -189,32 +198,23 @@ val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;
 
-// CR claude for claude: [bug] bit_and, bit_or, bit_xor, shl and shr below are `fn<'a:
-// Int>`, so 'a can settle to a union such as [i64, u8]. int_binop!/int_shift!
-// (lib.rs:1456-1494) return None when the two values are different integer types. Such
-// a call passes --check and never produces anything: no value, no error, no log. The
-// node-walk re-delivers its last result as stale while the JIT bottoms (graphix-fuzz
-// check: DIVERGENCE). `x + y` over the same operands is refused at check time. Declare
-// these five `fn<'a: Int + Singleton>`, as arithmetic is, here, in mod.gx:17-22 and in
-// book/src/stdlib/core.md; bit_not works per variant and can stay. probe:
-// design/review-2026-10-05/repro/gx-stdlib-11.gx (gx-stdlib-11)
 /// bitwise AND
-val bit_and: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
+val bit_and: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 
 /// bitwise OR
-val bit_or: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
+val bit_or: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 
 /// bitwise XOR
-val bit_xor: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
+val bit_xor: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 
 /// bitwise complement
 val bit_not: fn<'a: Int>(a: 'a) -> 'a;
 
 /// shift left (wrapping)
-val shl: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
+val shl: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 
 /// shift right (wrapping)
-val shr: fn<'a: Int>(a: 'a, b: 'a) -> 'a;
+val shr: fn<'a: Int + Singleton>(a: 'a, b: 'a) -> 'a;
 
 /// return the product of all arguments
 val product: fn(@args: [Number, Array<[Number, Array<Number>]>]) -> Number;

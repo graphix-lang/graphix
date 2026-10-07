@@ -12,5 +12,5 @@ let filter = |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> bool throws 'e| -> Map<'a, 
 let filter_map = 'c: Ordered |m: Map<'a, 'b>, f: fn(kv: ('a, 'b)) -> Option<('c, 'd)> throws 'e| -> Map<'c, 'd> throws 'e 'map_filter_map;
 let fold = |m: Map<'a, 'b>, init: 'c, f: fn(acc: 'c, kv: ('a, 'b)) -> 'c throws 'e| -> 'c throws 'e 'map_fold;
 
-let change = 'a: Ordered |m: Map<'a, 'b>, k: 'a, default: 'b, f: fn(v: 'b) -> 'b| -> Map<'a, 'b>
+let change = 'a: Ordered |m: Map<'a, 'b>, k: 'a, default: 'b, f: fn(v: 'b) -> 'b throws 'e| -> Map<'a, 'b> throws 'e
   insert(m, k, f(get_or(m, k, default)))

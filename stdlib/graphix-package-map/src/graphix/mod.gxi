@@ -35,7 +35,7 @@ val insert: fn<'k: Ordered>(m: Map<'k, 'v>, k: 'k, v: 'v) -> Map<'k, 'v>;
 /// update the value at k by applying f to the current value at k, or
 /// to the provided default if k is not present. returns the new map
 /// with k set to f's result. e.g. change(m, "count", 0, |n| n + 1)
-val change: fn<'k: Ordered>(m: Map<'k, 'v>, k: 'k, default: 'v, f: fn(v: 'v) -> 'v) -> Map<'k, 'v>;
+val change: fn<'k: Ordered>(m: Map<'k, 'v>, k: 'k, default: 'v, f: fn(v: 'v) -> 'v throws 'e) -> Map<'k, 'v> throws 'e;
 
 /// remove the value associated with the specified key from the map
 val remove: fn<'k: Ordered>(m: Map<'k, 'v>, k: 'k) -> Map<'k, 'v>;

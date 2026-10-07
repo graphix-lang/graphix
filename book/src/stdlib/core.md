@@ -46,7 +46,7 @@ type ErrChain<'a> = {
 };
 
 /// return the first argument when all arguments are equal, otherwise return nothing
-val all: fn(@args: Any) -> Any;
+val all: fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a;
 
 /// return true if all arguments are true, otherwise return false
 val and: fn(@args: bool) -> bool;
@@ -83,10 +83,10 @@ val min: fn<'a: Ordered>(x: 'a, @args:'a) -> 'a;
 val once: fn(x: 'a) -> 'a;
 
 /// take n updates from e and drop the rest. The internal count is reset when n updates.
-val take: fn(#n:Any, x: 'a) -> 'a;
+val take: fn(#n: i64, x: 'a) -> 'a;
 
 /// skip n updates from e and return the rest. The internal count is reset when n updates.
-val skip: fn(#n:Any, x: 'a) -> 'a;
+val skip: fn(#n: i64, x: 'a) -> 'a;
 
 /// range will update j - i times, starting at i and ending at j - 1
 val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
@@ -143,22 +143,22 @@ val println: fn(?#dest:Log, x: 'a) -> null;
 val throttle: fn(?#rate:duration, x: 'a) -> 'a;
 
 /// bitwise AND
-val bit_and: fn<'a: Int>(x: 'a, y: 'a) -> 'a;
+val bit_and: fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a;
 
 /// bitwise OR
-val bit_or: fn<'a: Int>(x: 'a, y: 'a) -> 'a;
+val bit_or: fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a;
 
 /// bitwise XOR
-val bit_xor: fn<'a: Int>(x: 'a, y: 'a) -> 'a;
+val bit_xor: fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a;
 
 /// bitwise complement
 val bit_not: fn<'a: Int>(x: 'a) -> 'a;
 
 /// shift left (wrapping)
-val shl: fn<'a: Int>(x: 'a, y: 'a) -> 'a;
+val shl: fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a;
 
 /// shift right (wrapping)
-val shr: fn<'a: Int>(x: 'a, y: 'a) -> 'a;
+val shr: fn<'a: Int + Singleton>(x: 'a, y: 'a) -> 'a;
 ```
 
 ## core::buffer
