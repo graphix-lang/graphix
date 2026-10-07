@@ -42,7 +42,7 @@ In script mode:
     - built into a TUI if it is of type Tui
     - printed to stdout as it updates if it is not
 - `Ctrl+C` exits the program
-- Warnings are enabled by default (unused variables, unhandled errors)
+- Warnings about unhandled errors are enabled by default
 
 Script mode is for running complete programs. The shell stays running to
 handle the reactive graph's ongoing updates.
@@ -465,19 +465,13 @@ graphix -W unhandled ./myprogram
 # Disable warning about unhandled errors
 graphix -W no-unhandled myapp.gx
 
-# Warn about unused variables - default in script mode
-graphix -W unused ./myproject
-
-# Disable unused variable warnings
-graphix -W no-unused myprogram.gx
-
 # Make all warnings into errors
 graphix -W error ./myapp
 ```
 
 Multiple warning flags can be combined:
 ```bash
-graphix -W unused -W unhandled -W error myprogram
+graphix -W unhandled -W error myprogram
 ```
 
 If you specify both a flag and its negation (e.g., `unhandled` and `no-unhandled`), the `no-` variant always wins.

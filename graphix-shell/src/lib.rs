@@ -322,8 +322,8 @@ impl<X: GXExt> Shell<X> {
             Mode::Script(source) => Some(source.clone()),
             Mode::Check(_) | Mode::Repl => None,
         };
-        let mut flags = match self.mode {
-            Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
+        let mut flags: BitFlags<CFlag> = match self.mode {
+            Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled.into(),
             Mode::Repl => CFlag::ReplaceImports.into(),
         };
         flags.insert(self.enable_flags);

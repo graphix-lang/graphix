@@ -57,7 +57,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
         resolvers.push(FilesResolver::new(root, None));
     }
     // A check runs CFlag::CheckOnly, which never fuses.
-    let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
+    let flags = BitFlags::from(CFlag::WarnUnhandled);
     // Drain runtime events so the channel never stalls the runtime.
     let (tx, rx) = mpsc::channel(100);
     task::spawn(drain(rx));

@@ -158,7 +158,7 @@ You can enable or disable compiler flags:
 use graphix_compiler::CFlag;
 
 ShellBuilder::<NoExt>::default()
-    .enable_flags(CFlag::WarnUnused | CFlag::WarnUnhandled)
+    .enable_flags(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
     .mode(Mode::Repl)
     // ...
 ```

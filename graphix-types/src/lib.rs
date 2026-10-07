@@ -47,17 +47,6 @@ pub use uuid::Uuid;
 #[repr(u64)]
 pub enum CFlag {
     WarnUnhandled,
-    // CR claude for claude: [dead] Nothing reads WarnUnused: no unused-binding warning
-    // exists in the workspace or ../netidx. Yet the shell sets it by default for
-    // scripts and --check (graphix-shell/src/lib.rs:260), the LSP sets it
-    // (lsp_backend.rs:62), `-W unused`/`-W no-unused` toggle it (main.rs:58-59, help at
-    // main.rs:226), and book/src/shell.md:45 and 466-470 promise unused-variable
-    // warnings by default. `graphix --check -W unused -W error` over two unused lets
-    // prints nothing and exits 0. The flag still enters the program image key, so `-W
-    // no-unused` misses the warm entry of an identical compile. Implement the warning
-    // through Env::warn, or delete the variant, the RawFlag pair, the help line and the
-    // book text. probe: design/review-2026-10-05/repro/shell-10.gx (shell-10)
-    WarnUnused,
     WarningsAreErrors,
     /// Disable fusion: no kernels are built or spliced and the program
     /// runs purely through the node-walk.

@@ -24,8 +24,6 @@ use std::{path::PathBuf, str::FromStr, time::Duration};
 enum RawFlag {
     Unhandled,
     NoUnhandled,
-    Unused,
-    NoUnused,
     Error,
     NoError,
 }
@@ -37,8 +35,6 @@ impl FromStr for RawFlag {
         match s {
             "unhandled" => Ok(Self::Unhandled),
             "no-unhandled" => Ok(Self::NoUnhandled),
-            "unused" => Ok(Self::Unused),
-            "no-unused" => Ok(Self::NoUnused),
             "error" => Ok(Self::Error),
             "no-error" => Ok(Self::NoError),
             s => bail!("invalid flag {s}"),
@@ -54,8 +50,6 @@ impl RawFlag {
             match fl {
                 Self::Unhandled => enable.insert(CFlag::WarnUnhandled),
                 Self::NoUnhandled => disable.insert(CFlag::WarnUnhandled),
-                Self::Unused => enable.insert(CFlag::WarnUnused),
-                Self::NoUnused => disable.insert(CFlag::WarnUnused),
                 Self::Error => enable.insert(CFlag::WarningsAreErrors),
                 Self::NoError => disable.insert(CFlag::WarningsAreErrors),
             }
@@ -206,7 +200,6 @@ struct Params {
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
     /// - unhandled, no-unhandled: warn about unhandled ? operators (default)
-    /// - unused, no-unused: warn about unused variables (default)
     /// - error, no-error makes warnings errors
     ///
     /// the no- variant turns the flag off. If both are specifed the no- variant
