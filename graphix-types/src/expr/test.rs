@@ -2496,12 +2496,24 @@ mod tree_sitter_compat {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
         for (src, shape) in [
-            ("a ~! b", "(binary_expression (reference (module_path (identifier))) (reference (module_path (identifier))))"),
-            ("&|x| x + 1", "(by_ref (lambda (lambda_params (lambda_param (structure_pattern (pattern_bind name: (identifier))))) (binary_expression"),
+            (
+                "a ~! b",
+                "(binary_expression (reference (module_path (identifier))) (reference (module_path (identifier))))",
+            ),
+            (
+                "&|x| x + 1",
+                "(by_ref (lambda (lambda_params (lambda_param (structure_pattern (pattern_bind name: (identifier))))) (binary_expression",
+            ),
             ("`A(x)", "(variant (type_identifier) (reference"),
-            ("t.0.1", "(tuple_ref (tuple_ref (reference (module_path (identifier))) (number)) (number))"),
+            (
+                "t.0.1",
+                "(tuple_ref (tuple_ref (reference (module_path (identifier))) (number)) (number))",
+            ),
             ("|a, x| a + x", "(lambda (lambda_params"),
-            ("i64:4/i64:2", "(binary_expression (type_ascription (primitive_type) (literal (number))) (type_ascription"),
+            (
+                "i64:4/i64:2",
+                "(binary_expression (type_ascription (primitive_type) (literal (number))) (type_ascription",
+            ),
             ("bytes:AQID==", "(type_ascription (primitive_type))"),
         ] {
             let tree = parser.parse(src, None).unwrap();

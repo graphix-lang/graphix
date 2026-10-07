@@ -39,7 +39,9 @@ const RANK2_FORMAL_APPLIED_AT_A_NUMBER: &str = r#"
 }
 "#;
 
-run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Result<&Value>| {
+run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Result<
+    &Value,
+>| {
     matches!(v, Ok(Value::I64(2)))
 });
 
@@ -68,10 +70,7 @@ const TWO_RIGID_VARS_UNIFIED: &str = r#"
 
 // `+` is ('a, 'a) -> 'a, so this body is well typed only where 'a = 'b:
 // a promise the signature does not make. Refused at the definition.
-run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")); graphix_package_core::testing::FuseExpect::None);
 
 const DEFAULT_ILL_TYPED_AT_DEFINITION: &str = r#"
 {
@@ -82,10 +81,7 @@ const DEFAULT_ILL_TYPED_AT_DEFINITION: &str = r#"
 
 // A default is checked at the definition, called or not: a lambda is
 // not an i64.
-run!(default_ill_typed_at_definition, DEFAULT_ILL_TYPED_AT_DEFINITION, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(default_ill_typed_at_definition, DEFAULT_ILL_TYPED_AT_DEFINITION, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain fn(i:")); graphix_package_core::testing::FuseExpect::None);
 
 const DEFAULT_IN_CONSTRAINT_SET: &str = r#"
 {
@@ -113,10 +109,7 @@ const DEFAULT_OUTSIDE_CONSTRAINT_SET: &str = r#"
 }
 "#;
 
-run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Int does not contain f64")); graphix_package_core::testing::FuseExpect::None);
 
 const LABELED_ARGS: &str = r#"
 {
@@ -137,10 +130,7 @@ const REQUIRED_ARGS: &str = r#"
 }
 "#;
 
-run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing required argument foo")); graphix_package_core::testing::FuseExpect::None);
 
 const MIXED_ARGS: &str = r#"
 {
@@ -618,10 +608,7 @@ const LAMBDAMATCH1: &str = r#"
 }
 "#;
 
-run!(lambdamatch1, LAMBDAMATCH1, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch1, LAMBDAMATCH1, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("non exhaustive struct matches require type annotations")); graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH2: &str = r#"
 {
@@ -644,10 +631,7 @@ const LAMBDAMATCH3: &str = r#"
 }
 "#;
 
-run!(lambdamatch3, LAMBDAMATCH3, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch3, LAMBDAMATCH3, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain { bar: i64, baz: i64 }")); graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH4: &str = r#"
 {
@@ -669,10 +653,7 @@ const LAMBDAMATCH5: &str = r#"
 }
 "#;
 
-run!(lambdamatch5, LAMBDAMATCH5, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch5, LAMBDAMATCH5, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain string")); graphix_package_core::testing::FuseExpect::None);
 
 const NESTED_OPTIONAL0: &str = r#"
 {
@@ -1114,17 +1095,15 @@ const RTYPE_REJECTS_ERROR_ARM: &str = r#"
 }
 "#;
 
-run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain [")); graphix_package_core::testing::FuseExpect::None);
 
 // A fn-valued element does not slip through a recursive-type HOF chain:
 // `acc + <fn>` is rejected.
 run!(
     list_map_fn_element_fold_rejected,
-    |v: Result<&Value>| matches!(v, Err(_)),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")),
     "/test.gx" => r#"
-        list::fold(
+        let result = list::fold(
             list::map(list::from_array([true]), |x| hold),
             i64:0,
             |acc, x| acc + x
@@ -1199,9 +1178,7 @@ const REC_RTYPE_REJECTS_ERROR_ARM: &str = r#"
 }
 "#;
 
-run!(rec_rtype_rejects_error_arm, REC_RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(rec_rtype_rejects_error_arm, REC_RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain [")); graphix_package_core::testing::FuseExpect::None);
 
 // Monomorphic recursion: a self-call arg disagreeing with the entry
 // call's narrowing is a def-time error.
@@ -1215,9 +1192,7 @@ const REC_SELFCALL_ARG_MISMATCH: &str = r#"
 }
 "#;
 
-run!(rec_selfcall_arg_mismatch, REC_SELFCALL_ARG_MISMATCH, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(rec_selfcall_arg_mismatch, REC_SELFCALL_ARG_MISMATCH, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain string")); graphix_package_core::testing::FuseExpect::None);
 
 // Two distinct unbound tvars in an arm union do not collapse; both
 // bindings survive into the select's type (direct-return shape only).
@@ -1258,9 +1233,7 @@ const SELECT_VARIANT_NONEXHAUSTIVE: &str = r#"
 }
 "#;
 
-run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing match cases")); graphix_package_core::testing::FuseExpect::None);
 
 // A tail-recursive `let rec` inside a HOF callback (depth 500).
 const REC_IN_HOF_CALLBACK: &str = r#"
@@ -1416,7 +1389,7 @@ const PARAM_KNOT_NO_LEAK: &str = r#"
 }
 "#;
 
-run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| matches!(v, Err(_));
+run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
      graphix_package_core::testing::FuseExpect::None);
 
 // A recursive callee whose self-call passes a fn-typed arg compiles
@@ -1588,7 +1561,7 @@ const EXCESS_POSITIONAL_REJECTED: &str = r#"
 run!(
     excess_positional_rejected,
     EXCESS_POSITIONAL_REJECTED,
-    |v: Result<&Value>| matches!(v, Err(_));
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("too many positional arguments"));
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1647,7 +1620,7 @@ const ARITH_REJECTS_ABSTRACT_OPERAND: &str = r#"
 run!(
     arith_rejects_abstract_operand,
     ARITH_REJECTS_ABSTRACT_OPERAND,
-    |v: Result<&Value>| matches!(v, Err(_));
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1685,7 +1658,7 @@ const DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE: &str = r#"
 run!(
     declared_rtype_proven_through_open_callee,
     DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE,
-    |v: Result<&Value>| matches!(v, Err(_));
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain"));
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1739,11 +1712,13 @@ run!(labeled_callback_default, LABELED_CALLBACK_DEFAULT, |v: Result<&Value>| mat
 async fn labeled_only_callback_is_compile_error() {
     let r =
         eval("array::map([i64:7], |#foo: i64 = i64:42| foo)", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "a labeled-only callback must not satisfy fn(x: 'a) -> 'b, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let msg = match r {
+        Err(e) => format!("{e:#}"),
+        Ok((v, _)) => {
+            panic!("a labeled-only callback must not satisfy fn(x: 'a) -> 'b, got {v:?}")
+        }
+    };
+    assert!(msg.contains("does not contain fn(?#foo: i64)"), "{msg}");
 }
 
 // A HOF callback calling a lambda whose return cell is still open (a
@@ -2063,9 +2038,7 @@ const REQUIRED_LABEL_CONNECT: &str = r#"
 }
 "#;
 
-run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("and cannot hold fn(#a: i64, x: i64)")); graphix_package_core::testing::FuseExpect::None);
 
 // A quiet bottom argument inside a tail recursion is bottom to the
 // callee: after `g(5)` ran and `x` went bottom, `f(2, x)` is bottom, as

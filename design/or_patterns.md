@@ -53,7 +53,9 @@ select x {
   above): Graphix narrows captures where Rust binds at the enum type,
   so exact equality refused ``kk@ `Up | kk@ `Char("k")``, the form
   orthodox code writes; the capture is the whole matched value, so the
-  union is exact. Checked at pattern compile, before coverage math.
+  union is exact. Checked at pattern compile, before coverage math,
+  under an explicit type predicate; under an inferred one the same
+  mistake is refused first as an unreachable alternative.
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
   `[x, r..] | [a, b, c]` are errors — the arm-level dead walk's
