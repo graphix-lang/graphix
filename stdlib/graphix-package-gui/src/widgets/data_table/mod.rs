@@ -356,22 +356,6 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if reconcile || source_fired {
             self.push_defaults_to_sparklines();
         }
-        // CR claude for claude: [perf] Every ToGui::Update reaches every widget of every
-        // window (event_loop.rs:280-284), and this call reconciles subscriptions for
-        // each one, whatever its id. A clock label's tick or a keystroke elsewhere in
-        // the UI costs a walk of every routing entry (one per absolute row once a sort
-        // column is set) plus a (Path, ArcStr) clone and hash per windowed cell.
-        // Reconcile only when the rows, the viewport, sort_by or the table changed. Per
-        // frame, render_with_size runs at every layout (iced's responsive calls its
-        // closure each time) and shapes each auto-width text cell at least twice
-        // through a fresh Paragraph: col_min_width, then truncate_to_width's full
-        // measure and binary search, on top of iced's own shaping. auto_fit_all_columns
-        // shapes every cell of every row on the GUI thread. Cache measured widths by
-        // text and size. Not measured. (gui-datatable-18)
-        // 2026-10-07 claude: handle_update reconciles only when the table, sort_by or a
-        // column's source kind changed. Still open: the per-frame text measuring
-        // (col_min_width, truncate_to_width, auto-fit) through a fresh Paragraph,
-        // with no width cache.
         if reconcile {
             self.reconcile();
             changed = true;

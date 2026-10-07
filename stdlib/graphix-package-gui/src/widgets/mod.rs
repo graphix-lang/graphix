@@ -380,8 +380,32 @@ pub(crate) async fn reconcile<T, F: Future<Output = Result<T>>>(
         .collect())
 }
 
-/// The width `text` lays out to at `size` in `font`, unwrapped.
+/// The width `text` lays out to at `size` in `font`, unwrapped. Widths
+/// are remembered per thread, up to `MEASURED` of them, since a layout
+/// measures the same cells again every frame.
 pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
+    const MEASURED: usize = 8192;
+    type Key = (CompactString, u32, iced_core::Font);
+    thread_local! {
+        static WIDTHS: std::cell::RefCell<ahash::AHashMap<Key, f32>> =
+            std::cell::RefCell::new(ahash::AHashMap::default());
+    }
+    let key = (CompactString::from(text), size.to_bits(), font);
+    if let Some(w) = WIDTHS.with(|m| m.borrow().get(&key).copied()) {
+        return w;
+    }
+    let w = shape_width(text, size, font);
+    WIDTHS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= MEASURED {
+            m.clear();
+        }
+        m.insert(key, w);
+    });
+    w
+}
+
+fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
     use iced_core::text::Paragraph as _;
     type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
     Paragraph::with_text(iced_core::Text {
