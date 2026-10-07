@@ -138,7 +138,7 @@ Error<`MyErr>  &i64  &mut i64  // error; read-only, writable reference
 fn(x: i64) -> string throws `E // positional params in fn TYPES must be named
 type Point = {x: f64, y: f64}; type Maybe<'a> = ['a, null]
 type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
-'a: Number  'a: Int  'a: Float   // constraints; sets Number Int SInt UInt Float Real
+'a: Number  'a: Int  'a: Float   // constraints; sets Number Int Sint Uint Float Real
 ```
 
 Abstract (nominal) types: `type Counter = Abstract<i64>` as a whole
