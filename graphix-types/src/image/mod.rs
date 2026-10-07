@@ -666,37 +666,28 @@ pub(crate) fn refcell_encode<B: BufMut>(
 }
 
 pub(crate) fn refcell_decode(buf: &mut impl Buf) -> Result<RefCell, PackError> {
-    with_slice(buf, |sub| {
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
-            REF => {
-                let ord = ref_ord(sub)?;
-                match built::<RefCell>(ord) {
-                    Some(c) => Ok(c),
-                    None => decode_at(ord, |b| refcell_decode(b)),
-                }
+    shared_decode(
+        buf,
+        built::<RefCell>,
+        |sub| {
+            // Entered before its contents: the definition can reach this
+            // cell again.
+            let cell: RefCell = Arc::new(Mutex::new(None));
+            enter(Obj::RefCell(cell.clone()))?;
+            if !sub.has_remaining() {
+                return Err(PackError::BufferShort);
             }
-            DEF => {
-                // Entered before its contents: the definition can reach
-                // this cell again.
-                let cell: RefCell = Arc::new(Mutex::new(None));
-                enter(Obj::RefCell(cell.clone()))?;
-                if !sub.has_remaining() {
-                    return Err(PackError::BufferShort);
-                }
-                match sub.get_u8() {
-                    CELL_EMPTY => {}
-                    CELL_LIVE => *cell.lock() = Some(resolved_decode_weak(sub)?),
-                    CELL_DEAD => *cell.lock() = Some(Weak::new()),
-                    _ => return Err(PackError::UnknownTag),
-                }
-                Ok(cell)
+            match sub.get_u8() {
+                CELL_EMPTY => {}
+                CELL_LIVE => *cell.lock() = Some(resolved_decode_weak(sub)?),
+                CELL_DEAD => *cell.lock() = Some(Weak::new()),
+                _ => return Err(PackError::UnknownTag),
             }
-            _ => Err(PackError::UnknownTag),
-        }
-    })
+            Ok(cell)
+        },
+        |b| refcell_decode(b),
+        unknown_tag,
+    )
 }
 
 pub(crate) fn resolved_len(r: &Resolved) -> usize {
@@ -724,53 +715,45 @@ enum ResolvedRead {
 }
 
 fn resolved_read(buf: &mut impl Buf) -> Result<ResolvedRead, PackError> {
-    with_slice(buf, |sub| {
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
-            REF => {
-                let ord = ref_ord(sub)?;
-                let known = decoding(|d| match d.get::<Resolved>(ord) {
-                    Some(r) => Some(ResolvedRead::Built(r)),
-                    None => d.resolving.get(&ord).cloned().map(ResolvedRead::Building),
+    shared_decode(
+        buf,
+        |ord| {
+            decoding(|d| match d.get::<Resolved>(ord) {
+                Some(r) => Some(ResolvedRead::Built(r)),
+                None => d.resolving.get(&ord).cloned().map(ResolvedRead::Building),
+            })
+            .flatten()
+        },
+        |sub| {
+            let at = decoding(|d| d.defining.last().copied())
+                .flatten()
+                .ok_or(PackError::InvalidFormat)?;
+            // Built cyclic: the cells in its body take the weak half
+            // before the definition exists.
+            let mut failed = None;
+            let r = sync::Arc::new_cyclic(|w| {
+                decoding(|d| d.resolving.insert(at, w.clone()));
+                crate::typ::resolved_decode(sub).unwrap_or_else(|e| {
+                    failed = Some(e);
+                    ResolvedRef::new(
+                        ModPath::root(),
+                        Default::default(),
+                        Arc::default(),
+                        Arc::from_iter([]),
+                        Type::Bottom,
+                    )
                 })
-                .flatten();
-                match known {
-                    Some(r) => Ok(r),
-                    None => decode_at(ord, |b| resolved_read(b)),
-                }
+            });
+            decoding(|d| d.resolving.remove(&at));
+            if let Some(e) = failed {
+                return Err(e);
             }
-            DEF => {
-                let at = decoding(|d| d.defining.last().copied())
-                    .flatten()
-                    .ok_or(PackError::InvalidFormat)?;
-                // Built cyclic: the cells in its body take the weak half
-                // before the definition exists.
-                let mut failed = None;
-                let r = sync::Arc::new_cyclic(|w| {
-                    decoding(|d| d.resolving.insert(at, w.clone()));
-                    crate::typ::resolved_decode(sub).unwrap_or_else(|e| {
-                        failed = Some(e);
-                        ResolvedRef::new(
-                            ModPath::root(),
-                            Default::default(),
-                            Arc::default(),
-                            Arc::from_iter([]),
-                            Type::Bottom,
-                        )
-                    })
-                });
-                decoding(|d| d.resolving.remove(&at));
-                if let Some(e) = failed {
-                    return Err(e);
-                }
-                enter(Obj::Resolved(r.clone()))?;
-                Ok(ResolvedRead::Built(r))
-            }
-            _ => Err(PackError::UnknownTag),
-        }
-    })
+            enter(Obj::Resolved(r.clone()))?;
+            Ok(ResolvedRead::Built(r))
+        },
+        |b| resolved_read(b),
+        unknown_tag,
+    )
 }
 
 /// A typedef's definition; one still being decoded is a malformed image,
@@ -1190,19 +1173,35 @@ pub fn enter(obj: Obj) -> Result<(), PackError> {
 /// Read an object written by [`object_encode`]: a reference clones the
 /// store's object or decodes its definition with `full`; a definition
 /// decodes `contents` and enters it.
-// CR claude for claude: [structure] tvar_decode (1362), cell_decode (1393),
-// refcell_decode (667), resolved_read (725) and dynscope_decode
-// (graphix-compiler/src/image/mod.rs:127) each repeat this function's REF/DEF dispatch:
-// with_slice, the tag match, built or decode_at, UnknownTag. The first three differ
-// from it only in entering the object before its contents. dynscope_decode is
-// foreign_decode behind a ROOT tag, and only resolved_read's Building lookup is its
-// own. Give this function an entered-first form and route them through it and
-// foreign_decode, so the rules for a definition (a DEF only where decode_at starts,
-// re-entry) are written in two places instead of six. (x-image-11)
 pub(crate) fn object_decode<T: Object>(
     buf: &mut impl Buf,
     contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    shared_decode(
+        buf,
+        built::<T>,
+        |sub| {
+            let v = contents(sub)?;
+            enter(v.clone().into_obj())?;
+            Ok(v)
+        },
+        full,
+        unknown_tag,
+    )
+}
+
+/// The frame every shared object decodes through: a REF is the object
+/// `built` finds, else its definition decoded again from its offset by
+/// `full`; a DEF is `def`'s, which enters the object; any other tag is
+/// `other`'s.
+#[doc(hidden)]
+pub fn shared_decode<T>(
+    buf: &mut impl Buf,
+    built: impl FnOnce(u32) -> Option<T>,
+    def: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+    other: impl FnOnce(u8) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
     with_slice(buf, |sub| {
         if !sub.has_remaining() {
@@ -1211,19 +1210,20 @@ pub(crate) fn object_decode<T: Object>(
         match sub.get_u8() {
             REF => {
                 let ord = ref_ord(sub)?;
-                match built::<T>(ord) {
+                match built(ord) {
                     Some(v) => Ok(v),
                     None => decode_at(ord, full),
                 }
             }
-            DEF => {
-                let v = contents(sub)?;
-                enter(v.clone().into_obj())?;
-                Ok(v)
-            }
-            _ => Err(PackError::UnknownTag),
+            DEF => def(sub),
+            tag => other(tag),
         }
     })
+}
+
+#[doc(hidden)]
+pub fn unknown_tag<T>(_: u8) -> Result<T, PackError> {
+    Err(PackError::UnknownTag)
 }
 
 /// A type node whose key the session holds: kept alive with it, so its
@@ -1402,71 +1402,53 @@ fn cell_encode(
 }
 
 pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
-    with_slice(buf, |sub| {
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
-            REF => {
-                let ord = ref_ord(sub)?;
-                match built::<TVar>(ord) {
-                    Some(tv) => Ok(tv),
-                    None => decode_at(ord, |b| tvar_decode(b)),
-                }
-            }
-            DEF => {
-                let name = Pack::decode(sub)?;
-                let id = TVarId::decode(sub)?;
-                let frozen = bool::decode(sub)?;
-                // Entered over a placeholder before its cell: the cell's
-                // bound type or a constraint can reach this wrapper.
-                let placeholder = Arc::new(RwLock::new(TCell::default()));
-                let tv = TVar::from_parts(name, id, frozen, placeholder);
-                enter(Obj::TVar(tv.clone()))?;
-                let cell = cell_decode(sub)?;
-                tv.write().cell = cell;
-                Ok(tv)
-            }
-            _ => Err(PackError::UnknownTag),
-        }
-    })
+    shared_decode(
+        buf,
+        built::<TVar>,
+        |sub| {
+            let name = Pack::decode(sub)?;
+            let id = TVarId::decode(sub)?;
+            let frozen = bool::decode(sub)?;
+            // Entered over a placeholder before its cell: the cell's
+            // bound type or a constraint can reach this wrapper.
+            let placeholder = Arc::new(RwLock::new(TCell::default()));
+            let tv = TVar::from_parts(name, id, frozen, placeholder);
+            enter(Obj::TVar(tv.clone()))?;
+            let cell = cell_decode(sub)?;
+            tv.write().cell = cell;
+            Ok(tv)
+        },
+        |b| tvar_decode(b),
+        unknown_tag,
+    )
 }
 
 fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
-    with_slice(buf, |sub| {
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
-            REF => {
-                let ord = ref_ord(sub)?;
-                match built::<Arc<RwLock<TCell>>>(ord) {
-                    Some(c) => Ok(c),
-                    None => decode_at(ord, |b| cell_decode(b)),
-                }
-            }
-            DEF => {
-                // Entered before its contents: a bound type can reach
-                // the cell again.
-                let cell = Arc::new(RwLock::new(TCell::default()));
-                enter(Obj::Cell(cell.clone()))?;
-                let typ = Pack::decode(sub)?;
-                let constraints: Vec<_> = Pack::decode(sub)?;
-                let refused = bool::decode(sub)?;
-                let bottom_fed = bool::decode(sub)?;
-                let level = Pack::decode(sub)?;
-                let mut c = cell.write();
-                c.level = level;
-                c.binding = typ;
-                c.constraints = constraints.into_iter().collect();
-                c.cycle_refused = refused;
-                c.bottom_fed = bottom_fed;
-                drop(c);
-                Ok(cell)
-            }
-            _ => Err(PackError::UnknownTag),
-        }
-    })
+    shared_decode(
+        buf,
+        built::<Arc<RwLock<TCell>>>,
+        |sub| {
+            // Entered before its contents: a bound type can reach the
+            // cell again.
+            let cell = Arc::new(RwLock::new(TCell::default()));
+            enter(Obj::Cell(cell.clone()))?;
+            let typ = Pack::decode(sub)?;
+            let constraints: Vec<_> = Pack::decode(sub)?;
+            let refused = bool::decode(sub)?;
+            let bottom_fed = bool::decode(sub)?;
+            let level = Pack::decode(sub)?;
+            let mut c = cell.write();
+            c.level = level;
+            c.binding = typ;
+            c.constraints = constraints.into_iter().collect();
+            c.cycle_refused = refused;
+            c.bottom_fed = bottom_fed;
+            drop(c);
+            Ok(cell)
+        },
+        |b| cell_decode(b),
+        unknown_tag,
+    )
 }
 
 /// An image a test wrote: its body, then the definitions.

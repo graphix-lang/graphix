@@ -125,32 +125,28 @@ fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackEr
 }
 
 fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
-    with_slice(buf, |sub| {
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
+    shared_decode(
+        buf,
+        |ord| {
+            built::<Foreign<ErrorHandler>>(ord)
+                .map(|Foreign(h)| DynScope::from_handler(h))
+        },
+        |sub| {
+            let bind = BindId::decode(sub)?;
+            let expr = ExprId::decode(sub)?;
+            let machine = bool::decode(sub)?;
+            let parent = dynscope_decode(sub)?;
+            let scope = parent.with_catch((bind, expr), machine);
+            let h = scope.handler().expect("with_catch installs a handler");
+            enter(Foreign(h).into_obj())?;
+            Ok(scope)
+        },
+        |b| dynscope_decode(b),
+        |tag| match tag {
             ROOT => Ok(DynScope::root()),
-            REF => {
-                let ord = ref_ord(sub)?;
-                match built::<Foreign<ErrorHandler>>(ord) {
-                    Some(Foreign(h)) => Ok(DynScope::from_handler(h)),
-                    None => decode_at(ord, |b| dynscope_decode(b)),
-                }
-            }
-            DEF => {
-                let bind = BindId::decode(sub)?;
-                let expr = ExprId::decode(sub)?;
-                let machine = bool::decode(sub)?;
-                let parent = dynscope_decode(sub)?;
-                let scope = parent.with_catch((bind, expr), machine);
-                let h = scope.handler().expect("with_catch installs a handler");
-                enter(Foreign(h).into_obj())?;
-                Ok(scope)
-            }
             _ => Err(PackError::UnknownTag),
-        }
-    })
+        },
+    )
 }
 
 pub fn scope_encode(scope: &Scope, buf: &mut impl BufMut) -> Result<(), PackError> {
