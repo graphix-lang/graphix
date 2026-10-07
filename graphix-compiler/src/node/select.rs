@@ -344,6 +344,15 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             return Ok(());
         }
+        // CR claude for eric: [bug] A guarded arm before an unguarded one over a payload
+        // that holds null refuses the select as non-exhaustive: `select v0 { `C(x) if
+        // false => 0, `C(v1) => 2, `Some => 5 }` over `[`C([string, null]), `Some]` fails
+        // here with "[`C('_: string), `Some] does not contain [`C([null, string]),
+        // `Some]", so the unguarded arm's bind is typed string, not [string, null]. It is
+        // accepted without the guarded arm, and over `C(i64)`. Found by graphix-fuzz
+        // gen-check while fixing the generator; off the CR campaign's topic, so filed
+        // rather than fixed. probe: design/review-2026-10-05/repro/coverage-guarded-nullable-01.gx
+        // (coverage-guarded-nullable-01)
         itype.check_contains(env, scrut).map_err(|e| {
             format_with_flags(PrintFlag::DerefTVars, || {
                 anyhow!("missing match cases {e}")

@@ -1,0 +1,12 @@
+// coverage-guarded-nullable-01: a guarded arm before an unguarded one over a
+// payload that holds null makes the select refuse as non-exhaustive.
+//
+// command: graphix --check design/review-2026-10-05/repro/coverage-guarded-nullable-01.gx
+// observed: missing match cases type mismatch [`C('_: string), `Some] does not
+//   contain [`C([null, string]), `Some]
+// expected: accepted, as it is without the guarded arm, or over `C(i64)`. Any guard
+//   refuses it (`if false`, `if x == null`).
+// found by graphix-fuzz gen-check 2000 11 (2026-10-06).
+let v0: [`C([string, null]), `Some] = `C(null);
+let r = select v0 { `C(x) if false => 0, `C(v1) => 2, `Some => 5 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0))

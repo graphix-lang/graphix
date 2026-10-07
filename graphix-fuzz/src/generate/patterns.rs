@@ -37,16 +37,6 @@ fn bind_name(inner: &mut GenCtx, rng: &mut Rng, mark: usize) -> String {
     inner.name_avoiding(rng, |c, n| c.vars[mark..].iter().any(|(m, _)| m == n))
 }
 
-// CR claude for claude: [test-gap] gen_pattern never emits a `name@ pattern` capture, a
-// partial struct `{f, ..}`, a slice suffix `[init.., x]` or a fixed multi-element slice
-// `[a, b]`. full_coverage_select's or-arms bind nothing, and the only binding or-arm is
-// general_select's integer pair `(l, x) | (x, l)`. The JIT lowers these forms natively
-// (captures typed by bind_captures, the `all@ [..]` owned bind, or-alternatives binding
-// tag payloads typed as the union). An interp/JIT divergence in them can only come from
-// mutated fixtures: `gen 3000 7` and `gen 2000 11 --reactive` contain none of these
-// forms. Add each at low odds. A capture of a tag pattern has the narrowed tag's type,
-// so pushing it at the whole union's type would give a later full-coverage select over
-// it dead arms. (fuzz-gen-b-05)
 fn gen_pattern(
     inner: &mut GenCtx,
     rng: &mut Rng,
@@ -103,8 +93,22 @@ fn gen_pattern(
             Pat { text: format!("({})", text.join(", ")), refutable }
         }
         GenType::Struct(fields) if depth > 0 => {
-            let parts: Vec<(String, Pat)> = fields
-                .iter()
+            // sometimes a partial pattern naming a strict subset of fields
+            let partial = fields.len() > 1 && rng.below(4) == 0;
+            let named: Vec<&(String, GenType)> = match partial {
+                false => fields.iter().collect(),
+                true => {
+                    let skip = rng.below(fields.len());
+                    fields
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != skip)
+                        .map(|(_, f)| f)
+                        .collect()
+                }
+            };
+            let parts: Vec<(String, Pat)> = named
+                .into_iter()
                 .map(|(f, t)| {
                     (
                         f.clone(),
@@ -113,8 +117,11 @@ fn gen_pattern(
                 })
                 .collect();
             let refutable = parts.iter().any(|(_, p)| p.refutable);
-            let text: Vec<_> =
+            let mut text: Vec<_> =
                 parts.into_iter().map(|(f, p)| format!("{f}: {}", p.text)).collect();
+            if partial {
+                text.push("..".into());
+            }
             Pat { text: format!("{{{}}}", text.join(", ")), refutable }
         }
         GenType::Variant(tags) if !force_irrefutable => {
@@ -154,8 +161,23 @@ fn gen_pattern(
         GenType::Array(e) if !force_irrefutable && depth > 0 => {
             // exactly one slice arm is ever emitted per select, and each
             // shape leaves lengths uncovered, so a final bind-all is never dead
-            match rng.below(3) {
+            match rng.below(5) {
                 0 => Pat { text: "[]".into(), refutable: true },
+                // plain binds: a `_` or a structure in one element infers a
+                // predicate the other's does not share
+                3 => {
+                    let a = bind_name(inner, rng, mark);
+                    inner.push(a.clone(), (**e).clone());
+                    let b = bind_name(inner, rng, mark);
+                    inner.push(b.clone(), (**e).clone());
+                    Pat { text: format!("[{a}, {b}]"), refutable: true }
+                }
+                4 => {
+                    let init = bind_name(inner, rng, mark);
+                    inner.push(init.clone(), ty.clone());
+                    let p = gen_pattern(inner, rng, e, depth - 1, true, mark);
+                    Pat { text: format!("[{init}.., {}]", p.text), refutable: true }
+                }
                 1 => {
                     let p = gen_pattern(inner, rng, e, depth - 1, true, mark);
                     Pat { text: format!("[{}]", p.text), refutable: true }
@@ -185,7 +207,19 @@ fn gen_arm(
 ) -> (String, bool) {
     let mut inner = ctx.clone();
     let mark = inner.mark();
-    let pat = gen_pattern(&mut inner, rng, scrut_ty, 2, force_irrefutable, mark);
+    let mut pat = gen_pattern(&mut inner, rng, scrut_ty, 2, force_irrefutable, mark);
+    // sometimes a capture of the whole match; a tag pattern's capture has
+    // the narrowed tag's type, not the union's, so it only masks
+    let structure =
+        pat.text.starts_with(['(', '{', '[', '`']) && !pat.text.contains(" | ");
+    if rng.below(8) == 0 && structure && !pat.text.contains('@') {
+        let n = bind_name(&mut inner, rng, mark);
+        match scrut_ty {
+            GenType::Variant(_) => inner.push_entry(n.clone(), super::Entry::Opaque),
+            t => inner.push(n.clone(), t.clone()),
+        }
+        pat.text = format!("{n}@ {}", pat.text);
+    }
     let guard = if guarded {
         format!(" if {}", exprs::gen_typed(&inner, rng, &GenType::Bool, 1))
     } else {
