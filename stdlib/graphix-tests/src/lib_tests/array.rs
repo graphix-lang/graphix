@@ -1,13 +1,5 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-// CR claude for claude: [style] array.rs, core.rs and list.rs spell out
-// `FuseExpect::` 145 times, and graphix-tests does the
-// same in 42 other files. Import it once with `use graphix_package_core::{run,
-// testing::FuseExpect};`, as lift.rs and lang/fusion.rs do. The `use sys::*;` in
-// core.rs's QUEUEFN_NET_SUBSCRIBE (557) and QUEUEFN_DELTA_PER_CYCLE (594) is unused:
-// both fixtures spell `sys::net::` and `sys::time::` in full and check without it, so
-// delete it. callable.rs spells graphix_compiler::expr::VfsEntry and
-// arcstr::ArcStr::from 8 times each; import them. (tests-lib-a-15)
 use graphix_package_core::{
     run,
     testing::{FuseExpect, refused},
