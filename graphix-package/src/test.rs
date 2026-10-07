@@ -144,16 +144,15 @@ async fn download_source_extracts_package_at_expected_root() {
 
 // The package manager only adds external deps: the stdlib optional deps
 // and the [features] table must survive untouched.
-#[tokio::test]
-async fn update_cargo_toml_preserves_stdlib_and_features() {
+#[test]
+fn with_external_preserves_stdlib_and_features() {
     let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let content =
         std::fs::read_to_string(ws.join("graphix-shell").join("Cargo.toml")).unwrap();
-    let pm = super::GraphixPM::new().await.unwrap();
     let mut external = std::collections::BTreeMap::new();
     external
         .insert("widgets".to_string(), super::PackageEntry::Version("1.2.3".to_string()));
-    let updated = pm.update_cargo_toml(&content, &external).unwrap();
+    let updated = super::with_external(&content, &external).unwrap();
     let orig: toml_edit::DocumentMut = content.parse().unwrap();
     let new: toml_edit::DocumentMut = updated.parse().unwrap();
     // [features] is byte-for-byte untouched

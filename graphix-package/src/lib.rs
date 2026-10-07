@@ -44,6 +44,7 @@ use tokio::{
     sync::oneshot,
     task,
 };
+use toml_edit::DocumentMut;
 use walkdir::WalkDir;
 
 #[cfg(test)]
@@ -295,18 +296,6 @@ impl Packages {
     /// Derive the inputs to a shell build: the stdlib Cargo feature list
     /// (installed stdlib packages minus `core`, always compiled) and the
     /// external packages (compiled as regular deps).
-    // CR claude for claude: [bug] build_plan sends every recorded [stdlib].installed name
-    // to `cargo install --features` without checking it against the source being built.
-    // Only update filters (1674-1675), and it writes the unfiltered set back (1679), so
-    // add, remove and rebuild never reconcile. After an update across a release that
-    // drops a stdlib package, every later add, remove and rebuild fails with cargo's
-    // unknown-feature error. `remove <name>` cannot clear it: the binary does not know
-    // the name as stdlib, so it prints "not installed" while `list` still shows it. The
-    // reverse case also fails: a shipped stdlib package that packages.toml never
-    // recorded (file written by an older binary, shell upgraded with `cargo install
-    // graphix-shell`) is left out of every rebuild without notice, and update offers it
-    // only at a shell bump. probe: design/review-2026-10-05/repro/package-05.sh (a fake
-    // cargo applies cargo's feature check). (package-05)
     fn build_plan(&self) -> BuildPlan {
         let features = self
             .stdlib_installed
@@ -522,7 +511,6 @@ fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<String>> {
     // BUILD_LOCK is a std Mutex with hand-written poison recovery (12-18) where
     // parking_lot::Mutex needs none, and line 776 carries a milestone tag '(M2)'.
     // (package-18)
-    use toml_edit::DocumentMut;
     let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
     let deps = doc
         .get("dependencies")
@@ -547,7 +535,6 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>
 /// mapped to the package features it directly enables. Only bare feature
 /// references are edges; `dep:`, `crate/feat` and `crate?/feat` are ignored.
 fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
-    use toml_edit::DocumentMut;
     let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
     let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let Some(features) = doc.get("features").and_then(|f| f.as_table()) else {
@@ -602,6 +589,117 @@ fn installed_dependents(
         .filter(|p| p.as_str() != target && feature_depends_on(p, target, edges))
         .cloned()
         .collect()
+}
+
+/// The shell manifest `content` with the external packages added to its
+/// `[dependencies]`. Stdlib packages are permanent optional deps selected
+/// by Cargo feature; neither they nor `[features]` are touched.
+fn with_external(
+    content: &str,
+    external: &BTreeMap<String, PackageEntry>,
+) -> Result<String> {
+    let mut doc: DocumentMut = content.parse().context("parsing Cargo.toml")?;
+    let deps = doc["dependencies"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
+    for (name, entry) in external {
+        let crate_name = format!("graphix-package-{name}");
+        match entry {
+            PackageEntry::Version(version) => {
+                deps[&crate_name] = toml_edit::value(version);
+            }
+            PackageEntry::Path(path) => {
+                let mut tbl = toml_edit::InlineTable::new();
+                tbl.insert(
+                    "path",
+                    toml_edit::Value::from(path.to_string_lossy().as_ref()),
+                );
+                deps[&crate_name] = toml_edit::Item::Value(tbl.into());
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+/// Add the external packages to the shell source's manifest. The shell's
+/// `packages!()` macro reads it at compile time, so adding the dep is the
+/// whole registration.
+async fn rewrite_manifest(
+    source_dir: &Path,
+    external: &BTreeMap<String, PackageEntry>,
+) -> Result<()> {
+    let path = source_dir.join("Cargo.toml");
+    let content = fs::read_to_string(&path).await?;
+    fs::write(&path, with_external(&content, external)?).await?;
+    Ok(())
+}
+
+/// Bring the record in line with the source about to be built: a recorded
+/// stdlib package the source no longer ships is dropped, and one it ships
+/// that the record never named is announced.
+async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
+    let shipped = stdlib_packages_in_source(source_dir).await?;
+    let gone: Vec<String> = packages
+        .stdlib_installed
+        .iter()
+        .filter(|n| *n != "core" && !shipped.contains(*n))
+        .cloned()
+        .collect();
+    for name in gone {
+        println!("warning: {name} is no longer part of graphix; dropping it");
+        packages.stdlib_installed.remove(&name);
+    }
+    packages.stdlib_removed.retain(|n| shipped.contains(n));
+    for name in shipped.iter().filter(|n| {
+        DEFAULT_PACKAGES.contains(&n.as_str())
+            && !packages.stdlib_installed.contains(*n)
+            && !packages.stdlib_removed.contains(*n)
+    }) {
+        println!(
+            "note: stdlib package {name} is not installed; `graphix package add {name}` adds it"
+        );
+    }
+    Ok(())
+}
+
+/// A source tree's manifest and lockfile as they were, to put back.
+struct Saved {
+    files: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl Saved {
+    /// `source_dir`'s manifest, and the lockfile cargo will write: its own,
+    /// else its workspace's.
+    async fn take(source_dir: &Path) -> Result<Self> {
+        let lock = source_dir
+            .ancestors()
+            .map(|d| d.join("Cargo.lock"))
+            .find(|p| p.exists())
+            .unwrap_or_else(|| source_dir.join("Cargo.lock"));
+        let mut files = Vec::new();
+        for path in [source_dir.join("Cargo.toml"), lock] {
+            let content = fs::read(&path).await.ok();
+            files.push((path, content));
+        }
+        Ok(Saved { files })
+    }
+
+    async fn put_back(self) -> Result<()> {
+        for (path, content) in self.files {
+            match content {
+                Some(c) => fs::write(&path, c).await?,
+                None => {
+                    let _ = fs::remove_file(&path).await;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The newest stable version a crate has, else its newest.
+fn newest(c: &crates_io_api::Crate) -> String {
+    c.max_stable_version.clone().unwrap_or_else(|| c.max_version.clone())
 }
 
 /// True if version `a` is strictly newer than `b` by semver. Falls back to
@@ -1171,6 +1269,18 @@ impl GraphixPM {
         Ok(fd_lock::RwLock::new(file))
     }
 
+    /// Hold the package lock for the life of the guard, saying so when
+    /// another operation has it.
+    fn hold(
+        lock: &mut fd_lock::RwLock<std::fs::File>,
+    ) -> Result<fd_lock::RwLockWriteGuard<'_, std::fs::File>> {
+        let busy = lock.try_write().is_err();
+        if busy {
+            println!("waiting for another graphix package operation to finish...");
+        }
+        lock.write().context("waiting for package lock")
+    }
+
     /// Unpack a fresh copy of the graphix-shell source. Tries the
     /// local cargo registry cache first, falls back to downloading
     /// from crates.io.
@@ -1189,39 +1299,6 @@ impl GraphixPM {
         }
     }
 
-    /// Add the external packages to the freshly unpacked shell source's
-    /// `[dependencies]`. Stdlib packages are permanent optional deps
-    /// selected by Cargo feature; neither they nor `[features]` are touched.
-    fn update_cargo_toml(
-        &self,
-        cargo_toml_content: &str,
-        external: &BTreeMap<String, PackageEntry>,
-    ) -> Result<String> {
-        use toml_edit::DocumentMut;
-        let mut doc: DocumentMut =
-            cargo_toml_content.parse().context("parsing Cargo.toml")?;
-        let deps = doc["dependencies"]
-            .as_table_mut()
-            .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
-        for (name, entry) in external {
-            let crate_name = format!("graphix-package-{name}");
-            match entry {
-                PackageEntry::Version(version) => {
-                    deps[&crate_name] = toml_edit::value(version);
-                }
-                PackageEntry::Path(path) => {
-                    let mut tbl = toml_edit::InlineTable::new();
-                    tbl.insert(
-                        "path",
-                        toml_edit::Value::from(path.to_string_lossy().as_ref()),
-                    );
-                    deps[&crate_name] = toml_edit::Item::Value(tbl.into());
-                }
-            }
-        }
-        Ok(doc.to_string())
-    }
-
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
@@ -1233,21 +1310,19 @@ impl GraphixPM {
         self.unpack_source(version).await
     }
 
-    /// Write deps.rs + Cargo.toml for the given package set into an already
-    /// unpacked source tree, back up the current binary, then build & install.
+    /// Build and install `packages` from an unpacked source tree, the record
+    /// reconciled with what the source ships first, and back up the current
+    /// binary.
     async fn install_from_source(
         &self,
         source_dir: &Path,
-        plan: &BuildPlan,
+        packages: &mut Packages,
     ) -> Result<()> {
-        // The shell's `packages!()` macro reads this Cargo.toml at compile
-        // time, so adding the dep is the whole registration.
+        reconcile(source_dir, packages).await?;
+        packages.enforce_invariants();
+        let plan = packages.build_plan();
         println!("Updating Cargo.toml...");
-        let cargo_toml_path = source_dir.join("Cargo.toml");
-        let cargo_toml_content = fs::read_to_string(&cargo_toml_path).await?;
-        let updated_cargo_toml =
-            self.update_cargo_toml(&cargo_toml_content, &plan.external)?;
-        fs::write(&cargo_toml_path, &updated_cargo_toml).await?;
+        rewrite_manifest(source_dir, &plan.external).await?;
         // Save previous binary
         if let Ok(graphix_path) = which::which("graphix") {
             let date = Local::now().format("%Y%m%d-%H%M%S");
@@ -1283,9 +1358,9 @@ impl GraphixPM {
     }
 
     /// Rebuild the graphix binary with the given package set
-    async fn rebuild(&self, plan: &BuildPlan, version: &str) -> Result<()> {
+    async fn rebuild(&self, packages: &mut Packages, version: &str) -> Result<()> {
         let source_dir = self.prepare_source(version).await?;
-        self.install_from_source(&source_dir, plan).await
+        self.install_from_source(&source_dir, packages).await
     }
 
     /// Clean up graphix-previous-* binaries older than 1 week
@@ -1293,8 +1368,7 @@ impl GraphixPM {
         let Ok(graphix_path) = which::which("graphix") else { return };
         let Some(bin_dir) = graphix_path.parent() else { return };
         let Ok(mut entries) = fs::read_dir(bin_dir).await else { return };
-        let week_ago =
-            std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
+        let week_ago = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
@@ -1333,7 +1407,7 @@ impl GraphixPM {
         skip_crates_io_check: bool,
     ) -> Result<()> {
         let mut lock = Self::lock_file()?;
-        let _guard = lock.write().context("waiting for package lock")?;
+        let _guard = Self::hold(&mut lock)?;
         let mut installed = read_packages().await?;
         let mut changed = false;
         for pkg in packages {
@@ -1346,21 +1420,13 @@ impl GraphixPM {
                          from the workspace"
                     )
                 }
-                println!("Adding stdlib package {name}");
                 installed.stdlib_removed.remove(name);
-                installed.stdlib_installed.insert(name.to_string());
-                // CR claude for claude: [perf] add sets changed for every stdlib name and
-                // every external entry, even one already installed at the same version.
-                // So `graphix package add array` with array installed unpacks the shell
-                // source, backs up the binary and runs a full LTO cargo install with
-                // the same feature set (probe: fake cargo and graphix on PATH, scratch
-                // XDG_DATA_HOME, `graphix package add array </dev/null` gives a cargo
-                // install and a new graphix-previous-* backup). remove already reports
-                // 'already removed'. Set changed only when the insert or remove
-                // actually changes the stdlib sets, and here and at 1333-1334 only when
-                // the external entry differs; otherwise print 'already installed'.
-                // (package-10)
-                changed = true;
+                if installed.stdlib_installed.insert(name.to_string()) {
+                    println!("Adding stdlib package {name}");
+                    changed = true;
+                } else {
+                    println!("{name} is already installed");
+                }
                 continue;
             }
             let entry = if let Some(path) = pkg.path() {
@@ -1388,17 +1454,21 @@ impl GraphixPM {
                     })?;
                 let version = match pkg.version() {
                     Some(v) => v.to_string(),
-                    None => cr.crate_data.max_version.clone(),
+                    None => newest(&cr.crate_data),
                 };
                 println!("Adding {name}@{version}");
                 PackageEntry::Version(version)
             };
+            if installed.external.get(name) == Some(&entry) {
+                println!("{name} is already installed as {entry}");
+                continue;
+            }
             installed.external.insert(name.to_string(), entry);
             changed = true;
         }
         if changed {
             let version = graphix_version().await?;
-            self.rebuild(&installed.build_plan(), &version).await?;
+            self.rebuild(&mut installed, &version).await?;
             write_packages(&installed).await?;
         } else {
             println!("No changes needed.");
@@ -1416,7 +1486,7 @@ impl GraphixPM {
         assume_yes: bool,
     ) -> Result<()> {
         let mut lock = Self::lock_file()?;
-        let _guard = lock.write().context("waiting for package lock")?;
+        let _guard = Self::hold(&mut lock)?;
         let mut installed = read_packages().await?;
         let version = graphix_version().await?;
         // A stdlib removal needs the shell's feature graph; unpack the source
@@ -1438,7 +1508,8 @@ impl GraphixPM {
             let name = pkg.name();
             if name == "core" {
                 eprintln!("Cannot remove the core package");
-            } else if is_stdlib_package(name) {
+            } else if is_stdlib_package(name) || installed.stdlib_installed.contains(name)
+            {
                 if installed.stdlib_installed.contains(name) {
                     stdlib.insert(name.to_string());
                 } else {
@@ -1488,11 +1559,9 @@ impl GraphixPM {
             installed.external.remove(name);
             println!("Removing {name}");
         }
-        installed.enforce_invariants();
-        let plan = installed.build_plan();
         match &prepared {
-            Some((source, _)) => self.install_from_source(source, &plan).await?,
-            None => self.rebuild(&plan, &version).await?,
+            Some((source, _)) => self.install_from_source(source, &mut installed).await?,
+            None => self.rebuild(&mut installed, &version).await?,
         }
         write_packages(&installed).await
     }
@@ -1519,10 +1588,11 @@ impl GraphixPM {
     /// Rebuild the graphix binary from the current packages.toml
     pub async fn do_rebuild(&self) -> Result<()> {
         let mut lock = Self::lock_file()?;
-        let _guard = lock.write().context("waiting for package lock")?;
-        let packages = read_packages().await?;
+        let _guard = Self::hold(&mut lock)?;
+        let mut packages = read_packages().await?;
         let version = graphix_version().await?;
-        self.rebuild(&packages.build_plan(), &version).await
+        self.rebuild(&mut packages, &version).await?;
+        write_packages(&packages).await
     }
 
     /// List installed packages
@@ -1577,88 +1647,70 @@ impl GraphixPM {
             crate_name.strip_prefix("graphix-package-").ok_or_else(|| {
                 anyhow!("package name must start with graphix-package-, got {crate_name}")
             })?;
-        // The embedded package is registered as an external path package.
-        // Its direct stdlib deps become features; the shell feature graph
-        // pulls their closure and `core` is always compiled.
+        if is_stdlib_package(short_name) {
+            bail!(
+                "{crate_name} is named like the stdlib package {short_name}: a standalone \
+                 shell cannot carry both"
+            )
+        }
+        let mut lock = Self::lock_file()?;
+        let _guard = Self::hold(&mut lock)?;
+        let source_dir = match source_override {
+            Some(dir) => dir
+                .canonicalize()
+                .with_context(|| format!("resolving {}", dir.display()))?,
+            None => self.prepare_source(&graphix_version().await?).await?,
+        };
+        // The embedded package is registered as an external path package, and
+        // the stdlib packages it depends on, as the shell ships them, are
+        // features: the feature graph pulls their closure and `core` is always
+        // compiled.
         let mut external = BTreeMap::new();
         external.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
-        // CR claude for claude: [bug] stdlib_packages_in_cargo_toml keeps every
-        // graphix-package-* key of the package's [dependencies], so a third-party dep
-        // becomes a shell feature. A package that depends on graphix-package-widgets
-        // builds with `--features "sys widgets graphix-package-mypkg/standalone"`, and
-        // cargo refuses it: "the package 'graphix-shell' does not contain this feature:
-        // widgets". As a result, no package that builds on another third-party graphix
-        // package can be made standalone. The features should be only the deps that the
-        // unpacked shell's Cargo.toml has as stdlib packages, computed once the source
-        // is ready. A package whose short name is a stdlib name (a fork of json) is
-        // also written over the shell's optional dep by update_cargo_toml, and cargo
-        // then refuses the manifest because `json = ["dep:graphix-package-json", ..]`
-        // names a non-optional dep; refuse that case here with a message of its own.
-        // probe: design/review-2026-10-05/repro/package-04.sh (package-04)
+        let shell_manifest = fs::read_to_string(source_dir.join("Cargo.toml")).await?;
+        let shipped = stdlib_packages_in_cargo_toml(&shell_manifest)?;
         let features: Vec<String> = stdlib_packages_in_cargo_toml(&contents)?
             .into_iter()
-            .filter(|n| n != "core")
+            .filter(|n| n != "core" && shipped.contains(n))
             .collect();
-        let mut lock_storage =
-            if source_override.is_none() { Some(Self::lock_file()?) } else { None };
-        let _guard = lock_storage
-            .as_mut()
-            .map(|l| l.write().context("waiting for package lock"))
-            .transpose()?;
-        let source_dir = if let Some(dir) = source_override {
-            // CR claude for claude: [bug] The override is used as given, but package_dir
-            // is canonicalized. Cargo then runs with current_dir(override) and the
-            // relative --target-dir override/target, so it builds into
-            // <cwd>/<override>/<override>/target. The copy below reads
-            // <override>/target/release/graphix against the caller's cwd. So any
-            // relative override whose `..` does not cancel (`../graphix/graphix-shell`,
-            // `shell`) fails after the full release build and leaves a stray target
-            // tree. Or it copies whatever binary already sits at
-            // <override>/target/release/graphix (a plain graphix after `package
-            // add`/`rebuild` in an unpacked tree) and prints Done. Canonicalize the
-            // override as package_dir is. probe:
-            // design/review-2026-10-05/repro/package-02.sh (package-02)
-            dir.to_path_buf()
-        } else {
-            // CR claude for claude: [structure] This block repeats prepare_source
-            // (1175-1181) line for line, and 1536-1540 repeat install_from_source's
-            // read, update_cargo_toml and write of the shell manifest (1193-1198). Call
-            // prepare_source and share one manifest-rewrite function. update_cargo_toml
-            // takes &self but uses nothing from it, which is the only reason its unit
-            // test has to build a GraphixPM. The package lock is taken in five places
-            // and only update says it is waiting, so add, remove, rebuild and
-            // build-standalone block silently while another terminal sits at update's
-            // prompt. (package-12)
-            println!("Unpacking graphix-shell source...");
-            let build_dir = graphix_data_dir()?.join("build");
-            if fs::metadata(&build_dir).await.is_ok() {
-                fs::remove_dir_all(&build_dir).await?;
-            }
-            self.unpack_source(&graphix_version().await?).await?
+        // an override is the caller's own tree: its manifest and lockfile are
+        // put back however the build ends
+        let saved = match source_override {
+            Some(_) => Some(Saved::take(&source_dir).await?),
+            None => None,
         };
-        // The shell's `packages!()` macro discovers the dep (and its
-        // `main_program`) from this Cargo.toml.
+        let built =
+            self.build_embedding(&source_dir, &external, &features, crate_name).await;
+        if let Some(saved) = saved {
+            saved.put_back().await?;
+        }
+        let built = built?;
+        let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
+        let dest = package_dir.join(&bin_name);
+        fs::copy(&built, &dest).await.with_context(|| {
+            format!("copying {} to {}", built.display(), dest.display())
+        })?;
+        println!("Done! Binary written to {}", dest.display());
+        Ok(())
+    }
+
+    /// Build the shell in `source_dir` with `external` added and
+    /// `features` on: the binary's path.
+    async fn build_embedding(
+        &self,
+        source_dir: &Path,
+        external: &BTreeMap<String, PackageEntry>,
+        features: &[String],
+        crate_name: &str,
+    ) -> Result<PathBuf> {
         println!("Updating Cargo.toml...");
-        let shell_cargo_toml_path = source_dir.join("Cargo.toml");
-        let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;
-        let updated = self.update_cargo_toml(&shell_cargo_toml, &external)?;
-        // CR claude for claude: [bug] With --source-override, source_dir is the caller's
-        // own tree. The help at graphix-shell/src/main.rs:109-112 suggests the
-        // workspace, which only works as graphix-shell/. This write leaves
-        // `graphix-package-<pkg> = { path = .. }` in that Cargo.toml for good, whether
-        // the build succeeds or fails. The checkout stays dirty, and every later
-        // workspace build of the shell compiles and registers the package, because
-        // packages!() pushes every non-optional dep. A later build-standalone of
-        // another package over the same override carries this package into that binary
-        // too, and once the package directory moves the shell no longer builds. Build
-        // from a private copy of the override, the way the unpacked source is used, and
-        // take the package lock. probe: design/review-2026-10-05/repro/package-03.sh
-        // (package-03)
-        fs::write(&shell_cargo_toml_path, &updated).await?;
+        rewrite_manifest(source_dir, external).await?;
         println!("Building standalone binary (this may take a while)...");
         // Pin the target dir so a global build.target-dir or CARGO_TARGET_DIR
-        // cannot move the binary out from under the copy below.
+        // cannot move the binary out from under the copy.
         let target_dir = source_dir.join("target");
+        let mut f = features.to_vec();
+        f.push(format!("{crate_name}/standalone"));
         let status = Command::new(&self.cargo)
             .arg("build")
             .arg("--release")
@@ -1666,28 +1718,17 @@ impl GraphixPM {
             .arg(&target_dir)
             .arg("--no-default-features")
             .arg("--features")
-            .arg({
-                let mut f = features.clone();
-                f.push(format!("{crate_name}/standalone"));
-                f.join(" ")
-            })
-            .current_dir(&source_dir)
+            .arg(f.join(" "))
+            .current_dir(source_dir)
             .status()
             .await
             .context("running cargo build")?;
         if !status.success() {
             bail!("cargo build --release failed with status {status}")
         }
-        let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
-        let built = target_dir
+        Ok(target_dir
             .join("release")
-            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX));
-        let dest = package_dir.join(&bin_name);
-        fs::copy(&built, &dest).await.with_context(|| {
-            format!("copying {} to {}", built.display(), dest.display())
-        })?;
-        println!("Done! Binary written to {}", dest.display());
-        Ok(())
+            .join(format!("graphix{}", std::env::consts::EXE_SUFFIX)))
     }
 
     /// Query crates.io for the latest version of a crate
@@ -1697,14 +1738,7 @@ impl GraphixPM {
             .get_crate(crate_name)
             .await
             .with_context(|| format!("querying crates.io for {crate_name}"))?;
-        // CR claude for claude: [risk] crates.io's max_version is the highest version
-        // including pre-releases (crates_io_api also exposes max_stable_version), and
-        // version_gt ranks 0.10.0-rc.1 above 0.9.0. Once a graphix-shell or package
-        // pre-release is published, `graphix package update --yes` moves every user
-        // onto it, and `graphix package add foo` with no version pins foo's
-        // pre-release. Use max_stable_version, falling back to max_version, here and at
-        // line 1328. (package-11)
-        Ok(cr.crate_data.max_version)
+        Ok(newest(&cr.crate_data))
     }
 
     /// Update graphix and its packages: discover the available changes (shell
@@ -1713,12 +1747,7 @@ impl GraphixPM {
     /// shell version with the chosen package set.
     pub async fn update(&self, assume_yes: bool) -> Result<()> {
         let mut lock = Self::lock_file()?;
-        // Probe the lock so we can tell the user we're waiting; the probe guard
-        // is dropped immediately, then we (re)acquire and hold for the op.
-        if lock.try_write().is_err() {
-            println!("waiting for another graphix package operation to finish...");
-        }
-        let _guard = lock.write().context("waiting for package lock")?;
+        let _guard = Self::hold(&mut lock)?;
         let current = graphix_version().await?;
         let latest = self
             .latest_version("graphix-shell")
@@ -1785,21 +1814,13 @@ impl GraphixPM {
             apply_selection(&current, &latest, &plan, &sel, &mut packages);
         // Reuse the latest source if we're building against it; otherwise the
         // shell bump was declined and we must build against the current source.
-        let (build_src, stdlib_build) = match latest_src {
-            Some(s) if build_version == latest => (s, stdlib_latest),
-            _ => {
-                let s = self.prepare_source(&build_version).await?;
-                let set = stdlib_packages_in_source(&s).await?;
-                (s, set)
-            }
+        let build_src = match latest_src {
+            Some(s) if build_version == latest => s,
+            _ => self.prepare_source(&build_version).await?,
         };
-        // Don't try to build an installed stdlib package that doesn't exist at
-        // the build version (e.g. removed upstream); keep the recorded intent.
-        let mut effective = packages.clone();
-        effective.stdlib_installed.retain(|n| n == "core" || stdlib_build.contains(n));
         // Build before writing: a failed cargo install leaves packages.toml
         // untouched and the user re-runs to the same choices.
-        self.install_from_source(&build_src, &effective.build_plan()).await?;
+        self.install_from_source(&build_src, &mut packages).await?;
         write_packages(&packages).await?;
         Ok(())
     }
