@@ -1,10 +1,10 @@
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
-    UserEvent, effects::EffectKind, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    TagView, UserEvent, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_derive::defpackage;
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, unit_image_state};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, fast_eval, unit_image_state};
 use netidx_core::pack::PackError;
 use netidx_value::Value;
 use std::boxed::Box;
@@ -16,20 +16,14 @@ struct ExampleBuiltin {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
-    const NAME: &str = "{{name}}_example";
-    // Override to `Sync` only if every output lands on the same cycle
-    // as the input that triggered it.
-    // CR claude for claude: [doc-drift] The comment above sends a same-cycle builtin to
-    // Sync, but effects.rs and book/src/packages/creating.md reserve Sync for builtins
-    // that keep cross-invocation state; a pure builtin is Stateless, the only class
-    // that fuses. Both examples are pure (this one computes core's is_err,
-    // ExampleCachedEv an any-true) yet stay Async. So packages scaffolded from here
-    // start with builtins that node-walk and fail `#[native]` where they are called.
-    // Line 4 imports effects::EffectKind, which nothing uses, so every new package
-    // compiles with a warning. Mark the examples Stateless (the cached one with a
-    // FastCall through fast_eval), describe the three classes as creating.md does, and
-    // drop the import. (package-14)
-    const EFFECT: Effect = Effect::Async;
+    const NAME: &str = "{{ident}}_example";
+    // What a builtin's output depends on (graphix_compiler::effects):
+    // - `Stateless(fast)`: its arguments alone, in the cycle they arrive; a
+    //   `FastCall` lets the JIT call it inside a fused kernel;
+    // - `Sync`: the same cycle, but it keeps state across invocations, or
+    //   depends on which arguments arrived;
+    // - `Async`: it may answer later, on its own, or never.
+    const EFFECT: Effect = Effect::Stateless(None);
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R, E>,
@@ -75,49 +69,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
                 self.out.set(TagValue::fired(v))
             }
             TagView::Stale(_) => self.out.ride(),
-            // CR claude for claude: [doc-drift] The template every new package starts
-            // from presents the bottom ride as policy: a bottom input returns
-            // `bottom_null` and keeps the pre-bottom result in `out` "for later stale
-            // re-surfacing" through `Stale(_) => self.out.ride()`, where
-            // tval.rs:201-205 and CLAUDE.md say a bottom input sets the resident
-            // (`self.out.set_bottom(..)`) and never rides it. Its pure
-            // `ExampleCachedEv` keeps the default `Effect::Async`, never shows
-            // `Stateless`, `FastCall` or `fast_eval`, and has a dead `None => return
-            // None` arm (CachedArgs never calls eval with a missing slot);
-            // `effects::EffectKind` is imported and unused, a warning in every new
-            // package. The book's fast-call example (book/src/packages/creating.md:178)
-            // calls `fast_eval(my_len, from)` without `ctx`. "Not replayable, so it
-            // must not be `Sync`" (sys/src/lib.rs:499, sys/src/dirs_mod.rs:18,
-            // args/src/lib.rs:144) gives a reason that no longer applies: nothing
-            // replays a builtin. (x-builtin-effects-20)
-            // A consumed bottom bottoms the invocation; the result slot keeps
-            // its history for later stale re-surfacing.
-            TagView::FreshBottom => TagValue::bottom_null(true),
-            TagView::StaleBottom => TagValue::bottom_null(false),
+            // A bottom input sets the result bottom: it never rides the
+            // value from before.
+            TagView::FreshBottom => self.out.set_bottom(true),
+            TagView::StaleBottom => self.out.set_bottom(false),
         }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
+// The one implementation the interpreter (through `fast_eval`) and the
+// JIT (through the `FastCall`) share: it sees only present arguments.
+fn example_any(args: &[Value]) -> Option<Value> {
+    Some(Value::Bool(args.iter().any(|v| matches!(v, Value::Bool(true)))))
+}
+
 #[derive(Debug, Default)]
 struct ExampleCachedEv;
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
-    const NAME: &str = "{{name}}_example_cached";
+    const NAME: &str = "{{ident}}_example_cached";
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(example_any)));
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = Some(Value::Bool(false));
-        for v in from.flat_iter() {
-            match v {
-                None => return None,
-                Some(Value::Bool(true)) => {
-                    res = Some(Value::Bool(true));
-                }
-                Some(_) => (),
-            }
-        }
-        res
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, example_any, from)
     }
 }
 

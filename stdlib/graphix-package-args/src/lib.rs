@@ -151,7 +151,6 @@ struct Parse {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
-    // Not replayable, so it must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "args_parse";
 

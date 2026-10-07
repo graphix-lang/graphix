@@ -511,7 +511,6 @@ pub(crate) struct Args {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
-    // Not replayable, so it must not be `Sync`.
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "sys_args";
 

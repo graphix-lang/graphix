@@ -15,7 +15,6 @@ macro_rules! dirs_builtin {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $name {
-            // Not replayable, so it must not be `Sync`.
             const EFFECT: Effect = Effect::Async;
             const NAME: &str = $builtin;
 

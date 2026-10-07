@@ -82,6 +82,9 @@ enum PackageAction {
     Remove {
         /// Package names to remove
         packages: Vec<String>,
+        /// Remove the packages that depend on them without prompting
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
     /// Search crates.io for graphix packages
     Search {
@@ -308,10 +311,10 @@ async fn handle_package(action: PackageAction) -> Result<()> {
             };
             pm.add_packages(&ids, skip_crates_io_check).await
         }
-        PackageAction::Remove { packages } => {
+        PackageAction::Remove { packages, yes } => {
             let pm = GraphixPM::new().await?;
             let ids: Vec<_> = packages.iter().map(|s| PackageId::new(s, None)).collect();
-            pm.remove_packages(&ids).await
+            pm.remove_packages(&ids, yes).await
         }
         PackageAction::Search { query } => {
             let pm = GraphixPM::new().await?;

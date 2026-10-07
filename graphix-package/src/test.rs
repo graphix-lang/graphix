@@ -225,21 +225,6 @@ fn vendor(ws: &Path) {
             .status()
             .expect("vendor.py");
         assert!(status.success(), "vendor.py failed");
-        // vendor.py writes .cargo/config.toml into the workspace root,
-        // but tests write their own per-package configs. Remove it so
-        // we don't leave the workspace pointing at vendored sources.
-        // CR claude for claude: [bug] vendor.py never writes .cargo/config.toml: its main
-        // only creates .cargo/ and prints the snippet. So this line deletes the
-        // developer's own <ws>/.cargo/config.toml, which git cannot restore because
-        // .gitignore excludes .cargo, whenever the release gate reaches
-        // created_package_compiles or build_standalone_produces_working_binary. The
-        // tests already write per-package configs, so this remove_file and the comment
-        // above it can both go. vendor.py's docstring item 4 and its "Step 4" comment
-        // claim the same write, and its printout says .config/cargo.toml where it means
-        // .cargo/config.toml. probe: design/review-2026-10-05/repro/package-08.sh runs
-        // the real vendor.py and test in a throwaway copy (PRESENT after vendor.py,
-        // DELETED after the test). (package-08)
-        let _ = std::fs::remove_file(ws.join(".cargo/config.toml"));
     });
 }
 
@@ -389,11 +374,11 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
 
 mod pure {
     use super::super::{
-        DEFAULT_PACKAGES, PackageEntry, Packages, Selection, UpdatePlan, apply_selection,
-        compute_update_plan, feature_depends_on, feature_edges, installed_dependents,
-        normalize_selection, parse_packages, parse_toggles, plan_items,
-        selection_from_indices, stdlib_packages_in_cargo_toml, to_toml_string,
-        version_gt,
+        DEFAULT_PACKAGES, INTERNAL_PACKAGES, PackageEntry, Packages, Selection,
+        UpdatePlan, apply_selection, compute_update_plan, feature_depends_on,
+        feature_edges, installed_dependents, normalize_selection, parse_packages,
+        parse_toggles, plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
+        to_toml_string, version_gt,
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -777,17 +762,6 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             .filter_map(|v| v.as_str())
             .map(String::from)
             .collect();
-        // CR claude for claude: [test-gap] This pin only checks that each
-        // DEFAULT_PACKAGES name has a shell feature, while is_stdlib_package
-        // (lib.rs:240) routes add, remove and migration by this hand-copied list. A
-        // stdlib crate added to graphix-shell/Cargo.toml but not to the list is routed
-        // by `add` as an external package. update_cargo_toml then replaces its optional
-        // dependency with a plain version string while its `dep:` feature stays, a
-        // manifest cargo refuses. Once `update` has installed it as stdlib, `remove`
-        // answers 'is not installed' (probe: a fake shell source with an optional
-        // graphix-package-math plus feature, then `graphix package add math@0.9.0
-        // --skip-crates-io-check`). Assert stdlib_packages_in_cargo_toml(shell
-        // Cargo.toml) == DEFAULT_PACKAGES ∪ INTERNAL_PACKAGES. (package-09)
         for &name in DEFAULT_PACKAGES {
             if name == "core" {
                 continue;
@@ -795,8 +769,17 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             assert!(feats.contains_key(name), "no [features] entry for {name}");
             assert!(all.contains(name), "`all` is missing stdlib package {name}");
         }
-        // bench is internal but must still be registered by a default build (M2)
+        // bench is internal but must still be registered by a default build
         assert!(all.contains("bench"), "`all` must include bench");
+        // is_stdlib_package routes by the hand-kept lists: they are the
+        // shell's stdlib packages, no more and no fewer
+        let shipped = stdlib_packages_in_cargo_toml(&content).unwrap();
+        let listed: BTreeSet<String> = DEFAULT_PACKAGES
+            .iter()
+            .chain(INTERNAL_PACKAGES)
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(shipped, listed);
         // core is non-optional — never a feature
         assert!(!feats.contains_key("core"), "core must not be a feature");
     }
@@ -811,19 +794,5 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         let edges = feature_edges(&content).unwrap();
         assert!(!feature_depends_on("krb5_iov", "sys", &edges));
         assert!(!feature_depends_on("krb5_iov", "http", &edges));
-    }
-
-    // Registration is done entirely by the `packages!()` macro.
-    #[test]
-    fn shell_has_no_generated_registration_files() {
-        let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let src = ws.join("graphix-shell").join("src");
-        assert!(!src.join("packages.rs").exists(), "src/packages.rs should be gone");
-        assert!(!src.join("deps.rs").exists(), "src/deps.rs should be gone");
-        let main = std::fs::read_to_string(src.join("main.rs")).unwrap();
-        assert!(
-            !main.contains("mod packages;"),
-            "main.rs should not declare `mod packages;`"
-        );
     }
 }

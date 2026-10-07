@@ -183,27 +183,18 @@ static SKEL: Skel = Skel {
 /// `graphix-package-{name}` inside the directory `base`. If base is not a
 /// directory the function will fail.
 pub async fn create_package(base: &Path, name: &str) -> Result<()> {
-    if !fs::metadata(base).await?.is_dir() {
+    if !fs::metadata(base).await.is_ok_and(|m| m.is_dir()) {
         bail!("base path {base:?} does not exist, or is not a directory")
     }
-    // CR claude for claude: [bug] This admits any [A-Za-z0-9-] short name and refuses
-    // `_`, but line 197 renders the raw short name into identifiers: skel/lib.rs NAME
-    // "{{name}}_example" and skel/mod.gx '{{name}}_example. `graphix package create
-    // my-pkg` exits 0 and writes 'my-pkg_example, which the parser refuses, so the
-    // scaffold's build.rs (graphix_ast_pack::emit) fails on the first build;
-    // defpackage! would also refuse NAME "my-pkg_example" because PACKAGE_NAME is
-    // my_pkg. `Foo`, `2d` and the bare `graphix-package-` are equally unbuildable, so a
-    // multi-word name has no working spelling. Check the short name as a Graphix name
-    // (a lowercase letter first) and render identifiers from its `-`→`_` form, the way
-    // netidx-admin's builtins are `netidx_admin_*`; created_package_compiles only tries
-    // `testpkg`. Smaller: a missing --dir reports a bare "No such file or directory"
-    // from line 177's `?`, and `{{user}}` in skel/Cargo.toml.hbs is never supplied
-    // (repository = "https://github.com//graphix-package-<name>"). probe:
-    // design/review-2026-10-05/repro/package-01.sh (package-01)
-    if name.contains(|c: char| c != '-' && !c.is_ascii_alphanumeric())
-        || !name.starts_with("graphix-package-")
-    {
-        bail!("invalid package name, name must match graphix-package-[-a-z]+")
+    // the short name becomes the Graphix module name and, `-` read as `_`,
+    // the prefix of every builtin's name
+    let short = name.strip_prefix("graphix-package-").unwrap_or("");
+    let valid = short.starts_with(|c: char| c.is_ascii_lowercase())
+        && short
+            .chars()
+            .all(|c| c == '-' || c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !valid {
+        bail!("invalid package name, name must match graphix-package-[a-z][-a-z0-9]*")
     }
     let full_path = base.join(name);
     if fs::metadata(&full_path).await.is_ok() {
@@ -216,8 +207,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     hb.register_template_string("mod.gx", SKEL.mod_gx)?;
     hb.register_template_string("mod.gxi", SKEL.mod_gxi)?;
     hb.register_template_string("README.md", SKEL.readme_md)?;
-    let name = name.strip_prefix("graphix-package-").unwrap();
-    let params = json!({"name": name, "deps": []});
+    let params = json!({"name": short, "ident": short.replace('-', "_"), "deps": []});
     fs::write(full_path.join("Cargo.toml"), hb.render("Cargo.toml", &params)?).await?;
     fs::write(full_path.join("README.md"), hb.render("README.md", &params)?).await?;
     fs::write(full_path.join("build.rs"), SKEL.build_rs).await?;
@@ -1416,10 +1406,15 @@ impl GraphixPM {
         Ok(())
     }
 
-    /// Remove packages and rebuild. Removing a stdlib package cascades
-    /// (with confirmation) to installed dependents; otherwise the feature
-    /// graph would keep the removed package compiled in.
-    pub async fn remove_packages(&self, packages: &[PackageId]) -> Result<()> {
+    /// Remove packages and rebuild. Removing a stdlib package removes the
+    /// installed packages that depend on it too (the feature graph would
+    /// keep it compiled in): those not asked for are confirmed, or taken
+    /// with `assume_yes`, and a refusal removes nothing.
+    pub async fn remove_packages(
+        &self,
+        packages: &[PackageId],
+        assume_yes: bool,
+    ) -> Result<()> {
         let mut lock = Self::lock_file()?;
         let _guard = lock.write().context("waiting for package lock")?;
         let mut installed = read_packages().await?;
@@ -1436,73 +1431,70 @@ impl GraphixPM {
         } else {
             None
         };
-        let mut changed = false;
+        // the whole removal, decided against the set installed now
+        let mut stdlib: BTreeSet<String> = BTreeSet::new();
+        let mut external: Vec<&str> = Vec::new();
         for pkg in packages {
             let name = pkg.name();
             if name == "core" {
                 eprintln!("Cannot remove the core package");
-                continue;
-            }
-            if is_stdlib_package(name) {
-                if !installed.stdlib_installed.contains(name) {
+            } else if is_stdlib_package(name) {
+                if installed.stdlib_installed.contains(name) {
+                    stdlib.insert(name.to_string());
+                } else {
                     println!("{name} is already removed");
-                    continue;
                 }
-                let edges = prepared
-                    .as_ref()
-                    .map(|(_, e)| e)
-                    .expect("edges are unpacked when a stdlib package is removed");
-                let dependents =
-                    installed_dependents(name, &installed.stdlib_installed, edges);
-                if !dependents.is_empty() {
-                    println!(
-                        "Removing {name} also removes packages that depend on it: {}",
-                        dependents.join(", ")
-                    );
-                    // CR claude for claude: [bug] Without a TTY confirm_yn answers no.
-                    // `graphix package remove sys </dev/null` then prints "Skipping
-                    // sys", then "No changes needed.", and exits 0 with sys still
-                    // installed, so a script cannot tell a refused removal from a done
-                    // one. update treats the same missing confirmation as a hard error
-                    // naming --yes (line 1646), but remove has no --yes, so a script
-                    // cannot accept the cascade. The skip also reads the installed set
-                    // mid-loop: `remove sys hbs json pack toml tui xls` skips sys "(its
-                    // dependents are still installed)", then removes every one of those
-                    // dependents in the same command and exits 0. probe:
-                    // design/review-2026-10-05/repro/package-07.sh (package-07)
-                    if !confirm_yn("Remove them too?").await? {
-                        println!("Skipping {name} (its dependents are still installed)");
-                        continue;
-                    }
-                    for d in &dependents {
-                        installed.stdlib_installed.remove(d);
-                        installed.stdlib_removed.insert(d.clone());
-                        println!("Removing stdlib package {d}");
-                    }
-                }
-                installed.stdlib_installed.remove(name);
-                installed.stdlib_removed.insert(name.to_string());
-                println!("Removing stdlib package {name}");
-                changed = true;
-            } else if installed.external.remove(name).is_some() {
-                println!("Removing {name}");
-                changed = true;
+            } else if installed.external.contains_key(name) {
+                external.push(name);
             } else {
                 println!("{name} is not installed");
             }
         }
-        if changed {
-            installed.enforce_invariants();
-            let plan = installed.build_plan();
-            match &prepared {
-                Some((source, _)) => self.install_from_source(source, &plan).await?,
-                None => self.rebuild(&plan, &version).await?,
+        let mut cascade: BTreeSet<String> = BTreeSet::new();
+        if let Some((_, edges)) = &prepared {
+            for name in &stdlib {
+                let dependents =
+                    installed_dependents(name, &installed.stdlib_installed, edges);
+                cascade.extend(dependents.into_iter().filter(|d| !stdlib.contains(d)));
             }
-            write_packages(&installed).await?;
-        } else {
-            println!("No changes needed.");
         }
-        Ok(())
+        if !cascade.is_empty() {
+            let list: Vec<&str> = cascade.iter().map(|s| s.as_str()).collect();
+            println!(
+                "Removing these also removes packages that depend on them: {}",
+                list.join(", ")
+            );
+            if !assume_yes {
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "stdin is not a terminal; re-run with --yes to remove the dependents too"
+                    );
+                }
+                if !confirm_yn("Remove them too?").await? {
+                    bail!("nothing removed");
+                }
+            }
+        }
+        if stdlib.is_empty() && external.is_empty() {
+            println!("No changes needed.");
+            return Ok(());
+        }
+        for name in stdlib.iter().chain(cascade.iter()) {
+            installed.stdlib_installed.remove(name);
+            installed.stdlib_removed.insert(name.clone());
+            println!("Removing stdlib package {name}");
+        }
+        for name in external {
+            installed.external.remove(name);
+            println!("Removing {name}");
+        }
+        installed.enforce_invariants();
+        let plan = installed.build_plan();
+        match &prepared {
+            Some((source, _)) => self.install_from_source(source, &plan).await?,
+            None => self.rebuild(&plan, &version).await?,
+        }
+        write_packages(&installed).await
     }
 
     /// Search crates.io for graphix packages
@@ -1536,23 +1528,10 @@ impl GraphixPM {
     /// List installed packages
     pub async fn list(&self) -> Result<()> {
         let packages = read_packages().await?;
-        // CR claude for claude: [dead] read_packages always returns core installed
-        // (enforce_invariants runs on every path), so this 'No packages installed'
-        // branch and the stdlib_installed.is_empty() guard at 1459 never fire.
-        // graphix-package/Cargo.toml:36 declares nohash, which nothing in this crate or
-        // in graphix-derive's expansions uses. test.rs:794-806 asserts that
-        // graphix-shell/src/deps.rs and packages.rs, files of a removed implementation,
-        // stay absent. It pins history and can only fail when someone adds an unrelated
-        // module named packages.rs. (package-17)
-        if packages.stdlib_installed.is_empty() && packages.external.is_empty() {
-            println!("No packages installed");
-            return Ok(());
-        }
-        if !packages.stdlib_installed.is_empty() {
-            println!("stdlib packages:");
-            for name in &packages.stdlib_installed {
-                println!("  {name}");
-            }
+        // core is always installed
+        println!("stdlib packages:");
+        for name in &packages.stdlib_installed {
+            println!("  {name}");
         }
         if !packages.stdlib_removed.is_empty() {
             println!("removed stdlib packages:");

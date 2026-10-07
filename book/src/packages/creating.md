@@ -174,8 +174,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyLenEv {
     const NAME: &str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(my_len, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, my_len, from)
     }
 }
 

@@ -6,7 +6,7 @@ Vendor all dependencies for graphix, including workspace members.
 2. Copies each workspace member into vendor/ with resolved Cargo.toml
    (workspace = true replaced, path deps stripped)
 3. Vendors external path deps (e.g. netidx) and their transitive path deps
-4. Writes .cargo/config.toml with source replacement
+4. Prints the source replacement to put in .cargo/config.toml
 """
 
 import json
@@ -82,6 +82,10 @@ def resolve_deps(deps, ws_deps, crate_dir):
             # graphix-package/src/test.rs:228, still say the script writes
             # .cargo/config.toml, but it only prints it. probe:
             # design/review-2026-10-05/repro/ide-tooling-06.py (ide-tooling-06)
+            # 2026-10-07 claude: the docstring and Step 4 now say the script prints
+            # the snippet, and test.rs no longer deletes .cargo/config.toml
+            # (package-08); the windows feature, the path resolution and the
+            # escaping remain.
             dep = dict(ws_val) if isinstance(ws_val, dict) else ws_val
         if isinstance(dep, dict):
             # If stripping `path` would leave us with no version, recover
@@ -312,12 +316,10 @@ def main():
     # [patch.crates-io] path overrides (e.g. a local immutable-chunkmap)
     vendor_external_path_deps({**ws_deps, **patches}, vendor_dir)
 
-    # Step 4: write .cargo/config.toml
-    cargo_dir = ROOT / ".cargo"
-    cargo_dir.mkdir(exist_ok=True)
+    # Step 4: the source replacement, for .cargo/config.toml
     print("""\
 
-# add to .config/cargo.toml to enable
+# add to .cargo/config.toml to enable
 [source.crates-io]
 replace-with = "vendored-sources"
 
