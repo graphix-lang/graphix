@@ -74,20 +74,52 @@ run!(pack_stream_tcp, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 }; FuseExpect::Jit);
 
-// CR claude for claude: [test-gap] pack_invalid, json_invalid (json.rs:68) and
-// toml_invalid (toml.rs:84) annotate the whole `Result<i64, [..]>`. That is the one
-// target type under which the reader's cast keeps its decode error. The usual spelling,
-// `let v: i64 = pack::read(garbage)?` (or `$`), casts the PackErr/JsonErr/TomlErr
-// itself to the target: it yields 0, false or null, and a struct target re-tags it
-// InvalidCast (small-pkgs-01). No fixture reads invalid input that way, so that bug has
-// no pin. Add fixtures that read garbage through `?` into a primitive and into a struct
-// target, and assert the catch receives the reader's own error tag. Probe: `let j: i64
-// = json::read("this is not json")$` is 0 in both engines. (tests-lib-b2-04)
-// 2026-10-06 claude: deferred to the fix of small-pkgs-01 (json/lib.rs), which these
-// fixtures pin; a catch around `json::read("this is not json")?` still receives nothing.
 run!(pack_invalid, r#"{
     let r: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:255, u8:255, u8:255]));
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+// A reader's own error reaches the catch through `?`, whatever the target:
+// never cast to the target (0, false, null) nor re-tagged InvalidCast.
+macro_rules! reader_error {
+    ($name:ident, $read:literal, $tag:literal) => {
+        run!(
+            $name,
+            concat!(
+                "{\n  let errors: Error<Any> = never();\n  catch(e) errors <- e;\n  ",
+                $read,
+                ";\n  \"[errors]\"\n}"
+            ),
+            |v: Result<&Value>| match v {
+                Ok(Value::String(s)) => s.contains($tag),
+                _ => false,
+            };
+            FuseExpect::None
+        );
+    };
+}
+
+reader_error!(
+    json_garbage_as_i64,
+    r#"let v: i64 = json::read("this is not json")?"#,
+    "JsonErr"
+);
+reader_error!(json_garbage_as_struct, r#"let v: {x: i64} = json::read("{")?"#, "JsonErr");
+reader_error!(toml_garbage_as_i64, r#"let v: i64 = toml::read("= =")?"#, "TomlErr");
+reader_error!(
+    toml_garbage_as_struct,
+    r#"let v: {x: i64} = toml::read("= =")?"#,
+    "TomlErr"
+);
+reader_error!(
+    pack_garbage_as_i64,
+    r#"let v: i64 = pack::read(buffer::from_array([u8:255, u8:255, u8:255]))?"#,
+    "PackErr"
+);
+reader_error!(
+    pack_garbage_as_struct,
+    r#"let v: {x: i64} = pack::read(buffer::from_array([u8:255, u8:255, u8:255]))?"#,
+    "PackErr"
+);

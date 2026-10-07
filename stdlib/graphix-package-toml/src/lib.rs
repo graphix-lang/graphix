@@ -3,18 +3,13 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::Result;
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use chrono::Utc;
-use graphix_compiler::{
-    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
-    effects::Effect,
-    errf,
-    typ::{FnType, Type},
-};
+use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
-    extract_cast_type, is_struct,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, ReadFormat, ReadInput,
+    TypedRead, is_struct,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -112,125 +107,56 @@ fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
 }
 
 #[derive(Debug)]
-enum ReadInput {
-    Str(ArcStr),
-    Bytes(Bytes),
-}
+struct Toml;
 
-// CR claude for claude: [structure] JsonReadEv, TomlReadEv, PackReadEv and sqlite's
-// SqliteQueryEv repeat the same init, typecheck1 and map_value around `cast_typ`,
-// differing only in the error tag, and each overrides typecheck0 with the trait
-// default's own body. json and toml also copy ReadInput and prepare_args, and each
-// package's fc_write_str and fc_write_bytes differ only in the final String or Bytes
-// conversion. A fix to the cast path has to be made four times: map_value casts eval's
-// own parse error to the target, so `let n: i64 = json::read("{")?` and the toml
-// equivalent both give 0. One typed reader in graphix-package-core that takes a parse
-// fn and an error tag, plus one encode-to-buffer fn per format with str and bytes
-// wrappers, would leave each package only its parser and encoder. (small-pkgs-17)
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct TomlReadEv {
-    cast_typ: Option<Type>,
-}
-
-graphix_package_core::pack_image_state!(TomlReadEv);
-
-impl EvalCachedAsync for TomlReadEv {
+impl ReadFormat for Toml {
+    const NAME: &str = "toml_read";
+    const TAG: ArcStr = literal!("TomlErr");
     type Args = ReadInput;
 
-    const NAME: &str = "toml_read";
-
-    fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: graphix_compiler::expr::ExprId,
-    ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved) }
+    fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {
+        ReadInput::of(cached)
     }
 
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
-        Ok(())
-    }
-
-    fn map_value<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        v: Value,
-    ) -> Option<Value> {
-        match &self.cast_typ {
-            Some(typ) => Some(typ.cast_value(&ctx.env, v)),
-            None => Some(errf!("TomlErr", "no concrete return type found")),
-        }
-    }
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let v = cached.0.first()?.as_ref()?;
-        match v {
-            Value::String(s) => Some(ReadInput::Str(s.clone())),
-            Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            _ => None,
-        }
-    }
-
-    fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
+    fn parse(input: ReadInput) -> impl Future<Output = Value> + Send {
         async move {
-            match input {
-                ReadInput::Str(s) => match toml::from_str::<toml::Value>(&s) {
+            let text = match &input {
+                ReadInput::Str(s) => Ok(&**s),
+                ReadInput::Bytes(b) => std::str::from_utf8(b),
+            };
+            match text {
+                Err(e) => errf!(Self::TAG, "invalid UTF-8: {e}"),
+                Ok(s) => match toml::from_str::<toml::Value>(s) {
                     Ok(t) => toml_to_value(t),
-                    Err(e) => errf!("TomlErr", "{e}"),
+                    Err(e) => errf!(Self::TAG, "{e}"),
                 },
-                ReadInput::Bytes(b) => {
-                    let s = match std::str::from_utf8(&b) {
-                        Ok(s) => s,
-                        Err(e) => return errf!("TomlErr", "invalid UTF-8: {e}"),
-                    };
-                    match toml::from_str::<toml::Value>(s) {
-                        Ok(t) => toml_to_value(t),
-                        Err(e) => errf!("TomlErr", "{e}"),
-                    }
-                }
             }
         }
     }
 }
 
-type TomlRead = CachedArgsAsync<TomlReadEv>;
+type TomlRead = CachedArgsAsync<TypedRead<Toml>>;
 
 #[derive(Debug, Default)]
 struct TomlWriteStrEv;
 
-fn fc_write_str(args: &[Value]) -> Option<Value> {
+/// `[pretty, value]` as TOML, or the error to answer with.
+fn encode(args: &[Value]) -> Option<Result<String, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let v = args.get(1)?;
-    let toml_val = match value_to_toml(v) {
+    let toml_val = match value_to_toml(args.get(1)?) {
         Ok(t) => t,
-        Err(e) => return Some(errf!("TomlErr", "{e}")),
+        Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
     };
     let res = if pretty {
         toml::to_string_pretty(&toml_val)
     } else {
         toml::to_string(&toml_val)
     };
-    Some(match res {
-        Ok(s) => Value::String(ArcStr::from(s.as_str())),
-        Err(e) => errf!("TomlErr", "{e}"),
-    })
+    Some(res.map_err(|e| errf!("TomlErr", "{e}")))
+}
+
+fn fc_write_str(args: &[Value]) -> Option<Value> {
+    Some(encode(args)?.map_or_else(|e| e, |s| Value::String(ArcStr::from(s.as_str()))))
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
@@ -252,21 +178,12 @@ type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
 struct TomlWriteBytesEv;
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
-    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let v = args.get(1)?;
-    let toml_val = match value_to_toml(v) {
-        Ok(t) => t,
-        Err(e) => return Some(errf!("TomlErr", "{e}")),
-    };
-    let res = if pretty {
-        toml::to_string_pretty(&toml_val)
-    } else {
-        toml::to_string(&toml_val)
-    };
-    Some(match res {
-        Ok(s) => Value::Bytes(PBytes::new(Bytes::from(s.into_bytes()))),
-        Err(e) => errf!("TomlErr", "{e}"),
-    })
+    Some(
+        encode(args)?.map_or_else(
+            |e| e,
+            |s| Value::Bytes(PBytes::new(Bytes::from(s.into_bytes()))),
+        ),
+    )
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {

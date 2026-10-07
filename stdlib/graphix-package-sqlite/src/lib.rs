@@ -2,13 +2,10 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use arcstr::ArcStr;
-use graphix_compiler::{
-    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf,
-    typ::{FnType, Type},
-};
+use arcstr::{ArcStr, literal};
+use graphix_compiler::errf;
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, EvalCachedAsync, extract_cast_type,
+    CachedArgsAsync, CachedVals, EvalCachedAsync, ReadFormat, TypedRead,
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
@@ -194,69 +191,22 @@ impl EvalCachedAsync for SqliteExecBatchEv {
 
 type SqliteExecBatch = CachedArgsAsync<SqliteExecBatchEv>;
 
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct SqliteQueryEv {
-    cast_typ: Option<Type>,
-}
+#[derive(Debug)]
+struct Query;
 
-graphix_package_core::pack_image_state!(SqliteQueryEv);
-
-impl EvalCachedAsync for SqliteQueryEv {
+impl ReadFormat for Query {
+    const NAME: &str = "sqlite_query";
+    const TAG: ArcStr = literal!("SqliteError");
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
 
-    const NAME: &str = "sqlite_query";
-
-    fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: graphix_compiler::expr::ExprId,
-    ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved) }
-    }
-
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> anyhow::Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
-        Ok(())
-    }
-
-    fn map_value<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        v: Value,
-    ) -> Option<Value> {
-        match self.cast_typ.as_ref() {
-            Some(typ) => Some(typ.cast_value(&ctx.env, v)),
-            None => Some(errf!(
-                "SqliteError",
-                "sqlite::query requires a concrete return type"
-            )),
-        }
-    }
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+    fn prepare_args(cached: &CachedVals) -> Option<Self::Args> {
         let conn = get_conn_arc(cached, 0)?;
         let sql = cached.get::<ArcStr>(1)?;
         let params = cached.get::<ValArray>(2)?;
         Some((conn, sql, params))
     }
 
-    fn eval((conn_arc, sql, params): Self::Args) -> impl Future<Output = Value> + Send {
+    fn parse((conn_arc, sql, params): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             with_conn(conn_arc, move |conn| {
                 let params = collect_params(&params);
@@ -327,7 +277,7 @@ impl EvalCachedAsync for SqliteQueryEv {
     }
 }
 
-type SqliteQuery = CachedArgsAsync<SqliteQueryEv>;
+type SqliteQuery = CachedArgsAsync<TypedRead<Query>>;
 
 macro_rules! simple_sql_builtin {
     ($ev_name:ident, $type_name:ident, $builtin_name:literal, $sql:literal) => {

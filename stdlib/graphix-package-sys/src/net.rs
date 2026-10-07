@@ -12,7 +12,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{extract_cast_type, seam_arg};
+use graphix_package_core::{CastTarget, castable, seam_arg};
 use netidx::{
     path::Path,
     publisher::{Typ, Val},
@@ -238,7 +238,7 @@ pub(crate) struct Subscribe {
     cur: Option<(Path, Dval)>,
     id: BindId,
     top_id: ExprId,
-    cast_typ: Option<Type>,
+    target: CastTarget,
     out: TagValue,
 }
 
@@ -262,7 +262,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
             cur: None,
             id,
             top_id,
-            cast_typ: extract_cast_type(resolved),
+            target: CastTarget::of(resolved),
             out: TagValue::phantom(),
         }))
     }
@@ -275,14 +275,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         let slept = bool::decode(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let cast_typ = Pack::decode(buf)?;
+        let target = CastTarget::decode(buf)?;
         ctx.record_ref(id, top_id);
         Ok(Box::new(Subscribe {
             slept,
             cur: None,
             id,
             top_id,
-            cast_typ,
+            target,
             out: TagValue::phantom(),
         }))
     }
@@ -297,7 +297,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         self.slept.encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
-        self.cast_typ.encode(buf)
+        self.target.encode(buf)
     }
 
     fn update(
@@ -348,23 +348,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
         let res = self.cur.as_ref().and_then(|_| {
-            // CR claude for claude: [bug] Every delivered value is cast to the success
-            // type here, errors included, and RpcCall::update does the same at line
-            // 461. So the pump's unsubscribed error (netstate.rs:47) and every call
-            // failure (a handler's error reply, an unknown argument name, the 10 s
-            // subscribe timeout) reach Type::cast_inner, whose Primitive arm passes the
-            // Error to netidx's Value::cast, which treats it as false. A publisher
-            // going away reads as 0 under `let x: i64 = sys::net::subscribe(p)?` (the
-            // book's intro example), a `null`-typed rpc command reports success on
-            // every failure, and the declared SubscribeError/RpcError is never
-            // produced. Turn an Error delivery into SubscribeError/RpcError before the
-            // cast, as List does at line 598; the pump's translation leaves no way to
-            // tell Unsubscribed from a published error value. The cast core has the
-            // same hole on its own: cast<i64>(error(`E)) is ok 0. probe:
-            // design/review-2026-10-05/repro/sys-net-01.gx (sys-net-01)
-            ctx.event.variables.get(&self.id).map(|v| match &self.cast_typ {
-                Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
-                None => v.value_cloned(),
+            ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
+                // the pump's unsubscribe, or the publisher's own error
+                Value::Error(e) => errf!(ERR_TAG.clone(), "{e}"),
+                v => self.target.cast(&ctx.env, v),
             })
         });
         match res {
@@ -387,7 +374,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
+        self.target.refresh(resolved);
         Ok(())
     }
 
@@ -414,7 +401,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 pub(crate) struct RpcCall {
     top_id: ExprId,
     id: BindId,
-    cast_typ: Option<Type>,
+    target: CastTarget,
     out: TagValue,
 }
 
@@ -436,7 +423,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         Ok(Box::new(RpcCall {
             top_id,
             id,
-            cast_typ: extract_cast_type(resolved),
+            target: CastTarget::of(resolved),
             out: TagValue::phantom(),
         }))
     }
@@ -448,9 +435,9 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let top_id = ExprId::decode(buf)?;
         let id = BindId::decode(buf)?;
-        let cast_typ = Pack::decode(buf)?;
+        let target = CastTarget::decode(buf)?;
         ctx.record_ref(id, top_id);
-        Ok(Box::new(RpcCall { top_id, id, cast_typ, out: TagValue::phantom() }))
+        Ok(Box::new(RpcCall { top_id, id, target, out: TagValue::phantom() }))
     }
 }
 
@@ -458,7 +445,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.top_id.encode(buf)?;
         self.id.encode(buf)?;
-        self.cast_typ.encode(buf)
+        self.target.encode(buf)
     }
 
     fn update(
@@ -515,9 +502,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                 Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             }
         }
-        let res = ctx.event.variables.get(&self.id).map(|v| match &self.cast_typ {
-            Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
-            None => v.value_cloned(),
+        let res = ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
+            Value::Error(e) => errf!(literal!("RpcError"), "{e}"),
+            v => self.target.cast(&ctx.env, v),
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -539,7 +526,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
+        self.target.refresh(resolved);
         if let Some(args_arg) = resolved.args.get(1) {
             deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
                 Some(Type::Struct(_)) => Ok(()),
@@ -694,20 +681,10 @@ list!(
 );
 
 fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
-    let resolved = resolved?;
-    resolved.args.first().and_then(|a| match &a.typ {
+    resolved?.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
-            // CR claude for claude: [structure] This decides whether t can be a cast
-            // target by printing it and looking for a quote. That allocates a String
-            // per typecheck and depends on printer details: without DerefTVars a TVar
-            // prints as its name whether bound or not, and ⊥ prints as _ and passes.
-            // extract_cast_type (stdlib/graphix-package-core/src/lib.rs:57-90) answers
-            // the same question structurally, with has_unbound plus a ⊥ check, so
-            // publish and subscribe/call follow two different rules. Move that
-            // predicate into one package-core helper and call it from both.
-            // (sys-net-17)
-            if format!("{t}").contains('\'') { None } else { Some(t.clone()) }
+            castable(t).then(|| t.clone())
         }
         _ => None,
     })

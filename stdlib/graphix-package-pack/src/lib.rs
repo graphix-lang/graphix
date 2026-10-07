@@ -2,89 +2,52 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::Result;
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use graphix_compiler::{
-    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
-    effects::Effect,
-    errf,
-    typ::{FnType, Type},
+    ExecCtx, FastCall, Rt, UserEvent, effects::Effect, env::Env, errf,
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
-    extract_cast_type,
+    CachedArgs, CachedArgsAsync, CachedVals, CastTarget, EvalCached, ReadFormat,
+    TypedRead,
 };
 use netidx_core::pack::Pack;
-use netidx_value::{PBytes, Value};
+use netidx_value::{PBytes, ValArray, Value};
 
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct PackReadEv {
-    cast_typ: Option<Type>,
-}
+#[derive(Debug)]
+struct Packed;
 
-graphix_package_core::pack_image_state!(PackReadEv);
-
-impl EvalCachedAsync for PackReadEv {
+impl ReadFormat for Packed {
+    const NAME: &str = "pack_read";
+    const TAG: ArcStr = literal!("PackErr");
     type Args = Bytes;
 
-    const NAME: &str = "pack_read";
-
-    fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: graphix_compiler::expr::ExprId,
-    ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved) }
-    }
-
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
-        Ok(())
-    }
-
-    fn map_value<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        v: Value,
-    ) -> Option<Value> {
-        match &self.cast_typ {
-            Some(typ) => Some(typ.cast_value(&ctx.env, v)),
-            None => Some(errf!("PackErr", "no concrete return type found")),
-        }
-    }
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+    fn prepare_args(cached: &CachedVals) -> Option<Bytes> {
         cached.get::<Bytes>(0)
     }
 
-    fn eval(b: Self::Args) -> impl Future<Output = Value> + Send {
+    /// A decoded value comes back as the one element of an array, so an
+    /// error value decoded from the bytes is data, never the reader's own.
+    fn parse(b: Bytes) -> impl Future<Output = Value> + Send {
         async move {
             match Value::decode(&mut b.as_ref()) {
-                Ok(v) => v,
-                Err(e) => errf!("PackErr", "{e}"),
+                Ok(v) => Value::Array(ValArray::from_iter([v])),
+                Err(e) => errf!(Self::TAG, "{e}"),
             }
+        }
+    }
+
+    fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
+        match v {
+            Value::Array(a) if a.len() == 1 => {
+                target.read_data(env, &Self::TAG, a[0].clone())
+            }
+            v => target.read(env, &Self::TAG, v),
         }
     }
 }
 
-type PackRead = CachedArgsAsync<PackReadEv>;
+type PackRead = CachedArgsAsync<TypedRead<Packed>>;
 
 #[derive(Debug, Default)]
 struct PackWriteBytesEv;

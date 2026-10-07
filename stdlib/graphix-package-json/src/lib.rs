@@ -3,17 +3,12 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::Result;
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use graphix_compiler::{
-    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
-    effects::Effect,
-    errf,
-    typ::{FnType, Type},
-};
+use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
-    extract_cast_type, is_struct,
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, ReadFormat, ReadInput,
+    TypedRead, is_struct,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -174,116 +169,42 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
 }
 
 #[derive(Debug)]
-enum ReadInput {
-    Str(ArcStr),
-    Bytes(Bytes),
-}
+struct Json;
 
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct JsonReadEv {
-    cast_typ: Option<Type>,
-}
-
-graphix_package_core::pack_image_state!(JsonReadEv);
-
-impl EvalCachedAsync for JsonReadEv {
+impl ReadFormat for Json {
+    const NAME: &str = "json_read";
+    const TAG: ArcStr = literal!("JsonErr");
     type Args = ReadInput;
 
-    const NAME: &str = "json_read";
-
-    fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: graphix_compiler::expr::ExprId,
-    ) -> Self {
-        Self { cast_typ: extract_cast_type(resolved) }
+    fn prepare_args(cached: &CachedVals) -> Option<ReadInput> {
+        ReadInput::of(cached)
     }
 
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        self.cast_typ = extract_cast_type(Some(resolved));
-        Ok(())
-    }
-
-    fn map_value<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        v: Value,
-    ) -> Option<Value> {
-        match self.cast_typ.as_ref() {
-            // CR claude for claude: [bug] This casts the JsonErr that eval returns for
-            // malformed input as if it were data. netidx's Value::cast turns an Error
-            // into Bool(false).cast(typ), so `let n: i64 = json::read("garbage")?`
-            // gives 0 and nothing raises: bool gives false, [string, null] gives null,
-            // Array<i64> gives [0], and string gives the error's text. A struct or Map
-            // target raises InvalidCast with the JsonErr text inside, so a `JsonErr(m)`
-            // arm never matches. An error from eval should be returned without the
-            // cast, as str::parse does (graphix-package-str/src/lib.rs:815); toml
-            // (lib.rs:167), pack (lib.rs:68) and sqlite::query (lib.rs:226) have the
-            // same map_value. json_invalid, toml_invalid and pack_invalid miss it
-            // because annotating the whole Result binds 'b to [i64, Error<..>], which
-            // keeps the error. probe: design/review-2026-10-05/repro/small-pkgs-01.gx
-            // (small-pkgs-01)
-            Some(typ) => Some(typ.cast_value(&ctx.env, v)),
-            None => Some(errf!("JsonErr", "no concrete return type found")),
-        }
-    }
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let v = cached.0.first()?.as_ref()?;
-        match v {
-            Value::String(s) => Some(ReadInput::Str(s.clone())),
-            Value::Bytes(b) => Some(ReadInput::Bytes((**b).clone())),
-            _ => None,
-        }
-    }
-
-    fn eval(input: Self::Args) -> impl Future<Output = Value> + Send {
+    fn parse(input: ReadInput) -> impl Future<Output = Value> + Send {
         async move {
-            match input {
-                ReadInput::Str(s) => {
-                    match serde_json::from_str::<serde_json::Value>(&s) {
-                        Ok(json) => json_to_value(json),
-                        Err(e) => errf!("JsonErr", "{e}"),
-                    }
-                }
-                ReadInput::Bytes(b) => {
-                    match serde_json::from_slice::<serde_json::Value>(&b) {
-                        Ok(json) => json_to_value(json),
-                        Err(e) => errf!("JsonErr", "{e}"),
-                    }
-                }
+            let json = match &input {
+                ReadInput::Str(s) => serde_json::from_str::<serde_json::Value>(s),
+                ReadInput::Bytes(b) => serde_json::from_slice::<serde_json::Value>(b),
+            };
+            match json {
+                Ok(json) => json_to_value(json),
+                Err(e) => errf!(Self::TAG, "{e}"),
             }
         }
     }
 }
 
-type JsonRead = CachedArgsAsync<JsonReadEv>;
+type JsonRead = CachedArgsAsync<TypedRead<Json>>;
 
 #[derive(Debug, Default)]
 struct JsonWriteStrEv;
 
-fn fc_write_str(args: &[Value]) -> Option<Value> {
+/// `[pretty, value]` as JSON, or the error to answer with.
+fn encode(args: &[Value]) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let v = args.get(1)?;
-    let json = match value_to_json(v) {
+    let json = match value_to_json(args.get(1)?) {
         Ok(j) => j,
-        Err(e) => return Some(errf!("JsonErr", "{e}")),
+        Err(e) => return Some(Err(errf!("JsonErr", "{e}"))),
     };
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
     let res = if pretty {
@@ -291,14 +212,15 @@ fn fc_write_str(args: &[Value]) -> Option<Value> {
     } else {
         serde_json::to_writer(&mut *buf, &json)
     };
-    Some(match res {
-        Ok(()) => {
-            // serde_json always produces valid UTF-8
-            let s = unsafe { std::str::from_utf8_unchecked(&buf) };
-            Value::String(ArcStr::from(s))
-        }
-        Err(e) => errf!("JsonErr", "{e}"),
-    })
+    Some(res.map(|()| buf).map_err(|e| errf!("JsonErr", "{e}")))
+}
+
+fn fc_write_str(args: &[Value]) -> Option<Value> {
+    // serde_json always produces valid UTF-8
+    Some(encode(args)?.map_or_else(
+        |e| e,
+        |buf| Value::String(ArcStr::from(unsafe { std::str::from_utf8_unchecked(&buf) })),
+    ))
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
@@ -320,22 +242,10 @@ type JsonWriteStr = CachedArgs<JsonWriteStrEv>;
 struct JsonWriteBytesEv;
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
-    let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let v = args.get(1)?;
-    let json = match value_to_json(v) {
-        Ok(j) => j,
-        Err(e) => return Some(errf!("JsonErr", "{e}")),
-    };
-    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-    let res = if pretty {
-        serde_json::to_writer_pretty(&mut *buf, &json)
-    } else {
-        serde_json::to_writer(&mut *buf, &json)
-    };
-    Some(match res {
-        Ok(()) => Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf))),
-        Err(e) => errf!("JsonErr", "{e}"),
-    })
+    Some(encode(args)?.map_or_else(
+        |e| e,
+        |buf| Value::Bytes(PBytes::new(Bytes::copy_from_slice(&buf))),
+    ))
 }
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {

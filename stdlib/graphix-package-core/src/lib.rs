@@ -9,6 +9,7 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope,
     Tag, TagValue, TagView, TypedFastFn, UserEvent,
     effects::Effect,
+    env::Env,
     err, errf,
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
@@ -28,6 +29,7 @@ use std::{
     collections::VecDeque,
     fmt::{Debug, Write},
     iter,
+    marker::PhantomData,
     time::Duration,
 };
 use tokio::time::Instant;
@@ -85,26 +87,13 @@ fn without_errors(t: &Type) -> Option<Type> {
     })
 }
 
-// CR claude for claude: [structure] json::read, toml::read, pack::read and sqlite::query
-// all wrap this the same way. Each has a cast_typ field set in init and again in
-// typecheck1, a typecheck0 override equal to the EvalCachedAsync default, and a
-// map_value that casts or returns a per-crate 'no concrete return type' error.
-// sys::net's Subscribe, RpcCall, Publish and PublishRpc keep the same field but pass
-// the value through uncast on a miss. extract_publish_cast_type detects a type variable
-// by formatting the type and looking for a quote, where this function calls
-// has_unbound(). A small cast-target type here (built from the resolved FnType, with
-// Pack and one cast that carries the missing-target policy) would leave each builtin
-// one field and two one-line calls. Nearby copies: json_to_value and toml_to_value
-// build the sorted struct-pair array identically (the inverse of is_struct), their
-// write_str/write_bytes fast fns differ only in the last conversion, and db's DbTreeEv
-// and DbTxnTreeEv are copies of each other. (x-dup-10)
 pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
-    let typ = cast_target(&resolved_typ?.rtype)?;
-    if typ.has_unbound() {
-        return None;
-    }
-    // ⊥ has no surface syntax, so a ⊥ anywhere in the target is an
-    // unconstrained cell, as unusable as an unbound one.
+    cast_target(&resolved_typ?.rtype).filter(castable)
+}
+
+/// Whether a read can cast to `t`: no unbound cell and no ⊥ (which has no
+/// surface syntax, so a ⊥ anywhere in it is an unconstrained cell).
+pub fn castable(t: &Type) -> bool {
     fn contains_bottom(t: &Type, depth: u32) -> bool {
         if depth > 64 {
             return false;
@@ -127,10 +116,153 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
             _ => false,
         }
     }
-    if contains_bottom(&typ, 0) {
-        return None;
+    !t.has_unbound() && !contains_bottom(t, 0)
+}
+
+/// A type-directed builtin's target: the success type of its resolved
+/// return type, set at init and again at `typecheck1`, imaged with it.
+#[derive(Debug, Default, Clone, netidx_derive::Pack)]
+pub struct CastTarget(Option<Type>);
+
+impl CastTarget {
+    pub fn of(resolved: Option<&FnType>) -> Self {
+        Self(extract_cast_type(resolved))
     }
-    Some(typ)
+
+    pub fn refresh(&mut self, resolved: &FnType) {
+        self.0 = extract_cast_type(Some(resolved))
+    }
+
+    /// `v` cast to the target, or as it is when there is none.
+    pub fn cast(&self, env: &Env, v: Value) -> Value {
+        match &self.0 {
+            Some(t) => t.cast_value(env, v),
+            None => v,
+        }
+    }
+
+    /// What a reader whose errors are tagged `tag` hands back: its own
+    /// error as it is, and data as [`Self::read_data`] does.
+    pub fn read(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+        match v {
+            v @ Value::Error(_) => v,
+            v => self.read_data(env, tag, v),
+        }
+    }
+
+    /// Data cast to the target (an error in it refused like any value the
+    /// target does not admit), or with no target an error saying so.
+    pub fn read_data(&self, env: &Env, tag: &ArcStr, v: Value) -> Value {
+        match &self.0 {
+            Some(t) => t.cast_value(env, v),
+            None => errf!(tag, "no concrete return type found"),
+        }
+    }
+}
+
+/// A text format's input: a string, or bytes holding one.
+#[derive(Debug)]
+pub enum ReadInput {
+    Str(ArcStr),
+    Bytes(bytes::Bytes),
+}
+
+impl ReadInput {
+    /// The first argument, when it is a string or bytes.
+    pub fn of(cached: &CachedVals) -> Option<Self> {
+        match cached.0.first()?.as_ref()? {
+            Value::String(s) => Some(Self::Str(s.clone())),
+            Value::Bytes(b) => Some(Self::Bytes((**b).clone())),
+            _ => None,
+        }
+    }
+}
+
+/// A format a typed reader parses: what it reads its input from, how it
+/// parses it, and the tag of its own errors.
+pub trait ReadFormat: Debug + Send + Sync + 'static {
+    const NAME: &str;
+    const TAG: ArcStr;
+    type Args: Debug + Any + Send + Sync;
+
+    fn prepare_args(cached: &CachedVals) -> Option<Self::Args>;
+
+    /// The parsed value, or an error tagged `TAG`.
+    fn parse(args: Self::Args) -> impl Future<Output = Value> + Send;
+
+    /// What the reader hands back for what `parse` made.
+    fn read(target: &CastTarget, env: &Env, v: Value) -> Value {
+        target.read(env, &Self::TAG, v)
+    }
+}
+
+/// A builtin that parses its input with `F` and casts what it parsed to
+/// its call site's type.
+#[derive(Debug)]
+pub struct TypedRead<F> {
+    target: CastTarget,
+    format: PhantomData<fn() -> F>,
+}
+
+impl<F> Default for TypedRead<F> {
+    fn default() -> Self {
+        Self { target: CastTarget::default(), format: PhantomData }
+    }
+}
+
+impl<F> ImageState for TypedRead<F> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.target.encode(buf)
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self { target: CastTarget::decode(buf)?, format: PhantomData })
+    }
+}
+
+impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
+    const NAME: &str = F::NAME;
+    type Args = F::Args;
+
+    fn init<R: Rt, E: UserEvent>(
+        _ctx: &mut CompileCtx<R, E>,
+        _typ: &FnType,
+        resolved: Option<&FnType>,
+        _scope: &Scope,
+        _from: &[Node<R, E>],
+        _top_id: ExprId,
+    ) -> Self {
+        Self { target: CastTarget::of(resolved), format: PhantomData }
+    }
+
+    fn typecheck1<R: Rt, E: UserEvent>(
+        &mut self,
+        _ctx: &mut CompileCtx<R, E>,
+        _from: &mut [Node<R, E>],
+        resolved: &FnType,
+    ) -> Result<()> {
+        self.target.refresh(resolved);
+        Ok(())
+    }
+
+    fn map_value<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        v: Value,
+    ) -> Option<Value> {
+        Some(F::read(&self.target, &ctx.env, v))
+    }
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        F::prepare_args(cached)
+    }
+
+    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
+        F::parse(args)
+    }
 }
 
 /// Program arguments stored in LibState. Index 0 is the script filename.
