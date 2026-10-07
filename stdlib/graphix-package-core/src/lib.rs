@@ -2721,6 +2721,7 @@ fn emit_line<R: Rt, E: UserEvent>(
     line: &str,
     suffix: &str,
 ) {
+    use std::io::Write;
     let sink = match dest {
         LogDest::Stdout | LogDest::Stderr => ctx.libstate.get::<PrintSink>(),
         LogDest::Log(_) => None,
@@ -2729,8 +2730,13 @@ fn emit_line<R: Rt, E: UserEvent>(
         (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
             sink.push(ctx.rt.cycle(), line, suffix)
         }
-        (LogDest::Stdout, None) => print!("{line}{suffix}"),
-        (LogDest::Stderr, None) => eprint!("{line}{suffix}"),
+        // a reader that has gone takes nothing, and the program goes on
+        (LogDest::Stdout, None) => {
+            let _ = write!(std::io::stdout().lock(), "{line}{suffix}");
+        }
+        (LogDest::Stderr, None) => {
+            let _ = write!(std::io::stderr().lock(), "{line}{suffix}");
+        }
         (LogDest::Log(lvl), _) => match lvl {
             Level::Trace => log::trace!("{line}"),
             Level::Debug => log::debug!("{line}"),

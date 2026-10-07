@@ -21,7 +21,11 @@ use input::InputReader;
 use netidx::publisher::Value;
 use poolshark::{global::GPooled, local::LPooled};
 use reedline::Signal;
-use std::{marker::PhantomData, process::exit};
+use std::{
+    io::{self, Write},
+    marker::PhantomData,
+    process::exit,
+};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -99,25 +103,25 @@ impl<X: GXExt> Output<X> {
         *self = Self::None;
     }
 
-    async fn process_update(&mut self, env: &Env, id: ExprId, v: Value) {
+    /// Show an update; an error is the text output's, whose reader may
+    /// have gone.
+    async fn process_update(
+        &mut self,
+        env: &Env,
+        id: ExprId,
+        v: Value,
+    ) -> io::Result<()> {
         match self {
-            Self::None | Output::EmptyScript => (),
-            Self::Custom(cdc) => cdc.custom.process_update(env, id, v).await,
-            Self::Text(e) => {
-                if e.id == id {
-                    // CR claude for claude: [bug] println! panics on EPIPE, so piping a
-                    // program whose value keeps updating into `head -2` ends in "thread
-                    // 'graphix-tokio' panicked … failed printing to stdout: Broken
-                    // pipe" and "Error: tokio thread panicked", exit 1. The print
-                    // builtins' print! (stdlib/graphix-package-core/src/lib.rs:2489)
-                    // panics the same way inside a node update and kills the runtime
-                    // ("graphix runtime is dead"). Write with writeln! to a locked
-                    // stdout and end the shell quietly on BrokenPipe; the builtins
-                    // should drop or log a failed write. probe:
-                    // design/review-2026-10-05/repro/x-errors-16.gx (x-errors-16)
-                    println!("{}", TVal { env: &env, typ: &e.typ, v: &v })
-                }
+            Self::None | Output::EmptyScript => Ok(()),
+            Self::Custom(cdc) => Ok(cdc.custom.process_update(env, id, v).await),
+            Self::Text(e) if e.id == id => {
+                writeln!(
+                    io::stdout().lock(),
+                    "{}",
+                    TVal { env: &env, typ: &e.typ, v: &v }
+                )
             }
+            Self::Text(_) => Ok(()),
         }
     }
 }
@@ -500,7 +504,7 @@ impl<X: GXExt> Shell<X> {
             println!("Welcome to the graphix shell");
             println!("Press ctrl-c to cancel, ctrl-d to exit, and tab for help")
         }
-        let exit = loop {
+        let exit = 'repl: loop {
             select! {
                 batch = from_gx.recv() => match batch {
                     None => bail!("graphix runtime is dead"),
@@ -508,7 +512,14 @@ impl<X: GXExt> Shell<X> {
                         for e in batch.drain(..) {
                             match e {
                                 GXEvent::Updated(id, v) => {
-                                    output.process_update(&env, id, v).await
+                                    match output.process_update(&env, id, v).await {
+                                        Ok(()) => (),
+                                        // the reader is done with the output
+                                        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                                            break 'repl Ok(())
+                                        }
+                                        Err(e) => break 'repl Err(e.into()),
+                                    }
                                 },
                                 GXEvent::Env(e) => {
                                     env = e;
