@@ -1485,9 +1485,11 @@ impl Lambda {
                     .entry(tv.name.clone())
                     .or_insert_with(|| tv.scope_refs(&scope.lexical))
                     .clone();
-                (tv, tc.scope_refs(&scope.lexical))
+                let tc = tc.scope_refs(&scope.lexical);
+                tc.check_bound(&ctx.env)?;
+                Ok((tv, tc))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         constraints.extend(trait_quantifiers.drain(..));
         let body = DefBody::of(&l.body);
         let builtin = match &l.body {

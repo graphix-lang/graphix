@@ -1815,11 +1815,13 @@ impl Type {
     /// holding a typedef's expansion): each registered head of the
     /// constructor variable's trait bounds is tried, and the one that
     /// contains the receiver and determines the element is the
-    /// constructor.
+    /// constructor. Only a `commit` binds the receiver's open cells; a
+    /// probe decides on a copy.
     pub(crate) fn app_split_for(
         ctor: &Type,
         t: &Type,
         env: &Env,
+        commit: bool,
     ) -> Result<Option<(Type, Type)>> {
         if let Some(parts) = Self::app_split(t, env)? {
             return Ok(Some(parts));
@@ -1842,24 +1844,13 @@ impl Type {
             let Some(tid) = env.trait_of_ref(tr) else { continue };
             let Some(heads) = env.impls_of(tid) else { continue };
             for im in heads.iter() {
-                if !matches!(im.target, Type::Ref(_))
-                    || fits(&im.target, &t.reset_tvars())?.is_none()
-                {
+                if !matches!(im.target, Type::Ref(_)) {
                     continue;
                 }
-                // CR claude for claude: [bug] This committing contains runs on the real
-                // receiver whatever the caller's flags. app_contains (contains.rs:1308,
-                // 1318) also calls app_split_for from a probe, so a probe that recovers
-                // a constructor binds the receiver's open cells. The binding stays when
-                // the probe then fails or set_commit picks another member, and the
-                // outer walk's probe memo is not invalidated. Take `f = 'c: Ctor |x:
-                // ['c<i64>, 'z]| 0` and `g = |y| f(`C("a", y))`: set_commit's probe of
-                // the 'c<i64> member binds y := L<string> through this line, then fails
-                // on i64 vs string, 'z takes the argument, and `g(1)` is refused (it is
-                // accepted once the unrelated `impl Ctor for L<'_>` is removed). Under
-                // a probe, decide on the reset copy only, and touch the real receiver
-                // only when the caller commits. probe:
-                // design/review-2026-10-05/repro/t-contains-13.gx (t-contains-13)
+                let Some(copy) = fits(&im.target, &t.reset_tvars())? else { continue };
+                if !commit {
+                    return Ok(Some(copy));
+                }
                 if let Some(r) = fits(&im.target, &t)? {
                     if graphix_dbg_bind() {
                         eprintln!("APP-SPLIT recovered ctor={:?} elem={:?}", r.0, r.1);
@@ -2366,17 +2357,22 @@ impl Type {
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
     /// trait anywhere else is an error. Returns the rewritten type.
-    // CR claude for claude: [bug] No bound reaches this check: lambda constraints
-    // (node/lambda.rs:1406) and typedef parameter bounds (env.rs:1423) are only scoped,
-    // and holes() and rewrite_trait_args_inner skip a Fn type's quantifier conjuncts.
-    // So `'a: Array<'_>` is accepted at the definition and every use fails with a
-    // mismatch naming '_ ("Array<'_> does not contain Array<i64>"), while `|x:
-    // Array<'_>|` gets the hole refusal. A trait under a bound gets through the same
-    // way: with `impl Show for i64` only, `let f = 'a: Array<Show> |x: 'a| x; f(["a"])`
-    // passes --check and the build refuses the instance (graphix-fuzz check: the check
-    // accepted what the build refused). Apply both refusals to what lies under each
-    // conjunct; the conjunct itself may be a trait. probe:
-    // design/review-2026-10-05/repro/x-expr-walks.r2-10.gx (x-expr-walks.r2-10)
+    /// A bound's conjunct: a trait or a predicate itself, or a type
+    /// holding neither a hole nor a trait, which only a parameter's type
+    /// may be.
+    pub fn check_bound(&self, env: &Env) -> Result<()> {
+        match self {
+            Type::Ref(tr) if env.trait_of_ref(tr).is_some() => Ok(()),
+            Type::Concrete
+            | Type::Function
+            | Type::Singleton
+            | Type::OneNumber
+            | Type::Discernible
+            | Type::Ordered => Ok(()),
+            t => t.rewrite_trait_args(env).map(|_| ()),
+        }
+    }
+
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         if self.holes() > 0 {
             bail!(
@@ -2401,6 +2397,9 @@ impl Type {
                 tr.name
             ),
             Type::Fn(ft) => {
+                for (_, c) in ft.constraint_view().iter() {
+                    c.check_bound(env)?;
+                }
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();
                 let mut changed = false;

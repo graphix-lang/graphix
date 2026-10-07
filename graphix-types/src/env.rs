@@ -1533,6 +1533,9 @@ impl Env {
             }
         };
         let params = scope_params(&params, scope);
+        for b in params.iter().filter_map(|(_, b)| b.as_ref()) {
+            b.check_bound(self)?;
+        }
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         let mut used: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();

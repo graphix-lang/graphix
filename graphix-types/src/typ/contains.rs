@@ -1725,7 +1725,12 @@ impl Type {
             }
             (Self::App(c, a), t1) => match Self::app_filled(c, a) {
                 Some(filled) => filled.contains_int(flags, env, hist, t1),
-                None => match Self::app_split_for(c, t1, env)? {
+                None => match Self::app_split_for(
+                    c,
+                    t1,
+                    env,
+                    flags.contains(ContainsFlags::Commit),
+                )? {
                     Some((ctor, last)) => {
                         Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
                             && a.contains_int(flags, env, hist, &last)?)
@@ -1735,7 +1740,12 @@ impl Type {
             },
             (t0, Self::App(c, a)) => match Self::app_filled(c, a) {
                 Some(filled) => t0.contains_int(flags, env, hist, &filled),
-                None => match Self::app_split_for(c, t0, env)? {
+                None => match Self::app_split_for(
+                    c,
+                    t0,
+                    env,
+                    flags.contains(ContainsFlags::Commit),
+                )? {
                     Some((ctor, last)) => {
                         Ok(Self::bind_ctor(c, &ctor, flags, env, hist)?
                             && last.contains_int(flags, env, hist, a)?)

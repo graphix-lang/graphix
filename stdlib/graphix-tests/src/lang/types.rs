@@ -2077,3 +2077,53 @@ run!(
     "/test/b.gx" => "type T = string";
     FuseExpect::None
 );
+
+/// A probe that recovers a constructor binds nothing: the free member
+/// takes what the constructor's member could not.
+const CONSTRUCTOR_PROBE_BINDS_NOTHING: &str = r#"
+{
+    type L<'a> = [`C('a, L<'a>), `N];
+    trait Ctor { val size: fn(self<'a>) -> i64 };
+    impl Ctor for L<'_> { let size = |l| 0 };
+    let f = 'c: Ctor |x: ['c<i64>, 'z]| 0;
+    let g = |y| f(`C("a", y));
+    g(1)
+}
+"#;
+
+run!(constructor_probe_binds_nothing, CONSTRUCTOR_PROBE_BINDS_NOTHING, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::I64(0))
+));
+
+/// A bound holds neither a hole nor a trait below its top.
+const HOLE_IN_A_BOUND: &str = r#"
+{
+    let f = 'a: Array<'_> |x: 'a| x;
+    f([1])
+}
+"#;
+
+run!(hole_in_a_bound, HOLE_IN_A_BOUND, refused("'_ is the hole"); FuseExpect::None);
+
+const TRAIT_UNDER_A_BOUND: &str = r#"
+{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |x| "i" };
+    let f = 'a: Array<Show> |x: 'a| x;
+    f(["a"])
+}
+"#;
+
+run!(trait_under_a_bound, TRAIT_UNDER_A_BOUND, refused("trait Show used as a type"); FuseExpect::None);
+
+const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
+{
+    let g: fn<'b: Array<'_>>(x: 'b) -> i64 = |x| 0;
+    g([1])
+}
+"#;
+
+run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole"); FuseExpect::None);
