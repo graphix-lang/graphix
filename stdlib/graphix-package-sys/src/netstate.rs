@@ -24,10 +24,7 @@ use netidx_derive::IntoValue;
 use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
-use poolshark::{
-    global::{GPooled, Pool},
-    local::LPooled,
-};
+use poolshark::global::{GPooled, Pool};
 use std::{
     sync::{Arc, LazyLock, OnceLock},
     time::Duration,
@@ -322,31 +319,9 @@ impl NetState {
                                     // coalesce per SubId (last wins) — the same channel can be
                                     // registered on a shared Dval more than once — then fan out
                                     // to every registered reader.
-                                    // CR claude for claude: [bug] This map keeps only the
-                                    // last update per SubId in each netidx batch, so a
-                                    // subscription silently drops every intermediate
-                                    // value that arrives in the same batch. netidx
-                                    // delivers all of them: on one burst a `netidx
-                                    // subscriber` CLI printed 0..200 in order while
-                                    // this subscription got 66 of 201. Which values
-                                    // survive depends on batch timing, so count, log or
-                                    // array::group over a subscription gives
-                                    // nondeterministic results. The case in the comment
-                                    // (a shared channel registered again) only re-sends
-                                    // `last` under BEGIN_WITH_LAST. Handle it at
-                                    // registration (NO_SPURIOUS, plus `dv.last()` to
-                                    // the new BindId) and forward every event in order
-                                    // here. probe:
-                                    // design/review-2026-10-05/repro/sys-net-07.gx
-                                    // (last line (177..192, 200), expected (201, 200)).
-                                    // (sys-net-07)
-                                    let mut last: LPooled<IntMap<SubId, NEvent>> =
-                                        LPooled::take();
-                                    for (sub_id, ev) in batch.drain(..) {
-                                        last.insert(sub_id, ev);
-                                    }
+                                    // every update, in order, to every reader
                                     let routes = routes.lock();
-                                    for (sub_id, ev) in last.drain() {
+                                    for (sub_id, ev) in batch.drain(..) {
                                         if let Some(ids) = routes.subs.get(&sub_id) {
                                             for id in ids {
                                                 out.push((*id, translate(ev.clone())));
@@ -467,22 +442,36 @@ impl NetState {
         id: BindId,
     ) -> Result<Dval> {
         let updates_tx = self.0.netidx_updates_tx.clone();
-        // CR claude for claude: [bug] Every subscription registers the one shared channel
-        // with BEGIN_WITH_LAST. When the path's Dval is already subscribed, netidx
-        // sends `last` again (NO_SPURIOUS unset,
-        // ../netidx/netidx/src/subscriber/connection.rs:377), and the pump fans it out
-        // to every BindId on the SubId (lines 299-304). So each existing subscriber of
-        // a path fires again with the value it already had whenever another subscribe
-        // of that path starts, including one in a woken select arm, and any count, seqq
-        // or `<-` driven by it runs again. A channel per subscription would not fix it:
-        // netidx sends that event to every stream of the subscription
-        // (connection.rs:604). The new BindId needs `dv.last()` delivered to it alone.
-        // probe: design/review-2026-10-05/repro/sys-net-06.gx (count(a) goes 1, then 2
-        // at 0.5s when `b` subscribes the same path). (sys-net-06)
+        // The shared channel is registered once per Dval: a later
+        // subscriber of the path gets the path's last value alone, never a
+        // re-send to every subscriber of it.
+        let flags = flags | UpdatesFlags::NO_SPURIOUS;
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
-        self.0.routes.lock().subs.entry(dv.id()).or_default().push(id);
+        let mut routes = self.0.routes.lock();
+        let ids = routes.subs.entry(dv.id()).or_default();
+        if !ids.is_empty()
+            && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
+            && let ev @ NEvent::Update(_) = dv.last()
+        {
+            ctx.rt.set_var(id, translate(ev));
+        }
+        ids.push(id);
         Ok(dv)
+    }
+
+    /// The path's Dval for writing alone: no updates and no route.
+    pub(crate) fn write_target<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        path: Path,
+    ) -> Result<Dval> {
+        Ok(self.handles(ctx)?.subscriber.subscribe(path))
+    }
+
+    /// Release a Dval [`Self::write_target`] gave.
+    pub(crate) fn release(&self, dv: Dval) {
+        let _ = self.0.unsubscribe_graveyard_tx.unbounded_send(dv);
     }
 
     pub(crate) fn unsubscribe(&self, dv: Dval, id: BindId) {

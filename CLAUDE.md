@@ -484,7 +484,8 @@ node graph IS the IR — there is no parallel typed IR
   clear in their own `sleep()`, a restart builtin's output included: a
   woken one is a fresh one; configuration (`#n`, `#rate`) survives. A labeled DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Async builtins clear their
-  output on sleep (`design/async_sleep_outputs.md`). A pure non-recursive
+  output on sleep and start again over their present arguments at the
+  wake (`design/async_sleep_outputs.md`). A pure non-recursive
   arm skips `sleep` and is not updated while untaken.
 - **Activation state** (`design/activation_state.md`,
   `design/recursive_activations.md`, `design/atomic_recursion.md`):

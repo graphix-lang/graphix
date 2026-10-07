@@ -1269,6 +1269,9 @@ impl<T> CachedArgs<T> {
 
 #[derive(Debug)]
 pub struct CachedArgsAsync<T: EvalCachedAsync> {
+    /// Set by `sleep()`, taken by the next update: the operation starts
+    /// again over its present arguments.
+    slept: bool,
     cached: CachedVals,
     id: BindId,
     top_id: ExprId,
@@ -1292,6 +1295,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         let id = BindId::new();
         ctx.record_ref(id, top_id);
         let t = CachedArgsAsync::<T> {
+            slept: false,
             id,
             top_id,
             cached: CachedVals::new(from),
@@ -1308,12 +1312,14 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let slept = bool::decode(buf)?;
         let cached = CachedVals::image_decode(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
         ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
+            slept,
             cached,
             id,
             top_id,
@@ -1332,6 +1338,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         if !self.queued.is_empty() || self.running {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
+        self.slept.encode(buf)?;
         self.cached.image_encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
@@ -1344,10 +1351,14 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         self.t.attach(ctx);
+        let woke = std::mem::take(&mut self.slept);
         let invocation = self.cached.update(ctx, from);
-        if invocation == Invocation::Fired
-            && let Some(args) = self.t.prepare_args(&self.cached)
-        {
+        let start = match invocation {
+            Invocation::Fired => true,
+            Invocation::Quiet => woke,
+            Invocation::Bottom { .. } => false,
+        };
+        if start && let Some(args) = self.t.prepare_args(&self.cached) {
             self.queued.push_back(args);
         }
         let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
@@ -1416,8 +1427,27 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.clear();
     }
 
+    // XCR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
+    // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
+    // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
+    // fires again, while `timer(duration:3.ms, true)` restarts because constants fire
+    // at the wake. AfterIdle::sleep (line 144) and CachedArgsAsync::sleep
+    // (graphix-package-core/src/lib.rs:936) have the same hole: they reset their output
+    // on the premise that the operation restarts on wake, nothing restarts it over
+    // level arguments, and the arm stays bottom for good (json::read(doc),
+    // sys::fs::read_all(p), after_idle(d, v)). Subscribe and Publish handle this with a
+    // slept bit that makes the first update after sleep act on the present arguments;
+    // these three need the same. Both engines agree, so the fuzzer cannot see it.
+    // Probe: design/review-2026-10-05/repro/x-engine-firing-04.gx. (x-engine-firing-04)
+    // 2026-10-07 claude: a slept bit in all three makes the first update after a wake
+    // act on the present arguments: Timer starts a run, AfterIdle starts its wait, and
+    // CachedArgsAsync runs the operation again (an effect too: a write in a reselected
+    // arm writes again). design/async_sleep_outputs.md and CLAUDE.md say so. The repro
+    // prints every arm again after Paused -> Live; the wake tests in lang/async_restart
+    // pass unchanged, so a pin for the level-argument case is still owed.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
+        self.slept = true;
         self.running = false;
         self.out = TagValue::phantom();
         let id = BindId::new();

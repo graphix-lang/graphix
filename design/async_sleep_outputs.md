@@ -9,7 +9,11 @@ source in `sleep` therefore clears its output to `TagValue::phantom()`
 there; otherwise a reselected arm would surface the previous
 activation's result as if the restarted operation had already
 completed. Ordinary updates still retain the latest completed value
-while waiting for the next result. Neither `seq` lowering nor select
+while waiting for the next result. The restart is the builtin's own: each one keeps a
+`slept` bit its `sleep` sets, and its first update after the wake starts
+the operation again over the arguments as they stand, read stale
+(`CachedArgsAsync`, `timer`, `after_idle`, and the net and http builtins
+that re-publish or re-serve). Neither `seq` lowering nor select
 history needs to know: a direct call to a restarted builtin reads as
 "nothing yet" until it produces.
 

@@ -16,7 +16,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::{CachedVals, Invocation, seam_tick, seam_value};
+use graphix_package_core::{CachedVals, Invocation, seam_arg, seam_tick};
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
 use netidx_value::{FromValue, ValArray, Value};
@@ -295,39 +295,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for claude: [bug] The config args are read through seam_value (fired
-        // or stale) and checked on every update. An invalid poll_interval or
-        // poll_batch_size returns TagValue::fired(error) whether or not any input
-        // fired, so the error re-fires on every cycle of the enclosing statement:
-        // count(w) reaches 12 under 5 timer ticks, and a `$` on it logs 12 times. A
-        // consumer that writes state on the result schedules the next cycle and spins
-        // at 100% CPU: `status <- select w { error as _ => "watch failed", _ =>
-        // "watching" }` writes about 70,000 times in 500 ms. Validate only on a fired
-        // delivery, as Timer does, and ride the resident otherwise. probe:
-        // design/review-2026-10-05/repro/sys-io-06.gx (sys-io-06)
-        let poll_interval = seam_value(from[0].update(ctx))
-            .and_then(|v| v.value_cloned().cast_to::<Option<Duration>>().ok().flatten());
-        let batch_size = seam_value(from[1].update(ctx))
-            .and_then(|v| v.value_cloned().cast_to::<Option<i64>>().ok().flatten());
+        let (poll_interval, pi_fired) = seam_arg(ctx, &mut from[0]);
+        let (batch_size, bs_fired) = seam_arg(ctx, &mut from[1]);
         let trigger = seam_tick(from[2].update(ctx)).is_some();
-        match poll_interval {
-            Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
-                return self.out.set(TagValue::fired(errf!(
-                    "WatchError",
-                    "poll_interval must be >= 100ms"
-                )));
+        // a bad setting is an error when it is delivered, not every cycle after
+        match poll_interval.and_then(|v| v.cast_to::<Option<Duration>>().ok().flatten()) {
+            Some(pi) if pi < Duration::from_millis(100) => {
+                if pi_fired {
+                    let e = errf!("WatchError", "poll_interval must be >= 100ms");
+                    return self.out.set(TagValue::fired(e));
+                }
             }
-            Some(poll_interval) => self.poll_interval = Some(poll_interval),
+            Some(pi) => self.poll_interval = Some(pi),
             None => (),
         }
-        match batch_size {
-            Some(batch_size) if batch_size < 0 => {
-                return self.out.set(TagValue::fired(errf!(
-                    "WatchError",
-                    "batch_size must be >= 0"
-                )));
+        match batch_size.and_then(|v| v.cast_to::<Option<i64>>().ok().flatten()) {
+            Some(bs) if bs < 0 => {
+                if bs_fired {
+                    let e = errf!("WatchError", "batch_size must be >= 0");
+                    return self.out.set(TagValue::fired(e));
+                }
             }
-            Some(batch_size) => self.batch_size = Some(batch_size),
+            Some(bs) => self.batch_size = Some(bs),
             None => (),
         }
         if trigger {
@@ -513,7 +502,7 @@ fn extract_bind_ids(v: &Value, out: &mut IntSet<BindId>) {
 /// What a watch stream outputs per event.
 pub(crate) trait WatchKind: Debug + Send + Sync + 'static {
     const NAME: &str;
-    fn convert(w: &mut WEvent) -> Value;
+    fn convert(w: &WEvent) -> Value;
 }
 
 #[derive(Debug)]
@@ -522,8 +511,8 @@ pub(crate) struct PathKind;
 impl WatchKind for PathKind {
     const NAME: &str = "sys_watch_path";
 
-    fn convert(w: &mut WEvent) -> Value {
-        w.0.paths.drain().next().map(utf8_path).unwrap_or(Value::Null)
+    fn convert(w: &WEvent) -> Value {
+        w.0.paths.iter().next().map(|p| utf8_path(p.clone())).unwrap_or(Value::Null)
     }
 }
 
@@ -533,7 +522,7 @@ pub(crate) struct EventsKind;
 impl WatchKind for EventsKind {
     const NAME: &str = "sys_watch_events";
 
-    fn convert(w: &mut WEvent) -> Value {
+    fn convert(w: &WEvent) -> Value {
         let event: Value = match &w.0.event {
             EventKind::Event(int) => WInterest(*int).into(),
             EventKind::Error(_) => unreachable!(),
@@ -543,7 +532,8 @@ impl WatchKind for EventsKind {
             event: Value,
             paths: ValArray,
         }
-        let paths = ValArray::from_iter_exact(w.0.paths.drain().map(utf8_path));
+        let paths =
+            ValArray::from_iter_exact(w.0.paths.iter().map(|p| utf8_path(p.clone())));
         Fields { event, paths }.into()
     }
 }
@@ -646,25 +636,17 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
             }
         }
         for bid in &self.bind_ids {
-            // CR claude for claude: [bug] take_custom removes the Watch's event from the
-            // cycle's shared custom map, but every path()/events() over one Watch refs
-            // this same bind id, so the first reader to update takes each event and the
-            // rest never fire. With `let p = path(h); let e = events(h)`, `e` never
-            // fires, and a second `path(h)` reader is silent too. Under
-            // GRAPHIX_PAR=force each event reaches exactly one reader, decided by the
-            // race, so a forked cycle differs from the serial one. Read the delivery
-            // without removing it (with_custom, as graphix-package-db's accessors do at
-            // subscribe.rs:253), converting from the borrowed event instead of draining
-            // its paths. probe: design/review-2026-10-05/repro/sys-io-04.gx (sys-io-04)
-            let Some(mut cbt) = ctx.event.take_custom(bid) else { continue };
-            let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<WEvent>() else {
-                continue;
-            };
-            let v = match &w.0.event {
-                EventKind::Error(e) => errf!("WatchError", "{e:?}"),
-                EventKind::Event(_) => K::convert(w),
-            };
-            ctx.rt.set_var(self.id, v);
+            // every reader of the watch sees its event: borrowed, not taken
+            let v = ctx.event.with_custom(bid, |cbt| {
+                let w = (cbt as &dyn Any).downcast_ref::<WEvent>()?;
+                Some(match &w.0.event {
+                    EventKind::Error(e) => errf!("WatchError", "{e:?}"),
+                    EventKind::Event(_) => K::convert(w),
+                })
+            });
+            if let Some(v) = v {
+                ctx.rt.set_var(self.id, v);
+            }
         }
         match ctx.event.variables.remove(&self.id) {
             Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),

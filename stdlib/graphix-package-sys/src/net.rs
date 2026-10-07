@@ -41,10 +41,14 @@ fn as_path(v: Value) -> Option<Path> {
     }
 }
 
+/// The value written to a path. Values that fire before the path is
+/// known queue and are written, in order, when it arrives.
 #[derive(Debug)]
 pub(crate) struct Write {
-    id: BindId,
     dv: Either<(Path, Dval), Vec<Value>>,
+    /// Set by `sleep`, taken by the next update: the target is found again
+    /// from the present path.
+    slept: bool,
     out: TagValue,
 }
 
@@ -57,13 +61,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
+        _from: &'c [Node<R, E>],
+        _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        let _ = (top_id, from);
         Ok(Box::new(Write {
             dv: Either::Right(vec![]),
-            id: BindId::new(),
+            slept: false,
             out: TagValue::phantom(),
         }))
     }
@@ -73,146 +76,12 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
         let queued = Pack::decode(buf)?;
-        Ok(Box::new(Write { id, dv: Either::Right(queued), out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
-    /// `Left` is a live subscription.
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        let queued = match &self.dv {
-            Either::Left(_) => return Err(PackError::Application(image::NOT_QUIESCENT)),
-            Either::Right(queued) => queued,
-        };
-        self.id.encode(buf)?;
-        queued.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        fn set(dv: &mut Either<(Path, Dval), Vec<Value>>, val: &Value) {
-            match dv {
-                Either::Right(q) => q.push(val.clone()),
-                Either::Left((_, dv)) => {
-                    dv.write(val.clone());
-                }
-            }
-        }
-        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
-        let (val, val_fired) = seam_arg(ctx, &mut from[1]);
-        let mut wrote = false;
-        if path_fired
-            && let Some(path) = &path
-            && !self.same_path(path)
-        {
-            match as_path(path.clone()) {
-                None => {
-                    // Release the old target's registration before dropping it;
-                    // the graveyard only sees UNSUBSCRIBED Dvals.
-                    if let Either::Left((_, old)) = &self.dv {
-                        let old = old.clone();
-                        NetState::get(ctx).unsubscribe(old, self.id);
-                        self.dv = Either::Right(vec![]);
-                    }
-                    let e = errf!(literal!("WriteError"), "invalid path {path:?}");
-                    return self.out.set(TagValue::fired(Value::Error(e.into())));
-                }
-                Some(path) => {
-                    let net = NetState::get(ctx);
-                    // CR claude for claude: [perf] Write gets its Dval through
-                    // NetState::subscribe with self.id. That registers the shared
-                    // update channel and a pump route for the id (netstate.rs:408-410),
-                    // yet Write never refs the id and never reads it. Every update of
-                    // the target path is routed there anyway: the runtime stores the
-                    // value under the id, where it stays after the Write is gone, and
-                    // runs a cycle with nothing scheduled. A process whose only
-                    // statement was a write to a path updated about 500 times a second
-                    // used 28 clock ticks of CPU in 6 s, against 0-1 for a write to an
-                    // unpublished path. A write needs only the Dval: take it from
-                    // subscriber.subscribe(path), with no update channel and no route.
-                    // (sys-net-12)
-                    let dv = match net.subscribe(
-                        ctx,
-                        UpdatesFlags::empty(),
-                        path.clone(),
-                        self.id,
-                    ) {
-                        Ok(dv) => dv,
-                        Err(e) => {
-                            let e = errf!(literal!("WriteError"), "{e:?}");
-                            return self.out.set(TagValue::fired(Value::Error(e.into())));
-                        }
-                    };
-                    match &mut self.dv {
-                        Either::Left((_, old)) => {
-                            // Same release-before-overwrite as the
-                            // invalid-path arm above.
-                            let old = old.clone();
-                            NetState::get(ctx).unsubscribe(old, self.id);
-                        }
-                        // CR claude for claude: [bug] When the path first arrives, this
-                        // drains the queue into the new Dval, and then line 158 writes
-                        // the standing `val` again. Unless `val` fired this cycle, the
-                        // queue's last entry already is that value. A value that fired
-                        // before its path was known (a constant, with the path read
-                        // from a subscription) therefore reaches the publisher twice,
-                        // and its on_write runs twice; queued values 1, 2 arrive as 1,
-                        // 2, 2. The standing write belongs only to a value that fired
-                        // this cycle, or to an empty queue (a path switch). probe:
-                        // design/review-2026-10-05/repro/sys-net-05.gx (sys-net-05)
-                        Either::Right(q) => {
-                            for v in q.drain(..) {
-                                dv.write(v);
-                            }
-                        }
-                    }
-                    self.dv = Either::Left((path, dv));
-                    if let Some(val) = &val {
-                        set(&mut self.dv, val);
-                        wrote = true;
-                    }
-                }
-            }
-        }
-        if val_fired && !wrote {
-            if let Some(val) = &val {
-                set(&mut self.dv, val)
-            }
-        }
-        self.out.ride()
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Either::Left((_, dv)) = &self.dv {
-            NetState::get(ctx).unsubscribe(dv.clone(), self.id)
-        }
-        self.dv = Either::Right(vec![])
-    }
-
-    // CR claude for claude: [bug] This sleep unsubscribes and empties `dv`, but Write has
-    // no `slept` bit, and update re-subscribes only when the path fires (line 114). If
-    // the path is bound outside the arm, a woken arm reads it stale, so every later
-    // write is pushed onto the queue (line 105) and never sent. The queue grows without
-    // bound and is replayed whole to the next path that fires, which is a different
-    // publisher if the path moved. Subscribe, Publish and PublishRpc re-establish from
-    // their present arguments on the first update after sleep; Write needs the same.
-    // probe: design/review-2026-10-05/repro/sys-net-04.gx (the writes at x = 4, 5, 7, 8
-    // never reach /a and land on /b at x = 10). (sys-net-04)
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.out = TagValue::phantom();
-        match &mut self.dv {
-            Either::Left((_, dv)) => {
-                let dv = dv.clone();
-                NetState::get(ctx).unsubscribe(dv, self.id);
-                self.dv = Either::Right(vec![])
-            }
-            Either::Right(_) => (),
-        }
+        Ok(Box::new(Write {
+            dv: Either::Right(queued),
+            slept: false,
+            out: TagValue::phantom(),
+        }))
     }
 }
 
@@ -222,6 +91,80 @@ impl Write {
             (Value::String(p0), Either::Left((p1, _))) => &**p0 == &**p1,
             _ => false,
         }
+    }
+
+    /// Drop the target; what fires next queues.
+    fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Either::Left((_, dv)) =
+            std::mem::replace(&mut self.dv, Either::Right(vec![]))
+        {
+            NetState::get(ctx).release(dv)
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
+    /// `Left` is a live subscription.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        match &self.dv {
+            Either::Left(_) => Err(PackError::Application(image::NOT_QUIESCENT)),
+            Either::Right(queued) => queued.encode(buf),
+        }
+    }
+
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        from: &mut [Node<R, E>],
+    ) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept);
+        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
+        let (val, val_fired) = seam_arg(ctx, &mut from[1]);
+        // the standing value goes to a new path when nothing queued is newer
+        let mut standing = val_fired;
+        if (woke || path_fired)
+            && let Some(path) = &path
+            && (woke || !self.same_path(path))
+        {
+            self.release(ctx);
+            let Some(p) = as_path(path.clone()) else {
+                let e = errf!(literal!("WriteError"), "invalid path {path:?}");
+                return self.out.set(TagValue::fired(Value::Error(e.into())));
+            };
+            let dv = match NetState::get(ctx).write_target(ctx, p.clone()) {
+                Ok(dv) => dv,
+                Err(e) => {
+                    let e = errf!(literal!("WriteError"), "{e:?}");
+                    return self.out.set(TagValue::fired(Value::Error(e.into())));
+                }
+            };
+            if let Either::Right(q) = &mut self.dv {
+                standing |= q.is_empty() && path_fired;
+                for v in q.drain(..) {
+                    dv.write(v);
+                }
+            }
+            self.dv = Either::Left((p, dv));
+        }
+        if standing && let Some(val) = val {
+            match &mut self.dv {
+                Either::Right(q) => q.push(val),
+                Either::Left((_, dv)) => {
+                    dv.write(val);
+                }
+            }
+        }
+        self.out.ride()
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.release(ctx)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.out = TagValue::phantom();
+        self.slept = true;
+        self.release(ctx)
     }
 }
 
@@ -812,54 +755,45 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
             ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
-        match ((path_fired || woke, val_fired), (&pathv, &val)) {
-            ((true, _), (Some(Value::String(path)), Some(v)))
-                if self.current.as_ref().map(|(p, _)| &**p != path).unwrap_or(true) =>
-            {
-                if let Some((_, id)) = self.current.take() {
-                    NetState::get(ctx).unpublish(id);
+        // a path that moved drops the publication even while the value is
+        // bottom, so the next value goes to the new path
+        if (path_fired || woke)
+            && let Some(Value::String(path)) = &pathv
+            && self.current.as_ref().is_some_and(|(p, _)| &**p != path)
+            && let Some((_, id)) = self.current.take()
+        {
+            NetState::get(ctx).unpublish(id);
+        }
+        if let (Some(Value::String(path)), Some(v)) = (&pathv, &val) {
+            match &self.current {
+                None if path_fired || val_fired || woke => publish!(path, v),
+                Some((_, id)) if val_fired => {
+                    NetState::get(ctx).update_val(id, v.clone())
                 }
-                publish!(path, v)
+                None | Some(_) => (),
             }
-            // CR claude for claude: [bug] A path fire while `v` is bottom matches neither
-            // arm: the arm above needs a value and this one needs a fire of `v`. So
-            // `current` keeps the old path's Val. When `v` fires again, this arm calls
-            // update_val on that Val, so the value is published at the old path, and
-            // the new path is not published until `p` fires again. Either compare the
-            // present path with `current`'s here and republish when they differ, or
-            // drop the publication on every path fire as PublishRpc does (net.rs:1122).
-            // probe: design/review-2026-10-05/repro/sys-net-08.gx (sys-net-08)
-            ((_, true), (Some(Value::String(path)), Some(v))) => match &self.current {
-                Some((_, val)) => NetState::get(ctx).update_val(val, v.clone()),
-                None => publish!(path, v),
-            },
-            _ => (),
         }
         let mut reply = None;
         if self.current.is_some() {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
-                    // CR claude for claude: [bug] When the cast to the on_write parameter
-                    // type fails, cast_value returns an InvalidCast error value, and it
-                    // is stored in `x` and delivered to the callback anyway, so a
-                    // parameter typed i64 (annotated or inferred) holds an error. Any
-                    // netidx client that writes a wrong-typed value (another process on
-                    // the machine-local resolver included) then kills the runtime under
-                    // the JIT (the staging panic at fusion/kernel.rs:243, "graphix
-                    // runtime is dead"), while the node-walk computes with the mistyped
-                    // value and bottoms. A failed cast should reach neither `x` nor the
-                    // callback; answer the writer with the cast error through
-                    // req.send_result instead. PublishRpc's set! casts call arguments
-                    // the same way. probe: design/review-2026-10-05/repro/sys-net-02.gx
-                    // (sys-net-02)
                     let v = match &self.cast_typ {
                         Some(typ) => typ.cast_value(&ctx.env, req.value.clone()),
                         None => req.value.clone(),
                     };
-                    ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-                    ctx.event.variables.insert(self.x, TagValue::fired(v));
-                    reply = req.send_result.take();
+                    // a value the handler cannot take is the writer's error
+                    if let Value::Error(_) = &v
+                        && !matches!(req.value, Value::Error(_))
+                    {
+                        if let Some(reply) = req.send_result.take() {
+                            reply.send(v)
+                        }
+                    } else {
+                        ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
+                        ctx.event.variables.insert(self.x, TagValue::fired(v));
+                        reply = req.send_result.take();
+                    }
                 }
             }
         }

@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use arcstr::literal;
-use bytes::{Buf, BufMut};
+
 use chrono::Utc;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
@@ -12,11 +12,11 @@ use graphix_compiler::{
     typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value,
+    CachedArgs, CachedVals, EvalCached, fast_eval, seam_arg, seam_tick, seam_value,
 };
-use netidx::{publisher::FromValue, subscriber::Value};
+use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
-use std::{ops::SubAssign, time::Duration};
+use std::time::Duration;
 
 /// Drop a timer's private fire id: its timer, its reference and the value
 /// the runtime stored for it, which no one else can read.
@@ -35,6 +35,9 @@ pub(crate) struct AfterIdle {
     /// the timer fires, after the arg's delivery is gone.
     last_v: Option<Value>,
     id: Option<BindId>,
+    /// Set by `sleep`, taken by the next update: the wait starts again
+    /// over the present arguments.
+    slept: bool,
     eid: ExprId,
     out: TagValue,
 }
@@ -55,6 +58,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
             timeout_v: None,
             last_v: None,
             id: None,
+            slept: false,
             eid: top_id,
             out: TagValue::phantom(),
         }))
@@ -72,6 +76,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
             timeout_v,
             last_v,
             id: None,
+            slept: false,
             eid,
             out: TagValue::phantom(),
         }))
@@ -94,6 +99,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
+        let woke = std::mem::take(&mut self.slept);
         let mut timeout_up = false;
         if let Some(tv) = seam_value(from[0].update(ctx)) {
             timeout_up = tv.is_fired();
@@ -105,7 +111,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             self.last_v = Some(tv.value_cloned());
         }
         if let Some(secs) = &self.timeout_v
-            && (timeout_up || val_up)
+            && (timeout_up || val_up || (woke && self.last_v.is_some()))
         {
             if let Some(old) = self.id.take() {
                 release(ctx, old, self.eid);
@@ -151,97 +157,34 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             release(ctx, id, self.eid);
         }
         self.timeout_v = None;
-        self.last_v = None
+        self.last_v = None;
+        self.slept = true;
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Repeat {
-    Yes,
-    No,
-    N(u64),
-}
-
-impl FromValue for Repeat {
-    fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::Bool(true) => Ok(Repeat::Yes),
-            Value::Bool(false) => Ok(Repeat::No),
-            v => match v.cast_to::<u64>() {
-                Ok(n) => Ok(Repeat::N(n)),
-                Err(_) => bail!("could not cast to repeat"),
-            },
-        }
+/// How many fires a timer's `repeat` asks for: `None` forever.
+fn fires(repeat: &Value) -> Option<Option<u64>> {
+    match repeat {
+        Value::Bool(true) => Some(None),
+        Value::Bool(false) => Some(Some(1)),
+        Value::I8(n) if *n < 0 => None,
+        Value::I16(n) if *n < 0 => None,
+        Value::I32(n) | Value::Z32(n) if *n < 0 => None,
+        Value::I64(n) | Value::Z64(n) if *n < 0 => None,
+        v => v.clone().cast_to::<u64>().ok().map(Some),
     }
 }
 
-impl SubAssign<u64> for Repeat {
-    fn sub_assign(&mut self, rhs: u64) {
-        match self {
-            Repeat::Yes | Repeat::No => (),
-            // CR claude for claude: [bug] This subtraction underflows on N(0).
-            // Timer::update's (Some(timeout), Some(repeat)) arm (line 343) schedules
-            // without checking will_repeat(), so timer(d, 0) arms a timer. A count that
-            // drops to 0 while a fire is pending (line 325) also keeps its armed timer,
-            // and in both cases the decrement at line 357 arrives here with 0. A debug
-            // build panics and kills the runtime ("graphix runtime is dead"); a release
-            // build wraps to u64::MAX and fires every period forever, where the gxi
-            // promises n fires. A negative count also fires forever instead of raising
-            // the TimerError its message promises, because from_value's
-            // cast_to::<u64>() wraps -1 to u64::MAX. probe:
-            // design/review-2026-10-05/repro/x-panics-11.gx (x-panics-11)
-            Repeat::N(n) => *n -= rhs,
-        }
-    }
-}
-
-impl Pack for Repeat {
-    fn encoded_len(&self) -> usize {
-        match self {
-            Repeat::Yes | Repeat::No => 1,
-            Repeat::N(n) => 1 + n.encoded_len(),
-        }
-    }
-
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        match self {
-            Repeat::Yes => 0u8.encode(buf),
-            Repeat::No => 1u8.encode(buf),
-            Repeat::N(n) => {
-                2u8.encode(buf)?;
-                n.encode(buf)
-            }
-        }
-    }
-
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        match u8::decode(buf)? {
-            0 => Ok(Repeat::Yes),
-            1 => Ok(Repeat::No),
-            2 => Ok(Repeat::N(u64::decode(buf)?)),
-            _ => Err(PackError::UnknownTag),
-        }
-    }
-}
-
-impl Repeat {
-    fn will_repeat(&self) -> bool {
-        match self {
-            Repeat::No => false,
-            Repeat::Yes => true,
-            Repeat::N(n) => *n > 0,
-        }
-    }
-}
-
+/// `timer(timeout, repeat)`: a run of fires starts whenever either
+/// argument fires, and again at a wake over the present arguments.
 #[derive(Debug)]
 pub(crate) struct Timer {
-    /// The latest raw repeat value — re-cast when a later timeout
-    /// delivery (re)schedules.
-    repeat_v: Option<Value>,
     timeout: Option<Duration>,
-    repeat: Repeat,
+    /// Fires left in this run, `None` forever.
+    left: Option<u64>,
     id: Option<BindId>,
+    /// Set by `sleep`, taken by the next update.
+    slept: bool,
     eid: ExprId,
     out: TagValue,
 }
@@ -258,14 +201,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
         _from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self {
-            repeat_v: None,
-            timeout: None,
-            repeat: Repeat::No,
-            id: None,
-            eid: top_id,
-            out: TagValue::phantom(),
-        }))
+        Ok(Box::new(Self::new(top_id)))
     }
 
     fn image_decode(
@@ -273,30 +209,48 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let repeat_v = Pack::decode(buf)?;
-        let timeout = Pack::decode(buf)?;
-        let repeat = Repeat::decode(buf)?;
-        let eid = ExprId::decode(buf)?;
-        Ok(Box::new(Self {
-            repeat_v,
-            timeout,
-            repeat,
+        Ok(Box::new(Self::new(ExprId::decode(buf)?)))
+    }
+}
+
+impl Timer {
+    fn new(eid: ExprId) -> Self {
+        Self {
+            timeout: None,
+            left: None,
             id: None,
+            slept: false,
             eid,
             out: TagValue::phantom(),
-        }))
+        }
+    }
+
+    fn stop<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Some(id) = self.id.take() {
+            release(ctx, id, self.eid);
+        }
+    }
+
+    /// Arm the next fire of the run, if it has one.
+    fn arm<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.stop(ctx);
+        if let Some(dur) = self.timeout
+            && self.left != Some(0)
+        {
+            let id = BindId::new();
+            self.id = Some(id);
+            ctx.rt.ref_var(id, self.eid);
+            ctx.rt.set_timer(id, dur);
+        }
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
-    /// `id` is an armed runtime timer.
+    /// A run exists only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.id.is_some() {
+        if self.timeout.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.repeat_v.encode(buf)?;
-        self.timeout.encode(buf)?;
-        self.repeat.encode(buf)?;
         self.eid.encode(buf)
     }
 
@@ -305,125 +259,49 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        macro_rules! error {
-            () => {{
-                if let Some(old) = self.id.take() {
-                    release(ctx, old, self.eid);
+        let woke = std::mem::take(&mut self.slept);
+        let (timeout, timeout_fired) = seam_arg(ctx, &mut from[0]);
+        let (repeat, repeat_fired) = seam_arg(ctx, &mut from[1]);
+        if (woke || timeout_fired || repeat_fired)
+            && let (Some(timeout), Some(repeat)) = (timeout, repeat)
+        {
+            match (timeout.cast_to::<Duration>(), fires(&repeat)) {
+                (Ok(dur), Some(left)) => {
+                    self.timeout = Some(dur);
+                    self.left = left;
+                    self.arm(ctx);
                 }
-                self.timeout = None;
-                self.repeat = Repeat::No;
-                return self.out.set(TagValue::fired(err!(
-                    literal!("TimerError"),
-                    "timer(per, rep): expected duration, bool or number >= 0"
-                )));
-            }};
-        }
-        macro_rules! schedule {
-            ($dur:expr) => {{
-                if let Some(old) = self.id.take() {
-                    release(ctx, old, self.eid);
-                }
-                let id = BindId::new();
-                self.id = Some(id);
-                ctx.rt.ref_var(id, self.eid);
-                ctx.rt.set_timer(id, $dur);
-            }};
-        }
-        let new_timeout = match seam_value(from[0].update(ctx)) {
-            Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
-            _ => None,
-        };
-        let mut repeat_up = false;
-        if let Some(tv) = seam_value(from[1].update(ctx)) {
-            repeat_up = tv.is_fired();
-            self.repeat_v = Some(tv.value_cloned());
-        }
-        match (new_timeout, &self.repeat_v, repeat_up) {
-            (None, Some(r), true) => match r.clone().cast_to::<Repeat>() {
-                Err(_) => error!(),
-                Ok(repeat) => {
-                    self.repeat = repeat;
-                    if let Some(dur) = self.timeout {
-                        // CR claude for claude: [bug] A one-shot timer whose repeat arg
-                        // arrives after its timeout never fires. The `(Some(s), None,
-                        // _)` arm only stores the timeout, and this arm arms the timer
-                        // only when `will_repeat()`, which is false for Repeat::No. In
-                        // `timer(100ms, r)` with `r` written 50 ms after init, `false`
-                        // fires 0 times but `1` fires once, though the doc treats them
-                        // the same. With `r` present at init, `false` fires once. This
-                        // arm cannot tell a timeout that was never armed from a
-                        // one-shot already spent, so that needs its own state. probe:
-                        // design/review-2026-10-05/repro/sys-io-12.gx (sys-io-12)
-                        if self.id.is_none() && repeat.will_repeat() {
-                            schedule!(dur)
-                        }
-                    }
-                }
-            },
-            (Some(s), None, _) => match s.cast_to::<Duration>() {
-                Err(_) => error!(),
-                Ok(dur) => self.timeout = Some(dur),
-            },
-            (Some(s), Some(r), _) => {
-                match (s.cast_to::<Duration>(), r.clone().cast_to::<Repeat>()) {
-                    (Err(_), _) | (_, Err(_)) => error!(),
-                    (Ok(dur), Ok(repeat)) => {
-                        self.timeout = Some(dur);
-                        self.repeat = repeat;
-                        schedule!(dur)
-                    }
+                _ => {
+                    self.stop(ctx);
+                    self.timeout = None;
+                    return self.out.set(TagValue::fired(err!(
+                        literal!("TimerError"),
+                        "timer(per, rep): expected duration, bool or number >= 0"
+                    )));
                 }
             }
-            (None, _, _) => (),
         }
-        let res = self
-            .id
-            .and_then(|id| {
-                ctx.event.variables.get(&id).map(|now| (id, now.value_cloned()))
-            })
-            .map(|(id, now)| {
-                release(ctx, id, self.eid);
-                self.id = None;
-                self.repeat -= 1;
-                if let Some(dur) = self.timeout {
-                    if self.repeat.will_repeat() {
-                        schedule!(dur)
-                    }
-                }
-                now
-            });
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
+        let fired =
+            self.id.and_then(|id| ctx.event.variables.get(&id)).map(|t| t.value_cloned());
+        match fired {
+            Some(now) => {
+                self.left = self.left.map(|n| n.saturating_sub(1));
+                self.arm(ctx);
+                self.out.set(TagValue::fired(now))
+            }
             None => self.out.ride(),
         }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(id) = self.id.take() {
-            release(ctx, id, self.eid);
-        }
+        self.stop(ctx)
     }
 
-    // CR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
-    // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
-    // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
-    // fires again, while `timer(duration:3.ms, true)` restarts because constants fire
-    // at the wake. AfterIdle::sleep (line 144) and CachedArgsAsync::sleep
-    // (graphix-package-core/src/lib.rs:936) have the same hole: they reset their output
-    // on the premise that the operation restarts on wake, nothing restarts it over
-    // level arguments, and the arm stays bottom for good (json::read(doc),
-    // sys::fs::read_all(p), after_idle(d, v)). Subscribe and Publish handle this with a
-    // slept bit that makes the first update after sleep act on the present arguments;
-    // these three need the same. Both engines agree, so the fuzzer cannot see it.
-    // Probe: design/review-2026-10-05/repro/x-engine-firing-04.gx. (x-engine-firing-04)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
-        self.repeat_v = None;
         self.timeout = None;
-        self.repeat = Repeat::No;
-        if let Some(id) = self.id.take() {
-            release(ctx, id, self.eid);
-        }
+        self.slept = true;
+        self.stop(ctx)
     }
 }
 
