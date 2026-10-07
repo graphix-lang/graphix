@@ -313,3 +313,19 @@ run!(map_key_mixed_abstract_kinds, MAP_KEY_MIXED_ABSTRACT_KINDS, |v: Result<&Val
         _ => false,
     }
 });
+
+const MAP_UNION_SECOND_WINS: &str = r#"
+{
+  let big = {1 => "a", 2 => "a", 3 => "a", 4 => "a", 5 => "a", 6 => "a", 7 => "a", 8 => "a"};
+  let one = {1 => "b"};
+  let ab = map::union(big, one);
+  let ba = map::union(one, big);
+  let eq = map::union({1 => "a"}, {1 => "b"});
+  "[map::get(ab, 1)$][map::get(ba, 1)$][map::get(eq, 1)$][map::get(ab, 8)$]"
+}
+"#;
+
+run!(map_union_second_wins, MAP_UNION_SECOND_WINS, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) => s == "baba",
+    _ => false,
+});

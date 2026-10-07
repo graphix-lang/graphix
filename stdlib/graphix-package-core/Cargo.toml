@@ -39,6 +39,7 @@ parking_lot = { workspace = true }
 poolshark = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
 triomphe = { workspace = true }
 log = { workspace = true }
 

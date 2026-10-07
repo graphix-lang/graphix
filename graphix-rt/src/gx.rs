@@ -237,6 +237,12 @@ async fn join_or_wait<T: 'static>(
     }
 }
 
+/// A finished task's reply, or nothing when the task died, which is
+/// logged: its reply never comes.
+fn joined<T>(r: result::Result<(BindId, T), JoinError>) -> Option<(BindId, T)> {
+    r.map_err(|e| error!("a runtime task ended without replying: {e}")).ok()
+}
+
 struct CallableInt {
     expr: ExprId,
     args: Box<[BindId]>,
@@ -1150,13 +1156,13 @@ impl<X: GXExt> GX<X> {
             }
             macro_rules! peek {
                 (tasks) => {
-                    while let Some(Ok(up)) = self.ctx.rt.tasks.try_join_next() {
-                        tasks.push(up);
+                    while let Some(r) = self.ctx.rt.tasks.try_join_next() {
+                        tasks.extend(joined(r));
                     }
                 };
                 (custom_tasks) => {
-                    while let Some(Ok(up)) = self.ctx.rt.custom_tasks.try_join_next() {
-                        custom_tasks.push(up);
+                    while let Some(r) = self.ctx.rt.custom_tasks.try_join_next() {
+                        custom_tasks.extend(joined(r));
                     }
                 };
                 (watches) => {
@@ -1221,15 +1227,11 @@ impl<X: GXExt> GX<X> {
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = join_or_wait(&mut self.ctx.rt.tasks) => {
-                    if let Ok(up) = up {
-                        tasks.push(up);
-                    }
+                    tasks.extend(joined(up));
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = join_or_wait(&mut self.ctx.rt.custom_tasks) => {
-                    if let Ok(up) = up {
-                        custom_tasks.push(up);
-                    }
+                    custom_tasks.extend(joined(up));
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = self.ctx.rt.watches.next() => {
