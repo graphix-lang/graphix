@@ -1922,6 +1922,12 @@ impl Type {
     /// when the trait is a constructor trait (`|c: Collection|` ≡
     /// `'c: Collection, c: 'c<'e>`).
     #[doc(hidden)]
+    /// The name of the element a constructor quantifier `q` is applied
+    /// to; a fn type lists it among its quantifiers, so a call copies it.
+    pub fn elem_name(q: &str) -> ArcStr {
+        format_compact!("{q}#elem").as_str().into()
+    }
+
     pub fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
         let hole = env
             .trait_of_ref(tr)
@@ -2413,11 +2419,21 @@ impl Type {
                             };
                             let tv = TVar::empty_generic(name.clone());
                             tv.add_cell_constraint(a.typ.clone());
+                            // a fn type's element is a quantifier, copied per call
+                            let t = match &Type::trait_param(env, tv, tr) {
+                                Type::App(c, _) => {
+                                    let elem = Type::elem_name(&name);
+                                    quantifiers.push(elem.clone());
+                                    let elem = Type::TVar(TVar::empty_generic(elem));
+                                    Type::App(c.clone(), Arc::new(elem))
+                                }
+                                t => t.clone(),
+                            };
                             if !quantifiers.contains(&name) {
                                 quantifiers.push(name);
                             }
                             changed = true;
-                            Type::trait_param(env, tv, tr)
+                            t
                         }
                         t => {
                             let r = t.rewrite_trait_args_int(env)?;
@@ -2439,21 +2455,11 @@ impl Type {
                 changed |= !rtype.ptr_eq_shallow(&ft.rtype);
                 let throws = ft.throws.rewrite_trait_args_int(env)?;
                 changed |= !throws.ptr_eq_shallow(&ft.throws);
-                // CR claude for claude: [bug] The element made here for a `'c:
-                // Collection` quantifier, like Type::trait_param's anonymous element
-                // for a `c: Collection` parameter (line 2168), never joins the fn
-                // type's `quantifiers`, so shared_call and instantiate copy `'c`/`#c`
-                // per call while every call shares the element. The first call through
-                // a rank-2 formal, a `let f: fn(c: Collection) -> i64` or a typedef'd
-                // fn type binds it for all later ones: `|f: fn(c: Collection) -> i64|
-                // (f([1, 2]), f(["x"]))` is refused with `Array<'_N: i64> does not
-                // contain Array<string>`, while a lambda header's element
-                // (node/lambda.rs:1331-1344) is copied per call. Probe:
-                // design/review-2026-10-05/repro/x-diff-types-05.gx. (x-diff-types-05)
                 let ctors = ctor_quantifiers(ft, env);
                 if !changed && ctors.is_empty() {
                     return Ok(self.clone());
                 }
+                quantifiers.extend(ctors.iter().map(|(q, _)| Type::elem_name(q)));
                 let ft = FnType {
                     args: Arc::from_iter(args.drain(..)),
                     vargs,
@@ -2634,10 +2640,7 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
             && !cons.is_empty()
             && cons.iter().all(|c| Type::is_ctor_trait_bound(env, c))
         {
-            let elem = Type::TVar(TVar::empty_named(
-                format_compact!("{q}#elem").as_str().into(),
-            ));
-            out.push((q.clone(), elem));
+            out.push((q.clone(), Type::TVar(TVar::empty_generic(Type::elem_name(q)))));
         }
     }
     out

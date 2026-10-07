@@ -422,3 +422,17 @@ run!(nested_mixed_types, NESTED_MIXED_TYPES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(9))
 ); FuseExpect::Jit);
+
+// A trait-typed parameter of a fn type takes a fresh element at each
+// call, so a rank-2 formal applies to collections of two element types.
+run!(
+    collection_rank2_elements_per_call,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
+    "/test.gx" => r#"
+        use Collection::*;
+        let n = |c: Collection| fold(c, 0, |acc, x| acc + 1);
+        let apply = |f: fn(c: Collection) -> i64| (f([1, 2]), f(["x"]));
+        let (a, b) = apply(n);
+        let result = a * 10 + b
+    "#
+);

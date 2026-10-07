@@ -2005,7 +2005,7 @@ const FORWARD_MAYBE_CYCLE: &str = r#"
 
 run!(forward_maybe_cycle, FORWARD_MAYBE_CYCLE, refused("refers back to itself"); FuseExpect::None);
 
-/// A renaming import is the type it names.
+// A renaming import is the type it names.
 run!(
     renamed_alias_cycle,
     refused("refers back to itself"),
@@ -2061,7 +2061,7 @@ const UNDEFINED_TYPE_SITED: &str = r#"{
 
 run!(undefined_type_sited, UNDEFINED_TYPE_SITED, refused("undefined type NoSuch at line: 2"); FuseExpect::None);
 
-/// A type name two globs provide is ambiguous, as a value's is.
+// A type name two globs provide is ambiguous, as a value's is.
 run!(
     ambiguous_glob_type,
     refused("`T` is ambiguous: both"),
