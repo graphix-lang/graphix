@@ -378,7 +378,7 @@ impl<X: GXExt> Callable<X> {
             .0
             .tx
             .send(ToGX::Call { id: self.id, args, answered })
-            .map_err(|_| anyhow!("runtime is dead"))
+            .map_err(|_| self.rt.stopped("runtime is dead"))
     }
 
     /// Call the lambda with args. Argument types and arity will NOT
@@ -677,8 +677,20 @@ impl<X: GXExt> GXHandle<X> {
 
     async fn exec<R, F: FnOnce(oneshot::Sender<R>) -> ToGX<X>>(&self, f: F) -> Result<R> {
         let (tx, rx) = oneshot::channel();
-        self.0.tx.send(f(tx)).map_err(|_| anyhow!("runtime is dead"))?;
-        Ok(rx.await.map_err(|_| anyhow!("runtime did not respond"))?)
+        self.0.tx.send(f(tx)).map_err(|_| self.stopped("runtime is dead"))?;
+        Ok(rx.await.map_err(|_| self.stopped("runtime did not respond"))?)
+    }
+
+    /// Why the runtime stopped, when its stack budget stopped it, else
+    /// `what`.
+    pub fn stopped(&self, what: &'static str) -> anyhow::Error {
+        if self.budget_aborted() {
+            anyhow!(
+                "the runtime exceeded its stack budget (GRAPHIX_STACK_BUDGET) and stopped"
+            )
+        } else {
+            anyhow!(what)
+        }
     }
 
     /// Get a copy of the current graphix environment
@@ -876,7 +888,7 @@ impl<X: GXExt> GXHandle<X> {
         self.0
             .tx
             .send(ToGX::TraceStart { max_events, max_cycles })
-            .map_err(|_| anyhow!("runtime is dead"))
+            .map_err(|_| self.stopped("runtime is dead"))
     }
 
     /// Wait until the runtime goes idle or a trace cap trips, then take
@@ -955,7 +967,7 @@ impl<X: GXExt> GXHandle<X> {
     /// as`Ref::set` and `TRef::set`
     pub fn set<T: Into<Value>>(&self, id: BindId, v: T) -> Result<()> {
         let v = v.into();
-        self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
+        self.0.tx.send(ToGX::Set { id, v }).map_err(|_| self.stopped("runtime is dead"))
     }
 
     /// Write `v` through the reference `cell` (`*r <- v`): a place patches
@@ -963,7 +975,10 @@ impl<X: GXExt> GXHandle<X> {
     /// the cell.
     pub fn set_deref<T: Into<Value>>(&self, cell: BindId, v: T) -> Result<()> {
         let v = v.into();
-        self.0.tx.send(ToGX::SetDeref { cell, v }).map_err(|_| anyhow!("runtime is dead"))
+        self.0
+            .tx
+            .send(ToGX::SetDeref { cell, v })
+            .map_err(|_| self.stopped("runtime is dead"))
     }
 
     /// Set several variables atomically: every update is delivered to
@@ -980,7 +995,7 @@ impl<X: GXExt> GXHandle<X> {
         self.0
             .tx
             .send(ToGX::SetMany { sets: batch })
-            .map_err(|_| anyhow!("runtime is dead"))
+            .map_err(|_| self.stopped("runtime is dead"))
     }
 
     /// Call a callable by id with the given arguments
@@ -991,7 +1006,7 @@ impl<X: GXExt> GXHandle<X> {
         self.0
             .tx
             .send(ToGX::Call { id, args, answered: false })
-            .map_err(|_| anyhow!("runtime is dead"))
+            .map_err(|_| self.stopped("runtime is dead"))
     }
 }
 

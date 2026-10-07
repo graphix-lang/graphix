@@ -73,14 +73,6 @@ pub fn set_stack_budget(bytes: usize) {
 /// the one exit for both the node-walk and the kernel stack check.
 #[doc(hidden)]
 pub fn budget_abort() {
-    // CR claude for claude: [bug] A budget abort is reported only here, and the shell
-    // writes the log only under --log-dir with RUST_LOG set. The user sees "Error:
-    // runtime did not respond" (graphix-rt/src/lib.rs:681, a request pending when the
-    // run loop stopped) or "Error: graphix runtime is dead"
-    // (graphix-shell/src/lib.rs:472), exit 1, and nothing in the shell reads
-    // GXHandle::budget_aborted. Those errors should name the stack budget when
-    // control.budget_aborted() is set. probe: GRAPHIX_STACK_BUDGET=64M graphix
-    // --no-cache --no-fusion design/review-2026-10-05/repro/t-misc-05.gx (t-misc-05)
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
          (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",

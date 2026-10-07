@@ -569,7 +569,7 @@ impl<X: GXExt> Shell<X> {
                     break 'repl Ok(Some(code))
                 },
                 batch = from_gx.recv() => match batch {
-                    None => bail!("graphix runtime is dead"),
+                    None => return Err(gx.stopped("graphix runtime is dead")),
                     Some(mut batch) => {
                         for e in batch.drain(..) {
                             match e {
