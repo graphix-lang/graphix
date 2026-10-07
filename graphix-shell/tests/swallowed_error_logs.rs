@@ -36,6 +36,7 @@ fn run(program: &str, no_fusion: bool, label: &str) -> (String, String) {
     let path = dir.join("swallow.gx");
     fs::write(&path, program).expect("write program");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
+    cmd.arg("--no-cache");
     if no_fusion {
         cmd.arg("--no-fusion");
     }

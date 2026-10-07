@@ -16,25 +16,12 @@ use std::{
 /// inside the shell's env load, before the input loop exists.
 const FIRST_CYCLE_WEDGE: &str = "{ let rec f = |v: i64| -> i64 f(v + i64:1); f(i64:0) }";
 
-/// Wedges only after producing a few values, so the wedge lands while
-/// the input loop is live.
-// CR claude for claude: [test-gap] This program never wedges. Each `s <- fold(..)` lands
-// next cycle and adds one activation, so every cycle completes and it keeps printing
-// `0` (about 1500 lines in 7 s) in both engines. A script that is not wedged exits on
-// the first SIGINT through the input loop's ctrl_c path whether or not the interrupt
-// works, and `alive` at 6 s holds only because the program never ends. So neither
-// later-cycle test pins that SIGINT frees a cycle spinning after the input loop is
-// live, nor the exit path's interrupt-before-clear order. A timer-gated wedge does: `{
-// let x = i64:0; x <- sys::time::timer(duration:1.s, false) ~ i64:1; let rec f = |n:
-// i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; f(x) }` prints one value,
-// spins at 100% CPU, and one SIGINT frees it in both engines. Assert that no new output
-// arrives while it is alive, and signal soon after the wedge, since the node-walk grows
-// about 450 MB/s. (tests-shell-compiler-06)
-const LATER_CYCLE_WEDGE: &str = "{let x = array::iter([i64:1, i64:2, i64:3, i64:4]); \
-     let m = x / i64:3; \
-     let rec f = |n: i64| -> i64 select n {i64:0 => i64:0, \
-     _ => f({let s = i64:0; s <- array::fold([i64:1, i64:2, i64:3], i64:0, |a, e| a + e); s})}; \
-     f(m)}";
+/// Prints one value, then a timer moves `x` and the recursion spins
+/// inside a later cycle, while the input loop is live.
+const LATER_CYCLE_WEDGE: &str = "{ let x = i64:0; \
+     x <- sys::time::timer(duration:1.s, false) ~ i64:1; \
+     let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n + i64:1) }; \
+     f(x) }";
 
 fn sigint(child: &Child) {
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
@@ -52,8 +39,9 @@ fn exited_within(child: &mut Child, budget: Duration) -> bool {
     false
 }
 
-fn spawn(path: &std::path::Path, no_fusion: bool) -> Child {
+fn spawn(path: &std::path::Path, out: fs::File, no_fusion: bool) -> Child {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
+    cmd.arg("--no-cache");
     if no_fusion {
         cmd.arg("--no-fusion");
     }
@@ -61,25 +49,40 @@ fn spawn(path: &std::path::Path, no_fusion: bool) -> Child {
     cmd.arg("--no-netidx")
         .arg(path)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(out)
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn graphix")
 }
 
-fn interrupt_frees_process(program: &str, no_fusion: bool, label: &str) {
+/// Run `program` until `wedged_after`, check it is alive and printing
+/// nothing more, then SIGINT it and require it to exit.
+fn interrupt_frees_process(
+    program: &str,
+    no_fusion: bool,
+    label: &str,
+    wedged_after: Duration,
+) {
     let dir =
         std::env::temp_dir().join(format!("gx-wedge-{}-{}", std::process::id(), label));
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("wedge.gx");
     fs::write(&path, program).expect("write program");
-    let mut child = spawn(&path, no_fusion);
+    let out = dir.join("out");
+    let mut child = spawn(&path, fs::File::create(&out).expect("output file"), no_fusion);
     // If it has already exited it is not wedging and the test proves nothing.
-    thread::sleep(Duration::from_secs(6));
+    thread::sleep(wedged_after);
     let alive = child.try_wait().expect("try_wait").is_none();
     assert!(
         alive,
         "{label}: program exited on its own — it is not a wedge, so this test is vacuous"
+    );
+    let printed = fs::metadata(&out).expect("output").len();
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        fs::metadata(&out).expect("output").len(),
+        printed,
+        "{label}: the program is still printing, so it is not wedged"
     );
     // Two signals, as a user would: cancel, then exit.
     sigint(&child);
@@ -98,20 +101,40 @@ fn interrupt_frees_process(program: &str, no_fusion: bool, label: &str) {
 
 #[test]
 fn interrupt_frees_first_cycle_wedge_jit() {
-    interrupt_frees_process(FIRST_CYCLE_WEDGE, false, "first-cycle/jit");
+    interrupt_frees_process(
+        FIRST_CYCLE_WEDGE,
+        false,
+        "first-cycle/jit",
+        Duration::from_secs(6),
+    );
 }
 
 #[test]
 fn interrupt_frees_first_cycle_wedge_interp() {
-    interrupt_frees_process(FIRST_CYCLE_WEDGE, true, "first-cycle/interp");
+    interrupt_frees_process(
+        FIRST_CYCLE_WEDGE,
+        true,
+        "first-cycle/interp",
+        Duration::from_secs(6),
+    );
 }
 
 #[test]
 fn interrupt_frees_later_cycle_wedge_jit() {
-    interrupt_frees_process(LATER_CYCLE_WEDGE, false, "later-cycle/jit");
+    interrupt_frees_process(
+        LATER_CYCLE_WEDGE,
+        false,
+        "later-cycle/jit",
+        Duration::from_secs(2),
+    );
 }
 
 #[test]
 fn interrupt_frees_later_cycle_wedge_interp() {
-    interrupt_frees_process(LATER_CYCLE_WEDGE, true, "later-cycle/interp");
+    interrupt_frees_process(
+        LATER_CYCLE_WEDGE,
+        true,
+        "later-cycle/interp",
+        Duration::from_secs(2),
+    );
 }

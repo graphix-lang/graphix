@@ -9,6 +9,7 @@ use graphix_shell::{Mode, ShellBuilder};
 
 async fn check(src: &str) -> Result<()> {
     ShellBuilder::<NoExt>::default()
+        .no_cache(true)
         .mode(Mode::Check(Source::Internal(src.into())))
         .build()?
         .check()

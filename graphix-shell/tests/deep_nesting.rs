@@ -189,6 +189,7 @@ fn run_child(shape: &str, depth: usize) {
         .expect("runtime");
     let r = rt.block_on(async {
         ShellBuilder::<NoExt>::default()
+            .no_cache(true)
             .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
             // CR claude for claude: [test-gap] Every shape runs through Mode::Check. That
             // is the check alone (CFlag::CheckOnly: no instance typing, elaboration,

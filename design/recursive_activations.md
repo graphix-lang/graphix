@@ -17,7 +17,7 @@ Pins: `lang/functions.rs` (`tail_stateful_per_iteration`,
 `lib_tests/lift.rs` (`recursion_shrink_deletes_unreached_activations`,
 `fused_recursion_sheds_unreached_blocks`),
 `graphix-shell/tests/recursion_memory.rs`,
-`graphix-shell/tests/check_runs_analyze.rs`,
+`graphix-shell/tests/check_leaves_assertions_to_the_build.rs`,
 `bench/collection/README.md`
 Supersedes: transient_recursion, interp_lazy_bind_cost
 
@@ -481,7 +481,7 @@ a 1000-element list aborted the process. Two rules:
 it — so `--check` rejects a false `#[tail_recursive]` with analysis's
 own message and `GXDBG_EFFECT=1 --check` prints the effect facts. The
 analyze call used to sit only at `compile()`'s tail, past where the
-check path stopped (`check_runs_analyze.rs`).
+check path stopped (`check_leaves_assertions_to_the_build.rs`).
 
 ## 11. The pressure tests
 

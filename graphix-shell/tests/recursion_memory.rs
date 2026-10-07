@@ -23,6 +23,7 @@ fn deep_recursion_memory_is_linear() {
         env::temp_dir().join(format!("recursion_memory_{}.gx", std::process::id()));
     fs::write(&path, program).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_graphix"))
+        .arg("--no-cache")
         .arg("--no-fusion")
         .arg(&path)
         .stdin(Stdio::null())

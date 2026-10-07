@@ -9,7 +9,7 @@
 //! (`"|^acc, x| acc"`). Fixtures are ASCII.
 
 use graphix_lsp::uri::{path_to_uri, uri_to_path};
-use lsp_server::{Connection, Message, Notification, Request, RequestId};
+use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     notification::{self as notif, Notification as _},
     request as req, *,
@@ -144,25 +144,21 @@ impl Client {
         self.conn.sender.send(Message::Notification(n)).unwrap();
     }
 
-    pub fn request<R: req::Request>(&mut self, params: R::Params) -> R::Result {
+    /// Send a request and wait for its response, recording the
+    /// diagnostics published meanwhile.
+    fn exchange(&mut self, method: &str, params: serde_json::Value) -> Response {
         self.next_id += 1;
         let id = RequestId::from(self.next_id);
-        let r = Request::new(id.clone(), R::METHOD.to_string(), params);
+        let r = Request { id: id.clone(), method: method.into(), params };
         self.conn.sender.send(Message::Request(r)).unwrap();
         loop {
             let msg = self
                 .conn
                 .receiver
                 .recv_timeout(TIMEOUT)
-                .unwrap_or_else(|e| panic!("no response to {}: {e}", R::METHOD));
+                .unwrap_or_else(|e| panic!("no response to {method}: {e}"));
             match msg {
-                Message::Response(r) if r.id == id => {
-                    if let Some(e) = r.error {
-                        panic!("{} failed: {}", R::METHOD, e.message)
-                    }
-                    let v = r.result.unwrap_or(serde_json::Value::Null);
-                    return serde_json::from_value(v).unwrap();
-                }
+                Message::Response(r) if r.id == id => return r,
                 Message::Notification(n)
                     if n.method == notif::PublishDiagnostics::METHOD =>
                 {
@@ -176,32 +172,21 @@ impl Client {
         }
     }
 
+    pub fn request<R: req::Request>(&mut self, params: R::Params) -> R::Result {
+        let r = self.exchange(R::METHOD, serde_json::to_value(params).unwrap());
+        if let Some(e) = r.error {
+            panic!("{} failed: {}", R::METHOD, e.message)
+        }
+        serde_json::from_value(r.result.unwrap_or(serde_json::Value::Null)).unwrap()
+    }
+
     /// A request with arbitrary params: the error message, if refused.
-    // CR claude for claude: [structure] raw_request repeats request's receive loop but
-    // drops publishDiagnostics. The server flushes dirty roots before answering a
-    // request, so a raw_request after an edit swallows that check's diagnostics and a
-    // later files_with_diagnostics() reads stale state. warnings() and underlined()
-    // also carry the same offset closure: share one receive-until-response loop that
-    // records diagnostics, and one offset fn. A clean first check publishes nothing
-    // (graphix-lsp/src/state.rs:191-199), so files_with_diagnostics() == [] cannot tell
-    // checked-clean from never-checked, and stdlib_packages_check rests on that alone.
-    // Have it also assert something only a finished check answers, such as document
-    // symbols for mod.gx. (tests-shell-compiler-15)
     pub fn raw_request(
         &mut self,
         method: &str,
         params: serde_json::Value,
     ) -> Option<String> {
-        self.next_id += 1;
-        let id = RequestId::from(self.next_id);
-        let r = Request { id: id.clone(), method: method.into(), params };
-        self.conn.sender.send(Message::Request(r)).unwrap();
-        loop {
-            match self.conn.receiver.recv_timeout(TIMEOUT).expect("a response") {
-                Message::Response(r) if r.id == id => return r.error.map(|e| e.message),
-                _ => (),
-            }
-        }
+        self.exchange(method, params).error.map(|e| e.message)
     }
 
     pub fn open(&mut self, file: &str) {
@@ -286,16 +271,12 @@ impl Client {
     /// The warnings standing on `file`: (underlined text, message).
     pub fn warnings(&mut self, file: &str) -> Vec<(String, String)> {
         let text = self.text(file);
-        let offset = |p: Position| {
-            let line: usize =
-                text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
-            line + p.character as usize
-        };
         let warnings = self.standing(file, DiagnosticSeverity::WARNING);
         warnings
             .iter()
             .map(|d| {
-                let under = &text[offset(d.range.start)..offset(d.range.end)];
+                let under =
+                    &text[offset(&text, d.range.start)..offset(&text, d.range.end)];
                 (under.to_string(), d.message.clone())
             })
             .collect()
@@ -305,15 +286,12 @@ impl Client {
     pub fn underlined(&mut self, file: &str) -> Vec<String> {
         self.sync();
         let text = self.text(file);
-        let offset = |p: Position| {
-            let line: usize =
-                text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
-            line + p.character as usize
-        };
         let diags = self.diagnostics.get(file).map(|d| d.as_slice()).unwrap_or(&[]);
         diags
             .iter()
-            .map(|d| text[offset(d.range.start)..offset(d.range.end)].to_string())
+            .map(|d| {
+                text[offset(&text, d.range.start)..offset(&text, d.range.end)].to_string()
+            })
             .collect()
     }
 
@@ -427,4 +405,11 @@ impl Drop for Client {
         self.notify::<notif::Exit>(());
         self.server.take().unwrap().join().unwrap().unwrap();
     }
+}
+
+/// The byte offset of `p` in `text`.
+fn offset(text: &str, p: Position) -> usize {
+    let line: usize =
+        text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
+    line + p.character as usize
 }

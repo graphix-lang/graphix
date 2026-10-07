@@ -86,25 +86,24 @@ fn check(
 }
 
 /// The expressions of a file: a program's, or an interface's trait
-/// defaults; `None` for a file that does not parse on its own (an example
-/// may be a snippet).
-fn file_exprs(path: &Path, text: &ArcStr) -> Option<Vec<Expr>> {
+/// defaults.
+fn file_exprs(path: &Path, text: &ArcStr) -> anyhow::Result<Vec<Expr>> {
     let ori = Origin {
         parent: None,
         source: Source::File(path.to_owned()),
         text: text.clone(),
     };
     if path.extension().is_some_and(|e| e == "gxi") {
-        let sig = parser::parse_sig(ori).ok()?;
+        let sig = parser::parse_sig(ori)?;
         let defaults = sig.items.iter().flat_map(|si| match &si.kind {
             SigKind::Trait(t) => {
                 t.methods.iter().filter_map(|m| m.default.clone()).collect()
             }
             _ => vec![],
         });
-        Some(defaults.collect())
+        Ok(defaults.collect())
     } else {
-        Some(parser::parse(ori).ok()?.to_vec())
+        Ok(parser::parse(ori)?.to_vec())
     }
 }
 
@@ -127,15 +126,8 @@ fn every_span_reads_back_as_its_node() {
         (f, text)
     });
     for (file, text) in texts.chain([fixture]) {
-        // CR claude for claude: [test-gap] A file that does not parse is skipped without
-        // a word, and the floors cannot notice: files.len() counts files found, not
-        // files parsed. All 344 corpus files parse and all 122 examples type-check
-        // today, so the skip tolerates nothing real and can only hide a parser
-        // regression (bench/ has no other parse gate). Make a parse failure a test
-        // failure, drop file_exprs' note that 'an example may be a snippet', and
-        // correct CLAUDE.md's 'Some are snippets that reference undefined names on
-        // purpose'. (tests-shell-compiler-13)
-        let Some(exprs) = file_exprs(&file, &text) else { continue };
+        let exprs = file_exprs(&file, &text)
+            .unwrap_or_else(|e| panic!("{} does not parse: {e:#}", file.display()));
         let mut found = vec![];
         for top in exprs.iter() {
             checked += check(&text, top, None, &mut found);

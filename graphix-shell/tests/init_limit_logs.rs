@@ -24,6 +24,7 @@ fn oversize_init_logs_once() {
     let path = dir.join("init.gx");
     fs::write(&path, PROGRAM).expect("write program");
     let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
+        .arg("--no-cache")
         .arg("--no-fusion")
         .arg("--no-netidx")
         .arg("--log-dir")

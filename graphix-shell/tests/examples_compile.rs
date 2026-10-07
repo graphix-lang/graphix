@@ -1,9 +1,13 @@
-//! Compile-check every example program under `book/src/examples`
-//! against the full shell environment, as `graphix --check` would.
+//! Build every example program under `book/src/examples` and every
+//! bench program against the full shell environment, as `graphix
+//! --expand` does: checked, elaborated and fused, never run.
 
 use anyhow::{Context, Result};
 use futures::{StreamExt, stream};
-use graphix_compiler::expr::{FilesResolver, Source};
+use graphix_compiler::{
+    CFlag,
+    expr::{FilesResolver, Source},
+};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use std::{
@@ -44,52 +48,19 @@ fn example_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-// CR claude for claude: [test-gap] Mode::Check is the check alone (CFlag::CheckOnly): the
-// examples get typecheck0 and its settle but no elaboration, analysis or fusion, and no
-// other test builds them. An example that elaboration refuses after the check accepted
-// it (a type-system bug by CLAUDE.md), or one whose fusion link panics, ships with this
-// test green. Also build each example without running it. CFlag::ExpandSeq is today's
-// only build-without-run path (all 122 build that way in about 12 s with the debug
-// binary); a build-only flag would also do. (tests-shell-compiler-14)
 #[tokio::test(flavor = "multi_thread")]
 async fn examples_compile() -> Result<()> {
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../book/src/examples");
-    let files = example_files(&examples)?;
-    assert!(
-        files.len() >= 100,
-        "examples dir looks wrong: only {} files under {}",
-        files.len(),
-        examples.display()
-    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = example_files(&root.join("book/src/examples"))?;
+    assert!(files.len() >= 100, "examples dir looks wrong: only {} files", files.len());
+    files.extend(example_files(&root.join("bench"))?);
     let failures: Vec<String> = stream::iter(files)
         .map(|f| async move {
             let base = f.parent().expect("example has a parent dir").to_path_buf();
-            // CR claude for claude: [risk] This shell uses the developer's real image
-            // cache, as do those in check_mode_parity, check_numeric_singleton,
-            // check_runs_analyze, check_whole_script and the deep_nesting children.
-            // init_limit_logs, swallowed_error_logs, interrupt_wedge and
-            // recursion_memory spawn graphix without --no-cache. Every store removes
-            // every other build id's directory (graphix-shell/src/cache.rs:200-205), so
-            // a test run wipes the installed graphix's warm entries and other
-            // worktrees'. Whether a test compiles cold or restores an image then
-            // depends on earlier runs; recursion_memory's peak RSS includes an image
-            // encode only when cold. Set .no_cache(true) as import_cycle.rs does and
-            // pass --no-cache to spawned binaries, or point XDG_CACHE_HOME at the
-            // test's temp dir where cold versus warm should be explicit.
-            // (tests-shell-compiler-11)
             let r = ShellBuilder::<NoExt>::default()
+                .no_cache(true)
                 .module_resolvers(vec![FilesResolver::new(base, None)])
-                // CR claude for claude: [test-gap] Mode::Check runs the check alone
-                // (CFlag::CheckOnly), with no elaboration and no fusion. So an example
-                // that elaboration refuses, or a failing def assertion, still passes.
-                // bench/*.gx and bench/collection/*.gx are only parsed
-                // (graphix-compiler/tests/expr_spans.rs:118), so nothing guards
-                // par_symbolic.gx's `#[parallel]`: `--check` accepts `#[parallel] x +
-                // 1`, which `--expand` refuses. All 163 example and bench programs
-                // build under --expand today; compile them here through that build path
-                // (elaborate and fuse, no run). book/src/examples/README.md:25-28 and
-                // CLAUDE.md:840-842 still say some examples reference undefined names,
-                // which this test forbids. (examples-11)
+                .enable_flags(CFlag::ExpandSeq.into())
                 .mode(Mode::Check(Source::File(f.clone())))
                 .build()
                 .expect("building shell")

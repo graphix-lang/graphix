@@ -11,6 +11,7 @@ mod dense_deltas;
 mod errors;
 mod functions;
 mod fusion;
+mod fusion_parity;
 mod image;
 mod inference;
 mod interfaces;

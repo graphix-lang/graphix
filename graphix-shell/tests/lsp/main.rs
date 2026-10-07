@@ -497,6 +497,8 @@ fn stdlib_packages_check() {
         let mut c = Client::start_in_repo(&format!("stdlib/{name}"));
         c.open("src/graphix/mod.gx");
         assert_eq!(c.files_with_diagnostics(), Vec::<String>::new(), "{name}");
+        // only a finished check answers this; a clean check publishes nothing
+        assert!(!c.symbols("src/graphix/mod.gx").is_empty(), "{name}: no symbols");
         checked += 1;
     }
     assert!(checked >= 20, "{checked}");

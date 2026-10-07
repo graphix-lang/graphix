@@ -236,7 +236,7 @@ impl RegistrationCache {
         // directory, so executables that share the cache evict each other and
         // alternating runs always start cold. That covers a dev and a quick graphix,
         // two standalone package builds, and every `cargo test`: its ShellBuilder tests
-        // (check_runs_analyze.rs, examples_compile.rs) write under their own build ids
+        // (check_leaves_assertions_to_the_build.rs, examples_compile.rs) write under their own build ids
         // and delete the user's graphix entries. Within one build id nothing is
         // collected: each edit of a script adds a program entry holding the whole
         // session (1.5 MB for a one-line script, debug build).
@@ -244,7 +244,7 @@ impl RegistrationCache {
         // collected. Collect by recency instead (touch an entry on load, remove what
         // has gone unused longest past a bound), and give the tests a cache directory
         // of their own. probe: a registration/<other-id>/ directory is gone after one
-        // cold run of graphix or of the check_runs_analyze test executable; four
+        // cold run of graphix or of the check_leaves_assertions_to_the_build test executable; four
         // one-line edits of a script left four 1.5 MB program entries. (x-image-08)
         if let Ok(entries) = fs::read_dir(&self.root) {
             for entry in entries.flatten() {
