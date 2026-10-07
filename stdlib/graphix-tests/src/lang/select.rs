@@ -1950,12 +1950,11 @@ const SELECT_SIBLING_BINDS_SPENT: &str = r#"
   };
   let e: Ev = never();
   let out = handle(e);
-  let t1 = sys::time::timer(duration:0.05s, false);
-  e <- t1 ~ `Key(`Enter);
-  let t2 = sys::time::timer(duration:0.15s, false);
-  screen <- t2 ~ 1;
-  let t3 = sys::time::timer(duration:0.3s, false);
-  t3 ~ (screen, seen, fired)
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  e <- select step { 1 => `Key(`Enter), _ => never() };
+  screen <- select step { 4 => 1, _ => never() };
+  select step { 8 => (screen, seen, fired), _ => never() }
 }
 "#;
 
@@ -2052,12 +2051,11 @@ const LET_SIBLING_BINDS_SPENT: &str = r#"
     0 => seen <- a ~ (seen + 1),
     _ => fired <- b ~ (fired + 1)
   };
-  let t1 = sys::time::timer(duration:0.05s, false);
-  pair <- t1 ~ (1, 2);
-  let t2 = sys::time::timer(duration:0.15s, false);
-  screen <- t2 ~ 1;
-  let t3 = sys::time::timer(duration:0.3s, false);
-  t3 ~ (screen, seen, fired)
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  pair <- select step { 1 => (1, 2), _ => never() };
+  screen <- select step { 4 => 1, _ => never() };
+  select step { 8 => (screen, seen, fired), _ => never() }
 }
 "#;
 

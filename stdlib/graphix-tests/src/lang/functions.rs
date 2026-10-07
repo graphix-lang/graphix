@@ -1976,33 +1976,22 @@ run!(null_callee_is_bottom, NULL_CALLEE_IS_BOTTOM, |v: Result<&Value>| {
 // for a non-tail call: the loop does not keep the previous value. `obs`
 // is written only by a value, so it stays null while the result is
 // bottom.
-// CR claude for claude: [risk] This fixture orders its events with wall-clock timers and
-// passes only while t1 (30 ms) lands at least three cycles before t2 (60 ms). The
-// runtime puts every completed timer into one cycle (graphix-rt/src/gx.rs:1029). So if
-// the runtime thread stalls across the 30 ms gap (a loaded parallel run; par and
-// jit_par also wait on the shared eval pool at every fork), `t2 ~ obs` reads obs before
-// it is written and the test fails with [null, null]. select_sibling_binds_spent and
-// let_sibling_binds_spent (select.rs:1885, 2002) depend on a 100 ms gap the same way
-// and fail with (1, 0, 1). Drive the events with a step counter, as
-// arm_sampled_write_keeps_trigger does; rewritten that way, all three give the expected
-// values in all four modes. probe: design/review-2026-10-05/repro/tests-lang-a-02.sh
-// (freezes the runtime with SIGSTOP for 35 ms or 120 ms across the gap).
-// (tests-lang-a-02)
 const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 {
   let rec f = |n: i64, x: i64, k: i64| -> i64 select n {
     0 => x,
     _ => f(n - 1, select n { m if m == k => null$, _ => x }, k)
   };
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
   let k = 2;
-  let t1 = sys::time::timer(duration:0.03s, false);
-  k <- t1 ~ 9;
+  k <- select step { 3 => 9, _ => never() };
   let r = f(3, 7, k);
   let obs: [i64, null] = null;
   obs <- r;
-  let t0 = sys::time::timer(duration:0.015s, false);
-  let t2 = sys::time::timer(duration:0.06s, false);
-  (t0 ~ obs, t2 ~ obs)
+  let first: [i64, null] = never();
+  first <- select step { 1 => obs, _ => never() };
+  select step { 6 => (first, obs), _ => never() }
 }
 "#;
 
