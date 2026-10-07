@@ -2219,3 +2219,14 @@ run!(quantified_typedef_takes_poly, QUANTIFIED_TYPEDEF_TAKES_POLY, |v: Result<
     v,
     Ok(Value::F64(1.5))
 ));
+
+/// A cast through a typedef whose params grow over one value ends.
+const CAST_GROWING_TYPEDEF: &str = r#"
+{
+    type W<'a> = [Array<W<Array<'a>>>, null];
+    let r = cast<W<i64>>("x");
+    select r { error as _ => true, _ => false }
+}
+"#;
+
+run!(cast_growing_typedef, CAST_GROWING_TYPEDEF, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);

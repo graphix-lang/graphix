@@ -117,6 +117,27 @@ fn cast_elts<T>(
 /// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
 type RefKey = (usize, Arc<[Type]>);
 
+/// The nodes in `ts`.
+fn params_size(ts: &[Type]) -> usize {
+    fn go(t: &Type, n: &mut usize) {
+        *n += 1;
+        ensure_sufficient(|| t.for_each_child(&mut |c| go(c, n)))
+    }
+    let mut n = 0;
+    ts.iter().for_each(|t| go(t, &mut n));
+    n
+}
+
+/// An `is_a` walk's state: the references on its path with the value
+/// each met, and each reference's expansion, made once a walk. Within a
+/// walk a reference is its definition and its params' allocation, and
+/// the expansions held keep those allocations alive.
+#[derive(Default)]
+struct IsAHist {
+    path: AHashSet<((usize, usize), usize)>,
+    expanded: AHashMap<(usize, usize), (Arc<[Type]>, Option<Type>)>,
+}
+
 fn ref_key(tr: &TypeRef) -> Option<RefKey> {
     tr.def_key().map(|k| (k, tr.params.clone()))
 }
@@ -682,23 +703,17 @@ impl Type {
                     Ok(t) => t,
                     Err(_) => return Err(self.cast_fail("undefined type", v)),
                 };
-                // CR claude for claude: [bug] The key includes the reference's params.
-                // The Array, List and Error arms wrap a value of the wrong shape by
-                // casting the same value to the element type, so a typedef whose params
-                // grow as it recurses (`type W<'a> = [Array<W<Array<'a>>>, null]`)
-                // meets the same value under a new key at every level, and this guard
-                // never fires. `cast<W<i64>>("x")` then recurses forever, and memory
-                // grows until the process is killed; the stack budget's abort does not
-                // stop it because the cast never polls, and a typed read of external
-                // data (`json::read("\"x\"")` as `W<i64>`) hangs the same way.
-                // `check_cast` and `holds_ref` key by `ShapeKey` for this kind of
-                // typedef, and this guard has no equivalent. probe:
-                // design/review-2026-10-05/repro/t-cast-setops-12.gx (t-cast-setops-12)
                 let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
                 else {
                     return Err(self.cast_fail("undefined type", v));
                 };
-                if !hist.insert(key.clone()) {
+                // the same definition over the same value with larger params
+                // grows at every level, the value never consumed
+                let size = params_size(&key.0.1);
+                let grows = hist.iter().any(|((d, ps), at)| {
+                    *d == key.0.0 && *at == key.1 && params_size(ps) < size
+                });
+                if grows || !hist.insert(key.clone()) {
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
@@ -761,7 +776,7 @@ impl Type {
     fn is_a_int(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(RefKey, usize)>,
+        hist: &mut IsAHist,
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
@@ -771,7 +786,7 @@ impl Type {
     fn is_a_int_inner(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(RefKey, usize)>,
+        hist: &mut IsAHist,
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
@@ -790,34 +805,28 @@ impl Type {
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
-            // CR claude for claude: [perf] Each Type::Ref a runtime match reaches goes
-            // through the committing lookup_ref: resolve the cell, fill a `known` map,
-            // replace_tvars and check_contains each declared parameter bound,
-            // replace_tvars the body and hash a RefKey into `hist`. This happens for
-            // every element of every value matched, since PatternNode::compile expands
-            // only the predicate's top-level ref (node/pattern.rs:1188). Matching a
-            // 200-element array against `Array<Pair<i64>>`, with `type Pair<'a: Number>
-            // = (string, 'a)`, costs 27 times the structural `Array<(string, i64)>`
-            // (9.9 s against 0.36 s for 20000 matches, the select node-walked in both);
-            // an unparameterized `type Pair` costs 3 times. A runtime test should not
-            // commit (lookup_ref_with(env, false) at the least), and resolving each
-            // arm's refs once, when its facts are built, would leave matching as a walk
-            // of a settled type. Probe: design/review-2026-10-05/repro/x-alloc-11.gx.
-            // (x-alloc-11)
-            Type::Ref(tr) => match self.lookup_ref(env) {
-                Err(_) => false,
-                Ok(t) => {
-                    let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
-                    else {
-                        return false;
-                    };
-                    hist.insert(key.clone()) && {
-                        let r = t.is_a_int(env, hist, flags, v);
-                        hist.remove(&key);
-                        r
+            // a test commits nothing, and expands each ref once a walk
+            Type::Ref(tr) => {
+                let def =
+                    tr.def_key().or_else(|| tr.resolve_in(env).map(|r| r.def_key()));
+                let Some(def) = def else { return false };
+                let rk = (def, (*tr.params).as_ptr().addr());
+                let t = match hist.expanded.get(&rk) {
+                    Some((_, t)) => t.clone(),
+                    None => {
+                        let t = self.lookup_ref_with(env, false).ok().flatten();
+                        hist.expanded.insert(rk, (tr.params.clone(), t.clone()));
+                        t
                     }
+                };
+                let Some(t) = t else { return false };
+                let key = (rk, (v as *const Value).addr());
+                hist.path.insert(key.clone()) && {
+                    let r = t.is_a_int(env, hist, flags, v);
+                    hist.path.remove(&key);
+                    r
                 }
-            },
+            }
             Type::Primitive(t) => t.contains(Typ::get(&v)),
             Type::Abstract { id, params } => match v {
                 Value::Abstract(a) => {
@@ -965,12 +974,12 @@ impl Type {
 
     /// True if v is structurally compatible with the type.
     pub fn is_a(&self, env: &Env, v: &Value) -> bool {
-        self.is_a_int(env, &mut LPooled::take(), BitFlags::empty(), v)
+        self.is_a_int(env, &mut IsAHist::default(), BitFlags::empty(), v)
     }
 
     /// [`Self::is_a`] with flags.
     pub fn is_a_with(&self, env: &Env, flags: BitFlags<IsAFlags>, v: &Value) -> bool {
-        self.is_a_int(env, &mut LPooled::take(), flags, v)
+        self.is_a_int(env, &mut IsAHist::default(), flags, v)
     }
 
     /// The shallow discriminator for a select arm's INFERRED type
