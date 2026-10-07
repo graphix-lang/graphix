@@ -198,28 +198,28 @@ const RECTYPES2: &str = r#"
 
 run!(rectypes2, RECTYPES2, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Lst<string> does not contain `Cons(i64")); FuseExpect::None);
 
-// CR claude for claude: [bug] This test pins acceptance of an unsound typedef. 'c is
-// declared nowhere: Env::deftype (graphix-types/src/env.rs:1451) refuses only
-// declared-but-unused variables, and every expansion of T gives 'c a fresh cell. So a
-// function stored at c: i64 can be called with a string. `let t: T<i64, i64> = { foo:
-// 1, bar: 2, f: |a: i64, b: i64, c: i64| a + b + c }; let g = t.f; g(1, 2, "x")` passes
-// --check, and both engines compute 3 + "x"; the run-time bind logs "did not type" and
-// runs it anyway. The plain form `type R = { v: 'a }` makes the engines disagree: the
-// JIT reads "s" as 0. Once deftype refuses the variable (see the CR at env.rs:1451),
-// make this a refusal pin and add a pin that uses such a type. probe:
-// design/review-2026-10-05/repro/tests-lang-b-01.gx (tests-lang-b-01)
-// 2026-10-07 claude: deferred to batch 9 with the deftype refusal it waits on.
-const TYPEDEF_TVAR_OK: &str = r#"
+/// A typedef may name only its parameters (and a function type's own
+/// quantifiers): an undeclared variable would be fresh at every use.
+const TYPEDEF_STRAY_TVAR: &str = r#"
 {
   type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn(a: 'a, b: 'b, c: 'c) -> 'a };
   0
 }
 "#;
 
-run!(typedef_tvar_ok, TYPEDEF_TVAR_OK, |v: Result<&Value>| match v {
-    Ok(Value::I64(0)) => true,
-    _ => false,
-});
+run!(typedef_stray_tvar_refused, TYPEDEF_STRAY_TVAR, refused("undeclared type variable"); FuseExpect::None);
+
+/// A function type's own quantifier is declared where it is written.
+const TYPEDEF_FN_QUANTIFIER: &str = r#"
+{
+  type T<'a> = { foo: 'a, f: fn<'c: Any>(a: 'a, c: 'c) -> 'a };
+  let t: T<i64> = { foo: 1, f: |a: i64, c| a };
+  let g = t.f;
+  g(t.foo, "x") + g(2, 3)
+}
+"#;
+
+run!(typedef_fn_quantifier, TYPEDEF_FN_QUANTIFIER, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
 
 // A multi-hop type-alias chain resolves.
 const DEEP_ALIAS_CHAIN: &str = r#"
@@ -1804,3 +1804,103 @@ const SINGLETON_MERGED_MEMBERS_RUN: &str = r#"{
 run!(singleton_merged_members_run, SINGLETON_MERGED_MEMBERS_RUN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 });
+
+// Containment: each rule below once admitted an ill-typed program.
+
+/// A conjunct reaches the open cells of what its cell is bound to.
+const CONJUNCT_REACHES_OPEN_CELLS: &str = r#"
+{
+    let f = 'a: Array<i64> |x: 'a| -> i64 x[0]$;
+    let g = |y| f([y]);
+    let h: fn(y: string) -> i64 = g;
+    h("hello")
+}
+"#;
+
+run!(conjunct_reaches_open_cells, CONJUNCT_REACHES_OPEN_CELLS, refused("does not contain"); FuseExpect::None);
+
+/// A quantifier admitted through its conjunct binds what holds it.
+const RIGID_BY_CONJUNCT_COMMITS: &str = r#"
+{
+    let id = |a: Array<'e>| -> Array<'e> a;
+    let f = 'r: Array<i64> |x: 'r| -> Array<string> id(x);
+    f([1, 2])
+}
+"#;
+
+run!(rigid_by_conjunct_commits, RIGID_BY_CONJUNCT_COMMITS, refused("does not contain"); FuseExpect::None);
+
+/// Two quantifiers hold each other only through their conjuncts.
+const RIGID_PAIR_BY_CONJUNCTS: &str = r#"
+{
+    let f = 'a: Any, 'b: Array<'a> |x: 'b, y: 'a| -> 'b y;
+    f([1], 12345)
+}
+"#;
+
+run!(rigid_pair_by_conjuncts, RIGID_PAIR_BY_CONJUNCTS, refused("does not contain 'a"); FuseExpect::None);
+
+/// A rigid constructor variable is not any constructor.
+const RIGID_CONSTRUCTOR_IS_NOT_ARRAY: &str = r#"
+{
+    let f = 'c: Collection |xs: 'c<i64>| {
+        let a: Array<i64> = xs;
+        a[1]$ + 1
+    };
+    f({"k" => 10, "j" => 20})
+}
+"#;
+
+run!(rigid_constructor_is_not_array, RIGID_CONSTRUCTOR_IS_NOT_ARRAY, refused("does not contain"); FuseExpect::None);
+
+/// A declared variable meeting an open one keeps its rigidity.
+const RIGID_SURVIVES_ALIAS: &str = r#"
+{
+    let id = |a: 'x| a;
+    let st: i64 = 0;
+    trait Probe { val p: fn(self, x: 'a) -> bool };
+    impl Probe for i64 { let p = |s, x| { st <- id(x); true } };
+    Probe::p(1, f64:2.5)
+}
+"#;
+
+run!(rigid_survives_alias, RIGID_SURVIVES_ALIAS, refused("cannot hold"); FuseExpect::None);
+
+/// A union implements no trait whose method takes `self` beyond the
+/// receiver: dispatch narrows only the receiver.
+const UNION_TRAIT_SELF_ARGUMENT: &str = r#"
+{
+    trait Comb { val comb: fn(self, other: self) -> string };
+    type A = Abstract<i64>;
+    type B = Abstract<string>;
+    impl Comb for A { let comb = |a, o| "A [a.0 + o.0]" };
+    impl Comb for B { let comb = |b, o| "B [b.0][o.0]" };
+    let pick = |n: i64| -> [A, B] select n { 0 => A(1), _ => B("x") };
+    Comb::comb(pick(0), pick(0))
+}
+"#;
+
+run!(union_trait_self_argument, UNION_TRAIT_SELF_ARGUMENT, refused("does not contain [A, B]"); FuseExpect::None);
+
+/// A union's uncovered primitives go to its open member at once.
+const OPEN_MEMBER_TAKES_THE_RESIDUE: &str = r#"
+{
+    let v: [i64, string, null] = 1;
+    let w: [i64, Array<i64>, null] = 1;
+    (opt::is_some(w), opt::is_some(v))
+}
+"#;
+
+run!(open_member_takes_the_residue, OPEN_MEMBER_TAKES_THE_RESIDUE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
+}; FuseExpect::Jit);
+
+/// A union holding the very cell it is asked to contain binds nothing.
+const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
+{
+    let f = |y| array::push([y, 1], y);
+    array::len(f("s"))
+}
+"#;
+
+run!(union_holds_its_own_cell, UNION_HOLDS_ITS_OWN_CELL, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);

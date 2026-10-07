@@ -167,8 +167,9 @@ fn is_unbound_tvar(t: &Type) -> bool {
 }
 
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
+/// A rigid cell never unifies, so it makes no cycle.
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
-    matches!(a, Type::TVar(tv) if !tv.is_bound() && tv.would_cycle(b))
+    matches!(a, Type::TVar(tv) if !tv.is_bound() && !tv.is_rigid() && tv.would_cycle(b))
 }
 
 /// Does `t` reach a cell that is open, unconstrained and
@@ -211,6 +212,55 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
     walk(t, &mut LPooled::take())
 }
 
+/// Whether every part of `t` is one type, so an open cell bound to a part
+/// loses nothing (a union part would bind the cell to the whole union,
+/// where it only had to stay within it). A variable is exact: binding
+/// aliases the cell to it, constraints and all.
+fn exact(t: &Type) -> bool {
+    ensure_sufficient(|| match t {
+        Type::Set(_) | Type::Any | Type::Ref(_) => false,
+        Type::Primitive(p) => p.len() == 1,
+        Type::TVar(tv) => tv.binding().is_none_or(|b| exact(&b)),
+        t => {
+            let mut all = true;
+            t.for_each_child(&mut |c| all &= exact(c));
+            all
+        }
+    })
+}
+
+/// Give the open cells inside `t`, about to be bound into the cell, their
+/// part of each exact structural conjunct (`Array<i64> ⊇ Array<'y>` binds
+/// `'y`): a probe admits them free, and the bind passes down only the
+/// predicates.
+fn commit_cell_constraints(
+    tv: &TVar,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    for c in tv.cell_constraints().iter() {
+        let predicate = matches!(
+            c,
+            Type::Concrete
+                | Type::Function
+                | Type::Singleton
+                | Type::OneNumber
+                | Type::Discernible
+                | Type::Ordered
+        );
+        if !predicate
+            && !c.is_trait_ref(env)
+            && exact(c)
+            && !c.contains_int(flags, env, hist, t)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// True iff binding `t` into the cell would satisfy every conjunct of
 /// the cell's constraints. A pure probe.
 fn cell_constraints_ok(
@@ -220,17 +270,6 @@ fn cell_constraints_ok(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
-        // CR claude for claude: [bug] This probe admits an open cell inside `t`
-        // (`Array<i64> ⊇ Array<'y>` holds with `'y` free). The bind that follows
-        // installs `t` without giving `'y` its part of the conjunct, because
-        // `TVar::bind` passes down only Concrete, Singleton and OneNumber, so `'y`
-        // generalizes unbounded. With `f = 'a: Array<i64> |x: 'a| -> i64 x[0]$`, `let g
-        // = |y| f([y])` is typed `fn(y: 'y) -> i64`. `--check` accepts `g("hello")` and
-        // the build refuses it, and through `let h: fn(y: string) -> i64 = g` the run
-        // panics at fusion/kernel.rs:243 (a String in a compiled Scalar(I64) slot). An
-        // inferred conjunct has the same hole: `let f = |i| a[i]$; let g = |b, k|
-        // f(select b { true => 1, false => k })` passes the check at `g(false, "s")`.
-        // probe: design/review-2026-10-05/repro/t-contains-08.gx (t-contains-08)
         if !c.contains_int(BitFlags::empty(), env, hist, t)? {
             return Ok(false);
         }
@@ -258,19 +297,10 @@ impl OpenPair {
         if t0.is_rigid() && t1.is_rigid() {
             return OpenPair::Distinct;
         }
-        // CR claude for claude: [bug] With exactly one rigid side this picks a name alias
-        // by `frozen` alone. A declared variable written once in its signature is
-        // unfrozen, so AliasLeft (t0 rigid) or AliasRight (t1 rigid) points it at the
-        // other cell through merge_into's Merge::Name path, which has no rigid-survivor
-        // rule; the variable then reads as free and the body binds it. `let eq = |a:
-        // 'x, b: 'x| a == b; let f = |x: 'a| eq(x, 1)` checks as fn(x: i64) and `|x:
-        // 'a, y: 'b| eq(x, y)` as fn(x: 'a, y: 'a), while `x == 1`, `x == y` and `eq(1,
-        // x)` are refused. In a trait impl the check passes, a static call is refused
-        // only at elaboration, and a dynamic call runs the impl at a type it was never
-        // checked at, writing an f64 into an i64 and panicking the JIT (probe:
-        // design/review-2026-10-05/repro/x-typecheck-generics-F13.gx). With one rigid
-        // side the cells should merge (OpenPair::Merge), which keeps the rigid cell.
-        // (x-typecheck-generics-F13)
+        // a rigid cell survives only a merge
+        if t0.is_rigid() || t1.is_rigid() {
+            return OpenPair::Merge;
+        }
         match (t0.read().frozen, t1.read().frozen) {
             (true, true) => OpenPair::Merge,
             (true, false) => OpenPair::AliasRight,
@@ -367,17 +397,16 @@ fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
         (Type::App(c0, a0), Type::App(c1, a1)) => {
             link_equal(c0, c1, commit) && link_equal(a0, a1, commit)
         }
-        // CR claude for claude: [bug] A bound variable against a non-variable lands in
-        // this arm, but union_identical accepts that pair through the binding
-        // (setops.rs:80) and Fn equality counts distinct open cells as equal, so
-        // identical_linked answers identical and welds nothing. A union member that is
-        // a variable bound to a function type then covers a same-shaped function type
-        // through the identity shortcuts (lines 558, 817, 837, 893) with their open
-        // cells left apart: the checker accepts a program whose string-typed binding
-        // holds an i64, the node-walk prints it, and the JIT panics the runtime at
-        // fusion/kernel.rs:243. Add the arm union_identical has, recursing into the
-        // binding with the sides kept in order. probe:
-        // design/review-2026-10-05/repro/x-expr-walks-06.gx (x-expr-walks-06)
+        // a bound variable compares through its binding, as union_identical
+        // does, so the cells under it weld
+        (Type::TVar(a), t) => match a.binding() {
+            Some(x) => link_equal(&x, t, commit),
+            None => true,
+        },
+        (t, Type::TVar(b)) => match b.binding() {
+            Some(y) => link_equal(t, &y, commit),
+            None => true,
+        },
         _ => true,
     }
 }
@@ -813,15 +842,6 @@ impl Type {
                 e.contains_int(flags, env, hist, &Type::Any)
             }
             (Self::Error(e0), Self::Error(e1)) => e0.contains_int(flags, env, hist, e1),
-            // CR claude for claude: [dead] This arm and the pointer-equality arms at 691
-            // (Struct), 704 (Variant) and 815 (Set) never fire. contains_dispatch is
-            // reached only from contains_int_inner, after same_content (453) has
-            // already returned true for every pair whose Tuple, Struct, Variant, Set or
-            // Fn content is one allocation. For the same reason, `same` in the Fn arm
-            // (936) is always false. Delete the four arms and reduce the Fn arm to `let
-            // r = f0.contains_int(flags, env, hist, f1)?; if r && commit {
-            // f0.lambda_ids.link(&f1.lambda_ids) } Ok(r)`. (t-contains-14)
-            (Self::Tuple(t0), Self::Tuple(t1)) if Arc::ptr_eq(t0, t1) => Ok(true),
             (Self::Tuple(t0), Self::Tuple(t1)) => Ok(t0.len() == t1.len()
                 && t0
                     .iter()
@@ -829,7 +849,6 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            (Self::Struct(t0), Self::Struct(t1)) if Arc::ptr_eq(t0, t1) => Ok(true),
             (Self::Struct(t0), Self::Struct(t1)) => {
                 Ok(t0.len() == t1.len() && {
                     // Struct fields are sorted by name.
@@ -841,11 +860,6 @@ impl Type {
                         .collect::<Result<AndAc>>()?
                         .0
                 })
-            }
-            (Self::Variant(tg0, t0, _), Self::Variant(tg1, t1, _))
-                if tg0.as_ptr() == tg1.as_ptr() && Arc::ptr_eq(t0, t1) =>
-            {
-                Ok(true)
             }
             (Self::Variant(tg0, t0, _), Self::Variant(tg1, t1, _)) => Ok(tg0 == tg1
                 && t0.len() == t1.len()
@@ -922,6 +936,9 @@ impl Type {
                             t0.cell_addr()
                         );
                     }
+                    if !commit_cell_constraints(t0, flags, env, hist, t1)? {
+                        return Ok(false);
+                    }
                     t0.bind(t1.clone());
                 }
                 Ok(true)
@@ -940,25 +957,15 @@ impl Type {
                     {
                         return Ok(true);
                     }
-                    // CR claude for claude: [bug] Under Commit this admits `t0 ⊇ 'r`
-                    // (rigid, open 'r) on a probe of one conjunct and records nothing,
-                    // so t0's open cells stay free and a later check binds them to
-                    // anything. Take `id = |a: Array<'e>| -> Array<'e> a`. Then `'r:
-                    // Array<i64> |x: 'r| -> Array<string> id(x)` leaves 'e open, the
-                    // return check binds 'e := string, and the def is accepted even
-                    // though it returns its Array<i64> argument; without the annotation
-                    // its signature returns a free `Array<'e>`. The instance's own
-                    // check refuses it (GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1), but
-                    // elaboration by substitution trusts the def, so the JIT reads the
-                    // i64 as an ArcStr and aborts. A rank-2 formal with a structural
-                    // quantifier bound (`fn<'b: Array<i64>>(x: 'b) -> Array<string>`)
-                    // reaches the same route. probe:
-                    // design/review-2026-10-05/repro/t-contains-03.gx (t-contains-03)
                     for c in t1.cell_constraints().iter() {
-                        // A probe: a flagged check would alias live
-                        // cells into the constraint store.
+                        // probed first: a failed flagged check would leave
+                        // bindings behind; the one that holds commits, so
+                        // t0's open cells take their part of the conjunct
                         if t0.contains_int(BitFlags::empty(), env, hist, c)? {
-                            return Ok(true);
+                            return match commit {
+                                true => t0.contains_int(flags, env, hist, c),
+                                false => Ok(true),
+                            };
                         }
                     }
                     return Ok(false);
@@ -992,11 +999,13 @@ impl Type {
                             t1.cell_addr()
                         );
                     }
+                    if !commit_cell_constraints(t1, flags, env, hist, t0)? {
+                        return Ok(false);
+                    }
                     t1.bind(t0.clone());
                 }
                 Ok(true)
             }
-            (Self::Set(s0), Self::Set(s1)) if Arc::ptr_eq(s0, s1) => Ok(true),
             (t0 @ Self::Set(_), t1 @ Self::Set(_))
                 if identical_linked(t0, t1, commit) =>
             {
@@ -1106,70 +1115,47 @@ impl Type {
                 .map(|t1| t0.contains_int(flags, env, hist, t1))
                 .collect::<Result<AndAc>>()?
                 .0),
-            // CR claude for claude: [bug] `[i64, 'y] ⊇ 'y` with 'y open binds 'y := i64.
-            // The TVar arms skip it because 'y occurs in the set, this arm has no
-            // identity pre-pass (the Set ⊇ Set arms have one), and set_commit tries the
-            // structural member i64 before the free 'y. An identical struct member
-            // loses the same way: `[{v: i64}, {v: 'y}] ⊇ {v: 'y}` binds 'y := i64. As a
-            // result `let f = |y| array::push([y, 1], y); f("s")` is refused at "s"
-            // with "i64 does not contain string". Also, `let y = str::parse("42")$; let
-            // x = select c { 0 => y, _ => null }; x <- y` is accepted with parse's
-            // target bound to null, when an open target must be refused. Cover t
-            // without binding when a member is identical_linked to it, before
-            // set_commit. probe: design/review-2026-10-05/repro/t-contains-10.gx
-            // (t-contains-10)
             (Self::Set(s), t) => {
                 if graphix_dbg_bind() {
                     eprintln!("SET-T {} >= {t}", Self::Set(s.clone()));
                 }
+                // a member that is `t` covers it and binds nothing
+                if s.iter().any(|m| identical_linked(m, t, commit)) {
+                    return Ok(true);
+                }
                 match t {
-                    // Prims first: the narrowest TVar bindings.
-                    // CR claude for claude: [bug] When a union with a bare open member is
-                    // checked against a multi-bit primitive, this arm commits the bits
-                    // one at a time. The first bit that no concrete member covers binds
-                    // the open member ('a := i64), the next bit is admitted by nothing,
-                    // and the arm returns false with that binding left behind. So
-                    // `opt::is_some(x)` with x: [i64, string, null] is refused ("[null,
-                    // 'a: i64] does not contain [i64, null, string]"), while the same
-                    // type written as `type N = [i64, string]; [N, null]`, or `[i64,
-                    // `A, null]`, is accepted. A probe of the same pair answers true,
-                    // so set_commit can pick a member whose commit then fails. Bind the
-                    // open member once to the bits no concrete member covers, as the
-                    // Set ⊇ Set residue arm does. probe:
-                    // design/review-2026-10-05/repro/x-diff-types-04.gx
-                    // (x-diff-types-04)
+                    // Prims first: the narrowest TVar bindings. The concrete
+                    // members take the bits they cover one at a time; the
+                    // rest go to a bare open member as one residue.
                     Self::Primitive(p) if p.len() > 1 => {
-                        let mut all = true;
-                        for p in t.iter_prims() {
-                            all &= Self::set_admits(s, env, hist, &p)?;
+                        let concrete: SmallVec<[Type; 8]> =
+                            s.iter().filter(|m| !is_unbound_tvar(m)).cloned().collect();
+                        let bare = s.iter().find(|m| is_unbound_tvar(m));
+                        let mut uncovered = BitFlags::empty();
+                        for b in p.iter() {
+                            let bit = Self::Primitive(b.into());
+                            if !Self::set_admits(&concrete, env, hist, &bit)? {
+                                uncovered |= b
+                            }
                         }
-                        // CR claude for claude: [bug] This pre-pass commits the
-                        // primitives one at a time. The first primitive no concrete
-                        // member covers binds the bare free member to itself. The next
-                        // one is not admitted by that binding, and the arm returns
-                        // false without trying the whole set at 930 and without undoing
-                        // the binding. A probe of the same pair says true, so
-                        // set_commit's probe-then-commit keeps the binding and moves on
-                        // to the next member. Valid calls are refused:
-                        // `opt::is_some(v)` with `v: [i64, string, null]` fails with
-                        // "[null, 'a: i64] does not contain [i64, null, string]" while
-                        // `[i64, Array<i64>, null]` (a Set, the residue arm at 824) is
-                        // accepted, and the leaked binding refuses an unrelated
-                        // argument (`|x: [Array<['a, null]>, Array<'c>], y: 'a|` called
-                        // with `Array<[bool, null, string]>` and "t"). Hand the
-                        // uncovered primitives to the bare member as one residue, as
-                        // the Set ⊇ Set arm does; probe:
-                        // design/review-2026-10-05/repro/t-contains-11.gx
-                        // (t-contains-11)
-                        if all {
-                            for p in t.iter_prims() {
-                                if Self::set_commit(s, flags, env, hist, &p)?
+                        if uncovered.is_empty() || bare.is_some() {
+                            for b in (*p & !uncovered).iter() {
+                                let bit = Self::Primitive(b.into());
+                                if Self::set_commit(&concrete, flags, env, hist, &bit)?
                                     != Some(true)
                                 {
                                     return Ok(false);
                                 }
                             }
-                            return Ok(true);
+                            return match bare {
+                                Some(m) if !uncovered.is_empty() => m.contains_int(
+                                    flags,
+                                    env,
+                                    hist,
+                                    &Self::Primitive(uncovered),
+                                ),
+                                _ => Ok(true),
+                            };
                         }
                     }
                     _ => (),
@@ -1180,9 +1166,8 @@ impl Type {
                 }
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
-                let same = Arc::ptr_eq(f0, f1);
-                let r = same || f0.contains_int(flags, env, hist, f1)?;
-                if r && !same && commit {
+                let r = f0.contains_int(flags, env, hist, f1)?;
+                if r && commit {
                     f0.lambda_ids.link(&f1.lambda_ids);
                 }
                 Ok(r)
@@ -1292,7 +1277,9 @@ impl Type {
                             t1.read().id.inner()
                         );
                     }
-                    if !cell_constraints_ok(t0, env, hist, &b1)? {
+                    if !cell_constraints_ok(t0, env, hist, &b1)?
+                        || !commit_cell_constraints(t0, flags, env, hist, &b1)?
+                    {
                         return Ok(false);
                     }
                     t0.copy(t1, b1);
@@ -1317,28 +1304,29 @@ impl Type {
                             t0.read().id.inner()
                         );
                     }
-                    if !cell_constraints_ok(t1, env, hist, &b0)? {
+                    if !cell_constraints_ok(t1, env, hist, &b0)?
+                        || !commit_cell_constraints(t1, flags, env, hist, &b0)?
+                    {
                         return Ok(false);
                     }
                     t1.copy(t0, b0);
                 }
                 Ok(true)
             }
+            // two quantifiers: t0 holds t1 only through one of t1's
+            // conjuncts ('t1 ⊆ C ⊆ t0), whatever an occurs check would say
+            (None, None) if t0.is_rigid() && t1.is_rigid() => {
+                let cons = t1.cell_constraints();
+                hist.assuming((Some(addr0), Some(addr1)), |hist| {
+                    for c in cons.iter() {
+                        if tt0.contains_int(flags, env, hist, c)? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })
+            }
             (None, None) => {
-                // CR claude for claude: [bug] When two open rigid cells' bounds reach
-                // each other (`'b: Array<'a>`, or `'b: 'a`), this occurs check fires
-                // before OpenPair::Distinct is consulted. refuse() then answers true,
-                // so the def gate accepts a value of either quantifier as the other.
-                // The cycle_refused marks matter only for a cell still open at a
-                // terminal settle, and a call binds both copies, so nothing reports it.
-                // The instance substitutes that verdict: `'a: Any, 'b: Array<'a> |x:
-                // 'b, y: 'a| -> 'b y` called as `f([1], 12345)` builds a kernel that
-                // returns the i64 as Array<i64> and segfaults, while the node-walk
-                // hands an Array-typed binding an i64. Decide a rigid pair by its
-                // conjuncts, as the `(t0, TVar(t1))` rigid arm does, and not by the
-                // refusal: a blanket Ok(false) would also refuse `'b: 'a |x: 'a, y: 'b|
-                // -> 'a y`, which passes today only through this path. probe:
-                // design/review-2026-10-05/repro/t-tvar-08.gx (t-tvar-08)
                 if cyc0() || cyc1() {
                     return refuse();
                 }
@@ -1613,26 +1601,14 @@ impl Type {
         env: &Env,
         hist: &mut ContainsHist,
     ) -> Result<bool> {
-        // CR claude for claude: [bug] Under a plain Commit (no RigidCheck) a rigid
-        // constructor variable takes this path: cell_constraints_ok passes, the bind is
-        // skipped, and Ok(true) comes back. So inside a `'c: Collection` body,
-        // `Array<i64> ⊇ 'c<i64>` holds without binding 'c, and so do `List<i64> ⊇
-        // 'c<i64>` and `array::len(xs)`. That breaks the rule every TVar arm keeps (a
-        // rigid cell is refused under `rigid || commit`) and the doc above. The check
-        // then accepts bodies that read a Map or List as an Array: the JIT reaches
-        // unreachable_unchecked in Value::clone (UB in release), the node-walk returns
-        // garbage, and the array::len form passes --check only for elaboration to
-        // refuse it. Take this path only when `!cv.is_rigid()`, so a rigid one falls to
-        // the general walk and is refused under commit. probe:
-        // design/review-2026-10-05/repro/t-tvar-01.gx (t-tvar-01)
         if let Self::TVar(cv) = c
             && !cv.is_bound()
-            && !(flags.contains(ContainsFlags::RigidCheck) && cv.is_rigid())
+            && !cv.is_rigid()
         {
             if !cell_constraints_ok(cv, env, hist, ctor)? {
                 return Ok(false);
             }
-            if flags.contains(ContainsFlags::Commit) && !cv.is_rigid() {
+            if flags.contains(ContainsFlags::Commit) {
                 if graphix_dbg_bind() {
                     eprintln!("BIND ctor '{}({:x}) := {ctor:?}", cv.name, cv.cell_addr());
                 }
@@ -1669,6 +1645,16 @@ impl Type {
         if CoreTrait::of_id(tid).is_some() {
             return Ok(true);
         }
+        // a union implements a trait when every member does, unless a method
+        // takes `self` beyond the receiver, which dispatch never narrows
+        let union = match t {
+            Self::Set(_) => true,
+            Self::Primitive(p) => p.len() > 1,
+            _ => false,
+        };
+        if union && env.trait_def(tid).is_some_and(|d| d.takes_self_beyond_receiver()) {
+            return Ok(false);
+        }
         match t {
             Self::Bottom => Ok(true),
             Self::Any => Ok(false),
@@ -1683,21 +1669,6 @@ impl Type {
                 }
                 Ok(true)
             }
-            // CR claude for claude: [bug] This arm lets a union satisfy a trait whenever
-            // every member has an impl, whatever the trait's methods take. So
-            // `Comb::comb(x, y)` with `comb: fn(self, other: self)` and x, y: [A, B]
-            // passes `--check`. The build then lowers the call through
-            // lower_trait_union (graphix-compiler/src/node/traits.rs:877), which
-            // narrows only the receiver, and refuses `#bind::N(#t, #a1)` because `#a1`
-            // is still [A, B]; the message names `#bind`, `#a1` and `'_N`, and
-            // graphix-fuzz reports a check/build divergence. A generic `'a: Comb |x:
-            // 'a, y: 'a| Comb::comb(x, y)` called with [A, B] fails the same way in its
-            // instance, and only this discharge sees that route, so the refusal belongs
-            // here and in the multi-flag Primitive arm below: a union cannot satisfy a
-            // trait that has a method taking `self` in a parameter other than the
-            // receiver (a `self` return is fine). probe:
-            // design/review-2026-10-05/repro/x-engine-seq-errors-05.gx
-            // (x-engine-seq-errors-05)
             Self::Set(ts) => {
                 for m in ts.iter() {
                     if !Self::trait_contains(tid, flags, env, hist, m)? {
@@ -1782,6 +1753,11 @@ impl Type {
 // as a JIT divergence (graphix-fuzz check on t-contains-07.gx). Pin each repro with its
 // fix, and once each variance rule is stated, give it a must-reject family: a write
 // through a widened reference, a widened abstract parameter. (t-contains-12)
+// 2026-10-07 claude: t-contains-03, t-contains-08 and t-tvar-08 are fixed and pinned in
+// lang::types (rigid_by_conjunct_commits, conjunct_reaches_open_cells,
+// rigid_pair_by_conjuncts), with t-tvar-01, x-typecheck-generics-F13 and the union
+// trait rule beside them. c-node-mod-01, t-contains-07, t-tvar-02 and t-contains-09
+// still stand, and so do the variance must-reject families.
 // 2026-10-06 claude: the reference part is done: `&T`/`&mut T` rules are pinned in
 // lang::byref and by must-reject family 9 (ref-write, ref-widen). The rest stands.
 #[cfg(test)]

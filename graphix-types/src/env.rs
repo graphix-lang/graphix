@@ -226,6 +226,31 @@ pub struct TraitDef {
     pub ori: Arc<Origin>,
 }
 
+impl TraitDef {
+    /// Whether a method takes `self` beyond its receiver: a union cannot
+    /// implement such a trait, since a call narrows only the receiver.
+    pub fn takes_self_beyond_receiver(&self) -> bool {
+        fn mentions_self(t: &Type) -> bool {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) if &*tv.name == "self" => true,
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found |= mentions_self(c));
+                    found
+                }
+            })
+        }
+        self.methods.iter().any(|m| {
+            m.typ
+                .args
+                .iter()
+                .enumerate()
+                .any(|(i, a)| i != m.self_index && mentions_self(&a.typ))
+                || m.typ.vargs.as_ref().is_some_and(mentions_self)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub struct TraitMethodDef {
@@ -594,6 +619,15 @@ impl Env {
 
     pub fn push_sig_link(&self, link: SigImplLink) {
         self.with_ide(|ide| ide.sig_links.push(link))
+    }
+
+    /// Keep the trait `tid` nameable where it is declared: a sandboxed
+    /// module implements the traits its interface declares impls of.
+    pub fn grant_trait(&mut self, tid: TraitId) {
+        if let Some(d) = self.trait_defs.get(&tid) {
+            let (scope, name) = (d.scope.clone(), CompactString::from(d.name.as_str()));
+            self.traits.get_or_default_cow(scope).insert_cow(name, tid);
+        }
     }
 
     pub fn apply_sandbox(&self, spec: &Sandbox) -> Result<Self> {

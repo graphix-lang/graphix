@@ -413,9 +413,12 @@ const QUEUEFN_COUNT_REF: &str = r#"
 {
   let depth = -1;
   let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64| -> i64 x * 10);
-  qf(1);  // immediate (pop_count=1), no push
-  qf(2);  // push, depth -> 1
-  qf(3);  // push, depth -> 2
+  // immediate (pop_count=1), no push
+  qf(1);
+  // push, depth -> 1
+  qf(2);
+  // push, depth -> 2
+  qf(3);
   // depth observer sees [-1 (let init), 0 (the reference told the depth), 1, 2]
   array::group(depth, |n, _| n == 4)
 }

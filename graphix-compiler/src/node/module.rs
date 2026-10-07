@@ -801,6 +801,15 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         env.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
+        // the interface grants the traits it declares impls of, wherever
+        // the sandbox leaves them
+        for si in sig.items.iter() {
+            if let SigKind::Impl(im) = &si.kind
+                && let Some(tid) = ctx.env.lookup_trait(&scope.lexical, &im.trait_name)?
+            {
+                env.grant_trait(tid)
+            }
+        }
         Ok(Node::new(Self {
             spec,
             flags,
