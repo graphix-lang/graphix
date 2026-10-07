@@ -1767,6 +1767,8 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
 // operator, and MinEv/MaxEv only in `<` against `>`. One parameterized copy of each
 // would stop the pairs drifting, as Divide (Stateless) and Sum/Product (Sync) already
 // have. (core-lib-13)
+// 2026-10-07 claude: Sum, Product and Divide share arith_fold now. The fast-builtin shell
+// macro and the Take/Skip and Min/Max pairs stand.
 #[derive(Debug, Default)]
 struct BitAndEv;
 unit_image_state!(BitAndEv);

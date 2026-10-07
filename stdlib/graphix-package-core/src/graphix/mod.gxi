@@ -81,7 +81,8 @@ trait Collection {
                 // of them") is false: Map lacks filter/find/find_map and List lacks
                 // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
                 // (gx-stdlib-04)
-                // 2026-10-07 claude: Map overrides filter (map_filter) and List len;
+                // 2026-10-07 claude: Map overrides filter (map_filter); List keeps the
+                // default len, a counting fold, as a cons list's length is a walk;
                 // find carries a found flag, so a null match ends the search; the
                 // trait doc no longer says the built-ins override everything and names
                 // the limit. What stands: a user collection's derived map and filter

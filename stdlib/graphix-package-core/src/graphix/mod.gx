@@ -65,6 +65,5 @@ impl Collection for List<'_> {
     let map = |l, f| 'list_map;
     let filter = |l, f| 'list_filter;
     let find = |l, f| 'list_find;
-    let find_map = |l, f| 'list_find_map;
-    let len = |l| 'list_len
+    let find_map = |l, f| 'list_find_map
 }
