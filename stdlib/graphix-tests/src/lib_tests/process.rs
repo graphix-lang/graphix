@@ -233,7 +233,7 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // `Lines::lines` frames at the byte level: a line split across two
-// reads, a CRLF line, and a trailing fragment with no newline.
+// reads, a CRLF line, and a last line with no newline, which is a line.
 #[cfg(unix)]
 const IO_LINES: &str = r#"
 {
@@ -266,7 +266,7 @@ run!(io_lines, IO_LINES, |v: Result<&Value>| {
                     _ => None,
                 })
                 .collect();
-            a.len() == 4 && got == ["alpha", "beta", "gamma", "delta"]
+            a.len() == 5 && got == ["alpha", "beta", "gamma", "delta", "last-no-newline"]
         }
         _ => false,
     }
