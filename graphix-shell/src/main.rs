@@ -193,7 +193,7 @@ struct Params {
     no_fusion: bool,
     /// after compiling the script, print its fusion profile (regions
     /// attempted/fused and per-region blocker reasons) to stderr
-    #[arg(long = "fusion-stats")]
+    #[arg(long = "fusion-stats", conflicts_with = "check")]
     fusion_stats: bool,
     /// do not execute the program, just veryify that it compiles and
     /// type checks.

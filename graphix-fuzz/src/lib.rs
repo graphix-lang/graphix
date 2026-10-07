@@ -1064,7 +1064,7 @@ async fn registration_image() -> Option<Bytes> {
                 REGISTER,
                 vec![],
                 BitFlags::empty(),
-                RegistrationImage::Save(reg_tx),
+                RegistrationImage::save(reg_tx),
                 None,
                 None,
                 None,
@@ -1084,8 +1084,8 @@ async fn registration_image() -> Option<Bytes> {
 /// process; without one it compiles its registration.
 async fn registration_image_source() -> RegistrationImage {
     match registration_image().await {
-        Some(bytes) => RegistrationImage::Load(bytes),
-        None => RegistrationImage::Save(oneshot::channel().0),
+        Some(bytes) => RegistrationImage::load(bytes),
+        None => RegistrationImage::save(oneshot::channel().0),
     }
 }
 
@@ -1140,7 +1140,7 @@ async fn run_subject(
     let program =
         Some(graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text())));
     let (registration, program, program_image, image_rx) = match image {
-        SessionImage::Read(bytes) => (RegistrationImage::Load(bytes), None, None, None),
+        SessionImage::Read(bytes) => (RegistrationImage::load(bytes), None, None, None),
         SessionImage::Write => {
             let (itx, irx) = oneshot::channel();
             (registration_image_source().await, program, Some(itx), Some(irx))
@@ -1183,7 +1183,7 @@ async fn run_subject(
     let image = match image_rx {
         None => no_image(),
         Some(irx) => match tokio::time::timeout(grace, irx).await {
-            Ok(Ok(Ok(bytes))) => Ok(bytes),
+            Ok(Ok(Ok(p))) => Ok(p.image),
             Ok(Ok(Err(e))) => Err(format!("the program image write failed: {e:#}")),
             Ok(Err(_)) | Err(_) => no_image(),
         },

@@ -11,10 +11,15 @@ built: the program key is the root file's bytes (graphix-shell/src/cache.rs:136)
 removes every other build id (cache.rs:200), and decode_at refuses only an entry with
 nothing entered since the last. The first four are doc fixes; the last three describe
 what the code should do. (x-image-13) -->
-Status: the registration image is built (2026-09-10); the kernel
-cache and the program image are proposals. Pins:
-`stdlib/graphix-tests/src/lang/image.rs`, `graphix-compiler/src/image/mod.rs`
-and `shared_map.rs` unit tests, `graphix-shell/src/cache.rs`.
+<!-- 2026-10-07 claude: the status line, pins, key, store and the shared_map path are
+fixed, and the depfile (the program entry's sources record) and recency collection are
+built (graphix-shell/src/cache.rs). The third-entry refusal still describes more than
+decode_at does. -->
+Status: the registration image and the program image are built, kernels
+included as stored bytes; step 2 was dropped. Pins:
+`stdlib/graphix-tests/src/lang/image.rs`, `graphix-types/src/image/mod.rs`
+and `graphix-types/src/shared_map.rs` unit tests,
+`graphix-shell/src/cache.rs`.
 Supersedes: the compiled-packages plan (build-time package-definition
 images).
 
@@ -54,21 +59,27 @@ every later run. This removes build scripts, host/target registries,
 cross-compilation, sidecars, and any way for a producer and consumer to
 disagree.
 
-**Key.** An entry's key is composed of:
+**Key.** Entries are filed under the executable's build id: the ELF
+linker's `.note.gnu.build-id`, a Mach-O `LC_UUID`, or a PE link stamp
+and size, never a hash of the whole executable, which is too slow to
+compute at every startup on the target machine. The build id covers
+the packages compiled in; an executable without one has no cache. The
+registration entry's key is the image format and the package root; a
+program entry's adds the program (a script's path, or an embedded
+program's text), the compile flags and `GRAPHIX_MODPATH`, and the entry
+opens with a record of the sources its compile read: each file's
+digest, and the files whose appearance would change a module's
+resolution (an interface beside a module, an `m.gx` beside the
+`m/mod.gx` it would win over). A load re-verifies the record and a
+mismatch is a miss; a program that read a netidx module gets no entry.
+A file added in a search directory ahead of the one a module came from
+is not seen.
 
-- the executable's build id (the linker's `.note.gnu.build-id`, or a
-  build-time constant), never a hash of the whole executable, which is
-  too slow to compute at every startup on the target machine;
-- each package's source checksum, baked into the package at AST-pack
-  time (`graphix-ast-pack`), so a package's identity is known without
-  rehashing;
-- the checksum of every source the resolvers read while compiling the
-  root, recorded in the entry like a depfile and re-verified on the
-  next run.
-
-**Store.** `$XDG_CACHE_HOME/graphix/<build-id>/…`. Entries are written
-to a temporary file and renamed into place, so concurrent first runs
-are safe. Build ids older than the current few are collected.
+**Store.** `$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`.
+Entries are written to a temporary file of the writer's own, synced
+and renamed into place, so concurrent first runs are safe. A load
+touches its entry; a write collects, across build ids, the entries
+unused for 30 days and the least recently used past 512 MiB.
 
 **Correctness.** An entry is written only after the work it caches
 succeeded, and before any cycle runs, so a cache never masks a
@@ -268,10 +279,9 @@ program root's id, output flag and type, and `GXHandle::program`
 hands the embedder what `load` used to. A program that fails to
 compile is reported through the same call, so the shell's error text
 is unchanged. The shell keeps two cache entries per build id, the
-registration and the program (its key adds the program source), and
-loads the most complete one it has; the runtime writes whichever was
-missing. Fusion-on programs hold kernels and fail the write, so they
-run cold until slice (d). A warm run compiles nothing, so
+registration and the program, and the runtime restores the most
+complete one that reads; it writes whichever it compiled, a missing
+entry or one that failed to restore. A warm run compiles nothing, so
 compile-time diagnostics (an uncaught `?`, unused bindings) print on
 the cold run only.
 
@@ -563,7 +573,7 @@ sharing instead of replaying their construction.
 The env's maps are imhm hash tries (`env::Map`, `env::Set`, hashed by
 `env::Hasher`), which expose their nodes (`Map::root`, `NodeRef`,
 `NodeHandle::inner`/`leaf`, `Map::from_root`), and
-`graphix-compiler/src/shared_map.rs` packs a map through them: each
+`graphix-types/src/shared_map.rs` packs a map through them: each
 node is written once, as its depth, kind and pairs or slots, and
 referenced afterwards. A decoded node is rebuilt through imhm's checked
 constructors, which recompute every hash and refuse a node the map

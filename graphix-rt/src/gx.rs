@@ -1,4 +1,4 @@
-use crate::RegistrationImage;
+use crate::{ProgramImage, RegistrationImage};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
@@ -7,8 +7,8 @@ use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Scope, compile,
     expr::{
-        self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
-        Resolvers, RootFile, Source, parse_modpath,
+        self, Expr, ExprId, ExprKind, FilesResolver, ModPath, ModuleKind, Origin,
+        ResolverRef, Resolvers, RootFile, Source, parse_modpath,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -167,6 +167,32 @@ fn is_output_kind(kind: &ExprKind) -> bool {
     }
 }
 
+/// Add each origin under `root` to `sources` once: a file's, each
+/// module's and each interface's.
+fn program_sources(root: &Expr, sources: &mut Vec<Arc<Origin>>) {
+    let mut add = |o: &Arc<Origin>| {
+        if !sources.iter().rev().any(|s| Arc::ptr_eq(s, o)) {
+            sources.push(o.clone())
+        }
+    };
+    let mut todo = vec![root];
+    while let Some(e) = todo.pop() {
+        add(&e.ori);
+        if let ExprKind::Module {
+            value: ModuleKind::Resolved { sig: Some(sig), .. },
+            ..
+        } = &e.kind
+        {
+            for item in sig.iter() {
+                if let Some(o) = &item.ori {
+                    add(o)
+                }
+            }
+        }
+        e.for_each_child(&mut |c| todo.push(c));
+    }
+}
+
 /// Wrap a file's top-level Exprs in one synthetic `ExprKind::Block` so the
 /// compiler produces one Node and fusion sees the whole file at once. A
 /// block rather than a module, because the last expression's value must
@@ -309,37 +335,22 @@ impl<X: GXExt> GX<X> {
             .trace
             .map(|(max_events, max_cycles)| TraceState::new(max_events, max_cycles));
         let st = Instant::now();
-        let (image, save) = match cfg.registration {
-            Some(RegistrationImage::Load(bytes)) => (Some(bytes), None),
-            Some(RegistrationImage::Save(tx)) => (None, Some(tx)),
-            None => (None, None),
-        };
-        t.restored = match image {
-            None => false,
-            Some(bytes) => match t.restore_registration(bytes) {
-                Ok(()) => true,
-                Err(e) => {
-                    warn!("{e}; compiling cold");
-                    false
+        let RegistrationImage { restore, save } = cfg.registration.unwrap_or_default();
+        for (what, bytes) in restore {
+            match t.restore_registration(bytes) {
+                Ok(()) => {
+                    t.restored = true;
+                    break;
                 }
-            },
-        };
+                Err(e) => warn!("{what}: {e}"),
+            }
+        }
         if !t.restored {
             if let Some(root) = cfg.root {
                 // The root declares packages; fusing their constants
-                // buys nothing and would put kernels in the image.
-                // CR claude for claude: [risk] The package root compiles under the
-                // session's flags, and every definition in it keeps them for its
-                // instances (DefOrigin::Source { flags }, imaged). The registration
-                // key, however, is format + root only (graphix-shell/src/cache.rs:135).
-                // So a registration written by the REPL (ReplaceImports), by --expand
-                // (ExpandSeq) or under -W error serves every later run, whatever that
-                // run's flags. A package whose root warns would then fail `-W error`
-                // cold and pass it warm. Nothing diverges today only because the stdlib
-                // root emits no warning and has no seq block. Compile the root with one
-                // fixed flag set (FusionDisabled, plus WarnUnhandled if wanted) so the
-                // image is a function of its key. (shell-12)
-                t.compile_root(cfg.flags | CFlag::FusionDisabled, root).await?;
+                // buys nothing and would put kernels in the image. Its
+                // flags are fixed, so an image is a function of its root.
+                t.compile_root(CFlag::FusionDisabled.into(), root).await?;
             }
             if let Some(tx) = save {
                 let _ = tx.send(t.registration_image());
@@ -351,12 +362,15 @@ impl<X: GXExt> GX<X> {
             && let Some(source) = cfg.program
         {
             let st = Instant::now();
-            match t.load_program(&source).await {
+            let mut sources = cfg.program_image.as_ref().map(|_| vec![]);
+            match t.load_program(&source, sources.as_mut()).await {
                 Ok(root) => {
                     t.program = Some(Ok(root));
                     info!("program init time: {:?}", st.elapsed());
-                    if let Some(tx) = cfg.program_image {
-                        let _ = tx.send(t.registration_image());
+                    if let (Some(tx), Some(sources)) = (cfg.program_image, sources) {
+                        let image = t.registration_image();
+                        let _ =
+                            tx.send(image.map(|image| ProgramImage { image, sources }));
                     }
                 }
                 Err(e) => t.program = Some(Err(format!("{e:?}"))),
@@ -1032,12 +1046,18 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn load(&mut self, rt: GXHandle<X>, source: &Source) -> Result<CompRes<X>> {
-        let ProgramRoot { id, output, typ } = self.load_program(source).await?;
+        let ProgramRoot { id, output, typ } = self.load_program(source, None).await?;
         let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
         Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
     }
 
-    async fn load_program(&mut self, source: &Source) -> Result<ProgramRoot> {
+    /// Compile the program in `source`, adding every source its compile
+    /// read to `sources`.
+    async fn load_program(
+        &mut self,
+        source: &Source,
+        sources: Option<&mut Vec<Arc<Origin>>>,
+    ) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
         let (ori, exprs) = self.load_exprs(source, &self.resolvers).await?;
@@ -1050,6 +1070,9 @@ impl<X: GXExt> GX<X> {
         let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
         let wrapped =
             wrap_file_in_block(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
+        if let Some(sources) = sources {
+            program_sources(&wrapped, sources);
+        }
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();

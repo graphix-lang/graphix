@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use bytes::Bytes;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
@@ -9,7 +8,8 @@ use graphix_compiler::{
     expr::{ExprId, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
 };
 use graphix_rt::{
-    Callable, CompRes, GXConfig, GXEvent, GXHandle, GXRt, NoExt, Ref, RegistrationImage,
+    Callable, CompRes, GXConfig, GXEvent, GXHandle, GXRt, NoExt, ProgramImage, Ref,
+    RegistrationImage,
 };
 use netidx::publisher::Value;
 use netidx_core::path::Path;
@@ -159,7 +159,7 @@ pub async fn init_with_session(
     flags: BitFlags<CFlag>,
     registration: RegistrationImage,
     program: Option<Source>,
-    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
 ) -> Result<TestCtx> {
     init_inner(
         sub,
@@ -185,7 +185,7 @@ pub async fn init_session_with_setup<F>(
     flags: BitFlags<CFlag>,
     registration: RegistrationImage,
     program: Option<Source>,
-    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
     trace: Option<(usize, u64)>,
     setup: F,
 ) -> Result<TestCtx>
@@ -263,7 +263,7 @@ async fn init_inner<F>(
     lsp_mode: bool,
     registration: Option<RegistrationImage>,
     program: Option<Source>,
-    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
     trace: Option<(usize, u64)>,
     setup: F,
 ) -> Result<TestCtx>

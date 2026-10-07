@@ -151,13 +151,13 @@ async fn registration_restores() -> Result<()> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
             .await?;
     let image = image_rx.await??;
     assert!(image.len() > 10_000, "{}", image.len());
     let (tx, mut warm_rx) = mpsc::channel(10);
     let warm =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image)).await?;
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image)).await?;
     assert!(!cold.rt.env_stats().await?.restored);
     assert!(warm.rt.env_stats().await?.restored, "the warm runtime compiled cold");
     for code in [
@@ -186,7 +186,7 @@ async fn registration_timing() -> Result<()> {
     let (image_tx, image_rx) = oneshot::channel();
     let t0 = std::time::Instant::now();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
             .await?;
     let cold_time = t0.elapsed();
     let image = image_rx.await??;
@@ -198,7 +198,7 @@ async fn registration_timing() -> Result<()> {
         let warm = init_with_registration(
             tx,
             TEST_REGISTER,
-            RegistrationImage::Load(image.clone()),
+            RegistrationImage::load(image.clone()),
         )
         .await?;
         warm_times.push(t0.elapsed());
@@ -274,12 +274,12 @@ async fn program_image_restores_kernels() -> Result<()> {
         tx,
         TEST_REGISTER,
         Default::default(),
-        RegistrationImage::Save(reg_tx),
+        RegistrationImage::save(reg_tx),
         Some(Source::Internal(PROGRAM.into())),
         Some(prog_tx),
     )
     .await?;
-    let image = prog_rx.await??;
+    let image = prog_rx.await??.image;
     let stats = cold.rt.fusion_stats().await?;
     assert!(stats.fused > 0, "the program must fuse something: {stats:?}");
     let cold_values = first_values(&mut cold_rx).await;
@@ -289,7 +289,7 @@ async fn program_image_restores_kernels() -> Result<()> {
         tx,
         TEST_REGISTER,
         Default::default(),
-        RegistrationImage::Load(image),
+        RegistrationImage::load(image),
         None,
         None,
     )
@@ -320,15 +320,15 @@ async fn session(
     let src = Some(Source::Internal(program.into()));
     let flags = CFlag::FusionDisabled.into();
     let (reg, prog_tx) = match image {
-        None => (RegistrationImage::Save(reg_tx), Some(prog_tx)),
+        None => (RegistrationImage::save(reg_tx), Some(prog_tx)),
         Some(image) => {
             drop(prog_tx);
-            (RegistrationImage::Load(image), None)
+            (RegistrationImage::load(image), None)
         }
     };
     let ctx = init_with_session(tx, TEST_REGISTER, flags, reg, src, prog_tx).await?;
     let written = match prog_rx.await {
-        Ok(image) => Some(image?),
+        Ok(image) => Some(image?.image),
         Err(_) => None,
     };
     let compiled = ctx.rt.program().await?.expect("the program compiled or restored");
@@ -490,7 +490,7 @@ array::fold([41], f(256), |acc, x| x + 1)
 async fn program_images_restore_round_after_round() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (reg_tx, reg_rx) = oneshot::channel();
-    let cold = init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(reg_tx))
+    let cold = init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(reg_tx))
         .await?;
     let registration = reg_rx.await??;
     cold.shutdown().await;
@@ -501,19 +501,19 @@ async fn program_images_restore_round_after_round() -> Result<()> {
             tx,
             TEST_REGISTER,
             CFlag::FusionDisabled.into(),
-            RegistrationImage::Load(registration.clone()),
+            RegistrationImage::load(registration.clone()),
             Some(Source::Internal(REPEATED.into())),
             Some(prog_tx),
         )
         .await?;
-        let image = prog_rx.await??;
+        let image = prog_rx.await??.image;
         writer.shutdown().await;
         let (tx, _rx) = mpsc::channel(10);
         let reader = init_with_session(
             tx,
             TEST_REGISTER,
             CFlag::FusionDisabled.into(),
-            RegistrationImage::Load(image),
+            RegistrationImage::load(image),
             None,
             None,
         )
@@ -558,12 +558,12 @@ async fn program_image_restores_builtins() -> Result<()> {
         tx,
         TEST_REGISTER,
         CFlag::FusionDisabled.into(),
-        RegistrationImage::Save(reg_tx),
+        RegistrationImage::save(reg_tx),
         Some(Source::Internal(BUILTINS.into())),
         Some(prog_tx),
     )
     .await?;
-    let image = prog_rx.await??;
+    let image = prog_rx.await??.image;
     let cold_values = first_values(&mut cold_rx).await;
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(
@@ -576,7 +576,7 @@ async fn program_image_restores_builtins() -> Result<()> {
         tx,
         TEST_REGISTER,
         CFlag::FusionDisabled.into(),
-        RegistrationImage::Load(image),
+        RegistrationImage::load(image),
         None,
         None,
     )
@@ -612,7 +612,7 @@ async fn program_package_root_is_the_script() -> Result<()> {
         TEST_REGISTER,
         vec![VfsResolver::new(table)],
         CFlag::FusionDisabled.into(),
-        RegistrationImage::Save(reg_tx),
+        RegistrationImage::save(reg_tx),
         Some(Source::Internal(literal!("mod m0; mod m1; m1::f(i64:1)"))),
         None,
         None,
@@ -634,7 +634,7 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
             .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
@@ -650,7 +650,7 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
     for bad in [image.slice(..image.len() / 2), huge] {
         let (tx, mut rx) = mpsc::channel(10);
         let warm =
-            init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(bad))
+            init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(bad))
                 .await?;
         assert!(!warm.rt.env_stats().await?.restored, "a bad image was restored");
         let v = eval_on(&warm, &mut rx, "{ let xs = [1, 2, 3]; array::len(xs) }").await?;
@@ -688,14 +688,14 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
         TEST_REGISTER,
         files(),
         CFlag::FusionDisabled.into(),
-        RegistrationImage::Save(reg_tx),
+        RegistrationImage::save(reg_tx),
         Some(Source::Internal(program)),
         Some(prog_tx),
         None,
         |_| {},
     )
     .await?;
-    let image = prog_rx.await??;
+    let image = prog_rx.await??.image;
     let cold_values = first_values(&mut cold_rx).await;
     assert_eq!(cold_values.last(), Some(&Value::I64(31)), "{cold_values:?}");
     cold.shutdown().await;
@@ -705,7 +705,7 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
         TEST_REGISTER,
         files(),
         CFlag::FusionDisabled.into(),
-        RegistrationImage::Load(image),
+        RegistrationImage::load(image),
         None,
         None,
         None,
@@ -726,13 +726,13 @@ async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
             .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
     let (tx, _rx) = mpsc::channel(10);
     let warm =
-        init_lsp_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image))
+        init_lsp_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image))
             .await?;
     assert!(warm.rt.get_env().await?.ide.is_lsp());
     warm.shutdown().await;

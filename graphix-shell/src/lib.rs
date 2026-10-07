@@ -269,11 +269,6 @@ impl<X: GXExt> Shell<X> {
             Mode::Script(source) => Some(source.clone()),
             Mode::Check(_) | Mode::Repl => None,
         };
-        let program_text: Option<Vec<u8>> = program.as_ref().and_then(|s| match s {
-            Source::File(p) => std::fs::read(p).ok(),
-            Source::Internal(text) => Some(text.as_bytes().to_vec()),
-            _ => None,
-        });
         let mut flags = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
             Mode::Repl => CFlag::ReplaceImports.into(),
@@ -285,7 +280,7 @@ impl<X: GXExt> Shell<X> {
             CacheMode::Off => None,
             CacheMode::On | CacheMode::Warm => match cache::RegistrationCache::new(
                 &root,
-                program_text.as_deref(),
+                program.as_ref(),
                 flags.bits() as u64,
             ) {
                 Ok(c) => Some(c),
@@ -301,49 +296,32 @@ impl<X: GXExt> Shell<X> {
         let mut pending_registration = None;
         let mut pending_program = None;
         let mut program_image = None;
-        let registration = match cache.as_ref() {
-            None => None,
-            Some(c) => {
-                // CR claude for claude: [bug] An entry that fails to read is never
-                // replaced. A loaded entry arms no save, and `program_loaded` keeps
-                // `program_image` unarmed, so when the restore fails
-                // (graphix-rt/src/gx.rs:296) the runtime compiles cold and never
-                // rewrites the entry it was given. A bad program entry also skips the
-                // intact registration entry. A zero-length file left by a crash after
-                // the un-fsynced write (cache.rs:198), or an entry written by a host
-                // with other CPU features (refused by the header's ISA check), makes
-                // every later start of that program cold until the build id changes; a
-                // bad registration entry does the same to every --check and REPL start.
-                // `--warm` exits 0 without replacing it, and the only sign is a
-                // --log-dir warning that says "registration image" for either entry and
-                // names no path. probe: design/review-2026-10-05/repro/x-image-07.sh
-                // (x-image-07)
-                let loaded = c
-                    .load(Entry::Program)
-                    .map(|b| (b, true))
-                    .or_else(|| c.load(Entry::Registration).map(|b| (b, false)));
-                let program_loaded = matches!(loaded, Some((_, true)));
-                if c.has_program() && !program_loaded {
-                    let (tx, rx) = oneshot::channel();
-                    program_image = Some(tx);
-                    pending_program = Some(rx);
-                }
-                // The registration entry serves a later run of a
-                // different program under these packages; a program
-                // built into the binary is the only one it runs, so
-                // its cold start skips the encode.
-                let embedded = matches!(self.mode, Mode::Script(Source::Internal(_)));
-                match loaded {
-                    Some((bytes, _)) => Some(RegistrationImage::Load(bytes)),
-                    None if embedded => None,
-                    None => {
-                        let (tx, rx) = oneshot::channel();
-                        pending_registration = Some(rx);
-                        Some(RegistrationImage::Save(tx))
-                    }
-                }
+        let registration = cache.as_ref().map(|c| {
+            let mut image = RegistrationImage::default();
+            // a fusion profile is of this process's compile, so it never
+            // starts from the program's entry
+            if !self.fusion_stats
+                && let Some(entry) = c.load(Entry::Program)
+            {
+                image.restore.push(entry);
             }
-        };
+            image.restore.extend(c.load(Entry::Registration));
+            // What does not restore is compiled and written. The
+            // registration entry serves a later run of a different
+            // program under these packages; a program built into the
+            // binary is the only one it runs, so it never writes one.
+            if !matches!(self.mode, Mode::Script(Source::Internal(_))) {
+                let (tx, rx) = oneshot::channel();
+                pending_registration = Some(rx);
+                image.save = Some(tx);
+            }
+            if c.has_program() {
+                let (tx, rx) = oneshot::channel();
+                program_image = Some(tx);
+                pending_program = Some(rx);
+            }
+            image
+        });
         let mut mods = vec![VfsResolver::new(vfs_modules)];
         for res in self.module_resolvers.drain(..) {
             mods.push(res);
@@ -371,33 +349,42 @@ impl<X: GXExt> Shell<X> {
             .await
             .context("loading initial modules")?;
         if let Some(cache) = cache.as_ref() {
-            for (entry, rx) in [
-                (Entry::Registration, pending_registration),
-                (Entry::Program, pending_program),
-            ] {
-                let Some(rx) = rx else { continue };
-                let stored = match rx.await {
-                    Ok(Ok(image)) => cache
-                        .store(entry, &image)
-                        .with_context(|| format!("{entry:?} image not written")),
-                    Ok(Err(e)) => Err(e.context(format!("{entry:?} image not taken"))),
-                    // the program failed to compile, which the run reports
-                    Err(_)
-                        if self.cache == CacheMode::Warm
-                            && matches!(entry, Entry::Program) =>
-                    {
-                        Ok(())
-                    }
-                    Err(_) => Err(anyhow!("{entry:?} image not taken: none was built")),
-                };
-                match stored {
-                    Ok(()) => (),
-                    Err(e) if self.cache == CacheMode::Warm => return Err(e),
-                    Err(e) => log::warn!("{e:#}"),
-                }
+            if let Some(rx) = pending_registration {
+                self.stored(Entry::Registration, rx.await, |i| {
+                    cache.store_registration(&i)
+                })?;
+            }
+            if let Some(rx) = pending_program {
+                self.stored(Entry::Program, rx.await, |p| cache.store_program(&p))?;
             }
         }
         Ok(handle)
+    }
+
+    /// Write the image the runtime sent, if it sent one: it sends none
+    /// for what it restored, or for a program that failed to compile,
+    /// which the run reports. A failure fails a warm run.
+    fn stored<T>(
+        &self,
+        entry: Entry,
+        image: Result<Result<T>, oneshot::error::RecvError>,
+        store: impl FnOnce(T) -> Result<()>,
+    ) -> Result<()> {
+        let stored = match image {
+            Err(_) => return Ok(()),
+            Ok(Ok(image)) => {
+                store(image).with_context(|| format!("{entry:?} image not written"))
+            }
+            Ok(Err(e)) => Err(e.context(format!("{entry:?} image not taken"))),
+        };
+        match stored {
+            Ok(()) => Ok(()),
+            Err(e) if self.cache == CacheMode::Warm => Err(e),
+            Err(e) => {
+                log::warn!("{e:#}");
+                Ok(())
+            }
+        }
     }
 
     async fn load_env(
@@ -419,16 +406,6 @@ impl<X: GXExt> Shell<X> {
                     .program()
                     .await?
                     .ok_or_else(|| anyhow!("the runtime has no program"))?;
-                // CR claude for claude: [bug] --fusion-stats prints the fusion counters
-                // of this process's own compile. A warm start restores the program
-                // entry and fuses nothing, so the second run of a program prints
-                // 'fusion: 0 of 0 attempted regions fused' where the cold run printed
-                // '1 of 2'. --check never fuses either (CheckOnly,
-                // graphix-rt/src/gx.rs:837-841), so `--check --fusion-stats` always
-                // prints 0 of 0; only --expand builds. Skip the program entry when
-                // fusion_stats is set (or carry the profile in the image), and refuse
-                // the flag under --check without --expand. probe:
-                // design/review-2026-10-05/repro/shell-09.gx (shell-09)
                 if self.fusion_stats {
                     print_fusion_stats(
                         &FusionStats::default(),

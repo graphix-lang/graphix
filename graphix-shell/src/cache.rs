@@ -2,21 +2,42 @@
 //! executable that wrote it, on its first run: entries live under the
 //! cache directory by the executable's build id, which also covers the
 //! packages compiled into it, keyed by the root that declares them and
-//! the image format, so a rebuilt executable misses and recompiles. A
-//! program's entry adds the program's source to the key. Entries are
-//! written to a temporary file and renamed into place, and other build
-//! ids' directories are removed when one is written.
+//! the image format, so a rebuilt executable misses and recompiles; an
+//! executable with no build id has no cache. A program's entry adds the
+//! program (its file's path, or an embedded program's text) to the key
+//! and carries the sources its compile read, re-verified on load.
+//! Entries are written to a temporary file and renamed into place; a
+//! load touches its entry, and the entries unused longest are collected
+//! when one is written.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
+use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::image;
+use graphix_compiler::{
+    expr::{Origin, Source},
+    image,
+};
+use graphix_rt::ProgramImage;
 use log::{info, warn};
 use netidx_core::utils::make_sha3_token;
 use std::{
     fmt::Write,
     fs,
     path::{Path as FsPath, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime},
 };
+
+/// The bytes the entries of every build id may hold together.
+const KEEP_BYTES: u64 = 512 << 20;
+/// An entry unused this long is collected whatever the total.
+const KEEP_UNUSED: Duration = Duration::from_secs(30 * 24 * 3600);
+/// A temporary file this old is a writer that died.
+const ABANDONED: Duration = Duration::from_secs(3600);
+/// A program entry opens with its sources: this magic, their length
+/// (u64 LE), the text, and zeros to a multiple of `IMAGE_ALIGN`.
+const DEPS_MAGIC: &[u8; 8] = b"GXDEPS\0\0";
+const IMAGE_ALIGN: usize = 64;
 
 pub(crate) struct RegistrationCache {
     root: PathBuf,
@@ -41,88 +62,109 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// The GNU build id note of the running executable, which the linker
-/// stamps per link, or for a PE executable its link stamp and size; a
-/// build with neither falls back to the compiler version, which is not
-/// unique per build but still separates releases.
-fn build_id() -> String {
-    match std::env::current_exe()
-        .ok()
-        .and_then(|p| elf_build_id(&p).or_else(|| pe_build_id(&p)))
-    {
-        Some(id) => id,
-        // CR claude for claude: [bug] Every Mach-O executable lands here (its magic is
-        // neither "\x7fELF" nor "MZ"), and aarch64-apple-darwin is a release target, so
-        // on macOS every build of one graphix-shell version shares one cache directory.
-        // The registration key is only the image format plus the package names, and the
-        // header checks only magic, format and ISA. A source rebuild after a stdlib
-        // edit, or the package manager's same-version rebuild after an external package
-        // update, therefore restores the previous build's definitions without warning,
-        // along with program entries whose kernel bytes link by helper name against the
-        // new binary. Read the Mach-O LC_UUID the way the ELF note is read, and when no
-        // per-build id exists, disable the cache rather than key it by version. probe:
-        // design/review-2026-10-05/repro/x-image-09.sh (Linux, binaries without a build
-        // id: the stdlib-edited build prints the old pi = 3.141592653589793 from the
-        // cache, pi = 3 with --no-cache). (x-image-09)
-        None => format!("v{}", env!("CARGO_PKG_VERSION")),
-    }
+fn digest(parts: &[&[u8]]) -> String {
+    hex(&make_sha3_token(parts.iter().copied())[..16])
+}
+
+/// The running executable's per-build id: the GNU build id note an ELF
+/// linker stamps, a Mach-O `LC_UUID`, or a PE link stamp and size.
+fn build_id() -> Option<String> {
+    let file = fs::File::open(std::env::current_exe().ok()?).ok()?;
+    // Mapped, so only the pages the walk touches are read: the headers
+    // and the note, not the executable.
+    let file = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    elf_build_id(&file).or_else(|| macho_build_id(&file)).or_else(|| pe_build_id(&file))
+}
+
+fn u16_le(b: &[u8], i: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?))
+}
+
+fn u32_le(b: &[u8], i: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
+}
+
+fn u64_le(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?))
+}
+
+fn u32_be(b: &[u8], i: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?))
+}
+
+fn u64_be(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from_be_bytes(b.get(i..i + 8)?.try_into().ok()?))
 }
 
 /// A PE executable's COFF `TimeDateStamp` and its length: the stamp is
 /// the link time, or a hash of the contents under a reproducible link,
 /// and the length separates two builds that share one. Any malformed
 /// field is `None`, never a panic.
-fn pe_build_id(exe: &FsPath) -> Option<String> {
-    fn u32_at(b: &[u8], i: usize) -> Option<u32> {
-        Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
-    }
-    let file = fs::File::open(exe).ok()?;
-    let file = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+fn pe_build_id(file: &[u8]) -> Option<String> {
     if file.get(..2)? != b"MZ" {
         return None;
     }
-    let pe = u32_at(&file, 0x3c)? as usize;
+    let pe = u32_le(file, 0x3c)? as usize;
     if file.get(pe..pe + 4)? != b"PE\0\0" {
         return None;
     }
-    let stamp = u32_at(&file, pe + 8)?;
+    let stamp = u32_le(file, pe + 8)?;
     Some(format!("pe-{stamp:08x}-{:x}", file.len()))
+}
+
+/// A 64-bit Mach-O's `LC_UUID`, or for a universal binary its first
+/// slice's. Any malformed field is `None`, never a panic.
+fn macho_build_id(file: &[u8]) -> Option<String> {
+    const LC_UUID: u32 = 0x1b;
+    let thin = match file.get(..4)? {
+        [0xca, 0xfe, 0xba, 0xbe] => {
+            let (off, len) = (u32_be(file, 16)? as usize, u32_be(file, 20)? as usize);
+            file.get(off..off.checked_add(len)?)?
+        }
+        [0xca, 0xfe, 0xba, 0xbf] => {
+            let (off, len) = (u64_be(file, 16)? as usize, u64_be(file, 24)? as usize);
+            file.get(off..off.checked_add(len)?)?
+        }
+        _ => file,
+    };
+    if thin.get(..4)? != [0xcf, 0xfa, 0xed, 0xfe] {
+        return None;
+    }
+    let mut at = 32;
+    for _ in 0..u32_le(thin, 16)? {
+        let (cmd, size) = (u32_le(thin, at)?, u32_le(thin, at + 4)? as usize);
+        if cmd == LC_UUID {
+            return Some(format!("macho-{}", hex(thin.get(at + 8..at + 24)?)));
+        }
+        if size == 0 {
+            return None;
+        }
+        at = at.checked_add(size)?;
+    }
+    None
 }
 
 /// Walk the ELF64 program headers for a `PT_NOTE` holding
 /// `NT_GNU_BUILD_ID`. Any malformed field is `None`, never a panic.
-fn elf_build_id(exe: &FsPath) -> Option<String> {
-    fn u16_at(b: &[u8], i: usize) -> Option<u16> {
-        Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?))
-    }
-    fn u32_at(b: &[u8], i: usize) -> Option<u32> {
-        Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
-    }
-    fn u64_at(b: &[u8], i: usize) -> Option<u64> {
-        Some(u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?))
-    }
-    // Mapped, so only the pages the walk touches are read: the headers
-    // and the note, not the executable.
-    let file = fs::File::open(exe).ok()?;
-    let file = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+fn elf_build_id(file: &[u8]) -> Option<String> {
     if file.get(..4)? != b"\x7fELF" || file.get(4)? != &2 || file.get(5)? != &1 {
         return None;
     }
-    let phoff = u64_at(&file, 32)? as usize;
-    let phentsize = u16_at(&file, 54)? as usize;
-    let phnum = u16_at(&file, 56)? as usize;
+    let phoff = u64_le(file, 32)? as usize;
+    let phentsize = u16_le(file, 54)? as usize;
+    let phnum = u16_le(file, 56)? as usize;
     for i in 0..phnum {
         let ph = file.get(phoff + i * phentsize..)?;
-        if u32_at(ph, 0)? != 4 {
+        if u32_le(ph, 0)? != 4 {
             continue;
         }
-        let offset = u64_at(ph, 8)? as usize;
-        let size = u64_at(ph, 32)? as usize;
+        let offset = u64_le(ph, 8)? as usize;
+        let size = u64_le(ph, 32)? as usize;
         let mut notes = file.get(offset..offset + size)?;
         while notes.len() >= 12 {
-            let namesz = u32_at(notes, 0)? as usize;
-            let descsz = u32_at(notes, 4)? as usize;
-            let ntype = u32_at(notes, 8)?;
+            let namesz = u32_le(notes, 0)? as usize;
+            let descsz = u32_le(notes, 4)? as usize;
+            let ntype = u32_le(notes, 8)?;
             let name_end = 12 + namesz;
             let desc_start = (name_end + 3) & !3;
             let desc_end = desc_start + descsz;
@@ -135,17 +177,80 @@ fn elf_build_id(exe: &FsPath) -> Option<String> {
     None
 }
 
+/// The program entry's record of the sources its compile read: a line
+/// `+<digest> <path>` per file read, and `-<path>` per file whose
+/// appearance would change what the compile read (an interface beside
+/// a module, a `m.gx` beside the `m/mod.gx` it would win over). `None`
+/// when it read a source no file vouches for on the next start.
+fn sources_record(sources: &[triomphe::Arc<Origin>]) -> Option<String> {
+    let mut read: Vec<(&FsPath, &Origin)> = vec![];
+    for o in sources {
+        match &o.source {
+            Source::File(p) => read.push((p, o)),
+            // the packages are the build's, an embedded program is the key
+            Source::Internal(_) | Source::Unspecified => (),
+            Source::Netidx(p) => {
+                info!("no program entry: the program reads {p} from netidx");
+                return None;
+            }
+        }
+    }
+    let mut record = String::new();
+    let absent = |p: PathBuf, record: &mut String| {
+        if !read.iter().any(|(r, _)| *r == p) {
+            let _ = writeln!(record, "-{}", p.display());
+        }
+    };
+    for (p, o) in &read {
+        let _ = writeln!(record, "+{} {}", digest(&[o.text.as_bytes()]), p.display());
+    }
+    for (p, o) in &read {
+        if p.extension().is_some_and(|e| e == "gxi") {
+            continue;
+        }
+        absent(p.with_extension("gxi"), &mut record);
+        if o.parent.is_some()
+            && p.file_name().is_some_and(|n| n == "mod.gx")
+            && let Some(dir) = p.parent()
+        {
+            absent(dir.with_extension("gx"), &mut record);
+        }
+    }
+    Some(record)
+}
+
+/// Whether every source `record` lists is as the compile read it.
+fn sources_unchanged(record: &str) -> bool {
+    record.lines().all(|line| match line.split_at_checked(1) {
+        Some(("-", path)) => {
+            matches!(fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        }
+        Some(("+", rest)) => match rest.split_once(' ') {
+            Some((want, path)) => {
+                fs::read(path).is_ok_and(|text| digest(&[&text]) == want)
+            }
+            None => false,
+        },
+        _ => false,
+    })
+}
+
+static TEMP: AtomicU64 = AtomicU64::new(0);
+
 impl RegistrationCache {
-    /// The cache entries for this root and, when its source is known,
-    /// the program; an error when there is no cache directory.
-    pub(crate) fn new(root: &str, program: Option<&[u8]>, flags: u64) -> Result<Self> {
+    /// The cache entries for this root and, when it is one a later start
+    /// can find again, the program; an error when there is no cache
+    /// directory or no build id to file the entries under.
+    pub(crate) fn new(root: &str, program: Option<&Source>, flags: u64) -> Result<Self> {
         let root_dir = dirs::cache_dir()
             .ok_or_else(|| anyhow!("no cache directory"))?
             .join("graphix")
             .join("registration");
+        let build =
+            build_id().ok_or_else(|| anyhow!("the executable has no build id"))?;
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
-        let registration = hex(&make_sha3_token([&format[..], root.as_bytes()])[..16]);
+        let registration = digest(&[&format, root.as_bytes()]);
         // CR claude for claude: [bug] The program entry is keyed by the root file's bytes
         // alone. The modules the compile read (`mod m;` files beside the script,
         // GRAPHIX_MODPATH, netidx) and the script's path are not in the key, and
@@ -158,10 +263,34 @@ impl RegistrationCache {
         // canonical script path, treat any mismatch as a miss, and hash the bytes
         // RootFile::load parsed, not the separate read at lib.rs:255. probe:
         // design/review-2026-10-05/repro/x-image-01.sh (x-image-01)
-        let program = program.map(|p| {
-            hex(&make_sha3_token([&format[..], root.as_bytes(), &flags[..], p])[..16])
+        // 2026-10-07 claude: the program entry is keyed by the script's path (or an
+        // embedded program's text) and carries sources_record: each file the compile
+        // parsed with its digest, from the origins the resolved program holds, plus
+        // the interface and `m.gx` that would change a module's resolution if they
+        // appeared; load re-verifies it, and a netidx module means no entry. Pin:
+        // cache::tests::a_program_entry_misses_when_a_source_changes. What remains: a
+        // file added in a search directory ahead of the one a module came from (the
+        // script's own, ahead of GRAPHIX_MODPATH) shadows it unseen, since an origin
+        // does not record the search that found it.
+        let program = program.and_then(|p| {
+            let id = match p {
+                Source::File(path) => path.to_string_lossy().into_owned().into_bytes(),
+                Source::Internal(text) => text.as_bytes().to_vec(),
+                Source::Netidx(_) | Source::Unspecified => return None,
+            };
+            // the search path decides which file a module name reaches
+            let modpath = std::env::var_os("GRAPHIX_MODPATH").unwrap_or_default();
+            let modpath = modpath.as_encoded_bytes();
+            Some(digest(&[
+                &format,
+                root.as_bytes(),
+                &flags,
+                &[p.is_file() as u8],
+                &id,
+                modpath,
+            ]))
         });
-        Ok(RegistrationCache { root: root_dir, build: build_id(), registration, program })
+        Ok(RegistrationCache { root: root_dir, build, registration, program })
     }
 
     pub(crate) fn has_program(&self) -> bool {
@@ -183,11 +312,12 @@ impl RegistrationCache {
         Some(self.dir().join(format!("{}.img", self.key(entry)?)))
     }
 
-    /// The entry mapped into memory: only the pages a restore touches
-    /// are read, and an instance decoded later reads its own. An entry
-    /// is never rewritten in place (written to a temporary file and
-    /// renamed), so the mapping stays valid.
-    pub(crate) fn load(&self, entry: Entry) -> Option<Bytes> {
+    /// The entry mapped into memory, with its path: only the pages a
+    /// restore touches are read, and an instance decoded later reads its
+    /// own. An entry is never rewritten in place (written to a temporary
+    /// file and renamed), so the mapping stays valid. A program entry
+    /// whose sources changed is a miss.
+    pub(crate) fn load(&self, entry: Entry) -> Option<(ArcStr, Bytes)> {
         let path = self.path(entry)?;
         let file = match fs::File::open(&path) {
             Ok(f) => f,
@@ -197,64 +327,120 @@ impl RegistrationCache {
                 return None;
             }
         };
-        match unsafe { memmap2::Mmap::map(&file) } {
-            Ok(map) => {
-                info!("{entry:?} image {}", path.display());
-                Some(Bytes::from_owner(map))
-            }
+        let bytes = match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(map) => Bytes::from_owner(map),
             Err(e) => {
                 warn!("mapping the {entry:?} image {}: {e}", path.display());
-                None
+                return None;
             }
-        }
+        };
+        let image = match entry {
+            Entry::Registration => bytes,
+            Entry::Program => {
+                let image = (|| {
+                    if bytes.get(..8)? != DEPS_MAGIC {
+                        return None;
+                    }
+                    let len = u64_le(&bytes, 8)? as usize;
+                    let record =
+                        std::str::from_utf8(bytes.get(16..16usize.checked_add(len)?)?)
+                            .ok()?;
+                    let start = (16 + len).next_multiple_of(IMAGE_ALIGN);
+                    (sources_unchanged(record) && start <= bytes.len())
+                        .then(|| bytes.slice(start..))
+                })();
+                match image {
+                    Some(image) => image,
+                    None => {
+                        info!("{entry:?} image {} is stale", path.display());
+                        return None;
+                    }
+                }
+            }
+        };
+        let _ = file.set_modified(SystemTime::now());
+        info!("{entry:?} image {}", path.display());
+        Some((ArcStr::from(path.display().to_string()), image))
     }
 
-    /// Write the entry and remove other build ids' directories.
-    pub(crate) fn store(&self, entry: Entry, image: &[u8]) -> Result<()> {
+    pub(crate) fn store_registration(&self, image: &[u8]) -> Result<()> {
+        self.store(Entry::Registration, &[image])
+    }
+
+    /// Write the program entry, unless its compile read a source the
+    /// next start cannot verify.
+    pub(crate) fn store_program(&self, program: &ProgramImage) -> Result<()> {
+        let Some(record) = sources_record(&program.sources) else { return Ok(()) };
+        let mut head =
+            Vec::with_capacity((16 + record.len()).next_multiple_of(IMAGE_ALIGN));
+        head.extend_from_slice(DEPS_MAGIC);
+        head.extend_from_slice(&(record.len() as u64).to_le_bytes());
+        head.extend_from_slice(record.as_bytes());
+        head.resize(head.len().next_multiple_of(IMAGE_ALIGN), 0);
+        self.store(Entry::Program, &[&head, &program.image])
+    }
+
+    /// Write the entry, then collect what has gone unused longest.
+    fn store(&self, entry: Entry, parts: &[&[u8]]) -> Result<()> {
         let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
-        // CR claude for claude: [risk] The temp name is `{key}.img.{pid}`. Two Shells in
-        // one process that store one entry at once open, truncate and write the same
-        // file, and the first rename installs whatever interleaving landed; the
-        // parallel #[test]s of check_whole_script.rs and check_numeric_singleton.rs do
-        // this on a fresh build id. Images differ from run to run (three --warm runs:
-        // 1519550, 1522275 and 1519802 bytes), so the installed entry can be a mix. A
-        // mixed entry restores as InvalidFormat ('compiling cold'), and a failed load
-        // is never rewritten, so every later start of that binary compiles the root
-        // cold. Give each writer its own temp name (pid plus a process-wide counter, or
-        // tempfile::NamedTempFile::new_in(dir) then persist). (shell-13)
         let tmp = dir.join(format!(
-            "{}.img.{}",
+            "{}.img.{}.{}",
             self.key(entry).unwrap_or_default(),
-            std::process::id()
+            std::process::id(),
+            TEMP.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::write(&tmp, image).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, &path).with_context(|| format!("renaming {}", tmp.display()))?;
-        // CR claude for claude: [perf] Every cold write deletes every other build id's
-        // directory, so executables that share the cache evict each other and
-        // alternating runs always start cold. That covers a dev and a quick graphix,
-        // two standalone package builds, and every `cargo test`: its ShellBuilder tests
-        // (check_leaves_assertions_to_the_build.rs, examples_compile.rs) write under their own build ids
-        // and delete the user's graphix entries. Within one build id nothing is
-        // collected: each edit of a script adds a program entry holding the whole
-        // session (1.5 MB for a one-line script, debug build).
-        // design/program_image.md:60 says only build ids older than the current few are
-        // collected. Collect by recency instead (touch an entry on load, remove what
-        // has gone unused longest past a bound), and give the tests a cache directory
-        // of their own. probe: a registration/<other-id>/ directory is gone after one
-        // cold run of graphix or of the check_leaves_assertions_to_the_build test executable; four
-        // one-line edits of a script left four 1.5 MB program entries. (x-image-08)
-        if let Ok(entries) = fs::read_dir(&self.root) {
-            for entry in entries.flatten() {
-                if entry.file_name() != self.build.as_str() {
-                    let _ = fs::remove_dir_all(entry.path());
+        let written = (|| {
+            use std::io::Write;
+            let mut f = fs::File::create(&tmp)?;
+            for part in parts {
+                f.write_all(part)?;
+            }
+            f.sync_all()?;
+            fs::rename(&tmp, &path)
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            bail!("writing {}: {e}", path.display());
+        }
+        info!("{entry:?} image written to {}", path.display());
+        self.collect();
+        Ok(())
+    }
+
+    /// Remove abandoned temporary files, entries unused past
+    /// `KEEP_UNUSED`, and the least recently used past `KEEP_BYTES`,
+    /// across every build id; then the build ids left empty.
+    fn collect(&self) {
+        let now = SystemTime::now();
+        let age = |m: &fs::Metadata| {
+            m.modified().ok().and_then(|t| now.duration_since(t).ok()).unwrap_or_default()
+        };
+        let mut entries = vec![];
+        for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+            for f in fs::read_dir(build.path()).into_iter().flatten().flatten() {
+                let Ok(m) = f.metadata() else { continue };
+                if f.path().extension().is_some_and(|e| e == "img") {
+                    entries.push((age(&m), m.len(), f.path()));
+                } else if age(&m) > ABANDONED {
+                    let _ = fs::remove_file(f.path());
                 }
             }
         }
-        info!("{entry:?} image written to {}", path.display());
-        Ok(())
+        entries.sort_unstable_by_key(|(age, ..)| *age);
+        let mut kept = 0;
+        for (age, len, path) in entries {
+            kept += len;
+            if age > KEEP_UNUSED || kept > KEEP_BYTES {
+                let _ = fs::remove_file(path);
+            }
+        }
+        for build in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+            // only an empty directory is removed
+            let _ = fs::remove_dir(build.path());
+        }
     }
 }
 
@@ -267,11 +453,68 @@ mod tests {
     #[test]
     fn build_id_is_read_from_the_executable() {
         let id = build_id();
-        assert!(!id.is_empty());
         assert_eq!(id, build_id());
         if cfg!(target_os = "linux") {
-            assert!(!id.starts_with('v'), "{id}");
+            let id = id.unwrap();
             assert_eq!(id.len(), 40, "{id}");
         }
+    }
+
+    fn thin_macho(uuid: [u8; 16]) -> Vec<u8> {
+        let mut b = vec![0xcf, 0xfa, 0xed, 0xfe];
+        b.resize(32, 0);
+        b[16..20].copy_from_slice(&2u32.to_le_bytes());
+        // LC_SEGMENT_64 stand-in, then LC_UUID
+        b.extend_from_slice(&0x19u32.to_le_bytes());
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&0x1bu32.to_le_bytes());
+        b.extend_from_slice(&24u32.to_le_bytes());
+        b.extend_from_slice(&uuid);
+        b
+    }
+
+    #[test]
+    fn macho_uuid_is_the_build_id() {
+        let uuid = *b"0123456789abcdef";
+        let want = format!("macho-{}", hex(&uuid));
+        let thin = thin_macho(uuid);
+        assert_eq!(macho_build_id(&thin).as_deref(), Some(want.as_str()));
+        let mut fat = vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 1];
+        fat.extend_from_slice(&[0; 8]);
+        fat.extend_from_slice(&64u32.to_be_bytes());
+        fat.extend_from_slice(&(thin.len() as u32).to_be_bytes());
+        fat.resize(64, 0);
+        fat.extend_from_slice(&thin);
+        assert_eq!(macho_build_id(&fat).as_deref(), Some(want.as_str()));
+        assert_eq!(macho_build_id(&thin[..40]), None);
+    }
+
+    #[test]
+    fn a_program_entry_misses_when_a_source_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main.gx");
+        let m = dir.path().join("m.gx");
+        fs::write(&main, "mod m;\nm::x").unwrap();
+        fs::write(&m, "let x = 1").unwrap();
+        let file = |p: &FsPath, parent: Option<triomphe::Arc<Origin>>| {
+            triomphe::Arc::new(Origin {
+                parent,
+                source: Source::File(p.to_path_buf()),
+                text: ArcStr::from(fs::read_to_string(p).unwrap()),
+            })
+        };
+        let root = file(&main, None);
+        let record = sources_record(&[root.clone(), file(&m, Some(root))]).unwrap();
+        assert!(sources_unchanged(&record), "{record}");
+        fs::write(&m, "let x = 2").unwrap();
+        assert!(!sources_unchanged(&record), "an edited module");
+        fs::write(&m, "let x = 1").unwrap();
+        fs::write(dir.path().join("m.gxi"), "val x: i64").unwrap();
+        assert!(!sources_unchanged(&record), "an interface added beside a module");
+        fs::remove_file(dir.path().join("m.gxi")).unwrap();
+        assert!(sources_unchanged(&record), "{record}");
+        fs::remove_file(&m).unwrap();
+        assert!(!sources_unchanged(&record), "a deleted module");
     }
 }

@@ -18,7 +18,7 @@ use graphix_compiler::{
     BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent, Scope,
     UserEvent,
     env::Env,
-    expr::{ExprId, ModPath, ResolverFactory, ResolverRef, Source},
+    expr::{ExprId, ModPath, Origin, ResolverFactory, ResolverRef, Source},
     ide::Ide,
     image::ProgramRoot,
     node::lambda::LambdaDef,
@@ -888,12 +888,32 @@ impl<X: GXExt> GXHandle<X> {
     }
 }
 
-/// What a runtime does about its registration image: restore one
-/// instead of compiling the root, or send the image of the root it
-/// compiled, taken before any cycle, so a warm start can restore it.
-pub enum RegistrationImage {
-    Load(Bytes),
-    Save(oneshot::Sender<Result<Bytes>>),
+/// What a runtime does about its session image: restore the first of
+/// `restore` that reads instead of compiling the root, and when none
+/// does, send the image of the root it compiled, taken before any
+/// cycle, to `save`, so a later start can restore it.
+#[derive(Default)]
+pub struct RegistrationImage {
+    /// each image with what it is, for the warning when it does not read
+    pub restore: SmallVec<[(ArcStr, Bytes); 2]>,
+    pub save: Option<oneshot::Sender<Result<Bytes>>>,
+}
+
+impl RegistrationImage {
+    pub fn load(image: Bytes) -> Self {
+        Self { restore: smallvec![(arcstr::literal!("the image"), image)], save: None }
+    }
+
+    pub fn save(tx: oneshot::Sender<Result<Bytes>>) -> Self {
+        Self { restore: SmallVec::new(), save: Some(tx) }
+    }
+}
+
+/// The session image taken after a program compiled, and every source
+/// its compile read (its file, each module's and interface's, once).
+pub struct ProgramImage {
+    pub image: Bytes,
+    pub sources: Vec<triomphe::Arc<Origin>>,
 }
 
 #[derive(Builder)]
@@ -910,7 +930,7 @@ pub struct GXConfig<X: GXExt> {
     /// Receives the image taken after `program` compiled, taken before
     /// any cycle, when the registration was not restored with one.
     #[builder(setter(strip_option), default)]
-    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    program_image: Option<oneshot::Sender<Result<ProgramImage>>>,
     /// Arm a trace (`max_events`, `max_cycles`, as [`GXHandle::trace_start`])
     /// before the program's init cycle, anchored at the program root.
     #[builder(setter(strip_option), default)]

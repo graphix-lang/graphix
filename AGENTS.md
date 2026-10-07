@@ -363,15 +363,17 @@ cycle; several writes to one variable in a cycle queue for the next.
 session state before any cycle (`graphix-compiler/src/image/` over
 the session core in `graphix-types/src/image/`) under
 `$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`: the
-registration entry (the package root compiled; key = image format +
-root; the build id covers the packages compiled in) and, for a script,
-the program entry (the program compiled too; key adds the program
-source). A warm start maps the program entry, else the registration
-entry and compiles the program, else compiles both; an entry that fails
-to read leaves the session untouched and starts cold; a missing entry is
-written from the runtime that compiled it. `--no-cache` disables the
-cache, `--warm` writes and exits; the program key carries the compile
-flags and the header the ISA. A script compiles at runtime
+registration entry (the package root compiled under fixed flags; key =
+image format + root; the build id covers the packages compiled in, and
+an executable without one has no cache) and, for a script, the program
+entry (the program compiled too; key adds the script's path or an
+embedded program's text, the flags and `GRAPHIX_MODPATH`; the entry
+records the sources its compile read and a load re-verifies them). The
+runtime restores the first of the program entry and the registration
+entry that reads, else compiles; an entry that fails to read leaves the
+session untouched, and whatever was compiled is written. `--no-cache`
+disables the cache, `--warm` writes and exits (failing when it cannot);
+the header carries the ISA. A script compiles at runtime
 construction (`GXConfig::program`, `GXHandle::program`), never through
 `load`. The package root compiles with fusion off. A fused region
 travels as its wrapper's `BodyRecord` (`fusion/emit/record.rs`):

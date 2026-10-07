@@ -247,13 +247,13 @@ async fn restored_builtin_check_leaves_no_binding() -> Result<()> {
     let (tx, _rx) = mpsc::channel(64);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::save(image_tx))
             .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
     let (tx, mut rx) = mpsc::channel(64);
     let warm =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image)).await?;
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(image)).await?;
     let (eid, _expr) = compile_one(&warm, "str::len(\"abc\") + str::len(\"de\")").await?;
     await_update(&mut rx, eid, |v| matches!(v, Value::I64(5))).await?;
     let env = warm.rt.get_env().await?;
