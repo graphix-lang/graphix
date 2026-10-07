@@ -3,36 +3,19 @@ use tui::{style, calendar::{Date, calendar, calendar_event, date}};
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
 
-// CR claude for eric: [readability] EventType, CalendarEntry and entries are never
-// read. Lines 13-17 rebuild the same four dates with hand-picked colours, so the book
-// section 'Color-coded Events by Type' (book/src/ui/tui/calendar.md:65) colours nothing
-// by type. Annotate `entries: Array<CalendarEntry>` and derive the events from it:
-// `array::map(entries, |e| calendar_event(style(#fg: select e.event_type { `Meeting =>
-// `Blue, `Deadline => `Red, `Holiday => `Green, `Birthday => `Magenta }), e.date))`.
-// tui/table_interactive.gx has the same shape: User and users (lines 8-14) are never
-// read, row1..row3 (lines 21-35) copy them by hand, and the Down guard hard-codes
-// `selected < 2` (line 45). `array::map(users, |u| &row([cell(line(u.name)),
-// cell(line("[u.age]")), cell(line(u.city))]))` and `selected < array::len(users) - 1`
-// fix both. Both rewrites pass graphix --check. (examples.r2-08)
-let entries = [
+let entries: Array<CalendarEntry> = [
     {date: date(2024, 5, 5), event_type: `Meeting},
     {date: date(2024, 5, 10), event_type: `Deadline},
     {date: date(2024, 5, 15), event_type: `Holiday},
     {date: date(2024, 5, 25), event_type: `Birthday}
 ];
 
-// CR claude for eric: [readability] EventType, CalendarEntry and `entries` are never
-// read. These four hand-written events hard-code their colors and repeat the dates in
-// entries, so the book's 'Color-coded Events by Type' section
-// (ui/tui/calendar.md:65-68) never derives a color from the type. Annotate `let
-// entries: Array<CalendarEntry>`, map the type to a color with a select (`` `Meeting =>
-// `Blue `` and so on), and build `events` with `array::map(entries, |e|
-// calendar_event(style(#fg: color_of(e.event_type)), e.date))`. That version checks and
-// builds. (examples-14)
-let event1 = calendar_event(style(#fg: `Blue), date(2024, 5, 5));
-let event2 = calendar_event(style(#fg: `Red), date(2024, 5, 10));
-let event3 = calendar_event(style(#fg: `Green), date(2024, 5, 15));
-let event4 = calendar_event(style(#fg: `Magenta), date(2024, 5, 25));
-let events = [event1, event2, event3, event4];
+let color_of = |t: EventType| select t {
+    `Meeting => `Blue,
+    `Deadline => `Red,
+    `Holiday => `Green,
+    `Birthday => `Magenta
+};
+let events = array::map(entries, |e| calendar_event(style(#fg: color_of(e.event_type)), e.date));
 
 calendar(#events: &events, &date(2024, 5, 1))

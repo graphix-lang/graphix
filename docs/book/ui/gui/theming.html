@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -266,7 +266,7 @@ let col = column(
   #width: &amp;`Fill,
   &amp;[
     text(#size: &amp;24.0, &amp;"Custom Palette"),
-    button(#padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
+    button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
     toggler(#label: &amp;"Enabled", #on_toggle: |v| enabled &lt;- v, &amp;enabled),
     slider(#min: &amp;0.0, #max: &amp;0.5, #step: &amp;0.05, #on_change: |v| br &lt;- v, &amp;br),
     text(&amp;"Brightness: [br]")
@@ -414,7 +414,7 @@ let dark_mode = true;
           #on_toggle: |v| dark_mode &lt;- v,
           &amp;dark_mode
         ),
-        button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
+        button(#on_press: |_| null, #padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
       ]
     )
   )
@@ -558,7 +558,7 @@ val slider_style: fn(
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -177,23 +177,32 @@
                         <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
-<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
+<pre><code class="language-graphix">// CR claude for claude: [dead] `use super::args;` is unused: `args` appears here and in
+// net.gx only as a parameter name. The pass that turned the globs into explicit names
+// counted parameter and field names, and left the same kind of import in db txn.gxi:1
+// (`txn`), gui clipboard.gxi (`image`, `text`), mouse_area.gxi (`button`),
+// keyboard_area.gxi and style.gxi (`text`), data_table.gxi (`column`), canvas.gxi
+// (`color`) and tui canvas.gxi (`line`); tui form.gxi's `Line` is unused as well.
+// Separately, db/mod.gx:1-2, http/mod.gx:1-2, fs/tempdir.gx:1 and fs/watch.gx:1-2
+// repeat their gxi's `mod` and bodyless `type` declarations, which
+// add_interface_modules already splices into the body (fs.gx uses `File` and db uses
+// `subscription` with no copy). book/src/modules/interfaces.md:289 ("declared `type T;`
+// on both sides") reads as asking for that copy, which contradicts lines 136-138 of the
+// same chapter. (gx-stdlib.r2-15)
+use super::args;
+type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// write the value to the specified path
 val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-/// subscribe to the specified path. The result type is driven by the
-/// annotation at the binding site — the runtime converts the published
-/// value into the requested type, returning `InvalidCast` if the
-/// conversion fails.
-val subscribe: fn(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
+/// subscribe to the specified path
+val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc. args must be a struct or null. The result
-/// type is driven by the annotation at the binding site.
-val call: fn(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+/// call the specified rpc. args must be a struct or null.
+val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
-/// Publish an rpc.
+/// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
 /// - the argument to f ('args) must be a struct with the same fields as 'spec,
 ///   or null if 'spec is null
@@ -205,17 +214,13 @@ val rpc: fn(
     #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path. If #update is specified the
-/// list refreshes each time the trigger updates; otherwise it refreshes
-/// once per second.
+/// list paths under the specified path.
 val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path. Refresh semantics match `list`.
+/// list the table under the specified path.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specified value at the specified path. Whenever the value
-/// updates, the new value is sent to subscribers. If #on_write is specified,
-/// writes from subscribers invoke on_write with the written value.
+/// Publish the specifed value at the specified path.
 val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 
@@ -270,7 +275,7 @@ val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 

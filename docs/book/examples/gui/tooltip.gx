@@ -13,13 +13,13 @@ let col = column(
             #tip: &text(&"Save your work"),
             #position: &`Bottom,
             #gap: &5.0,
-            &button(#padding: &`All(10.0), &text(&"Save"))
+            &button(#on_press: |_| null, #padding: &`All(10.0), &text(&"Save"))
         ),
         tooltip(
             #tip: &text(&"Delete permanently"),
             #position: &`Right,
             #gap: &5.0,
-            &button(#padding: &`All(10.0), &text(&"Delete"))
+            &button(#on_press: |_| null, #padding: &`All(10.0), &text(&"Delete"))
         )
     ]
 );

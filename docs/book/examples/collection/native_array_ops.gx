@@ -2,8 +2,6 @@
 // array — the spellings a Collection implementation for your own
 // array-backed type would use. Each is an index tail recursion, and the
 // whole loop compiles to a native kernel.
-use Collection::*;
-
 // fold: the primitive. ~6x the intrinsic per element (the loop's own
 // bounds check, `$` and select — array::len is a fast call).
 let rec fold_go = |a: Array<'a>, f: fn(acc: 'b, x: 'a) -> 'b, i: i64, acc: 'b| -> 'b

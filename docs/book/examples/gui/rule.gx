@@ -2,7 +2,7 @@ use gui::{
   window,
   column::column,
   row::row,
-  rule::{self, horizontal_rule, vertical_rule},
+  rule::{horizontal_rule, vertical_rule},
   text::text
 };
 mod icon;

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -314,8 +314,9 @@ editor’s <code>PATH</code>.</p>
 up the LSP via <code>nvim-lspconfig</code> (with a fallback to the built-in
 <code>vim.lsp.start</code> when lspconfig is missing), and registers the
 tree-sitter grammar.</p>
-<p>Drop the <code>nvim/</code> directory into your config or your plugin manager,
-then call:</p>
+<p><code>nvim/</code> is a runtime directory (<code>lua/graphix/</code>, <code>ftdetect/</code>,
+<code>queries/graphix/</code>): put it on the runtimepath through your plugin
+manager or <code>vim.opt.runtimepath:append(..)</code>, then call:</p>
 <pre><code class="language-lua">require('graphix').setup()
 </code></pre>
 <p>To install the tree-sitter grammar, run <code>:TSInstall graphix</code> after
@@ -839,13 +840,8 @@ bytes. The type correspondence is,</p>
 <h3 id="number-sets"><a class="header" href="#number-sets">Number Sets</a></h3>
 <p>There are a few sets of number types that classify numbers into various kinds.
 <code>Number</code> being the most broad, it contains all the number types. <code>Int</code> contains
-only integers, <code>Real</code> contains only reals (decimal plus the two float types),</p>
-<!-- CR claude for eric: [doc-drift] The core interface defines these sets as `Sint` and
-`Uint` (stdlib/graphix-package-core/src/graphix/mod.gxi:1-2; typ/print.rs:37-38 prints
-them so). `SInt` and `UInt` name nothing: `'a: SInt` is refused with "undefined type
-SInt". The graphix-lang skill (ide/skills/graphix-lang/SKILL.md:141) and
-../netidx/AGENTS.md:237 repeat the wrong names. (x-expr-walks.r2-15) -->
-<p><code>SInt</code> contains signed integers, <code>UInt</code> contains unsigned integers.</p>
+only integers, <code>Real</code> contains only reals (decimal plus the two float types),
+<code>Sint</code> contains signed integers, <code>Uint</code> contains unsigned integers.</p>
 <h2 id="bool"><a class="header" href="#bool">Bool</a></h2>
 <p>Boolean literals are written as <code>true</code> and <code>false</code>, and the name of the boolean
 type is <code>bool</code>.</p>
@@ -869,24 +865,26 @@ Caused by:
 </code></pre>
 <h2 id="duration"><a class="header" href="#duration">Duration</a></h2>
 <p>A time duration. The type name is <code>duration</code>, and the literals are written as,
-<code>duration:1.0s</code>, <code>duration:1.0ms</code>, <code>duration:1.0us</code>, <code>duration:1.0ns</code>. Durations
-can be added, and can be multiplied and divided by scalars.</p>
-<pre><code class="language-graphix">〉duration:1.0s + duration:1.0s
+<code>duration:1.0s</code>, <code>duration:1.0ms</code>, <code>duration:1.0us</code>, <code>duration:1.0ns</code> (and
+<code>m</code>, <code>h</code>, <code>d</code>, <code>M</code> and <code>y</code>). The arithmetic operators do not apply to
+durations; <a href="#systime---timers-and-time-arithmetic">sys::time</a> does the arithmetic.</p>
+<pre><code class="language-graphix">〉sys::time::add_dur(duration:1.0s, duration:1.0s)$
 -: duration
 2.s
-〉duration:1.0s * 50
+〉sys::time::scale(duration:1.0s, 50.0)$
 -: duration
 50.s
-〉duration:1.0s / 50
+〉sys::time::scale(duration:1.0s, 0.02)$
 -: duration
-0.02s
+20.ms
 </code></pre>
 <h2 id="datetime"><a class="header" href="#datetime">DateTime</a></h2>
 <p>A date and time in the UTC time zone. The type name is <code>datetime</code> and literals
 are written in RFC3339 format inside quotes. For example,
-<code>datetime:"2020-01-01T00:00:00Z"</code>. You can add and subtract <code>duration</code> from
-<code>datetime</code>.</p>
-<pre><code class="language-graphix">〉datetime:"2020-01-01T00:00:00Z" + duration:30.s
+<code>datetime:"2020-01-01T00:00:00Z"</code>. <code>sys::time::add</code> and <code>sys::time::sub</code>
+move a <code>datetime</code> by a <code>duration</code>, and <code>sys::time::diff</code> is the duration
+between two.</p>
+<pre><code class="language-graphix">〉sys::time::add(datetime:"2020-01-01T00:00:00Z", duration:30.s)
 -: datetime
 2020-01-01 00:00:30 UTC
 </code></pre>
@@ -3881,8 +3879,6 @@ recursions, compiled to a native loop:</p>
 // array — the spellings a Collection implementation for your own
 // array-backed type would use. Each is an index tail recursion, and the
 // whole loop compiles to a native kernel.
-use Collection::*;
-
 // fold: the primitive. ~6x the intrinsic per element (the loop's own
 // bounds check, `$` and select — array::len is a fast call).
 let rec fold_go = |a: Array&lt;'a&gt;, f: fn(acc: 'b, x: 'a) -&gt; 'b, i: i64, acc: 'b| -&gt; 'b
@@ -5853,7 +5849,7 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
-            // CR claude for eric: [bug] This completion test reads `acc`, so it fires
+            // CR claude for claude: [bug] This completion test reads `acc`, so it fires
             // again when the false arm's `acc &lt;-` lands. At that point the next read is
             // still in flight and `b` still holds the previous chunk, so over an
             // asynchronous `read` that returns 4 of 6 bytes, read_exact answers the
@@ -5888,7 +5884,7 @@ trait Read {
     /// produces.
     val read_all: fn(self) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s| {
         let want: u64 = u64:65536;
-        // CR claude for eric: [bug] acc's initializer is a constant, so acc is set
+        // CR claude for claude: [bug] acc's initializer is a constant, so acc is set
         // once, when the call site is built, and nothing clears it when `s` fires
         // again. Any second request at the same site (a new file, the next accepted
         // connection, a seq re-run, a file seeked back to 0) returns everything read
@@ -5907,7 +5903,7 @@ trait Read {
                 true =&gt; acc,
                 false =&gt; {
                     // gated on the chunk: see `read_exact`
-                    // CR claude for eric: [perf] Each 64 KiB chunk copies the whole
+                    // CR claude for claude: [perf] Each 64 KiB chunk copies the whole
                     // accumulator (core_bytes_concat builds a fresh buffer), so
                     // read_all is quadratic in the stream's length. No system stream
                     // overrides it: io.gx, fs.gx, tcp.gx, tls.gx and process.gx bind
@@ -6047,7 +6043,7 @@ Write::write_exact(out, json::write_bytes(#pretty: true, config)?)?
 <h1 id="sysfs---filesystem-operations"><a class="header" href="#sysfs---filesystem-operations">sys::fs - Filesystem Operations</a></h1>
 <p>The <code>sys::fs</code> module provides functions for reading, writing, and watching files and directories.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">use sys::io;
+<pre><code class="language-graphix">use sys::io::{Read, Lines, Write, Close};
 
 type FileType = [
     `Dir,
@@ -6061,9 +6057,6 @@ type FileType = [
     null
 ];
 
-/// Filesystem metadata. Not all kind fields are possible on all platforms.
-/// permissions will only be set on unix platforms, windows will only
-/// expose the ReadOnly flag.
 type Metadata = {
     accessed: [datetime, null],
     created: [datetime, null],
@@ -6073,7 +6066,6 @@ type Metadata = {
     permissions: [u32, `ReadOnly(bool)]
 };
 
-/// a directory entry
 type DirEntry = {
     path: string,
     file_name: string,
@@ -6083,70 +6075,6 @@ type DirEntry = {
 
 type Mode = [`Read, `Write, `Append, `ReadWrite, `Create, `CreateNew];
 type SeekFrom = [`Start(u64), `End(i64), `Current(i64)];
-
-mod watch;
-mod tempdir;
-
-/// Read the specified file into memory as a utf8 string and return it.
-val read_all: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// Read the specified file into memory as bytes and return it.
-val read_all_bin: fn(path: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
-
-/// Write data to path. If path does not exist it is created. If path exists it
-/// is truncated and replaced with data.
-val write_all: fn(#path: string, data: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// Like write_all, but for binary data.
-val write_all_bin: fn(#path: string, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// If path is a regular file then return path, otherwise return an IOError.
-val is_file: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// If path is a directory then return path, otherwise return an IOError.
-val is_dir: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
-
-/// Return metadata for a filesystem object.
-val metadata: fn(?#follow_symlinks: bool, path: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
-
-/// Read a directory and return an array of directory entries.
-val readdir: fn(
-    ?#max_depth: i64,
-    ?#min_depth: i64,
-    ?#contents_first: bool,
-    ?#follow_symlinks: bool,
-    ?#follow_root_symlink: bool,
-    ?#same_filesystem: bool,
-    path: string
-) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
-
-/// Create a directory. If `all` is true (default false) create all intermediate
-/// directories as well.
-val create_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// Remove a directory. If `all` is true (default false) recursively remove
-/// the contents as well.
-val remove_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// Remove a file.
-val remove_file: fn(path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
-
-/// Open a file with the specified mode, returning an I/O stream.
-///
-/// Mode semantics:
-/// - `Read: must exist, read only
-/// - `Write: create or truncate, write only
-/// - `Append: create or append, write only
-/// - `ReadWrite: must exist, read and write
-/// - `Create: create or truncate, read and write
-/// - `CreateNew: must not exist, read and write
-val open: fn(mode: Mode, path: string) -&gt; Result&lt;File, `IOError(string)&gt;;
-
-/// Get metadata for the open file.
-val fstat: fn(file: File) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
-
-/// Truncate or extend the file to the specified length.
-val truncate: fn(file: File, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
 
 /// An open file. It reads, writes, seeks, and closes.
 type File;
@@ -6162,6 +6090,71 @@ impl Lines for File;
 impl Write for File;
 impl Close for File;
 impl Seek for File;
+
+mod watch;
+mod tempdir;
+
+/// Read the specified file into memory as a utf8 string and return it, or an
+/// error if,
+/// - path is not a file
+/// - path is not valid utf8
+/// - an OS specific error occurs while trying to read path
+val read_all: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// Read the specified file into memory as a bytes and return it, or an
+/// error if,
+/// - path is not a file
+/// - an OS specific error occurs while trying to read path
+val read_all_bin: fn(path: string) -&gt; Result&lt;bytes, `IOError(string)&gt;;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+val write_all: fn(#path: string, data: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Write data to path. If path does not exist it will be created. If path exists it
+/// will be truncated and it's contents will be replaced with data.
+val write_all_bin: fn(#path: string, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// if path is a file then return path
+/// otherwise return an IOError.
+val is_file: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// if path is a directory then return path, otherwise return an IOError.
+val is_dir: fn(path: string) -&gt; Result&lt;string, `IOError(string)&gt;;
+
+/// Return the metadata for a filesystem object, or an error.
+val metadata: fn(?#follow_symlinks: bool, path: string) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+
+/// readdir reads a directory and returns an array of directory entries.
+val readdir: fn(
+    ?#max_depth: i64,
+    ?#min_depth: i64,
+    ?#contents_first: bool,
+    ?#follow_symlinks: bool,
+    ?#follow_root_symlink: bool,
+    ?#same_filesystem: bool,
+    path: string
+) -&gt; Result&lt;Array&lt;DirEntry&gt;, `IOError(string)&gt;;
+
+/// create a directory. If all is true (default false) create all intermediate
+/// directories as well.
+val create_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// remove a directory. If all is true (default false) then recursively remove
+/// the contents as well.
+val remove_dir: fn(?#all: bool, path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// remove a file
+val remove_file: fn(path: string) -&gt; Result&lt;null, `IOError(string)&gt;;
+
+/// Open a file with the specified mode.
+val open: fn(mode: Mode, path: string) -&gt; Result&lt;File, `IOError(string)&gt;;
+
+/// Get metadata for the open file.
+val fstat: fn(file: File) -&gt; Result&lt;Metadata, `IOError(string)&gt;;
+
+/// Truncate or extend the file to the specified length.
+val truncate: fn(file: File, len: u64) -&gt; Result&lt;null, `IOError(string)&gt;;
 </code></pre>
 <p>An open <code>File</code> reads, writes and closes through the <a href="#sysio">sys::io</a>
 traits, and seeks through <code>Seek</code>:</p>
@@ -6174,7 +6167,18 @@ let text = buffer::to_string(Read::read_all(rewound ~ f)?)?;
 Close::close(text ~ f)?
 </code></pre>
 <h2 id="sysfswatch"><a class="header" href="#sysfswatch">sys::fs::watch</a></h2>
-<pre><code class="language-graphix">type Interest = [
+<pre><code class="language-graphix">/// The type of file system events you are interested in.
+/// The short names, e.g. `Access mean ANY kind of access event.
+/// The longer names e.g. `AccessOpen mean a more specific subset
+/// of the short named class event. There are sometimes multiple
+/// levels of this. For example `Modify expresses interest in
+/// any modification, `ModifyRename expresses interest in any
+/// kind of rename operation, and `ModifyRenameTo expresses interest
+/// only on rename to.
+///
+/// `Established is a special event that happens when the watch is
+/// successfully established
+type Interest = [
     `Established,
     `Any,
     `Access,
@@ -6216,11 +6220,18 @@ type WatchEvent = {
     event: Interest
 };
 
+/// An opaque handle to a filesystem watcher. Cleaned up when
+/// no remaining references exist.
 type Watcher;
+
+/// An opaque handle to a single watch. Use path() and events()
+/// to extract values from watch events.
 type Watch;
 
 /// Create a filesystem watcher.
-/// poll_interval defaults to 1s; poll_batch_size defaults to 100.
+///
+/// poll_interval: How often to poll a batch, must be &gt;= 100ms. default 1s.
+/// poll_batch_size: How many files to poll per batch, must be &gt;= 0. default 100.
 val create: fn(
     ?#poll_interval:[duration, null],
     ?#poll_batch_size:[i64, null],
@@ -6228,29 +6239,52 @@ val create: fn(
 ) -&gt; Result&lt;Watcher, `WatchError(string)&gt;;
 
 /// Watch path for events matching #interest using the given watcher.
+/// watch updates when,
+/// - an event occurs that matches interest
+/// - an error occurs when trying to establish the watch
+///
+/// If you wish to know when the watch is established, you must express interest
+/// in the `Established event (which is in the default set). If you do so, you will
+/// also get a new established event if you change the interest or the path.
+///
+/// If path is a directory the watch will report events about immediate children.
+/// If the watch could not be established establishement will be retried every
+/// time path updates
+///
+/// Filesystem watches are a limited operating system resource, like file
+/// descriptors, or handles.
 val watch: fn(?#interest: Array&lt;Interest&gt;, watcher: Watcher, path: string)
     -&gt; Result&lt;Watch, `WatchError(string)&gt;;
 
-/// The path of the filesystem object involved in the most recent watch event.
+/// The path of the filesystem object involved in the most recent
+/// watch event. Updates reactively when new events arrive.
 /// Accepts a single Watch, an Array of Watches, or a Map with Watch values.
-val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
-    -&gt; Result&lt;string, `WatchError(string)&gt;;
+/// When given a collection, flattens to a single stream — fires when
+/// any watch in the collection fires.
+val path: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;string, `WatchError(string)&gt;;
 
 /// The full watch event including all paths and the event type.
-val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;])
-    -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
+/// Updates reactively when new events arrive.
+/// Same collection handling as path().
+val events: fn(@args: [Watch, Array&lt;Watch&gt;, Map&lt;'k, Watch&gt;]) -&gt; Result&lt;WatchEvent, `WatchError(string)&gt;;
 </code></pre>
 <h2 id="sysfstempdir"><a class="header" href="#sysfstempdir">sys::fs::tempdir</a></h2>
 <pre><code class="language-graphix">/// An opaque handle to a temporary directory. The directory is
-/// automatically deleted when the handle is dropped.
+/// automatically deleted when there are no remaining references
+/// to the TempDir value.
 type T;
 
-/// Get the filesystem path of a TempDir.
+/// Get the filesystem path of a TempDir as a string.
 val path: fn(td: T) -&gt; string;
 
-/// Create a temporary directory.
-/// - #in: parent directory (default: system temp dir)
-/// - #name: prefix or suffix for the directory name
+/// Create a temporary directory and return a tempdir::T handle.
+/// The directory will be cleaned up when the tempdir::T value is
+/// no longer referenced.
+///
+/// if `in` is specified, the temporary directory will be created as a child of `in`
+///
+/// if `name` is specified, the temporary directory will have either a prefix of name
+/// or a suffix of name.
 val create: fn(
     ?#in:[null, string],
     ?#name:[null, `Prefix(string), `Suffix(string)],
@@ -6264,6 +6298,7 @@ stdio handle configured as <code>Pipe</code> is a <code>sys::process::Pipe</code
 implements the <a href="#sysio">sys::io</a> traits.</p>
 <pre><code class="language-graphix">use sys::io::{Read, Lines, Write, Close};
 
+/// An opaque handle to a managed child process.
 type Proc;
 
 /// One end of a pipe to a child process: the child's stdin (which the
@@ -6275,6 +6310,7 @@ impl Lines for Pipe;
 impl Write for Pipe;
 impl Close for Pipe;
 
+/// Where one of the child's standard streams goes.
 type Redirect = [
   `Pipe,
   `Inherit,
@@ -6310,12 +6346,14 @@ type ExitStatus = {
   success: bool,
 };
 
+/// Build stdio configuration. Streams inherit from the parent by default.
 val stdio: fn(
   ?#stdin: Redirect,
   ?#stdout: Redirect,
   ?#stderr: Redirect
 ) -&gt; StdioConfig;
 
+/// Build spawn options with default args/env/cwd/stdio settings.
 val options: fn(
   ?#args: Array&lt;string&gt;,
   ?#cwd: [string, null],
@@ -6326,12 +6364,23 @@ val options: fn(
   command: string
 ) -&gt; SpawnOptions;
 
+/// Start a child process using the supplied options. The process handle
+/// owns the child lifetime; if kill_on_drop is true, dropping the final
+/// handle kills a still-running child.
 val spawn: fn(options: SpawnOptions) -&gt; Result&lt;Child, `ProcessError(string)&gt;;
 
+/// Wait until the process exits and return its status. Multiple callers may
+/// wait on the same process concurrently.
 val wait: fn(proc: Proc) -&gt; Result&lt;ExitStatus, `ProcessError(string)&gt;;
 
+/// Return the OS process identifier assigned when the process was spawned.
 val pid: fn(proc: Proc) -&gt; i64;
 
+/// Stop the process if it is still running: signal graceful shutdown
+/// (SIGTERM on unix, the shutdown event on Windows), give it #grace to
+/// comply, then hard-kill as the backstop. The default #grace of zero
+/// is an immediate hard kill. Resolves after the process is dead; a
+/// no-op for a process that already exited.
 val kill: fn(?#grace: duration, proc: Proc) -&gt; null;
 </code></pre>
 <p><code>kill</code> stops a running process gracefully: it signals shutdown (SIGTERM
@@ -6438,7 +6487,7 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
-// CR claude for eric: [doc-drift] "A failed upgrade leaves it untouched" holds only for
+// CR claude for claude: [doc-drift] "A failed upgrade leaves it untouched" holds only for
 // failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
 // handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
 // which drops it. The caller's TcpStream then reads IOError "stream unavailable". The
@@ -6460,23 +6509,32 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
-<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
+<pre><code class="language-graphix">// CR claude for claude: [dead] `use super::args;` is unused: `args` appears here and in
+// net.gx only as a parameter name. The pass that turned the globs into explicit names
+// counted parameter and field names, and left the same kind of import in db txn.gxi:1
+// (`txn`), gui clipboard.gxi (`image`, `text`), mouse_area.gxi (`button`),
+// keyboard_area.gxi and style.gxi (`text`), data_table.gxi (`column`), canvas.gxi
+// (`color`) and tui canvas.gxi (`line`); tui form.gxi's `Line` is unused as well.
+// Separately, db/mod.gx:1-2, http/mod.gx:1-2, fs/tempdir.gx:1 and fs/watch.gx:1-2
+// repeat their gxi's `mod` and bodyless `type` declarations, which
+// add_interface_modules already splices into the body (fs.gx uses `File` and db uses
+// `subscription` with no copy). book/src/modules/interfaces.md:289 ("declared `type T;`
+// on both sides") reads as asking for that copy, which contradicts lines 136-138 of the
+// same chapter. (gx-stdlib.r2-15)
+use super::args;
+type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// write the value to the specified path
 val write: fn(path: string, value: Any) -&gt; Result&lt;_, `WriteError(string)&gt;;
 
-/// subscribe to the specified path. The result type is driven by the
-/// annotation at the binding site — the runtime converts the published
-/// value into the requested type, returning `InvalidCast` if the
-/// conversion fails.
-val subscribe: fn(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
+/// subscribe to the specified path
+val subscribe: fn&lt;'a: Concrete&gt;(path: string) -&gt; Result&lt;'a, [`SubscribeError(string), `InvalidCast(string)]&gt;;
 
-/// call the specified rpc. args must be a struct or null. The result
-/// type is driven by the annotation at the binding site.
-val call: fn(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
+/// call the specified rpc. args must be a struct or null.
+val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`RpcError(string), `InvalidCast(string)]&gt;;
 
-/// Publish an rpc.
+/// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)
 /// - the argument to f ('args) must be a struct with the same fields as 'spec,
 ///   or null if 'spec is null
@@ -6488,29 +6546,17 @@ val rpc: fn(
     #f:fn(args: 'args) -&gt; 'result throws 'e
 ) -&gt; Result&lt;_, `PublishRpcError(string)&gt; throws 'e;
 
-/// list paths under the specified path. If #update is specified the
-/// list refreshes each time the trigger updates; otherwise it refreshes
-/// once per second.
+/// list paths under the specified path.
 val list: fn(?#update:Any, path: string) -&gt; Result&lt;Array&lt;string&gt;, `ListError(string)&gt;;
 
-/// list the table under the specified path. Refresh semantics match `list`.
+/// list the table under the specified path.
 val list_table: fn(?#update:Any, path: string) -&gt; Result&lt;Table, `ListError(string)&gt;;
 
-/// Publish the specified value at the specified path. Whenever the value
-/// updates, the new value is sent to subscribers. If #on_write is specified,
-/// writes from subscribers invoke on_write with the written value.
+/// Publish the specifed value at the specified path.
 val publish: fn(?#on_write:fn(v: 'a) -&gt; _ throws 'e, path: string, v: Any) -&gt; Result&lt;_, `PublishError(string)&gt; throws 'e;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="systime---timers"><a class="header" href="#systime---timers">sys::time - Timers</a></h1>
-<!-- CR claude for eric: [doc-drift] This page is a hand copy of time.gxi and lacks 6 of
-its 9 vals (add, sub, add_dur, sub_dur, diff, scale), and nothing else in the book
-documents them. Meanwhile book/src/core/fundamental_types.md:139-166 teaches `duration +
-duration`, `duration:1.0s * 50` and `datetime + duration`, all refused by the checker,
-so the book shows no working time arithmetic. Include the gxi as io.md, tcp.md and
-tls.md do. dirs.md, fs.md, net.md and process.md are hand copies too: net.md's subscribe
-and call lack their Concrete bounds, and process.md drops most of the gxi's docs.
-(sys-io-15) -->
+<h1 id="systime---timers-and-time-arithmetic"><a class="header" href="#systime---timers-and-time-arithmetic">sys::time - Timers and Time Arithmetic</a></h1>
 <pre><code class="language-graphix">/// When v updates wait timeout and then return it. If v updates again
 /// before timeout expires, reset the timeout and continue waiting.
 val after_idle: fn(timeout: [duration, Number], v: 'a) -&gt; 'a;
@@ -6523,6 +6569,26 @@ val timer: fn(timeout: [duration, Number], repeat: [bool, Number]) -&gt; Result&
 
 /// return the current time each time trigger updates
 val now: fn(trigger: Any) -&gt; datetime;
+
+/// Add a duration to a datetime, saturating at the datetime range limits.
+val add: fn(t: datetime, d: duration) -&gt; datetime;
+
+/// Subtract a duration from a datetime, saturating at the datetime range limits.
+val sub: fn(t: datetime, d: duration) -&gt; datetime;
+
+/// Sum two durations. Overflow is a catchable error.
+val add_dur: fn(a: duration, b: duration) -&gt; Result&lt;duration, `DurationError(string)&gt;;
+
+/// Subtract two durations, saturating at zero (durations are unsigned).
+val sub_dur: fn(a: duration, b: duration) -&gt; duration;
+
+/// The time from `earlier` to `later`, saturating at zero when `later`
+/// is not after `earlier` (durations are unsigned).
+val diff: fn(later: datetime, earlier: datetime) -&gt; duration;
+
+/// Scale a duration by a float factor (divide by scaling with 1/x).
+/// A negative, NaN, or overflowing result is a catchable error.
+val scale: fn(d: duration, by: f64) -&gt; Result&lt;duration, `DurationError(string)&gt;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="sysdirs"><a class="header" href="#sysdirs">sys::dirs</a></h1>
@@ -7397,13 +7463,7 @@ let temp_source = 50.0;
 temp_source &lt;- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
 sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
 
-// CR claude for eric: [style] This `?` and four others with no catch
-// (gauge_threshold.gx:11, linegauge_colored.gx:11, paragraph_log_viewer.gx:21,
-// sparkline_rolling.gx:15) make each of these examples print 'error raised by ? will
-// not be caught' when checked or run. They are the only warnings in the example and
-// bench corpus. A handler-less `?` drops and logs the error just as `$` does, so `$`
-// keeps the behavior without the warning. (examples-15)
-let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")?;
+let temperature: f64 = sys::net::subscribe("/local/graphix/overview_realtime/temperature")$;
 
 // Will display updates automatically when data changes
 gauge(
@@ -7550,6 +7610,21 @@ tui::gauge::gauge(
 )
 </code></pre>
 <p>See individual widget documentation for specific style parameters they accept.</p>
+<h2 id="indexed-colors"><a class="header" href="#indexed-colors">Indexed Colors</a></h2>
+<p><code>`Indexed(n)</code> names one of the terminal’s 256 palette colors. This
+prints the whole palette with each index:</p>
+<pre><code class="language-graphix">use tui::{Span, line, span, style, paragraph::paragraph};
+
+let spans: Array&lt;Span&gt; = select range(0, 256)$ {
+    i =&gt; [
+        span(#style:style(#fg:`Indexed(i)), "██"),
+        span("[i]"),
+        span(#style:style(#fg:`Indexed(i)), "██")
+    ]
+};
+let l = line(array::flatten(array::group(spans, |n, _| n == 256)));
+paragraph(&amp;[l])
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-bar-chart-widget"><a class="header" href="#the-bar-chart-widget">The Bar Chart Widget</a></h1>
 <p>The <code>barchart</code> widget displays categorical data as vertical bars, supporting grouped bars, custom styling, and dynamic updates. It’s ideal for comparing values across categories, showing rankings, or displaying resource usage.</p>
@@ -7877,6 +7952,118 @@ input_handler(
 )
 </code></pre>
 <p><img src="ui/tui/media/browser_navigation.gif" alt="Browser With Navigation"></p>
+<h3 id="commands"><a class="header" href="#commands">Commands</a></h3>
+<p>A <code>:</code> command line beside the browser: <code>:w &lt;value&gt;</code> writes the value to
+the selected path, and an error from the command shows in the bottom
+title.</p>
+<pre><code class="language-graphix">use tui::{
+  Size, line, span, style,
+  block::block,
+  browser::{MoveCursor, browser},
+  input_handler::{Event, KeyCode, input_handler, on_press}
+};
+
+let path = "/";
+let command_error = "";
+let selected_path: string = never();
+let selected_row: string = never();
+let cursor: MoveCursor = never();
+let command_mode = false;
+let command = "";
+
+let run_command = |c: string, path: string| {
+    catch(e) command_error &lt;- "[e]";
+    select str::sub(#start:0, #len:2, c)? {
+        "w " =&gt; {
+            let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
+            let v: Primitive = str::parse(v)?;
+            sys::net::write(path, v)?
+        },
+        s =&gt; error("invalid command [s]")?
+    }
+};
+
+let title_style = style(#fg:`Indexed(202));
+let title_bottom = select command_mode {
+    true =&gt; line(#style:title_style, ":[command]"),
+    false =&gt; {
+        let spans = [
+            span("[path] ([selected_path])"),
+            span(#style:style(#fg:`Red), "  [command_error]")
+        ];
+        line(#style:title_style, spans)
+    }
+};
+
+let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
+    e@ `Left =&gt; { cursor &lt;- e ~ `Left(1); `Stop },
+    e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
+    e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
+    e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
+    e@ `Enter =&gt; { path &lt;- e ~ selected_row; `Stop },
+    e@ `Backspace =&gt; select e ~ str::dirname(path) {
+        null as _ =&gt; `Stop,
+        s =&gt; {
+            path &lt;- s;
+            `Stop
+        }
+    },
+    `Char(":") =&gt; {
+        command &lt;- "";
+        command_error &lt;- "";
+        command_mode &lt;- true;
+        `Stop
+    },
+    _ =&gt; `Continue
+};
+
+let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
+    `Char(c) =&gt; {
+        command &lt;- c ~ "[command][c]";
+        `Stop
+    },
+    x@ `Enter =&gt; {
+        command_mode &lt;- false;
+        run_command(command, x ~ selected_path);
+        `Stop
+    },
+    e@ `Backspace if command != "" =&gt; {
+        let len = str::len(command) - 1;
+        command &lt;- e ~ str::sub(#start:0, #len, command)$;
+        `Stop
+    },
+    `Esc =&gt; {
+        command_mode &lt;- false;
+        `Stop
+    },
+    _ =&gt; `Continue
+};
+
+let handle_event = |e: Event| on_press(e, |k| select k ~ command_mode {
+    true =&gt; handle_command_mode_key(k.code),
+    false =&gt; handle_normal_mode_key(k.code)
+});
+
+let size: Size = never();
+
+let browser = browser(
+    #cursor,
+    #selected_row: &amp;mut selected_row,
+    #selected_path: &amp;mut selected_path,
+    #size,
+    path
+);
+
+let block = block(
+    #border:&amp;`None,
+    #title_bottom:&amp;title_bottom,
+    #style:&amp;style(#bg:`Indexed(234)),
+    #size:&amp;size,
+    &amp;browser
+);
+
+input_handler(#handle: &amp;handle_event, &amp;block)
+</code></pre>
 <h2 id="see-also-3"><a class="header" href="#see-also-3">See Also</a></h2>
 <ul>
 <li><a href="#the-list-widget">list</a> - For simpler selection interfaces</li>
@@ -7963,37 +8150,20 @@ block(
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
 
-// CR claude for eric: [readability] EventType, CalendarEntry and entries are never
-// read. Lines 13-17 rebuild the same four dates with hand-picked colours, so the book
-// section 'Color-coded Events by Type' (book/src/ui/tui/calendar.md:65) colours nothing
-// by type. Annotate `entries: Array&lt;CalendarEntry&gt;` and derive the events from it:
-// `array::map(entries, |e| calendar_event(style(#fg: select e.event_type { `Meeting =&gt;
-// `Blue, `Deadline =&gt; `Red, `Holiday =&gt; `Green, `Birthday =&gt; `Magenta }), e.date))`.
-// tui/table_interactive.gx has the same shape: User and users (lines 8-14) are never
-// read, row1..row3 (lines 21-35) copy them by hand, and the Down guard hard-codes
-// `selected &lt; 2` (line 45). `array::map(users, |u| &amp;row([cell(line(u.name)),
-// cell(line("[u.age]")), cell(line(u.city))]))` and `selected &lt; array::len(users) - 1`
-// fix both. Both rewrites pass graphix --check. (examples.r2-08)
-let entries = [
+let entries: Array&lt;CalendarEntry&gt; = [
     {date: date(2024, 5, 5), event_type: `Meeting},
     {date: date(2024, 5, 10), event_type: `Deadline},
     {date: date(2024, 5, 15), event_type: `Holiday},
     {date: date(2024, 5, 25), event_type: `Birthday}
 ];
 
-// CR claude for eric: [readability] EventType, CalendarEntry and `entries` are never
-// read. These four hand-written events hard-code their colors and repeat the dates in
-// entries, so the book's 'Color-coded Events by Type' section
-// (ui/tui/calendar.md:65-68) never derives a color from the type. Annotate `let
-// entries: Array&lt;CalendarEntry&gt;`, map the type to a color with a select (`` `Meeting =&gt;
-// `Blue `` and so on), and build `events` with `array::map(entries, |e|
-// calendar_event(style(#fg: color_of(e.event_type)), e.date))`. That version checks and
-// builds. (examples-14)
-let event1 = calendar_event(style(#fg: `Blue), date(2024, 5, 5));
-let event2 = calendar_event(style(#fg: `Red), date(2024, 5, 10));
-let event3 = calendar_event(style(#fg: `Green), date(2024, 5, 15));
-let event4 = calendar_event(style(#fg: `Magenta), date(2024, 5, 25));
-let events = [event1, event2, event3, event4];
+let color_of = |t: EventType| select t {
+    `Meeting =&gt; `Blue,
+    `Deadline =&gt; `Red,
+    `Holiday =&gt; `Green,
+    `Birthday =&gt; `Magenta
+};
+let events = array::map(entries, |e| calendar_event(style(#fg: color_of(e.event_type)), e.date));
 
 calendar(#events: &amp;events, &amp;date(2024, 5, 1))
 </code></pre>
@@ -8530,7 +8700,7 @@ log_source &lt;- tick ~ "[n] [rand::pick(tick ~ messages)]";
 sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")$;
 
 log_entries &lt;- array::window(
     #n: 100,
@@ -8607,7 +8777,7 @@ let color = select power {
     x =&gt; `Green
 };
 
-let percentage = cast&lt;i64&gt;(power * 100.0)?;
+let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,
@@ -8694,7 +8864,7 @@ let color = select power {
     x =&gt; `Green
 };
 
-let percentage = cast&lt;i64&gt;(power * 100.0)?;
+let percentage = cast&lt;i64&gt;(power * 100.0)$;
 
 block(
     #border: &amp;`All,
@@ -9188,6 +9358,104 @@ layout(
 )
 </code></pre>
 <p><img src="ui/tui/media/layout_header_footer.png" alt="Layout With Header and Footer"></p>
+<h3 id="nested-layout-with-focus-and-scrolling"><a class="header" href="#nested-layout-with-focus-and-scrolling">Nested Layout with Focus and Scrolling</a></h3>
+<p>Nested layouts whose focused pane is highlighted, with a long paragraph
+scrolled beside a scrollbar.</p>
+<pre><code class="language-graphix">use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  paragraph::paragraph,
+  scrollbar::scrollbar,
+  text::text
+};
+
+let long_text = "1 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head! 2 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!3 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!4 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!5 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!6 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!7 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!8 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!9 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!10 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!11 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!12 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!13 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!14 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!15 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!16 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!17 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!18 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!19 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!20 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!21 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!22 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!23 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!24 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!25 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!26 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!27 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!28 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!29 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!30 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!31 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!32 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!33 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!34 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!35 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!36 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!37 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!38 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!39 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!40 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!41 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!42 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!43 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!44 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!45 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!46 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!47 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!48 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!49 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!50 I've got a lovely bunch of coconuts ... all lined up in a row. Big ones small ones, some the size of your head!";
+
+let focused = 0;
+
+let block1 = block(
+  #border:&amp;`All,
+  #border_style: &amp;style(#fg: select focused { f if f == 0 =&gt; `Red, _ =&gt; `Yellow }),
+  #title: &amp;line("block 1"),
+  &amp;text(&amp;"hello layout world!")
+);
+
+let block2l = block(
+  #border:&amp;`All,
+  #border_style: &amp;style(#fg: `Cyan),
+  #title: &amp;line("block 2l"),
+  &amp;text(&amp;"hello again layout world!")
+);
+
+let block2r = block(
+  #border:&amp;`All,
+  #border_style: &amp;style(#fg: `Cyan),
+  #title: &amp;line("block 2r"),
+  &amp;text(&amp;"hello again layout world!")
+);
+
+let block2rem = block(
+  #border:&amp;`All,
+  #border_style: &amp;style(#fg: `Yellow),
+  #title: &amp;line("Content!"),
+  &amp;{
+     let position = 0;
+     let handle_event = |e: Event| on_press(e, |k| select k.code {
+         k@`Up if position &gt; 0 =&gt; {
+             position &lt;- (k ~ position) - 1;
+             `Stop
+         },
+         k@`Down if position &lt; 150 =&gt; {
+             position &lt;- (k ~ position) + 1;
+             `Stop
+         },
+         _ =&gt; `Continue
+     });
+     input_handler(
+       #handle: &amp;handle_event,
+       &amp;scrollbar(
+         #position: &amp;position,
+         #content_length:&amp;150,
+         &amp;paragraph(#scroll: &amp;{x: 0, y: position}, &amp;long_text)
+       )
+     )
+  }
+);
+
+let block2_layout = layout(
+  #direction: &amp;`Horizontal,
+  #focused: &amp;2,
+  &amp;[
+    child(#constraint:`Percentage(25), block2l),
+    child(#constraint:`Percentage(25), block2r),
+    child(#constraint:`Percentage(50), block2rem)
+  ]
+);
+let block2 = block(
+  #border:&amp;`All,
+  #border_style: &amp;style(#fg: select focused { f if f == 1 =&gt; `Red, _ =&gt; `Yellow }),
+  #title: &amp;line("block 2"),
+  &amp;block2_layout
+);
+
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Tab =&gt; {
+        focused &lt;- ((k ~ focused) + 1) % 2;
+        `Stop
+    },
+    _ =&gt; `Continue
+});
+
+input_handler(
+  #handle: &amp;handle_event,
+  &amp;layout(#focused: &amp;focused, &amp;[
+    child(#constraint:`Percentage(50), block1),
+    child(#constraint:`Percentage(50), block2)
+  ])
+)
+</code></pre>
 <h2 id="see-also-12"><a class="header" href="#see-also-12">See Also</a></h2>
 <ul>
 <li><a href="#the-block-widget">block</a> - Common child widget for layouts</li>
@@ -9671,7 +9939,7 @@ cpu_source &lt;- tick ~ 50.0 + 40.0 * math::sin(t / 7.0);
 sys::net::publish("/local/graphix/sparkline_rolling/cpu", cpu_source);
 
 let data: Array&lt;f64&gt; = [];
-let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")?;
+let new_value: f64 = sys::net::subscribe("/local/graphix/sparkline_rolling/cpu")$;
 
 data &lt;- array::window(
     #n: 60,
@@ -9805,22 +10073,11 @@ let header = row(
     [cell(line("Name")), cell(line("Age")), cell(line("City"))]
 );
 
-let row1 = row([
-    cell(line("Alice")),
-    cell(line("28")),
-    cell(line("New York"))
-]);
-let row2 = row([
-    cell(line("Bob")),
-    cell(line("32")),
-    cell(line("San Francisco"))
-]);
-let row3 = row([
-    cell(line("Charlie")),
-    cell(line("25")),
-    cell(line("Chicago"))
-]);
-let rows = [&amp;row1, &amp;row2, &amp;row3];
+let rows = array::map(users, |u| &amp;row([
+    cell(line(u.name)),
+    cell(line("[u.age]")),
+    cell(line(u.city))
+]));
 
 let selected = 0;
 
@@ -9829,7 +10086,7 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         selected &lt;- (k ~ selected) - 1;
         `Stop
     },
-    k@`Down if selected &lt; 2 =&gt; {
+    k@`Down if selected &lt; array::len(users) - 1 =&gt; {
         selected &lt;- (k ~ selected) + 1;
         `Stop
     },
@@ -10109,6 +10366,8 @@ val window: fn(
 <pre><code class="language-graphix">use gui::{window, button::button, column::column, text::text};
 mod icon;
 
+let clicks = 0;
+
 [&amp;window(
   #icon: &amp;icon::icon,
   #title: &amp;"Graphix Demo",
@@ -10122,22 +10381,12 @@ mod icon;
     &amp;[
       text(#size: &amp;24.0, &amp;"Hello, Graphix GUI!"),
       text(&amp;"A simple window with text and a button"),
-      // CR claude for eric: [readability] This button has no #on_press. ButtonW::view
-      // (stdlib/graphix-package-gui/src/widgets/button.rs:105-112) gives iced an
-      // on_press only when a callable exists, so iced draws the button disabled:
-      // half-alpha colours, no hover, no press. book/src/ui/gui/media/hello.png shows
-      // the dimmed 'Click me!'. row.gx:25-27, tooltip.gx:16 and 22,
-      // custom_palette.gx:30 and custom_styles.gx:94 have the same problem, and in the
-      // two theming demos the button is the widget meant to show the palette's primary
-      // colour and the stylesheet's button_style. book/src/ui/gui/button.md:20 says a
-      // button with no #on_press 'renders but does nothing when clicked', which hides
-      // that it looks exactly like `#disabled: true`. Give each button an #on_press, as
-      // button.gx does, and say on the button page that a button without one is
-      // disabled. (examples.r2-17)
       button(
+        #on_press: |c| clicks &lt;- c ~ clicks + 1,
         #padding: &amp;`All(10.0),
         &amp;text(&amp;"Click me!")
-      )
+      ),
+      text(&amp;"Clicked [clicks] times")
     ]
   )
 )]
@@ -10466,7 +10715,7 @@ let col = column(
   #width: &amp;`Fill,
   &amp;[
     text(#size: &amp;24.0, &amp;"Custom Palette"),
-    button(#padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
+    button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Primary Button")),
     toggler(#label: &amp;"Enabled", #on_toggle: |v| enabled &lt;- v, &amp;enabled),
     slider(#min: &amp;0.0, #max: &amp;0.5, #step: &amp;0.05, #on_change: |v| br &lt;- v, &amp;br),
     text(&amp;"Brightness: [br]")
@@ -10614,7 +10863,7 @@ let dark_mode = true;
           #on_toggle: |v| dark_mode &lt;- v,
           &amp;dark_mode
         ),
-        button(#padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
+        button(#on_press: |_| null, #padding: &amp;`All(12.0), &amp;text(&amp;"Styled Button"))
       ]
     )
   )
@@ -10740,7 +10989,7 @@ val slider_style: fn(
 <p>The positional argument is a reference to the string to display. Because it is a reference, the text updates reactively when the underlying value changes.</p>
 <h2 id="examples-16"><a class="header" href="#examples-16">Examples</a></h2>
 <h3 id="styling-and-alignment"><a class="header" href="#styling-and-alignment">Styling and Alignment</a></h3>
-<pre><code class="language-graphix">use gui::{color, style, window, column::column, text::text};
+<pre><code class="language-graphix">use gui::{color, window, column::column, text::text};
 mod icon;
 
 [&amp;window(
@@ -10785,7 +11034,7 @@ mod icon;
 </code></pre>
 <h2 id="parameters-17"><a class="header" href="#parameters-17">Parameters</a></h2>
 <ul>
-<li><strong><code>#on_press</code></strong> – Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button renders but does nothing when clicked.</li>
+<li><strong><code>#on_press</code></strong> – Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button is disabled: it draws as <code>#disabled: true</code> does and ignores clicks.</li>
 <li><strong><code>#width</code></strong> – Width of the button. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#height</code></strong> – Height of the button. Same <code>Length</code> values as width. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#padding</code></strong> – Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Axis({x: f64, y: f64})</code>, or <code>`Each({top: f64, right: f64, bottom: f64, left: f64})</code>.</li>
@@ -11462,9 +11711,9 @@ mod icon;
         #spacing: &amp;10.0,
         #valign: &amp;`Center,
         &amp;[
-          button(#padding: &amp;`All(10.0), &amp;text(&amp;"One")),
-          button(#padding: &amp;`All(10.0), &amp;text(&amp;"Two")),
-          button(#padding: &amp;`All(10.0), &amp;text(&amp;"Three"))
+          button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"One")),
+          button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Two")),
+          button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Three"))
         ]
       )
     ]
@@ -11741,7 +11990,7 @@ val vertical_rule: fn(?#width: &amp;f64) -&gt; Widget;
   window,
   column::column,
   row::row,
-  rule::{self, horizontal_rule, vertical_rule},
+  rule::{horizontal_rule, vertical_rule},
   text::text
 };
 mod icon;
@@ -11999,6 +12248,77 @@ let col = column(
 [&amp;window(#icon: &amp;icon::icon, #title: &amp;"Canvas", #size: &amp;mut { width: 600.0, height: 450.0 }, &amp;col)]
 </code></pre>
 <p><img src="ui/gui/media/canvas.png" alt="Canvas"></p>
+<h3 id="per-pixel-drawing"><a class="header" href="#per-pixel-drawing">Per-Pixel Drawing</a></h3>
+<p>The Mandelbrot set, one rectangle per pixel. The escape loop, its
+coloring and the <code>array::init</code> over the grid compile to native code,
+which the <code>#[native]</code> on the init asserts.</p>
+<pre><code class="language-graphix">// The Mandelbrot set drawn on a canvas, one rectangle per pixel. The
+// per-pixel escape loop, its coloring and the array::init over the grid
+// compile to native code; the #[native] on the init asserts it.
+use gui::{color, window, canvas::canvas};
+
+let start = cast&lt;f64&gt;(sys::time::now(once(null)))$;
+let w = 100;
+let h = 75;
+let max_iter = 64;
+let scale = 6.0;
+
+let xmin = -2.5;
+let xmax = 1.0;
+let ymin = -1.3125;
+let ymax = 1.3125;
+let dx = (xmax - xmin) / cast&lt;f64&gt;(w)$;
+let dy = (ymax - ymin) / cast&lt;f64&gt;(h)$;
+
+let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -&gt; i64
+    select i {
+        0 =&gt; 0,
+        _ if zr * zr + zi * zi &gt; 4.0 =&gt; i,
+        _ =&gt; iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+    };
+
+let color_for = |n: i64| select n {
+    0 =&gt; color(#r: 0.0, #g: 0.0, #b: 0.0)$,
+    _ =&gt; {
+        let t = cast&lt;f64&gt;(max_iter - n)$ / cast&lt;f64&gt;(max_iter)$;
+        color(
+            #r: 9.0 * (1.0 - t) * t * t * t,
+            #g: 15.0 * (1.0 - t) * (1.0 - t) * t * t,
+            #b: 8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t
+        )$
+    }
+};
+
+let shapes = #[native] array::init(w * h, |idx| {
+    let px = idx % w;
+    let py = idx / w;
+    let cr = xmin + cast&lt;f64&gt;(px)$ * dx;
+    let ci = ymin + cast&lt;f64&gt;(py)$ * dy;
+    let n = iterate(0.0, 0.0, cr, ci, max_iter);
+    `Rect({
+        top_left: {x: cast&lt;f64&gt;(px)$ * scale, y: cast&lt;f64&gt;(py)$ * scale},
+        size: {width: scale, height: scale},
+        fill: color_for(n),
+        stroke: null
+    })
+});
+
+let finish = cast&lt;f64&gt;(sys::time::now(shapes))$;
+let elapsed = (finish - start);
+println("rendered [w * h] pixels in [elapsed]s");
+
+[&amp;window(
+    #title: &amp;"Mandelbrot Set",
+    #theme: &amp;`CatppuccinMocha,
+    #size: &amp;mut {width: 620.0, height: 470.0},
+    &amp;canvas(
+        #width: &amp;`Fill,
+        #height: &amp;`Fill,
+        #background: &amp;color(#r: 0.0, #g: 0.0, #b: 0.0)$,
+        &amp;shapes
+    )
+)]
+</code></pre>
 <h2 id="see-also-34"><a class="header" href="#see-also-34">See Also</a></h2>
 <ul>
 <li><a href="#the-chart-widget-1">chart</a> - Pre-built chart widget for data visualization</li>
@@ -12822,13 +13142,13 @@ let col = column(
             #tip: &amp;text(&amp;"Save your work"),
             #position: &amp;`Bottom,
             #gap: &amp;5.0,
-            &amp;button(#padding: &amp;`All(10.0), &amp;text(&amp;"Save"))
+            &amp;button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Save"))
         ),
         tooltip(
             #tip: &amp;text(&amp;"Delete permanently"),
             #position: &amp;`Right,
             #gap: &amp;5.0,
-            &amp;button(#padding: &amp;`All(10.0), &amp;text(&amp;"Delete"))
+            &amp;button(#on_press: |_| null, #padding: &amp;`All(10.0), &amp;text(&amp;"Delete"))
         )
     ]
 );
@@ -13072,20 +13392,8 @@ let col = column(
             #padding: &amp;`All(10.0),
             &amp;text(&amp;"Copy to clipboard")
         ),
-        // CR claude for eric: [bug] The on_press handler below pastes the previous
-        // read. read_text is async and re-delivers its last reply while a press's read
-        // is in flight, so `c ~ clipboard::read_text(c)$` writes the reply to the
-        // previous press, and the new reply fires with no `c` fire to sample it. Every
-        // paste after the first shows the clipboard as it was at the previous press
-        // (copy A, paste: A; copy B, paste: still A; paste again: B). read_text is
-        // already triggered by `c`, so write its reply: `#on_press: |c| pasted &lt;-
-        // clipboard::read_text(c)$`. The book teaches this example
-        // (book/src/ui/gui/clipboard.md). probe:
-        // design/review-2026-10-05/repro/examples-01.gx (the handler's shape over
-        // json::read through sys::net::publish's on_write trails by one event; the fix
-        // does not). (examples-01)
         button(
-            #on_press: |c| pasted &lt;- c ~ clipboard::read_text(c)$,
+            #on_press: |c| pasted &lt;- clipboard::read_text(c)$,
             #padding: &amp;`All(10.0),
             &amp;text(&amp;"Paste from clipboard")
         ),
@@ -13387,7 +13695,8 @@ render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>st
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
 <h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
-<pre><code class="language-graphix">type SortDirection = [`Ascending, `Descending];
+<pre><code class="language-graphix">use super::{column, table, Widget};
+type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
 type ColumnType = [
@@ -13414,22 +13723,81 @@ type ColumnType = [
     })
 ];
 
-type Source = [`Netidx([null, string]), string, Map&lt;string, Any&gt;];
+/// Where a column's per-cell values come from.
+///
+/// - `` `Netidx(fallback) ``: subscribe to `&lt;row_path&gt;/&lt;column_name&gt;`
+///   for every absolute-path row. The fallback is the value rendered
+///   for cells whose subscription is pending or `Unsubscribed`, AND
+///   for virtual rows (non-absolute paths), which never subscribe.
+///   It is one of:
+///     - `null`: no fallback — cells render blank until the
+///       subscription resolves, and virtual rows render blank.
+///     - `string`: a uniform placeholder used for every cell.
+///     - `Map&lt;string, Any&gt;`: per-row fallback keyed by row basename
+///       — virtual rows pick up their map entry, and absolute rows
+///       fall back to it before the subscription delivers a value.
+/// - `string`: a uniform default — every cell renders this text. No
+///   subscription. Useful for static fields and computed columns
+///   where one value applies to all rows.
+/// - `Map&lt;string, Any&gt;`: per-row defaults keyed by row basename. No
+///   subscription on any row. Useful for purely "calculated"
+///   columns whose values are derived in graphix and shouldn't
+///   ever subscribe.
+type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
 type ColumnSpec = {
     name: string,
     typ: ColumnType,
     display_name: [string, null],
     source: &amp;Source,
-    on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    on_resize: &amp;[fn(width: f64) -&gt; Any, null],
     width: &amp;[f64, null]
 };
 
+/// The data table's content. Rows are netidx paths (absolute paths
+/// drive subscriptions; non-absolute rows are virtual). Columns are
+/// either bare strings (shorthand for a default Text column with
+/// `` `Netidx `` source named after the string) or full `ColumnSpec`
+/// structs with explicit type, source, width, etc. Bare strings let
+/// `sys::net::Table` (which has `columns: Array&lt;string&gt;`) be passed
+/// straight through; mixed arrays are fine.
+///
+/// Display order is exactly the order of entries in `columns` —
+/// virtual and subscribed columns are not segregated.
 type Table = {
     rows: Array&lt;string&gt;,
     columns: Array&lt;[string, ColumnSpec]&gt;
 };
 
+type DataTable = {
+    on_activate: &amp;[fn(#path: string) -&gt; Any, null],
+    on_header_click: &amp;[fn(#column: string) -&gt; Any, null],
+    on_select: &amp;[fn(#path: string) -&gt; Any, null],
+    on_update: &amp;[fn(#path: string, #value: Primitive) -&gt; Any, null],
+    selection: &amp;Array&lt;string&gt;,
+    show_row_name: &amp;bool,
+    sort_by: &amp;Array&lt;SortBy&gt;,
+    table: &amp;Table
+};
+
+/// A data table that displays rows and columns of data.
+///
+/// Rows that are absolute netidx paths trigger live subscriptions to
+/// `&lt;row_path&gt;/&lt;column_name&gt;` for every column whose `source` is
+/// `` `Netidx ``. Rows that are not absolute paths are virtual — they
+/// never subscribe and render the column source's fallback value
+/// (either the `Netidx` payload's per-row map / uniform string, or
+/// the bare `string` / `Map&lt;string, Any&gt;` source).
+///
+/// The caller owns the shape of the Table: row order, column order,
+/// hidden vs. shown, virtual vs. subscribed — all of that lives in
+/// the `Table` value the caller passes in.
+///
+/// `sort_by` is a list of sort keys applied in order: the first key
+/// is the primary sort, subsequent keys break ties. Empty list (the
+/// default) preserves the Table's row order. Sort values come from
+/// the column's source — a live subscription when source is
+/// `` `Netidx ``, or the source's stored value otherwise.
 val data_table: fn(
     ?#sort_by: &amp;Array&lt;SortBy&gt;,
     ?#selection: &amp;Array&lt;string&gt;,
@@ -13441,18 +13809,87 @@ val data_table: fn(
     #table: &amp;Table
 ) -&gt; Widget;
 
+/// Build a `Text` ColumnSpec. With no `on_edit` the cell is read-only.
 val text_column: fn(
     #name: string,
     ?#on_edit: [fn(#path: string, #value: Any) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
-// (toggle_column, combo_column, spin_column, progress_column,
-//  button_column, sparkline_column have the same shape — each takes
-//  #name plus its kind-specific args, and accepts the same source /
-//  width / on_resize options.)
+
+/// Build a `Toggle` ColumnSpec for boolean cells.
+val toggle_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: bool) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Combo` ColumnSpec. `choices` is the picklist; each entry's
+/// `id` is the value written and `label` is what the user sees.
+val combo_column: fn(
+    #name: string,
+    #choices: Array&lt;{ id: string, label: string }&gt;,
+    ?#on_edit: [fn(#path: string, #value: string) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Spin` ColumnSpec for bounded numeric input.
+val spin_column: fn(
+    #name: string,
+    #min: f64,
+    #max: f64,
+    #increment: f64,
+    ?#on_edit: [fn(#path: string, #value: f64) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a read-only `Progress` ColumnSpec. Cell values are clamped to [0, 1].
+val progress_column: fn(
+    #name: string,
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Button` ColumnSpec. Each cell renders as a button; clicking
+/// fires `on_click` with the cell's path and current value.
+val button_column: fn(
+    #name: string,
+    ?#on_click: [fn(#path: string, #value: Any) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Sparkline` ColumnSpec. Each cell accumulates values from its
+/// subscription for `history_seconds` and renders them as a rolling
+/// chart. By default the y-axis is shared across every cell in the
+/// column (auto-scaled to the union of all rows' values), so cells can
+/// be compared visually. Pass `#min`/`#max` to fix the axis to a
+/// caller-defined range instead.
+val sparkline_column: fn(
+    #name: string,
+    #history_seconds: f64,
+    ?#min: [f64, null],
+    ?#max: [f64, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
 </code></pre>
 <h2 id="data_table-parameters"><a class="header" href="#data_table-parameters"><code>data_table</code> Parameters</a></h2>
 <ul>
@@ -13494,32 +13931,24 @@ path (<code>"row_path/col_name"</code> for data cells, <code>"row_path"</code> f
 row-name column).</p>
 </li>
 <li>
-<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell
-or presses Enter while a row is selected. Receives the row path.</p>
+<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell,
+or presses Enter: for the selected cell’s row whatever its column,
+or for the first row when nothing is selected. Receives the row
+path.</p>
 </li>
 <li>
 <p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
 column’s header label. Receives the column name.</p>
 </li>
-</ul>
-<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
-subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
-again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
-cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
-the window: either subscribe on_update table-wide or document its scope. The interface
-block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
-(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
-`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
-but Enter fires for the selected cell's row whatever its column, and for row 0 when
-nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
-column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
-outside the subscription window contribute only their fallback (layout.rs:309-317).
-(gui-datatable-21) -->
-<ul>
-<li><strong><code>#on_update</code></strong> – Fired once per subscription update on every
-cell — useful when you want to mirror live values into graphix
-state (e.g. re-derive an aggregate) without subscribing separately.
-Receives the cell path and new value.</li>
+<li>
+<p><strong><code>#on_update</code></strong> – Fired for each update of a cell the table
+subscribes, which is the rows within 50 of the visible window; a
+row scrolling back in re-delivers its current value. Useful to
+mirror live values into graphix state without subscribing
+separately, but an aggregate over every row
+(<code>data_table_calculated.gx</code>’s sum) is complete only while the whole
+table is subscribed. Receives the cell path and new value.</p>
+</li>
 </ul>
 <h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
 <p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
@@ -13577,25 +14006,26 @@ column auto-sizes to its content, with a per-column cap (default
 300px).</p>
 </li>
 <li>
-<p><strong><code>on_resize: &amp;[fn(x: f64) -&gt; Any, null]</code></strong> – Fired while the user
+<p><strong><code>on_resize: &amp;[fn(width: f64) -&gt; Any, null]</code></strong> – Fired while the user
 drags a column header’s right edge. The callable receives the new
 pixel width. The reference is a <code>&amp;</code> field so the callable can be
 swapped, nulled, or initialized reactively.</p>
 </li>
 </ul>
 <p>Double-clicking any column’s resize handle auto-fits <em>every</em> column
-to the widest cell in the entire table (not just the visible window).</p>
+to its widest cell among the subscribed rows (those within 50 of the
+visible window); other rows count only their fallback.</p>
 <h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
 <p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
 column’s per-cell values originate:</p>
 <ul>
-<li><strong><code>`Netidx(placeholder)</code></strong> – The column subscribes to
+<li><strong><code>`Netidx(fallback)</code></strong> – The column subscribes to
 <code>&lt;row_path&gt;/&lt;column_name&gt;</code> for every row whose path is absolute.
-Cell values come from the subscription. The <code>placeholder</code> payload
-(<code>null</code> or a string) is the text rendered before the subscription
-resolves and any time it goes <code>Unsubscribed</code> afterward — useful
-for distinguishing “not yet subscribed” / “lost” from a real blank
-value. <code>`Netidx(null)</code> is the default for the column-builder
+Cell values come from the subscription. The <code>fallback</code> payload is
+what a cell renders before its subscription resolves, any time it
+goes <code>Unsubscribed</code> afterward, and always for a virtual row: <code>null</code>
+(blank), a string (one placeholder for every cell), or a
+<code>Map&lt;string, Any&gt;</code> keyed by row basename (a value per row). <code>`Netidx(null)</code> is the default for the column-builder
 helpers and the implicit behavior for bare-string entries in
 <code>Table.columns</code>.</li>
 <li><strong><code>string</code></strong> – A uniform value: every cell in the column renders
@@ -13613,9 +14043,10 @@ rolling history, so a virtual-column sparkline fed from graphix state
 accumulates points the same way a subscribed one does.</p>
 <h2 id="keyboard-navigation-1"><a class="header" href="#keyboard-navigation-1">Keyboard Navigation</a></h2>
 <p>The widget is focusable: clicking into it grants keyboard focus.
-Arrow keys move the selection (the currently-rendered selected cell
-scrolls into view as needed). <code>Enter</code> on a row-name cell fires
-<code>on_activate</code>; <code>Space</code> on an editable cell opens its editor;
+Arrow keys move the selection among the data columns (the
+currently-rendered selected cell scrolls into view as needed); they
+never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
+the selected cell’s row; <code>Space</code> on an editable cell opens its editor;
 <code>Escape</code> cancels an in-progress edit.</p>
 <h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
@@ -13671,15 +14102,6 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
-// CR claude for eric: [readability] Unused import: the file calls array::filter
-// qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
-// filter. Three more examples import names they never use. gui/text.gx:1 imports style,
-// but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
-// nothing writes `rule::`. collection/native_array_ops.gx:5 has `use Collection::*` but
-// calls no Collection method. Each file checks with its import removed, and
-// native_array_ops still prints sum=15 found=4 mapped=[10, 20, 30, 40, 50]. Graphix
-// reports no unused import, so nothing else will catch these. (examples.r2-13)
-use array::filter;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
@@ -13705,25 +14127,14 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
-// and the connect below lands the filtered table a cycle later. So every time
-// list_table refires while a pattern is set, `tbl` (and the data_table holding `&amp;tbl`)
-// gets every row for one cycle before the filtered rows replace it. Derive it instead,
-// `let tbl: Table = select str::len(pattern) { 0 =&gt; raw_tbl, _ =&gt; .. }`, as
-// data_table_dashboard.gx:99-112 does. The `opt::or_default(re::is_match(..)$, false)`
-// at line 41 never uses its default: `$` has already turned an invalid regex into
-// bottom, and is_match never returns null. So while the pattern is half typed
-// (`0[14](`) the filter is bottom and the table keeps the previous filter, even after
-// the picker switches to Exclude; select the Result to false as the dashboard does.
-// `use array::filter;` at line 10 is unused. probe:
-// design/review-2026-10-05/repro/examples-03.gx (run with --no-netidx). (examples-03)
-let tbl: Table = raw_tbl;
-tbl &lt;- select str::len(pattern) {
-    n if n == 0 =&gt; raw_tbl,
+let tbl: Table = select str::len(pattern) {
+    0 =&gt; raw_tbl,
     _ =&gt; {
         let name_of = |r: string| opt::or_default(str::basename(r), r);
-        let matches = |r: string| opt::or_default(
-            re::is_match(#pat: pattern, name_of(r))$, false);
+        let matches = |r: string| select re::is_match(#pat: pattern, name_of(r)) {
+            error as _ =&gt; false,
+            b =&gt; b
+        };
         let keep = |r: string| select mode {
             `Include =&gt; matches(r),
             `Exclude =&gt; !matches(r)
@@ -13822,69 +14233,17 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
-// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
-// (two hosts times four fields) plus eight state lets, differing only in host and
-// field. A new host or column means four or eight more copies, and a typo in one path
-// or variable silently publishes the wrong cell. data_table_basic.gx and
-// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
-// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
-// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
-// name &lt;- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
-// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
-// passes graphix --check at 90 lines instead of 131. A parameter written by its own
-// #on_write republishes the new value: in a probe, the published name went from alpha
-// to beta after a sys::net::write. (examples.r2-18)
-let host_01_name = "alpha";
-let host_01_enabled = true;
-let host_01_zone = "us-east-1";
-let host_01_cpu = f64:4.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_01_name &lt;- v,
-    "/local/graphix/data_table_editable/host-01/name",
-    host_01_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_01_enabled &lt;- v,
-    "/local/graphix/data_table_editable/host-01/enabled",
-    host_01_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_01_zone &lt;- v,
-    "/local/graphix/data_table_editable/host-01/zone",
-    host_01_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_01_cpu &lt;- v,
-    "/local/graphix/data_table_editable/host-01/cpu",
-    host_01_cpu
-);
-
-let host_02_name = "bravo";
-let host_02_enabled = false;
-let host_02_zone = "eu-west-1";
-let host_02_cpu = f64:8.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_02_name &lt;- v,
-    "/local/graphix/data_table_editable/host-02/name",
-    host_02_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_02_enabled &lt;- v,
-    "/local/graphix/data_table_editable/host-02/enabled",
-    host_02_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_02_zone &lt;- v,
-    "/local/graphix/data_table_editable/host-02/zone",
-    host_02_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_02_cpu &lt;- v,
-    "/local/graphix/data_table_editable/host-02/cpu",
-    host_02_cpu
-);
+// One host's four cells. A parameter is the cell's state: its
+// #on_write writes it, and the publish republishes the new value.
+let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
+    let base = "/local/graphix/data_table_editable/[host]";
+    sys::net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
+    sys::net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
+    sys::net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
+    sys::net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
+};
+publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
+publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
 
 // Map the resolver-derived columns array. Each editable column gets
 // an explicit ColumnSpec; anything else (none expected here) passes
@@ -13993,22 +14352,7 @@ let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 // bare strings from `sys::net::list_table` continue to mean "Netidx-
 // sourced Text columns"; the new entry pulls its values from a let-
 // bound Map updated by the on_update callback below.
-//
-// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return type
-// widens each bare-string entry into the union element type before
-// concat. Without the explicit return type, inference leaves the
-// resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
-// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
-// own. `let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;` checks and builds,
-// and so does the map without `-&gt; [string, ColumnSpec]`; only dropping the annotation
-// is refused. The comment also says concat where the code uses push. The book includes
-// this example (ui/gui/data_table.md:283), so it teaches a per-row identity map as a
-// type workaround. Use the plain annotated let and drop the comment.
-// data_table_scrolling.gx:46-47 has the same kind of false comment: a bare
-// `array::map(host_ids, publish_host);` statement keeps its publishers live, so the `-&gt;
-// bool`, the `true` and the comment can go. (examples-13)
-let widened: Array&lt;[string, ColumnSpec]&gt; =
-    array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;
 let tbl: Table = {
     rows: raw_tbl.rows,
     columns: array::push(widened, text_column(
@@ -14390,6 +14734,94 @@ let layout = column(
 )]
 </code></pre>
 <p><img src="ui/gui/media/data_table_dashboard.png" alt="Data Table — Dashboard"></p>
+<h3 id="scrolling"><a class="header" href="#scrolling">Scrolling</a></h3>
+<p>Enough rows and columns that both scrollbars appear at the default
+window size. The rows are real netidx paths, so scrolling also
+subscribes the rows that enter the viewport and drops the ones that
+leave it.</p>
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{data_table, progress_column, sparkline_column, text_column},
+  text::text
+};
+use sys::{time, net};
+use rand::rand;
+mod icon;
+
+// Enough rows and columns that both the vertical and horizontal
+// virtualized scrollbars kick in at the default window size. Rows
+// are real netidx paths, so scrolling also exercises the
+// subscribe-on-enter / drop-on-exit window around the viewport.
+
+let host_ids = [
+    "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
+    "011", "012", "013", "014", "015", "016", "017", "018", "019", "020",
+    "021", "022", "023", "024", "025", "026", "027", "028", "029", "030",
+    "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"
+];
+
+let base = "/local/graphix/data_table_scrolling";
+
+// Drive every metric off one clock so all rows update in lockstep.
+let tick = time::timer(duration:2.s, true);
+
+let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
+let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
+let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+
+let publish_host = |name: string| {
+    net::publish("[base]/host-[name]/cpu_pct", rand100());
+    net::publish("[base]/host-[name]/mem_pct", rand100());
+    net::publish("[base]/host-[name]/disk_pct", rand100());
+    net::publish("[base]/host-[name]/net_in_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/net_out_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/load_1m", rand01());
+    net::publish("[base]/host-[name]/load_5m", rand01());
+    net::publish("[base]/host-[name]/load_15m", rand01());
+    net::publish("[base]/host-[name]/error_count", rand100());
+    net::publish("[base]/host-[name]/request_count", rand_mbps())
+};
+
+array::map(host_ids, publish_host);
+
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;f64:90.),
+    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;f64:90.),
+    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;f64:90.),
+    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;f64:110.),
+    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;f64:110.),
+    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &amp;f64:120.),
+    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &amp;f64:120.),
+    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &amp;f64:120.),
+    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;f64:100.),
+    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;f64:110.),
+    other =&gt; other
+});
+
+let raw_tbl = net::list_table(base)$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(14.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;18.0, &amp;"40 hosts × 10 metrics"),
+        text(&amp;"Scroll vertically or horizontally to reveal off-screen cells."),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Scrolling",
+    #theme: &amp;`CatppuccinMocha,
+    #size: &amp;mut {width: f64:900., height: f64:400.},
+    &amp;layout
+)]
+</code></pre>
 <h2 id="see-also-45"><a class="header" href="#see-also-45">See Also</a></h2>
 <ul>
 <li><a href="#the-table-widget-1">Table</a> – static row/column layout from graphix
@@ -14714,7 +15146,7 @@ directory:</p>
 </tbody>
 </table>
 </div>
-<!-- CR claude for eric: [doc-drift] This section shows the pre-v2 format (a bare
+<!-- CR claude for claude: [doc-drift] This section shows the pre-v2 format (a bare
 [packages] table), but parse_packages reads any file without [stdlib] as legacy and
 migrate_old marks every stdlib package the file does not name as removed, so a file
 written from this example rebuilds a binary with core alone (probe: put this example in
@@ -15967,7 +16399,7 @@ for ev in batch.drain(..) {
         <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="theme/graphix-highlight-24424521.js"></script>
 
         <script>
         window.addEventListener('load', function() {

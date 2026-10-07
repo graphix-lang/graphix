@@ -32,22 +32,7 @@ let data: Map<string, Map<string, i64>> = {};
 // bare strings from `sys::net::list_table` continue to mean "Netidx-
 // sourced Text columns"; the new entry pulls its values from a let-
 // bound Map updated by the on_update callback below.
-//
-// `array::map` with an explicit `-> [string, ColumnSpec]` return type
-// widens each bare-string entry into the union element type before
-// concat. Without the explicit return type, inference leaves the
-// resulting array as `Array<string>` and fails to fit ColumnSpec.
-// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
-// own. `let widened: Array<[string, ColumnSpec]> = raw_tbl.columns;` checks and builds,
-// and so does the map without `-> [string, ColumnSpec]`; only dropping the annotation
-// is refused. The comment also says concat where the code uses push. The book includes
-// this example (ui/gui/data_table.md:283), so it teaches a per-row identity map as a
-// type workaround. Use the plain annotated let and drop the comment.
-// data_table_scrolling.gx:46-47 has the same kind of false comment: a bare
-// `array::map(host_ids, publish_host);` statement keeps its publishers live, so the `->
-// bool`, the `true` and the comment can go. (examples-13)
-let widened: Array<[string, ColumnSpec]> =
-    array::map(raw_tbl.columns, |n: string| -> [string, ColumnSpec] n);
+let widened: Array<[string, ColumnSpec]> = raw_tbl.columns;
 let tbl: Table = {
     rows: raw_tbl.rows,
     columns: array::push(widened, text_column(

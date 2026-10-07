@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -195,7 +195,8 @@ render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>st
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type SortDirection = [`Ascending, `Descending];
+<pre><code class="language-graphix">use super::{column, table, Widget};
+type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
 type ColumnType = [
@@ -222,22 +223,81 @@ type ColumnType = [
     })
 ];
 
-type Source = [`Netidx([null, string]), string, Map&lt;string, Any&gt;];
+/// Where a column's per-cell values come from.
+///
+/// - `` `Netidx(fallback) ``: subscribe to `&lt;row_path&gt;/&lt;column_name&gt;`
+///   for every absolute-path row. The fallback is the value rendered
+///   for cells whose subscription is pending or `Unsubscribed`, AND
+///   for virtual rows (non-absolute paths), which never subscribe.
+///   It is one of:
+///     - `null`: no fallback — cells render blank until the
+///       subscription resolves, and virtual rows render blank.
+///     - `string`: a uniform placeholder used for every cell.
+///     - `Map&lt;string, Any&gt;`: per-row fallback keyed by row basename
+///       — virtual rows pick up their map entry, and absolute rows
+///       fall back to it before the subscription delivers a value.
+/// - `string`: a uniform default — every cell renders this text. No
+///   subscription. Useful for static fields and computed columns
+///   where one value applies to all rows.
+/// - `Map&lt;string, Any&gt;`: per-row defaults keyed by row basename. No
+///   subscription on any row. Useful for purely "calculated"
+///   columns whose values are derived in graphix and shouldn't
+///   ever subscribe.
+type Source = [`Netidx([null, string, Map&lt;string, Any&gt;]), string, Map&lt;string, Any&gt;];
 
 type ColumnSpec = {
     name: string,
     typ: ColumnType,
     display_name: [string, null],
     source: &amp;Source,
-    on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    on_resize: &amp;[fn(width: f64) -&gt; Any, null],
     width: &amp;[f64, null]
 };
 
+/// The data table's content. Rows are netidx paths (absolute paths
+/// drive subscriptions; non-absolute rows are virtual). Columns are
+/// either bare strings (shorthand for a default Text column with
+/// `` `Netidx `` source named after the string) or full `ColumnSpec`
+/// structs with explicit type, source, width, etc. Bare strings let
+/// `sys::net::Table` (which has `columns: Array&lt;string&gt;`) be passed
+/// straight through; mixed arrays are fine.
+///
+/// Display order is exactly the order of entries in `columns` —
+/// virtual and subscribed columns are not segregated.
 type Table = {
     rows: Array&lt;string&gt;,
     columns: Array&lt;[string, ColumnSpec]&gt;
 };
 
+type DataTable = {
+    on_activate: &amp;[fn(#path: string) -&gt; Any, null],
+    on_header_click: &amp;[fn(#column: string) -&gt; Any, null],
+    on_select: &amp;[fn(#path: string) -&gt; Any, null],
+    on_update: &amp;[fn(#path: string, #value: Primitive) -&gt; Any, null],
+    selection: &amp;Array&lt;string&gt;,
+    show_row_name: &amp;bool,
+    sort_by: &amp;Array&lt;SortBy&gt;,
+    table: &amp;Table
+};
+
+/// A data table that displays rows and columns of data.
+///
+/// Rows that are absolute netidx paths trigger live subscriptions to
+/// `&lt;row_path&gt;/&lt;column_name&gt;` for every column whose `source` is
+/// `` `Netidx ``. Rows that are not absolute paths are virtual — they
+/// never subscribe and render the column source's fallback value
+/// (either the `Netidx` payload's per-row map / uniform string, or
+/// the bare `string` / `Map&lt;string, Any&gt;` source).
+///
+/// The caller owns the shape of the Table: row order, column order,
+/// hidden vs. shown, virtual vs. subscribed — all of that lives in
+/// the `Table` value the caller passes in.
+///
+/// `sort_by` is a list of sort keys applied in order: the first key
+/// is the primary sort, subsequent keys break ties. Empty list (the
+/// default) preserves the Table's row order. Sort values come from
+/// the column's source — a live subscription when source is
+/// `` `Netidx ``, or the source's stored value otherwise.
 val data_table: fn(
     ?#sort_by: &amp;Array&lt;SortBy&gt;,
     ?#selection: &amp;Array&lt;string&gt;,
@@ -249,18 +309,87 @@ val data_table: fn(
     #table: &amp;Table
 ) -&gt; Widget;
 
+/// Build a `Text` ColumnSpec. With no `on_edit` the cell is read-only.
 val text_column: fn(
     #name: string,
     ?#on_edit: [fn(#path: string, #value: Any) -&gt; Any, null],
     ?#display_name: [string, null],
     ?#source: &amp;Source,
-    ?#on_resize: &amp;[fn(x: f64) -&gt; Any, null],
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
     ?#width: &amp;[f64, null]
 ) -&gt; ColumnSpec;
-// (toggle_column, combo_column, spin_column, progress_column,
-//  button_column, sparkline_column have the same shape — each takes
-//  #name plus its kind-specific args, and accepts the same source /
-//  width / on_resize options.)
+
+/// Build a `Toggle` ColumnSpec for boolean cells.
+val toggle_column: fn(
+    #name: string,
+    ?#on_edit: [fn(#path: string, #value: bool) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Combo` ColumnSpec. `choices` is the picklist; each entry's
+/// `id` is the value written and `label` is what the user sees.
+val combo_column: fn(
+    #name: string,
+    #choices: Array&lt;{ id: string, label: string }&gt;,
+    ?#on_edit: [fn(#path: string, #value: string) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Spin` ColumnSpec for bounded numeric input.
+val spin_column: fn(
+    #name: string,
+    #min: f64,
+    #max: f64,
+    #increment: f64,
+    ?#on_edit: [fn(#path: string, #value: f64) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a read-only `Progress` ColumnSpec. Cell values are clamped to [0, 1].
+val progress_column: fn(
+    #name: string,
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Button` ColumnSpec. Each cell renders as a button; clicking
+/// fires `on_click` with the cell's path and current value.
+val button_column: fn(
+    #name: string,
+    ?#on_click: [fn(#path: string, #value: Any) -&gt; Any, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
+
+/// Build a `Sparkline` ColumnSpec. Each cell accumulates values from its
+/// subscription for `history_seconds` and renders them as a rolling
+/// chart. By default the y-axis is shared across every cell in the
+/// column (auto-scaled to the union of all rows' values), so cells can
+/// be compared visually. Pass `#min`/`#max` to fix the axis to a
+/// caller-defined range instead.
+val sparkline_column: fn(
+    #name: string,
+    #history_seconds: f64,
+    ?#min: [f64, null],
+    ?#max: [f64, null],
+    ?#display_name: [string, null],
+    ?#source: &amp;Source,
+    ?#on_resize: &amp;[fn(width: f64) -&gt; Any, null],
+    ?#width: &amp;[f64, null]
+) -&gt; ColumnSpec;
 </code></pre>
 <h2 id="data_table-parameters"><a class="header" href="#data_table-parameters"><code>data_table</code> Parameters</a></h2>
 <ul>
@@ -302,32 +431,24 @@ path (<code>"row_path/col_name"</code> for data cells, <code>"row_path"</code> f
 row-name column).</p>
 </li>
 <li>
-<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell
-or presses Enter while a row is selected. Receives the row path.</p>
+<p><strong><code>#on_activate</code></strong> – Fired when the user clicks a row-name cell,
+or presses Enter: for the selected cell’s row whatever its column,
+or for the first row when nothing is selected. Receives the row
+path.</p>
 </li>
 <li>
 <p><strong><code>#on_header_click</code></strong> – Fired when the user clicks a data
 column’s header label. Receives the column name.</p>
 </li>
-</ul>
-<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
-subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
-again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
-cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
-the window: either subscribe on_update table-wide or document its scope. The interface
-block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
-(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
-`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
-but Enter fires for the selected cell's row whatever its column, and for row 0 when
-nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
-column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
-outside the subscription window contribute only their fallback (layout.rs:309-317).
-(gui-datatable-21) -->
-<ul>
-<li><strong><code>#on_update</code></strong> – Fired once per subscription update on every
-cell — useful when you want to mirror live values into graphix
-state (e.g. re-derive an aggregate) without subscribing separately.
-Receives the cell path and new value.</li>
+<li>
+<p><strong><code>#on_update</code></strong> – Fired for each update of a cell the table
+subscribes, which is the rows within 50 of the visible window; a
+row scrolling back in re-delivers its current value. Useful to
+mirror live values into graphix state without subscribing
+separately, but an aggregate over every row
+(<code>data_table_calculated.gx</code>’s sum) is complete only while the whole
+table is subscribed. Receives the cell path and new value.</p>
+</li>
 </ul>
 <h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
 <p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
@@ -385,25 +506,26 @@ column auto-sizes to its content, with a per-column cap (default
 300px).</p>
 </li>
 <li>
-<p><strong><code>on_resize: &amp;[fn(x: f64) -&gt; Any, null]</code></strong> – Fired while the user
+<p><strong><code>on_resize: &amp;[fn(width: f64) -&gt; Any, null]</code></strong> – Fired while the user
 drags a column header’s right edge. The callable receives the new
 pixel width. The reference is a <code>&amp;</code> field so the callable can be
 swapped, nulled, or initialized reactively.</p>
 </li>
 </ul>
 <p>Double-clicking any column’s resize handle auto-fits <em>every</em> column
-to the widest cell in the entire table (not just the visible window).</p>
+to its widest cell among the subscribed rows (those within 50 of the
+visible window); other rows count only their fallback.</p>
 <h2 id="source-where-cell-values-come-from"><a class="header" href="#source-where-cell-values-come-from">Source: Where Cell Values Come From</a></h2>
 <p>Each <code>ColumnSpec.source</code> is a <code>&amp;Source</code> ref that decides where the
 column’s per-cell values originate:</p>
 <ul>
-<li><strong><code>`Netidx(placeholder)</code></strong> – The column subscribes to
+<li><strong><code>`Netidx(fallback)</code></strong> – The column subscribes to
 <code>&lt;row_path&gt;/&lt;column_name&gt;</code> for every row whose path is absolute.
-Cell values come from the subscription. The <code>placeholder</code> payload
-(<code>null</code> or a string) is the text rendered before the subscription
-resolves and any time it goes <code>Unsubscribed</code> afterward — useful
-for distinguishing “not yet subscribed” / “lost” from a real blank
-value. <code>`Netidx(null)</code> is the default for the column-builder
+Cell values come from the subscription. The <code>fallback</code> payload is
+what a cell renders before its subscription resolves, any time it
+goes <code>Unsubscribed</code> afterward, and always for a virtual row: <code>null</code>
+(blank), a string (one placeholder for every cell), or a
+<code>Map&lt;string, Any&gt;</code> keyed by row basename (a value per row). <code>`Netidx(null)</code> is the default for the column-builder
 helpers and the implicit behavior for bare-string entries in
 <code>Table.columns</code>.</li>
 <li><strong><code>string</code></strong> – A uniform value: every cell in the column renders
@@ -421,9 +543,10 @@ rolling history, so a virtual-column sparkline fed from graphix state
 accumulates points the same way a subscribed one does.</p>
 <h2 id="keyboard-navigation"><a class="header" href="#keyboard-navigation">Keyboard Navigation</a></h2>
 <p>The widget is focusable: clicking into it grants keyboard focus.
-Arrow keys move the selection (the currently-rendered selected cell
-scrolls into view as needed). <code>Enter</code> on a row-name cell fires
-<code>on_activate</code>; <code>Space</code> on an editable cell opens its editor;
+Arrow keys move the selection among the data columns (the
+currently-rendered selected cell scrolls into view as needed); they
+never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
+the selected cell’s row; <code>Space</code> on an editable cell opens its editor;
 <code>Escape</code> cancels an in-progress edit.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
@@ -479,15 +602,6 @@ caller owns the data pipeline end to end.</p>
   text::text,
   text_input::text_input
 };
-// CR claude for eric: [readability] Unused import: the file calls array::filter
-// qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
-// filter. Three more examples import names they never use. gui/text.gx:1 imports style,
-// but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
-// nothing writes `rule::`. collection/native_array_ops.gx:5 has `use Collection::*` but
-// calls no Collection method. Each file checks with its import removed, and
-// native_array_ops still prints sum=15 found=4 mapped=[10, 20, 30, 40, 50]. Graphix
-// reports no unused import, so nothing else will catch these. (examples.r2-13)
-use array::filter;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
@@ -513,25 +627,14 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
-// and the connect below lands the filtered table a cycle later. So every time
-// list_table refires while a pattern is set, `tbl` (and the data_table holding `&amp;tbl`)
-// gets every row for one cycle before the filtered rows replace it. Derive it instead,
-// `let tbl: Table = select str::len(pattern) { 0 =&gt; raw_tbl, _ =&gt; .. }`, as
-// data_table_dashboard.gx:99-112 does. The `opt::or_default(re::is_match(..)$, false)`
-// at line 41 never uses its default: `$` has already turned an invalid regex into
-// bottom, and is_match never returns null. So while the pattern is half typed
-// (`0[14](`) the filter is bottom and the table keeps the previous filter, even after
-// the picker switches to Exclude; select the Result to false as the dashboard does.
-// `use array::filter;` at line 10 is unused. probe:
-// design/review-2026-10-05/repro/examples-03.gx (run with --no-netidx). (examples-03)
-let tbl: Table = raw_tbl;
-tbl &lt;- select str::len(pattern) {
-    n if n == 0 =&gt; raw_tbl,
+let tbl: Table = select str::len(pattern) {
+    0 =&gt; raw_tbl,
     _ =&gt; {
         let name_of = |r: string| opt::or_default(str::basename(r), r);
-        let matches = |r: string| opt::or_default(
-            re::is_match(#pat: pattern, name_of(r))$, false);
+        let matches = |r: string| select re::is_match(#pat: pattern, name_of(r)) {
+            error as _ =&gt; false,
+            b =&gt; b
+        };
         let keep = |r: string| select mode {
             `Include =&gt; matches(r),
             `Exclude =&gt; !matches(r)
@@ -630,69 +733,17 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
-// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
-// (two hosts times four fields) plus eight state lets, differing only in host and
-// field. A new host or column means four or eight more copies, and a typo in one path
-// or variable silently publishes the wrong cell. data_table_basic.gx and
-// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
-// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
-// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
-// name &lt;- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
-// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
-// passes graphix --check at 90 lines instead of 131. A parameter written by its own
-// #on_write republishes the new value: in a probe, the published name went from alpha
-// to beta after a sys::net::write. (examples.r2-18)
-let host_01_name = "alpha";
-let host_01_enabled = true;
-let host_01_zone = "us-east-1";
-let host_01_cpu = f64:4.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_01_name &lt;- v,
-    "/local/graphix/data_table_editable/host-01/name",
-    host_01_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_01_enabled &lt;- v,
-    "/local/graphix/data_table_editable/host-01/enabled",
-    host_01_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_01_zone &lt;- v,
-    "/local/graphix/data_table_editable/host-01/zone",
-    host_01_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_01_cpu &lt;- v,
-    "/local/graphix/data_table_editable/host-01/cpu",
-    host_01_cpu
-);
-
-let host_02_name = "bravo";
-let host_02_enabled = false;
-let host_02_zone = "eu-west-1";
-let host_02_cpu = f64:8.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_02_name &lt;- v,
-    "/local/graphix/data_table_editable/host-02/name",
-    host_02_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_02_enabled &lt;- v,
-    "/local/graphix/data_table_editable/host-02/enabled",
-    host_02_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_02_zone &lt;- v,
-    "/local/graphix/data_table_editable/host-02/zone",
-    host_02_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_02_cpu &lt;- v,
-    "/local/graphix/data_table_editable/host-02/cpu",
-    host_02_cpu
-);
+// One host's four cells. A parameter is the cell's state: its
+// #on_write writes it, and the publish republishes the new value.
+let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
+    let base = "/local/graphix/data_table_editable/[host]";
+    sys::net::publish(#on_write: |v: string| name &lt;- v, "[base]/name", name);
+    sys::net::publish(#on_write: |v: bool| enabled &lt;- v, "[base]/enabled", enabled);
+    sys::net::publish(#on_write: |v: string| zone &lt;- v, "[base]/zone", zone);
+    sys::net::publish(#on_write: |v: f64| cpu &lt;- v, "[base]/cpu", cpu)
+};
+publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
+publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
 
 // Map the resolver-derived columns array. Each editable column gets
 // an explicit ColumnSpec; anything else (none expected here) passes
@@ -801,22 +852,7 @@ let data: Map&lt;string, Map&lt;string, i64&gt;&gt; = {};
 // bare strings from `sys::net::list_table` continue to mean "Netidx-
 // sourced Text columns"; the new entry pulls its values from a let-
 // bound Map updated by the on_update callback below.
-//
-// `array::map` with an explicit `-&gt; [string, ColumnSpec]` return type
-// widens each bare-string entry into the union element type before
-// concat. Without the explicit return type, inference leaves the
-// resulting array as `Array&lt;string&gt;` and fails to fit ColumnSpec.
-// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
-// own. `let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;` checks and builds,
-// and so does the map without `-&gt; [string, ColumnSpec]`; only dropping the annotation
-// is refused. The comment also says concat where the code uses push. The book includes
-// this example (ui/gui/data_table.md:283), so it teaches a per-row identity map as a
-// type workaround. Use the plain annotated let and drop the comment.
-// data_table_scrolling.gx:46-47 has the same kind of false comment: a bare
-// `array::map(host_ids, publish_host);` statement keeps its publishers live, so the `-&gt;
-// bool`, the `true` and the comment can go. (examples-13)
-let widened: Array&lt;[string, ColumnSpec]&gt; =
-    array::map(raw_tbl.columns, |n: string| -&gt; [string, ColumnSpec] n);
+let widened: Array&lt;[string, ColumnSpec]&gt; = raw_tbl.columns;
 let tbl: Table = {
     rows: raw_tbl.rows,
     columns: array::push(widened, text_column(
@@ -1198,6 +1234,94 @@ let layout = column(
 )]
 </code></pre>
 <p><img src="./media/data_table_dashboard.png" alt="Data Table — Dashboard"></p>
+<h3 id="scrolling"><a class="header" href="#scrolling">Scrolling</a></h3>
+<p>Enough rows and columns that both scrollbars appear at the default
+window size. The rows are real netidx paths, so scrolling also
+subscribes the rows that enter the viewport and drops the ones that
+leave it.</p>
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{data_table, progress_column, sparkline_column, text_column},
+  text::text
+};
+use sys::{time, net};
+use rand::rand;
+mod icon;
+
+// Enough rows and columns that both the vertical and horizontal
+// virtualized scrollbars kick in at the default window size. Rows
+// are real netidx paths, so scrolling also exercises the
+// subscribe-on-enter / drop-on-exit window around the viewport.
+
+let host_ids = [
+    "001", "002", "003", "004", "005", "006", "007", "008", "009", "010",
+    "011", "012", "013", "014", "015", "016", "017", "018", "019", "020",
+    "021", "022", "023", "024", "025", "026", "027", "028", "029", "030",
+    "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"
+];
+
+let base = "/local/graphix/data_table_scrolling";
+
+// Drive every metric off one clock so all rows update in lockstep.
+let tick = time::timer(duration:2.s, true);
+
+let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
+let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
+let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
+
+let publish_host = |name: string| {
+    net::publish("[base]/host-[name]/cpu_pct", rand100());
+    net::publish("[base]/host-[name]/mem_pct", rand100());
+    net::publish("[base]/host-[name]/disk_pct", rand100());
+    net::publish("[base]/host-[name]/net_in_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/net_out_mbps", rand_mbps());
+    net::publish("[base]/host-[name]/load_1m", rand01());
+    net::publish("[base]/host-[name]/load_5m", rand01());
+    net::publish("[base]/host-[name]/load_15m", rand01());
+    net::publish("[base]/host-[name]/error_count", rand100());
+    net::publish("[base]/host-[name]/request_count", rand_mbps())
+};
+
+array::map(host_ids, publish_host);
+
+let make_columns = |raw: Array&lt;string&gt;| array::map(raw, |name| select name {
+    "cpu_pct"       =&gt; progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &amp;f64:90.),
+    "mem_pct"       =&gt; progress_column(#name: "mem_pct",     #display_name: "Memory %",#width: &amp;f64:90.),
+    "disk_pct"      =&gt; progress_column(#name: "disk_pct",    #display_name: "Disk %",  #width: &amp;f64:90.),
+    "net_in_mbps"   =&gt; text_column(    #name: "net_in_mbps", #display_name: "Net In",  #width: &amp;f64:110.),
+    "net_out_mbps"  =&gt; text_column(    #name: "net_out_mbps",#display_name: "Net Out", #width: &amp;f64:110.),
+    "load_1m"       =&gt; sparkline_column(#name: "load_1m",    #history_seconds: f64:60.,  #display_name: "Load 1m",  #width: &amp;f64:120.),
+    "load_5m"       =&gt; sparkline_column(#name: "load_5m",    #history_seconds: f64:300., #display_name: "Load 5m",  #width: &amp;f64:120.),
+    "load_15m"      =&gt; sparkline_column(#name: "load_15m",   #history_seconds: f64:900., #display_name: "Load 15m", #width: &amp;f64:120.),
+    "error_count"   =&gt; text_column(    #name: "error_count", #display_name: "Errors",   #width: &amp;f64:100.),
+    "request_count" =&gt; text_column(    #name: "request_count",#display_name: "Requests",#width: &amp;f64:110.),
+    other =&gt; other
+});
+
+let raw_tbl = net::list_table(base)$;
+let tbl = { rows: raw_tbl.rows, columns: make_columns(raw_tbl.columns) };
+
+let layout = column(
+    #spacing: &amp;10.0,
+    #padding: &amp;`All(14.0),
+    #width: &amp;`Fill,
+    #height: &amp;`Fill,
+    &amp;[
+        text(#size: &amp;18.0, &amp;"40 hosts × 10 metrics"),
+        text(&amp;"Scroll vertically or horizontally to reveal off-screen cells."),
+        data_table(#table: &amp;tbl)
+    ]
+);
+
+[&amp;window(
+    #icon: &amp;icon::icon,
+    #title: &amp;"Data Table — Scrolling",
+    #theme: &amp;`CatppuccinMocha,
+    #size: &amp;mut {width: f64:900., height: f64:400.},
+    &amp;layout
+)]
+</code></pre>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>
 <li><a href="table.html">Table</a> – static row/column layout from graphix
@@ -1258,7 +1382,7 @@ widgets, no netidx subscriptions.</li>
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 

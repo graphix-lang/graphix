@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -282,22 +282,11 @@ let header = row(
     [cell(line("Name")), cell(line("Age")), cell(line("City"))]
 );
 
-let row1 = row([
-    cell(line("Alice")),
-    cell(line("28")),
-    cell(line("New York"))
-]);
-let row2 = row([
-    cell(line("Bob")),
-    cell(line("32")),
-    cell(line("San Francisco"))
-]);
-let row3 = row([
-    cell(line("Charlie")),
-    cell(line("25")),
-    cell(line("Chicago"))
-]);
-let rows = [&amp;row1, &amp;row2, &amp;row3];
+let rows = array::map(users, |u| &amp;row([
+    cell(line(u.name)),
+    cell(line("[u.age]")),
+    cell(line(u.city))
+]));
 
 let selected = 0;
 
@@ -306,7 +295,7 @@ let handle_event = |e: Event| on_press(e, |k| select k.code {
         selected &lt;- (k ~ selected) - 1;
         `Stop
     },
-    k@`Down if selected &lt; 2 =&gt; {
+    k@`Down if selected &lt; array::len(users) - 1 =&gt; {
         selected &lt;- (k ~ selected) + 1;
         `Stop
     },
@@ -457,7 +446,7 @@ table(#header: &amp;header, &amp;rows)
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 

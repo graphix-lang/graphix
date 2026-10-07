@@ -1,6 +1,8 @@
 use gui::{window, button::button, column::column, text::text};
 mod icon;
 
+let clicks = 0;
+
 [&window(
   #icon: &icon::icon,
   #title: &"Graphix Demo",
@@ -14,22 +16,12 @@ mod icon;
     &[
       text(#size: &24.0, &"Hello, Graphix GUI!"),
       text(&"A simple window with text and a button"),
-      // CR claude for eric: [readability] This button has no #on_press. ButtonW::view
-      // (stdlib/graphix-package-gui/src/widgets/button.rs:105-112) gives iced an
-      // on_press only when a callable exists, so iced draws the button disabled:
-      // half-alpha colours, no hover, no press. book/src/ui/gui/media/hello.png shows
-      // the dimmed 'Click me!'. row.gx:25-27, tooltip.gx:16 and 22,
-      // custom_palette.gx:30 and custom_styles.gx:94 have the same problem, and in the
-      // two theming demos the button is the widget meant to show the palette's primary
-      // colour and the stylesheet's button_style. book/src/ui/gui/button.md:20 says a
-      // button with no #on_press 'renders but does nothing when clicked', which hides
-      // that it looks exactly like `#disabled: true`. Give each button an #on_press, as
-      // button.gx does, and say on the button page that a button without one is
-      // disabled. (examples.r2-17)
       button(
+        #on_press: |c| clicks <- c ~ clicks + 1,
         #padding: &`All(10.0),
         &text(&"Click me!")
-      )
+      ),
+      text(&"Clicked [clicks] times")
     ]
   )
 )]

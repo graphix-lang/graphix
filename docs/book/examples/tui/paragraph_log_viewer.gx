@@ -18,7 +18,7 @@ log_source <- tick ~ "[n] [rand::pick(tick ~ messages)]";
 sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];
-let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")?;
+let new_entry: string = sys::net::subscribe("/local/graphix/paragraph_log_viewer/log")$;
 
 log_entries <- array::window(
     #n: 100,

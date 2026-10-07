@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -188,7 +188,7 @@
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
-<li><strong><code>#on_press</code></strong> – Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button renders but does nothing when clicked.</li>
+<li><strong><code>#on_press</code></strong> – Callback invoked when the button is clicked. Receives <code>null</code> as its argument. Use the sample operator <code>~</code> inside the callback to capture current state at click time: <code>|c| counter &lt;- c ~ counter + 1</code>. If omitted, the button is disabled: it draws as <code>#disabled: true</code> does and ignores clicks.</li>
 <li><strong><code>#width</code></strong> – Width of the button. Accepts <code>Length</code> values: <code>`Fill</code>, <code>`Shrink</code>, or <code>`Fixed(f64)</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#height</code></strong> – Height of the button. Same <code>Length</code> values as width. Defaults to <code>`Shrink</code>.</li>
 <li><strong><code>#padding</code></strong> – Interior padding around the child widget. Accepts <code>Padding</code> values: <code>`All(f64)</code>, <code>`Axis({x: f64, y: f64})</code>, or <code>`Each({top: f64, right: f64, bottom: f64, left: f64})</code>.</li>
@@ -285,7 +285,7 @@ let col = column(
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 

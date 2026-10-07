@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-a46bfca9.js";
+            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -250,6 +250,118 @@ input_handler(
 )
 </code></pre>
 <p><img src="./media/browser_navigation.gif" alt="Browser With Navigation"></p>
+<h3 id="commands"><a class="header" href="#commands">Commands</a></h3>
+<p>A <code>:</code> command line beside the browser: <code>:w &lt;value&gt;</code> writes the value to
+the selected path, and an error from the command shows in the bottom
+title.</p>
+<pre><code class="language-graphix">use tui::{
+  Size, line, span, style,
+  block::block,
+  browser::{MoveCursor, browser},
+  input_handler::{Event, KeyCode, input_handler, on_press}
+};
+
+let path = "/";
+let command_error = "";
+let selected_path: string = never();
+let selected_row: string = never();
+let cursor: MoveCursor = never();
+let command_mode = false;
+let command = "";
+
+let run_command = |c: string, path: string| {
+    catch(e) command_error &lt;- "[e]";
+    select str::sub(#start:0, #len:2, c)? {
+        "w " =&gt; {
+            let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
+            let v: Primitive = str::parse(v)?;
+            sys::net::write(path, v)?
+        },
+        s =&gt; error("invalid command [s]")?
+    }
+};
+
+let title_style = style(#fg:`Indexed(202));
+let title_bottom = select command_mode {
+    true =&gt; line(#style:title_style, ":[command]"),
+    false =&gt; {
+        let spans = [
+            span("[path] ([selected_path])"),
+            span(#style:style(#fg:`Red), "  [command_error]")
+        ];
+        line(#style:title_style, spans)
+    }
+};
+
+let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
+    e@ `Left =&gt; { cursor &lt;- e ~ `Left(1); `Stop },
+    e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
+    e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
+    e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
+    e@ `Enter =&gt; { path &lt;- e ~ selected_row; `Stop },
+    e@ `Backspace =&gt; select e ~ str::dirname(path) {
+        null as _ =&gt; `Stop,
+        s =&gt; {
+            path &lt;- s;
+            `Stop
+        }
+    },
+    `Char(":") =&gt; {
+        command &lt;- "";
+        command_error &lt;- "";
+        command_mode &lt;- true;
+        `Stop
+    },
+    _ =&gt; `Continue
+};
+
+let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
+    `Char(c) =&gt; {
+        command &lt;- c ~ "[command][c]";
+        `Stop
+    },
+    x@ `Enter =&gt; {
+        command_mode &lt;- false;
+        run_command(command, x ~ selected_path);
+        `Stop
+    },
+    e@ `Backspace if command != "" =&gt; {
+        let len = str::len(command) - 1;
+        command &lt;- e ~ str::sub(#start:0, #len, command)$;
+        `Stop
+    },
+    `Esc =&gt; {
+        command_mode &lt;- false;
+        `Stop
+    },
+    _ =&gt; `Continue
+};
+
+let handle_event = |e: Event| on_press(e, |k| select k ~ command_mode {
+    true =&gt; handle_command_mode_key(k.code),
+    false =&gt; handle_normal_mode_key(k.code)
+});
+
+let size: Size = never();
+
+let browser = browser(
+    #cursor,
+    #selected_row: &amp;mut selected_row,
+    #selected_path: &amp;mut selected_path,
+    #size,
+    path
+);
+
+let block = block(
+    #border:&amp;`None,
+    #title_bottom:&amp;title_bottom,
+    #style:&amp;style(#bg:`Indexed(234)),
+    #size:&amp;size,
+    &amp;browser
+);
+
+input_handler(#handle: &amp;handle_event, &amp;block)
+</code></pre>
 <h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
 <ul>
 <li><a href="list.html">list</a> - For simpler selection interfaces</li>
@@ -308,7 +420,7 @@ input_handler(
         <script src="../../book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
-        <script src="../../theme/graphix-highlight-8f553dc2.js"></script>
+        <script src="../../theme/graphix-highlight-24424521.js"></script>
 
 
 
