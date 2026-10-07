@@ -134,17 +134,21 @@ async fn fn_forward_resolutions_go_with_their_instance() -> Result<()> {
         .1
         .id;
     let len = |n: usize| move |v: &Value| matches!(v, Value::Array(a) if a.len() == n);
-    let mut bottoms = vec![];
+    let mut forward_resolutions = vec![];
     for _ in 0..4 {
         let four: Vec<Value> = (1..=4).map(Value::I64).collect();
         ctx.rt.set(arr, Value::Array(four.into()))?;
         await_update(&mut rx, eid, len(4)).await?;
         ctx.rt.set(arr, Value::Array(Vec::<Value>::new().into()))?;
         await_update(&mut rx, eid, len(0)).await?;
-        bottoms.push(ctx.rt.with_ctx(|ctx| ctx.fn_forward_resolutions.len()).await?);
+        forward_resolutions
+            .push(ctx.rt.with_ctx(|ctx| ctx.fn_forward_resolutions.len()).await?);
     }
     ctx.shutdown().await;
-    assert!(bottoms.iter().all(|b| *b == bottoms[0]), "{bottoms:?}");
+    assert!(
+        forward_resolutions.iter().all(|b| *b == forward_resolutions[0]),
+        "{forward_resolutions:?}"
+    );
     Ok(())
 }
 
@@ -222,17 +226,10 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
                     sig { val h: i64 };
                     source "let a = 1; let f = |x| x + a; let g = |y| y; let h = missing"
                 };
-                select status { error as e => e, null as _ => error("compiled") }
+                select status { error as e => e, null as _ => never() }
             }"#,
         )
         .await?;
-        // CR claude for claude: [test-gap] The fixture maps a successful compile to
-        // `error("compiled")`, and this wait accepts any error. So if the module source
-        // ever compiled, the test would measure the success path and still pass, though
-        // it is named for failed compiles. Make the null arm `never()` (the wait then
-        // times out on success), or reject the "compiled" payload here. Separately,
-        // `bottoms` (line 137) holds fn_forward_resolutions lengths; name it for that.
-        // (tests-lib-b2-14)
         await_update(&mut rx, eid, |v| matches!(v, Value::Error(_))).await?;
         drop(res);
     }

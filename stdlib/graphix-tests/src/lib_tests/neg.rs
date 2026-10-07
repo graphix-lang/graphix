@@ -4,7 +4,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval},
+    testing::{FuseExpect, refusal},
 };
 use netidx::subscriber::Value;
 
@@ -24,10 +24,6 @@ run!(neg_sum, NEG_SUM, |v: Result<&Value>| matches!(v, Ok(Value::I64(-7)));
 // `-x` on an unsigned operand is a compile error.
 #[tokio::test]
 async fn neg_unsigned_is_compile_error() {
-    let r = eval("{ let x = u64:5; -x }", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "negating an unsigned value must be a compile error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal("{ let x = u64:5; -x }", crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("does not contain u64"), "{e}");
 }

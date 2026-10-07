@@ -4,7 +4,7 @@
 //! a function definition. Tested via `eval` (fusion on), since the
 //! attribute is mode-dependent.
 
-use graphix_package_core::testing::eval;
+use graphix_package_core::testing::{eval, refusal};
 use netidx::subscriber::Value;
 
 // A pure computation that fully fuses satisfies `#[native]`.
@@ -22,47 +22,34 @@ async fn native_fusable_ok() {
 // `#[native]` on a bare lambda literal is an error.
 #[tokio::test]
 async fn native_on_lambda_literal_is_error() {
-    let r = eval("#[native]\n|x: i64| x + i64:1", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "#[native] on a function literal must be a compile error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal("#[native]\n|x: i64| x + i64:1", crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("not a function"), "{e}");
 }
 
 // `#[native]` on a function binding is an error.
 #[tokio::test]
 async fn native_on_lambda_binding_is_error() {
-    let r =
-        eval("{ #[native]\nlet f = |x: i64| x + i64:1; f(i64:2) }", crate::TEST_REGISTER)
-            .await;
-    assert!(
-        r.is_err(),
-        "#[native] on a function binding must be a compile error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal(
+        "{ #[native]\nlet f = |x: i64| x + i64:1; f(i64:2) }",
+        crate::TEST_REGISTER,
+    )
+    .await
+    .unwrap();
+    assert!(e.contains("not a function"), "{e}");
 }
 
 // `#[native]` on an async computation (`throttle`) is an error.
 #[tokio::test]
 async fn native_on_unfusable_is_error() {
-    let r = eval("#[native]\nthrottle(i64:5)", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "#[native] on an async (non-fusing) expr must be a compile error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal("#[native]\nthrottle(i64:5)", crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("did not fully fuse"), "{e}");
 }
 
 // An unregistered attribute name is a compile error.
 #[tokio::test]
 async fn unknown_attribute_is_error() {
-    let r = eval("#[bogus]\ni64:1", crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "an unknown attribute must be a compile error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal("#[bogus]\ni64:1", crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("unknown attribute #[bogus]"), "{e}");
 }
 
 // `#[native]` inside a HOF callback body is checked: a wholly sync
@@ -90,8 +77,7 @@ async fn native_hof_callback_recursive_call_fuses_ok() {
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
-        "#[native] on a callback that calls a recursive lambda must compile now \
-         that nested cross-statement calls fuse (#203), got {:?}",
+        "#[native] on a callback that calls a recursive lambda must compile, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -135,7 +121,7 @@ async fn native_transitive_callee_dyncall_ok() {
     assert!(
         r.is_ok(),
         "#[native] on a computation calling a callee with a body DynCall must \
-         compile now that Stage 2 delivers transitive-callee DynCalls, got {:?}",
+         compile, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -148,8 +134,7 @@ async fn native_structwith_ok() {
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
-        "#[native] on a scalar struct-with must compile now that StructWith has \
-         an emit_clif, got {:?}",
+        "#[native] on a scalar struct-with must compile, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -169,28 +154,14 @@ async fn native_structwith_string_field_ok() {
 
 // A connect inside a map callback.
 #[tokio::test]
-// CR claude for claude: [readability] This test asserts the 'did not fully fuse' compile
-// error, so its name says the opposite of what it pins; call it
-// native_connect_in_callback_is_error. The must-reject tests at lines 22-66 (and
-// neg.rs:26) assert only `r.is_err()`, which a parse error or eval's own 5 s no-result
-// timeout also satisfies; match each on its message, as this test does. Several
-// assertion messages narrate history ('now that nested cross-statement calls fuse
-// (#203)', 'now that Stage 2 delivers transitive-callee DynCalls', 'now that StructWith
-// has an emit_clif', 'must fully fuse now', 'now that `_` infers a fresh TVar'); say
-// what must hold instead. (tests-lib-b2-10)
-async fn native_connect_composite_rhs_ok() {
+async fn native_connect_in_callback_is_error() {
     let prog = "{ let last = { v: i64:0 }; \
                 array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); \
                 last.v }";
-    let r = eval(prog, crate::TEST_REGISTER).await;
     // A connect is an effect and refuses emission, so `#[native]` on
     // this callback is a compile error.
-    let e = format!("{:?}", r.as_ref().err());
-    assert!(
-        r.is_err() && e.contains("did not fully fuse"),
-        "expected the strict-fusion cliff error, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal(prog, crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("did not fully fuse"), "{e}");
 }
 
 // String elements use the collection scaffold's owned ArcStr binding.
@@ -212,7 +183,7 @@ async fn native_select_destructure_ok() {
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
-        "a tuple-destructuring select must fully fuse now, got {:?}",
+        "a tuple-destructuring select must fully fuse, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -225,7 +196,7 @@ async fn native_select_nested_tuple_ok() {
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
-        "a nested-slice-in-tuple select must fully fuse now, got {:?}",
+        "a nested-slice-in-tuple select must fully fuse, got {:?}",
         r.map(|(v, _)| v)
     );
 }
@@ -239,8 +210,7 @@ async fn native_select_nested_struct_ok() {
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
         r.is_ok(),
-        "the struct-nested select must fully fuse now that `_` infers a \
-         fresh TVar, got {:?}",
+        "the struct-nested select must fully fuse, got {:?}",
         r.map(|(v, _)| v)
     );
 }

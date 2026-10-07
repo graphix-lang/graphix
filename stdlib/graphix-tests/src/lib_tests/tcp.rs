@@ -11,14 +11,14 @@ const TCP_CONNECT_ACCEPT: &str = r#"
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
   let client = sys::tcp::connect(listener ~ addr)?;
-  sys::tcp::accept(listener, client)?;
-  true
+  let server = sys::tcp::accept(listener, client)?;
+  server ~ true
 }
 "#;
 
 run!(tcp_connect_accept, TCP_CONNECT_ACCEPT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // Connecting to port 1 (reserved, nothing listening) fails.
 const TCP_CONNECT_FAIL: &str = r#"

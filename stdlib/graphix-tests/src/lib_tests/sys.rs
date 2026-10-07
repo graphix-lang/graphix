@@ -65,17 +65,14 @@ run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
-// stdin is a valid stream (no data can be fed in a test).
+// stdin produces a stream (no data can be fed in a test).
 const STDIN_CREATE: &str = r#"
-{
-    let inp = sys::io::stdin(null);
-    !is_err(inp)
-}
+  sys::io::stdin(null) ~ true
 "#;
 
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // Writing to stdin is an error.
 const STDIN_WRITE_ERR: &str = r#"

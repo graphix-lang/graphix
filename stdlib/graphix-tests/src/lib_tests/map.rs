@@ -276,7 +276,7 @@ const MAP_MAP_KEY_COLLISION: &str = r#"
   (map::len(collided), map::get(collided, "same"))
 }
 "#;
-// CR claude for claude: [test-gap] The predicate accepts 1 or 2. run! checks each mode
+// CR claude for eric: [test-gap] The predicate accepts 1 or 2. run! checks each mode
 // against the predicate separately and never compares one mode's value with another's,
 // so this test cannot see the engines disagree, which is what the comment above says it
 // pins. For loose predicates like this one, CLAUDE.md's 'asserting equal values' for
@@ -287,6 +287,8 @@ const MAP_MAP_KEY_COLLISION: &str = r#"
 // value (`Ok(Ok((1, 1)))` today). Probe: `let k = "same"; (map::get({k => 1, k => 2},
 // k), map::get(map::map({"a" => 1, "b" => 2}, |(kk, v)| (k, v)), k))` gives (2, 1) in
 // both engines. (tests-lib-b2-03)
+// 2026-10-06 claude: re-addressed: which value a map keeps when keys collapse is a
+// semantics choice (literal keeps the last, map/filter_map keep the first).
 run!(map_map_key_collision, MAP_MAP_KEY_COLLISION, |v: Result<&Value>| {
     matches!(
         v.map(|v| v.clone().cast_to::<(i64, i64)>()),

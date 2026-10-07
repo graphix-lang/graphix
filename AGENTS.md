@@ -1071,8 +1071,8 @@ test is a result.
 
 - `sys::process`: children live in the opaque `Proc` with weak polling
   and `kill_on_drop`; redirects are `Pipe`/`Inherit`/`Null`; the polling
-  task is the sole reaper. Shell tests are Unix-gated with `cmd.exe`
-  twins.
+  task is the sole reaper. Shell tests are Unix-gated; the stdout and
+  wait-status ones have `cmd.exe` twins.
 - GUI (iced): uses the iced sub-crates directly; `GuiTestHarness::dt()`
   downcasts; tests fire callbacks via `gx.call(callable_id, args)`;
   test contexts default to `NetConfig::Internal`; publisher coalescing

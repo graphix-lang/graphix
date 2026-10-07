@@ -2,6 +2,17 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
+// CR claude for claude: [doc-drift] CLAUDE.md (Stdlib notes) says the shell tests are
+// Unix-gated with cmd.exe twins, but only PROCESS_STDOUT_PIPE and PROCESS_WAIT_STATUS
+// have one. stdin_pipe, concurrent_wait, kill_during_wait, stdin_eof, env,
+// graceful_kill, io_lines and io_lines_batched run on Unix only. Every fixture sets
+// `#kill_on_drop: true`, yet none checks that dropping the last Proc handle kills the
+// child, a rule CLAUDE.md states. Correct CLAUDE.md or add the twins. Add a fixture
+// that spawns a long sleep with kill_on_drop, drops the expression, and asserts the
+// child is gone. (tests-lib-b2-15)
+// 2026-10-06 claude: CLAUDE.md now names the two twins. The kill-on-drop pin fails
+// today: the reply holding the Proc stays in the runtime's store after its expression is
+// deleted (rt-01), so the child runs until shutdown. The pin lands with rt-01's fix.
 #[cfg(unix)]
 const PROCESS_STDOUT_PIPE: &str = r#"
 {
@@ -41,14 +52,6 @@ run!(process_stdout_pipe, PROCESS_STDOUT_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; FuseExpect::Jit);
 
-// CR claude for claude: [doc-drift] CLAUDE.md (Stdlib notes) says the shell tests are
-// Unix-gated with cmd.exe twins, but only PROCESS_STDOUT_PIPE and PROCESS_WAIT_STATUS
-// have one. stdin_pipe, concurrent_wait, kill_during_wait, stdin_eof, env,
-// graceful_kill, io_lines and io_lines_batched run on Unix only. Every fixture sets
-// `#kill_on_drop: true`, yet none checks that dropping the last Proc handle kills the
-// child, a rule CLAUDE.md states. Correct CLAUDE.md or add the twins. Add a fixture
-// that spawns a long sleep with kill_on_drop, drops the expression, and asserts the
-// child is gone. (tests-lib-b2-15)
 #[cfg(unix)]
 const PROCESS_STDIN_PIPE: &str = r#"
 {
@@ -202,24 +205,21 @@ run!(process_env, PROCESS_ENV, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 #[cfg(unix)]
-// CR claude for claude: [risk] The kill fires 100 ms after init, and `~` banks that fire
-// until child.proc arrives. So whenever the spawn plus sh's startup take longer than
-// 100 ms, SIGTERM lands before sh has run `trap 'exit 0' TERM`, sh dies by the signal,
-// and status.success is false. Under a loaded `cargo test` this makes the test flaky.
-// Gate the kill on the child announcing itself: `trap 'exit 0' TERM; echo ready; sleep
-// 10 & wait` with stdout piped, killing when the line is read. Probe:
-// design/review-2026-10-05/repro/tests-lib-b2-08.gx (the fixture with its spawn delayed
-// 200 ms gives success false in both engines; with 50 ms it passes). (tests-lib-b2-08)
 const PROCESS_GRACEFUL_KILL: &str = r#"
 {
+  use sys::io::Lines;
+  use opt;
   let options = sys::process::options(
-    #args: ["-c", "trap 'exit 0' TERM; sleep 10 & wait"],
+    #args: ["-c", "trap 'exit 0' TERM; echo ready; sleep 10 & wait"],
+    #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
     #kill_on_drop: true,
     "/bin/sh"
   );
   let child = sys::process::spawn(options)?;
   let status = sys::process::wait(child.proc)?;
-  sys::process::kill(#grace: duration:5.s, sys::time::timer(duration:100.ms, false) ~ child.proc);
+  let out = opt::ok_or(child.stdout, `Null("stdout"))?;
+  let ready = Lines::lines(out)?;
+  sys::process::kill(#grace: duration:5.s, ready ~ child.proc);
   status.success
 }
 "#;
@@ -246,13 +246,6 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
 // `Lines::lines` frames at the byte level: a line split across two
 // reads, a CRLF line, and a trailing fragment with no newline.
 #[cfg(unix)]
-// CR claude for claude: [test-gap] The comment above says this pins the dropped trailing
-// fragment (io.gxi: the final line is dropped if the stream ends without a newline).
-// But the fixture produces as soon as seen holds four lines, and the harness checks
-// only that first update, so a fifth line emitted at EOF would arrive after the
-// verdict. Gate the result on the end of the stream, e.g.
-// `sys::time::after_idle(duration:200.ms, sys::process::wait(child.proc)?) ~ seen`, and
-// assert exactly the four lines. (tests-lib-b2-07)
 const IO_LINES: &str = r#"
 {
   use sys::io::Lines;
@@ -267,11 +260,9 @@ const IO_LINES: &str = r#"
   let line = Lines::lines(out)?;
   let seen = [];
   seen <- array::push(line ~ seen, line);
-  // Produce ONCE, complete: the harness asserts on the first update.
-  select array::len(seen) {
-    i64:4 => seen,
-    _ => never()
-  }
+  // Produce once, after the stream ended: a line delivered at EOF
+  // lands in seen first.
+  sys::time::after_idle(duration:200.ms, sys::process::wait(child.proc)?) ~ seen
 }
 "#;
 
@@ -286,7 +277,7 @@ run!(io_lines, IO_LINES, |v: Result<&Value>| {
                     _ => None,
                 })
                 .collect();
-            got == ["alpha", "beta", "gamma", "delta"]
+            a.len() == 4 && got == ["alpha", "beta", "gamma", "delta"]
         }
         _ => false,
     }

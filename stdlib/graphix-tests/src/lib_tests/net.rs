@@ -57,6 +57,8 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
 // observe v (e.g. `x <- str::len(v)`, expecting [42, 6]). Add a fixture that writes
 // "abc" to an i64 on_write and asserts x is unchanged in all four modes.
 // (tests-lib-b2-05)
+// 2026-10-06 claude: deferred to batch 6 with sys-net-02 and sys-net-04, which the
+// refused-cast fixture needs fixed first.
 const NET_WRITE1: &str = r#"
 {
   let p = "/local/foo";

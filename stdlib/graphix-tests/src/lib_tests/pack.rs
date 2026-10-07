@@ -46,12 +46,7 @@ run!(pack_struct, r#"{
     let obj: S = pack::read(pack::write_bytes({x: 42, y: "hi"})$)?;
     obj
 }"#, |v: Result<&Value>| {
-    // CR claude for claude: [test-gap] pack_struct accepts any two-element array, so a
-    // decode that swaps or zeroes the fields of {x: 42, y: "hi"} still passes. Have the
-    // fixture return `obj.x == 42 && obj.y == "hi"`, or match the exact Value.
-    // sqlite_exec_params (sqlite.rs:48) has the same weakness: it binds [1, 3.14] and
-    // checks only the id; check `(rows[0]$).val == 3.14` too. (tests-lib-b2-13)
-    matches!(v, Ok(Value::Array(arr)) if arr.len() == 2)
+    format!("{}", v.unwrap()) == r#"[["x", i64:42], ["y", "hi"]]"#
 }; FuseExpect::None);
 
 run!(pack_bytes, r#"{
@@ -88,6 +83,8 @@ run!(pack_stream_tcp, r#"{
 // no pin. Add fixtures that read garbage through `?` into a primitive and into a struct
 // target, and assert the catch receives the reader's own error tag. Probe: `let j: i64
 // = json::read("this is not json")$` is 0 in both engines. (tests-lib-b2-04)
+// 2026-10-06 claude: deferred to the fix of small-pkgs-01 (json/lib.rs), which these
+// fixtures pin; a catch around `json::read("this is not json")?` still receives nothing.
 run!(pack_invalid, r#"{
     let r: Result<i64, [`PackErr(string), `InvalidCast(string)]> = pack::read(buffer::from_array([u8:255, u8:255, u8:255]));
     is_err(r)

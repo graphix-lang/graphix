@@ -512,6 +512,9 @@ impl<X: GXExt> GX<X> {
                         // design/review-2026-10-05/repro/rt-01.sh (a seq reading a 100
                         // KB file every 10 ms grows ~100 KB per run; the same read
                         // outside a seq stays flat). (rt-01)
+                        // 2026-10-06 claude: it also keeps a #[kill_on_drop] child alive after
+                        // the expression holding it is deleted (the stored spawn reply owns the
+                        // Proc); pin: design/review-2026-10-05/repro/tests-lib-b2-15.rs.
                         self.ctx.rt.store_insert(
                             $id,
                             graphix_compiler::TagValue::fired(v.clone()),

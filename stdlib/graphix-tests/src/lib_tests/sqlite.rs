@@ -2,22 +2,13 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-// CR claude for claude: [test-gap] This test cannot fail. The block's value is the
-// constant `true`, which fires at init whatever open and close do, and a failing `?`
-// with no catch is only logged. It is the only test of sqlite::close.
-// tcp_connect_accept (tcp.rs:9) has the same shape, and stdin_create (sys.rs:69) checks
-// `!is_err` of a Stdio, which is never an error, so it fails only if stdin never
-// produces. Gate the value on the effect: `let c = sqlite::close(db)?; c ~ true` (a
-// failing open then never produces) and `server ~ true` on accept's result. Probe: this
-// fixture with open("/definitely/not/a/dir/x.db") prints the unhandled SqliteError,
-// then `true`. (tests-lib-b2-01)
 run!(sqlite_open_memory, r#"{
     let db = sqlite::open(":memory:")?;
-    sqlite::close(db)?;
-    true
+    let closed = sqlite::close(db)?;
+    closed ~ true
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; FuseExpect::Jit);
+}; FuseExpect::None);
 
 // A typed struct query: exec_batch creates the schema, query reads back
 // structs.
@@ -59,7 +50,8 @@ run!(sqlite_exec_params, r#"{
     let setup = sqlite::exec_batch(db, "CREATE TABLE t(id INTEGER PRIMARY KEY, val REAL)")$;
     let inserted = sqlite::exec(setup ~ db, "INSERT INTO t(id, val) VALUES(?, ?)", [1, 3.14])$;
     let rows: Array<{id: i64, val: f64}> = sqlite::query(inserted ~ db, "SELECT id, val FROM t", [])$;
-    (rows[0]$).id == 1
+    let row = rows[0]$;
+    row.id == 1 && row.val == 3.14
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
