@@ -217,6 +217,12 @@ the dispatch route compared at final-values strength like its engine
 pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
 Nth batched subject; the individual path always runs them.
 
+**Forked runs** (`Pair::Par`): each engine runs again with every fork
+point forked (`ParMode::Force`) and is compared with its serial run.
+`GRAPHIX_FUZZ_FORK=0` disables them. `GRAPHIX_FUZZ_PAR` is a different
+knob, the number of checks in flight (default 8 per core; `soak.sh` sets
+it to the memory-sized worker count).
+
 **`selfcheck` is the oracle-soundness gate**: interp-vs-interp and
 jit-vs-jit trace equality over generated + corpus programs, 100%
 required before any interp-vs-jit finding is trusted. **`detcheck`** is

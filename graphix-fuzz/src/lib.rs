@@ -88,25 +88,9 @@ impl Mode {
     }
 }
 
-/// `GRAPHIX_FUZZ_PAR=0` disables the forced-fork run (default on).
-// CR claude for claude: [risk] `GRAPHIX_FUZZ_PAR` means two unrelated things. Here, '0'
-// turns the forced-fork runs off and any other value leaves them on. `parallelism()`
-// (lib.rs:3832-3841) reads the same variable as the number of checks in flight, and
-// soak.sh:124 sets it to the worker count. So concurrency cannot be capped while the
-// forked runs are off: `GRAPHIX_FUZZ_PAR=0` also restores the default of 8 checks per
-// core, which is the opposite of what a box short on memory wants when it drops the
-// extra runs. Give the fork switch its own name and document both knobs in
-// design/graphix_fuzz.md. (x-doc-drift-15)
+/// `GRAPHIX_FUZZ_FORK=0` disables the forced-fork runs (default on).
 fn par_enabled() -> bool {
-    // CR claude for claude: [risk] GRAPHIX_FUZZ_PAR means two things: here a switch (0
-    // turns the forced-fork Par/JitPar runs off), in parallelism() (line 3834) the
-    // number of checks in flight, where 0 is ignored and falls back to 8 x cores.
-    // soak.sh sets it to the memory-sized worker count and every child inherits it, so
-    // a soak cannot turn fork runs off without losing its pool size, and
-    // GRAPHIX_FUZZ_PAR=0 on a direct run silently means no fork runs and 8 x cores.
-    // Give the switch its own variable, as GRAPHIX_FUZZ_SESSIONS is for the session
-    // runs, and document both in design/graphix_fuzz.md. (fuzz-lib-b-10)
-    std::env::var("GRAPHIX_FUZZ_PAR").map_or(true, |v| v != "0")
+    std::env::var("GRAPHIX_FUZZ_FORK").map_or(true, |v| v != "0")
 }
 
 /// How a `callable-v1` program's dispatch epochs are delivered (see
@@ -4080,7 +4064,8 @@ pub fn fuzz_source(seed: u64, weight: f64, tasks: usize) -> Source<'static> {
 /// How many checks to keep in flight. The oracle is mostly wait
 /// (runtime spin-up, quiescence), so the cores are oversubscribed 8x.
 fn parallelism() -> usize {
-    // `GRAPHIX_FUZZ_PAR` overrides so concurrent campaigns can share a box
+    // `GRAPHIX_FUZZ_PAR` sets the checks in flight, so concurrent
+    // campaigns can share a box
     if let Some(n) = std::env::var("GRAPHIX_FUZZ_PAR")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
