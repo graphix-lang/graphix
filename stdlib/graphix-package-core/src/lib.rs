@@ -269,6 +269,31 @@ impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
 #[derive(Default, Clone)]
 pub struct ProgramArgs(pub Vec<ArcStr>);
 
+/// How `sys::exit` ends a program, seeded into `ctx.libstate` by an
+/// embedder that ends in order (a display cleared, its runtime stopped)
+/// and then exits with the code. Without one the process exits on the
+/// spot.
+#[derive(Clone)]
+pub struct ExitRequest(
+    triomphe::Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<i32>>>>,
+);
+
+impl ExitRequest {
+    pub fn new() -> (Self, tokio::sync::oneshot::Receiver<i32>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Self(triomphe::Arc::new(parking_lot::Mutex::new(Some(tx)))), rx)
+    }
+
+    /// Ask to exit with `code`; false when the embedder no longer listens.
+    /// A program already exiting keeps its first code.
+    pub fn request(&self, code: i32) -> bool {
+        match self.0.lock().take() {
+            Some(tx) => tx.send(code).is_ok(),
+            None => true,
+        }
+    }
+}
+
 /// Print-capture sink, seeded into `ctx.libstate` by harnesses. When
 /// present, `print`/`println`/`dbg` Stdout and Stderr output appends
 /// here (exactly the bytes the stream would receive) instead of the

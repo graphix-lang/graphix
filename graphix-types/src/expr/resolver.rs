@@ -255,6 +255,20 @@ impl Resolution {
     }
 }
 
+/// The files a module `name` may be, tried in order beside its parent's
+/// base: `{name}.gx` or `{name}/mod.gx`, each paired with the interface
+/// beside it. Every resolver lays modules out this way.
+pub const MODULE_LAYOUTS: [(&str, &str); 2] = [(".gx", ".gxi"), ("/mod.gx", "/mod.gxi")];
+
+/// Where the submodules of the module at `path` (its implementation or
+/// its interface) live: `{stem}/` beside `{stem}.gx`, its own directory
+/// for `mod.gx`.
+pub fn submodule_base(path: &str) -> &str {
+    let stem =
+        path.strip_suffix(".gxi").or_else(|| path.strip_suffix(".gx")).unwrap_or(path);
+    stem.strip_suffix("/mod").unwrap_or(stem)
+}
+
 fn resolve_from_vfs(
     scope: &ModPath,
     parent: &Arc<Origin>,
@@ -284,7 +298,7 @@ fn resolve_from_vfs(
     // design/review-2026-10-05/repro/t-format-resolver-01.sh (t-format-resolver-01)
     let at = |file: &str| vfs.get(&scope.append(&format_compact!("{name}{file}")));
     // an interface pairs with the implementation beside it, as on disk
-    for (imp, intf) in [(".gx", ".gxi"), ("/mod.gx", "/mod.gxi")] {
+    for (imp, intf) in MODULE_LAYOUTS {
         if let Some(e) = at(imp) {
             let interface = at(intf).map(unit);
             return Resolution::Resolved { interface, implementation: unit(e) };
@@ -316,13 +330,7 @@ async fn resolve_from_files(
             text,
         })
     };
-    let mut file = base.clone();
-    for part in Path::parts(&name) {
-        file.push(part);
-    }
-    let dir = file.clone();
-    file.set_extension("gx");
-    let mod_file = dir.join("mod.gx");
+    let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
     // CR claude for claude: [risk] An interface pairs only with the implementation beside
     // it, and nothing reports an interface left beside the other layout. With foo.gxi
     // next to foo/mod.gx, or foo/mod.gxi next to foo.gx, the interface is dropped
@@ -336,8 +344,9 @@ async fn resolve_from_files(
     // in resolve_from_vfs (line 240), whose pin at line 919 would then expect the
     // refusal. probe: design/review-2026-10-05/repro/t-format-resolver.r2-10.sh
     // (t-format-resolver.r2-10)
-    for imp in [file, mod_file] {
-        let intf = imp.with_extension("gxi");
+    for (imp, intf) in MODULE_LAYOUTS {
+        let (imp, intf) =
+            (base.join(format!("{rel}{imp}")), base.join(format!("{rel}{intf}")));
         match read(overrides, &imp).await {
             Ok(None) => continue,
             Err(e) => return Resolution::Broken(e),
@@ -353,11 +362,11 @@ async fn resolve_from_files(
             }
         }
     }
-    let (file, mod_file) = (dir.with_extension("gx"), dir.join("mod.gx"));
+    let [(file, _), (mod_file, _)] = MODULE_LAYOUTS;
     errors.push(anyhow::anyhow!(
         "{} or {}: no such file",
-        file.display(),
-        mod_file.display()
+        base.join(format!("{rel}{file}")).display(),
+        base.join(format!("{rel}{mod_file}")).display()
     ));
     Resolution::TryNextMethod
 }
@@ -888,11 +897,8 @@ impl Expr {
                 // for a VFS body, through the transport for a netidx one.
                 let prepend = match source {
                     Some(Source::File(p)) => {
-                        let Some(parent) = p.parent() else { return Ok(None) };
-                        Some(files(match p.file_stem().and_then(|s| s.to_str()) {
-                            Some("mod") | None => parent.to_path_buf(),
-                            Some(stem) => parent.join(stem),
-                        }))
+                        let Some(p) = p.to_str() else { return Ok(None) };
+                        Some(files(PathBuf::from(submodule_base(p))))
                     }
                     Some(Source::Internal(_) | Source::Unspecified) => None,
                     Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
@@ -1022,6 +1028,14 @@ pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<A
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn submodule_base_follows_the_layout() {
+        assert_eq!(submodule_base("/d/m.gx"), "/d/m");
+        assert_eq!(submodule_base("/d/m.gxi"), "/d/m");
+        assert_eq!(submodule_base("/d/m/mod.gx"), "/d/m");
+        assert_eq!(submodule_base("/d/m/mod.gxi"), "/d/m");
+    }
+
     use super::*;
     use crate::expr::WrittenAt;
     use arcstr::literal;

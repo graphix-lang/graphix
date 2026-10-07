@@ -236,7 +236,9 @@ struct Inner {
     netidx_updates_tx: mpsc::Sender<GPooled<Vec<(SubId, NEvent)>>>,
     writes_tx: mpsc::Sender<GPooled<Vec<WriteRequest>>>,
     rpcs_tx: mpsc::Sender<(BindId, netidx_protocols::rpc::server::RpcCall)>,
-    pending_publish_batch: Mutex<Option<UpdateBatch>>,
+    /// The flusher's too: it holds this and not the Inner, so dropping
+    /// the NetState closes `flush_tx` and the tasks end.
+    pending_publish_batch: Arc<Mutex<Option<UpdateBatch>>>,
     flush_tx: mpsc::UnboundedSender<()>,
     unsubscribe_graveyard_tx: mpsc::UnboundedSender<Dval>,
     // rpc client procs, GC'd on use
@@ -296,7 +298,7 @@ impl NetState {
             netidx_updates_tx: updates_tx,
             writes_tx,
             rpcs_tx,
-            pending_publish_batch: Mutex::new(None),
+            pending_publish_batch: Arc::default(),
             flush_tx,
             unsubscribe_graveyard_tx: graveyard_tx,
             rpc_clients: Mutex::new(Vec::new()),
@@ -386,26 +388,15 @@ impl NetState {
         // FLUSHER: commit the publish batch when pinged, coalescing
         // pings that arrive while a commit is in flight.
         {
-            // CR claude for claude: [risk] The flusher holds st2, an Arc of the Inner
-            // that owns flush_tx, and loops until flush_rx closes, so Inner is never
-            // dropped. After the runtime goes away, these all live until the tokio
-            // runtime shuts down: the flusher and graveyard tasks, the cached rpc
-            // client Procs, the change trackers and, through NetHandles, the publisher,
-            // the subscriber and (in Internal mode) the gx-netidx thread with its
-            // private resolver. A process that runs several runtimes on one tokio
-            // runtime keeps one netidx universe for each finished runtime that touched
-            // sys::net. A graphix-fuzz check-batch worker is one: it runs every session
-            // of every subject on its #[tokio::main] runtime. Give the flusher only
-            // what it uses (the pending batch behind its own Arc, and the timeout), so
-            // dropping NetState closes flush_tx and the tasks exit. (sys-net-13)
-            let st2 = st.clone();
+            let pending = st.0.pending_publish_batch.clone();
+            let timeout = st.0.publish_timeout;
             task::spawn(async move {
                 while let Some(()) = flush_rx.next().await {
-                    let batch = st2.0.pending_publish_batch.lock().take();
-                    if let Some(batch) = batch {
-                        if batch.len() > 0 {
-                            batch.commit(st2.0.publish_timeout).await;
-                        }
+                    let batch = pending.lock().take();
+                    if let Some(batch) = batch
+                        && batch.len() > 0
+                    {
+                        batch.commit(timeout).await;
                     }
                 }
             });
@@ -552,18 +543,6 @@ impl NetState {
             clients.retain(|(_, _, last)| {
                 now.saturating_duration_since(*last) < Duration::from_secs(60)
             });
-            // CR claude for claude: [bug] This keeps reusing one netidx client Proc per
-            // path until no call has used the path for 60 s. That Proc reads the
-            // procedure's argument names only once (a OnceCell in client::Proc::call,
-            // netidx-protocols rpc.rs:498-534) and refuses any later call that names an
-            // argument outside that set. So after the server republishes the path with
-            // a different spec, every call that names a new argument fails with "no
-            // such argument b" as long as calls keep arriving less than 60 s apart. The
-            // program sees 0 (the error cast of sys-net-01), while a fresh Proc answers
-            // 20. A cache must not change a call's answer. Fix the root: when a name is
-            // missing, re-read the argument set from the call Dval's current value. At
-            // minimum, drop the entry when a call through it fails. probe:
-            // design/review-2026-10-05/repro/sys-net-10.gx (sys-net-10)
             match clients.iter_mut().find(|(p, _, _)| p == &path) {
                 Some((_, proc, last)) => {
                     *last = now;

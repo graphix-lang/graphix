@@ -24,7 +24,7 @@ a hardwired resolver variant.
 ## The mechanisms
 
 **Module loading is a trait object.** `ModuleResolver`
-(`graphix-compiler/src/expr/resolver.rs`) is async `resolve`/
+(`graphix-types/src/expr/resolver.rs`) is async `resolve`/
 `for_source`/`fetch_source`; `VfsResolver` and `FilesResolver` live in
 the core, `NetidxResolver` in `graphix-package-sys/src/loader.rs`.
 `GRAPHIX_MODPATH` schemes map to loaders through a `ResolverFactory`

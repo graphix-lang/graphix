@@ -628,17 +628,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-            // CR claude for claude: [bug] This exits inside a cycle, so the shell's
-            // orderly end (graphix-shell/src/lib.rs:542-547) never runs. A TUI program
-            // that ends with sys::exit leaves the terminal in the alternate screen,
-            // with the cursor hidden and in raw mode; tui::exit restores it but takes
-            // no exit code. Its kill_on_drop children outlive it too, and they also
-            // outlive Ctrl-C and tui::exit. The kill lives in the own_child task
-            // (process.rs:66-104), which does not get to run when the runtime is torn
-            // down, and the tokio Command (process.rs:239) has no kill_on_drop, so that
-            // half needs a fix in process.rs as well. probe:
-            // design/review-2026-10-05/repro/x-errors-01.py (x-errors-01)
-            std::process::exit(code as i32);
+            let asked = ctx
+                .libstate
+                .get::<graphix_package_core::ExitRequest>()
+                .is_some_and(|r| r.request(code as i32));
+            if !asked {
+                std::process::exit(code as i32);
+            }
         }
         TagValue::phantom_ref()
     }

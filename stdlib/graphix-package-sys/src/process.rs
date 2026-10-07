@@ -69,15 +69,18 @@ async fn own_child(
     status_tx: watch::Sender<Status>,
     mut ctl: mpsc::UnboundedReceiver<KillReq>,
 ) {
+    let publish = |status: Result<std::process::ExitStatus>| {
+        let status = match status {
+            Ok(s) => Ok(s.into()),
+            Err(e) => Err(ArcStr::from(format_compact!("{e}").as_str())),
+        };
+        let _ = status_tx.send(Some(status));
+    };
     loop {
         tokio::select! {
             biased;
             status = spawned.wait() => {
-                let status = match status {
-                    Ok(s) => Ok(s.into()),
-                    Err(e) => Err(ArcStr::from(format_compact!("{e}").as_str())),
-                };
-                let _ = status_tx.send(Some(status));
+                publish(status);
                 break;
             }
             req = ctl.recv() => match req {
@@ -86,12 +89,13 @@ async fn own_child(
                     let _ = done.send(());
                 }
                 None => {
-                    // Every handle dropped — nobody can observe the
-                    // status anymore.
+                    // Every handle dropped; a wait still pending gets the
+                    // status once the child has gone.
                     if kill_on_drop {
                         stop_proc(&mut spawned, Duration::ZERO).await;
                     }
-                    break;
+                    publish(spawned.wait().await);
+                    return;
                 }
             },
         }
@@ -147,7 +151,7 @@ fn get_proc(cached: &CachedVals, idx: usize) -> Option<ProcValue> {
 }
 
 #[derive(Debug, Clone, IntoValue)]
-struct ExitStatusValue {
+pub(crate) struct ExitStatusValue {
     code: Option<i64>,
     success: bool,
 }
@@ -237,6 +241,8 @@ fn job() -> Result<&'static Job> {
 
 fn spawn_child(opts: SpawnOptions) -> Result<ChildBundle> {
     let mut cmd = Command::new(&*opts.command);
+    // the runtime's end drops the child with the task that owns it
+    cmd.kill_on_drop(opts.kill_on_drop);
     cmd.args(opts.args.iter().map(|s| &**s));
     if let Some(cwd) = opts.cwd {
         cmd.current_dir(&*cwd);
@@ -298,25 +304,16 @@ pub(crate) struct ProcessWaitEv;
 
 impl EvalCachedAsync for ProcessWaitEv {
     const NAME: &str = "sys_process_wait";
-    // CR claude for claude: [bug] The wait future owns the ProcValue. While a wait is
-    // pending, `ctl` stays open and own_child never sees the last handle drop, so a
-    // kill_on_drop child that is being waited on is not killed when the program drops
-    // it (process.gxi:69-71). For example, a respawn's old child runs until it exits on
-    // its own. CachedArgsAsync also queues the new proc's wait behind the old one, so
-    // `st` reports the dropped child's exit and the current child's exit only arrives
-    // after the old child ends. Holding a clone of `status_rx` instead of the ProcValue
-    // makes the kill happen. own_child should then publish a status after the kill, or
-    // the pending wait ends in "status channel closed". probe:
-    // design/review-2026-10-05/repro/sys-io-07.gx (sys-io-07)
-    type Args = ProcValue;
+    /// The status alone, not the handle, so a pending wait does not keep a
+    /// dropped child alive.
+    type Args = watch::Receiver<Status>;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_proc(cached, 0)
+        get_proc(cached, 0).map(|p| p.inner.status_rx.clone())
     }
 
-    fn eval(proc: Self::Args) -> impl Future<Output = Value> + Send {
+    fn eval(mut status: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut status = proc.inner.status_rx.clone();
             let result = match status.wait_for(|status| status.is_some()).await {
                 Ok(status) => {
                     status.clone().expect("wait_for predicate guarantees status")

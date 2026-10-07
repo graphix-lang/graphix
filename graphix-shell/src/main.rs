@@ -349,7 +349,7 @@ async fn handle_package(action: PackageAction) -> Result<()> {
     }
 }
 
-fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<()> {
+fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -424,9 +424,12 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<()> {
                         }
                     };
                     shell = shell.module_resolvers(vec![
+                        // a script's modules sit beside it, as on disk
                         graphix_package_sys::loader::NetidxResolver::new(
                             subscriber,
-                            netidx_core::path::Path::from(ArcStr::from(path)),
+                            netidx_core::path::Path::from(ArcStr::from(
+                                netidx_core::path::Path::dirname(path).unwrap_or("/"),
+                            )),
                             None,
                         ),
                     ]);
@@ -509,5 +512,10 @@ fn main() -> Result<()> {
     while let Ok(f) = main_rx.recv() {
         f();
     }
-    tokio_handle.join().map_err(|_| anyhow::anyhow!("tokio thread panicked"))?
+    let code =
+        tokio_handle.join().map_err(|_| anyhow::anyhow!("tokio thread panicked"))??;
+    if let Some(code) = code {
+        std::process::exit(code)
+    }
+    Ok(())
 }

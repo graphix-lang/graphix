@@ -217,6 +217,9 @@ pub struct Shell<X: GXExt> {
     /// `packages` or extend with `add_packages`.
     #[builder(setter(custom), default = "stdlib_packages::<X>()")]
     packages: Vec<Box<dyn Package<X>>>,
+    /// Where `sys::exit` asks the shell to end, installed at init.
+    #[builder(setter(skip), default)]
+    exit: Option<tokio::sync::oneshot::Receiver<i32>>,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
 }
@@ -246,6 +249,9 @@ impl<X: GXExt> Shell<X> {
         if let Some(setup) = self.setup_context.take() {
             setup(&mut ctx);
         }
+        let (exit, exit_rx) = graphix_package_core::ExitRequest::new();
+        ctx.libstate.set(exit);
+        self.exit = Some(exit_rx);
         // argv[0] names the program: its file, or the binary a package's
         // embedded program is; an embedder's internal source gets exactly
         // the arguments it passes
@@ -473,14 +479,16 @@ impl<X: GXExt> Shell<X> {
         self.check_with(&gx).await
     }
 
-    pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
+    /// Run the shell; `Some(code)` when the program asked to exit with it,
+    /// after the display is cleared and the runtime stopped.
+    pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
         if self.cache == CacheMode::Warm {
             if let Mode::Script(_) = &self.mode {
                 gx.program().await?;
             }
-            return Ok(());
+            return Ok(None);
         }
         // Armed before the first cycle: a program may wedge inside
         // `load_env`, before the input loop exists.
@@ -504,8 +512,12 @@ impl<X: GXExt> Shell<X> {
             println!("Welcome to the graphix shell");
             println!("Press ctrl-c to cancel, ctrl-d to exit, and tab for help")
         }
+        let mut exit_rx = self.exit.take().expect("init installs the exit request");
         let exit = 'repl: loop {
             select! {
+                code = &mut exit_rx => if let Ok(code) = code {
+                    break 'repl Ok(Some(code))
+                },
                 batch = from_gx.recv() => match batch {
                     None => bail!("graphix runtime is dead"),
                     Some(mut batch) => {
@@ -516,7 +528,7 @@ impl<X: GXExt> Shell<X> {
                                         Ok(()) => (),
                                         // the reader is done with the output
                                         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                                            break 'repl Ok(())
+                                            break 'repl Ok(None)
                                         }
                                         Err(e) => break 'repl Err(e.into()),
                                     }
@@ -539,13 +551,13 @@ impl<X: GXExt> Shell<X> {
                             gx.interrupt();
                             output.clear().await;
                         }
-                        Ok(Signal::CtrlC) if script => break Ok(()),
+                        Ok(Signal::CtrlC) if script => break Ok(None),
                         Ok(Signal::CtrlC) => {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.
                             gx.interrupt();
                             output.clear().await;
                         }
-                        Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break Ok(()),
+                        Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break Ok(None),
                         Ok(Signal::Success(line)) => {
                             match gx.compile(ArcStr::from(line)).await {
                                 Err(e) => eprintln!("error: {e:?}"),
