@@ -43,9 +43,9 @@ Subcommands: `check`/`run`/`minimize`/`typemorph <file>`; `generate
 `typemorph-one` are the hidden child-process forms.
 
 Sources: **corpus mutation** (seeds = the hand seeds plus every `run!`
-fixture harvested at build time by `build.rs`; a type-directed
-in-scope subexpression replacement applied 1–5×, with type-aware
-subtree transplant between seeds), **generation** (`generate/`: a
+fixture harvested at build time by `build.rs`; a type-blind
+subexpression replacement applied 1–5×, a donor subtree from any seed
+at a random node, the compile filtering what does not type), **generation** (`generate/`: a
 `GenCtx` shadowing the compiler's `Env`; `gen_typed` over a `GenType`
 target with `try_call`, `try_accessor` and `try_hof` as its producers —
 type-correct by construction, since under

@@ -8,8 +8,9 @@
 //! dropped and counted (`noparse`). Site indices are [`crate::mutate`]
 //! preorder indices and transforms are deterministic in the body text,
 //! so a `(kind, site)` id re-derives the same candidate in a fresh
-//! process. Grades: parens-wrap is sound (a flip is a compiler bug);
-//! the rest are expected-preserving (a flip files for triage).
+//! process. Grades: parens-wrap and label-permute are sound (a flip is
+//! a compiler bug); the rest are expected-preserving (a flip files for
+//! triage).
 
 use crate::mutate;
 use arcstr::ArcStr;
@@ -94,8 +95,10 @@ const TYP: &str = "Tm__0";
 pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     let mut out: Vec<TmProbe> = Vec::new();
     let mut noparse = 0usize;
-    // `mutate::replace` drops attributes on the rebuilt path, so an
-    // attr-bearing body could flip on attribute loss rather than typing.
+    // A transform that rebuilds its target from the kind loses the target's
+    // attributes, one that relocates a node moves them, and the reparse
+    // check sees neither (Expr equality ignores attributes), so an
+    // attr-bearing body could flip on its attributes rather than typing.
     if body.contains("tm__") || body.contains("Tm__") || body.contains("#[") {
         return (out, 0);
     }
@@ -233,6 +236,20 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             push(&mut out, &mut noparse, TmKind::LetExtract, gi, &cand);
         }
     }
+    // a let over ⊥ (or an empty collection) is a cell its first reader
+    // decides, so two of its readers do not commute
+    let open: HashSet<String> = stmts
+        .iter()
+        .filter_map(|st| match &st.kind {
+            ExprKind::Bind(b) if b.typ.is_none() && open_value(&b.value) => {
+                match &b.pattern {
+                    StructurePattern::Bind(n) => Some(n.to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
     // let-inline: substitute a single-use, unannotated, non-shadowed
     // `let x = e` into its one later use
     {
@@ -244,11 +261,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
             // a `let` over `never()` is an open cell, the value inlined ⊥;
             // a value that binds names binds them for the statements between
-            if b.rec
-                || b.typ.is_some()
-                || matches!(b.value.kind, ExprKind::Never { .. })
-                || leaks_binds(&b.value)
-            {
+            if b.rec || b.typ.is_some() || open_value(&b.value) || leaks_binds(&b.value) {
                 continue;
             }
             let StructurePattern::Bind(name) = &b.pattern else { continue };
@@ -258,18 +271,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let mut ok = true;
             // a later binder of the name shadows the use; a later binder
             // of a name the value references, at any depth, captures it
-            // CR claude for claude: [bug] let-inline moves the value's check from its
-            // `let` to its one use, past every read in between. But a let over ⊥ takes
-            // its type from its first reader, the rule stmt-permute's `open` set
-            // encodes. When the value and another reader of such a let are checked in a
-            // different order after the inline, the other reader decides the cell and
-            // the moved value is refused. This files a false let-inline typeflip. The
-            // other reader can be any statement up to the use, including the use's own
-            // statement before the use (`let x = k(g); h(g) + x`). Skip the inline when
-            // the value reads an open let that any statement from si+1 through the use
-            // also reads, using the same openness test as stmt-permute. probe:
-            // design/review-2026-10-05/repro/fuzz-mutate-07.gx (`graphix-fuzz
-            // typemorph` on it reports let-inline#3). (fuzz-mutate-07)
             for later in &stmts[si + 1..] {
                 later.fold((), &mut |(), n| match &n.kind {
                     ExprKind::Ref { name } if name.to_string() == nm => uses += 1,
@@ -292,16 +293,32 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let under = |k: fn(&ExprKind) -> bool| {
                 (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
             };
+            // the inline moves the value's check to its use, past the reads
+            // between: a reader of an open let the value reads would decide
+            // it first
+            let uj = (si..stmts.len())
+                .find(|&j| gi < offsets[j] + sizes[offsets[j]])
+                .unwrap_or(si);
+            let opens: Vec<&String> =
+                vrefs.iter().filter(|r| open.contains(*r)).collect();
+            if !opens.is_empty()
+                && stmts[si + 1..=uj]
+                    .iter()
+                    .any(|st| opens.iter().any(|r| stmt_names(st).refs.contains(*r)))
+            {
+                continue;
+            }
+            // a value that can raise must not move past a `catch`, whose
+            // handler would take its raise
+            let raises = b.value.fold(false, &mut |a, n| {
+                a || matches!(n.kind, ExprKind::Qop(_) | ExprKind::Apply(_))
+            });
+            let catch_between = (offsets[si] + sizes[offsets[si]]..gi)
+                .any(|j| matches!(pre[j].kind, ExprKind::Catch(_)));
+            if raises && catch_between {
+                continue;
+            }
             // a name under `&` may be a place root; a seq body refuses a `catch`
-            // CR claude for claude: [bug] let-inline can move a value that raises (`x?`,
-            // or a call whose callee raises) to a use that sits after a `catch` in an
-            // enclosing block, so the raise reaches that handler instead of its old
-            // one; a handler typed for other errors then refuses the mutant by language
-            // rule, a false typeflip. The guard below covers only the reverse move (a
-            // value holding a `catch` into a seq body). Skip the inline when the value
-            // can raise and a `catch` statement stands between the `let` and the use in
-            // a block enclosing the use. probe:
-            // design/review-2026-10-05/repro/fuzz-mutate-10.gx (fuzz-mutate-10)
             let holds_catch = b
                 .value
                 .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
@@ -327,36 +344,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // stmt-permute: swap adjacent independent statements
     {
-        // a let over ⊥ takes its type from its first use, so two
-        // readers of one do not commute
-        // CR claude for claude: [bug] `open` only holds lets whose value is a bare
-        // `never()`. The first reader also decides the type of a let over `(never())`,
-        // a block ending in `never()`, or a select whose only arm is `never()`, and
-        // `let xs = []` flips the same way through its element cell. stmt-permute still
-        // swaps two readers of these, so the reader moved to the front decides the cell
-        // and the other is refused: a false stmt-permute flip filed for triage.
-        // let-inline's guard (line 235) uses the same bare test, and the pin
-        // readers_of_a_bottom_let_do_not_commute covers only the bare form. Fix: decide
-        // openness from the subject's checked types (`ExprTypeSite::cell`, or a let
-        // type that holds a cell), or at least look through parens, block tails and
-        // all-`never()` selects. probe:
-        // design/review-2026-10-05/repro/fuzz-mutate-08.gx (graphix-fuzz typemorph on
-        // it prints a stmt-permute#1 TYPEFLIP). (fuzz-mutate-08)
-        let open: HashSet<String> = stmts
-            .iter()
-            .filter_map(|st| match &st.kind {
-                ExprKind::Bind(b)
-                    if b.typ.is_none()
-                        && matches!(b.value.kind, ExprKind::Never { .. }) =>
-                {
-                    match &b.pattern {
-                        StructurePattern::Bind(n) => Some(n.to_string()),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            })
-            .collect();
         let mut sites = Vec::new();
         for i in 0..stmts.len().saturating_sub(1) {
             if permutable(&stmts[i], &stmts[i + 1], &open) {
@@ -534,20 +521,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
     });
 }
 
-/// Whether the body needs an unannotated parameter's type before it
-/// checks: a select over a value the parameter's type decides (a type
-/// test binds it, coverage reads it), or a field read or a `with` update
-/// on it. Only the call supplies that type, so a `let` of the
 /// `e` under any parentheses.
-// CR claude for claude: [readability] The doc above (489-493) is the head of
-// reads_param_type's doc spliced onto the tail of unparen's own, and reads_param_type
-// keeps only its last line (501); mustreject.rs:197-198 is widen's doc sitting on
-// binds_outward, and widen (mustreject.rs:214) has none. Move each block back above its
-// function. The comment at line 83 is also wrong: mutate::replace rebuilds the path
-// with `with_kind`, which keeps `dec`. Attributes are lost where a transform rebuilds
-// its target from the kind (`to_expr_nopos`) and moved where it relocates a node, and
-// the reparse check sees neither because Expr equality ignores `dec`; that is the
-// reason to skip `#[`. (fuzz-mutate-17)
 pub(crate) fn unparen(mut e: &Expr) -> &Expr {
     while let ExprKind::ExplicitParens(inner) = &e.kind {
         e = inner;
@@ -555,7 +529,28 @@ pub(crate) fn unparen(mut e: &Expr) -> &Expr {
     e
 }
 
-/// lambda is refused by language rule, not by an ordering bug.
+/// Whether a `let` over `e` is a cell its first reader decides: `e` is ⊥
+/// (through parens, a block's tail, a select whose every arm is) or an
+/// empty collection, whose element is open.
+fn open_value(e: &Expr) -> bool {
+    match &unparen(e).kind {
+        ExprKind::Never { .. } => true,
+        ExprKind::Block { exprs } => exprs.last().is_some_and(open_value),
+        ExprKind::Select(se) => {
+            !se.arms.is_empty() && se.arms.iter().all(|(_, b)| open_value(b))
+        }
+        ExprKind::Array { args } | ExprKind::List { args } => args.is_empty(),
+        ExprKind::Map { args } => args.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether the body needs an unannotated parameter's type before it
+/// checks: a select over a value the parameter's type decides (a type
+/// test binds it, coverage reads it), a field read or a `with` update on
+/// it, a call through it or a deref of it. Only the call supplies that
+/// type, so a `let` of the lambda is refused by language rule, not by an
+/// ordering bug.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let mut untyped: HashSet<&str> = HashSet::new();
     for a in l.args.iter().filter(|a| a.constraint.is_none()) {
@@ -573,20 +568,8 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
                 ExprKind::StructRef { source, .. }
                 | ExprKind::TupleRef { source, .. } => is_param(source),
                 ExprKind::StructWith(w) => is_param(&w.source),
-                // CR claude for claude: [bug] Like the field read above, a call through
-                // an unannotated parameter (`|g| g(2)`) or a deref of one (`|r| *r +
-                // 1`) needs the parameter's type before the body checks. A `let` of
-                // either lambda is refused at its definition ("type must be known,
-                // annotations needed" / "expected reference"). Both fall through to
-                // `false` here, so let-extract hoists them and typemorph files a
-                // typeflip for a language rule. Flips dedup by kind and head, so that
-                // class then also hides any real let-extract flip with the same head.
-                // Add `ExprKind::Apply(ap) => is_param(&ap.function)` and
-                // `ExprKind::Deref(x) => is_param(x)`, and pin both shapes in
-                // extract_skips_param_type_reads. probe: graphix-fuzz typemorph
-                // design/review-2026-10-05/repro/fuzz-mutate-09.gx (the generators
-                // never emit these shapes; hand-run typemorph and mutants can).
-                // (fuzz-mutate-09)
+                ExprKind::Apply(ap) => is_param(&ap.function),
+                ExprKind::Deref(x) => is_param(x),
                 _ => false,
             }
     })
@@ -1060,13 +1043,17 @@ mod test {
 
     #[test]
     fn readers_of_a_bottom_let_do_not_commute() {
-        let body = "{ let g = never(); let a: Array<fn(?#x: i64) -> i64> = [g]; \
-                    let b: Array<fn(#x: i64) -> i64> = [g]; array::len(a) + array::len(b) }";
-        let (probes, _) = probes(body, 8);
-        assert!(
-            probes.iter().all(|p| p.kind != TmKind::StmtPermute || p.site != 1),
-            "the first reader of `g` decides its type"
-        );
+        for init in ["never()", "(never())", "{ let z = 1; never() }", "[]"] {
+            let body = format!(
+                "{{ let g = {init}; let a: Array<fn(?#x: i64) -> i64> = [g]; \
+                 let b: Array<fn(#x: i64) -> i64> = [g]; array::len(a) + array::len(b) }}"
+            );
+            let (probes, _) = probes(&body, 8);
+            assert!(
+                probes.iter().all(|p| p.kind != TmKind::StmtPermute || p.site != 1),
+                "the first reader of `g = {init}` decides its type"
+            );
+        }
     }
 
     #[test]
@@ -1078,6 +1065,8 @@ mod test {
             "{ let k = u8:1; array::map([{n: k, y: k}], |r| { r with y: k }) }",
             "{ let k = u8:1; array::fold([true], k, |acc, x| select (acc %? acc) { error as _ => acc, u8 as n => n }) }",
             "{ let k = 1; array::map([((1, 2), k)], |(pt, n)| pt.0 + n) }",
+            "{ let k = i64:2; array::map([|n: i64| n + k], |g| g(2)) }",
+            "{ let k = i64:1; let c = &k; array::map([c], |r| *r + 1) }",
         ] {
             let (probes, _) = probes(body, 8);
             assert!(

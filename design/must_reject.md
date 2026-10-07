@@ -42,17 +42,17 @@ certainty argument is always the pair (the consumer's rule, the type
 the base's check gave the value), and a candidate whose argument does
 not hold is skipped, never guessed.
 
-Stacking comes from the base, not from the mutation: bases are
-typemorph's subjects and its ACCEPTED probes, which are already far
-from anything written by hand, and each base yields one mutant per
-chosen site. A mutant is never mutated again.
+Stacking comes from the base, not from the mutation: a base is a
+typemorph subject, already far from anything written by hand, and each
+base yields one mutant per chosen site. A mutant is never mutated
+again.
 
 ## The type map
 
 The base is checked once with a type map: every expression's type,
 resolved (`resolve_tvars`, so later unification cannot move it) and
-keyed by its preorder index in `mutate::preorder`, the index space
-typemorph's sites already use. It is a new `Ide` sink, filled by one
+keyed by its span in the body; nodes sharing a span answer with the
+first type recorded. It is a new `Ide` sink, filled by one
 walk over the checked root nodes after typecheck and only when a check
 asks for it; a check without it pays nothing. The binds and references
 `Ide` already records give the variable-level view (a binding's type,
@@ -302,19 +302,9 @@ differential run that adjudicates a LEAK.
 
 ## Integration
 
-<!-- CR claude for claude: [doc-drift] Four statements disagree with the code. Here and at
-lines 45-48: an accepted must-accept probe is not a base for must-reject probes, since
-typemorph_subject runs must_reject on the subject's body only
-(graphix-fuzz/src/lib.rs:2916). Lines 52-55: the type map is keyed by body span, not by
-preorder index, and nodes sharing a span answer with the first type recorded
-(mustreject.rs:83, `of(..).first()`). graphix_fuzz.md:46-48 calls corpus mutation
-type-directed with a type-aware transplant, but mutate.rs is type-blind (a random donor
-at a random node, and the compile filters); and typemorph.rs:11-12 grades only
-parens-wrap sound where lines 232-233 here also grade label-permute sound.
-(fuzz-mutate-13) -->
 The families run inside the typemorph source: a subject yields its
-must-accept probes as now and its must-reject probes on the same base;
-an accepted must-accept probe is itself a base for must-reject probes.
+must-accept probes as now and its must-reject probes on the same base,
+the subject's own body.
 The cap per family per subject is typemorph's (`TM_CAP`). No new soak
 source: the typemorph share covers it, re-weighed from findings per
 CPU-second once it runs.

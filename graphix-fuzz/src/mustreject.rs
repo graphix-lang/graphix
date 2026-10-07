@@ -348,8 +348,6 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
     }
 }
 
-/// `e` widened by `u`: `select (i64:1 == i64:1) { true => e, false => u }`,
-/// typed the union of the two whatever the scrutinee's value.
 /// Does `e` bind a name its surroundings see: a dynamic module outside
 /// any block or lambda of its own? Under a select arm the name would be
 /// scoped.
@@ -365,6 +363,8 @@ fn binds_outward(e: &Expr) -> bool {
     }
 }
 
+/// `e` widened by `u`: `select (i64:1 == i64:1) { true => e, false => u }`,
+/// typed the union of the two whatever the scrutinee's value.
 fn widen(e: &Expr, u: Expr) -> Expr {
     let one =
         || Arc::new(ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos());
