@@ -2386,14 +2386,15 @@ impl Type {
                  (`impl Collection for Array<'_>`); it is not a type"
             )
         }
-        self.rewrite_trait_args_int(env)
+        Ok(self.rewrite_trait_args_int(env)?.unwrap_or_else(|| self.clone()))
     }
 
-    fn rewrite_trait_args_int(&self, env: &Env) -> Result<Type> {
+    /// The rewrite of what changed; `None` for a type it leaves alone.
+    fn rewrite_trait_args_int(&self, env: &Env) -> Result<Option<Type>> {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env))
     }
 
-    fn rewrite_trait_args_inner(&self, env: &Env) -> Result<Type> {
+    fn rewrite_trait_args_inner(&self, env: &Env) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
                 "trait {} used as a type: a trait is a bound — write it as a \
@@ -2409,7 +2410,17 @@ impl Type {
                 let mut quantifiers: LPooled<Vec<ArcStr>> =
                     ft.quantifiers.iter().cloned().collect();
                 let mut changed = false;
+                let mut part = |t: &Type| -> Result<Type> {
+                    Ok(match t.rewrite_trait_args_int(env)? {
+                        Some(r) => {
+                            changed = true;
+                            r
+                        }
+                        None => t.clone(),
+                    })
+                };
                 let mut args: LPooled<Vec<FnArgType>> = LPooled::take();
+                let mut params_changed = false;
                 for (i, a) in ft.args.iter().enumerate() {
                     let typ = match &a.typ {
                         Type::Ref(tr) if env.trait_of_ref(tr).is_some() => {
@@ -2432,32 +2443,19 @@ impl Type {
                             if !quantifiers.contains(&name) {
                                 quantifiers.push(name);
                             }
-                            changed = true;
+                            params_changed = true;
                             t
                         }
-                        t => {
-                            let r = t.rewrite_trait_args_int(env)?;
-                            changed |= !r.ptr_eq_shallow(t);
-                            r
-                        }
+                        t => part(t)?,
                     };
                     args.push(FnArgType { kind: a.kind.clone(), typ });
                 }
-                let vargs = match &ft.vargs {
-                    None => None,
-                    Some(t) => {
-                        let r = t.rewrite_trait_args_int(env)?;
-                        changed |= !r.ptr_eq_shallow(t);
-                        Some(r)
-                    }
-                };
-                let rtype = ft.rtype.rewrite_trait_args_int(env)?;
-                changed |= !rtype.ptr_eq_shallow(&ft.rtype);
-                let throws = ft.throws.rewrite_trait_args_int(env)?;
-                changed |= !throws.ptr_eq_shallow(&ft.throws);
+                let vargs = ft.vargs.as_ref().map(|t| part(t)).transpose()?;
+                let rtype = part(&ft.rtype)?;
+                let throws = part(&ft.throws)?;
                 let ctors = ctor_quantifiers(ft, env);
-                if !changed && ctors.is_empty() {
-                    return Ok(self.clone());
+                if !changed && !params_changed && ctors.is_empty() {
+                    return Ok(None);
                 }
                 quantifiers.extend(ctors.iter().map(|(q, _)| Type::elem_name(q)));
                 let ft = FnType {
@@ -2470,17 +2468,16 @@ impl Type {
                     lambda_ids: ft.lambda_ids.clone(),
                 };
                 if ctors.is_empty() {
-                    return Ok(Type::Fn(Arc::new(ft)));
+                    return Ok(Some(Type::Fn(Arc::new(ft))));
                 }
                 let ft =
                     ft.cow_walk(|t| t.apply_ctor_quantifiers_int(&ctors)).unwrap_or(ft);
-                Ok(Type::Fn(Arc::new(ft)))
+                Ok(Some(Type::Fn(Arc::new(ft))))
             }
             t => {
                 let mut err = None;
                 let r = t.cow_children(&mut |c| match c.rewrite_trait_args_int(env) {
-                    Ok(r) if r.ptr_eq_shallow(c) => None,
-                    Ok(r) => Some(r),
+                    Ok(r) => r,
                     Err(e) => {
                         err = Some(e);
                         None
@@ -2488,29 +2485,9 @@ impl Type {
                 });
                 match err {
                     Some(e) => Err(e),
-                    None => Ok(r.unwrap_or_else(|| self.clone())),
+                    None => Ok(r),
                 }
             }
-        }
-    }
-
-    // CR claude for claude: [structure] ptr_eq_shallow is not a pointer test. Its general
-    // arm is Type::eq, and the TVar arm repeats it, so two distinct open cells, or two
-    // refs with different resolution cells, compare equal. rewrite_trait_args uses it
-    // to decide whether a child changed. A rewrite whose result differs from its input
-    // only in which variable or cell it holds would therefore be thrown away as
-    // unchanged. Today's two rewrites both change a constructor, so nothing is lost
-    // yet. design/type_operation_scaling.md asks rebuild walks to report this
-    // themselves: return Result<Option<Type>> from rewrite_trait_args_int (cow_children
-    // with an error slot, the Fn arm tracking which parts came back Some) and delete
-    // this function. (t-typ-mod-05)
-    /// Same allocation or same leaf — the "unchanged" test for walks
-    /// that return `self.clone()` when nothing moved.
-    fn ptr_eq_shallow(&self, other: &Type) -> bool {
-        match (self, other) {
-            (Type::Fn(a), Type::Fn(b)) => Arc::ptr_eq(a, b),
-            (Type::TVar(a), Type::TVar(b)) => a == b,
-            (a, b) => a == b,
         }
     }
 
