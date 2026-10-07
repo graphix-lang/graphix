@@ -117,8 +117,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	dyncall-key0-stateful-aug2026/00_count_in_callee_fold.gx
 3	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
 20	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
-0	dyncall-partial-args-jul2026/00_window_bottom_val.gx
-0	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
+1	dyncall-partial-args-jul2026/00_window_bottom_val.gx
+1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
 1	dyncall-pending-taint-jul2026/01_pad_guard_unconsumed_bind.gx
 1	dyncall-pending-taint-jul2026/02_pad_guard_consumed_silent.gx
 0	dyncall-pending-taint-jul2026/03_pend_chain_cached_downstream.gx
