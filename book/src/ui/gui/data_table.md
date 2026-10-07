@@ -25,72 +25,7 @@ from the source ref.
 ## Interface
 
 ```graphix
-type SortDirection = [`Ascending, `Descending];
-type SortBy = { column: string, direction: SortDirection };
-
-type ColumnType = [
-    `Text({ on_edit: [fn(#path: string, #value: Any) -> Any, null] }),
-    `Toggle({ on_edit: [fn(#path: string, #value: bool) -> Any, null] }),
-    `Combo({
-        choices: Array<{ id: string, label: string }>,
-        on_edit: [fn(#path: string, #value: string) -> Any, null]
-    }),
-    `Spin({
-        min: f64,
-        max: f64,
-        increment: f64,
-        on_edit: [fn(#path: string, #value: f64) -> Any, null]
-    }),
-    `Progress,
-    `Button({
-        on_click: [fn(#path: string, #value: Any) -> Any, null]
-    }),
-    `Sparkline({
-        history_seconds: f64,
-        min: [f64, null],
-        max: [f64, null]
-    })
-];
-
-type Source = [`Netidx([null, string]), string, Map<string, Any>];
-
-type ColumnSpec = {
-    name: string,
-    typ: ColumnType,
-    display_name: [string, null],
-    source: &Source,
-    on_resize: &[fn(x: f64) -> Any, null],
-    width: &[f64, null]
-};
-
-type Table = {
-    rows: Array<string>,
-    columns: Array<[string, ColumnSpec]>
-};
-
-val data_table: fn(
-    ?#sort_by: &Array<SortBy>,
-    ?#selection: &Array<string>,
-    ?#show_row_name: &bool,
-    ?#on_select: [fn(#path: string) -> Any, null],
-    ?#on_activate: [fn(#path: string) -> Any, null],
-    ?#on_header_click: [fn(#column: string) -> Any, null],
-    ?#on_update: [fn(#path: string, #value: Primitive) -> Any, null],
-    #table: &Table
-) -> Widget;
-
-val text_column: fn(
-    #name: string,
-    ?#on_edit: [fn(#path: string, #value: Any) -> Any, null],
-    ?#display_name: [string, null],
-    ?#source: &Source,
-    ?#on_resize: &[fn(x: f64) -> Any, null],
-    ?#width: &[f64, null]
-) -> ColumnSpec;
-// (toggle_column, combo_column, spin_column, progress_column,
-//  button_column, sparkline_column have the same shape — each takes
-//  #name plus its kind-specific args, and accepts the same source /
-//  width / on_resize options.)
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/data_table.gxi}}
 ```
 
 ## `data_table` Parameters
@@ -128,29 +63,21 @@ val text_column: fn(
   path (`"row_path/col_name"` for data cells, `"row_path"` for the
   row-name column).
 
-- **`#on_activate`** -- Fired when the user clicks a row-name cell
-  or presses Enter while a row is selected. Receives the row path.
+- **`#on_activate`** -- Fired when the user clicks a row-name cell,
+  or presses Enter: for the selected cell's row whatever its column,
+  or for the first row when nothing is selected. Receives the row
+  path.
 
 - **`#on_header_click`** -- Fired when the user clicks a data
   column's header label. Receives the column name.
 
-<!-- CR claude for claude: [doc-drift] on_update fires only for cells that hold a Grid
-subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
-again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
-cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit
-the window: either subscribe on_update table-wide or document its scope. The interface
-block has drifted from data_table.gxi: Source's `Netidx` payload lacks Map<string, Any>
-(line 55, and the prose at 203-211), and on_resize's parameter is `x` where the gxi says
-`width` (lines 62, 87, 190). Line 230 says Enter on a row-name cell fires on_activate,
-but Enter fires for the selected cell's row whatever its column, and for row 0 when
-nothing is selected (events.rs:66-84, 122-130); the arrow keys never reach the row-name
-column (events.rs:90). Lines 195-196 say auto-fit measures the entire table, but rows
-outside the subscription window contribute only their fallback (layout.rs:309-317).
-(gui-datatable-21) -->
-- **`#on_update`** -- Fired once per subscription update on every
-  cell — useful when you want to mirror live values into graphix
-  state (e.g. re-derive an aggregate) without subscribing separately.
-  Receives the cell path and new value.
+- **`#on_update`** -- Fired for each update of a cell the table
+  subscribes, which is the rows within 50 of the visible window; a
+  row scrolling back in re-delivers its current value. Useful to
+  mirror live values into graphix state without subscribing
+  separately, but an aggregate over every row
+  (`data_table_calculated.gx`'s sum) is complete only while the whole
+  table is subscribed. Receives the cell path and new value.
 
 ## Column Types
 
@@ -200,26 +127,27 @@ Widths are controlled by two refs per column:
   column auto-sizes to its content, with a per-column cap (default
   300px).
 
-- **`on_resize: &[fn(x: f64) -> Any, null]`** -- Fired while the user
+- **`on_resize: &[fn(width: f64) -> Any, null]`** -- Fired while the user
   drags a column header's right edge. The callable receives the new
   pixel width. The reference is a `&` field so the callable can be
   swapped, nulled, or initialized reactively.
 
 Double-clicking any column's resize handle auto-fits *every* column
-to the widest cell in the entire table (not just the visible window).
+to its widest cell among the subscribed rows (those within 50 of the
+visible window); other rows count only their fallback.
 
 ## Source: Where Cell Values Come From
 
 Each `ColumnSpec.source` is a `&Source` ref that decides where the
 column's per-cell values originate:
 
-- **`` `Netidx(placeholder) ``** -- The column subscribes to
+- **`` `Netidx(fallback) ``** -- The column subscribes to
   `<row_path>/<column_name>` for every row whose path is absolute.
-  Cell values come from the subscription. The `placeholder` payload
-  (`null` or a string) is the text rendered before the subscription
-  resolves and any time it goes `Unsubscribed` afterward — useful
-  for distinguishing "not yet subscribed" / "lost" from a real blank
-  value. `` `Netidx(null) `` is the default for the column-builder
+  Cell values come from the subscription. The `fallback` payload is
+  what a cell renders before its subscription resolves, any time it
+  goes `Unsubscribed` afterward, and always for a virtual row: `null`
+  (blank), a string (one placeholder for every cell), or a
+  `Map<string, Any>` keyed by row basename (a value per row). `` `Netidx(null) `` is the default for the column-builder
   helpers and the implicit behavior for bare-string entries in
   `Table.columns`.
 - **`string`** -- A uniform value: every cell in the column renders
@@ -239,9 +167,10 @@ accumulates points the same way a subscribed one does.
 ## Keyboard Navigation
 
 The widget is focusable: clicking into it grants keyboard focus.
-Arrow keys move the selection (the currently-rendered selected cell
-scrolls into view as needed). `Enter` on a row-name cell fires
-`on_activate`; `Space` on an editable cell opens its editor;
+Arrow keys move the selection among the data columns (the
+currently-rendered selected cell scrolls into view as needed); they
+never land on the row-name column. `Enter` fires `on_activate` for
+the selected cell's row; `Space` on an editable cell opens its editor;
 `Escape` cancels an in-progress edit.
 
 ## Examples
