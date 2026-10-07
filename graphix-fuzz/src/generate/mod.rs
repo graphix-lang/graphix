@@ -81,6 +81,9 @@ pub struct GenCfg {
     /// A statement slot emits a REFERENCE group (`let r = &v`, tuple
     /// storage, `*r <- lit` write-through).
     pub p_ref: f64,
+    /// A statement slot builds and consumes a value of a shape
+    /// `random_type` never draws (see [`funcs::gen_shape_template`]).
+    pub p_shape: f64,
     /// Statement slots per program: a geometric count with mean
     /// max_lets/2, capped at min(4 * max_lets, 48) (template slots may
     /// emit several statements).
@@ -119,6 +122,7 @@ impl Default for GenCfg {
             p_bare_module: 0.2,
             p_dynmod: 0.08,
             p_ref: 0.1,
+            p_shape: 0.08,
             max_lets: 6,
             type_depth: 2,
             p_subprogram: 0.10,
@@ -185,6 +189,9 @@ pub struct GenStats {
     pub unannotated_ret: bool,
     /// A reference shape was emitted (`&`/`*`/ref param/`*r <-`).
     pub ref_op: bool,
+    /// A shape template was emitted (primitive union, option of a
+    /// composite, nested variant, recursive typedef).
+    pub shape: bool,
     /// A `use super::{…}` header, an inline `super::`/`package::`
     /// spelling, a main-scope item import, a rename, or a module glob.
     pub use_vocab: bool,
@@ -452,6 +459,8 @@ fn gen_slots(
             stmts.push(gen_subprogram_stmt(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_ref) {
             stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
+        } else if chance(rng, cfg.p_shape) {
+            stmts.extend(funcs::gen_shape_template(ctx, rng, stats));
         } else if chance(rng, cfg.p_rec) {
             stmts.extend(funcs::gen_rec_lambda(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_error_lambda) {

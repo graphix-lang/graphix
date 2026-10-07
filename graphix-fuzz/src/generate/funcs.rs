@@ -559,3 +559,75 @@ pub(super) fn gen_rec_lambda(
     ctx.push(call, I64);
     stmts
 }
+
+/// A value of a shape `random_type` never draws, built and consumed in
+/// place, its consumer bound as an `i64`: a primitive union read by a
+/// type test, an option of a composite, a variant nested in a struct, or
+/// a recursive typedef with a `let rec` builder and consumer. Each crosses
+/// a kernel as an opaque value.
+pub(super) fn gen_shape_template(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    stats.shape = true;
+    let v = ctx.fresh();
+    let r = ctx.fresh();
+    let n = exprs::gen_typed(ctx, rng, &I64, 1);
+    let s = exprs::gen_typed(ctx, rng, &GenType::Str, 1);
+    let stmts = match rng.below(4) {
+        0 => {
+            let init = if rng.below(2) == 0 { n } else { s };
+            vec![
+                format!("let {v}: [i64, string] = {init}"),
+                format!(
+                    "let {r} = select {v} {{ i64 as x => x, string as t => str::len(t) }}"
+                ),
+            ]
+        }
+        1 => {
+            let init = if rng.below(3) == 0 {
+                "null".to_string()
+            } else {
+                format!("({n}, {s})")
+            };
+            vec![
+                format!("let {v}: [(i64, string), null] = {init}"),
+                format!(
+                    "let {r} = select {v} {{ null as _ => i64:-1, (x, t) => x + str::len(t) }}"
+                ),
+            ]
+        }
+        2 => {
+            let tag =
+                if rng.below(2) == 0 { format!("`A({n})") } else { "`B".to_string() };
+            vec![
+                format!(
+                    "let {v}: {{ k: [`A(i64), `B], w: string }} = {{ k: {tag}, w: {s} }}"
+                ),
+                format!(
+                    "let {r} = select {v}.k {{ `A(x) => x + str::len({v}.w), `B => str::len({v}.w) }}"
+                ),
+            ]
+        }
+        _ => {
+            let t = format!("L{}", ctx.fresh());
+            let build = ctx.fresh();
+            let sum = ctx.fresh();
+            let k = rng.below(8);
+            vec![
+                format!("type {t} = [`Cons(i64, {t}), `Nil]"),
+                format!(
+                    "let rec {build} = |m: i64, x: i64| -> {t} select m {{ i64:0 => `Nil, m => `Cons(x, {build}(m - i64:1, x)) }}"
+                ),
+                format!(
+                    "let rec {sum} = |l: {t}| -> i64 select l {{ `Nil => i64:0, `Cons(h, tl) => h + {sum}(tl) }}"
+                ),
+                format!("let {v} = {build}(i64:{k}, {n})"),
+                format!("let {r} = {sum}({v})"),
+            ]
+        }
+    };
+    ctx.push(r, I64);
+    stmts
+}
