@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-3004033c.js";
+            window.path_to_searchindex_js = "../searchindex-2ab81abc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -185,7 +185,9 @@ operation, no stateful builtin such as <code>count</code> or <code>uniq</code>, 
 of its own bindings) and compiles to native code runs as a native loop
 instead: constant stack, any depth, answering exactly what the
 activations would. A body that does not compile keeps an activation per
-iteration, which costs memory and time at every level. The things that
+call, which costs memory and time for every call: one per level for a
+linear recursion, one per call in the whole call tree for a branching
+one like a naive <code>fib</code>. The things that
 keep a body out of native code are reading a reference (<code>*r</code>), a <code>?</code>
 raising to a handler, a <code>&lt;-</code> to a variable outside the function, and a
 builtin without a fast call; move them out of the loop when the loop is
@@ -202,7 +204,7 @@ deep.</p>
 <p>Every path gets its own publish site, retained across cycles. When the
 array changes, the activations are fed again by position, and those
 past the new end sleep.</p>
-<p>Depth is bounded by memory, not by a limit: non-tail recursion nests on
+<p>Recursion is bounded by memory, not by a limit: non-tail recursion nests on
 heap-allocated stack segments, in the interpreter and in compiled code
 alike. An embedder may cap it with a stack budget
 (<code>graphix_compiler::set_stack_budget</code>, or <code>GRAPHIX_STACK_BUDGET</code> in

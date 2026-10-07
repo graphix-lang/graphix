@@ -11,7 +11,9 @@ operation, no stateful builtin such as `count` or `uniq`, no `<-` to one
 of its own bindings) and compiles to native code runs as a native loop
 instead: constant stack, any depth, answering exactly what the
 activations would. A body that does not compile keeps an activation per
-iteration, which costs memory and time at every level. The things that
+call, which costs memory and time for every call: one per level for a
+linear recursion, one per call in the whole call tree for a branching
+one like a naive `fib`. The things that
 keep a body out of native code are reading a reference (`*r`), a `?`
 raising to a handler, a `<-` to a variable outside the function, and a
 builtin without a fast call; move them out of the loop when the loop is
@@ -33,7 +35,7 @@ Every path gets its own publish site, retained across cycles. When the
 array changes, the activations are fed again by position, and those
 past the new end sleep.
 
-Depth is bounded by memory, not by a limit: non-tail recursion nests on
+Recursion is bounded by memory, not by a limit: non-tail recursion nests on
 heap-allocated stack segments, in the interpreter and in compiled code
 alike. An embedder may cap it with a stack budget
 (`graphix_compiler::set_stack_budget`, or `GRAPHIX_STACK_BUDGET` in
