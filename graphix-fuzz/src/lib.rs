@@ -2161,6 +2161,9 @@ fn batch_size() -> usize {
 /// The soak pool's sources, in mix order.
 pub const SOURCES: usize = 4;
 
+pub const SOURCE_KINDS: [SourceKind; SOURCES] =
+    [SourceKind::Fuzz, SourceKind::Generate, SourceKind::Reactive, SourceKind::Typemorph];
+
 /// Which generator a work order asks the child to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
@@ -2329,10 +2332,12 @@ pub async fn run_work_order(
     if order.kind == SourceKind::Typemorph {
         return typemorph_work_order(&progs, timeout, out).await;
     }
-    // ring admission is computed here: the child has the parsed program
-    let novel: Vec<Option<(u64, usize, bool)>> =
-        progs.iter().map(|p| mutate::shape_stats(p)).collect();
-    let mut interesting: Vec<usize> = Vec::new();
+    // ring admission is computed here, where the program is parsed; only
+    // mutants breed
+    let novel: Vec<Option<(u64, usize, bool)>> = match order.kind {
+        SourceKind::Fuzz => progs.iter().map(|p| mutate::shape_stats(p)).collect(),
+        _ => vec![None; progs.len()],
+    };
     run_batch(&progs, timeout, |i, v| {
         let tag = match v {
             BatchVerdict::Agree { ran: true } => "R",
@@ -2341,7 +2346,10 @@ pub async fn run_work_order(
         };
         let _ = writeln!(out, "V {i} {tag}");
         if matches!(v, BatchVerdict::Other) {
-            interesting.push(i);
+            let p = &progs[i];
+            let _ = writeln!(out, "P {i} {}", p.len());
+            let _ = out.write_all(p.as_bytes());
+            let _ = writeln!(out);
         } else if matches!(v, BatchVerdict::Agree { ran: true })
             && let Some((sig, nodes, ok)) = novel[i]
             && ok
@@ -2355,24 +2363,6 @@ pub async fn run_work_order(
         let _ = out.flush();
     })
     .await;
-    // CR claude for claude: [bug] When a gen-batch child dies mid-order, the soak records
-    // nothing. The causes include a compiler or JIT-link panic aborting it, a JIT
-    // SIGSEGV, the AS cap and a stall kill. These P lines are written only after the
-    // whole batch, the subject that killed the child never leaves it, and
-    // run_aggregator reads `clean` only for the breakage window (4803). So the crash
-    // and every earlier suspect in the order are lost, the rest of the order never
-    // runs, and inflight keeps count - ran units (4721). batch_isolated, used by
-    // run_pool_multi, re-runs a dead batch's remaining subjects through check_isolated,
-    // which records the crash; the aggregator has no such step. probe:
-    // design/review-2026-10-05/repro/fuzz-main-aux-01.sh (order `fuzz 9 24`: subject 19
-    // aborts the child on the jit.rs:1187 link panic, subjects 6 and 14 are JIT
-    // divergences, and the out file holds only V 0..18). (fuzz-main-aux-01)
-    for i in interesting {
-        let p = &progs[i];
-        let _ = writeln!(out, "P {i} {}", p.len());
-        let _ = out.write_all(p.as_bytes());
-        let _ = writeln!(out);
-    }
     let _ = writeln!(out, "CPU {}", self_cpu().as_micros());
     let _ = out.flush();
 }
@@ -2390,7 +2380,7 @@ async fn typemorph_work_order(
             Ok(rep) => rep.flipped(),
             Err(_) => false,
         };
-        let _ = writeln!(out, "V {i} A");
+        let _ = writeln!(out, "V {i} {}", if flipped { "O" } else { "A" });
         if flipped {
             let _ = writeln!(out, "P {i} {}", p.len());
             let _ = out.write_all(p.as_bytes());
@@ -2402,71 +2392,15 @@ async fn typemorph_work_order(
     let _ = out.flush();
 }
 
-/// Run a batch of eligible programs through one `check-batch` child.
-/// A missing or non-Agree verdict, and every subject on a child that
-/// died or exited unclean, falls back to the individual
-/// [`check_isolated`] path: batches only fast-path agreement.
-async fn batch_isolated(
-    progs: Vec<String>,
-    timeout: Duration,
-) -> (Vec<(String, PoolResult)>, Duration) {
-    let n = progs.len();
-    let mut resolved: Vec<Option<PoolResult>> = (0..n).map(|_| None).collect();
-    let mut individual: Vec<usize> = Vec::new();
-    let mut remaining: Vec<usize> = (0..n).collect();
-    // every child this batch spends is charged to the requesting source
-    let mut cpu = Duration::ZERO;
-    // Re-batch after a clean abort: the unreported tail rides a fresh
-    // child instead of individual re-runs. An unclean exit discards the
-    // round's verdicts (the child's memory was suspect for the whole
-    // round); a clean round that reports nothing also falls back.
-    loop {
-        let batch: Vec<String> = remaining.iter().map(|&i| progs[i].clone()).collect();
-        let (clean, verdicts, round_cpu) = run_batch_child(&batch, timeout).await;
-        cpu += round_cpu;
-        if !clean || verdicts.is_empty() {
-            individual.extend(remaining.drain(..));
-            break;
-        }
-        let mut still: Vec<usize> = Vec::new();
-        for (pos, &orig) in remaining.iter().enumerate() {
-            match verdicts.get(&pos) {
-                Some(BatchVerdict::Agree { ran }) => {
-                    resolved[orig] = Some(PoolResult::Agree { ran: *ran })
-                }
-                Some(BatchVerdict::Other) => individual.push(orig),
-                None => still.push(orig),
-            }
-        }
-        remaining = still;
-        if remaining.is_empty() {
-            break;
-        }
-    }
-    for &i in &individual {
-        let (res, one_cpu) = check_isolated(&progs[i], timeout).await;
-        cpu += one_cpu;
-        resolved[i] = Some(res);
-    }
-    let out = progs
-        .into_iter()
-        .zip(resolved)
-        .map(|(prog, res)| {
-            let res = res.unwrap_or(PoolResult::Agree { ran: false });
-            (prog, res)
-        })
-        .collect();
-    (out, cpu)
-}
-
 /// What one work order came back with. Everything here is per-BATCH or
 /// per-FINDING; nothing scales with the number of agreeing subjects.
 pub(crate) struct OrderResult {
-    /// Subjects the child ran, and how many of those both engines ran.
-    pub ran: usize,
-    pub agreed_ran: usize,
-    /// Programs the child could not resolve; the parent re-derives them
-    /// through the individual path.
+    /// Subjects the child agreed on.
+    pub agreed: usize,
+    /// Programs the child could not resolve, and on a child that died
+    /// every subject it left without a verdict; the parent re-derives
+    /// them through the individual path, which records the one that
+    /// killed it.
     pub suspect: Vec<String>,
     /// (signature, program) the child judged ring-worthy.
     pub novel: Vec<(u64, String)>,
@@ -2477,14 +2411,6 @@ pub(crate) struct OrderResult {
 /// Issue ONE work order to a child and collect its summary.
 async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
     use tokio::io::AsyncWriteExt;
-    let mut res = OrderResult {
-        ran: 0,
-        agreed_ran: 0,
-        suspect: Vec::new(),
-        novel: Vec::new(),
-        cpu: Duration::ZERO,
-        clean: false,
-    };
     let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     let out_path = sandbox.path().join("order-out");
@@ -2507,7 +2433,7 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
     };
     let stall = timeout * per_subject + Duration::from_secs(90);
     let mut last_len = 0u64;
-    res.clean = loop {
+    let exited_zero = loop {
         tokio::select! {
             r = child.wait() => break matches!(r, Ok(s) if s.code() == Some(0)),
             _ = tokio::time::sleep(stall) => {
@@ -2520,21 +2446,40 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
             }
         }
     };
-    let Ok(text) = std::fs::read_to_string(&out_path) else { return res };
-    let mut rest = text.as_str();
+    let text = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let mut res = order_result(order, &text, exited_zero);
+    res.cpu += child_cpu(sandbox.path());
+    res
+}
+
+/// What a work order's output says, from a child that exited 0 or not.
+fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult {
+    let mut res = OrderResult {
+        agreed: 0,
+        suspect: Vec::new(),
+        novel: Vec::new(),
+        cpu: Duration::ZERO,
+        clean: false,
+    };
+    // a subject's verdict: agreed, or its program came back as a suspect
+    let mut resolved = vec![false; order.count];
+    let mut finished = false;
+    let mut rest = text;
     while let Some((line, tail)) = rest.split_once('\n') {
         rest = tail;
         let mut it = line.split_whitespace();
         match it.next() {
             Some("V") => {
-                res.ran += 1;
-                if it.nth(1) == Some("R") {
-                    res.agreed_ran += 1;
+                let i: Option<usize> = it.next().and_then(|v| v.parse().ok());
+                if it.next() != Some("O") {
+                    res.agreed += 1;
+                    if let Some(r) = i.and_then(|i| resolved.get_mut(i)) {
+                        *r = true;
+                    }
                 }
             }
-            Some("N") | Some("P") => {
-                let kind = &line[..1];
-                let sig: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            Some(kind @ ("N" | "P")) => {
+                let id: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
                 let len: usize = match it.next().and_then(|v| v.parse().ok()) {
                     Some(n) => n,
                     None => break,
@@ -2545,12 +2490,16 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
                 let prog = rest[..len].to_string();
                 rest = rest[len..].strip_prefix('\n').unwrap_or(&rest[len..]);
                 if kind == "N" {
-                    res.novel.push((sig, prog));
+                    res.novel.push((id, prog));
                 } else {
+                    if let Some(r) = resolved.get_mut(id as usize) {
+                        *r = true;
+                    }
                     res.suspect.push(prog);
                 }
             }
             Some("CPU") => {
+                finished = true;
                 if let Some(us) = it.next().and_then(|v| v.parse::<u64>().ok()) {
                     res.cpu = Duration::from_micros(us);
                 }
@@ -2558,75 +2507,19 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
             _ => (),
         }
     }
-    res.cpu += child_cpu(sandbox.path());
+    // a subject's `sys::exit` ends the child with any status, so a clean
+    // order is one that wrote its last line
+    res.clean = exited_zero && finished;
+    if !res.clean {
+        let mut next = order.generator();
+        for done in resolved {
+            let p = next();
+            if !done {
+                res.suspect.push(p);
+            }
+        }
+    }
     res
-}
-
-/// Spawn one `check-batch` child over `progs`, returning (clean-exit,
-/// per-index verdicts, cpu). Verdicts come back through a file inside
-/// the parent-owned sandbox, flushed per subject.
-async fn run_batch_child(
-    progs: &[String],
-    timeout: Duration,
-) -> (bool, AHashMap<usize, BatchVerdict>, Duration) {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let verdict_path = sandbox.path().join("verdicts");
-    cmd.arg("check-batch")
-        .arg(&verdict_path)
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        let mut buf = format!("{}\n", progs.len());
-        for p in progs {
-            buf.push_str(&format!("{}\n", p.len()));
-            buf.push_str(p);
-        }
-        let _ = stdin.write_all(buf.as_bytes()).await;
-    }
-    // Progress-based deadline: "the verdict file stopped growing" is the
-    // wedge signal, so batch size does not scale the wall. The stall
-    // budget covers the double stdlib init, the slowest legitimate
-    // subject and the post-timeout health probe.
-    let stall = timeout * 4 + Duration::from_secs(90);
-    let mut last_len = 0u64;
-    let clean = loop {
-        tokio::select! {
-            r = child.wait() => break matches!(r, Ok(s) if s.code() == Some(0)),
-            _ = tokio::time::sleep(stall) => {
-                let len = std::fs::metadata(&verdict_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                if len == last_len {
-                    let _ = child.kill().await;
-                    break false;
-                }
-                last_len = len;
-            }
-        }
-    };
-    let mut verdicts: AHashMap<usize, BatchVerdict> = AHashMap::new();
-    if let Ok(s) = std::fs::read_to_string(&verdict_path) {
-        for line in s.lines() {
-            let mut it = line.split_whitespace();
-            if let (Some(i), Some(v)) = (it.next(), it.next())
-                && let Ok(i) = i.parse::<usize>()
-            {
-                let v = match v {
-                    "A" => BatchVerdict::Agree { ran: false },
-                    "R" => BatchVerdict::Agree { ran: true },
-                    _ => BatchVerdict::Other,
-                };
-                verdicts.insert(i, v);
-            }
-        }
-    }
-    (clean, verdicts, child_cpu(sandbox.path()))
 }
 
 /// Coarse "same bug" key: the bisection class, the outcome kinds and
@@ -2657,6 +2550,62 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
         _ => None,
     };
     (d.bisect(), d.reference.kind(), d.tested.kind(), td)
+}
+
+/// The minimizations a campaign spends on one [`Finding::key`]; later
+/// findings with the key are counted, not minimized.
+const MINIMIZE_PER_KEY: usize = 3;
+
+/// What a campaign records about a divergence: its record's text and the
+/// coarse key it dedups on before minimizing. A check child computes it
+/// and the parent reads it back, so the parent never runs the subject.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Finding {
+    /// The pair and [`bucket`]: what the minimizer must preserve.
+    pub key: String,
+    pub bisect: String,
+    pub labels: (String, String),
+    pub reference: String,
+    pub tested: String,
+}
+
+impl Finding {
+    pub fn of(d: &Divergence) -> Self {
+        let (la, lb) = d.labels();
+        Finding {
+            key: format!("{:?} {:?}", d.pair, bucket(d)),
+            bisect: d.bisect().to_string(),
+            labels: (la.to_string(), lb.to_string()),
+            reference: render(&d.reference),
+            tested: render(&d.tested),
+        }
+    }
+
+    /// One escaped line per field.
+    pub fn encode(&self) -> String {
+        [
+            &self.key,
+            &self.bisect,
+            &self.labels.0,
+            &self.labels.1,
+            &self.reference,
+            &self.tested,
+        ]
+        .map(|f| escape_line(f) + "\n")
+        .concat()
+    }
+
+    pub fn decode(s: &str) -> Option<Self> {
+        let mut l = s.lines().map(unescape_line);
+        let f = Finding {
+            key: l.next()?,
+            bisect: l.next()?,
+            labels: (l.next()?, l.next()?),
+            reference: l.next()?,
+            tested: l.next()?,
+        };
+        Some(f)
+    }
 }
 
 /// Minimize a diverging wrapper: schedule reductions first (drop the
@@ -3757,8 +3706,13 @@ pub struct FuzzStats {
 pub struct Corpus {
     dir: std::path::PathBuf,
     seen: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Findings claimed per [`Finding::key`], this campaign's and those on
+    /// disk.
+    keys: std::sync::Mutex<AHashMap<String, usize>>,
     counter: std::sync::atomic::AtomicUsize,
 }
+
+const KEY_LINE: &str = "// key: ";
 
 impl Corpus {
     /// Load every `*.gx` already in `dir`, keying the dedup set on each
@@ -3766,6 +3720,7 @@ impl Corpus {
     pub fn load(dir: &std::path::Path) -> Self {
         let _ = std::fs::create_dir_all(dir);
         let mut seen = std::collections::HashSet::new();
+        let mut keys: AHashMap<String, usize> = AHashMap::new();
         let mut max_idx = 0usize;
         if let Ok(rd) = std::fs::read_dir(dir) {
             for ent in rd.flatten() {
@@ -3774,6 +3729,9 @@ impl Corpus {
                     continue;
                 }
                 if let Ok(body) = std::fs::read_to_string(&path) {
+                    if let Some(k) = body.lines().find_map(|l| l.strip_prefix(KEY_LINE)) {
+                        *keys.entry(unescape_line(k)).or_default() += 1;
+                    }
                     if let Some(m) = extract_minimized(&body) {
                         seen.insert(m);
                     } else if let Some(class) = typeflip_class_of(&body) {
@@ -3800,6 +3758,7 @@ impl Corpus {
         Corpus {
             dir: dir.to_path_buf(),
             seen: std::sync::Mutex::new(seen),
+            keys: std::sync::Mutex::new(keys),
             counter: std::sync::atomic::AtomicUsize::new(max_idx),
         }
     }
@@ -3818,7 +3777,16 @@ impl Corpus {
     /// The dedup key is the minimized text, so distinct root causes get
     /// distinct files while many raw mutants that reduce to the same
     /// canonical repro collapse to one.
-    pub fn record(&self, d: &Divergence, mutant: &str, minimized: &str) -> bool {
+    /// Claim a minimization for `key`: false once [`MINIMIZE_PER_KEY`]
+    /// findings have it.
+    pub fn claim(&self, key: &str) -> bool {
+        let mut keys = self.keys.lock().unwrap();
+        let n = keys.entry(key.to_string()).or_default();
+        *n += 1;
+        *n <= MINIMIZE_PER_KEY
+    }
+
+    pub fn record(&self, f: &Finding, mutant: &str, minimized: &str) -> bool {
         let key = minimized.trim().to_string();
         {
             let mut seen = self.seen.lock().unwrap();
@@ -3831,13 +3799,14 @@ impl Corpus {
         // multi-line mutant cannot land a bare program line mid-header.
         // The outcome lines are clipped by render; the traces are
         // reproducible from the program text below.
-        let (la, lb) = d.labels();
+        let (la, lb) = &f.labels;
         let body = format!(
-            "// bisect: {}\n// {la}: {}\n// {lb}: {}\n\
+            "// bisect: {}\n{KEY_LINE}{}\n// {la}: {}\n// {lb}: {}\n\
              // mutant: {}\n// minimized:\n{}\n",
-            d.bisect(),
-            render(&d.reference),
-            render(&d.tested),
+            f.bisect,
+            escape_line(&f.key),
+            f.reference,
+            f.tested,
             mutant.replace('\n', "\\n"),
             minimized,
         );
@@ -3964,84 +3933,21 @@ pub async fn fuzz(
     timeout: Duration,
     corpus: &std::sync::Arc<Corpus>,
 ) -> FuzzStats {
-    // a single-source campaign keeps the unnamed log format
-    let mut src = fuzz_source(seed, 1.0, gen_tasks());
-    src.name = "";
-    run_pool_multi(corpus, iters, timeout, vec![src])
-        .await
-        .pop()
-        .map(|(_, stats, _)| stats)
-        .unwrap_or_default()
+    one_source(SourceKind::Fuzz, iters, seed, timeout, corpus).await
 }
 
-/// Source A: mutate the curated seed corpus.
-pub fn fuzz_source(seed: u64, weight: f64, tasks: usize) -> Source<'static> {
-    let seeds = std::sync::Arc::new(corpus::all_seeds());
-    let donors = std::sync::Arc::new(mutate::donor_pool(&seeds));
-    // The evolutionary ring: agreeing both-modes-ran mutants with a
-    // novel AST shape join a bounded pool of mutation ancestors. Guard
-    // rails: the admission bar, a 50/50 base-seed mix, FIFO eviction.
-    // Trajectories are not seed-reproducible; findings are, from their text.
-    let ring = std::sync::Arc::new(std::sync::Mutex::new((
-        std::collections::VecDeque::<String>::new(),
-        ahash::AHashSet::<u64>::new(),
-    )));
-    const RING_CAP: usize = 256;
-    let admit = ring.clone();
-    Source {
-        name: "fuzz",
-        weight,
-        gens: (0..tasks.max(1))
-            .map(|k| {
-                let seeds = seeds.clone();
-                let donors = donors.clone();
-                let ring = ring.clone();
-                let mut rng = mutate::Rng::new(
-                    seed.wrapping_add((k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-                );
-                let g: Box<dyn FnMut() -> String + Send> = Box::new(move || {
-                    // retry a few times, falling back to a raw seed so the
-                    // pool never stalls
-                    for _ in 0..8 {
-                        let s = {
-                            let ring = ring.lock().unwrap();
-                            if !ring.0.is_empty() && rng.below(2) == 0 {
-                                ring.0[rng.below(ring.0.len())].clone()
-                            } else {
-                                seeds[rng.below(seeds.len())].to_string()
-                            }
-                        };
-                        if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5)
-                        {
-                            return p;
-                        }
-                    }
-                    seeds[rng.below(seeds.len())].to_string()
-                });
-                g
-            })
-            .collect(),
-        on_agree: Some(Box::new(move |prog, ran| {
-            if !ran {
-                return false;
-            }
-            let Some((sig, nodes, interesting)) = mutate::shape_stats(prog) else {
-                return false;
-            };
-            if nodes < 8 || nodes > 600 || !interesting {
-                return false;
-            }
-            let mut ring = admit.lock().unwrap();
-            if !ring.1.insert(sig) {
-                return false;
-            }
-            ring.0.push_back(prog.to_string());
-            if ring.0.len() > RING_CAP {
-                ring.0.pop_front();
-            }
-            true
-        })),
-    }
+/// A campaign of one source through [`run_aggregator`].
+async fn one_source(
+    kind: SourceKind,
+    iters: Option<usize>,
+    seed: u64,
+    timeout: Duration,
+    corpus: &std::sync::Arc<Corpus>,
+) -> FuzzStats {
+    let weights = SOURCE_KINDS.map(|k| if k == kind { 1.0 } else { 0.0 });
+    let mut stats = run_aggregator(corpus, seed, iters, timeout, weights).await;
+    let i = SOURCE_KINDS.iter().position(|k| *k == kind).expect("a source kind");
+    stats.swap_remove(i).1
 }
 
 /// Run `job(i)` for every `i` in `0..count`, at most `par` at a time,
@@ -4136,53 +4042,14 @@ pub async fn generate_campaign(
     corpus: &std::sync::Arc<Corpus>,
     reactive: bool,
 ) -> FuzzStats {
-    let mut src = generate_source(seed, 1.0, reactive, gen_tasks());
-    src.name = "";
-    run_pool_multi(corpus, iters, timeout, vec![src])
-        .await
-        .pop()
-        .map(|(_, stats, _)| stats)
-        .unwrap_or_default()
-}
-
-/// Fresh type-directed programs, plain or scheduled. Neither feeds the
-/// mutation ring: admitting them would change what its novelty counter
-/// measures.
-pub fn generate_source(
-    seed: u64,
-    weight: f64,
-    reactive: bool,
-    tasks: usize,
-) -> Source<'static> {
-    Source {
-        name: if reactive { "reactive" } else { "generate" },
-        weight,
-        gens: (0..tasks.max(1))
-            .map(|k| {
-                let mut rng = mutate::Rng::new(
-                    seed.wrapping_add((k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-                );
-                let g: Box<dyn FnMut() -> String + Send> = Box::new(move || {
-                    if reactive {
-                        generate::reactive::gen_reactive_program(&mut rng)
-                    } else {
-                        generate::gen_program(&mut rng)
-                    }
-                });
-                g
-            })
-            .collect(),
-        on_agree: None,
-    }
+    let kind = if reactive { SourceKind::Reactive } else { SourceKind::Generate };
+    one_source(kind, iters, seed, timeout, corpus).await
 }
 
 /// What one pool slot concluded about a program.
 enum PoolResult {
-    Agree {
-        /// Both outcomes were runtime traces — the ring-admission bar.
-        ran: bool,
-    },
-    Diverge(Divergence),
+    Agree,
+    Diverge(Finding),
     /// The isolated child died (signal / abort / hang). String = wait
     /// status + stderr tail.
     Crash(String),
@@ -4275,6 +4142,14 @@ fn child_cpu(sandbox: &std::path::Path) -> Duration {
         .unwrap_or_default()
 }
 
+/// A child's address-space cap (`GRAPHIX_FUZZ_MEM_LIMIT`, 0 = none).
+fn mem_limit() -> u64 {
+    std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8 << 30)
+}
+
 /// The child's own address-space limit, applied by the child itself
 /// rather than through a `pre_exec` hook so the parent keeps
 /// posix_spawn's vfork fast path. Called once at startup by every
@@ -4287,10 +4162,7 @@ pub fn apply_mem_limit() {
         if std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none() {
             return;
         }
-        let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(8 << 30);
+        let limit = mem_limit();
         if limit > 0 {
             let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
             // best effort: a hard limit already below `limit` makes this
@@ -4601,31 +4473,26 @@ pub async fn detcheck(
 }
 
 /// Run one oracle check in a child process (`graphix-fuzz check-one`,
-/// program on stdin, verdict in the exit code). A program that kills the
-/// evaluator kills only the child; the campaign records a crash finding
-/// and keeps running.
+/// program on stdin). The verdict comes back in a file in the
+/// parent-owned sandbox, never the exit status, which the subject can set
+/// itself (`sys::exit`); a child that leaves no verdict died. A program
+/// that kills the evaluator kills only the child; the campaign records a
+/// crash finding and keeps running.
 async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
+    use tokio::io::AsyncWriteExt;
     let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
-    let res = check_isolated_in(prog, timeout, &mut cmd).await;
-    (res, child_cpu(sandbox.path()))
-}
-
-async fn check_isolated_in(
-    prog: &str,
-    timeout: Duration,
-    cmd: &mut tokio::process::Command,
-) -> PoolResult {
-    use tokio::io::AsyncWriteExt;
+    let verdict = sandbox.path().join("verdict");
     cmd.arg("check-one")
+        .arg(&verdict)
         // the pool provides the concurrency; small children keep the
         // total thread count sane
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = spawn_child(cmd);
+    let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
         // a write error means the child died instantly; wait captures it
         let _ = stdin.write_all(prog.as_bytes()).await;
@@ -4647,99 +4514,115 @@ async fn check_isolated_in(
     let deadline = timeout * 4
         + (timeout * 8).max(Duration::from_secs(60))
         + Duration::from_secs(30);
-    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => return PoolResult::Crash(format!("wait: {e}")),
-        Err(_) => return PoolResult::Crash("HANG (outer deadline)".into()),
-    };
-    // the verdict is the exit code (0 = agree, 7 = agree and both ran,
-    // 10 = diverge): stdout is corruptible by the program under test
-    // CR claude for claude: [risk] The subject can set this status itself. sys::exit
-    // calls std::process::exit in the process running it
-    // (graphix-package-sys/src/lib.rs:596), and nothing screens subjects for it, so the
-    // comment's reason for not trusting stdout applies to the exit code too. A
-    // subject's sys::exit(7) reads as an agreement that ran (ring admission), and
-    // sys::exit(10) reads as a divergence; the in-process check(prog) below then runs
-    // the subject and exits the campaign with status 10. In a batch child, sys::exit
-    // cuts the batch short. No generator, harvested fixture or pin calls sys::exit
-    // today, but `sys::exit(sys::time::after_idle(..))` ends 266 of this review's 387
-    // .gx repros, and regress runs pins in its own process. Write the verdict to a file
-    // in the parent-owned sandbox, as check-batch and typemorph-one already do, and
-    // treat a missing file as a crash. probe:
-    // design/review-2026-10-05/repro/fuzz-lib-a-13.gx (fuzz-lib-a-13)
-    match out.status.code() {
-        Some(0) => PoolResult::Agree { ran: false },
-        Some(7) => PoolResult::Agree { ran: true },
-        // the child proved the program diverges without dying, so an
-        // in-process re-check for the full Divergence is safe
-        // CR claude for claude: [risk] On exit 10 the parent re-runs the whole check
-        // in-process only to rebuild a Divergence the child already computed, and
-        // minimize-one's first check() runs it a third time. The soak parent has no
-        // RLIMIT_AS (apply_mem_limit skips unsandboxed processes), no abort-on-panic
-        // hook (main.rs omits soak, fuzz and generate) and an unsandboxed cwd (the repo
-        // checkout, under fleet.sh), and it runs these re-checks, slow retries and
-        // forked Par/JitPar runs included, on the two workers that drive the
-        // aggregator, up to `par` at once in a burst. A divergence that needs the
-        // child's conditions is dropped here as flaky, and a nondeterministic crash in
-        // the re-run kills the soak. Have check-one write the record text (bisect,
-        // labels, both outcomes' Debug) into its sandbox, as minimize-one does, and
-        // drop this re-check and design §4's sentence about it. (fuzz-lib-b-09)
-        Some(10) => match check(prog, timeout).await {
-            Some(d) => PoolResult::Diverge(d),
-            // flaky: drop it rather than record an unreproducible finding
-            None => PoolResult::Agree { ran: false },
+    let res = match tokio::time::timeout(deadline, child.wait_with_output()).await {
+        Ok(Ok(out)) => match std::fs::read_to_string(&verdict) {
+            Ok(v) => match v.split_once('\n') {
+                Some(("agree", _)) => PoolResult::Agree,
+                Some(("diverge", f)) => match Finding::decode(f) {
+                    Some(f) => PoolResult::Diverge(f),
+                    None => PoolResult::Crash(format!("unreadable verdict: {v}")),
+                },
+                _ => PoolResult::Crash(format!("unreadable verdict: {v}")),
+            },
+            Err(_) => died(prog, timeout, &out).await,
         },
-        _ => {
-            // a SIGTERM death is the campaign stop's own kill signal
-            // reaching a mid-flight child, not a finding
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                if out.status.signal() == Some(15) {
-                    return PoolResult::Agree { ran: false };
-                }
-            }
-            // the child's last stderr lines distinguish a node-walk
-            // overflow from a SIGSEGV in JIT'd frames (which prints nothing)
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            // the child's address-space cap stopped a runaway subject:
-            // containment, as the stack budget's abort is
-            // CR claude for claude: [risk] Any 'memory allocation of N bytes failed' line
-            // counts as address-space containment whatever N is. A runaway fails on a
-            // request below the 8 GB cap (a 20 GB-width str::sprintf under check-one
-            // dies on 4294967296 bytes), so a single request above the cap is a corrupt
-            // length (a miscompiled size reaching Vec or ValArray), and it is counted
-            // as an agreement instead of a crash. Parse N and treat the line as
-            // containment only below the child's RLIMIT_AS (GRAPHIX_FUZZ_MEM_LIMIT);
-            // record a crash otherwise. (fuzz-lib-b-11)
-            // CR claude for claude: [bug] This reads an address-space abort as agreement
-            // without knowing which engine allocated. check-one runs the node-walk and
-            // the JIT (and the session and forked modes) in one process, the abort line
-            // names no engine, and nothing is logged. So a JIT-side runaway beside a
-            // node-walk value is dropped as containment, though the stack-budget path
-            // records it after its slow retry. Probe:
-            // design/review-2026-10-05/repro/fuzz-main-aux-06.sh uses a JIT bug at HEAD
-            // (a destructured let shadowing a builtin lambda, where the kernel calls
-            // 'array_iota). At 4 calls it is exit 10 and recorded; at 40 calls of 16M
-            // elements the node-walk returns a 40-element value, the JIT side dies at
-            // the 8GB cap, and this branch returns Agree. Containment should require
-            // the node-walk alone to hit the cap too, for example by rerunning each
-            // engine in its own child. (fuzz-main-aux-06)
-            if stderr.lines().any(|l| {
-                (l.starts_with("memory allocation of") && l.ends_with("failed"))
-                    || l.contains("mmap failed to allocate stack")
-            }) {
-                return PoolResult::Agree { ran: false };
-            }
-            let tail: Vec<&str> = stderr.lines().rev().take(2).collect();
-            let mut status = out.status.to_string();
-            for l in tail.into_iter().rev() {
-                status.push_str(" | ");
-                status.push_str(l);
-            }
-            PoolResult::Crash(status)
+        Ok(Err(e)) => PoolResult::Crash(format!("wait: {e}")),
+        Err(_) => PoolResult::Crash("HANG (outer deadline)".into()),
+    };
+    (res, child_cpu(sandbox.path()))
+}
+
+/// [`check_isolated`]'s conclusion, for a person: how a campaign reads
+/// `prog`.
+pub async fn check_isolated_report(prog: &str, timeout: Duration) -> String {
+    match check_isolated(prog, timeout).await.0 {
+        PoolResult::Agree => "AGREE".to_string(),
+        PoolResult::Crash(status) => format!("CRASH — {status}"),
+        PoolResult::Diverge(f) => format!(
+            "DIVERGENCE — {}\n  {}: {}\n  {}: {}",
+            f.bisect, f.labels.0, f.reference, f.labels.1, f.tested
+        ),
+    }
+}
+
+/// What a check child that left no verdict means.
+async fn died(prog: &str, timeout: Duration, out: &std::process::Output) -> PoolResult {
+    // a SIGTERM death is the campaign stop's own kill signal reaching a
+    // mid-flight child, not a finding
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if out.status.signal() == Some(15) {
+            return PoolResult::Agree;
         }
     }
+    // the child's last stderr lines distinguish a node-walk overflow from
+    // a SIGSEGV in JIT'd frames (which prints nothing)
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let crash = |what: &str| {
+        let mut status = format!("{what}{}", out.status);
+        for l in stderr.lines().rev().take(2).collect::<Vec<_>>().into_iter().rev() {
+            status.push_str(" | ");
+            status.push_str(l);
+        }
+        PoolResult::Crash(status)
+    };
+    // A request above the cap is a corrupt length, not a runaway (a
+    // runaway fails on a request below it).
+    let cap = mem_limit();
+    let mut over_cap = false;
+    let address_space = stderr.lines().any(|l| {
+        // another thread's output may share the line
+        let request = l
+            .split_once("memory allocation of ")
+            .and_then(|(_, r)| r.split_once(" bytes failed"))
+            .and_then(|(n, _)| n.parse::<u64>().ok());
+        over_cap |= cap > 0 && request.is_some_and(|n| n >= cap);
+        request.is_some() || l.contains("mmap failed to allocate stack")
+    });
+    if over_cap {
+        return crash("allocation over the address-space cap: ");
+    }
+    if !address_space {
+        return crash("");
+    }
+    // The address-space cap stopped a runaway: containment, as the stack
+    // budget's abort is, when the node-walk alone runs away too. One that
+    // runs alone beside another engine that dies alone is that engine's
+    // runaway.
+    match (
+        run_isolated(prog, Mode::Interp, timeout).await,
+        run_isolated(prog, Mode::Jit, timeout).await,
+    ) {
+        (Some(true), None) => crash(
+            "the JIT alone exceeds the address-space cap beside a node-walk value: ",
+        ),
+        _ => PoolResult::Agree,
+    }
+}
+
+/// Run `prog` in one mode in a child (`graphix-fuzz run-one`): whether
+/// it produced a trace, `None` when the child died.
+async fn run_isolated(prog: &str, mode: Mode, timeout: Duration) -> Option<bool> {
+    use tokio::io::AsyncWriteExt;
+    let mut cmd = child_command();
+    let sandbox = sandbox_cwd(&mut cmd);
+    let verdict = sandbox.path().join("verdict");
+    cmd.arg("run-one")
+        .arg(&verdict)
+        .arg(if mode == Mode::Interp { "interp" } else { "jit" })
+        .env("TOKIO_WORKER_THREADS", "2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = spawn_child(&mut cmd);
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prog.as_bytes()).await;
+    }
+    let deadline = slow_budget(timeout) + Duration::from_secs(30);
+    let _ = tokio::time::timeout(deadline, child.wait()).await;
+    std::fs::read_to_string(&verdict).ok().map(|v| v.trim() == "trace")
 }
 
 /// Oracle-check budget for the campaign's minimizer: a soak pays this
@@ -4815,91 +4698,6 @@ impl BreakageWindow {
     }
 }
 
-/// One work source in a soak: where its programs come from, what it does
-/// with an agreeing result, and the share of the box's CPU it should
-/// draw.
-pub struct Source<'a> {
-    /// Prefix on this source's counter lines; "" for a single-source
-    /// campaign.
-    pub name: &'static str,
-    /// Relative CPU share. Normalized internally, so any positive scale
-    /// works.
-    pub weight: f64,
-    /// Generators, run in their own tasks (generation is real work:
-    /// `mutate_wrapper` rewrites an AST per subject). Each owns a
-    /// disjoint seed stream, so a subject is reproducible as (source, seed).
-    pub gens: Vec<Box<dyn FnMut() -> String + Send + 'a>>,
-    /// Ring admission, run in its own task like generation (`shape_stats`
-    /// parses the program). `None` = this source has no ring.
-    pub on_agree: Option<Box<dyn FnMut(&str, bool) -> bool + Send + 'a>>,
-}
-
-/// Per-source accounting. `cpu` is what the source's finished children
-/// burned; `inflight` is what it has issued but not been charged for,
-/// estimated at the source's own observed mean.
-#[derive(Default)]
-struct SourceState {
-    cpu: Duration,
-    inflight: usize,
-    done: usize,
-    stats: FuzzStats,
-    pending: Vec<String>,
-    /// Ring admissions in flight, and the count the admit task has made.
-    /// `None` when the source has no ring.
-    admit: Option<tokio::sync::mpsc::Sender<(String, bool)>>,
-    novel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// Programs the generator task has already produced; the driver only
-    /// pops, so filling a batch never blocks dispatch on generation.
-    ready: std::collections::VecDeque<String>,
-}
-
-impl SourceState {
-    /// CPU this source is expected to have drawn once everything it has
-    /// issued lands. `global_mean` seeds a source that has not completed
-    /// anything yet, so the very first picks still spread out.
-    fn projected(&self, global_mean: f64) -> f64 {
-        let mean = if self.done > 0 {
-            self.cpu.as_secs_f64() / self.done as f64
-        } else {
-            global_mean
-        };
-        self.cpu.as_secs_f64() + self.inflight as f64 * mean
-    }
-}
-
-/// Generator tasks per source. Generation is CPU work, so one task
-/// cannot feed a pool; capped because they compete with the workers.
-pub fn gen_tasks() -> usize {
-    std::thread::available_parallelism().map(|n| n.get() / 4).unwrap_or(2).clamp(2, 8)
-}
-
-/// How many programs each source's generator may run ahead. Deep enough
-/// that filling a 64-subject batch is always a memory move, small enough
-/// that a source cannot hoard memory when the pool is busy elsewhere.
-const GEN_BUFFER: usize = 512;
-
-/// Drain whatever the generators have produced into the ready buffers,
-/// then answer which source to issue: `want` (the CPU-share choice)
-/// whenever it has work, else any source with work.
-fn ready_source(
-    want: usize,
-    states: &mut [SourceState],
-    gens: &mut [tokio::sync::mpsc::Receiver<String>],
-) -> Option<usize> {
-    for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
-        while st.ready.len() < GEN_BUFFER {
-            match rx.try_recv() {
-                Ok(p) => st.ready.push_back(p),
-                Err(_) => break,
-            }
-        }
-    }
-    if !states[want].ready.is_empty() {
-        return Some(want);
-    }
-    states.iter().position(|st| !st.ready.is_empty())
-}
-
 /// The aggregator: issue work orders and aggregate what comes back. The
 /// parent never generates, classifies or ships program text; its cost
 /// is per batch (issue an order, charge its CPU) and per finding
@@ -4911,27 +4709,16 @@ pub async fn run_aggregator(
     timeout: Duration,
     weights: [f64; SOURCES],
 ) -> Vec<(&'static str, FuzzStats, Duration)> {
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use std::sync::atomic::Ordering::Relaxed;
     use tokio::task::JoinSet;
-    const KINDS: [SourceKind; SOURCES] = [
-        SourceKind::Fuzz,
-        SourceKind::Generate,
-        SourceKind::Reactive,
-        SourceKind::Typemorph,
-    ];
-    // findings are confirmed in detached `derive` tasks, so the tally
-    // crosses tasks
-    struct Found {
-        divergences: [AtomicUsize; SOURCES],
-        crashes: [AtomicUsize; SOURCES],
-    }
-    let found = std::sync::Arc::new(Found {
-        divergences: std::array::from_fn(|_| AtomicUsize::new(0)),
-        crashes: std::array::from_fn(|_| AtomicUsize::new(0)),
-    });
+    const KINDS: [SourceKind; SOURCES] = SOURCE_KINDS;
+    // findings are confirmed in `derive` tasks, so the tally crosses tasks
+    let found: std::sync::Arc<[Tally; SOURCES]> =
+        std::sync::Arc::new(std::array::from_fn(|_| Tally::default()));
     /// Ring ancestors per order — a sample, not a snapshot.
     const RING_SAMPLE: usize = 16;
     const RING_CAP: usize = 256;
+    // orders and derivations share the slots: each is one child at a time
     let par = parallelism();
     let bsize = batch_size().max(1);
     let mut stats: [FuzzStats; SOURCES] = std::array::from_fn(|_| FuzzStats::default());
@@ -4941,6 +4728,8 @@ pub async fn run_aggregator(
     // subjects a batch child could not resolve, re-derived one process
     // each; batching everything is only right while this stays small
     let mut suspect = [0usize; SOURCES];
+    let mut to_derive: std::collections::VecDeque<(usize, String)> =
+        std::collections::VecDeque::new();
     let mut seed_ctr = [0u64; SOURCES];
     // the regression corpus goes through typemorph once, first
     let mut pins_next = 0usize;
@@ -4948,15 +4737,26 @@ pub async fn run_aggregator(
     let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut ring_sigs: ahash::AHashSet<u64> = ahash::AHashSet::default();
     let mut rng = mutate::Rng::new(seed ^ 0xC0FFEE);
-    let mut orders: JoinSet<(usize, OrderResult)> = JoinSet::new();
-    let mut derive: JoinSet<()> = JoinSet::new();
+    let mut orders: JoinSet<(usize, usize, OrderResult)> = JoinSet::new();
+    let mut derive: JoinSet<bool> = JoinSet::new();
     let mut breakage = BreakageWindow::new();
     let wsum = weights.iter().map(|w| w.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
     loop {
-        // keep `par` orders in flight, choosing the source furthest below
-        // its target share of measured CPU
-        while want(launched) && orders.len() < par {
+        // suspects first: a finding waiting on a slot is worth more than
+        // a fresh order
+        while orders.len() + derive.len() < par
+            && let Some((si, prog)) = to_derive.pop_front()
+        {
+            let corpus = corpus.clone();
+            let found = found.clone();
+            derive.spawn(async move {
+                derive_suspect(KINDS[si], &prog, &corpus, &found[si], timeout).await
+            });
+        }
+        // then orders, choosing the source furthest below its target
+        // share of measured CPU
+        while want(launched) && orders.len() + derive.len() < par {
             let total_done: usize = done.iter().sum();
             let total_cpu: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
             let mean = if total_done > 0 { total_cpu / total_done as f64 } else { 1.0 };
@@ -5018,19 +4818,19 @@ pub async fn run_aggregator(
             };
             launched += count;
             inflight[si] += count;
-            orders.spawn(async move { (si, run_order_child(&order, timeout).await) });
+            orders.spawn(
+                async move { (si, count, run_order_child(&order, timeout).await) },
+            );
         }
         tokio::select! {
             biased;
             Some(res) = orders.join_next() => {
-                let Ok((si, r)) = res else { continue };
+                let Ok((si, count, r)) = res else { continue };
                 cpu[si] += r.cpu;
-                inflight[si] = inflight[si].saturating_sub(r.ran.max(1));
-                done[si] += r.ran;
-                stats[si].run += r.ran;
-                // Only mutants breed: admitting generated shapes would
-                // change what the ring's 50/50 base-seed mix measures.
-                for (sig, prog) in r.novel.into_iter().filter(|_| KINDS[si] == SourceKind::Fuzz) {
+                inflight[si] -= count;
+                done[si] += count;
+                stats[si].run += count;
+                for (sig, prog) in r.novel {
                     if ring_sigs.insert(sig) {
                         ring.push_back(prog);
                         stats[si].novel += 1;
@@ -5039,9 +4839,12 @@ pub async fn run_aggregator(
                         }
                     }
                 }
-                if stats[si].run % 1000 < r.ran.max(1) {
-                    stats[si].divergences = found.divergences[si].load(Relaxed);
-                    stats[si].crashes = found.crashes[si].load(Relaxed);
+                for _ in 0..r.agreed {
+                    breakage_note(&mut breakage, false);
+                }
+                if stats[si].run % 1000 < count {
+                    stats[si].divergences = found[si].divergences.load(Relaxed);
+                    stats[si].crashes = found[si].crashes.load(Relaxed);
                     let tot: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
                     let pct = if tot > 0.0 {
                         (cpu[si].as_secs_f64() * 100.0 / tot).round() as u64
@@ -5054,99 +4857,110 @@ pub async fn run_aggregator(
                         0
                     };
                     eprintln!(
-                        "  {}…{} run, {} {}, {} crashes, {} in corpus, \
+                        "  {}…{} run, {} {} ({} known), {} crashes, {} in corpus, \
                          {} novel shapes, {}% cpu, {}% individual",
                         KINDS[si].tag(), stats[si].run, stats[si].divergences,
-                        KINDS[si].findings(),
+                        KINDS[si].findings(), found[si].known.load(Relaxed),
                         stats[si].crashes, corpus.len(), stats[si].novel, pct, ipct
                     );
                 }
-                // a suspect is derived by the individual path, which owns
-                // the escalation ladder and the minimizer
                 suspect[si] += r.suspect.len();
-                for prog in r.suspect {
-                    if derive.len() >= par {
-                        let _ = derive.join_next().await;
-                    }
-                    let corpus = corpus.clone();
-                    let found = found.clone();
-                    derive.spawn(async move {
-                        if KINDS[si] == SourceKind::Typemorph {
-                            if confirm_typeflip(&corpus, &prog, timeout).await {
-                                found.divergences[si].fetch_add(1, Relaxed);
-                            }
-                            return;
-                        }
-                        let (res, _) = check_isolated(&prog, timeout).await;
-                        match res {
-                            PoolResult::Agree { .. } => (),
-                            PoolResult::Crash(status) => {
-                                if status.contains("HANG")
-                                    && ["rand::", "sys::", "http::"]
-                                        .iter().any(|m| prog.contains(m))
-                                {
-                                    return;
-                                }
-                                found.crashes[si].fetch_add(1, Relaxed);
-                                if corpus.record_crash(&prog, &status) {
-                                    println!("CRASH — child {status}");
-                                    println!("    program: {}", prog.replace('\n', "\\n"));
-                                }
-                            }
-                            PoolResult::Diverge(d) => {
-                                found.divergences[si].fetch_add(1, Relaxed);
-                                // CR claude for claude: [risk] Every confirmed divergence
-                                // is minimized before any dedup, though
-                                // design/graphix_fuzz.md §7 says to dedup first on the
-                                // coarse key; bucket() (line 2418) is used only inside
-                                // the minimizer. Corpus::record dedups afterwards on
-                                // the minimized text and minimize-one writes its file
-                                // only at the end, so a minimization killed at its 540
-                                // s deadline records the raw mutant as its own key: a
-                                // one-sided hang costs at least 63 s per reproducing
-                                // candidate (3 s run, 60 s slow retry, re-run), is
-                                // never minimized, and each of its mutants becomes a
-                                // new file. derive is capped at `par` apart from the
-                                // orders, so a burst runs up to 2 x par children where
-                                // fleet.sh sized par by memory (80 workers is 30-46 GB
-                                // on a 62 GB box), and the order loop stalls on
-                                // derive.join_next meanwhile. Key on bucket plus pair
-                                // before minimizing (minimize the first few per key,
-                                // count the rest) and charge derive children to the
-                                // same budget; run_pool_multi (line 5113) has the same
-                                // gap. (fuzz-lib-b-05)
-                                let min = minimize_isolated(&prog, timeout)
-                                    .await
-                                    .unwrap_or_else(|| prog.clone());
-                                if corpus.record(&d, &prog, &min) {
-                                    println!("DIVERGENCE — {}", d.bisect());
-                                    println!("    minimized: {min}");
-                                    let (a, b) = d.labels();
-                                    println!("    {a}={} {b}={}", render(&d.reference), render(&d.tested));
-                                }
-                            }
-                        }
-                    });
-                }
-                if breakage.note(!r.clean) {
-                    eprintln!(
-                        "FATAL fuzz harness: {} of the last {} orders came back \
-                         unclean — the environment (or the build) is broken",
-                        breakage.findings, BreakageWindow::LEN,
-                    );
-                    std::process::exit(2);
+                to_derive.extend(r.suspect.into_iter().map(|p| (si, p)));
+            }
+            Some(res) = derive.join_next() => {
+                breakage_note(&mut breakage, res.unwrap_or(true));
+            }
+            else => {
+                if to_derive.is_empty() {
+                    break;
                 }
             }
-            Some(_) = derive.join_next() => {}
-            else => break,
         }
     }
-    while derive.join_next().await.is_some() {}
     for i in 0..SOURCES {
-        stats[i].divergences = found.divergences[i].load(Relaxed);
-        stats[i].crashes = found.crashes[i].load(Relaxed);
+        stats[i].divergences = found[i].divergences.load(Relaxed);
+        stats[i].crashes = found[i].crashes.load(Relaxed);
     }
     (0..SOURCES).map(|i| (KINDS[i].tag(), stats[i].clone(), cpu[i])).collect()
+}
+
+/// Note one subject in the breakage window; a tripped window ends the
+/// campaign.
+fn breakage_note(w: &mut BreakageWindow, finding: bool) {
+    if w.note(finding) {
+        eprintln!(
+            "FATAL fuzz harness: {} of the last {} subjects were findings — the \
+             environment (or the build) is broken",
+            w.findings,
+            BreakageWindow::LEN,
+        );
+        std::process::exit(2);
+    }
+}
+
+/// One source's findings.
+#[derive(Default)]
+struct Tally {
+    divergences: std::sync::atomic::AtomicUsize,
+    crashes: std::sync::atomic::AtomicUsize,
+    /// Divergences whose key had its minimizations: counted, not recorded.
+    known: std::sync::atomic::AtomicUsize,
+}
+
+/// Derive one suspect in a fresh process and record what it is: a flip
+/// for typemorph, else a crash or a divergence, minimized while its key
+/// has minimizations left. True when it is a finding.
+async fn derive_suspect(
+    kind: SourceKind,
+    prog: &str,
+    corpus: &Corpus,
+    tally: &Tally,
+    timeout: Duration,
+) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if kind == SourceKind::Typemorph {
+        let confirmed = confirm_typeflip(corpus, prog, timeout).await;
+        if confirmed {
+            tally.divergences.fetch_add(1, Relaxed);
+        }
+        return confirmed;
+    }
+    match check_isolated(prog, timeout).await.0 {
+        PoolResult::Agree => false,
+        // a hang of a program on the clock, the network or a process is
+        // the environment's
+        PoolResult::Crash(status)
+            if status.contains("HANG")
+                && ["rand::", "sys::", "http::"].iter().any(|m| prog.contains(m)) =>
+        {
+            false
+        }
+        PoolResult::Crash(status) => {
+            tally.crashes.fetch_add(1, Relaxed);
+            if corpus.record_crash(prog, &status) {
+                println!("CRASH — child {status}");
+                println!("    program: {}", prog.replace('\n', "\\n"));
+            }
+            true
+        }
+        PoolResult::Diverge(f) => {
+            tally.divergences.fetch_add(1, Relaxed);
+            if !corpus.claim(&f.key) {
+                tally.known.fetch_add(1, Relaxed);
+                return true;
+            }
+            let min = minimize_isolated(prog, timeout)
+                .await
+                .unwrap_or_else(|| prog.to_string());
+            if corpus.record(&f, prog, &min) {
+                println!("DIVERGENCE — {}", f.bisect);
+                println!("    minimized: {min}");
+                let (a, b) = &f.labels;
+                println!("    {a}={} {b}={}", f.reference, f.tested);
+            }
+            true
+        }
+    }
 }
 
 /// Re-probe a subject that flipped in a batch child in a fresh process
@@ -5172,343 +4986,6 @@ async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> boo
         }
     }
     confirmed
-}
-
-/// Run several sources through one pool, dividing the box by measured
-/// CPU rather than by worker slots (slots are not cores: what a check
-/// draws depends on how much of its life the subject spends blocked).
-/// Keeps `parallelism()` checks in flight, in isolated child processes
-/// unless `GRAPHIX_FUZZ_INPROC=1`. A divergence is minimized, deduped
-/// against `corpus` and written without stalling the pool; a crash
-/// records immediately. `iters = None` runs forever.
-// CR claude for claude: [structure] This is a second campaign engine beside
-// run_aggregator, and the two have drifted: here BreakageWindow counts subjects that
-// are findings (design §4), there it counts unclean orders, so a soak never trips on a
-// divergence flood from a broken build; here inflight balances, there it leaks count -
-// ran on every short order; here a dead batch child's subjects are re-checked, there
-// they are lost (fuzz-lib-b-01). Its only callers (fuzz, generate_campaign) pass one
-// source, so pick's share logic, projected and Source::weight are dead. RING_CAP, the
-// 8..=600 admission bound, the ring-or-seed loop (fuzz_source vs mutant()) and the
-// IO-HANG exclusion are each written twice, and generate/reactive order children emit N
-// lines (a shape_stats parse plus program text) that the aggregator discards. Run fuzz
-// and generate through run_aggregator with one-hot weights and delete this engine with
-// Source, SourceState, ready_source, batch_isolated, run_batch_child and check-batch;
-// GRAPHIX_FUZZ_INPROC, honoured only here, moves or goes. (fuzz-lib-b-07)
-pub async fn run_pool_multi(
-    corpus: &std::sync::Arc<Corpus>,
-    iters: Option<usize>,
-    timeout: Duration,
-    mut sources: Vec<Source<'static>>,
-) -> Vec<(&'static str, FuzzStats, Duration)> {
-    use tokio::task::JoinSet;
-    let par = parallelism();
-    let isolate = std::env::var_os("GRAPHIX_FUZZ_INPROC").is_none();
-    let bsize = if isolate { batch_size() } else { 1 };
-    let mut breakage = BreakageWindow::new();
-    let mut checks: JoinSet<(usize, Vec<(String, PoolResult)>, Duration)> =
-        JoinSet::new();
-    let mut minims: JoinSet<()> = JoinSet::new();
-    let mut launched = 0usize;
-    let want = |launched: usize| iters.map_or(true, |n| launched < n);
-    let mut states: Vec<SourceState> =
-        (0..sources.len()).map(|_| SourceState::default()).collect();
-    // One generator task per source, bounded; each source's seed stream
-    // stays sequential inside its own task.
-    let mut gens: Vec<tokio::sync::mpsc::Receiver<String>> = Vec::new();
-    let mut gen_tasks: JoinSet<()> = JoinSet::new();
-    for (i, src) in sources.iter_mut().enumerate() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<String>(GEN_BUFFER);
-        for mut next in std::mem::take(&mut src.gens) {
-            let tx = tx.clone();
-            gen_tasks.spawn(async move {
-                loop {
-                    if tx.send(next()).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-        gens.push(rx);
-        // Ring admission likewise, try_send'd: dropping an admission
-        // costs a shape, stalling the driver costs every source its slots.
-        if let Some(mut admit) = src.on_agree.take() {
-            let (atx, mut arx) = tokio::sync::mpsc::channel::<(String, bool)>(GEN_BUFFER);
-            let novel = states[i].novel.clone();
-            gen_tasks.spawn(async move {
-                while let Some((prog, ran)) = arx.recv().await {
-                    if admit(&prog, ran) {
-                        novel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-            });
-            states[i].admit = Some(atx);
-        }
-    }
-    let wsum: f64 =
-        sources.iter().map(|s| s.weight.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
-    // whichever source is furthest below its target share of projected CPU
-    let pick = |sources: &[Source<'static>], states: &[SourceState]| -> usize {
-        if sources.len() == 1 {
-            return 0;
-        }
-        let done: usize = states.iter().map(|s| s.done).sum();
-        let cpu: f64 = states.iter().map(|s| s.cpu.as_secs_f64()).sum();
-        let global_mean = if done > 0 { cpu / done as f64 } else { 1.0 };
-        let proj: Vec<f64> = states.iter().map(|s| s.projected(global_mean)).collect();
-        let total: f64 = proj.iter().sum();
-        let mut best = 0;
-        let mut best_deficit = f64::NEG_INFINITY;
-        for i in 0..sources.len() {
-            let target = sources[i].weight.max(0.0) / wsum;
-            let actual = if total > 0.0 { proj[i] / total } else { 0.0 };
-            let deficit = target - actual;
-            if deficit > best_deficit {
-                best_deficit = deficit;
-                best = i;
-            }
-        }
-        best
-    };
-    // Spawn one child's worth of work: subjects accumulate per source
-    // into a `check-batch` child (so the child's CPU charges to exactly
-    // one account); leftover partial batches flush when `iters` runs out.
-    let spawn_next =
-        |checks: &mut JoinSet<(usize, Vec<(String, PoolResult)>, Duration)>,
-         sources: &mut Vec<Source<'static>>,
-         states: &mut Vec<SourceState>,
-         gens: &mut Vec<tokio::sync::mpsc::Receiver<String>>,
-         launched: &mut usize|
-         -> bool {
-            loop {
-                if !want(*launched) {
-                    for (si, st) in states.iter_mut().enumerate() {
-                        if st.pending.is_empty() {
-                            continue;
-                        }
-                        let buf = &mut st.pending;
-                        let batch = std::mem::take(buf);
-                        st.inflight += batch.len();
-                        checks.spawn(async move {
-                            let (r, cpu) = batch_isolated(batch, timeout).await;
-                            (si, r, cpu)
-                        });
-                        return true;
-                    }
-                    return true;
-                }
-                let si = pick(sources, states);
-                // Never generate inline and never spawn a partial batch to
-                // fill the gap: report dry and let the caller await
-                // generation. Returning without spawning would park the
-                // accumulated programs and shrink the pool permanently.
-                let si = match ready_source(si, states, gens) {
-                    Some(i) => i,
-                    None => return false,
-                };
-                let prog = match states[si].ready.pop_front() {
-                    Some(p) => p,
-                    None => return false,
-                };
-                *launched += 1;
-                // GRAPHIX_FUZZ_ECHO: print each program as it dispatches
-                if std::env::var_os("GRAPHIX_FUZZ_ECHO").is_some() {
-                    eprintln!("FUZZPROG\t{}", prog.replace('\n', "\\n"));
-                }
-                if !isolate {
-                    states[si].inflight += 1;
-                    checks.spawn(async move {
-                        let res = match check_classified(&prog, timeout).await {
-                            (Some(d), _) => PoolResult::Diverge(d),
-                            (None, ran) => PoolResult::Agree { ran },
-                        };
-                        (si, vec![(prog, res)], Duration::ZERO)
-                    });
-                    return true;
-                }
-                let st = &mut states[si];
-                // Every subject batches; the batch child falls back on its
-                // own, and the `% individual` counter reports the rate.
-                if bsize <= 1 {
-                    st.inflight += 1;
-                    checks.spawn(async move {
-                        let (r, cpu) = check_isolated(&prog, timeout).await;
-                        (si, vec![(prog, r)], cpu)
-                    });
-                    return true;
-                }
-                let buf = &mut st.pending;
-                buf.push(prog);
-                if buf.len() >= bsize {
-                    let batch = std::mem::take(buf);
-                    st.inflight += batch.len();
-                    checks.spawn(async move {
-                        let (r, cpu) = batch_isolated(batch, timeout).await;
-                        (si, r, cpu)
-                    });
-                    return true;
-                }
-            }
-        };
-    // Wait for a generator when nothing is ready: at t=0 every buffer is
-    // empty, and "nothing ready" is not "no work left".
-    async fn await_any(
-        states: &mut [SourceState],
-        gens: &mut [tokio::sync::mpsc::Receiver<String>],
-    ) -> bool {
-        use tokio::sync::mpsc::error::TryRecvError;
-        loop {
-            let mut closed = 0;
-            for (st, rx) in states.iter_mut().zip(gens.iter_mut()) {
-                match rx.try_recv() {
-                    Ok(p) => {
-                        st.ready.push_back(p);
-                        return true;
-                    }
-                    Err(TryRecvError::Disconnected) => closed += 1,
-                    Err(TryRecvError::Empty) => (),
-                }
-            }
-            // every generator gone means the campaign is out of work
-            if closed == gens.len() {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }
-    // keep asking until the slot is filled
-    while want(launched) && checks.len() < par {
-        if !spawn_next(&mut checks, &mut sources, &mut states, &mut gens, &mut launched)
-            && !await_any(&mut states, &mut gens).await
-        {
-            break;
-        }
-    }
-    loop {
-        tokio::select! {
-            biased;
-            Some(res) = checks.join_next() => {
-                // Refill first: `continue` inside this arm targets the
-                // enclosing loop, so a refill at the bottom would leak a
-                // slot on every excluded result.
-                while want(launched) && checks.len() < par {
-                    if !spawn_next(
-                        &mut checks, &mut sources, &mut states, &mut gens, &mut launched,
-                    ) && !await_any(&mut states, &mut gens).await
-                    {
-                        break;
-                    }
-                }
-                if let Ok((si, results, cpu)) = res {
-                    states[si].cpu += cpu;
-                    states[si].inflight = states[si].inflight.saturating_sub(results.len());
-                    states[si].done += results.len();
-                    for (prog, res) in results {
-                    states[si].stats.run += 1;
-                    if states[si].stats.run % 1000 == 0 {
-                        // per-source counters, each on its own line
-                        let total: f64 =
-                            states.iter().map(|s| s.cpu.as_secs_f64()).sum();
-                        let pct = if total > 0.0 {
-                            (states[si].cpu.as_secs_f64() * 100.0 / total).round() as u64
-                        } else {
-                            0
-                        };
-                        states[si].stats.novel = states[si]
-                            .novel
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        let st = &states[si].stats;
-                        eprintln!(
-                            "  {}…{} run, {} divergences, {} crashes, {} in corpus, \
-                             {} novel shapes, {}% cpu",
-                            sources[si].name, st.run, st.divergences, st.crashes,
-                            corpus.len(), st.novel, pct
-                        );
-                    }
-                    let finding = match res {
-                        PoolResult::Agree { ran } => {
-                            if let Some(tx) = &states[si].admit {
-                                let _ = tx.try_send((prog.clone(), ran));
-                            }
-                            false
-                        }
-                        PoolResult::Crash(status) => {
-                            // A HANG in a program touching IO/async modules
-                            // is environmental: the child has no resolver.
-                            // Signal deaths and panics still record.
-                            if status.contains("HANG")
-                                && ["rand::", "sys::", "http::"]
-                                    .iter()
-                                    .any(|m| prog.contains(m))
-                            {
-                                continue;
-                            }
-                            states[si].stats.crashes += 1;
-                            if corpus.record_crash(&prog, &status) {
-                                println!("CRASH — child {status}");
-                                println!(
-                                    "    program: {}",
-                                    prog.replace('\n', "\\n")
-                                );
-                            }
-                            true
-                        }
-                        PoolResult::Diverge(d) => {
-                            // `check` compares at the program's own tier,
-                            // so a Diverge from the child is a real finding
-                            states[si].stats.divergences += 1;
-                            // bound concurrent minimizations
-                            if minims.len() >= par {
-                                let _ = minims.join_next().await;
-                            }
-                            let corpus = corpus.clone();
-                            minims.spawn(async move {
-                                // isolated: a reduction of a benign
-                                // divergence can itself be a crasher
-                                let min = if isolate {
-                                    minimize_isolated(&prog, timeout)
-                                        .await
-                                        .unwrap_or_else(|| prog.clone())
-                                } else {
-                                    minimize(&prog, timeout, CAMPAIGN_MINIMIZE_BUDGET).await.0
-                                };
-                                if corpus.record(&d, &prog, &min) {
-                                    println!("DIVERGENCE — {}", d.bisect());
-                                    println!("    minimized: {min}");
-                                    let (a, b) = d.labels();
-                                    println!("    {a}={} {b}={}", render(&d.reference), render(&d.tested));
-                                }
-                            });
-                            true
-                        }
-                    };
-                    if breakage.note(finding) {
-                        eprintln!(
-                            "FATAL fuzz harness: {} of the last {} subjects \
-                             produced findings — the environment (or the \
-                             build) is broken, not the programs; aborting \
-                             instead of flooding the corpus",
-                            breakage.findings,
-                            BreakageWindow::LEN,
-                        );
-                        std::process::exit(2);
-                    }
-                    }
-                }
-            }
-            Some(_) = minims.join_next() => {}
-            else => break,
-        }
-    }
-    while minims.join_next().await.is_some() {}
-    sources
-        .iter()
-        .zip(states.into_iter())
-        .map(|(src, mut st)| {
-            st.stats.novel = st.novel.load(std::sync::atomic::Ordering::Relaxed);
-            (src.name, st.stats, st.cpu)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -6895,6 +6372,49 @@ mod batch_files_test {
                  compiled the subject)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod order_test {
+    use super::*;
+
+    #[test]
+    fn a_dead_order_child_hands_back_every_subject_without_a_verdict() {
+        let order = WorkOrder {
+            kind: SourceKind::Generate,
+            seed: 5,
+            count: 6,
+            ring: vec![],
+            pins: 0..0,
+        };
+        let mut next = order.generator();
+        let progs: Vec<String> = (0..order.count).map(|_| next()).collect();
+        let p1 = &progs[1];
+        let head = format!("V 0 A\nV 1 O\nP 1 {}\n{p1}\nV 2 R\n", p1.len());
+        let r = order_result(&order, &head, false);
+        assert!(!r.clean);
+        assert_eq!(r.agreed, 2);
+        assert_eq!(r.suspect, [1, 3, 4, 5].map(|i| progs[i].clone()));
+        // a subject's `sys::exit(0)` is not a clean order
+        assert!(!order_result(&order, &head, true).clean);
+        let tail: String = (3..6).map(|i| format!("V {i} A\n")).collect();
+        let r = order_result(&order, &format!("{head}{tail}CPU 7\n"), true);
+        assert!(r.clean);
+        assert_eq!(r.agreed, 5);
+        assert_eq!(r.suspect, [progs[1].clone()]);
+    }
+
+    #[test]
+    fn a_finding_round_trips_its_file() {
+        let f = Finding {
+            key: "Engine (\"x\\y\", 1, 2, None)".into(),
+            bisect: "b".into(),
+            labels: ("interp".into(), "jit".into()),
+            reference: "Trace([0:i64:1])".into(),
+            tested: "line\nbreak".into(),
+        };
+        assert_eq!(Finding::decode(&f.encode()), Some(f));
     }
 }
 

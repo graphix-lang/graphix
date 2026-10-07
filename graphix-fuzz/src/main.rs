@@ -237,29 +237,6 @@ fn feature_report(progs: &[String], ok: &[bool], reactive: bool) {
     }
 }
 
-/// Parse `check-batch`'s stdin framing: `{n}\n` then, per subject,
-/// `{byte_len}\n{bytes}`. Length-prefixed because programs are
-/// arbitrary text.
-fn parse_batch_frames(input: &str) -> Result<Vec<String>> {
-    let mut progs = Vec::new();
-    let (head, mut rest) = input
-        .split_once('\n')
-        .ok_or_else(|| anyhow::anyhow!("check-batch: empty stdin"))?;
-    let n: usize = head.trim().parse()?;
-    for _ in 0..n {
-        let (len, tail) = rest
-            .split_once('\n')
-            .ok_or_else(|| anyhow::anyhow!("check-batch: truncated frame header"))?;
-        let len: usize = len.trim().parse()?;
-        if tail.len() < len {
-            anyhow::bail!("check-batch: truncated frame body");
-        }
-        progs.push(tail[..len].to_string());
-        rest = &tail[len..];
-    }
-    Ok(progs)
-}
-
 /// Read a whole program from stdin (the `check-one` / `minimize-one`
 /// isolated-worker input channel).
 fn read_stdin() -> Result<String> {
@@ -292,7 +269,7 @@ async fn main() -> Result<()> {
         args.get(1).map(String::as_str),
         Some(
             "check-one"
-                | "check-batch"
+                | "run-one"
                 | "gen-batch"
                 | "detcheck-one"
                 | "selfcheck-one"
@@ -318,12 +295,12 @@ async fn main() -> Result<()> {
     let sandbox_cwd = std::env::var_os("GRAPHIX_FUZZ_SANDBOXED").is_none()
         && match args.get(1).map(String::as_str) {
             Some(
-                "check-one" | "check-batch" | "gen-batch" | "detcheck-one"
-                | "selfcheck-one" | "minimize-one" | "typemorph-one" | "gen-check"
-                | "regress" | "fusecheck",
+                "check-one" | "run-one" | "gen-batch" | "detcheck-one" | "selfcheck-one"
+                | "minimize-one" | "typemorph-one" | "gen-check" | "regress"
+                | "fusecheck",
             ) => true,
             // the path argument is resolved before the chdir
-            Some("check" | "run" | "minimize" | "leakcheck") => {
+            Some("check" | "check-isolated" | "run" | "minimize" | "leakcheck") => {
                 if let Some(f) = args.get_mut(2) {
                     if let Ok(abs) = std::fs::canonicalize(&*f) {
                         *f = abs.to_string_lossy().into_owned();
@@ -786,30 +763,6 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // batch worker: length-prefixed programs on stdin, verdicts
-        // appended and flushed to the file named by argv[2] so a
-        // mid-batch death leaves the completed prefix on record
-        Some("check-batch") => {
-            use std::io::Write;
-            let verdict_path = args
-                .get(2)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("check-batch requires a verdict path"))?;
-            let input = read_stdin()?;
-            let progs = parse_batch_frames(&input)?;
-            let mut out = std::fs::File::create(&verdict_path)?;
-            graphix_fuzz::run_batch(&progs, campaign_timeout(), |i, v| {
-                let tag = match v {
-                    graphix_fuzz::BatchVerdict::Agree { ran: true } => "R",
-                    graphix_fuzz::BatchVerdict::Agree { ran: false } => "A",
-                    graphix_fuzz::BatchVerdict::Other => "O",
-                };
-                let _ = writeln!(out, "{i} {tag}");
-                let _ = out.flush();
-            })
-            .await;
-            graphix_fuzz::report_self_cpu();
-        }
         // the aggregator's worker: told what to make, not what to run
         Some("gen-batch") => {
             let out_path = args
@@ -820,20 +773,43 @@ async fn main() -> Result<()> {
             let mut out = std::fs::File::create(&out_path)?;
             graphix_fuzz::run_work_order(&order, campaign_timeout(), &mut out).await;
         }
+        // isolated check: program on stdin, verdict written to the file
+        // named by argv[2] (the exit status is the subject's to set)
         Some("check-one") => {
+            let path = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("check-one requires a verdict path"))?;
             let code = read_stdin()?;
-            // 0 = agree; 7 = agree and both modes produced runtime
-            // traces; 10 = diverge
-            let status =
-                match graphix_fuzz::check_classified(code.trim(), campaign_timeout())
-                    .await
-                {
-                    (Some(_), _) => 10,
-                    (None, true) => 7,
-                    (None, false) => 0,
-                };
+            let verdict = match graphix_fuzz::check(code.trim(), campaign_timeout()).await
+            {
+                Some(d) => format!("diverge\n{}", graphix_fuzz::Finding::of(&d).encode()),
+                None => "agree\n".to_string(),
+            };
             graphix_fuzz::report_self_cpu();
-            std::process::exit(status);
+            std::fs::write(path, verdict)?;
+            std::process::exit(0);
+        }
+        // one mode alone: `trace` in the file named by argv[2] when it
+        // produced one
+        Some("run-one") => {
+            let path = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("run-one requires a verdict path"))?;
+            let mode = match args.get(3).map(String::as_str) {
+                Some("interp") => Mode::Interp,
+                Some("jit") => Mode::Jit,
+                _ => bail!("run-one requires a mode: interp or jit"),
+            };
+            let code = read_stdin()?;
+            let o =
+                graphix_fuzz::run_program(code.trim(), mode, campaign_timeout()).await;
+            std::fs::write(
+                path,
+                if matches!(o, Outcome::Trace(_)) { "trace" } else { "other" },
+            )?;
+            std::process::exit(0);
         }
         // isolated selfcheck worker: 0 = clean, 40+mask (bit 1 interp
         // flaky, bit 2 jit flaky), 50 = inconclusive
@@ -953,6 +929,19 @@ async fn main() -> Result<()> {
             if new > 0 || regressions > 0 {
                 std::process::exit(1);
             }
+        }
+        // the campaign's view of a program: checked in a child as a
+        // suspect is, crash and containment rules included
+        Some("check-isolated") => {
+            let path = args.get(2).ok_or_else(|| {
+                anyhow::anyhow!("usage: graphix-fuzz check-isolated <file>")
+            })?;
+            let code = std::fs::read_to_string(path)?;
+            println!(
+                "{}",
+                graphix_fuzz::check_isolated_report(code.trim(), campaign_timeout())
+                    .await
+            );
         }
         Some("minimize") => {
             let path = match args.get(2) {
