@@ -139,30 +139,32 @@ Caused by:
 ## Duration
 
 A time duration. The type name is `duration`, and the literals are written as,
-`duration:1.0s`, `duration:1.0ms`, `duration:1.0us`, `duration:1.0ns`. Durations
-can be added, and can be multiplied and divided by scalars.
+`duration:1.0s`, `duration:1.0ms`, `duration:1.0us`, `duration:1.0ns` (and
+`m`, `h`, `d`, `M` and `y`). The arithmetic operators do not apply to
+durations; [sys::time](../stdlib/sys/time.md) does the arithmetic.
 
 ```graphix
-〉duration:1.0s + duration:1.0s
+〉sys::time::add_dur(duration:1.0s, duration:1.0s)$
 -: duration
 2.s
-〉duration:1.0s * 50
+〉sys::time::scale(duration:1.0s, 50.0)$
 -: duration
 50.s
-〉duration:1.0s / 50
+〉sys::time::scale(duration:1.0s, 0.02)$
 -: duration
-0.02s
+20.ms
 ```
 
 ## DateTime
 
 A date and time in the UTC time zone. The type name is `datetime` and literals
 are written in RFC3339 format inside quotes. For example,
-`datetime:"2020-01-01T00:00:00Z"`. You can add and subtract `duration` from
-`datetime`.
+`datetime:"2020-01-01T00:00:00Z"`. `sys::time::add` and `sys::time::sub`
+move a `datetime` by a `duration`, and `sys::time::diff` is the duration
+between two.
 
 ```graphix
-〉datetime:"2020-01-01T00:00:00Z" + duration:30.s
+〉sys::time::add(datetime:"2020-01-01T00:00:00Z", duration:30.s)
 -: datetime
 2020-01-01 00:00:30 UTC
 ```

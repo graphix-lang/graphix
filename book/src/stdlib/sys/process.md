@@ -5,77 +5,7 @@ stdio handle configured as `Pipe` is a `sys::process::Pipe`, which
 implements the [sys::io](io.md) traits.
 
 ```graphix
-use sys::io::{Read, Lines, Write, Close};
-
-type Proc;
-
-/// One end of a pipe to a child process: the child's stdin (which the
-/// parent writes) or its stdout or stderr (which the parent reads).
-type Pipe;
-
-impl Read for Pipe;
-impl Lines for Pipe;
-impl Write for Pipe;
-impl Close for Pipe;
-
-type Redirect = [
-  `Pipe,
-  `Inherit,
-  `Null,
-];
-
-type StdioConfig = {
-  stdin: Redirect,
-  stdout: Redirect,
-  stderr: Redirect,
-};
-
-type SpawnOptions = {
-  command: string,
-  args: Array<string>,
-  cwd: [string, null],
-  clear_env: bool,
-  env: Map<string, [string, null]>,
-  stdio: StdioConfig,
-  kill_on_drop: bool,
-};
-
-type Child = {
-  proc: Proc,
-  pid: i64,
-  stdin: [Pipe, null],
-  stdout: [Pipe, null],
-  stderr: [Pipe, null],
-};
-
-type ExitStatus = {
-  code: [i64, null],
-  success: bool,
-};
-
-val stdio: fn(
-  ?#stdin: Redirect,
-  ?#stdout: Redirect,
-  ?#stderr: Redirect
-) -> StdioConfig;
-
-val options: fn(
-  ?#args: Array<string>,
-  ?#cwd: [string, null],
-  ?#clear_env: bool,
-  ?#env: Map<string, [string, null]>,
-  ?#stdio: StdioConfig,
-  ?#kill_on_drop: bool,
-  command: string
-) -> SpawnOptions;
-
-val spawn: fn(options: SpawnOptions) -> Result<Child, `ProcessError(string)>;
-
-val wait: fn(proc: Proc) -> Result<ExitStatus, `ProcessError(string)>;
-
-val pid: fn(proc: Proc) -> i64;
-
-val kill: fn(?#grace: duration, proc: Proc) -> null;
+{{#include ../../../../stdlib/graphix-package-sys/src/graphix/process.gxi}}
 ```
 
 `kill` stops a running process gracefully: it signals shutdown (SIGTERM
