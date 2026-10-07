@@ -1508,6 +1508,7 @@ impl Env {
         public: bool,
         doc: Option<ArcStr>,
         pos: SourcePosition,
+        decl: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Unguarded> {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
@@ -1523,8 +1524,8 @@ impl Env {
             TypeDefBody::Abstract(rep) => {
                 let formals =
                     Arc::from_iter(params.iter().map(|(tv, _)| Type::TVar(tv.clone())));
-                let typ =
-                    Type::Abstract { id: AbstractId::of(scope, name), params: formals };
+                let id = AbstractId::declared(scope, name, decl, &ori);
+                let typ = Type::Abstract { id, params: formals };
                 let rep = match rep {
                     None => None,
                     Some(r) => Some(r.scope_refs(scope).rewrite_trait_args(self)?),
@@ -1609,7 +1610,9 @@ impl Env {
         // contains' coinductive memo would accept it against anything.
         match typ.reaches_unguarded(self, key) {
             Unguarded::Reaches => {
-                self.abstract_reps.remove(&AbstractId::of(scope, name));
+                if let Type::Abstract { id, .. } = &typ {
+                    self.abstract_reps.remove(id);
+                }
                 self.undeftype(scope, name);
                 bail!("{}", non_contractive(name))
             }
@@ -1920,6 +1923,7 @@ mod test {
                 true,
                 None,
                 expr.pos,
+                expr.pos,
                 expr.ori.clone(),
             )
             .unwrap();
@@ -1959,6 +1963,7 @@ mod test {
                 body,
                 true,
                 None,
+                SourcePosition::default(),
                 SourcePosition::default(),
                 ori.clone(),
             )

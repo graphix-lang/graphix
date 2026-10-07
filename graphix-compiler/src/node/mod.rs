@@ -554,6 +554,7 @@ impl TypeDef {
                 false,
                 None,
                 name.pos_or(spec.pos),
+                spec.pos,
                 spec.ori.clone(),
             )
             .at(&spec)?;

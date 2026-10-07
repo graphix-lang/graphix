@@ -96,8 +96,11 @@ simplification is the bigger win.
 
 ## Identity
 
-`AbstractId::of(scope, name)` (`typ/mod.rs`) is a v5 UUID of the
-canonical path, minted at `Env::deftype`, used for BOTH the
+`AbstractId::declared(scope, name, ..)` (`typ/mod.rs`) is a v5 UUID
+of the canonical path less the components a function body or block mints
+(whose ids differ per instance and per process), and, for a type a body
+declares, of the declaration's source and position too; minted at
+`Env::deftype`, used for BOTH the
 compile-time `Type::Abstract { id, params }` and the runtime tag. One
 identity per type however many times its interface is read; the
 fusion-shape determinism gate stays quiet; a `Counter` published over

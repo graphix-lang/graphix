@@ -1879,6 +1879,7 @@ mod tests {
                 true,
                 None,
                 expr.pos,
+                expr.pos,
                 expr.ori.clone(),
             )
             .unwrap();

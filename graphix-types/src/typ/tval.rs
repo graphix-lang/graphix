@@ -383,6 +383,7 @@ mod test {
             true,
             None,
             Default::default(),
+            Default::default(),
             Arc::new(Default::default()),
         )
         .unwrap();

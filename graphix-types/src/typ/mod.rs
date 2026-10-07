@@ -328,22 +328,41 @@ impl AbstractId {
     /// The identity of the abstract type `name` defined in `scope`:
     /// the low 64 bits of [`abstract_uuid`] of its canonical path.
     pub fn of(scope: &ModPath, name: &str) -> Self {
-        // CR claude for claude: [bug] This hashes the lexical scope text. For a type
-        // declared in a function body, that text holds minted ids (`#fn<LambdaId>`,
-        // `#do<ExprId>`), so the identity is not one per declaration. Every instance of
-        // an enclosing function recompiles the inner lambda literal with a fresh
-        // LambdaId and mints another T. A warm start relocates both ids, so an instance
-        // compiled at run time mints a different T from the restored ones. The checker
-        // gives all of them the definition check's single T, so in both engines values
-        // of one static type compare unequal and the typed printer falls back. The warm
-        // run also differs from the cold one, and a checked program is refused at
-        // elaboration: `let outer = |x: i64| { let inner = |y: i64| { type T =
-        // Abstract<i64>; let get = |t: T| t.0; get(T(y)) }; inner(x) }; outer(1)` fails
-        // with "fn(t: T) -> .. does not contain fn(t: T) -> i64". probe:
-        // design/review-2026-10-05/repro/t-expr-core-02.gx (expected (true, true); cold
-        // (false, true), warm (false, false)). (t-expr-core-02)
         let path = format_compact!("{scope}::{name}");
         let (_, lo) = abstract_uuid(&path).as_u64_pair();
+        let id = AbstractId(lo);
+        ABSTRACT_NAMES.lock().entry(id).or_insert_with(|| ArcStr::from(name));
+        id
+    }
+
+    /// The identity of the abstract type `name` declared at `pos` in
+    /// `ori`, in `scope`. A component a function body or block mints
+    /// (`#fn..`, `#do..`) differs per instance and per process, so it
+    /// takes no part: a module's type is its path without them (an
+    /// interface's declaration and its implementation's are one type),
+    /// and a type declared in a body is its place there, so every
+    /// instance of the enclosing function, cold or warm, declares one.
+    pub fn declared(
+        scope: &ModPath,
+        name: &str,
+        pos: SourcePosition,
+        ori: &Origin,
+    ) -> Self {
+        let parts = || netidx_core::path::Path::parts(&scope.0);
+        if !parts().any(|p| p.starts_with('#')) {
+            return Self::of(scope, name);
+        }
+        let mut stable = compact_str::CompactString::new("");
+        for p in parts().filter(|p| !p.starts_with('#')) {
+            stable.push('/');
+            stable.push_str(p);
+        }
+        let in_body = parts().last().is_some_and(|p| p.starts_with('#'));
+        let place = match in_body {
+            false => format_compact!("{stable}::{name}"),
+            true => format_compact!("{stable}::#{}:{pos}::{name}", ori.source),
+        };
+        let (_, lo) = abstract_uuid(&place).as_u64_pair();
         let id = AbstractId(lo);
         ABSTRACT_NAMES.lock().entry(id).or_insert_with(|| ArcStr::from(name));
         id

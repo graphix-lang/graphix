@@ -271,6 +271,7 @@ fn bind_sig_item(
                 true,
                 si.doc.0.clone(),
                 td.name.pos_or(si.pos),
+                si.pos,
                 si_ori.clone(),
             )?;
         }

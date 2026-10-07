@@ -478,6 +478,37 @@ array::fold(array::init(20, |i| i), 0, |a, x| {
     Ok(())
 }
 
+/// An abstract type a function body declares is one type in every
+/// instance of the function, cold and warm: its identity is the
+/// declaration's place, not the instance's minted scope.
+#[tokio::test]
+async fn function_body_abstract_type_is_one_type() -> Result<()> {
+    const BODY_ABSTRACT: &str = r#"
+let outer = |x: i64| {
+    let inner = |y: i64| {
+        type T = Abstract<i64>;
+        T(y)
+    };
+    inner(x)
+};
+let mk = |x: i64| {
+    type U = Abstract<i64>;
+    U(x)
+};
+let a = mk(1);
+let h = select a { _ => mk };
+(outer(1) == outer(1), a == h(1))
+"#;
+    let both = Value::Array(netidx_value::ValArray::from_iter([
+        Value::Bool(true),
+        Value::Bool(true),
+    ]));
+    let ((_, cold_values), (_, warm_values)) = cold_and_warm(BODY_ABSTRACT).await?;
+    assert_eq!(cold_values.last(), Some(&both), "{cold_values:?}");
+    assert_eq!(warm_values.last(), Some(&both), "{warm_values:?}");
+    Ok(())
+}
+
 /// A program over a collection HOF with a recursive callee, whose
 /// synthesized nodes share the process-static `NOP` expression.
 const REPEATED: &str = r#"
