@@ -7,6 +7,23 @@
   "use strict";
 
   function graphix(hljs) {
+    // The parser's reserved and construct words
+    // (graphix-types/src/expr/parser/mod.rs KEYWORDS) plus the contextual
+    // ones of module, seq, trait and signature syntax.
+    const KEYWORDS =
+      "mod let select type fn cast never if use rec catch try pub trait impl " +
+      "seq seqq until mut val sig with as throws for dynamic sandbox whitelist " +
+      "blacklist unrestricted source abort flush any self super package";
+
+    // Compiler-known type names, the primitives, core's aliases and the
+    // type-variable bounds
+    const TYPES =
+      "Array Map List Error Any Abstract " +
+      "i8 u8 i16 u16 i32 u32 v32 z32 i64 u64 v64 z64 f32 f64 " +
+      "decimal datetime duration bool string bytes " +
+      "Result Option Number Int Sint Uint Float Real Primitive Ordering " +
+      "Concrete Function Singleton OneNumber Discernible Ordered";
+
     // Type parameter pattern: 'a, 'b, 'r, 'e, etc.
     const TYPE_PARAM = {
       className: "type",
@@ -26,10 +43,17 @@
       relevance: 0,
     };
 
+    // Attributes: #[native], #[parallel(g)]
+    const ATTRIBUTE = {
+      className: "meta",
+      begin: "#\\[",
+      end: "\\]",
+    };
+
     // Reference operator: &
     const REFERENCE = {
       className: "operator",
-      begin: "&[a-z_]",
+      begin: "&(mut\\b)?",
       relevance: 0,
     };
 
@@ -37,58 +61,66 @@
     const OPERATORS = {
       className: "operator",
       begin:
-        "(<-|->|=>|~|\\?|\\$|\\.\\.|::|@|\\*(?=[a-z_])|\\||\\+|\\-|/|%|==|!=|<=|>=|<|>|&&|\\|\\|)",
+        "(<-|->|=>|~!|~|\\?|\\$|\\.\\.|::|@|\\*(?=[a-z_])|\\||\\+\\??|\\-\\??|/\\??|%\\??|==|!=|<=|>=|<|>|&&|\\|\\|)",
     };
 
-    // Numbers with optional type suffixes
+    // Numbers: decimal, float, exponent, hex, binary, octal
     const NUMBER = {
       className: "number",
       variants: [
-        // Hexadecimal
-        {
-          begin:
-            "\\b0x[0-9a-fA-F]+(_?[0-9a-fA-F]+)*(i32|z32|i64|z64|u32|v32|u64|v64)?\\b",
-        },
-        // Decimal/Float with type suffix
-        {
-          begin:
-            "\\b\\d+(_?\\d+)*\\.\\d+(_?\\d+)*([eE][+-]?\\d+(_?\\d+)*)?(f32|f64)?\\b",
-        },
-        // Float with exponent
-        { begin: "\\b\\d+(_?\\d+)*[eE][+-]?\\d+(_?\\d+)*(f32|f64)?\\b" },
-        // Integer with type suffix
-        {
-          begin:
-            "\\b\\d+(_?\\d+)*(i32|z32|i64|z64|u32|v32|u64|v64|f32|f64)?\\b",
-        },
+        { begin: "\\b0x[0-9a-fA-F]+\\b" },
+        { begin: "\\b0b[01]+\\b" },
+        { begin: "\\b0o[0-7]+\\b" },
+        { begin: "\\b\\d+\\.\\d+([eE][+-]?\\d+)?" },
+        { begin: "\\b\\d+[eE][+-]?\\d+\\b" },
+        { begin: "\\b\\d+\\b" },
       ],
       relevance: 0,
     };
 
-    // Duration literals: 1.5s, 500ms, etc.
+    // Duration literals: duration:1.5s, duration:500.ms
     const DURATION = {
       className: "number",
-      begin: "\\b\\d+(\\.\\d+)?(ms|s|m|h|d)\\b",
+      begin: "\\b\\d+(\\.\\d*)?(ns|us|ms|s|m|h|d|M|y)\\b",
     };
 
-    // String with interpolation support
+    const ESCAPE = {
+      className: "char.escape",
+      begin: "\\\\.",
+      relevance: 0,
+    };
+
+    // Strings: interpolating "..[x]..", template """..\\[x]..""" (brackets
+    // are text) and raw r"..", r#".."#
     const STRING = {
       className: "string",
       variants: [
         {
+          begin: '"""',
+          end: '"""',
+          contains: [
+            {
+              className: "subst",
+              begin: "\\\\\\[",
+              end: "\\]",
+              contains: ["self"],
+            },
+            ESCAPE,
+          ],
+        },
+        { begin: 'r"', end: '"' },
+        { begin: 'r#"', end: '"#' },
+        { begin: 'r##"', end: '"##' },
+        {
           begin: '"',
           end: '"',
           contains: [
+            ESCAPE,
             {
               className: "subst",
               begin: "\\[",
               end: "\\]",
               contains: ["self"],
-            },
-            {
-              className: "char.escape",
-              begin: "\\\\.",
-              relevance: 0,
             },
           ],
         },
@@ -108,7 +140,7 @@
       relevance: 0,
     };
 
-    // Type names: Array, Map, String, Result, Option, Error, etc.
+    // Type names: user types and typedefs
     const TYPE_NAME = {
       className: "type",
       begin: "\\b[A-Z][a-zA-Z0-9_]*\\b",
@@ -118,23 +150,10 @@
     return {
       name: "Graphix",
       aliases: ["gx"],
-      // CR claude for claude: [doc-drift] The keyword list lacks seq, seqq, until, abort,
-      // flush, try, catch, cast, never, any, rec, pub, trait and impl. The book's code
-      // uses most of them, and they render as plain text. built_in lists String, Bool,
-      // DateTime and Duration, which are not Graphix types, and lacks List. STRING
-      // knows only plain double quotes, so a triple-quoted template scans as an empty
-      // string followed by a new one, with its brackets shown as a splice, and `r#` raw
-      // strings are not recognized. The block-comment rule (140) and the type-suffixed
-      // numbers such as `42i64` (43-66) describe syntax Graphix does not have. Take the
-      // keywords from the parser's KEYWORDS (graphix-types/src/expr/parser/mod.rs:100).
-      // (ide-tooling.r2-16)
       keywords: {
-        keyword:
-          "let fn mod type val sig use select if throws dynamic sandbox whitelist as with",
+        keyword: KEYWORDS,
         literal: "true false null",
-        built_in:
-          // Only include truly built-in types, not function names
-          "Array Map Result Option Error String Number Int Float Bool DateTime Duration Any",
+        built_in: TYPES,
       },
       contains: [
         // Documentation comments (must come before regular comments)
@@ -144,72 +163,19 @@
           end: "$",
           relevance: 10,
         },
-        // Regular comments
         hljs.COMMENT("//", "$"),
-        // Block comments
-        hljs.COMMENT("/\\*", "\\*/"),
-
+        ATTRIBUTE,
         STRING,
         VARIANT,
         TYPE_PARAM,
         LABEL,
         MODULE_PATH,
         FUNCTION_CALL,
-        TYPE_NAME,
         DURATION,
         NUMBER,
-        OPERATORS,
+        TYPE_NAME,
         REFERENCE,
-
-        // Lambda syntax
-        {
-          className: "function",
-          begin: "\\|",
-          end: "\\|",
-          keywords: {
-            keyword: "as",
-          },
-          contains: [
-            TYPE_PARAM,
-            TYPE_NAME,
-            {
-              className: "params",
-              begin: "[a-z_][a-z0-9_]*",
-              relevance: 0,
-            },
-          ],
-        },
-
-        // Type annotations in patterns
-        {
-          // CR claude for claude: [bug] This mode opens at every `:` and ends at the next
-          // `,`, `)`, `}`, `]`, `=` or `>`, coloring only type names inside, so
-          // struct-literal values and typed literals lose their colors: `{name:
-          // "hello", age: 3}` and `i64:3` render with no spans. The keywords (123) lack
-          // seq, seqq, until, try, catch, cast, never, rec, trait, impl, pub, abort and
-          // flush, so the seq chapter's examples show no keyword colored; the lambda
-          // mode (155-171) never matches because OPERATORS takes every `|` first; the
-          // `/*` comment mode (140), which Graphix does not have, turns `total /*count
-          // + 1` into a comment; and triple-quoted and `r#` strings split into
-          // fragments. probe: run docs/book/highlight-abc7f01d.js (hljs 10.1.1) and
-          // this file in node and call hljs.highlight('graphix', src). (ide-tooling-13)
-          begin: ":\\s*",
-          end: "(?=[,\\)\\}\\]=>]|$)",
-          keywords: {
-            built_in:
-              "Array Map Result Option Error String Number Int Float Bool DateTime Duration Any",
-          },
-          contains: [
-            TYPE_PARAM,
-            TYPE_NAME,
-            {
-              className: "type",
-              begin:
-                "\\b(i32|z32|i64|z64|u32|v32|u64|v64|f32|f64|bool|string|null|error|array|datetime|duration|decimal)\\b",
-            },
-          ],
-          relevance: 0,
-        },
+        OPERATORS,
       ],
     };
   }
