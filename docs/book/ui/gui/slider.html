@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -183,8 +183,8 @@
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(x: f64) -&gt; Any,
-  ?#on_release: fn(a: null) -&gt; Any,
+  ?#on_change: [fn(x: f64) -&gt; Any, null],
+  ?#on_release: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
   ?#disabled: &amp;bool,
@@ -210,8 +210,8 @@
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(x: f64) -&gt; Any,
-  ?#on_release: fn(a: null) -&gt; Any,
+  ?#on_change: [fn(x: f64) -&gt; Any, null],
+  ?#on_release: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;[f64, null],
   ?#height: &amp;Length,
   ?#disabled: &amp;bool,

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -204,7 +204,7 @@ type MenuGroup = {
 type ContextMenu = { child: &amp;Widget, items: &amp;Array&lt;MenuItem&gt; };
 
 val action: fn(
-  ?#on_click: fn(a: null) -&gt; Any,
+  ?#on_click: [fn(a: null) -&gt; Any, null],
   ?#shortcut: &amp;[Shortcut, null],
   ?#disabled: &amp;bool,
   s: &amp;string
@@ -219,7 +219,7 @@ val bar: fn(?#width: &amp;Length, a: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget;
 val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
-<p>Creates a keyboard shortcut from modifier flags and a single character key.</p>
+<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included.</p>
 <ul>
 <li><strong><code>#ctrl</code></strong> – Hold Ctrl. Defaults to <code>false</code>.</li>
 <li><strong><code>#shift</code></strong> – Hold Shift. Defaults to <code>false</code>.</li>
@@ -227,7 +227,7 @@ val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widge
 <li><strong><code>#logo</code></strong> – Hold the logo/super key. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>string</code></strong> – A single character (e.g. <code>"N"</code>, <code>"Z"</code>). Returns an error if the key is not exactly one character.</li>
 </ul>
-<p>The shortcut text (e.g. “Ctrl+N”) is displayed right-aligned in dimmed text next to the menu item label. Pressing the key combination triggers the action globally within the window.</p>
+<p>The shortcut text (e.g. “Ctrl+N”) is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.</p>
 <h2 id="menuaction-parameters"><a class="header" href="#menuaction-parameters"><code>menu::action</code> Parameters</a></h2>
 <ul>
 <li><strong><code>#on_click</code></strong> – Callback invoked when the action is clicked. Receives <code>null</code>. If omitted, the action is displayed but does nothing.</li>

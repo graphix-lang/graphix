@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -175,9 +175,10 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-chart-widget"><a class="header" href="#the-chart-widget">The Chart Widget</a></h1>
-<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).</p>
+<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart within one mode: a chart cannot mix bar, pie, 3D and XY series, nor XY series over numbers with ones over datetimes. A chart that mixes them draws nothing and logs the conflict once.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type SeriesStyle = {
+<pre><code class="language-graphix">use super::{Color, Length, Widget};
+type SeriesStyle = {
   color: [Color, null],
   label: [string, null],
   stroke_width: [f64, null],
@@ -216,9 +217,6 @@ type Projection3D = {
   scale: [f64, null],
   yaw: [f64, null]
 };
-
-type OhlcPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, open: f64, high: f64, low: f64, close: f64};
-type ErrorBarPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, min: f64, avg: f64, max: f64};
 
 type MeshStyle = {
   show_x_grid: [bool, null],
@@ -261,6 +259,9 @@ type ChartStyle = {
   mesh: [MeshStyle, null]
 };
 
+type OhlcPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, open: f64, high: f64, low: f64, close: f64};
+type ErrorBarPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, min: f64, avg: f64, max: f64};
+
 type Dataset = [
   `Line({data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;], style: SeriesStyle}),
   `Scatter({data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;], style: SeriesStyle}),
@@ -275,6 +276,21 @@ type Dataset = [
   `Surface({data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;, style: SurfaceStyle})
 ];
 
+type Chart = {
+  datasets: &amp;Array&lt;Dataset&gt;,
+  title: &amp;[string, null],
+  x_label: &amp;[string, null],
+  y_label: &amp;[string, null],
+  x_range: &amp;[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
+  y_range: &amp;[{min: f64, max: f64}, null],
+  z_label: &amp;[string, null],
+  z_range: &amp;[{min: f64, max: f64}, null],
+  projection: &amp;[Projection3D, null],
+  width: &amp;Length,
+  height: &amp;Length,
+  style: &amp;[ChartStyle, null]
+};
+
 val chart: fn(
   ?#title: &amp;[string, null],
   ?#x_label: &amp;[string, null],
@@ -287,8 +303,133 @@ val chart: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#style: &amp;[ChartStyle, null],
-  a: &amp;Array&lt;Dataset&gt;
-) -&gt; Widget
+  datasets: &amp;Array&lt;Dataset&gt;
+) -&gt; Widget;
+
+val line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val scatter: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#margin: [f64, null],
+  data: &amp;Array&lt;(string, f64)&gt;
+) -&gt; Dataset;
+
+val area: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val dashed_line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  ?#dash: f64,
+  ?#gap: f64,
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val candlestick: fn(
+  ?#gain_color: [Color, null],
+  ?#loss_color: [Color, null],
+  ?#bar_width: [f64, null],
+  ?#label: [string, null],
+  data: &amp;[Array&lt;OhlcPoint&lt;f64&gt;&gt;, Array&lt;OhlcPoint&lt;datetime&gt;&gt;]
+) -&gt; Dataset;
+
+val error_bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;ErrorBarPoint&lt;f64&gt;&gt;, Array&lt;ErrorBarPoint&lt;datetime&gt;&gt;]
+) -&gt; Dataset;
+
+val mesh_style: fn(
+  ?#show_x_grid: [bool, null],
+  ?#show_y_grid: [bool, null],
+  ?#grid_color: [Color, null],
+  ?#bold_line_color: [Color, null],
+  ?#axis_color: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null],
+  ?#x_label_area_size: [f64, null],
+  ?#x_labels: [i64, null],
+  ?#x_light_lines: [i64, null],
+  ?#y_label_area_size: [f64, null],
+  ?#y_labels: [i64, null],
+  ?#y_light_lines: [i64, null],
+  ?#z_labels: [i64, null],
+  ?#z_light_lines: [i64, null]
+) -&gt; MeshStyle;
+
+val pie: fn(
+  ?#colors: [Array&lt;Color&gt;, null],
+  ?#donut: [f64, null],
+  ?#start_angle: [f64, null],
+  ?#show_percentages: [bool, null],
+  ?#label_offset: [f64, null],
+  data: &amp;Array&lt;(string, f64)&gt;
+) -&gt; Dataset;
+
+val scatter3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#point_size: [f64, null],
+  data: &amp;Array&lt;(f64, f64, f64)&gt;
+) -&gt; Dataset;
+
+val line3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;Array&lt;(f64, f64, f64)&gt;
+) -&gt; Dataset;
+
+val surface: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#color_by_z: [bool, null],
+  data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;
+) -&gt; Dataset;
+
+val legend_style: fn(
+  ?#background: [Color, null],
+  ?#border: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null]
+) -&gt; LegendStyle;
+
+/// Every appearance knob of a chart in one record, so one style can be
+/// shared by every chart in a program and varied with `{ s with .. }`.
+val chart_style: fn(
+  ?#background: [Color, null],
+  ?#margin: [f64, null],
+  ?#title_size: [f64, null],
+  ?#title_color: [Color, null],
+  ?#palette: [Array&lt;Color&gt;, null],
+  ?#legend_position: [LegendPosition, null],
+  ?#legend: [LegendStyle, null],
+  ?#mesh: [MeshStyle, null]
+) -&gt; ChartStyle;
 </code></pre>
 <h2 id="chart-parameters"><a class="header" href="#chart-parameters">Chart Parameters</a></h2>
 <ul>
@@ -384,8 +525,8 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>color</strong> — Series color. When null, a color is assigned from a default palette.</li>
 <li><strong>label</strong> — Display name shown in the legend. When null, no legend entry is created.</li>
-<li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2.</li>
-<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.</li>
+<li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2. Scatter and scatter3d draw filled dots and take none.</li>
+<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible. For error_bar it is the width of the whisker caps, <code>stroke_width</code> by default.</li>
 </ul>
 <h3 id="barstyle"><a class="header" href="#barstyle">BarStyle</a></h3>
 <p>Used by bar:</p>
@@ -407,7 +548,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>colors</strong> — Array of colors for pie slices. When null, default palette is used.</li>
 <li><strong>donut</strong> — Inner radius as a fraction of the outer radius (0.0–1.0). When null or 0, draws a full pie.</li>
-<li><strong>label_offset</strong> — Distance of labels from the pie center as a percentage. Defaults to plotters default.</li>
+<li><strong>label_offset</strong> — Distance of the labels outside the pie’s edge, as a percentage of its radius. Defaults to 5.</li>
 <li><strong>show_percentages</strong> — Whether to display percentage values on labels. Defaults to false.</li>
 <li><strong>start_angle</strong> — Starting angle in degrees. Defaults to 0 (3 o’clock position). Use -90.0 to start at 12 o’clock.</li>
 </ul>

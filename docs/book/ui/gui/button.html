@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -178,7 +178,7 @@
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
-  ?#on_press: fn(a: null) -&gt; Any,
+  ?#on_press: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#padding: &amp;Padding,

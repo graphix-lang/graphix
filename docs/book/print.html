@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1e568722.js";
+            window.path_to_searchindex_js = "searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -5890,6 +5890,10 @@ val sprintf: fn(fmt: string, @args: Any) -&gt; Result&lt;string, `FormatError(st
 /// return the length of the string in bytes
 val len: fn(s: string) -&gt; i64;
 
+/// return the number of unicode characters in the string, e.g.
+/// str::char_len("💖é") is 2 where str::len is 6
+val char_len: fn(s: string) -&gt; i64;
+
 /// extract a substring of s starting at #start with lenth #len.
 /// both #start and #len are unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
@@ -8138,7 +8142,7 @@ let run_command = |c: string, path: string| {
     catch(e) command_error &lt;- "[e]";
     select str::sub(#start:0, #len:2, c)? {
         "w " =&gt; {
-            let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
+            let v = str::sub(#start:2, #len:str::char_len(c) - 2, c)?;
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
@@ -8191,7 +8195,7 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
         `Stop
     },
     e@ `Backspace if command != "" =&gt; {
-        let len = str::len(command) - 1;
+        let len = str::char_len(command) - 1;
         command &lt;- e ~ str::sub(#start:0, #len, command)$;
         `Stop
     },
@@ -11110,7 +11114,7 @@ val slider_style: fn(
 <tr><td><code>PickListStyle</code></td><td><code>pick_list_style</code></td><td><code>background</code>, <code>border_color</code>, <code>border_radius</code>, <code>border_width</code>, <code>handle_color</code>, <code>placeholder_color</code>, <code>text_color</code></td></tr>
 <tr><td><code>ProgressBarStyle</code></td><td><code>progress_bar_style</code></td><td><code>background</code>, <code>bar_color</code>, <code>border_radius</code></td></tr>
 <tr><td><code>RadioStyle</code></td><td><code>radio_style</code></td><td><code>background</code>, <code>border_color</code>, <code>border_width</code>, <code>dot_color</code>, <code>text_color</code></td></tr>
-<tr><td><code>RuleStyle</code></td><td><code>rule_style</code></td><td><code>color</code>, <code>radius</code>, <code>width</code></td></tr>
+<tr><td><code>RuleStyle</code></td><td><code>rule_style</code></td><td><code>color</code>, <code>fill_percent</code> (the share of the container the line covers, 0 to 100), <code>radius</code></td></tr>
 <tr><td><code>ScrollableStyle</code></td><td><code>scrollable_style</code></td><td><code>background</code>, <code>border_color</code>, <code>border_radius</code>, <code>border_width</code>, <code>scroller_color</code></td></tr>
 <tr><td><code>TextEditorStyle</code></td><td><code>text_editor_style</code></td><td><code>background</code>, <code>border_color</code>, <code>border_radius</code>, <code>border_width</code>, <code>placeholder_color</code>, <code>selection_color</code>, <code>value_color</code></td></tr>
 <tr><td><code>TogglerStyle</code></td><td><code>toggler_style</code></td><td><code>background</code>, <code>background_border_color</code>, <code>border_radius</code>, <code>foreground</code>, <code>foreground_border_color</code>, <code>text_color</code></td></tr>
@@ -11187,7 +11191,7 @@ mod icon;
 <p>A clickable button that wraps a child widget (typically text). Buttons trigger a callback when pressed and can be styled with custom width, height, and padding.</p>
 <h2 id="interface-22"><a class="header" href="#interface-22">Interface</a></h2>
 <pre><code class="language-graphix">val button: fn(
-  ?#on_press: fn(a: null) -&gt; Any,
+  ?#on_press: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#padding: &amp;Padding,
@@ -11248,8 +11252,8 @@ let col = column(
 <h2 id="interface-23"><a class="header" href="#interface-23">Interface</a></h2>
 <pre><code class="language-graphix">val text_input: fn(
   ?#placeholder: &amp;string,
-  ?#on_input: fn(s: string) -&gt; Any,
-  ?#on_submit: fn(a: null) -&gt; Any,
+  ?#on_input: [fn(s: string) -&gt; Any, null],
+  ?#on_submit: [fn(a: null) -&gt; Any, null],
   ?#is_secure: &amp;bool,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
@@ -11305,7 +11309,7 @@ let col = column(
 <h2 id="interface-24"><a class="header" href="#interface-24">Interface</a></h2>
 <pre><code class="language-graphix">val text_editor: fn(
   ?#placeholder: &amp;string,
-  ?#on_edit: fn(s: string) -&gt; Any,
+  ?#on_edit: [fn(s: string) -&gt; Any, null],
   ?#width: &amp;[f64, null],
   ?#height: &amp;[f64, null],
   ?#padding: &amp;Padding,
@@ -11347,7 +11351,7 @@ let col = column(
             #height: &amp;300.0,
             &amp;content
         ),
-        text(&amp;"Length: [str::len(content)] characters")
+        text(&amp;"Length: [str::char_len(content)] characters")
     ]
 );
 
@@ -11365,7 +11369,7 @@ let col = column(
 <h2 id="interface-25"><a class="header" href="#interface-25">Interface</a></h2>
 <pre><code class="language-graphix">val checkbox: fn(
   ?#label: &amp;string,
-  ?#on_toggle: fn(flag: bool) -&gt; Any,
+  ?#on_toggle: [fn(flag: bool) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
@@ -11418,7 +11422,7 @@ let col = column(
 <h2 id="interface-26"><a class="header" href="#interface-26">Interface</a></h2>
 <pre><code class="language-graphix">val toggler: fn(
   ?#label: &amp;string,
-  ?#on_toggle: fn(flag: bool) -&gt; Any,
+  ?#on_toggle: [fn(flag: bool) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
@@ -11470,7 +11474,7 @@ let col = column(
 <pre><code class="language-graphix">val radio: fn(
   #label: &amp;string,
   ?#selected: &amp;'a,
-  ?#on_select: fn(x: 'a) -&gt; Any,
+  ?#on_select: [fn(x: 'a) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#size: &amp;[f64, null],
   ?#spacing: &amp;[f64, null],
@@ -11533,8 +11537,8 @@ let col = column(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(x: f64) -&gt; Any,
-  ?#on_release: fn(a: null) -&gt; Any,
+  ?#on_change: [fn(x: f64) -&gt; Any, null],
+  ?#on_release: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;[f64, null],
   ?#disabled: &amp;bool,
@@ -11560,8 +11564,8 @@ let col = column(
   ?#min: &amp;f64,
   ?#max: &amp;f64,
   ?#step: &amp;[f64, null],
-  ?#on_change: fn(x: f64) -&gt; Any,
-  ?#on_release: fn(a: null) -&gt; Any,
+  ?#on_change: [fn(x: f64) -&gt; Any, null],
+  ?#on_release: [fn(a: null) -&gt; Any, null],
   ?#width: &amp;[f64, null],
   ?#height: &amp;Length,
   ?#disabled: &amp;bool,
@@ -11673,7 +11677,7 @@ let value = 50.0;
 <h2 id="interface-29"><a class="header" href="#interface-29">Interface</a></h2>
 <pre><code class="language-graphix">val pick_list: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(s: string) -&gt; Any,
+  ?#on_select: [fn(s: string) -&gt; Any, null],
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#padding: &amp;Padding,
@@ -11727,7 +11731,7 @@ let col = column(
 <h2 id="interface-30"><a class="header" href="#interface-30">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(s: string) -&gt; Any,
+  ?#on_select: [fn(s: string) -&gt; Any, null],
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#disabled: &amp;bool,
@@ -11960,7 +11964,7 @@ mod icon;
 <h2 id="interface-34"><a class="header" href="#interface-34">Interface</a></h2>
 <pre><code class="language-graphix">val scrollable: fn(
   ?#direction: &amp;ScrollDirection,
-  ?#on_scroll: fn(a: {x: f64, y: f64}) -&gt; Any,
+  ?#on_scroll: [fn(a: {x: f64, y: f64}) -&gt; Any, null],
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   a: &amp;Widget
@@ -12485,13 +12489,14 @@ println("rendered [w * h] pixels in [elapsed]s");
 <h2 id="see-also-34"><a class="header" href="#see-also-34">See Also</a></h2>
 <ul>
 <li><a href="#the-chart-widget-1">chart</a> - Pre-built chart widget for data visualization</li>
-<li><a href="#the-image--svg-widgets">image</a> - Display raster images and SVGs</li>
+<li><a href="#the-image-widget">image</a> - Display raster images and SVGs</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-chart-widget-1"><a class="header" href="#the-chart-widget-1">The Chart Widget</a></h1>
-<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).</p>
+<p>The <code>chart</code> widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart within one mode: a chart cannot mix bar, pie, 3D and XY series, nor XY series over numbers with ones over datetimes. A chart that mixes them draws nothing and logs the conflict once.</p>
 <h2 id="interface-38"><a class="header" href="#interface-38">Interface</a></h2>
-<pre><code class="language-graphix">type SeriesStyle = {
+<pre><code class="language-graphix">use super::{Color, Length, Widget};
+type SeriesStyle = {
   color: [Color, null],
   label: [string, null],
   stroke_width: [f64, null],
@@ -12530,9 +12535,6 @@ type Projection3D = {
   scale: [f64, null],
   yaw: [f64, null]
 };
-
-type OhlcPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, open: f64, high: f64, low: f64, close: f64};
-type ErrorBarPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, min: f64, avg: f64, max: f64};
 
 type MeshStyle = {
   show_x_grid: [bool, null],
@@ -12575,6 +12577,9 @@ type ChartStyle = {
   mesh: [MeshStyle, null]
 };
 
+type OhlcPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, open: f64, high: f64, low: f64, close: f64};
+type ErrorBarPoint&lt;'a: [f64, datetime]&gt; = {x: 'a, min: f64, avg: f64, max: f64};
+
 type Dataset = [
   `Line({data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;], style: SeriesStyle}),
   `Scatter({data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;], style: SeriesStyle}),
@@ -12589,6 +12594,21 @@ type Dataset = [
   `Surface({data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;, style: SurfaceStyle})
 ];
 
+type Chart = {
+  datasets: &amp;Array&lt;Dataset&gt;,
+  title: &amp;[string, null],
+  x_label: &amp;[string, null],
+  y_label: &amp;[string, null],
+  x_range: &amp;[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
+  y_range: &amp;[{min: f64, max: f64}, null],
+  z_label: &amp;[string, null],
+  z_range: &amp;[{min: f64, max: f64}, null],
+  projection: &amp;[Projection3D, null],
+  width: &amp;Length,
+  height: &amp;Length,
+  style: &amp;[ChartStyle, null]
+};
+
 val chart: fn(
   ?#title: &amp;[string, null],
   ?#x_label: &amp;[string, null],
@@ -12601,8 +12621,133 @@ val chart: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#style: &amp;[ChartStyle, null],
-  a: &amp;Array&lt;Dataset&gt;
-) -&gt; Widget
+  datasets: &amp;Array&lt;Dataset&gt;
+) -&gt; Widget;
+
+val line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val scatter: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#margin: [f64, null],
+  data: &amp;Array&lt;(string, f64)&gt;
+) -&gt; Dataset;
+
+val area: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val dashed_line: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  ?#dash: f64,
+  ?#gap: f64,
+  data: &amp;[Array&lt;(f64, f64)&gt;, Array&lt;(datetime, f64)&gt;]
+) -&gt; Dataset;
+
+val candlestick: fn(
+  ?#gain_color: [Color, null],
+  ?#loss_color: [Color, null],
+  ?#bar_width: [f64, null],
+  ?#label: [string, null],
+  data: &amp;[Array&lt;OhlcPoint&lt;f64&gt;&gt;, Array&lt;OhlcPoint&lt;datetime&gt;&gt;]
+) -&gt; Dataset;
+
+val error_bar: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;[Array&lt;ErrorBarPoint&lt;f64&gt;&gt;, Array&lt;ErrorBarPoint&lt;datetime&gt;&gt;]
+) -&gt; Dataset;
+
+val mesh_style: fn(
+  ?#show_x_grid: [bool, null],
+  ?#show_y_grid: [bool, null],
+  ?#grid_color: [Color, null],
+  ?#bold_line_color: [Color, null],
+  ?#axis_color: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null],
+  ?#x_label_area_size: [f64, null],
+  ?#x_labels: [i64, null],
+  ?#x_light_lines: [i64, null],
+  ?#y_label_area_size: [f64, null],
+  ?#y_labels: [i64, null],
+  ?#y_light_lines: [i64, null],
+  ?#z_labels: [i64, null],
+  ?#z_light_lines: [i64, null]
+) -&gt; MeshStyle;
+
+val pie: fn(
+  ?#colors: [Array&lt;Color&gt;, null],
+  ?#donut: [f64, null],
+  ?#start_angle: [f64, null],
+  ?#show_percentages: [bool, null],
+  ?#label_offset: [f64, null],
+  data: &amp;Array&lt;(string, f64)&gt;
+) -&gt; Dataset;
+
+val scatter3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#point_size: [f64, null],
+  data: &amp;Array&lt;(f64, f64, f64)&gt;
+) -&gt; Dataset;
+
+val line3d: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#stroke_width: [f64, null],
+  ?#point_size: [f64, null],
+  data: &amp;Array&lt;(f64, f64, f64)&gt;
+) -&gt; Dataset;
+
+val surface: fn(
+  ?#color: [Color, null],
+  ?#label: [string, null],
+  ?#color_by_z: [bool, null],
+  data: &amp;Array&lt;Array&lt;(f64, f64, f64)&gt;&gt;
+) -&gt; Dataset;
+
+val legend_style: fn(
+  ?#background: [Color, null],
+  ?#border: [Color, null],
+  ?#label_color: [Color, null],
+  ?#label_size: [f64, null]
+) -&gt; LegendStyle;
+
+/// Every appearance knob of a chart in one record, so one style can be
+/// shared by every chart in a program and varied with `{ s with .. }`.
+val chart_style: fn(
+  ?#background: [Color, null],
+  ?#margin: [f64, null],
+  ?#title_size: [f64, null],
+  ?#title_color: [Color, null],
+  ?#palette: [Array&lt;Color&gt;, null],
+  ?#legend_position: [LegendPosition, null],
+  ?#legend: [LegendStyle, null],
+  ?#mesh: [MeshStyle, null]
+) -&gt; ChartStyle;
 </code></pre>
 <h2 id="chart-parameters"><a class="header" href="#chart-parameters">Chart Parameters</a></h2>
 <ul>
@@ -12698,8 +12843,8 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>color</strong> — Series color. When null, a color is assigned from a default palette.</li>
 <li><strong>label</strong> — Display name shown in the legend. When null, no legend entry is created.</li>
-<li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2.</li>
-<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.</li>
+<li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2. Scatter and scatter3d draw filled dots and take none.</li>
+<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible. For error_bar it is the width of the whisker caps, <code>stroke_width</code> by default.</li>
 </ul>
 <h3 id="barstyle"><a class="header" href="#barstyle">BarStyle</a></h3>
 <p>Used by bar:</p>
@@ -12721,7 +12866,7 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <ul>
 <li><strong>colors</strong> — Array of colors for pie slices. When null, default palette is used.</li>
 <li><strong>donut</strong> — Inner radius as a fraction of the outer radius (0.0–1.0). When null or 0, draws a full pie.</li>
-<li><strong>label_offset</strong> — Distance of labels from the pie center as a percentage. Defaults to plotters default.</li>
+<li><strong>label_offset</strong> — Distance of the labels outside the pie’s edge, as a percentage of its radius. Defaults to 5.</li>
 <li><strong>show_percentages</strong> — Whether to display percentage values on labels. Defaults to false.</li>
 <li><strong>start_angle</strong> — Starting angle in degrees. Defaults to 0 (3 o’clock position). Use -90.0 to start at 12 o’clock.</li>
 </ul>
@@ -13157,33 +13302,26 @@ let col = column(
 <li><a href="#the-canvas-widget-1">canvas</a> — Low-level drawing for custom visualizations</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
-<p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
+<h1 id="the-image-widget"><a class="header" href="#the-image-widget">The Image Widget</a></h1>
+<p>The <code>image</code> widget displays raster images from files, raw bytes or pixel buffers, and SVG images from files or inline XML, with sizing and content fitting controls.</p>
 <h2 id="interface-39"><a class="header" href="#interface-39">Interface</a></h2>
-<h3 id="image"><a class="header" href="#image">image</a></h3>
-<pre><code class="language-graphix">type ImageSource = [
-  string,
-  `Bytes(bytes),
-  `Rgba({width: u32, height: u32, pixels: bytes})
-];
+<pre><code class="language-graphix">use super::{ContentFit, ImageSource, Length, Widget};
+type Image = {
+  source: &amp;ImageSource,
+  width: &amp;Length,
+  height: &amp;Length,
+  content_fit: &amp;ContentFit
+};
 
 val image: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#content_fit: &amp;ContentFit,
-  a: &amp;ImageSource
-) -&gt; Widget
-</code></pre>
-<h3 id="svg"><a class="header" href="#svg">svg</a></h3>
-<pre><code class="language-graphix">val svg: fn(
-  ?#width: &amp;Length,
-  ?#height: &amp;Length,
-  ?#content_fit: &amp;ContentFit,
-  s: &amp;string
+  source: &amp;ImageSource
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters-33"><a class="header" href="#parameters-33">Parameters</a></h2>
-<p>Both widgets share the same labeled arguments:</p>
+<p>The labeled arguments:</p>
 <ul>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
@@ -13198,15 +13336,16 @@ val image: fn(
 </li>
 </ul>
 <h2 id="image-sources"><a class="header" href="#image-sources">Image Sources</a></h2>
-<p>The <code>image</code> widget accepts an <code>ImageSource</code> union with three variants:</p>
+<p>The <code>image</code> widget accepts an <code>ImageSource</code> union:</p>
 <ul>
-<li><strong>string</strong> – A file path to a PNG, JPEG, BMP, GIF, or other supported image format. The path is relative to the working directory.</li>
+<li><strong>string</strong> – A file path to a PNG, JPEG, BMP, GIF, or other supported image format, or to an <code>.svg</code> or <code>.svgz</code> file. The path is relative to the working directory.</li>
+<li><strong><code>`Svg(string)</code></strong> – Inline SVG XML.</li>
 <li><strong><code>`Bytes(bytes)</code></strong> – Raw image file bytes (e.g. the contents of a PNG file loaded with <code>sys::fs::read_all_bin</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
 <li><strong><code>`Rgba({width, height, pixels})</code></strong> – A raw RGBA pixel buffer. The <code>width</code> and <code>height</code> fields specify the image dimensions, and <code>pixels</code> is a <code>bytes</code> value containing <code>width * height * 4</code> bytes (one byte each for red, green, blue, and alpha per pixel, in row-major order).</li>
 </ul>
-<p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>
+<p>An image delivered again with the same source keeps what it has drawn.</p>
 <h2 id="examples-33"><a class="header" href="#examples-33">Examples</a></h2>
-<h3 id="image-1"><a class="header" href="#image-1">Image</a></h3>
+<h3 id="image"><a class="header" href="#image">Image</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, image::image, text::text};
 mod icon;
 
@@ -13234,7 +13373,7 @@ let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AA
 )]
 </code></pre>
 <p><img src="ui/gui/media/image.png" alt="Image"></p>
-<h3 id="svg-1"><a class="header" href="#svg-1">SVG</a></h3>
+<h3 id="svg"><a class="header" href="#svg">SVG</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, image::image, text::text};
 mod icon;
 
@@ -13331,11 +13470,11 @@ let col = column(
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
-  ?#on_press: fn(a: MouseButton) -&gt; Any,
-  ?#on_release: fn(a: MouseButton) -&gt; Any,
-  ?#on_enter: fn(a: null) -&gt; Any,
-  ?#on_exit: fn(a: null) -&gt; Any,
-  ?#on_move: fn(a: {x: f64, y: f64}) -&gt; Any,
+  ?#on_press: [fn(a: MouseButton) -&gt; Any, null],
+  ?#on_release: [fn(a: MouseButton) -&gt; Any, null],
+  ?#on_enter: [fn(a: null) -&gt; Any, null],
+  ?#on_exit: [fn(a: null) -&gt; Any, null],
+  ?#on_move: [fn(a: {x: f64, y: f64}) -&gt; Any, null],
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>
@@ -13409,17 +13548,25 @@ let position = "---";
 <h1 id="the-keyboard-area-widget"><a class="header" href="#the-keyboard-area-widget">The Keyboard Area Widget</a></h1>
 <p>The <code>keyboard_area</code> widget wraps a child and captures keyboard events. Use it to build keyboard-driven interactions like shortcuts, navigation, or text handling.</p>
 <h2 id="interface-42"><a class="header" href="#interface-42">Interface</a></h2>
-<pre><code class="language-graphix">type KeyEvent = {
+<pre><code class="language-graphix">use super::Widget;
+type KeyEvent = {
   key: string,
-  modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
+  modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool},
   text: string,
   repeat: bool
 };
 
+type KeyboardArea = {
+  child: &amp;Widget,
+  on_key_press: &amp;[fn(e: KeyEvent) -&gt; Any, null],
+  on_key_release: &amp;[fn(e: KeyEvent) -&gt; Any, null]
+};
+
+/// A key no callback is given for goes on to an enclosing area.
 val keyboard_area: fn(
-  ?#on_key_press: fn(a: KeyEvent) -&gt; Any,
-  ?#on_key_release: fn(a: KeyEvent) -&gt; Any,
-  a: &amp;Widget
+  ?#on_key_press: [fn(e: KeyEvent) -&gt; Any, null],
+  ?#on_key_release: [fn(e: KeyEvent) -&gt; Any, null],
+  child: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="the-keyevent-type"><a class="header" href="#the-keyevent-type">The KeyEvent Type</a></h2>
@@ -13434,6 +13581,9 @@ val keyboard_area: fn(
 <li><strong>on_key_press</strong> — called with a <code>KeyEvent</code> when a key is pressed</li>
 <li><strong>on_key_release</strong> — called with a <code>KeyEvent</code> when a key is released</li>
 </ul>
+<p>A key with no callback for it goes on to an enclosing <code>keyboard_area</code>.</p>
+<p>An area takes keys while it has focus: a click inside it gives it focus,
+a click outside takes focus away. Until the first click it hears no keys.</p>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples-36"><a class="header" href="#examples-36">Examples</a></h2>
 <pre><code class="language-graphix">use gui::{
@@ -13688,14 +13838,14 @@ let col = column(
 <h2 id="see-also-42"><a class="header" href="#see-also-42">See Also</a></h2>
 <ul>
 <li><a href="#the-text-widget-1">text</a> – for displaying text alongside a QR code</li>
-<li><a href="#the-image--svg-widgets">image</a> – for displaying raster images</li>
+<li><a href="#the-image-widget">image</a> – for displaying raster images</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="the-markdown-widget"><a class="header" href="#the-markdown-widget">The Markdown Widget</a></h1>
 <p>Renders a markdown string as rich text with support for headings, bold, italic, lists, code blocks, and clickable links.</p>
 <h2 id="interface-46"><a class="header" href="#interface-46">Interface</a></h2>
 <pre><code class="language-graphix">val markdown: fn(
-  ?#on_link: fn(s: string) -&gt; Any,
+  ?#on_link: [fn(s: string) -&gt; Any, null],
   ?#spacing: &amp;[f64, null],
   ?#text_size: &amp;[f64, null],
   ?#width: &amp;Length,
@@ -13858,7 +14008,7 @@ render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>st
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
 <h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
-<pre><code class="language-graphix">use super::{table, Widget};
+<pre><code class="language-graphix">use super::Widget;
 type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
@@ -13960,7 +14110,10 @@ type DataTable = {
 /// is the primary sort, subsequent keys break ties. Empty list (the
 /// default) preserves the Table's row order. Sort values come from
 /// the column's source — a live subscription when source is
-/// `` `Netidx ``, or the source's stored value otherwise.
+/// `` `Netidx ``, or the source's stored value otherwise. A column the
+/// Table does not list sorts by the netidx value at
+/// `&lt;row_path&gt;/&lt;column&gt;`. Numbers sort before text, NaN below every
+/// number, text by its bytes.
 val data_table: fn(
     ?#sort_by: &amp;Array&lt;SortBy&gt;,
     ?#selection: &amp;Array&lt;string&gt;,
@@ -14203,14 +14356,17 @@ graphix.</li>
 widget re-reads it and refreshes the affected cells. Sparkline
 columns additionally push each new numeric source value into the
 rolling history, so a virtual-column sparkline fed from graphix state
-accumulates points the same way a subscribed one does.</p>
+accumulates points the same way a subscribed one does. A subscribed
+cell’s history holds only its live values, never the fallback.</p>
 <h2 id="keyboard-navigation-1"><a class="header" href="#keyboard-navigation-1">Keyboard Navigation</a></h2>
 <p>The widget is focusable: clicking into it grants keyboard focus.
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
-the selected cell’s row; <code>Space</code> on an editable cell opens its editor;
-<code>Escape</code> cancels an in-progress edit.</p>
+the selected cell’s row; <code>Space</code> on an editable cell opens its editor,
+which takes the typed keys, <code>Enter</code> to commit and <code>Escape</code> to cancel.
+Other keys go on to an enclosing <code>keyboard_area</code>, so application
+shortcuts keep working while the table has focus.</p>
 <h2 id="examples-42"><a class="header" href="#examples-42">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
 <p>Minimal usage: publish three hosts and hand the
@@ -15024,7 +15180,7 @@ type MenuGroup = {
 type ContextMenu = { child: &amp;Widget, items: &amp;Array&lt;MenuItem&gt; };
 
 val action: fn(
-  ?#on_click: fn(a: null) -&gt; Any,
+  ?#on_click: [fn(a: null) -&gt; Any, null],
   ?#shortcut: &amp;[Shortcut, null],
   ?#disabled: &amp;bool,
   s: &amp;string
@@ -15039,7 +15195,7 @@ val bar: fn(?#width: &amp;Length, a: &amp;Array&lt;MenuGroup&gt;) -&gt; Widget;
 val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widget
 </code></pre>
 <h2 id="menushortcut"><a class="header" href="#menushortcut"><code>menu::shortcut</code></a></h2>
-<p>Creates a keyboard shortcut from modifier flags and a single character key.</p>
+<p>Creates a keyboard shortcut from modifier flags and a single character key; any one character, <code>é</code> or <code>€</code> included.</p>
 <ul>
 <li><strong><code>#ctrl</code></strong> – Hold Ctrl. Defaults to <code>false</code>.</li>
 <li><strong><code>#shift</code></strong> – Hold Shift. Defaults to <code>false</code>.</li>
@@ -15047,7 +15203,7 @@ val context_menu: fn(a: &amp;Array&lt;MenuItem&gt;, a2: &amp;Widget) -&gt; Widge
 <li><strong><code>#logo</code></strong> – Hold the logo/super key. Defaults to <code>false</code>.</li>
 <li><strong>positional <code>string</code></strong> – A single character (e.g. <code>"N"</code>, <code>"Z"</code>). Returns an error if the key is not exactly one character.</li>
 </ul>
-<p>The shortcut text (e.g. “Ctrl+N”) is displayed right-aligned in dimmed text next to the menu item label. Pressing the key combination triggers the action globally within the window.</p>
+<p>The shortcut text (e.g. “Ctrl+N”) is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.</p>
 <h2 id="menuaction-parameters"><a class="header" href="#menuaction-parameters"><code>menu::action</code> Parameters</a></h2>
 <ul>
 <li><strong><code>#on_click</code></strong> – Callback invoked when the action is clicked. Receives <code>null</code>. If omitted, the action is displayed but does nothing.</li>

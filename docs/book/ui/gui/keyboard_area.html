@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -177,17 +177,25 @@
                         <h1 id="the-keyboard-area-widget"><a class="header" href="#the-keyboard-area-widget">The Keyboard Area Widget</a></h1>
 <p>The <code>keyboard_area</code> widget wraps a child and captures keyboard events. Use it to build keyboard-driven interactions like shortcuts, navigation, or text handling.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">type KeyEvent = {
+<pre><code class="language-graphix">use super::Widget;
+type KeyEvent = {
   key: string,
-  modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
+  modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool},
   text: string,
   repeat: bool
 };
 
+type KeyboardArea = {
+  child: &amp;Widget,
+  on_key_press: &amp;[fn(e: KeyEvent) -&gt; Any, null],
+  on_key_release: &amp;[fn(e: KeyEvent) -&gt; Any, null]
+};
+
+/// A key no callback is given for goes on to an enclosing area.
 val keyboard_area: fn(
-  ?#on_key_press: fn(a: KeyEvent) -&gt; Any,
-  ?#on_key_release: fn(a: KeyEvent) -&gt; Any,
-  a: &amp;Widget
+  ?#on_key_press: [fn(e: KeyEvent) -&gt; Any, null],
+  ?#on_key_release: [fn(e: KeyEvent) -&gt; Any, null],
+  child: &amp;Widget
 ) -&gt; Widget
 </code></pre>
 <h2 id="the-keyevent-type"><a class="header" href="#the-keyevent-type">The KeyEvent Type</a></h2>
@@ -202,6 +210,9 @@ val keyboard_area: fn(
 <li><strong>on_key_press</strong> — called with a <code>KeyEvent</code> when a key is pressed</li>
 <li><strong>on_key_release</strong> — called with a <code>KeyEvent</code> when a key is released</li>
 </ul>
+<p>A key with no callback for it goes on to an enclosing <code>keyboard_area</code>.</p>
+<p>An area takes keys while it has focus: a click inside it gives it focus,
+a click outside takes focus away. Until the first click it hears no keys.</p>
 <p>The positional argument is a reference to the child widget.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <pre><code class="language-graphix">use gui::{

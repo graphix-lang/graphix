@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -273,7 +273,7 @@ let run_command = |c: string, path: string| {
     catch(e) command_error &lt;- "[e]";
     select str::sub(#start:0, #len:2, c)? {
         "w " =&gt; {
-            let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
+            let v = str::sub(#start:2, #len:str::char_len(c) - 2, c)?;
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
@@ -326,7 +326,7 @@ let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
         `Stop
     },
     e@ `Backspace if command != "" =&gt; {
-        let len = str::len(command) - 1;
+        let len = str::char_len(command) - 1;
         command &lt;- e ~ str::sub(#start:0, #len, command)$;
         `Stop
     },

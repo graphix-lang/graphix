@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -195,7 +195,7 @@ render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>st
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<pre><code class="language-graphix">use super::{table, Widget};
+<pre><code class="language-graphix">use super::Widget;
 type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
@@ -297,7 +297,10 @@ type DataTable = {
 /// is the primary sort, subsequent keys break ties. Empty list (the
 /// default) preserves the Table's row order. Sort values come from
 /// the column's source — a live subscription when source is
-/// `` `Netidx ``, or the source's stored value otherwise.
+/// `` `Netidx ``, or the source's stored value otherwise. A column the
+/// Table does not list sorts by the netidx value at
+/// `&lt;row_path&gt;/&lt;column&gt;`. Numbers sort before text, NaN below every
+/// number, text by its bytes.
 val data_table: fn(
     ?#sort_by: &amp;Array&lt;SortBy&gt;,
     ?#selection: &amp;Array&lt;string&gt;,
@@ -540,14 +543,17 @@ graphix.</li>
 widget re-reads it and refreshes the affected cells. Sparkline
 columns additionally push each new numeric source value into the
 rolling history, so a virtual-column sparkline fed from graphix state
-accumulates points the same way a subscribed one does.</p>
+accumulates points the same way a subscribed one does. A subscribed
+cell’s history holds only its live values, never the fallback.</p>
 <h2 id="keyboard-navigation"><a class="header" href="#keyboard-navigation">Keyboard Navigation</a></h2>
 <p>The widget is focusable: clicking into it grants keyboard focus.
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. <code>Enter</code> fires <code>on_activate</code> for
-the selected cell’s row; <code>Space</code> on an editable cell opens its editor;
-<code>Escape</code> cancels an in-progress edit.</p>
+the selected cell’s row; <code>Space</code> on an editable cell opens its editor,
+which takes the typed keys, <code>Enter</code> to commit and <code>Escape</code> to cancel.
+Other keys go on to an enclosing <code>keyboard_area</code>, so application
+shortcuts keep working while the table has focus.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic"><a class="header" href="#basic">Basic</a></h3>
 <p>Minimal usage: publish three hosts and hand the

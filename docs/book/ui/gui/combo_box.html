@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -179,7 +179,7 @@
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
 <pre><code class="language-graphix">val combo_box: fn(
   ?#selected: &amp;[string, null],
-  ?#on_select: fn(s: string) -&gt; Any,
+  ?#on_select: [fn(s: string) -&gt; Any, null],
   ?#placeholder: &amp;string,
   ?#width: &amp;Length,
   ?#disabled: &amp;bool,

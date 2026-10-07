@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -174,33 +174,26 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="the-image--svg-widgets"><a class="header" href="#the-image--svg-widgets">The Image &amp; SVG Widgets</a></h1>
-<p>The <code>image</code> widget displays raster images from files, raw bytes, or pixel buffers. The <code>svg</code> widget renders Scalable Vector Graphics from files or inline XML. Both support sizing and content fitting controls.</p>
+                        <h1 id="the-image-widget"><a class="header" href="#the-image-widget">The Image Widget</a></h1>
+<p>The <code>image</code> widget displays raster images from files, raw bytes or pixel buffers, and SVG images from files or inline XML, with sizing and content fitting controls.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
-<h3 id="image"><a class="header" href="#image">image</a></h3>
-<pre><code class="language-graphix">type ImageSource = [
-  string,
-  `Bytes(bytes),
-  `Rgba({width: u32, height: u32, pixels: bytes})
-];
+<pre><code class="language-graphix">use super::{ContentFit, ImageSource, Length, Widget};
+type Image = {
+  source: &amp;ImageSource,
+  width: &amp;Length,
+  height: &amp;Length,
+  content_fit: &amp;ContentFit
+};
 
 val image: fn(
   ?#width: &amp;Length,
   ?#height: &amp;Length,
   ?#content_fit: &amp;ContentFit,
-  a: &amp;ImageSource
-) -&gt; Widget
-</code></pre>
-<h3 id="svg"><a class="header" href="#svg">svg</a></h3>
-<pre><code class="language-graphix">val svg: fn(
-  ?#width: &amp;Length,
-  ?#height: &amp;Length,
-  ?#content_fit: &amp;ContentFit,
-  s: &amp;string
+  source: &amp;ImageSource
 ) -&gt; Widget
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
-<p>Both widgets share the same labeled arguments:</p>
+<p>The labeled arguments:</p>
 <ul>
 <li><strong>width</strong> - Horizontal sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
 <li><strong>height</strong> - Vertical sizing as a <code>Length</code>. Defaults to <code>`Shrink</code>.</li>
@@ -215,15 +208,16 @@ val image: fn(
 </li>
 </ul>
 <h2 id="image-sources"><a class="header" href="#image-sources">Image Sources</a></h2>
-<p>The <code>image</code> widget accepts an <code>ImageSource</code> union with three variants:</p>
+<p>The <code>image</code> widget accepts an <code>ImageSource</code> union:</p>
 <ul>
-<li><strong>string</strong> – A file path to a PNG, JPEG, BMP, GIF, or other supported image format. The path is relative to the working directory.</li>
+<li><strong>string</strong> – A file path to a PNG, JPEG, BMP, GIF, or other supported image format, or to an <code>.svg</code> or <code>.svgz</code> file. The path is relative to the working directory.</li>
+<li><strong><code>`Svg(string)</code></strong> – Inline SVG XML.</li>
 <li><strong><code>`Bytes(bytes)</code></strong> – Raw image file bytes (e.g. the contents of a PNG file loaded with <code>sys::fs::read_all_bin</code>). Useful when image data comes from a network source or is embedded in the program. Bytes literals use the <code>bytes:&lt;base64&gt;</code> syntax.</li>
 <li><strong><code>`Rgba({width, height, pixels})</code></strong> – A raw RGBA pixel buffer. The <code>width</code> and <code>height</code> fields specify the image dimensions, and <code>pixels</code> is a <code>bytes</code> value containing <code>width * height * 4</code> bytes (one byte each for red, green, blue, and alpha per pixel, in row-major order).</li>
 </ul>
-<p>The <code>svg</code> widget accepts a string that is either a file path to an <code>.svg</code> file or inline SVG XML content.</p>
+<p>An image delivered again with the same source keeps what it has drawn.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
-<h3 id="image-1"><a class="header" href="#image-1">Image</a></h3>
+<h3 id="image"><a class="header" href="#image">Image</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, image::image, text::text};
 mod icon;
 
@@ -251,7 +245,7 @@ let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AA
 )]
 </code></pre>
 <p><img src="./media/image.png" alt="Image"></p>
-<h3 id="svg-1"><a class="header" href="#svg-1">SVG</a></h3>
+<h3 id="svg"><a class="header" href="#svg">SVG</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, image::image, text::text};
 mod icon;
 

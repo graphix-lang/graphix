@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -180,11 +180,11 @@
 <pre><code class="language-graphix">type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
-  ?#on_press: fn(a: MouseButton) -&gt; Any,
-  ?#on_release: fn(a: MouseButton) -&gt; Any,
-  ?#on_enter: fn(a: null) -&gt; Any,
-  ?#on_exit: fn(a: null) -&gt; Any,
-  ?#on_move: fn(a: {x: f64, y: f64}) -&gt; Any,
+  ?#on_press: [fn(a: MouseButton) -&gt; Any, null],
+  ?#on_release: [fn(a: MouseButton) -&gt; Any, null],
+  ?#on_enter: [fn(a: null) -&gt; Any, null],
+  ?#on_exit: [fn(a: null) -&gt; Any, null],
+  ?#on_move: [fn(a: {x: f64, y: f64}) -&gt; Any, null],
   a: &amp;Widget
 ) -&gt; Widget
 </code></pre>

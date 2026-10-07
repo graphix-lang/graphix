@@ -17,7 +17,7 @@ let run_command = |c: string, path: string| {
     catch(e) command_error <- "[e]";
     select str::sub(#start:0, #len:2, c)? {
         "w " => {
-            let v = str::sub(#start:2, #len:str::len(c) - 2, c)?;
+            let v = str::sub(#start:2, #len:str::char_len(c) - 2, c)?;
             let v: Primitive = str::parse(v)?;
             sys::net::write(path, v)?
         },
@@ -70,7 +70,7 @@ let handle_command_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
         `Stop
     },
     e@ `Backspace if command != "" => {
-        let len = str::len(command) - 1;
+        let len = str::char_len(command) - 1;
         command <- e ~ str::sub(#start:0, #len, command)$;
         `Stop
     },

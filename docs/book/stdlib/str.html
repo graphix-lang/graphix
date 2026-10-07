@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1e568722.js";
+            window.path_to_searchindex_js = "../searchindex-9f5ddc0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -274,6 +274,10 @@ val sprintf: fn(fmt: string, @args: Any) -&gt; Result&lt;string, `FormatError(st
 
 /// return the length of the string in bytes
 val len: fn(s: string) -&gt; i64;
+
+/// return the number of unicode characters in the string, e.g.
+/// str::char_len("💖é") is 2 where str::len is 6
+val char_len: fn(s: string) -&gt; i64;
 
 /// extract a substring of s starting at #start with lenth #len.
 /// both #start and #len are unicode character indexes,
