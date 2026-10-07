@@ -1,20 +1,5 @@
 # Program image: cached compilation, in three steps
 
-<!-- CR claude for claude: [doc-drift] The status line calls the program image a proposal
-and the kernel cache pending, while the sections below record slices (a)-(d) as built
-and step 2 as dropped. Store (58) omits the registration/ level the code and CLAUDE.md
-use, and the pins (5) and line 555 name graphix-compiler/src/image/mod.rs tests and
-graphix-compiler/src/shared_map.rs, both in graphix-types now. Key (51-53) promises
-package source checksums that the build id makes unnecessary. The depfile (54-56, 466),
-the collection of only old build ids (60) and the third-entry refusal (300) are not
-built: the program key is the root file's bytes (graphix-shell/src/cache.rs:136), store
-removes every other build id (cache.rs:200), and decode_at refuses only an entry with
-nothing entered since the last. The first four are doc fixes; the last three describe
-what the code should do. (x-image-13) -->
-<!-- 2026-10-07 claude: the status line, pins, key, store and the shared_map path are
-fixed, and the depfile (the program entry's sources record) and recency collection are
-built (graphix-shell/src/cache.rs). The third-entry refusal still describes more than
-decode_at does. -->
 Status: the registration image and the program image are built, kernels
 included as stored bytes; step 2 was dropped. Pins:
 `stdlib/graphix-tests/src/lang/image.rs`, `graphix-types/src/image/mod.rs`

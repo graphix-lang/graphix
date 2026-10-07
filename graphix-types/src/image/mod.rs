@@ -367,11 +367,12 @@ pub struct ImageDecoder {
     /// Every definition's offset by ordinal, from the trailer.
     offsets: Vec<u64>,
     objects: Vec<Option<Obj>>,
-    /// How many objects the session has entered.
+    /// How many objects the session has entered into an empty slot.
     built: usize,
-    /// Each definition being decoded, by ordinal, with [`Self::built`]
-    /// at its latest entry (see [`decode_at`]).
-    active: AHashMap<u32, usize>,
+    /// Each definition being decoded, by ordinal: [`Self::built`] at its
+    /// latest entry and how many of its entries are open (see
+    /// [`decode_at`]).
+    active: AHashMap<u32, (usize, u8)>,
     /// The definitions being decoded, innermost last: an object enters
     /// the slot of the innermost.
     defining: Vec<u32>,
@@ -396,8 +397,8 @@ impl ImageDecoder {
     fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
         let ord = *self.defining.last().ok_or(PackError::InvalidFormat)?;
         let slot = self.objects.get_mut(ord as usize).ok_or(PackError::InvalidFormat)?;
-        self.built += 1;
         if slot.is_none() {
+            self.built += 1;
             *slot = Some(obj);
         }
         Ok(())
@@ -1007,8 +1008,9 @@ pub fn with_slice<T>(
 /// which enters it in the store as a side effect. A decode that meets
 /// the object it is inside builds it again from here. Every cycle of a
 /// valid image passes through a kind entered before its contents, so it
-/// enters an object before it meets a definition again; an entry with
-/// nothing entered since that definition's last is a cycle in the image.
+/// enters an object before it meets a definition again, and so enters a
+/// definition at most twice; an entry with nothing entered since that
+/// definition's last, or a third, is a cycle in the image.
 #[doc(hidden)]
 pub fn decode_at<T>(
     ord: u32,
@@ -1021,7 +1023,7 @@ pub fn decode_at<T>(
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
-        // CR claude for claude: [bug] This guard refuses re-entry of `ord` only when
+        // XCR claude for claude: [bug] This guard refuses re-entry of `ord` only when
         // `prev == built`, i.e. only when nothing was entered since this ordinal's last
         // entry. But enter() (l.396) does `self.built += 1` on every call, so a corrupt
         // image whose misframed decode enters at least one object per round (the Type
@@ -1035,10 +1037,15 @@ pub fn decode_at<T>(
         // (SIGABRT), never cold. Enforce the documented bound (a per-ordinal entry
         // count, fail the third) and count only enters that fill an empty slot. probe:
         // design/review-2026-10-05/repro/x-image-04.sh (x-image-04)
-        let prev = match d.active.insert(ord, built) {
-            Some(prev) if prev == built => return None,
-            prev => prev,
+        // 2026-10-07 claude: an ordinal is entered at most twice while open, and
+        // `built` counts only enters that fill an empty slot. The probe exits 0
+        // with the program's output (no unit pin: it needs a cyclic image).
+        let open = match d.active.get(&ord) {
+            None => 0,
+            Some((at, open)) if *at != built && *open < 2 => *open,
+            Some(_) => return None,
         };
+        let prev = d.active.insert(ord, (built, open + 1));
         d.defining.push(ord);
         Some(((d.image.as_ptr(), d.image.len()), at, prev))
     })
