@@ -20,6 +20,8 @@ use gui::mouse_area::{self, *};\n\
 use gui::keyboard_area::{self, *};\n\
 use gui::scrollable::{self, *};\n\
 use gui::combo_box::{self, *};\n\
+use gui::progress_bar::{self, *};\n\
+use gui::menu::{self, *};\n\
 use gui::column::{self, *}";
 
 async fn harness(widget_expr: &str) -> Result<InteractionHarness> {
@@ -85,19 +87,7 @@ async fn checkbox_toggle_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
-    // CR claude for claude: [test-gap] These predicates accept any Bool (here and in
-    // toggler_toggle_produces_call), and radio_on_select, text_input_on_input and
-    // text_editor_on_edit accept any String, so a wrapper that sends the old value
-    // (false, "none", "") instead of the new one (true, "option_a", "a") passes.
-    // expect_call_with_args (mod.rs:642) also returns the first match without checking
-    // it is the only one, so a callback fired twice per click passes, and
-    // on_resize_fires_on_drag (data_table_test.rs:1327) accepts any width above 100
-    // where the drag from 100 to 180 must give 180. Assert the exact values, and make
-    // expect_call_with_args require exactly one match as expect_call does.
-    // (tests-ui.r2-14)
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::Bool(_)))
-    });
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -122,9 +112,7 @@ async fn toggler_toggle_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::Bool(_)))
-    });
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::Bool(true)));
     Ok(())
 }
 
@@ -277,9 +265,7 @@ async fn text_input_on_input_produces_call() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     h.click(WIDGET_HIT);
     let msgs = h.type_text("a");
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::String(_)))
-    });
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("a")));
     Ok(())
 }
 
@@ -308,9 +294,7 @@ async fn radio_on_select_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
-    expect_call_with_args(&msgs, |args| {
-        matches!(args.iter().next(), Some(Value::String(_)))
-    });
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("option_a")));
     Ok(())
 }
 
@@ -338,19 +322,9 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
              #placeholder: &\"Choose...\", \
              &[\"Red\", \"Green\", \"Blue\"])"
     );
-    // The dropdown is an overlay, which the headless UserInterface does
-    // not route clicks to; this pins only that clicking does not panic.
-    // CR claude for claude: [test-gap] The comment above is stale, and the test checks
-    // nothing its name promises. on_edit_combo_column (data_table_test.rs:946-963)
-    // opens the same iced PickList overlay with one click in this harness and selects
-    // an option with a second. Making PickListW's on_select closure
-    // (pick_list.rs:114-119) always return Nop leaves this test green. Click to open,
-    // click the second option at (x, widget bottom + 22 * 1.5) as that test does, and
-    // expect_call_with_args for "Green". Do the same in
-    // combo_box_on_select_produces_call (:405). (tests-ui-11)
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
-    let _ = h.view();
-    let _ = h.click(WIDGET_HIT);
+    let msgs = pick(&mut h, "Green");
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("Green")));
     Ok(())
 }
 
@@ -413,10 +387,8 @@ async fn text_editor_on_edit_produces_callback() -> Result<()> {
     h.click(WIDGET_HIT);
     let msgs = h.type_text("a");
     let results = h.process_editor_actions(&msgs);
-    assert!(
-        results.iter().any(|(_, v)| matches!(v, Value::String(_))),
-        "text_editor on_edit should produce a String value callback"
-    );
+    let values: Vec<_> = results.iter().map(|(_, v)| v.clone()).collect();
+    assert_eq!(values, [Value::from("a")], "one on_edit with the new text");
     Ok(())
 }
 
@@ -430,20 +402,12 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
              #placeholder: &\"Pick one\", \
              &[\"Alpha\", \"Beta\", \"Gamma\"])"
     );
-    // Suggestions are an overlay, as for pick_list.
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
-    // CR claude for claude: [test-gap] This test clicks and returns Ok without looking at
-    // any message, so it cannot fail. It should pick an option (type and press Enter,
-    // or click the overlay) and expect the on_select Call. No canvas_test case draws
-    // either: view() never calls Program::draw, so draw_shape (canvas.rs:213-338) runs
-    // in no test (chart_test.rs:282-310 shows a headless draw, and CanvasW would need
-    // as_any). Context menus have only a render test (widgets_test.rs:532), with
-    // nothing for right-click, item clicks, shortcuts, disabled items or a scrolled
-    // container. As a result, the suite passes despite the canvas panics on NaN
-    // coordinates and zero text size, the combo box reset on a same-value options fire,
-    // and the dead shortcuts of a closed context menu. (gui-widgets-a-17)
     let _ = h.click(WIDGET_HIT);
+    let _ = h.type_text("Gam");
+    let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("Gamma")));
     Ok(())
 }
 
@@ -719,5 +683,277 @@ async fn mouse_area_exits_when_the_cursor_leaves_the_window() -> Result<()> {
     h.move_cursor(WIDGET_HIT);
     let msgs = h.process_events(&[Event::Mouse(mouse::Event::CursorLeft)]);
     expect_call(&msgs);
+    Ok(())
+}
+
+/// Open the dropdown at `WIDGET_HIT` and click down its list until a row
+/// chooses `option`; the messages of that click.
+fn pick(h: &mut InteractionHarness, option: &str) -> Vec<super::Message> {
+    let _ = h.view();
+    for y in (24..160).step_by(4) {
+        let _ = h.click(WIDGET_HIT);
+        let msgs = h.click(Point::new(WIDGET_HIT.x, y as f32));
+        let chose = msgs.iter().any(|m| {
+            matches!(m, super::Message::Call(_, a) if a.first() == Some(&Value::String(option.into())))
+        });
+        if chose {
+            return msgs;
+        }
+    }
+    panic!("no row of the dropdown chose {option}")
+}
+
+/// Options delivered again unchanged keep what the user is typing.
+#[tokio::test(flavor = "current_thread")]
+async fn combo_box_keeps_typing_across_equal_options() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let opts = [\"apple\", \"banana\", \"cherry\"];\n\
+         let result = combo_box(#on_select: |s| null, #placeholder: &\"Pick\", &opts)"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
+    let _ = h.view();
+    let _ = h.click(WIDGET_HIT);
+    let _ = h.type_text("ban");
+    let opts =
+        graphix_package_core::testing::find_bind_id(&h.inner.compiled.env, "test::opts")?;
+    let opts_ref = h.inner.gx.compile_ref(opts).await?;
+    for _ in 0..3 {
+        let v = opts_ref.last.clone().expect("the options");
+        h.inner.gx.compile_ref(opts).await?.set(v)?;
+        h.drain().await?;
+    }
+    let msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
+    expect_call_with_args(&msgs, |args| args.first() == Some(&Value::from("banana")));
+    Ok(())
+}
+
+/// Keys typed before the runtime echoes the earlier ones build on what
+/// was typed: the input's text is the user's, not the stale value's.
+#[tokio::test(flavor = "current_thread")]
+async fn text_input_keys_outrun_their_echoes() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let v = \"\";\n\
+         let result = text_input(#on_input: |s| v <- s, &v)"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let _ = h.watch("test::v").await?;
+    let _ = h.click(WIDGET_HIT);
+    for c in ["a", "b", "c"] {
+        let msgs = h.type_text(c);
+        h.apply(&msgs);
+    }
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::v"), Some(&Value::from("abc")));
+    Ok(())
+}
+
+/// Two clicks before the first echo toggle twice.
+#[tokio::test(flavor = "current_thread")]
+async fn checkbox_clicks_outrun_their_echoes() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let c = false;\n\
+         let result = checkbox(#label: &\"c\", #on_toggle: |b| c <- b, &c)"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let _ = h.watch("test::c").await?;
+    for _ in 0..2 {
+        let msgs = h.click(WIDGET_HIT);
+        h.apply(&msgs);
+    }
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::c"), Some(&Value::Bool(false)));
+    Ok(())
+}
+
+/// The editor keeps its cursor when its echo comes back, through a struct
+/// field that re-fires the whole column.
+#[tokio::test(flavor = "current_thread")]
+async fn text_editor_keeps_its_cursor_through_echoes() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let doc = {{ text: \"\", n: 0 }};\n\
+         let result = column(&[\
+             text_editor(#on_edit: |s| doc <- s ~ {{doc with text: s, n: doc.n + 1}}, &doc.text)\
+         ])"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    let _ = h.watch("test::doc").await?;
+    let _ = h.click(WIDGET_HIT);
+    for c in ["a", "b", "c"] {
+        h.live(&[char_key(c)]).await?;
+    }
+    let text = match h.get_watched("test::doc") {
+        Some(Value::Array(fields)) => fields.iter().find_map(|f| match f {
+            Value::Array(kv) if kv[0] == Value::from("text") => Some(kv[1].clone()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    assert_eq!(text, Some(Value::from("abc")));
+    Ok(())
+}
+
+fn char_key(c: &str) -> Event {
+    use iced_core::keyboard;
+    let s: iced_core::SmolStr = c.into();
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Character(s.clone()),
+        modified_key: keyboard::Key::Character(s.clone()),
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::empty(),
+        text: Some(s),
+        repeat: false,
+    })
+}
+
+/// A mouse area with only a hover handler takes no clicks: the button
+/// under it gets them.
+#[tokio::test(flavor = "current_thread")]
+async fn a_hover_only_mouse_area_passes_clicks() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let pressed = false;\n\
+         let result = mouse_area(\
+             #on_enter: |_| null, \
+             &button(#on_press: |c| pressed <- c ~ true, &text(&\"go\")))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let _ = h.watch("test::pressed").await?;
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::pressed"), Some(&Value::Bool(true)));
+    Ok(())
+}
+
+/// A radio whose value has not arrived selects nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn a_radio_without_its_value_selects_nothing() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let v: string = never();\n\
+         let result = radio(#label: &\"r\", #on_select: |x| null, &v)"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let msgs = h.click(WIDGET_HIT);
+    assert!(!msgs.iter().any(|m| matches!(m, super::Message::Call(..))), "{msgs:?}");
+    Ok(())
+}
+
+/// Sliders deliver f64 values, a null step is continuous, and a progress
+/// bar over an empty range draws.
+#[tokio::test(flavor = "current_thread")]
+async fn sliders_are_f64_and_continuous() -> Result<()> {
+    let value_at = async |slider: &str, x: f32| -> Result<f64> {
+        let code = format!("{IMPORTS};\nlet result = {slider}");
+        let mut h =
+            InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
+        let msgs = h.click(Point::new(x, 10.0));
+        let id = expect_call(&msgs);
+        let _ = id;
+        match msgs.iter().find_map(|m| match m {
+            super::Message::Call(_, a) => a.first().cloned(),
+            _ => None,
+        }) {
+            Some(Value::F64(v)) => Ok(v),
+            v => anyhow::bail!("not an f64: {v:?}"),
+        }
+    };
+    let stepped = value_at(
+        "slider(#min: &0.0, #max: &1.0, #step: &0.05, #on_change: |v| null, &0.0)",
+        40.0,
+    )
+    .await?;
+    assert!((stepped * 20.0 - (stepped * 20.0).round()).abs() < 1e-12, "{stepped}");
+    let free =
+        value_at("slider(#min: &0.0, #max: &1.0, #on_change: |v| null, &0.0)", 150.0)
+            .await?;
+    assert!(free > 0.05 && free < 0.95, "{free}");
+    let h = harness("progress_bar(#min: &1.0, #max: &0.0, &0.5)").await?;
+    h.inner.render().await
+}
+
+/// A context menu opens at a right-click, chooses an item at a click,
+/// takes its shortcut while open and none while closed.
+#[tokio::test(flavor = "current_thread")]
+async fn context_menu_items_and_shortcuts() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let n = 0;\n\
+         let copy = menu::action(\
+             #on_click: |c| n <- c ~ n + 1, \
+             #shortcut: &menu::shortcut(#ctrl: true, \"c\")$, \
+             &\"Copy\");\n\
+         let result = menu::context_menu(&[copy], &text(&\"target\"))"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let _ = h.watch("test::n").await?;
+    let msgs = h.press_ctrl("c");
+    assert!(
+        !msgs.iter().any(|m| matches!(m, super::Message::Call(..))),
+        "closed: {msgs:?}"
+    );
+    right_click(&mut h, WIDGET_HIT);
+    let msgs = h.press_ctrl("c");
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::n"), Some(&Value::I64(1)), "shortcut while open");
+    right_click(&mut h, WIDGET_HIT);
+    let msgs = h.click(Point::new(WIDGET_HIT.x + 20.0, WIDGET_HIT.y + 12.0));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::n"), Some(&Value::I64(2)), "item click");
+    Ok(())
+}
+
+/// A press on an open menu's disabled item does not reach the button
+/// under it.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_menu_takes_presses_over_it() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let pressed = false;\n\
+         let off = menu::action(#on_click: |_| null, #disabled: &true, &\"Off\");\n\
+         let result = menu::context_menu(\
+             &[off], \
+             &button(#on_press: |c| pressed <- c ~ true, &text(&\"a wide button\")))"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let _ = h.watch("test::pressed").await?;
+    right_click(&mut h, Point::new(5.0, 5.0));
+    let msgs = h.click(Point::new(20.0, 15.0));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::pressed"), Some(&Value::Bool(false)));
+    Ok(())
+}
+
+fn right_click(h: &mut InteractionHarness, at: Point) {
+    let _ = h.view();
+    let _ = h.move_cursor(at);
+    let _ = h.process_events(&[Event::Mouse(mouse::Event::ButtonPressed(
+        mouse::Button::Right,
+    ))]);
+    let _ = h.process_events(&[Event::Mouse(mouse::Event::ButtonReleased(
+        mouse::Button::Right,
+    ))]);
+}
+
+/// A shortcut key is one character, whatever its byte length.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shortcut_key_is_any_one_character() -> Result<()> {
+    let code = r#"{
+use gui::menu;
+let valid = |k: string| select menu::shortcut(#ctrl: true, k) { error as e => false, _ => true };
+[valid("é"), valid("€"), valid("ab")]
+}"#;
+    let (v, _ctx) =
+        graphix_package_core::testing::eval(code, super::TEST_REGISTER).await?;
+    assert_eq!(
+        v,
+        Value::Array([true, true, false].map(Value::Bool).into_iter().collect())
+    );
     Ok(())
 }

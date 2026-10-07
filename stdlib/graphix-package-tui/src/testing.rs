@@ -12,12 +12,10 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
-use graphix_compiler::expr::ExprId;
 use graphix_compiler::expr::VfsResolver;
 use graphix_package_core::testing::{self, PackageRef, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use nohash::IntMap;
 use poolshark::global::GPooled;
 use ratatui::{
     Terminal,
@@ -51,8 +49,7 @@ pub struct TuiTestHarness {
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: TuiW,
     terminal: Terminal<TestBackend>,
-    watched: IntMap<ExprId, Value>,
-    watch_names: AHashMap<String, ExprId>,
+    watches: testing::Watches,
     _refs: Vec<Ref<NoExt>>,
     _callables: Vec<Callable<NoExt>>,
 }
@@ -117,8 +114,7 @@ impl TuiTestHarness {
             rx,
             widget,
             terminal,
-            watched: IntMap::default(),
-            watch_names: AHashMap::default(),
+            watches: testing::Watches::default(),
             _refs: Vec::new(),
             _callables: Vec::new(),
         })
@@ -134,27 +130,13 @@ impl TuiTestHarness {
     /// `drain`, answering when the last update batch arrived (`None` when
     /// there was none).
     async fn drain_timed(&mut self) -> Result<Option<Instant>> {
-        let mut last = None;
-        loop {
-            let idle = self.gx.wait_idle();
-            tokio::pin!(idle);
-            let mut delivered = false;
-            loop {
-                tokio::select! {
-                    biased;
-                    Some(batch) = self.rx.recv() => {
-                        if deliver(&mut self.widget, &mut self.watched, batch).await? {
-                            delivered = true;
-                            last = Some(Instant::now());
-                        }
-                    }
-                    r = &mut idle => break r?,
-                }
-            }
-            if !delivered {
-                return Ok(last);
-            }
-        }
+        let Self { gx, rx, widget, watches, .. } = self;
+        let deliver = async |id, v: Value| {
+            watches.note(id, &v);
+            widget.handle_update(id, v).await.context("widget handle_update")?;
+            Ok(true)
+        };
+        Ok(testing::drain_idle(gx, rx, deliver).await?.1.map(|t| t.into_std()))
     }
 
     /// Wait up to `timeout` for the runtime to send an update, then
@@ -163,8 +145,19 @@ impl TuiTestHarness {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, self.rx.recv()).await {
-                Ok(Some(batch)) => {
-                    if deliver(&mut self.widget, &mut self.watched, batch).await? {
+                Ok(Some(mut batch)) => {
+                    let mut updated = false;
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            updated = true;
+                            self.watches.note(id, &v);
+                            self.widget
+                                .handle_update(id, v)
+                                .await
+                                .context("widget handle_update")?;
+                        }
+                    }
+                    if updated {
                         self.drain().await?;
                         return Ok(true);
                     }
@@ -179,24 +172,14 @@ impl TuiTestHarness {
     /// `watched`. `name` is module-qualified (e.g. `"test::clicks"`).
     /// Returns the initial value.
     pub async fn watch(&mut self, name: &str) -> Result<Value> {
-        let bid = testing::find_bind_id(&self.compiled.env, name)
-            .with_context(|| format!("watch: lookup {name}"))?;
-        let r = self
-            .gx
-            .compile_ref(bid)
-            .await
-            .with_context(|| format!("watch: compile_ref {name}"))?;
-        let initial = r.last.clone().unwrap_or(Value::Null);
-        self.watched.insert(r.id, initial.clone());
-        self.watch_names.insert(name.to_string(), r.id);
-        self._refs.push(r);
+        let v = self.watches.watch(&self.gx, &self.compiled.env, name).await?;
         self.drain().await?;
-        Ok(initial)
+        Ok(v)
     }
 
     /// Latest value of a name passed to `watch`.
     pub fn get_watched(&self, name: &str) -> Option<&Value> {
-        self.watch_names.get(name).and_then(|eid| self.watched.get(eid))
+        self.watches.get(name)
     }
 
     /// Deliver a crossterm event to the widget tree, then drain any
@@ -325,24 +308,6 @@ impl TuiTestHarness {
 // and Ctrl-C reaches the widgets instead of stopping. Rebuild on the root id here, set
 // `size` from the viewport and `event` on each dispatch, and add a dispatch that
 // delivers several events before draining. (tui-core-10)
-async fn deliver(
-    widget: &mut TuiW,
-    watched: &mut IntMap<ExprId, Value>,
-    mut batch: GPooled<Vec<GXEvent>>,
-) -> Result<bool> {
-    let mut updated = false;
-    for event in batch.drain(..) {
-        if let GXEvent::Updated(id, v) = event {
-            updated = true;
-            if watched.contains_key(&id) {
-                watched.insert(id, v.clone());
-            }
-            widget.handle_update(id, v).await.context("widget handle_update")?;
-        }
-    }
-    Ok(updated)
-}
-
 /// Render a `Buffer` into one `String` per row by concatenating each
 /// cell's `symbol()`. Empty / overdrawn cells render as a single space;
 /// a wide glyph leaves a trailing space for the cell after it.

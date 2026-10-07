@@ -406,6 +406,17 @@ run!(str_len, STR_LEN, |v: Result<&Value>| {
     }
 });
 
+const STR_CHAR_LEN: &str = r#"
+  (str::char_len("💖é"), str::len("💖é"))
+"#;
+
+run!(str_char_len, STR_CHAR_LEN, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => a[..] == [Value::I64(2), Value::I64(6)],
+        _ => false,
+    }
+});
+
 const STR_SUB: &str = r#"
   str::sub(#start:1, #len:2, "💗💖🍇")
 "#;

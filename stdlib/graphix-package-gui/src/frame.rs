@@ -51,9 +51,9 @@ pub fn frame(
     }
 }
 
-/// Apply what widgets published, in order: a call goes to the runtime,
-/// any other message to `deliver`, which hands it to the widgets and
-/// queues what they publish in turn.
+/// Apply what widgets published, in order: every message goes to
+/// `deliver`, which hands it to the widgets and queues what they publish
+/// in turn, and a call then goes to the runtime.
 pub fn apply_messages<X: GXExt>(
     gx: &GXHandle<X>,
     messages: impl IntoIterator<Item = Message>,
@@ -63,8 +63,11 @@ pub fn apply_messages<X: GXExt>(
     while let Some(msg) = pending.pop_front() {
         match msg {
             Message::Nop => {}
-            Message::Call(id, args) => {
-                if let Err(e) = gx.call(id, args) {
+            Message::Call(..) => {
+                deliver(&msg, &mut pending);
+                if let Message::Call(id, args) = msg
+                    && let Err(e) = gx.call(id, args)
+                {
                     log::error!("failed to call: {e:?}");
                 }
             }

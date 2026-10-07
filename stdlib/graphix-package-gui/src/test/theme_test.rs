@@ -1,19 +1,15 @@
 use super::TEST_REGISTER;
 use crate::types::ThemeV;
-use ahash::AHashMap;
 use anyhow::{Context, Result};
-use graphix_compiler::expr::{VfsEntry, VfsResolver};
 use graphix_package_core::testing;
 use netidx::publisher::FromValue;
-use netidx_core::path::Path;
-use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "current_thread")]
 async fn custom_theme_decodes() -> Result<()> {
-    let code = r#"
+    let code = r#"{
 use gui::color;
 use gui::style::{button_style, rule_style, stylesheet};
-let result = `Custom(stylesheet(
+`Custom(stylesheet(
   #palette: {
     background: color(#r: 0.1, #g: 0.2, #b: 0.3)$,
     text: color(#r: 0.9)$,
@@ -25,22 +21,8 @@ let result = `Custom(stylesheet(
   #button: button_style(#background: color(#r: 0.25)$, #border_width: 2.0),
   #rule: rule_style(#fill_percent: 3.0)
 ))
-"#;
-    let (tx, mut rx) = mpsc::channel(100);
-    let vfs = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        VfsEntry::from(arcstr::ArcStr::from(code)),
-    )]);
-    let ctx =
-        testing::init_with_resolvers(tx, TEST_REGISTER, vec![VfsResolver::new(vfs)])
-            .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let v = testing::next_update(
-        &mut rx,
-        compiled.exprs[0].id,
-        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
-    )
-    .await?;
+}"#;
+    let (v, _ctx) = testing::eval(code, TEST_REGISTER).await?;
     let ThemeV(theme) = ThemeV::from_value(v)?;
     let p = theme.palette();
     assert_eq!((p.background.r, p.background.g, p.background.b), (0.1, 0.2, 0.3));

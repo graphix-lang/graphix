@@ -19,7 +19,7 @@ async fn line_renders() -> Result<()> {
         "color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.5})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -30,7 +30,7 @@ async fn circle_with_fill_only() -> Result<()> {
         "fill: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, stroke: null})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -41,7 +41,7 @@ async fn circle_with_stroke_only() -> Result<()> {
         "fill: null, stroke: {color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 3.0}})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -53,7 +53,7 @@ async fn circle_with_both() -> Result<()> {
         "stroke: {color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 1.0}})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -63,7 +63,7 @@ async fn circle_with_neither() -> Result<()> {
         "`Circle({center: {x: 0.0, y: 0.0}, radius: 5.0, fill: null, stroke: null})",
     )
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -75,7 +75,7 @@ async fn rect_with_fill() -> Result<()> {
         "fill: color(#r: 0.5, #g: 0.5, #b: 0.5, #a: 1.0)$, stroke: null})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -87,7 +87,7 @@ async fn rect_with_stroke() -> Result<()> {
         "fill: null, stroke: {color: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 2.0}})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -98,7 +98,7 @@ async fn text_renders() -> Result<()> {
         "color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, size: 16.0})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 
@@ -136,7 +136,7 @@ async fn path_and_curves_render() -> Result<()> {
         "color: color(#r: 0.0, #g: 0.0, #b: 1.0, #a: 1.0)$, width: 1.0})",
     ))
     .await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 

@@ -3,6 +3,7 @@
 
 use super::*;
 use anyhow::Result;
+use std::time::Duration;
 
 /// Harness drained until the snapshot is steady.
 async fn dt(code: &str) -> Result<GuiTestHarness> {
@@ -558,14 +559,15 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    for _ in 0..15 {
-        h.drain().await?;
-        h.before_view();
-        let snap = h.dt_snapshot();
-        if snap.row_basenames == vec!["r1", "r2", "r0"] {
-            break;
-        }
-    }
+    h.wait_until(
+        |h| {
+            let snap = h.dt_snapshot();
+            snap.row_basenames == vec!["r1", "r2", "r0"]
+        },
+        Duration::from_secs(10),
+        "the initial sort",
+    )
+    .await?;
     let snap = h.dt_snapshot();
     assert_eq!(
         snap.row_basenames,
@@ -576,14 +578,15 @@ let result = data_table(
     let bid = testing::find_bind_id(&h.compiled.env, "test::v1")?;
     let mut v1_ref = h.gx.compile_ref(bid).await?;
     v1_ref.set(Value::F64(100.0))?;
-    for _ in 0..15 {
-        h.drain().await?;
-        h.before_view();
-        let snap = h.dt_snapshot();
-        if snap.row_basenames == vec!["r2", "r0", "r1"] {
-            break;
-        }
-    }
+    h.wait_until(
+        |h| {
+            let snap = h.dt_snapshot();
+            snap.row_basenames == vec!["r2", "r0", "r1"]
+        },
+        Duration::from_secs(10),
+        "the resort",
+    )
+    .await?;
     let snap = h.dt_snapshot();
     assert_eq!(
         snap.row_basenames,
@@ -630,15 +633,16 @@ let result = data_table(
             snap.grid[vi][1].parse::<usize>().ok() == Some(i * 10)
         })
     };
-    for _ in 0..40 {
-        h.drain().await?;
-        h.before_view();
-        let snap = h.dt_snapshot();
-        if snap.row_basenames.first().map(|s| s.as_str()) == Some("r119") && mem_ok(&snap)
-        {
-            break;
-        }
-    }
+    h.wait_until(
+        |h| {
+            let snap = h.dt_snapshot();
+            snap.row_basenames.first().map(|s| s.as_str()) == Some("r119")
+                && mem_ok(&snap)
+        },
+        Duration::from_secs(10),
+        "the sorted window's mem cells",
+    )
+    .await?;
     let snap = h.dt_snapshot();
     assert_eq!(snap.row_basenames[0], "r119", "top row after desc sort");
     assert!(mem_ok(&snap), "the visible rows' mem cells: {:?}", &snap.grid[..30]);
@@ -697,12 +701,15 @@ let result = data_table(
         expected: &[String],
         why: &str,
     ) -> Result<()> {
-        for _ in 0..40 {
-            h.drain().await?;
-            h.before_view();
-            if h.dt_snapshot().row_basenames == expected {
-                return Ok(());
-            }
+        let converged = h
+            .wait_until(
+                |h| h.dt_snapshot().row_basenames == expected,
+                Duration::from_secs(10),
+                why,
+            )
+            .await;
+        if converged.is_ok() {
+            return Ok(());
         }
         let got = h.dt_snapshot().row_basenames;
         anyhow::bail!(
@@ -1072,12 +1079,12 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     let _ = h.watch("test::log").await?;
-    for _ in 0..15 {
-        h.drain().await?;
-        if matches!(h.get_watched("test::log"), Some(Value::String(s)) if !s.is_empty()) {
-            break;
-        }
-    }
+    h.wait_until(
+        |h| matches!(h.get_watched("test::log"), Some(Value::String(s)) if !s.is_empty()),
+        Duration::from_secs(10),
+        "on_update's log",
+    )
+    .await?;
     let log = h.get_watched("test::log");
     assert!(
         matches!(log, Some(Value::String(s))
@@ -1108,12 +1115,12 @@ let result = data_table(
     let bid = testing::find_bind_id(&h.compiled.env, "test::a")?;
     let mut a_ref = h.gx.compile_ref(bid).await?;
     a_ref.set(Value::String(arcstr::literal!("v1b")))?;
-    for _ in 0..5 {
-        h.drain().await?;
-        if h.dt_snapshot().grid[0][0] == "v1b" {
-            break;
-        }
-    }
+    h.wait_until(
+        |h| h.dt_snapshot().grid[0][0] == "v1b",
+        Duration::from_secs(10),
+        "the new value",
+    )
+    .await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1b");
     Ok(())
 }

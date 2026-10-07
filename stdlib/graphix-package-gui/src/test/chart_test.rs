@@ -208,7 +208,7 @@ async fn shared_style_with_update() -> Result<()> {
            chart(#title: &\"a\", #style: &deck, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])]),\
            chart(#title: &\"b\", #style: &big, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])])])";
     let h = GuiTestHarness::new(code).await?;
-    let _ = h.view();
+    h.render().await?;
     Ok(())
 }
 

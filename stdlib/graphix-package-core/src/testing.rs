@@ -509,6 +509,79 @@ pub async fn compile_named_callable(
     Ok((r, cb))
 }
 
+/// Variables a test harness watches by name: their refs, kept alive, and
+/// their latest values.
+#[derive(Default)]
+pub struct Watches {
+    refs: Vec<graphix_rt::Ref<NoExt>>,
+    values: nohash::IntMap<ExprId, Value>,
+    names: ahash::AHashMap<String, ExprId>,
+}
+
+impl Watches {
+    /// Watch the module-qualified variable `name`; its value as it stands.
+    pub async fn watch(
+        &mut self,
+        gx: &graphix_rt::GXHandle<NoExt>,
+        env: &Env,
+        name: &str,
+    ) -> Result<Value> {
+        let bid = find_bind_id(env, name).with_context(|| format!("watch: {name}"))?;
+        let r = gx.compile_ref(bid).await.with_context(|| format!("watch: {name}"))?;
+        let initial = r.last.clone().unwrap_or(Value::Null);
+        self.values.insert(r.id, initial.clone());
+        self.names.insert(name.to_string(), r.id);
+        self.refs.push(r);
+        Ok(initial)
+    }
+
+    /// Record `v` if `id` is a watched variable's.
+    pub fn note(&mut self, id: ExprId, v: &Value) {
+        if let Some(slot) = self.values.get_mut(&id) {
+            *slot = v.clone();
+        }
+    }
+
+    /// The latest value of the watched variable `name`.
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.names.get(name).and_then(|id| self.values.get(id))
+    }
+}
+
+/// Deliver every update from `rx` to `deliver` until the runtime is idle
+/// with nothing left to deliver; answers whether `deliver` reported a
+/// change and when the last update came.
+pub async fn drain_idle(
+    gx: &graphix_rt::GXHandle<NoExt>,
+    rx: &mut Events,
+    mut deliver: impl AsyncFnMut(ExprId, Value) -> Result<bool>,
+) -> Result<(bool, Option<Instant>)> {
+    let (mut changed, mut last) = (false, None);
+    loop {
+        let idle = gx.wait_idle();
+        tokio::pin!(idle);
+        let mut delivered = false;
+        loop {
+            tokio::select! {
+                biased;
+                Some(mut batch) = rx.recv() => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = e {
+                            delivered = true;
+                            last = Some(Instant::now());
+                            changed |= deliver(id, v).await?;
+                        }
+                    }
+                }
+                r = &mut idle => break r?,
+            }
+        }
+        if !delivered {
+            return Ok((changed, last));
+        }
+    }
+}
+
 /// Evaluate a graphix expression and return its first value with the
 /// test context (caller must shut it down).
 pub async fn eval(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {

@@ -5,7 +5,6 @@ use graphix_compiler::expr::VfsResolver;
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -30,6 +29,23 @@ const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
     &crate::P,
 ];
 
+/// Deliver an update to the widget tree. A children recompile blocks on
+/// the runtime, which only a multi-thread flavor permits, and there only
+/// inside `block_in_place`.
+fn update_widget(
+    widget: &mut GuiW<NoExt>,
+    rt: &tokio::runtime::Handle,
+    id: ExprId,
+    v: &Value,
+) -> Result<bool> {
+    match rt.runtime_flavor() {
+        tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| widget.handle_update(rt, id, v))
+        }
+        _ => widget.handle_update(rt, id, v),
+    }
+}
+
 /// Test harness for GUI widget integration tests: compiles graphix
 /// code producing a Widget value, builds the widget tree, and drives
 /// interactions through the reactive loop.
@@ -40,8 +56,7 @@ struct GuiTestHarness {
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: GuiW<NoExt>,
     rt_handle: tokio::runtime::Handle,
-    watched: IntMap<ExprId, Value>,
-    watch_names: AHashMap<String, ExprId>,
+    watches: testing::Watches,
     _refs: Vec<Ref<NoExt>>,
     _callables: Vec<Callable<NoExt>>,
 }
@@ -84,94 +99,37 @@ impl GuiTestHarness {
             rx,
             widget,
             rt_handle,
-            watched: IntMap::default(),
-            watch_names: AHashMap::default(),
+            watches: testing::Watches::default(),
             _refs: Vec::new(),
             _callables: Vec::new(),
         })
     }
 
-    /// Drain all pending reactive updates into the widget tree.
-    /// Returns true if any updates were processed.
-    // CR claude for claude: [structure] drain waits for a quiet window (100 ms with no
-    // batch, 50 ms after the last), where the TUI harness drains to
-    // GXHandle::wait_idle: each drain here sleeps 50-100 ms against wait_idle's 3-6 ms,
-    // and viewport_metrics_update_on_resize spends 2.1 s in its 20 drains. Under a
-    // multi_thread runtime (stack_children_follow_rotation) a reply that comes more
-    // than 100 ms after the call is lost; the current_thread tests cannot lose one this
-    // way, since the runtime finishes its cycles on the drain's own thread before the
-    // timer is seen. find_bind_id, wait_for_update, compile_named_callable and
-    // get_watched are verbatim copies of graphix-package-tui/src/testing.rs, watch and
-    // call_callback nearly so, theme_test.rs repeats the setup and
-    // graphix-tests/src/lib_tests/callable.rs has a third find_bind_id, so a fix to one
-    // copy misses the others (wait_idle is in the TUI's only). One shared core in
-    // graphix_package_core::testing fixes both; the drain loops that wait for netidx
-    // values then need next_update or wait_until, as the TUI's do. probe:
-    // design/review-2026-10-05/repro/tests-ui-06.rs (tests-ui-06)
-    // 2026-10-06 claude: find_bind_id, wait_for_update (now next_update) and
-    // compile_named_callable live in graphix_package_core::testing, shared with the TUI.
+    /// Deliver every update until the runtime is idle with nothing left
+    /// to deliver. Returns true if any update changed the widget tree.
+    /// A value from outside the runtime (netidx) can come later: wait for
+    /// it with `wait_until`.
     async fn drain(&mut self) -> Result<bool> {
-        let mut changed = false;
-        let timeout = tokio::time::sleep(Duration::from_millis(100));
-        tokio::pin!(timeout);
-        loop {
-            tokio::select! {
-                biased;
-                Some(mut batch) = self.rx.recv() => {
-                    for event in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = event {
-                            if self.watched.contains_key(&id) {
-                                self.watched.insert(id, v.clone());
-                            }
-                            changed |= self.update_widget(id, &v)?;
-                        }
-                    }
-                    timeout.as_mut().reset(
-                        tokio::time::Instant::now() + Duration::from_millis(50)
-                    );
-                }
-                _ = &mut timeout => break,
-            }
-        }
-        Ok(changed)
-    }
-
-    /// A children recompile blocks on the runtime, which only a
-    /// multi-thread flavor permits, and there only inside
-    /// `block_in_place`.
-    fn update_widget(&mut self, id: ExprId, v: &Value) -> Result<bool> {
-        match self.rt_handle.runtime_flavor() {
-            tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| {
-                    self.widget.handle_update(&self.rt_handle, id, v)
-                })
-            }
-            _ => self.widget.handle_update(&self.rt_handle, id, v),
-        }
+        let Self { gx, rx, widget, rt_handle, watches, .. } = self;
+        let deliver = async |id, v: Value| {
+            watches.note(id, &v);
+            update_widget(widget, rt_handle, id, &v)
+        };
+        Ok(testing::drain_idle(gx, rx, deliver).await?.0)
     }
 
     /// Watch a module-qualified variable such as "test::released" and
     /// return its initial value; `get_watched()` reads it after a
     /// `drain()`.
     async fn watch(&mut self, name: &str) -> Result<Value> {
-        let bid = testing::find_bind_id(&self.compiled.env, name)
-            .with_context(|| format!("watch: lookup {name}"))?;
-        let r = self
-            .gx
-            .compile_ref(bid)
-            .await
-            .with_context(|| format!("watch: compile ref to {name}"))?;
-        let initial = r.last.clone().unwrap_or(Value::Null);
-        self.watched.insert(r.id, initial.clone());
-        self.watch_names.insert(name.to_string(), r.id);
-        self._refs.push(r);
+        let v = self.watches.watch(&self.gx, &self.compiled.env, name).await?;
         self.drain().await?;
-        Ok(initial)
+        Ok(v)
     }
 
     /// Get the most recent value of a watched variable by name.
     fn get_watched(&self, name: &str) -> Option<&Value> {
-        self.watch_names.get(name).and_then(|eid| self.watched.get(eid))
+        self.watches.get(name)
     }
 
     /// Dispatch iced Messages through the runtime and widget as
@@ -188,20 +146,28 @@ impl GuiTestHarness {
         Ok(())
     }
 
-    /// Call `view()` on the widget.
-    // CR claude for claude: [test-gap] Every *_renders test in canvas_test.rs and
-    // chart_test.rs calls this and drops the element, and
-    // InteractionHarness::process_events (:438) builds and updates a UserInterface but
-    // never draws. So canvas.rs draw_shape never runs for any shape, and the
-    // candlestick, error-bar, 3D, legend and styled-mesh chart bodies never run. Only
-    // fresh_chart_redraws_an_inherited_cache and markers_draw_on_every_series_kind call
-    // Program::draw. A panic in one of those bodies would take down a GUI program while
-    // these tests stay green. Add a draw step (ui.draw after update in
-    // InteractionHarness, or Program::draw on chart and canvas roots as
-    // chart_test.rs:342-348 does) and make the *_renders tests call it. (tests-ui-08)
-    // 2026-10-07 claude: InteractionHarness's frame is the event loop's
-    // frame::frame now, which draws (tests-ui.r2-05, merged here). The *_renders
-    // tests still build their element and drop it; they need to go through it.
+    /// Build, lay out and draw the widget tree once, as a window frame
+    /// does, on a headless renderer.
+    async fn render(&self) -> Result<()> {
+        let mut renderer = headless_gpu().await.create_renderer();
+        let theme =
+            crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+        crate::frame::frame(
+            self.widget.view(),
+            Size::new(800.0, 600.0),
+            &mut user_interface::Cache::default(),
+            &mut renderer,
+            &mut Vec::new(),
+            &[],
+            mouse::Cursor::Unavailable,
+            &mut TestClipboard::default(),
+            &mut Vec::new(),
+            &theme,
+        );
+        Ok(())
+    }
+
+    /// The widget's element, built and dropped.
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.widget.view()
     }
@@ -498,6 +464,22 @@ impl InteractionHarness {
         Ok(())
     }
 
+    /// Give the widgets `msgs` as the event loop does after a frame, the
+    /// calls sent to the runtime without letting it run: the next frame
+    /// comes before their echoes, as fast input does.
+    fn apply(&mut self, msgs: &[Message]) {
+        let widget = &mut self.inner.widget;
+        crate::frame::apply_messages(
+            &self.inner.gx,
+            msgs.iter().cloned(),
+            |msg, pending| {
+                let mut shell = MessageShell::default();
+                widget.on_message(msg, &mut shell);
+                pending.extend(shell.out.drain(..));
+            },
+        );
+    }
+
     /// A left-button drag from `from` to `to`, live.
     async fn drag_live(&mut self, from: Point, to: Point, steps: u32) -> Result<()> {
         let mut events = vec![
@@ -667,6 +649,6 @@ fn expect_call_with_args(
             _ => None,
         })
         .collect();
-    assert!(!calls.is_empty(), "expected a Call message matching predicate, got none");
+    assert_eq!(calls.len(), 1, "expected exactly one Call matching the predicate");
     calls[0]
 }
