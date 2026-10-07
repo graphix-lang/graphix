@@ -111,8 +111,8 @@ fn main() {
     // `#[native]` is a TEST-INFRA assertion (zero node-walk residue at a
     // location; a no-op under --no-fusion) — deliberately mode-asymmetric,
     // so a mutant carrying it into a non-fusable position (e.g. a select
-    // arm) CompileErrs under jit only and the oracle records a phantom
-    // divergence (soak 2026-07-04). Strip it from the seed pool.
+    // arm) CompileErrs under jit only and the oracle would record a phantom
+    // divergence. Strip it from the seed pool.
     for s in seeds.iter_mut() {
         if s.contains("#[native]") {
             *s = s.replace("#[native]", "");

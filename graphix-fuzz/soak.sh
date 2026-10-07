@@ -146,7 +146,7 @@ wait_for_gate() {
     # gate's wall time is a few minutes at scale 1 and grows with the
     # corpus and with GRAPHIX_FUZZ_TIMEOUT_SCALE. The wait is the
     # scaled gate with generous headroom: giving up early kills a
-    # healthy soak (aug27a aieka at 114s, sep11a ryouko at 120s).
+    # healthy soak, and a loaded box takes minutes.
     local scale=${GRAPHIX_FUZZ_TIMEOUT_SCALE:-1}
     [[ $scale =~ ^[0-9]+$ ]] && ((scale >= 1)) || scale=1
     local max=$(( 3000 * scale ))
@@ -209,8 +209,8 @@ start() {
         echo "workers must be positive" >&2
         exit 2
     }
-    # A seed passed in the workers position launches billions of
-    # children and OOM-kills the box (it happened — twice, 2026-07-19).
+    # A seed passed in the workers position would launch billions of
+    # children and OOM-kill the box.
     (( workers <= $(ncpu) * 16 )) || {
         echo "workers $workers exceeds $(ncpu)*16 — arguments are" \
              "<campaign> [workers] [base-seed] [mix]; did you pass the" \

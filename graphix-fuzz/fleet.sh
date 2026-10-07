@@ -28,48 +28,17 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 
 # name : sync method : workers : timeout scale : os
-# Seeds are allocated in THIS order, 10M apart from the base — the round
-# map in memory records the base, so the order is load-bearing.
-# Sync method is rsync for EVERY box (2026-08-26, Eric's call): the
-# old syncthing-wait path stalled deploys on propagation lag (katana
-# sat TREE STALE past SYNC_WAIT while the rest of the fleet verified),
-# and a stale tree can strike any box at any deploy. rsync pushes the
-# same bytes syncthing would deliver, so the two reconcile without
-# conflict copies; the fingerprint check still gates the launch. The
-# cost, now fleet-wide: remote .git is excluded, so a box's own
-# `git log` says nothing about the tree it runs (long true of hz0).
-# Workers = 8x cores, uniform across the fleet where the RAM allows it
-# (2026-08-28, Eric's call). aieka proves the ceiling: 288 workers (8x36)
-# on 62G runs with headroom, so every box here — all 54-62G except
-# katana's 16G — clears 8x at its core count. hz0 20c=160, aieka 36c=288,
-# katana 8c=64, ryouko 32c=256, mazikeen 14c=112, washu-chan 16c=128.
-# Oversubscription hides the per-subject off-CPU gap (compile/spawn) that
-# left a 1:1 box idling at ~50%.
+# Seeds are allocated in THIS order, 10M apart from the base, so the
+# order is load-bearing.
 #
-# washu-chan is the SESSION box and reaches itself over ssh, so it rides
-# the ordinary rsync path with no local special case (2026-08-28, Eric's
-# call): its src==dest rsync is a quick-check noop (.git/target excluded).
-# It joins a soak only when idle — launch it alone with FLEET_ONLY rather
-# than folding it into a full-fleet launch while a session is live.
-
-# Disabled but may return
-# "mazikeen:rsync:112:4:linux"
+# Every box syncs by rsync (remote .git is excluded, so a box's own
+# `git log` says nothing about the tree it runs); the fingerprint check
+# gates the launch. washu-chan, the session box, reaches itself over ssh
+# and joins a soak only when idle: launch it alone with FLEET_ONLY.
 #
-# Workers are sized by MEMORY on the Linux boxes (2026-09-11): a subject
-# runs its cold and warm image sessions on top of the plain run, and a
-# worker measures ~375MB average, ~575MB at the top (ryouko, sep11f).
-# 8x cores put aieka and ryouko 30GB into swap; 4x still left ryouko
-# 11GB in. 80 workers on a 62GB box is ~30GB average, ~46GB at the
-# top. katana (16GB) at 64 sat in 4.2GB of its 5GB swap with a load of
-# 100+ on 8 cores (sep12a: four "child HANG" crashes that all pass on
-# an idle box); 32 is its memory-sized count.
-# CR claude for claude: [doc-drift] The 'Workers = 8x cores' paragraph above (hz0 160,
-# aieka 288, katana 64, ryouko 256) contradicts this table (32/64/80/80) and the
-# memory-sizing paragraph just above it, and it names hosts that are not in the fleet.
-# Delete it and state the sizing rule once (about 375MB per worker on average, 575MB at
-# the top). The dated narration here and in soak.sh, stdout-baseline.sh, build.rs and
-# main.rs (deploy names, dates, 'Eric's call', 'it happened — twice') is history; keep
-# only the invariants. (fuzz-main-aux-19)
+# Workers are sized by memory: a worker runs a subject's plain, cold and
+# warm sessions and measures about 375MB on average and 575MB at the top,
+# so a 62GB box takes 80 and katana (16GB) 32.
 HOSTS=(
     "katana:rsync:32:4:darwin"
     "washu-chan:rsync:64:1:linux"
@@ -144,8 +113,9 @@ corpus_count() { find "$repo/graphix-fuzz/findings" -name '*.gx' | wc -l | tr -d
 # differ per box for reasons that cannot affect a build.
 FINGERPRINT='cd ~/proj/graphix && find graphix-types graphix-compiler graphix-rt \
     graphix-package graphix-derive graphix-ast-pack graphix-shell graphix-fuzz stdlib \
-    Cargo.toml -type f \
-    \( -name "*.rs" -o -name "*.gx" -o -name "*.gxi" -o -name "*.toml" -o -name "*.sh" \) \
+    Cargo.toml Cargo.lock -type f \
+    \( -name "*.rs" -o -name "*.gx" -o -name "*.gxi" -o -name "*.toml" -o -name "*.sh" \
+       -o -name "*.manifest" -o -name Cargo.lock \) \
     ! -path "*/target/*" ! -name "#*" ! -name ".#*" \
     | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-16'
 
@@ -209,17 +179,14 @@ EOF
 
 # ---------------------------------------------------------------- sync
 
-# THE DIRTY-TREE GUARD (2026-09-01). The loss model, lived once at the
-# aug31f deploy: the local fingerprint is captured ONCE, so a commit
-# made while the sync loop walked the fleet gave the later boxes a
-# NEWER tree than `want` — each then sat the full SYNC_WAIT in silent
-# 10s polls before a misleading per-box TREE STALE, and the fleet
-# ended half old tree, half new. Two facts close both doors:
+# THE DIRTY-TREE GUARD. The local fingerprint is captured once, so a
+# commit made while the sync loop walks the fleet would give the later
+# boxes a newer tree than `want`, and the fleet would end half old, half
+# new. Two facts close both doors:
 #   - at entry, the build inputs must be CLEAN in git (a fingerprinted
 #     file that git doesn't have is a tree no redeploy can reproduce);
-#     netidx and immutable-chunkmap ship too, so their build inputs are
-#     checked the same way even though the fingerprint can't see them
-#     (a dirty sibling would ship silently — worse than a stall);
+#     netidx ships too, so its build inputs are checked the same way
+#     even though the fingerprint can't see them;
 #   - per box, the local fingerprint is re-read BEFORE the rsync and a
 #     drift from `want` dies loudly at once, naming the real cause,
 #     instead of stalling box after box against a reference that no
@@ -228,7 +195,7 @@ EOF
 # uncommitted-tree soak; nothing skips the drift check — a tree that
 # changes MID-DEPLOY is never deliberate.
 FP_ROOTS=(graphix-types graphix-compiler graphix-rt graphix-package graphix-derive
-          graphix-ast-pack graphix-shell graphix-fuzz stdlib Cargo.toml)
+          graphix-ast-pack graphix-shell graphix-fuzz stdlib Cargo.toml Cargo.lock)
 
 require_clean_inputs() {
     [[ ${FLEET_ALLOW_DIRTY:-0} == 1 ]] && return 0
@@ -238,7 +205,7 @@ require_clean_inputs() {
 (commit/stash, or FLEET_ALLOW_DIRTY=1 for a deliberate dirty soak):
 $dirty"
     local sib
-    for sib in netidx immutable-chunkmap; do
+    for sib in netidx; do
         dirty=$(git -C "$repo/../$sib" status --porcelain -- \
             ':(glob)**/*.rs' ':(glob)**/*.toml' 2>/dev/null || true)
         [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in ../$sib \
@@ -258,27 +225,12 @@ sync_tree() {
         now=$(local_fingerprint)
         [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
-        # CR claude for claude: [doc-drift] The comment below and require_clean_inputs say
-        # graphix builds against the sibling immutable-chunkmap through netidx's patch.
-        # But [patch] applies only in the root workspace: Cargo.lock resolves
-        # immutable-chunkmap 2.1.4 from the registry, the root Cargo.toml has no
-        # [patch], and graphix-fuzz/Cargo.toml's [patch.crates-io] is ignored because
-        # graphix-fuzz is a workspace member (its 'own workspace' comment is false). So
-        # the chunkmap sync and its clean check do nothing, and a change landed in
-        # ../immutable-chunkmap reaches no build. FINGERPRINT also leaves out Cargo.lock
-        # and the include_str!'d outcome.manifest and fusecheck.manifest, which do
-        # determine the fuzz binary. Either patch at the root, or drop the sibling sync,
-        # its check and the dead [patch]; either way, add those files to the
-        # fingerprint. (fuzz-main-aux-18)
         if [[ $method == rsync ]]; then
-            # graphix builds against the sibling netidx, which is
-            # patched onto the sibling immutable-chunkmap.
+            # graphix builds against the sibling netidx
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/../netidx/" "$name:proj/netidx/"
-            rsync -a --delete --exclude target --exclude .git \
-                "$repo/../immutable-chunkmap/" "$name:proj/immutable-chunkmap/"
         fi
         waited=0
         while :; do
@@ -306,7 +258,7 @@ sync_tree() {
 # itself prints lane lines, not a marker (a verifier keyed on a marker
 # the launch never emits false-negatives a healthy box).
 launch() {
-    local camp=$1 base=$2 h name os workers scale seed i=0 asan
+    local camp=$1 base=$2 h name os workers scale seed i=0 asan rc=0
     [[ -n $camp && -n $base ]] || usage
     [[ $base =~ ^[0-9]+$ ]] || die "base-seed must be an unsigned integer"
     for h in "${HOSTS[@]}"; do
@@ -325,20 +277,13 @@ launch() {
         say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
              "$name" "$camp" "$seed" "$workers" "$scale" \
              "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
-        # CR claude for claude: [bug] launch is called as a plain command under set -euo
-        # pipefail, and this ssh has no failure handling. One unreachable box, or a
-        # failed log redirect on the remote, exits fleet.sh here. The boxes after it are
-        # never launched, verify never runs, and in deploy the old campaigns are already
-        # stopped. pull, stop and verify degrade per box; launch should too (`|| { warn
-        # "$name LAUNCH FAILED"; rc=1; }`, keep looping, return rc, and let deploy
-        # verify the boxes that did launch). probe: the same loop with a fake ssh
-        # returning 255 for the third host exits 255 without launching the fourth or
-        # reaching verify. (fuzz-main-aux-12)
-        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF'
+        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF' \
+            || { warn "$(printf '%-8s LAUNCH FAILED' "$name")"; rc=1; }
 camp=$1; seed=$2; workers=$3; scale=$4; mix=$5; asan=$6
 log=~/tmp/fleet-$camp-launch.log
 perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' \
     bash -lc "
+    trap 'rc=\$?; [ \$rc -eq 0 ] || echo FLEET_LAUNCH_FAILED rc=\$rc' EXIT
     set -e
     export PATH=\$HOME/.cargo/bin:\$PATH
     export GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale
@@ -350,6 +295,7 @@ perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV
 EOF
     done
     say "launched; run 'fleet.sh verify $camp' (it waits for the builds)"
+    return $rc
 }
 
 # -------------------------------------------------------------- verify
@@ -374,24 +320,18 @@ verify() {
 
 verify_host() {
     local name=$1 camp=$2 want=$3 out gate n bad a b
-    # CR claude for claude: [bug] The remote loop below stops only on FLEET_LAUNCH_OK or
-    # the LAUNCH_WAIT budget. It never stops on a launcher that has already exited. So a
-    # cargo error, a failed regress gate, or soak.sh start refusing an existing campaign
-    # directory holds verify for 92 minutes per box, one box after another. The last
-    # case is every same-name FLEET_ONLY restart of a box that ran the campaign,
-    # whatever the comment at line 86 says. After the budget the script still samples
-    # counters for up to 600s, but this timeout leaves it 120s, so ssh is killed and the
-    # box is reported UNREACHABLE; the launch log's error, which the FAILURES grep
-    # already collected, is never shown. probe:
-    # design/review-2026-10-05/repro/fuzz-main-aux-10.sh (FLEET_LAUNCH_WAIT=20: the
-    # launcher exits 1 at once, verify says UNREACHABLE after 140s). (fuzz-main-aux-10)
-    out=$(timeout $((LAUNCH_WAIT + 120)) ssh "$name" bash -s "$camp" "$LAUNCH_WAIT" <<'EOF' || echo "FLEET_UNREACHABLE"
+    # the remote waits LAUNCH_WAIT for the launch, then up to 600s for
+    # the counters
+    out=$(timeout $((LAUNCH_WAIT + 720)) ssh "$name" bash -s "$camp" "$LAUNCH_WAIT" <<'EOF' || echo "FLEET_UNREACHABLE"
 camp=$1; budget=$2
 log=~/tmp/fleet-$camp-launch.log
 dir=~/tmp/target/fuzz/$camp
 waited=0
 while :; do
     grep -q FLEET_LAUNCH_OK "$log" 2>/dev/null && break
+    if grep -q FLEET_LAUNCH_FAILED "$log" 2>/dev/null; then
+        echo "FLEET_LAUNCHER_EXITED"; tail -5 "$log"; exit 0
+    fi
     [ "$waited" -ge "$budget" ] && { echo "FLEET_TIMEOUT after ${waited}s"; break; }
     sleep 10; waited=$((waited + 10))
 done
@@ -426,6 +366,11 @@ EOF
 )
     if [[ $out == *FLEET_UNREACHABLE* ]]; then
         warn "$(printf '%-8s UNREACHABLE' "$name")"; return 1
+    fi
+    if [[ $out == *FLEET_LAUNCHER_EXITED* ]]; then
+        warn "$(printf '%-8s LAUNCH FAILED:' "$name")"
+        warn "$(sed -n '/FLEET_LAUNCHER_EXITED/,$p' <<<"$out" | tail -n +2)"
+        return 1
     fi
     if [[ $out == *FLEET_TIMEOUT* ]]; then
         warn "$(printf '%-8s LAUNCH TIMED OUT (still building, or wedged)' "$name")"; return 1
@@ -469,16 +414,11 @@ status() {
         name=$(f_name "$h")
         skip_host "$name" && continue
         say "=== $name ==="
-        # CR claude for claude: [bug] With no campaign argument, `ls -d
-        # ~/tmp/target/fuzz/*/` yields each directory with a trailing slash. The pgrep
-        # pattern in this script then becomes `<camp>//graphix-fuzz`, which no command
-        # line contains, so every campaign reports 0 procs. Strip the slash (`d=${d%/}`)
-        # before using it. probe: a copy of sleep run as fz/campX/graphix-fuzz counts 0
-        # with d from `ls -d fz/*/` and nonzero with d=fz/campX. (fuzz-main-aux-13)
         timeout 60 ssh "$name" bash -s "$camp" <<'EOF' || warn "  unreachable"
 camp=$1
 if [ -n "$camp" ]; then dirs=~/tmp/target/fuzz/$camp; else dirs=$(ls -d ~/tmp/target/fuzz/*/ 2>/dev/null); fi
 for d in $dirs; do
+    d=${d%/}
     [ -d "$d" ] || continue
     n=$(find "$d/corpus" -name '*.gx' 2>/dev/null | wc -l | tr -d ' ')
     p=$(pgrep -f "$d/graphix-fuzz" | wc -l | tr -d ' ')
@@ -502,7 +442,7 @@ deploy() {
         say "== stop $old =="
         stop "$old" || die "refusing to deploy over a fleet that would not stop"
     fi
-    say "== launch =="; launch "$new" "$base"
+    say "== launch =="; launch "$new" "$base" || warn "some launches failed; verifying the rest"
     say "== verify =="; verify "$new"
 }
 
