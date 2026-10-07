@@ -2,8 +2,10 @@
 // dispatch over a union self type.
 
 use anyhow::Result;
-use graphix_package_core::testing::Mode;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, Mode, refused},
+};
 
 use netidx::publisher::Value;
 
@@ -100,7 +102,7 @@ run!(
 // Calling with a type that has no implementation is a compile error.
 run!(
     trait_no_impl_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Show does not contain string")),
+    refused("within Show does not contain string"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -112,7 +114,7 @@ run!(
 // A required method missing from an implementation is a compile error.
 run!(
     trait_missing_method_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("is missing the required method other")),
+    refused("is missing the required method other"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string; val other: fn(self) -> i64 };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -124,7 +126,7 @@ run!(
 // Two implementations for one type conflict.
 run!(
     trait_duplicate_impl_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("conflicting implementation: Show is already implemented for i64")),
+    refused("conflicting implementation: Show is already implemented for i64"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -153,7 +155,7 @@ run!(
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Show does not contain [i64, string]")),
+    refused("within Show does not contain [i64, string]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -406,7 +408,7 @@ run!(
 
 run!(
     ctor_quantifier_wrong_bound_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing constraint")),
+    refused("missing constraint"),
     "/test.gx" => r#"
         mod m;
         let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
@@ -449,7 +451,7 @@ run!(
 // A quantifier bound written in a `let` annotation is enforced.
 run!(
     annotation_bound_enforced,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Number does not contain string")),
+    refused("within Number does not contain string"),
     "/test.gx" => r#"
         let f: fn<'a: Number>(x: 'a) -> 'a = |x| x;
         let result = f("hi")
@@ -589,7 +591,7 @@ run!(
 // `#[sync]`: an async body is a compile error.
 run!(
     core_method_async_refused,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("this function is async")),
+    refused("this function is async"),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Display for Key { let fmt = |k| sys::time::timer(duration:0.01s, false) ~ k.0 };

@@ -1,7 +1,10 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::eval};
+use graphix_package_core::{
+    run,
+    testing::{eval, refused},
+};
 use netidx::publisher::Value;
 
 const SELECT0: &str = r#"
@@ -63,7 +66,7 @@ select 42 {
 }
 "#;
 
-run!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing match cases")); graphix_package_core::testing::FuseExpect::None);
+run!(match_exhaust0, MATCH_EXHAUST0, refused("missing match cases"); graphix_package_core::testing::FuseExpect::None);
 
 const MATCH_EXHAUST1: &str = r#"
 #[native] select 42 {
@@ -443,7 +446,7 @@ const SELECT_SLICE_HOLE: &str = r#"
 }
 "#;
 
-run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("leave array length 1 uncovered")); graphix_package_core::testing::FuseExpect::None);
+run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, refused("leave array length 1 uncovered"); graphix_package_core::testing::FuseExpect::None);
 
 // Exact-length arms alone never cover every length.
 const SELECT_SLICE_NO_REST: &str = r#"
@@ -456,7 +459,7 @@ const SELECT_SLICE_NO_REST: &str = r#"
 }
 "#;
 
-run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cover finitely many lengths")); graphix_package_core::testing::FuseExpect::None);
+run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, refused("cover finitely many lengths"); graphix_package_core::testing::FuseExpect::None);
 
 // A guarded arm claims no coverage.
 const SELECT_SLICE_GUARDED_REST: &str = r#"
@@ -472,7 +475,7 @@ const SELECT_SLICE_GUARDED_REST: &str = r#"
 run!(
     select_slice_guarded_rest_rejected,
     SELECT_SLICE_GUARDED_REST,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("a guarded slice arm cannot establish length"));
+    refused("a guarded slice arm cannot establish length");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -491,7 +494,7 @@ const SELECT_SLICE_DEAD_WILDCARD: &str = r#"
 run!(
     select_slice_dead_wildcard_rejected,
     SELECT_SLICE_DEAD_WILDCARD,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("unreachable arm"));
+    refused("unreachable arm");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -510,7 +513,7 @@ const SELECT_SLICE_DEAD_SHADOW: &str = r#"
 run!(
     select_slice_dead_shadow_rejected,
     SELECT_SLICE_DEAD_SHADOW,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("every array length this slice pattern can match is covered"));
+    refused("every array length this slice pattern can match is covered");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -529,7 +532,7 @@ const SELECT_BOOL_DEAD_WILDCARD: &str = r#"
 run!(
     select_bool_dead_wildcard_rejected,
     SELECT_BOOL_DEAD_WILDCARD,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("unreachable arm"));
+    refused("unreachable arm");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -584,7 +587,7 @@ const SELECT_SLICE_REFUTABLE_ELEM: &str = r#"
 run!(
     select_slice_refutable_elem_rejected,
     SELECT_SLICE_REFUTABLE_ELEM,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("refutable element patterns"));
+    refused("refutable element patterns");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -802,7 +805,7 @@ const GUARD_STRING: &str = r#"
 }
 "#;
 
-run!(guard_string_rejected, GUARD_STRING, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("bool does not contain string"));
+run!(guard_string_rejected, GUARD_STRING, refused("bool does not contain string");
     graphix_package_core::testing::FuseExpect::None);
 
 const GUARD_INT: &str = r#"
@@ -812,7 +815,7 @@ const GUARD_INT: &str = r#"
 }
 "#;
 
-run!(guard_int_rejected, GUARD_INT, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("bool does not contain i64"));
+run!(guard_int_rejected, GUARD_INT, refused("bool does not contain i64");
     graphix_package_core::testing::FuseExpect::None);
 
 // A nullable bool is not a bool guard either.
@@ -823,7 +826,7 @@ const GUARD_NULLABLE_BOOL: &str = r#"
 }
 "#;
 
-run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("bool does not contain [bool, null]")); graphix_package_core::testing::FuseExpect::None);
+run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, refused("bool does not contain [bool, null]"); graphix_package_core::testing::FuseExpect::None);
 
 // An unannotated lambda used as a guard infers a bool return.
 const GUARD_INFERS_BOOL: &str = r#"
@@ -1657,7 +1660,7 @@ const OR_SAME_BINDS_ERR: &str = r#"
 select 1 { 1 | x => 0, _ => 1 }
 "#;
 
-run!(or_same_binds_err, OR_SAME_BINDS_ERR, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("must bind the same names"));
+run!(or_same_binds_err, OR_SAME_BINDS_ERR, refused("must bind the same names");
  graphix_package_core::testing::FuseExpect::None);
 
 // Payload binds must have exactly equal types across alternatives. Under
@@ -1667,7 +1670,7 @@ const OR_EQUAL_TYPES_ERR: &str = r#"
 select (1, "a") { (i64, string) as (1, y) | (y, "b") => 1, _ => 0 }
 "#;
 
-run!(or_equal_types_err, OR_EQUAL_TYPES_ERR, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("must bind y at exactly equal types"));
+run!(or_equal_types_err, OR_EQUAL_TYPES_ERR, refused("must bind y at exactly equal types");
  graphix_package_core::testing::FuseExpect::None);
 
 // Dead alternatives are errors, like dead arms.
@@ -1675,14 +1678,14 @@ const OR_DUP_ALT_ERR: &str = r#"
 select 1 { 1 | 1 => 0, _ => 2 }
 "#;
 
-run!(or_dup_alt_err, OR_DUP_ALT_ERR, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("duplicate of an earlier alternative"));
+run!(or_dup_alt_err, OR_DUP_ALT_ERR, refused("duplicate of an earlier alternative");
  graphix_package_core::testing::FuseExpect::None);
 
 const OR_DEAD_ALT_ERR: &str = r#"
 select 1 { _ | 1 => 0 }
 "#;
 
-run!(or_dead_alt_err, OR_DEAD_ALT_ERR, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("already matches anything"));
+run!(or_dead_alt_err, OR_DEAD_ALT_ERR, refused("already matches anything");
  graphix_package_core::testing::FuseExpect::None);
 
 // Zero-residue: the whole or-select compiles native.
@@ -1782,7 +1785,7 @@ const SELECT_VARIANT_UNION_DIAGONAL: &str = r#"
 run!(
     select_variant_union_diagonal_rejected,
     SELECT_VARIANT_UNION_DIAGONAL,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing match cases"));
+    refused("missing match cases");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1942,7 +1945,7 @@ const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
 }
 "#;
 
-run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("unreachable arm")); graphix_package_core::testing::FuseExpect::None);
+run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, refused("unreachable arm"); graphix_package_core::testing::FuseExpect::None);
 
 // A destructuring `let`'s siblings are facets of one delivery: arm 0
 // handles the pair through `a`, so `b` is spent.
@@ -2659,7 +2662,7 @@ const ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL: &str = r#"
 }
 "#;
 
-run!(array_element_test_keeps_residual, ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("string does not contain [i64, string]"));
+run!(array_element_test_keeps_residual, ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL, refused("string does not contain [i64, string]");
  graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_ELEMENT_TEST_RESIDUAL_MIXED: &str = r#"

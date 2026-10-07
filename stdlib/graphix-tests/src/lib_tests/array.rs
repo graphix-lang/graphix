@@ -8,7 +8,7 @@ use arcstr::ArcStr;
 // both fixtures spell `sys::net::` and `sys::time::` in full and check without it, so
 // delete it. callable.rs spells graphix_compiler::expr::VfsEntry and
 // arcstr::ArcStr::from 8 times each; import them. (tests-lib-a-15)
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 const ARRAY_MAP0: &str = r#"
@@ -143,12 +143,7 @@ const ARRAY_MAP2: &str = r#"
   array::map([1, 2], |x| str::len(x))
 "#;
 
-run!(array_map2, ARRAY_MAP2, |v: Result<&Value>| {
-    match v {
-        Err(_) => true,
-        Ok(_) => false,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_map2, ARRAY_MAP2, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_FILTER: &str = r#"
 {
@@ -601,12 +596,7 @@ const ARRAY_FOLD1: &str = r#"
 }
 "#;
 
-run!(array_fold1, ARRAY_FOLD1, |v: Result<&Value>| {
-    match v {
-        Err(_) => true,
-        Ok(_) => false,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_fold1, ARRAY_FOLD1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_CONCAT: &str = r#"
   array::concat([1, 2, 3], [4, 5], [6])
@@ -782,12 +772,7 @@ const ARRAY_GROUP1: &str = r#"
 }
 "#;
 
-run!(array_group1, ARRAY_GROUP1, |v: Result<&Value>| {
-    match v {
-        Ok(_) => false,
-        Err(_) => true,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_group1, ARRAY_GROUP1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_GROUP2: &str = r#"
 {
@@ -796,12 +781,7 @@ const ARRAY_GROUP2: &str = r#"
 }
 "#;
 
-run!(array_group2, ARRAY_GROUP2, |v: Result<&Value>| {
-    match v {
-        Ok(_) => false,
-        Err(_) => true,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
@@ -875,12 +855,7 @@ const ARRAY_INIT4: &str = r#"
   array::init(3, |i| str::len(i))
 "#;
 
-run!(array_init4, ARRAY_INIT4, |v: Result<&Value>| {
-    match v {
-        Err(_) => true,
-        Ok(_) => false,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_init4, ARRAY_INIT4, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_SORT0: &str = r#"
 {

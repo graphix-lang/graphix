@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use chrono::prelude::*;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 use std::time::Duration;
 
@@ -101,10 +101,7 @@ const DATETIME_ARITH07: &str = r#"
 }
 "#;
 
-run!(datetime_arith07, DATETIME_ARITH07, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith07, DATETIME_ARITH07, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH08: &str = r#"
 {
@@ -113,10 +110,7 @@ const DATETIME_ARITH08: &str = r#"
 }
 "#;
 
-run!(datetime_arith08, DATETIME_ARITH08, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith08, DATETIME_ARITH08, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH09: &str = r#"
 {
@@ -125,10 +119,7 @@ const DATETIME_ARITH09: &str = r#"
 }
 "#;
 
-run!(datetime_arith09, DATETIME_ARITH09, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith09, DATETIME_ARITH09, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH10: &str = r#"
 {
@@ -137,10 +128,7 @@ const DATETIME_ARITH10: &str = r#"
 }
 "#;
 
-run!(datetime_arith10, DATETIME_ARITH10, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith10, DATETIME_ARITH10, refused("cannot compute duration + u32"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH11: &str = r#"
 {
@@ -149,79 +137,52 @@ const DATETIME_ARITH11: &str = r#"
 }
 "#;
 
-run!(datetime_arith11, DATETIME_ARITH11, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith11, DATETIME_ARITH11, refused("cannot compute duration - u32"); graphix_package_core::testing::FuseExpect::None);
 
-// CR claude for claude: [test-gap] arith12 to arith16 annotate `x: duration` over
-// `datetime OP i64`, and the annotation alone refuses them ('duration does not contain
-// datetime'). They would still pass if the operator rule started accepting datetime
-// arithmetic with an integer. arith18's comment says duration is not a Number, but the
-// one-type operand rule is what refuses it ('cannot compute duration *? i64'). Nothing
-// pins that datetime is not a Number, which is the reason `datetime - datetime` is
-// refused. Drop the annotations and match the error message. Change arith18 to
-// `duration:1.s *? duration:2.s` ('Number does not contain duration'), and add a test
-// that subtracts two datetimes ('Number does not contain datetime'). (tests-lang-d-07)
 const DATETIME_ARITH12: &str = r#"
 {
-    let x: duration = datetime:"2024-11-05T00:00:00Z" - 1;
+    let x = datetime:"2024-11-05T00:00:00Z" - 1;
     x
 }
 "#;
 
-run!(datetime_arith12, DATETIME_ARITH12, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith12, DATETIME_ARITH12, refused("cannot compute datetime - i64"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH13: &str = r#"
 {
-    let x: duration = datetime:"2024-11-05T00:00:00Z" + 1;
+    let x = datetime:"2024-11-05T00:00:00Z" + 1;
     x
 }
 "#;
 
-run!(datetime_arith13, DATETIME_ARITH13, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith13, DATETIME_ARITH13, refused("cannot compute datetime + i64"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH14: &str = r#"
 {
-    let x: duration = datetime:"2024-11-05T00:00:00Z" * 2;
+    let x = datetime:"2024-11-05T00:00:00Z" * 2;
     x
 }
 "#;
 
-run!(datetime_arith14, DATETIME_ARITH14, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith14, DATETIME_ARITH14, refused("cannot compute datetime * i64"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH15: &str = r#"
 {
-    let x: duration = datetime:"2024-11-05T00:00:00Z" / 2;
+    let x = datetime:"2024-11-05T00:00:00Z" / 2;
     x
 }
 "#;
 
-run!(datetime_arith15, DATETIME_ARITH15, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith15, DATETIME_ARITH15, refused("cannot compute datetime / i64"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH16: &str = r#"
 {
-    let x: duration = datetime:"2024-11-05T00:00:00Z" % 2;
+    let x = datetime:"2024-11-05T00:00:00Z" % 2;
     x
 }
 "#;
 
-run!(datetime_arith16, DATETIME_ARITH16, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith16, DATETIME_ARITH16, refused("cannot compute datetime % i64"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH17: &str = r#"
 {
@@ -230,18 +191,23 @@ const DATETIME_ARITH17: &str = r#"
 }
 "#;
 
-run!(datetime_arith17, DATETIME_ARITH17, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith17, DATETIME_ARITH17, refused("cannot compute duration - datetime"); graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH18: &str = r#"
-    duration:9999999999999.s *? 99999999999999
+    duration:1.s *? duration:2.s
 "#;
 
 // duration is not a Number: the operator rejects at compile time
 // (scaling is sys::time::scale).
-run!(datetime_arith18, DATETIME_ARITH18, |v: Result<&Value>| matches!(v, Err(_));
+run!(datetime_arith18, DATETIME_ARITH18, refused("Number does not contain duration");
+     graphix_package_core::testing::FuseExpect::None);
+
+const DATETIME_MINUS_DATETIME: &str = r#"
+    datetime:"2024-11-05T01:00:00Z" - datetime:"2024-11-05T00:00:00Z"
+"#;
+
+// datetime is not a Number either: the difference is sys::time::diff.
+run!(datetime_minus_datetime, DATETIME_MINUS_DATETIME, refused("Number does not contain datetime");
      graphix_package_core::testing::FuseExpect::None);
 
 const DATETIME_ARITH19: &str = r#"

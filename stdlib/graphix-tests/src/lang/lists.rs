@@ -1,7 +1,7 @@
 // Native List literals and list-slice patterns (design/list_native.md).
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 
 const LIST_LIT_BASIC: &str = r#"
@@ -103,7 +103,7 @@ const LIST_PAT_NONEXHAUSTIVE: &str = r#"
 }
 "#;
 
-run!(list_pat_nonexhaustive, LIST_PAT_NONEXHAUSTIVE, |v: Result<&Value>| v.is_err();
+run!(list_pat_nonexhaustive, LIST_PAT_NONEXHAUSTIVE, refused("missing match cases");
     graphix_package_core::testing::FuseExpect::None);
 
 const LIST_PAT_DEAD_WILDCARD: &str = r#"
@@ -113,7 +113,7 @@ const LIST_PAT_DEAD_WILDCARD: &str = r#"
 }
 "#;
 
-run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, |v: Result<&Value>| v.is_err();
+run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, refused("unreachable arm");
     graphix_package_core::testing::FuseExpect::None);
 
 // The suffix form is refused for lists: the front is an O(n) walk.
@@ -124,7 +124,7 @@ const LIST_PAT_SUFFIX_REFUSED: &str = r#"
 }
 "#;
 
-run!(list_pat_suffix_refused, LIST_PAT_SUFFIX_REFUSED, |v: Result<&Value>| v.is_err();
+run!(list_pat_suffix_refused, LIST_PAT_SUFFIX_REFUSED, refused("list patterns have no suffix form");
     graphix_package_core::testing::FuseExpect::None);
 
 // `list::flat_map` fuses: its callback's List return is an opaque value

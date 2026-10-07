@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"
@@ -321,12 +321,7 @@ const FILTER1: &str = r#"
 }
 "#;
 
-run!(filter1, FILTER1, |v: Result<&Value>| {
-    match v {
-        Ok(_) => false,
-        Err(_) => true,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(filter1, FILTER1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const QUEUE: &str = r#"
 {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 const LIST_NIL: &str = r#"
@@ -56,28 +56,11 @@ run!(list_head_empty, LIST_HEAD_EMPTY, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_TAIL_NONEMPTY: &str = r#"
-  list::tail(list::from_array([1, 2, 3]))
+  list::to_array(list::tail(list::from_array([1, 2, 3]))$)
 "#;
 
-// CR claude for claude: [structure] list_tail_nonempty and list_uncons_nonempty (91)
-// match the cons-cell layout `[2, [3, []]]`, which design/list_native.md says is
-// private and free to change. A change of representation would break them even though
-// no program behaves differently. Assert through the API instead:
-// `list::to_array(list::tail(list::from_array([1, 2, 3]))$)` gives [2, 3]. LIST_NIL (6)
-// and LIST_IS_EMPTY_TRUE (115) are the same program, and LIST_LEN (168) and
-// LIST_FROM_ARRAY_LEN (272) differ only in length; delete one of each pair.
-// (tests-lib-a-17)
 run!(list_tail_nonempty, LIST_TAIL_NONEMPTY, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(2), Value::Array(rest)] => match &rest[..] {
-                [Value::I64(3), Value::Array(nil)] => nil.is_empty(),
-                _ => false,
-            },
-            _ => false,
-        },
-        _ => false,
-    }
+    matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(2), Value::I64(3)])
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_TAIL_EMPTY: &str = r#"
@@ -89,23 +72,14 @@ run!(list_tail_empty, LIST_TAIL_EMPTY, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_UNCONS_NONEMPTY: &str = r#"
-  list::uncons(list::from_array([10, 20, 30]))
+{
+  let (h, t) = list::uncons(list::from_array([10, 20, 30]))$;
+  (h, list::to_array(t))
+}
 "#;
 
 run!(list_uncons_nonempty, LIST_UNCONS_NONEMPTY, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(t)) => match &t[..] {
-            [Value::I64(10), Value::Array(tail)] => match &tail[..] {
-                [Value::I64(20), Value::Array(rest)] => match &rest[..] {
-                    [Value::I64(30), Value::Array(nil)] => nil.is_empty(),
-                    _ => false,
-                },
-                _ => false,
-            },
-            _ => false,
-        },
-        _ => false,
-    }
+    matches!(v.map(|v| v.clone().cast_to::<(i64, [i64; 2])>()), Ok(Ok((10, [20, 30]))))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_UNCONS_EMPTY: &str = r#"
@@ -114,14 +88,6 @@ const LIST_UNCONS_EMPTY: &str = r#"
 
 run!(list_uncons_empty, LIST_UNCONS_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
-
-const LIST_IS_EMPTY_TRUE: &str = r#"
-  list::is_empty(list::nil(null))
-"#;
-
-run!(list_is_empty_true, LIST_IS_EMPTY_TRUE, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_IS_EMPTY_FALSE: &str = r#"
@@ -263,14 +229,6 @@ run!(list_roundtrip, LIST_ROUNDTRIP, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const LIST_FROM_ARRAY_LEN: &str = r#"
-  list::len(list::from_array([1, 2, 3]))
-"#;
-
-run!(list_from_array_len, LIST_FROM_ARRAY_LEN, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(3)))
-}; graphix_package_core::testing::FuseExpect::Jit);
-
 const LIST_CONCAT: &str = r#"
 {
   let a = list::from_array([1, 2, 3]);
@@ -336,9 +294,7 @@ const LIST_MAP_TYPE_ERR: &str = r#"
 }
 "#;
 
-run!(list_map_type_err, LIST_MAP_TYPE_ERR, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(list_map_type_err, LIST_MAP_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const LIST_FILTER: &str = r#"
 {
@@ -420,9 +376,7 @@ const LIST_FOLD_TYPE_ERR: &str = r#"
 }
 "#;
 
-run!(list_fold_type_err, LIST_FOLD_TYPE_ERR, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(list_fold_type_err, LIST_FOLD_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const LIST_FIND: &str = r#"
 {
@@ -455,20 +409,11 @@ run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
 
 // A heterogeneous list with a Fn member flowing through find into
 // Number-constrained arith is rejected.
-// CR claude for claude: [test-gap] The comment says the Fn member reaches the fold's
-// Number-constrained `acc + x`. In fact the program is refused earlier, at the find
-// callback's `x > 10` ('cannot compare [i64, null, fn(..)] with i64'). Since
-// `matches!(v, Err(_))` accepts any error, the fold's check could regress with this
-// test still green. With `|x| true` as the find callback, the refusal is the fold's
-// ('arithmetic is fn('a: Number, 'a) -> 'a'); use that callback and assert on the error
-// text. The unit's nine other expect-Err fixtures (array_map2, array_fold1,
-// array_group1/2, array_init4, filter1, list_map/fold/init_type_err) also accept any
-// error, so a renamed builtin would still pass them. (tests-lib-a-09)
 const LIST_FIND_HET_FN_FOLD_TYPE_ERR: &str = r#"
 {
   let a = array::init(3, |i| {
     let l = list::from_array([null, list::cons, 3]);
-    list::find(l, |x| x > 10)
+    list::find(l, |x| true)
   });
   array::fold(a, 0, |acc, x| acc + x)
 }
@@ -477,7 +422,7 @@ const LIST_FIND_HET_FN_FOLD_TYPE_ERR: &str = r#"
 run!(
     list_find_het_fn_fold_type_err,
     LIST_FIND_HET_FN_FOLD_TYPE_ERR,
-    |v: Result<&Value>| { matches!(v, Err(_)) };
+    refused("arithmetic is fn(");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -656,9 +601,7 @@ const LIST_INIT_TYPE_ERR: &str = r#"
   list::init(3, |i| str::len(i))
 "#;
 
-run!(list_init_type_err, LIST_INIT_TYPE_ERR, |v: Result<&Value>| {
-    matches!(v, Err(_))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(list_init_type_err, LIST_INIT_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const LIST_ITER: &str = r#"
   filter(list::iter(list::from_array([1, 2, 3, 4])), |x| x == 4)

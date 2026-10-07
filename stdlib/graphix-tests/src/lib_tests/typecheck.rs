@@ -1,21 +1,21 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 // Deserialization builtins require a concrete result type at compile time.
 
 // json::read without a concrete return type is a compile error.
-run!(json_no_type, r#"json::read("42")"#, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
 
 // toml::read without a concrete return type is a compile error.
-run!(toml_no_type, r#"toml::read("x = 42")"#, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
 
 // pack::read without a concrete return type is a compile error.
 run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| v
     .is_err(); graphix_package_core::testing::FuseExpect::None);
 
 // str::parse without a concrete return type is a compile error.
-run!(str_parse_no_type, r#"str::parse("42")"#, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(str_parse_no_type, r#"str::parse("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
 
 // json::read with a concrete type.
 run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
@@ -112,8 +112,7 @@ run!(
     let results = array::map(data, json::read);
     results[0]
 }"#,
-    |v: Result<&Value>| { matches!(v, Err(_)) }
-; graphix_package_core::testing::FuseExpect::None);
+    refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
 
 // array::fold: json::read in the fold closure receives its concrete type.
 run!(

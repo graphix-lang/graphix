@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 
 const MAP0: &str = r#"
@@ -142,10 +142,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, |v: Result<&Value>| match v {
-    Err(_) => true, // Type error at compile time is expected
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("does not contain Map<"); graphix_package_core::testing::FuseExpect::None);
 
 const MAP_NESTED: &str = r#"
 {

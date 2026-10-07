@@ -291,15 +291,6 @@ run!(catch_block_scope, CATCH_BLOCK_SCOPE, |v: Result<&Value>| matches!(
 
 // A catch covering a lambda body's `?` keeps those errors out of the
 // lambda's inferred throws.
-// CR claude for claude: [test-gap] Nothing in this fixture observes f's throws. An
-// uncovered `?` only logs, so with the catch deleted the program still compiles and
-// yields 1, and a regression that leaked covered errors into the lambda's inferred
-// throws would still pass. Ascribe the lambda and call through it: `let g: fn(i: i64)
-// -> i64 = f; (g(0), g(9)).0`. With the catch that yields 1; without it the program is
-// refused ('fn(i: i64) -> i64 does not contain ... throws
-// Error<ErrChain<`ArrayIndexError(string)>>'). The 'None:' comment above the run!
-// contradicts its FuseExpect::Jit: parts of the body fuse, and the catch only stops f
-// from getting a kernel of its own. Delete it. (tests-lang-d-04)
 const CATCH_IN_LAMBDA_THROWS: &str = r#"
 {
     let err0: Error<Any> = never();
@@ -308,7 +299,8 @@ const CATCH_IN_LAMBDA_THROWS: &str = r#"
         let a = [1, 2, 3];
         any(a[i]?, 0 - 1)
     };
-    (f(0), f(9)).0
+    let g: fn(i: i64) -> i64 = f;
+    (g(0), g(9)).0
 }
 "#;
 
@@ -316,6 +308,25 @@ run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, |v: Result<&Value>| matches
     v,
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// Without the catch the lambda throws, and the ascription refuses it.
+const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
+{
+    let f = |i: i64| {
+        let a = [1, 2, 3];
+        any(a[i]?, 0 - 1)
+    };
+    let g: fn(i: i64) -> i64 = f;
+    (g(0), g(9)).0
+}
+"#;
+
+run!(
+    uncaught_in_lambda_throws,
+    UNCAUGHT_IN_LAMBDA_THROWS,
+    graphix_package_core::testing::refused("throws '_");
+    graphix_package_core::testing::FuseExpect::None
+);
 
 /// A catch installed by one `GXHandle::compile` input covers later
 /// inputs; the `?`'s delivery crosses tops via `set_var`.
@@ -504,18 +515,8 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
         catch(e: Error<ErrChain<`ArithError(string)>>) never(e);
         a[10]?
     }"#;
-    let r = graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await;
-    // CR claude for claude: [test-gap] is_err() also holds if the narrow catch is
-    // accepted. Its handler is never(e) and a[10]? raises, so the block never produces
-    // a value, eval returns its 5 s timeout error, and the test passes. The same
-    // program with catch(e: Error<Any>) compiles and prints nothing. Assert on the
-    // refusal itself, e.g. that format!("{e:#}") contains 'does not contain
-    // Error<ErrChain<`ArrayIndexError'. (tests-lang-d-03)
-    assert!(
-        r.is_err(),
-        "too-narrow catch(e: T) must be rejected, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
+    assert!(e.contains("does not contain Error<ErrChain<`ArrayIndexError"), "{e}");
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 const STR_STARTS_WITH: &str = r#"
@@ -434,9 +434,7 @@ const STR_PARSE_REF_TARGET: &str = r#"{
   x
 }"#;
 
-run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("Concrete"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("Concrete"); graphix_package_core::testing::FuseExpect::None);
 
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.

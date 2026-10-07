@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::subscriber::Value;
 
 run!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Result<&Value>| {
@@ -159,6 +159,4 @@ run!(json_nested_struct_cast, r#"{
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // json::read without a concrete return type is a compile error.
-run!(json_no_concrete_type, r#"json::read("42")"#, |v: Result<&Value>| {
-    v.is_err()
-}; graphix_package_core::testing::FuseExpect::None);
+run!(json_no_concrete_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);

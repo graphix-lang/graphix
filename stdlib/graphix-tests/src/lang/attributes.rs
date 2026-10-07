@@ -2,7 +2,7 @@
 // and `#[async]`: a failed assertion is a compile error (`Err(_)`).
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 
 const TAIL_RECURSIVE_OK: &str = r#"
@@ -27,7 +27,7 @@ const TAIL_RECURSIVE_NON_TAIL: &str = r#"
 }
 "#;
 
-run!(tail_recursive_non_tail, TAIL_RECURSIVE_NON_TAIL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(tail_recursive_non_tail, TAIL_RECURSIVE_NON_TAIL, refused("every recursive call must be in tail position"); graphix_package_core::testing::FuseExpect::None);
 
 // One tail self-call does not make a function tail-recursive when
 // another self-call is non-tail.
@@ -43,7 +43,7 @@ const TAIL_RECURSIVE_MIXED: &str = r#"
 }
 "#;
 
-run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, refused("every recursive call must be in tail position"); graphix_package_core::testing::FuseExpect::None);
 
 // `#[tail_recursive]` asserts a constant-space loop, which needs a
 // stateless body: `count` gives every iteration its own activation.
@@ -55,7 +55,7 @@ const TAIL_RECURSIVE_STATEFUL: &str = r#"
 }
 "#;
 
-run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); graphix_package_core::testing::FuseExpect::None);
 
 // A vacuous assertion is an error: the function never recurses.
 const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
@@ -69,7 +69,7 @@ const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
 run!(
     tail_recursive_not_recursive,
     TAIL_RECURSIVE_NOT_RECURSIVE,
-    |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+    refused("#[tail_recursive]: this function is not recursive"); graphix_package_core::testing::FuseExpect::None);
 
 const SYNC_OK: &str = r#"
 {
@@ -101,7 +101,7 @@ const SYNC_PARENS_ON_ASYNC: &str = r#"
 }
 "#;
 
-run!(sync_parens_on_async, SYNC_PARENS_ON_ASYNC, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_parens_on_async, SYNC_PARENS_ON_ASYNC, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);
 
 // `throttle` defers deliveries across cycles: the body is async.
 const SYNC_ON_ASYNC: &str = r#"
@@ -112,7 +112,7 @@ const SYNC_ON_ASYNC: &str = r#"
 }
 "#;
 
-run!(sync_on_async, SYNC_ON_ASYNC, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_async, SYNC_ON_ASYNC, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);
 
 // A `&` evaluates its whole expression: an async builtin two levels
 // under the reference makes the body async.
@@ -124,7 +124,7 @@ const SYNC_ON_ASYNC_UNDER_REF: &str = r#"
 }
 "#;
 
-run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);
 
 // A dynamic module runs code its source delivers at run time.
 const SYNC_ON_DYNAMIC_MODULE: &str = r#"
@@ -142,7 +142,7 @@ const SYNC_ON_DYNAMIC_MODULE: &str = r#"
 }
 "#;
 
-run!(sync_on_dynamic_module, SYNC_ON_DYNAMIC_MODULE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_dynamic_module, SYNC_ON_DYNAMIC_MODULE, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);
 
 // An async builtin in a dynamic module's source expression.
 const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
@@ -180,7 +180,7 @@ const ASYNC_ON_SYNC: &str = r#"
 }
 "#;
 
-run!(async_on_sync, ASYNC_ON_SYNC, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(async_on_sync, ASYNC_ON_SYNC, refused("#[async]: this function is sync"); graphix_package_core::testing::FuseExpect::None);
 
 // The definition-asserting attributes reject non-function targets.
 const SYNC_ON_VALUE: &str = r#"
@@ -191,7 +191,7 @@ const SYNC_ON_VALUE: &str = r#"
 }
 "#;
 
-run!(sync_on_value, SYNC_ON_VALUE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_value, SYNC_ON_VALUE, refused("#[sync] annotates a function definition"); graphix_package_core::testing::FuseExpect::None);
 
 // Effects are inferred per instance: a pure instance of `apply` does
 // not stand in for the async one `delayed` reaches.
@@ -205,7 +205,7 @@ const SYNC_ON_ASYNC_INSTANCE: &str = r#"
 }
 "#;
 
-run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);
 
 // A definition's assertion sees every instance: the pure instance of
 // `loop` does not stand in for the one whose callback counts.
@@ -223,7 +223,7 @@ const TAIL_RECURSIVE_STATEFUL_INSTANCE: &str = r#"
 run!(
     tail_recursive_stateful_instance,
     TAIL_RECURSIVE_STATEFUL_INSTANCE,
-    |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+    refused("#[tail_recursive]: this function's body is stateful or async"); graphix_package_core::testing::FuseExpect::None);
 
 // The same loop with pure callbacks only.
 const TAIL_RECURSIVE_PURE_INSTANCES: &str = r#"
@@ -250,7 +250,7 @@ const TAIL_RECURSIVE_LABELED: &str = r#"
 }
 "#;
 
-run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, refused("no loop is built"); graphix_package_core::testing::FuseExpect::None);
 
 // The instance `h` recurses through is mutually recursive; the tail
 // instance over `|x| x` does not stand in for it.
@@ -263,7 +263,7 @@ const TAIL_RECURSIVE_MUTUAL_INSTANCE: &str = r#"
 }
 "#;
 
-run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, refused("every recursive call must be in tail position"); graphix_package_core::testing::FuseExpect::None);
 
 // A lambda literal called in place is an instance like any other: its
 // async body makes the enclosing function async.
@@ -275,4 +275,4 @@ const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
 }
 "#;
 
-run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, refused("#[sync]: this function is async"); graphix_package_core::testing::FuseExpect::None);

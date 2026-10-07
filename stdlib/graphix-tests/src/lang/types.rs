@@ -1,14 +1,17 @@
 // Tests for type system features: type checking, annotations, type variables
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::eval};
+use graphix_package_core::{
+    run,
+    testing::{eval, refused},
+};
 use netidx::publisher::Value;
 
 const SIMPLE_TYPECHECK: &str = r#"
 "foo" + 1
 "#;
 
-run!(simple_typecheck, SIMPLE_TYPECHECK, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cannot compute string + i64")); graphix_package_core::testing::FuseExpect::None);
+run!(simple_typecheck, SIMPLE_TYPECHECK, refused("cannot compute string + i64"); graphix_package_core::testing::FuseExpect::None);
 
 const FUNCTION_TYPES: &str = r#"
 {
@@ -17,7 +20,7 @@ const FUNCTION_TYPES: &str = r#"
 }
 "#;
 
-run!(function_types, FUNCTION_TYPES, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Number does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(function_types, FUNCTION_TYPES, refused("Number does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const PARTIAL_FUNCTION_TYPES: &str = r#"
 {
@@ -26,7 +29,7 @@ const PARTIAL_FUNCTION_TYPES: &str = r#"
 }
 "#;
 
-run!(partial_function_types, PARTIAL_FUNCTION_TYPES, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Number does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(partial_function_types, PARTIAL_FUNCTION_TYPES, refused("Number does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const FUNCTION_RTYPE: &str = r#"
 {
@@ -35,7 +38,7 @@ const FUNCTION_RTYPE: &str = r#"
 }
 "#;
 
-run!(function_rtype, FUNCTION_RTYPE, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Number does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(function_rtype, FUNCTION_RTYPE, refused("Number does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const INFERRED_RTYPE: &str = r#"
 {
@@ -46,7 +49,7 @@ const INFERRED_RTYPE: &str = r#"
 }
 "#;
 
-run!(inferred_rtype, INFERRED_RTYPE, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain")); graphix_package_core::testing::FuseExpect::None);
+run!(inferred_rtype, INFERRED_RTYPE, refused("i64 does not contain"); graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDA_CONSTRAINT: &str = r#"
 {
@@ -64,7 +67,7 @@ const EXPLICIT_TYPE_VARS0: &str = r#"
 }
 "#;
 
-run!(explicit_type_vars0, EXPLICIT_TYPE_VARS0, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(explicit_type_vars0, EXPLICIT_TYPE_VARS0, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS1: &str = r#"
 {
@@ -73,7 +76,7 @@ const EXPLICIT_TYPE_VARS1: &str = r#"
 }
 "#;
 
-run!(explicit_type_vars1, EXPLICIT_TYPE_VARS1, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("u32 does not contain i64")); graphix_package_core::testing::FuseExpect::None);
+run!(explicit_type_vars1, EXPLICIT_TYPE_VARS1, refused("u32 does not contain i64"); graphix_package_core::testing::FuseExpect::None);
 
 const EXPLICIT_TYPE_VARS2: &str = r#"
 {
@@ -99,7 +102,7 @@ const EXPLICIT_TYPE_VARS3: &str = r#"
 "#;
 
 // Two distinct quantified operand types cannot add.
-run!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
+run!(explicit_type_vars3, EXPLICIT_TYPE_VARS3, refused("both operands must be one numeric type");
      graphix_package_core::testing::FuseExpect::None);
 
 const TYPED_ARRAYS0: &str = r#"
@@ -130,7 +133,7 @@ const TYPED_ARRAYS1: &str = r#"
 }
 "#;
 
-run!(typed_arrays1, TYPED_ARRAYS1, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain Array<")); graphix_package_core::testing::FuseExpect::None);
+run!(typed_arrays1, TYPED_ARRAYS1, refused("does not contain Array<"); graphix_package_core::testing::FuseExpect::None);
 
 const RECTYPES0: &str = r#"
 {
@@ -245,7 +248,7 @@ const CYCLIC_ALIAS: &str = r#"
 }
 "#;
 
-run!(cyclic_alias, CYCLIC_ALIAS, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("refers back to itself through unions and aliases alone"));
+run!(cyclic_alias, CYCLIC_ALIAS, refused("refers back to itself through unions and aliases alone");
     graphix_package_core::testing::FuseExpect::None);
 
 // `|a| a + a` is type-preserving: the result aliases the operand cell,
@@ -275,7 +278,7 @@ const SAME_CELL_ANNOTATION_CONFLICT: &str = r#"
 run!(
     same_cell_annotation_conflict,
     SAME_CELL_ANNOTATION_CONFLICT,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("f64 does not contain"));
+    refused("f64 does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -288,7 +291,7 @@ const ONE_CELL_FORMALS_MIXED_CALL: &str = r#"
 
 // `|a, b| a + b` aliases both formals into one cell, so an i64 x f64
 // call rejects.
-run!(one_cell_formals_refuse_mixed_call, ONE_CELL_FORMALS_MIXED_CALL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain f64"));
+run!(one_cell_formals_refuse_mixed_call, ONE_CELL_FORMALS_MIXED_CALL, refused("i64 does not contain f64");
      graphix_package_core::testing::FuseExpect::None);
 
 // A declared `'a` is a contract: a concrete f64 body under `-> 'a` is a
@@ -300,7 +303,7 @@ const RIGID_TVAR_CONCRETE_BODY: &str = r#"
 }
 "#;
 
-run!(rigid_tvar_concrete_body_refused, RIGID_TVAR_CONCRETE_BODY, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Number does not contain f64")); graphix_package_core::testing::FuseExpect::None);
+run!(rigid_tvar_concrete_body_refused, RIGID_TVAR_CONCRETE_BODY, refused("within Number does not contain f64"); graphix_package_core::testing::FuseExpect::None);
 
 // The same def rejects even at an f64 call.
 const RIGID_TVAR_CONCRETE_BODY_F64_CALL: &str = r#"
@@ -310,7 +313,7 @@ const RIGID_TVAR_CONCRETE_BODY_F64_CALL: &str = r#"
 }
 "#;
 
-run!(rigid_tvar_concrete_body_refused_at_f64_call, RIGID_TVAR_CONCRETE_BODY_F64_CALL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Number does not contain f64")); graphix_package_core::testing::FuseExpect::None);
+run!(rigid_tvar_concrete_body_refused_at_f64_call, RIGID_TVAR_CONCRETE_BODY_F64_CALL, refused("within Number does not contain f64"); graphix_package_core::testing::FuseExpect::None);
 
 // `x + f64:0.` under a generic `'a: Number` formal is ill-typed.
 const RIGID_TVAR_MIXED_ARITH: &str = r#"
@@ -320,7 +323,7 @@ const RIGID_TVAR_MIXED_ARITH: &str = r#"
 }
 "#;
 
-run!(rigid_tvar_mixed_arith_refused, RIGID_TVAR_MIXED_ARITH, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")); graphix_package_core::testing::FuseExpect::None);
+run!(rigid_tvar_mixed_arith_refused, RIGID_TVAR_MIXED_ARITH, refused("both operands must be one numeric type"); graphix_package_core::testing::FuseExpect::None);
 
 // The same def rejects at an f64-only use: the def itself is ill-typed.
 const RIGID_TVAR_MIXED_ARITH_F64_CALL: &str = r#"
@@ -330,7 +333,7 @@ const RIGID_TVAR_MIXED_ARITH_F64_CALL: &str = r#"
 }
 "#;
 
-run!(rigid_tvar_mixed_arith_refused_at_f64_call, RIGID_TVAR_MIXED_ARITH_F64_CALL, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")); graphix_package_core::testing::FuseExpect::None);
+run!(rigid_tvar_mixed_arith_refused_at_f64_call, RIGID_TVAR_MIXED_ARITH_F64_CALL, refused("both operands must be one numeric type"); graphix_package_core::testing::FuseExpect::None);
 
 // An unannotated formal infers monomorphic: `|x| x + i64:1` is
 // fn(i64) -> i64, so the f64 site rejects.
@@ -341,9 +344,7 @@ const UNANNOTATED_FORMAL_MONOMORPHIC: &str = r#"
 }
 "#;
 
-run!(unannotated_formal_refuses_f64_call, UNANNOTATED_FORMAL_MONOMORPHIC, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain f64"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(unannotated_formal_refuses_f64_call, UNANNOTATED_FORMAL_MONOMORPHIC, refused("i64 does not contain f64"); graphix_package_core::testing::FuseExpect::None);
 
 // Set-vs-set residue: a bare unbound tvar member binds to the union of
 // the uncovered rhs members in one act (`[null, 'a] ⊇ [`A, `B]`).
@@ -377,7 +378,7 @@ const CONNECT_SAMPLE_SELECT_SHAPE_ERR: &str = r#"
 run!(
     connect_sample_select_shape_err,
     CONNECT_SAMPLE_SELECT_SHAPE_ERR,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("and cannot hold { b: f64, y: i64 }"));
+    refused("and cannot hold { b: f64, y: i64 }");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -393,7 +394,7 @@ const PARSE_UNANNOTATED_IN_CALLBACK_ERR: &str = r#"
 run!(
     parse_unannotated_in_callback_err,
     PARSE_UNANNOTATED_IN_CALLBACK_ERR,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("must be fully known here"));
+    refused("must be fully known here");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -631,7 +632,7 @@ const REC_RETURN_SELF_REJECTS: &str = r#"
 run!(
     rec_return_self_rejects,
     REC_RETURN_SELF_REJECTS,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cannot infer a finite type here"));
+    refused("cannot infer a finite type here");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -693,7 +694,7 @@ const REC_BLOCK_INFINITE_REJECTS: &str = r#"
 run!(
     rec_block_infinite_rejects,
     REC_BLOCK_INFINITE_REJECTS,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cannot infer a finite type here"));
+    refused("cannot infer a finite type here");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -707,7 +708,7 @@ const REC_RETURN_SELF_BLOCK_REJECTS: &str = r#"
 run!(
     rec_return_self_block_rejects,
     REC_RETURN_SELF_BLOCK_REJECTS,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cannot infer a finite type here"));
+    refused("cannot infer a finite type here");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -722,7 +723,7 @@ const REC_RETURN_SELF_STATEMENT_REJECTS: &str = r#"
 run!(
     rec_return_self_statement_rejects,
     REC_RETURN_SELF_STATEMENT_REJECTS,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("cannot infer a finite type here"));
+    refused("cannot infer a finite type here");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -740,7 +741,7 @@ const CONNECT_SELF_NESTING_REJECTED: &str = r#"
 run!(
     connect_self_nesting_rejected,
     CONNECT_SELF_NESTING_REJECTED,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("and cannot hold Array<"));
+    refused("and cannot hold Array<");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -755,7 +756,7 @@ const CONNECT_SELF_NESTING_ANNOTATED_REJECTED: &str = r#"
 run!(
     connect_self_nesting_annotated_rejected,
     CONNECT_SELF_NESTING_ANNOTATED_REJECTED,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("src is Array<Array<i64>> and cannot hold"));
+    refused("src is Array<Array<i64>> and cannot hold");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -878,7 +879,7 @@ const CAST_RECURSIVE_NO_PROGRESS: &str = r#"
   cast<Loop>("not-a-number")
 }
 "#;
-run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("refers back to itself through unions and aliases alone")); graphix_package_core::testing::FuseExpect::None);
+run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, refused("refers back to itself through unions and aliases alone"); graphix_package_core::testing::FuseExpect::None);
 
 // A two-element array is not a list: converting it keeps both items.
 const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
@@ -896,14 +897,10 @@ run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
 // refused where the check sees it, and fails where only an instance
 // does.
 const CAST_OF_A_REFERENCE: &str = r#"{ let v = 0; cast<f32>(&v) }"#;
-run!(cast_of_a_reference, CAST_OF_A_REFERENCE, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_of_a_reference, CAST_OF_A_REFERENCE, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 const CAST_OF_A_NESTED_REFERENCE: &str = r#"{ let v = 0; cast<Array<i64>>([&v]) }"#;
-run!(cast_of_a_nested_reference, CAST_OF_A_NESTED_REFERENCE, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_of_a_nested_reference, CAST_OF_A_NESTED_REFERENCE, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 const CAST_OF_A_REFERENCE_IN_AN_INSTANCE: &str = r#"
 {
@@ -943,9 +940,7 @@ const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
   1
 }
 "#;
-run!(operand_with_two_numeric_members, OPERAND_WITH_TWO_NUMERIC_MEMBERS, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("more than one numeric type"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(operand_with_two_numeric_members, OPERAND_WITH_TWO_NUMERIC_MEMBERS, refused("more than one numeric type"); graphix_package_core::testing::FuseExpect::None);
 
 // An alias applied twice is two types: `Id<i64>` checked does not vouch
 // for `Id<&i64>`, as target or as source.
@@ -955,9 +950,7 @@ const CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"
   cast<(Id<i64>, Id<&i64>)>((1, u64:0))
 }
 "#;
-run!(cast_to_a_reference_through_an_alias, CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_to_a_reference_through_an_alias, CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 const CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"
 {
@@ -967,9 +960,7 @@ const CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"
   cast<(i64, u64)>(t)
 }
 "#;
-run!(cast_of_a_reference_through_an_alias, CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_of_a_reference_through_an_alias, CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 // An application decided once is decided for the walk: checking the
 // parameter of Id<Id<&i64>> must not vouch for the whole.
@@ -979,9 +970,7 @@ const CAST_TO_A_REFERENCE_THROUGH_A_NESTED_ALIAS: &str = r#"
   cast<Id<Id<&i64>>>(u64:0)
 }
 "#;
-run!(cast_to_a_reference_through_a_nested_alias, CAST_TO_A_REFERENCE_THROUGH_A_NESTED_ALIAS, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_to_a_reference_through_a_nested_alias, CAST_TO_A_REFERENCE_THROUGH_A_NESTED_ALIAS, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 const CAST_OF_A_REFERENCE_THROUGH_A_NESTED_ALIAS: &str = r#"
 {
@@ -991,9 +980,7 @@ const CAST_OF_A_REFERENCE_THROUGH_A_NESTED_ALIAS: &str = r#"
   cast<(i64, u64)>(t)
 }
 "#;
-run!(cast_of_a_reference_through_a_nested_alias, CAST_OF_A_REFERENCE_THROUGH_A_NESTED_ALIAS, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(cast_of_a_reference_through_a_nested_alias, CAST_OF_A_REFERENCE_THROUGH_A_NESTED_ALIAS, refused("can't cast a reference"); graphix_package_core::testing::FuseExpect::None);
 
 // A name expanded twice on one value with other parameters is no cycle.
 run!(
@@ -1035,7 +1022,7 @@ run!(
 // though B was first reached inside A.
 run!(
     cast_to_a_reference_through_a_cycle,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference")),
+    refused("can't cast a reference"),
     "/test.gx" => r#"
         type Ph<'x> = [null, Array<Ph<'x>>];
         type A = (B, &i64);
@@ -1046,7 +1033,7 @@ run!(
 
 run!(
     cast_of_a_reference_through_a_cycle,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference")),
+    refused("can't cast a reference"),
     "/test.gx" => r#"
         type Ph<'x> = [null, Array<Ph<'x>>];
         type A = (B, &i64);
@@ -1060,7 +1047,7 @@ run!(
 // `never<T>` writes a type name like an annotation does.
 run!(
     never_type_names_are_defined,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("undefined type Act")),
+    refused("undefined type Act"),
     "/test.gx" => r#"
         let result = { let x = 1; never<Act>() }
     "#
@@ -1070,7 +1057,7 @@ run!(
 // registered: a later sibling does, an undefined name does not.
 run!(
     typedef_body_names_are_defined,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("undefined type Act")),
+    refused("undefined type Act"),
     "/test.gx" => r#"
         type A = [`X(B), `N];
         type B = [`Y(Act), `M];
@@ -1125,7 +1112,7 @@ run!(
 // A type may not take a trait's name in one scope, in either order.
 run!(
     type_after_trait_of_one_name,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("already defined")),
+    refused("already defined"),
     "/test.gx" => r#"
         trait Foo { val show: fn(self) -> string };
         type Foo = i64;
@@ -1201,7 +1188,7 @@ run!(
 // A type parameter the definition never uses is refused.
 run!(
     typedef_unused_parameter,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("unused type parameter")),
+    refused("unused type parameter"),
     "/test.gx" => r#"
         type T<'a> = i64;
         let result: T<string> = 1

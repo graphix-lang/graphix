@@ -3,7 +3,10 @@
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
-use graphix_package_core::run;
+use graphix_package_core::{
+    run,
+    testing::{Mode, refused},
+};
 use netidx::publisher::Value;
 
 const ARRAY_INDEXING0: &str = r#"
@@ -211,10 +214,7 @@ const ARRAY_INDEXING5: &str = r#"
 }
 "#;
 
-run!(array_indexing5, ARRAY_INDEXING5, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_indexing5, ARRAY_INDEXING5, refused("cannot compute ["); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INDEXING6: &str = r#"
 {
@@ -264,19 +264,13 @@ const ARRAY_SLICE_NON_ARRAY: &str = r#"
   ("foo")[..]
 "#;
 
-run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_INDEX_NON_ARRAY: &str = r#"
   ("foo")[0]
 "#;
 
-run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const ARRAY_MATCH0: &str = r#"
 {
@@ -404,16 +398,14 @@ const FOLD_OVER_OVERSIZE_INIT_BOTTOMS: &str = r#"
 }
 "#;
 
-// CR claude for claude: [test-gap] run! stops at the first update, which is 1 (from n =
-// 0). The comment above is about the second cycle, where the oversize init must bottom
-// the fold. With n = [0, 1] the program emits 1 then 2 and this predicate still passes.
-// So an oversize init that yields [] or a truncated array instead of bottom would go
-// unnoticed, and nothing else pins it: init_runaway_local_bottom discards the init's
-// value. Collect every delivery with run_delta (dense_deltas.rs) and expect exactly [1]
-// in both modes. (tests-lang-d-09)
-run!(fold_over_oversize_init_bottoms, FOLD_OVER_OVERSIZE_INIT_BOTTOMS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+async fn fold_over_oversize_init_bottoms(mode: Mode) -> Result<()> {
+    let (values, _) =
+        super::dense_deltas::run_delta(FOLD_OVER_OVERSIZE_INIT_BOTTOMS, mode).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), [1]);
+    Ok(())
+}
+
+modes!(fold_over_oversize_init_bottoms);
 
 // Composite / string fold accumulators as native loops. `array::fold`
 // is in-language, so these are `Jit` without a `#[native]` pin.

@@ -461,6 +461,23 @@ pub fn refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
     move |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains(phrase))
 }
 
+/// The compile error `let result = {code}` gets, in full; an error if it
+/// compiles, or if the runtime died compiling it.
+pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
+    let (ctx, _rx) =
+        fixture_runtime([("/test.gx", result_source(code))], register, Mode::Jit, |_| {})
+            .await?;
+    let r = compile_result(&ctx).await;
+    if let Err(dead) = ctx.rt.get_env().await {
+        bail!("the runtime died compiling {code} ({dead:#})")
+    }
+    ctx.shutdown().await;
+    match r {
+        Ok(_) => bail!("compiled: {code}"),
+        Err(e) => Ok(format!("{e:#}")),
+    }
+}
+
 /// The `BindId` of a module-qualified name like `"test::clicks"`. Scope
 /// keys are generated paths (`/do…/test`), so the module is matched as a
 /// suffix.

@@ -3,7 +3,7 @@
 // where the definition is visible (design/nominal_abstract_types.md).
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 
 // The interface declares an abstract type; the implementation defines it.
@@ -301,32 +301,23 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::Jit);
 
-// Error: missing concrete definition for an abstract type.
-// CR claude for claude: [test-gap] The comment above claims a refusal the design does not
-// have. A gxi `type T;` with nothing in the gx is the Rust-backed row of
-// design/nominal_abstract_types.md (sys's `type File;` is one), and it compiles. This
-// test fails only because `val x: T` mismatches `let x = 42`, which
-// abstract_type_sig_mismatch already pins: delete it, or make it a positive pin (gxi
-// `type T; val x: i64`, result 0). The comment at line 779 says the pattern is also
-// refused outside the definition, but no test pins that (`select inner::make(42) {
-// inner::T(x) => x }`: "its values cannot be destructured"). The nine `v.is_err()`
-// predicates in this file accept any error; match the refusal text as
-// interface_omits_singleton does. (tests-lang-c-06)
+// A gxi `type T;` the gx does not define is a Rust-backed type: it
+// compiles.
 run!(
-    abstract_type_missing_definition,
-    |v: Result<&Value>| v.is_err(),
+    abstract_type_rust_backed,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
     "/test.gx" => r#"
         mod inner;
         let result = 0
     "#,
     "/test/inner.gxi" => r#"
         type T;
-        val x: T
+        val x: i64
     "#,
     "/test/inner.gx" => r#"
         let x = 42
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; graphix_package_core::testing::FuseExpect::Jit);
 
 // An abstract type in the implementation is allowed (stays opaque).
 run!(
@@ -349,7 +340,7 @@ run!(
 // Error: the function returns the wrong type.
 run!(
     abstract_type_sig_mismatch,
-    |v: Result<&Value>| v.is_err(),
+    refused("signature has T, implementation has i64"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -367,7 +358,7 @@ run!(
 // Error: abstract type parameter constraint mismatch.
 run!(
     abstract_type_constraint_mismatch,
-    |v: Result<&Value>| v.is_err(),
+    refused("constraint mismatch on a, signature constraint Number vs implementation constraint missing"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -407,7 +398,7 @@ run!(
 // Error: string does not satisfy `Box<'a: Number>`.
 run!(
     abstract_type_constraint_auto_enforced_error,
-    |v: Result<&Value>| v.is_err(),
+    refused("Number does not contain 'a: string"),
     "/test.gx" => r#"
         mod inner;
         let box = inner::wrap("hello");
@@ -475,7 +466,7 @@ run!(
 // Error: extra type parameter in the implementation.
 run!(
     abstract_type_extra_param,
-    |v: Result<&Value>| v.is_err(),
+    refused("signature mismatch in T, missing parameter b"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -494,7 +485,7 @@ run!(
 // signature's abstract type.
 run!(
     abstract_type_wrong_arg,
-    |v: Result<&Value>| v.is_err(),
+    refused("signature has T, implementation has i64"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -784,7 +775,7 @@ run!(
 // error for all three.
 run!(
     abstract_construct_outside_refused,
-    |v: Result<&Value>| v.is_err(),
+    refused("the definition of inner::T is not visible here, so it cannot be constructed"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::get(inner::T(42))
@@ -801,10 +792,27 @@ run!(
 
 run!(
     abstract_payload_outside_refused,
-    |v: Result<&Value>| v.is_err(),
+    refused("so its payload cannot be read"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::make(42).0
+    "#,
+    "/test/inner.gxi" => r#"
+        type T;
+        val make: fn(x: i64) -> T
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>;
+        let make = |x: i64| -> T T(x)
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    abstract_pattern_outside_refused,
+    refused("its values cannot be destructured"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = select inner::make(42) { inner::T(x) => x }
     "#,
     "/test/inner.gxi" => r#"
         type T;
@@ -820,7 +828,7 @@ run!(
 // hiding a transparent alias is the two-view case itself.
 run!(
     abstract_hidden_alias_refused,
-    |v: Result<&Value>| v.is_err(),
+    refused("T is hidden by the interface, so its definition must be"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::get(inner::make(42))
@@ -1069,7 +1077,7 @@ run!(
 // ... and a re-declaration that means something else is refused.
 run!(
     interface_trait_redeclared_differently,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not match")),
+    refused("does not match"),
     "/test.gx" => r#"
         mod inner;
         let result = 0

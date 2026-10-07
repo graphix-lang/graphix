@@ -3,7 +3,7 @@
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use netidx::publisher::Value;
 
 const TUPLES0: &str = r#"
@@ -159,10 +159,7 @@ const STRUCTWITH0: &str = r#"
 }
 "#;
 
-run!(structwith0, STRUCTWITH0, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(structwith0, STRUCTWITH0, refused("string does not contain i64"); graphix_package_core::testing::FuseExpect::None);
 
 const STRUCTWITH1: &str = r#"
 {
@@ -411,7 +408,7 @@ const TUPLE_INDEX_OOB: &str = r#"
 }
 "#;
 
-run!(tuple_index_oob, TUPLE_INDEX_OOB, |v: Result<&Value>| matches!(v, Err(_));
+run!(tuple_index_oob, TUPLE_INDEX_OOB, refused("no such field 5");
     graphix_package_core::testing::FuseExpect::None);
 
 // `{src with f}` where the source type sits behind TVars and the

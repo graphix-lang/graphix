@@ -1,9 +1,9 @@
 # The module system: Rust-2018-style names
 
 Status: built 2026-08-22
-Pins: `stdlib/graphix-tests/src/lang/modules.rs` (`finding1_sig_alias`,
-`finding1_private_type_in_body`, `finding1_imported_body_annotation`,
-`finding1_private_type_union_member`, `use_in_value_position_is_compile_error`,
+Pins: `stdlib/graphix-tests/src/lang/modules.rs` (`sig_type_through_use_alias`,
+`private_type_in_public_body`, `imported_type_in_body`,
+`private_type_union_member`, `use_in_value_position_is_compile_error`,
 `declaration_in_value_position_is_compile_error`),
 `graphix-compiler/src/expr/parser/test.rs` (`use_groups`, `use_new_grammar`,
 `keyword_rooted_typath`), `graphix-compiler/src/env.rs` (`mod_root_strips_marked`).

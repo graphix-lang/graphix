@@ -3,48 +3,19 @@
 use crate::init;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::refused};
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
 
-#[tokio::test(flavor = "current_thread")]
-async fn bind_ref_arith() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    let gx = ctx.rt;
-    let e = r#"
+const BIND_REF_ARITH: &str = r#"
 {
   let v = (((1 + 1) * 2) / 2) - 1;
   v
 }
 "#;
-    let e = gx.compile(ArcStr::from(e)).await?;
-    let eid = e.exprs[0].id;
-    // CR claude for claude: [test-gap] This reads exactly one batch, and that batch comes
-    // from the root's init cycle. GX::new leaves the root's expressions in `updated`
-    // (graphix-rt/src/gx.rs:694), so the run loop's first pass runs a cycle and sends
-    // its batch before init returns (the log prints 'first cycle time' before 'runtime
-    // start wait'). That batch has no Updated event, so neither assert runs, and the
-    // test passes whatever the expression evaluates to. Make it a run! fixture like
-    // mod0 below (SCOPE already evaluates the same expression), or loop until
-    // Updated(eid, _) arrives. (tests-lang-d-06)
-    match rx.recv().await {
-        None => bail!("runtime died"),
-        Some(mut ev) => {
-            for e in ev.drain(..) {
-                match e {
-                    GXEvent::Env(_) => (),
-                    GXEvent::Updated(id, v) => {
-                        assert_eq!(id, eid);
-                        assert_eq!(v, Value::I64(1))
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
+
+run!(bind_ref_arith, BIND_REF_ARITH, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))));
 
 const MOD0: &str = r#"
 {
@@ -110,10 +81,7 @@ const STATIC_SCOPE: &str = r#"
 }
 "#;
 
-run!(static_scope, STATIC_SCOPE, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(static_scope, STATIC_SCOPE, refused("y not defined"); graphix_package_core::testing::FuseExpect::None);
 
 const UNDEFINED: &str = r#"
 {
@@ -124,10 +92,7 @@ const UNDEFINED: &str = r#"
 }
 "#;
 
-run!(undefined, UNDEFINED, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(undefined, UNDEFINED, refused("x not defined"); graphix_package_core::testing::FuseExpect::None);
 
 // A sync variadic builtin called with no positional args can never fire:
 // a compile error pointing at never().
@@ -138,10 +103,7 @@ const DEAD_VARIADIC_ZERO_ARGS: &str = r#"
 }
 "#;
 
-run!(dead_variadic_zero_args, DEAD_VARIADIC_ZERO_ARGS, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(dead_variadic_zero_args, DEAD_VARIADIC_ZERO_ARGS, refused("calling `str::concat` with no positional arguments can never produce a value"); graphix_package_core::testing::FuseExpect::None);
 
 // Labeled args are config, not data: `join(#sep: ",")` is as dead as
 // `concat()`.
@@ -152,10 +114,7 @@ const DEAD_VARIADIC_LABELED_ONLY: &str = r#"
 }
 "#;
 
-run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, |v: Result<&Value>| match v {
-    Err(_) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, refused("calling `str::join` with no positional arguments can never produce a value"); graphix_package_core::testing::FuseExpect::None);
 
 // never() stays legal; the binding never fires and the tail still does.
 const NEVER_ZERO_ARGS_OK: &str = r#"

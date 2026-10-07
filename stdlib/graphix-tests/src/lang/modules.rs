@@ -1,7 +1,10 @@
 // Tests for dynamic modules
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::eval};
+use graphix_package_core::{
+    run,
+    testing::{eval, refusal, refused},
+};
 use netidx::publisher::Value;
 
 const DYNAMIC_MODULE0: &str = r#"
@@ -277,14 +280,11 @@ run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Resolution is a pure function of (module, name): a name spelled at
-// the def site resolves the same from any deferred consumer.
-
 // A module's check decides no type the code around it left open: its
 // siblings check concurrently and see each other through interfaces.
 run!(
     module_check_decides_no_outer_type,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("left open")),
+    refused("left open"),
     "/test.gx" => r#"
 let x = never();
 mod m;
@@ -343,17 +343,10 @@ let y = super::x + 1
 );
 
 // A gxi signature spells a type through a `use … as` alias.
-// CR claude for claude: [readability] The section comment at line 280 ("Resolution is a
-// pure function of (module, name)...") describes the finding1_* tests starting here,
-// but the module_check_* tests now sit between it and them. The names
-// finding1_sig_alias, finding1_private_type_in_body, finding1_imported_body_annotation
-// and finding1_private_type_union_member are a campaign finding number, and "aieka" in
-// the message at line 443 is a fleet host name. Move or delete the comment and name the
-// tests by what they pin (e.g. sig_type_through_use_alias, private_type_in_public_body,
-// imported_type_in_body, private_type_union_member). Drop "aieka" and update the pin
-// list in design/module_system.md:4-6. (tests-lang-c-10)
+// Resolution is a pure function of (module, name): a name spelled at
+// the def site resolves the same from any deferred consumer.
 run!(
-    finding1_sig_alias,
+    sig_type_through_use_alias,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
     "/test.gx" => r#"
 mod a;
@@ -378,7 +371,7 @@ let wrap = |x: U| -> U x
 
 // A module-private type annotating a public lambda's body.
 run!(
-    finding1_private_type_in_body,
+    private_type_in_public_body,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
     "/test.gx" => r#"
 mod m;
@@ -399,7 +392,7 @@ let f = |x: i64| -> i64 {
 // A use-imported bare type name annotating a binding inside a public
 // lambda's body.
 run!(
-    finding1_imported_body_annotation,
+    imported_type_in_body,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
     "/test.gx" => r#"
 mod a;
@@ -434,34 +427,16 @@ async fn use_in_value_position_is_compile_error() {
         "{i64:1; use array::iter}",
         "array::len(use array::iter)",
     ] {
-        // CR claude for claude: [test-gap] eval also returns Err when a program compiles
-        // and produces nothing for 5 s, so `is_err()` cannot tell the intended refusal
-        // from a `use` compiled to a bottom value again; `{let tag = never(); tag}`
-        // passes it. The same holds for use_value_soundness_witness_rejected and
-        // bottom_connect_target_witness_rejected below. Compile with compile_error
-        // (line 641) and match the message, as
-        // declaration_in_value_position_is_compile_error does: "a use declaration is
-        // not an expression" here and for the witness, and "a type definition is not an
-        // expression" and "cannot compute" for the two connect-target sources.
-        // (tests-lang-c-04)
-        let r = eval(src, crate::TEST_REGISTER).await;
-        assert!(
-            r.is_err(),
-            "`use` in value position must be rejected: {src} => {:?}",
-            r.map(|(v, _)| v)
-        );
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains("a use declaration is not an expression"), "{src}: {e}");
     }
 }
 
 #[tokio::test]
 async fn use_value_soundness_witness_rejected() {
     let src = r#"{let a = {let a = [true]; let tag = use array::*; {catch(e) tag <- e.0; any(a[i64:5]?, i64:0)}; select tag {"" => never(""), t => t}}; select a {[init.., x] => x * i64:100, _ => i64:0}}"#;
-    let r = eval(src, crate::TEST_REGISTER).await;
-    assert!(
-        r.is_err(),
-        "the aieka use-in-value witness must be rejected, got {:?}",
-        r.map(|(v, _)| v)
-    );
+    let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("a use declaration is not an expression"), "{e}");
 }
 
 // `type`/`trait`/`impl` are statement-position-only declarations too.
@@ -490,16 +465,18 @@ async fn declaration_in_value_position_is_compile_error() {
 async fn bottom_connect_target_witness_rejected() {
     // A typedef in value position, and a value-position connect into a
     // ⊥-initialized binding whose site cell is already bound.
-    for src in [
-        r#"{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}"#,
-        r#"{let dummy = i64:0; let g = || {let inner = dummy <- i64:1; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); v - i64:1}"#,
+    for (src, refused) in [
+        (
+            r#"{let outer = never(); catch(e) outer <- i64:1; let g = || {let inner = type M = [`M(Map<string, i64>), `N]; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); error(`B)?; v - outer}"#,
+            "a type definition is not an expression",
+        ),
+        (
+            r#"{let dummy = i64:0; let g = || {let inner = dummy <- i64:1; catch(e) inner <- array::filter(["a", "b"], |s| str::len(s) > i64:5); error(`A)?; inner}; let v = g(); v - i64:1}"#,
+            "cannot compute",
+        ),
     ] {
-        let r = eval(src, crate::TEST_REGISTER).await;
-        assert!(
-            r.is_err(),
-            "the ⊥ connect-target witness must be rejected: {src} => {:?}",
-            r.map(|(v, _)| v)
-        );
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(refused), "{src}: {e}");
     }
 }
 
@@ -507,7 +484,7 @@ async fn bottom_connect_target_witness_rejected() {
 // through a nested lambda's connect: the instance body typechecks under
 // the defining module's env.
 run!(
-    finding1_private_type_union_member,
+    private_type_union_member,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(21))),
     "/test.gx" => r#"
 mod m;

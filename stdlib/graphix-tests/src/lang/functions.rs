@@ -1,8 +1,10 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use anyhow::Result;
-use graphix_package_core::testing::Mode;
-use graphix_package_core::{run, testing::eval};
+use graphix_package_core::{
+    run,
+    testing::{Mode, eval, refused},
+};
 use netidx::publisher::Value;
 
 const LAMBDA: &str = r#"
@@ -71,7 +73,7 @@ const TWO_RIGID_VARS_UNIFIED: &str = r#"
 
 // `+` is ('a, 'a) -> 'a, so this body is well typed only where 'a = 'b:
 // a promise the signature does not make. Refused at the definition.
-run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")); graphix_package_core::testing::FuseExpect::None);
+run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, refused("both operands must be one numeric type"); graphix_package_core::testing::FuseExpect::None);
 
 const DEFAULT_ILL_TYPED_AT_DEFINITION: &str = r#"
 {
@@ -110,7 +112,7 @@ const DEFAULT_OUTSIDE_CONSTRAINT_SET: &str = r#"
 }
 "#;
 
-run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Int does not contain f64")); graphix_package_core::testing::FuseExpect::None);
+run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, refused("Int does not contain f64"); graphix_package_core::testing::FuseExpect::None);
 
 const LABELED_ARGS: &str = r#"
 {
@@ -131,7 +133,7 @@ const REQUIRED_ARGS: &str = r#"
 }
 "#;
 
-run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing required argument foo")); graphix_package_core::testing::FuseExpect::None);
+run!(required_args, REQUIRED_ARGS, refused("missing required argument foo"); graphix_package_core::testing::FuseExpect::None);
 
 const MIXED_ARGS: &str = r#"
 {
@@ -603,7 +605,7 @@ const LAMBDAMATCH1: &str = r#"
 }
 "#;
 
-run!(lambdamatch1, LAMBDAMATCH1, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("non exhaustive struct matches require type annotations")); graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch1, LAMBDAMATCH1, refused("non exhaustive struct matches require type annotations"); graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH2: &str = r#"
 {
@@ -625,7 +627,7 @@ const LAMBDAMATCH3: &str = r#"
 }
 "#;
 
-run!(lambdamatch3, LAMBDAMATCH3, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain { bar: i64, baz: i64 }")); graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch3, LAMBDAMATCH3, refused("does not contain { bar: i64, baz: i64 }"); graphix_package_core::testing::FuseExpect::None);
 
 const LAMBDAMATCH4: &str = r#"
 {
@@ -646,7 +648,7 @@ const LAMBDAMATCH5: &str = r#"
 }
 "#;
 
-run!(lambdamatch5, LAMBDAMATCH5, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(lambdamatch5, LAMBDAMATCH5, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 const NESTED_OPTIONAL0: &str = r#"
 {
@@ -1093,7 +1095,7 @@ run!(rtype_rejects_error_arm, RTYPE_REJECTS_ERROR_ARM, |v: Result<&Value>| match
 // `acc + <fn>` is rejected.
 run!(
     list_map_fn_element_fold_rejected,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type")),
+    refused("both operands must be one numeric type"),
     "/test.gx" => r#"
         let result = list::fold(
             list::map(list::from_array([true]), |x| hold),
@@ -1143,7 +1145,7 @@ const OPERAND_REFUSES_NULLABLE_ELEMENT: &str = r#"
 run!(
     operand_refuses_nullable_element,
     OPERAND_REFUSES_NULLABLE_ELEMENT,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
+    refused("both operands must be one numeric type");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1154,7 +1156,7 @@ array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0, |res, v|
 run!(
     operand_refuses_mixed_numeric_element,
     OPERAND_REFUSES_MIXED_NUMERIC_ELEMENT,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
+    refused("both operands must be one numeric type");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1184,7 +1186,7 @@ const REC_SELFCALL_ARG_MISMATCH: &str = r#"
 }
 "#;
 
-run!(rec_selfcall_arg_mismatch, REC_SELFCALL_ARG_MISMATCH, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain string")); graphix_package_core::testing::FuseExpect::None);
+run!(rec_selfcall_arg_mismatch, REC_SELFCALL_ARG_MISMATCH, refused("i64 does not contain string"); graphix_package_core::testing::FuseExpect::None);
 
 // Two distinct unbound tvars in an arm union do not collapse; both
 // bindings survive into the select's type (direct-return shape only).
@@ -1225,7 +1227,7 @@ const SELECT_VARIANT_NONEXHAUSTIVE: &str = r#"
 }
 "#;
 
-run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing match cases")); graphix_package_core::testing::FuseExpect::None);
+run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, refused("missing match cases"); graphix_package_core::testing::FuseExpect::None);
 
 // A tail-recursive `let rec` inside a HOF callback (depth 500).
 const REC_IN_HOF_CALLBACK: &str = r#"
@@ -1381,7 +1383,7 @@ const PARAM_KNOT_NO_LEAK: &str = r#"
 }
 "#;
 
-run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
+run!(param_knot_no_leak, PARAM_KNOT_NO_LEAK, refused("both operands must be one numeric type");
      graphix_package_core::testing::FuseExpect::None);
 
 // A recursive callee whose self-call passes a fn-typed arg compiles
@@ -1553,7 +1555,7 @@ const EXCESS_POSITIONAL_REJECTED: &str = r#"
 run!(
     excess_positional_rejected,
     EXCESS_POSITIONAL_REJECTED,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("too many positional arguments"));
+    refused("too many positional arguments");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1612,7 +1614,7 @@ const ARITH_REJECTS_ABSTRACT_OPERAND: &str = r#"
 run!(
     arith_rejects_abstract_operand,
     ARITH_REJECTS_ABSTRACT_OPERAND,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
+    refused("both operands must be one numeric type");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1650,7 +1652,7 @@ const DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE: &str = r#"
 run!(
     declared_rtype_proven_through_open_callee,
     DECLARED_RTYPE_PROVEN_THROUGH_OPEN_CALLEE,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain"));
+    refused("i64 does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2030,7 +2032,7 @@ const REQUIRED_LABEL_CONNECT: &str = r#"
 }
 "#;
 
-run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("and cannot hold fn(#a: i64, x: i64)")); graphix_package_core::testing::FuseExpect::None);
+run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, refused("and cannot hold fn(#a: i64, x: i64)"); graphix_package_core::testing::FuseExpect::None);
 
 // A quiet bottom argument inside a tail recursion is bottom to the
 // callee: after `g(5)` ran and `x` went bottom, `f(2, x)` is bottom, as
@@ -2173,7 +2175,7 @@ run!(
 run!(
     generalized_callback_result_does_not_narrow,
     r#"{ let f = |a| (a, null); let v: Array<(i64, u8)> = array::map([1], f); v }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    refused("does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2181,7 +2183,7 @@ run!(
 run!(
     no_widest_arg_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    refused("does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2189,7 +2191,7 @@ run!(
 run!(
     widest_arg_types_the_result,
     r#"{ let n: [u64, null] = null; let f = |x: 'a, y: 'a| -> 'a y; let r: u64 = f(u64:0, n); r }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    refused("does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2202,7 +2204,7 @@ run!(
   let g = |x: 'a, f: fn(v: 'a) -> 'a, y: 'a| -> 'a f(y);
   g(u64:0, |v| v, n)
 }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    refused("does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2216,7 +2218,7 @@ run!(
   let f = |x: &'a, y: &'a| -> &'a y;
   f(r, n)
 }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    refused("does not contain");
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -2428,7 +2430,7 @@ run!(
 // So is an annotation that would narrow it, and a concrete container.
 run!(
     rigid_under_a_concrete_annotation,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain 'r")),
+    refused("i64 does not contain 'r"),
     "/test.gx" => r#"
         let f = |x: 'r| { let y: i64 = x; y };
         let result = 0
@@ -2437,7 +2439,7 @@ run!(
 
 run!(
     rigid_element_to_a_concrete_container,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Array<i64> does not contain Array<'r")),
+    refused("Array<i64> does not contain Array<'r"),
     "/test.gx" => r#"
         let g = |a: Array<i64>| 3;
         let f = |x: Array<'r>| g(x);
@@ -2465,7 +2467,7 @@ run!(
 // annotation claims `fn(x: 'a) -> 'a`, which `fn(string) -> bytes` is not.
 run!(
     annotation_variable_is_one_variable,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain fn(s: string) -> bytes")),
+    refused("does not contain fn(s: string) -> bytes"),
     "/test.gx" => r#"
         let f: fn(x: 'a) -> 'a = buffer::from_string;
         let result = 0
@@ -2493,9 +2495,7 @@ const LET_IN_VALUE_POSITION: &str = r#"
 }
 "#;
 
-run!(let_in_value_position, LET_IN_VALUE_POSITION, |v: Result<&Value>| {
-    matches!(v, Err(e) if format!("{e:#}").contains("a let binding is not an expression"))
-}; graphix_package_core::testing::FuseExpect::None);
+run!(let_in_value_position, LET_IN_VALUE_POSITION, refused("a let binding is not an expression"); graphix_package_core::testing::FuseExpect::None);
 
 // An instance's node can be born knowing a type its definition's check
 // widened: the callback's `d.domain` is `string` in the instance, where
@@ -2510,3 +2510,31 @@ run!(
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2)
 );
+
+// A binding that aliases a lambda resolves statically, annotated or not.
+const LAMBDA_ALIAS_NATIVE: &str = r#"
+{
+  let f = |i: i64| i + 1;
+  let h = f;
+  let g: fn(i: i64) -> i64 = f;
+  #[native]
+  (h(1) + g(2))
+}
+"#;
+
+run!(lambda_alias_native, LAMBDA_ALIAS_NATIVE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(5))
+));
+
+// An alias a `<-` writes stays a dynamic call and follows the write.
+const LAMBDA_ALIAS_WRITTEN: &str = r#"
+{
+  let f = |i: i64| i + 1;
+  let h = f;
+  h <- |i: i64| i * 10;
+  filter(h(2), |v| v == 20)
+}
+"#;
+
+run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v, Ok(Value::I64(20))); graphix_package_core::testing::FuseExpect::None);

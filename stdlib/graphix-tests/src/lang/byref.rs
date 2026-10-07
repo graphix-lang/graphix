@@ -246,31 +246,21 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
 // An undetermined key is a bottom reference: a write through it lands
 // nowhere; when the key returns the reference retargets (and, as at
 // every retarget, the pending write lands there).
-// CR claude for claude: [risk] place_bottom_key, place_removed_element,
-// place_through_deref, place_through_bottom_deref, deref_moved_to_undelivered and
-// place_payload order their phases with one-shot timers 30-40 ms apart. The run loop
-// (graphix-rt/src/gx.rs `run`) puts every finished task into one cycle, so if the
-// runtime thread does not run during that gap, both timers fire together and the second
-// phase acts before the first phase's `<-` lands. Under CPU throttling, 16 to 23 of
-// their 24 test functions fail per run with exactly those values (place_through_deref
-// gives [10, 10], place_removed_element's obs is 20); ordinary load on a 16-core box
-// did not trigger it. Fix: drive the phases by cycles (the `step <- select step { .. }`
-// counter in printing.rs), or arm each timer off the previous phase's landed effect
-// (`timer(k ~ duration:0.03s, false)`). probe:
-// design/review-2026-10-05/repro/tests-lang-d-08.sh (tests-lang-d-08)
 const PLACE_BOTTOM_KEY: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [10, 20];
   let k: [i64, null] = 0;
   let r = &mut a[k$];
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   k <- t1 ~ null;
-  let t2 = sys::time::timer(duration:0.05s, false);
+  let t2 = select step { 5 => null, _ => never() };
   *r <- t2 ~ 99;
-  let t3 = sys::time::timer(duration:0.08s, false);
-  let t4 = sys::time::timer(duration:0.11s, false);
+  let t3 = select step { 8 => null, _ => never() };
+  let t4 = select step { 11 => null, _ => never() };
   k <- t4 ~ 1;
-  let t5 = sys::time::timer(duration:0.16s, false);
+  let t5 = select step { 16 => null, _ => never() };
   let seen = array::group(*r, |n, _| n == 3);
   (t3 ~ a, t5 ~ a, t5 ~ seen)
 }
@@ -284,17 +274,19 @@ run!(place_bottom_key, PLACE_BOTTOM_KEY, |v: Result<&Value>| {
 // connect sampling it then writes nothing.
 const PLACE_REMOVED_ELEMENT: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [10, 20];
   let r = &a[1];
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   a <- t1 ~ [5];
-  let t2 = sys::time::timer(duration:0.05s, false);
+  let t2 = select step { 5 => null, _ => never() };
   let obs: [i64, null] = null;
   obs <- t2 ~ *r;
-  let t3 = sys::time::timer(duration:0.08s, false);
+  let t3 = select step { 8 => null, _ => never() };
   a <- t3 ~ [6, 7];
   let seen = array::group(*r, |n, _| n == 2);
-  let t4 = sys::time::timer(duration:0.11s, false);
+  let t4 = select step { 11 => null, _ => never() };
   (t4 ~ seen, t4 ~ obs)
 }
 "#;
@@ -323,12 +315,14 @@ run!(place_error_field, PLACE_ERROR_FIELD, |v: Result<&Value>| {
 // the root.
 const PLACE_THROUGH_DEREF: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = {p: {x: 10, y: 1}};
   let r: &mut {x: i64, y: i64} = &mut a.p;
   let s = &mut (*r).x;
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   *s <- t1 ~ 20;
-  let t2 = sys::time::timer(duration:0.05s, false);
+  let t2 = select step { 5 => null, _ => never() };
   (t2 ~ a.p.x, t2 ~ *s)
 }
 "#;
@@ -343,20 +337,22 @@ run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
 // the pending write lands there).
 const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let a = [10, 20];
   let r: [&mut Array<i64>, null] = &mut a;
   let s = &mut (*r$)[0];
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   r <- t1 ~ null;
-  let t2 = sys::time::timer(duration:0.05s, false);
+  let t2 = select step { 5 => null, _ => never() };
   *s <- t2 ~ 99;
   let obs: [i64, null] = null;
   obs <- t2 ~ *s;
-  let t3 = sys::time::timer(duration:0.08s, false);
+  let t3 = select step { 8 => null, _ => never() };
   r <- t3 ~ &mut a;
-  let t4 = sys::time::timer(duration:0.11s, false);
+  let t4 = select step { 11 => null, _ => never() };
   *s <- t4 ~ 7;
-  let t5 = sys::time::timer(duration:0.16s, false);
+  let t5 = select step { 16 => null, _ => never() };
   (t3 ~ a, t5 ~ obs, t5 ~ a)
 }
 "#;
@@ -447,13 +443,15 @@ modes!(byref_expr_same_cycle);
 // delivered is bottom, not the previous referent's value.
 const DEREF_MOVED_TO_UNDELIVERED: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   let x = 1;
   let y = sys::time::after_idle(duration:10.s, 2);
   let sel = false;
-  sel <- sys::time::timer(duration:0.02s, false) ~ true;
+  sel <- select step { 2 => null, _ => never() } ~ true;
   let r = select sel { false => &x, true => &y };
-  let late = sys::time::timer(duration:0.06s, false) ~ *r;
-  any(late, sys::time::timer(duration:0.12s, false) ~ -1)
+  let late = select step { 6 => null, _ => never() } ~ *r;
+  any(late, select step { 12 => null, _ => never() } ~ -1)
 }
 "#;
 
@@ -465,16 +463,18 @@ run!(deref_moved_to_undelivered, DEREF_MOVED_TO_UNDELIVERED, |v: Result<&Value>|
 // visible, and an error's; writes rebuild them.
 const PLACE_PAYLOAD: &str = r#"
 {
+  let step = 0;
+  step <- select step { s if s < 20 => s + 1, _ => never() };
   type C = Abstract<i64>;
   let c = C(5);
   let e: Error<i64> = error(1);
   let rc = &mut c.0;
   let re = &mut e.0;
   let before = once((*rc, *re));
-  let t1 = sys::time::timer(duration:0.02s, false);
+  let t1 = select step { 2 => null, _ => never() };
   *rc <- t1 ~ 7;
   *re <- t1 ~ 8;
-  let t2 = sys::time::timer(duration:0.06s, false);
+  let t2 = select step { 6 => null, _ => never() };
   t2 ~ (before, c.0, e.0, *rc, *re)
 }
 "#;

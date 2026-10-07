@@ -3,7 +3,10 @@
 // `map(c, f)` mean the same thing whatever `c` is.
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 
 use netidx::publisher::Value;
 
@@ -143,7 +146,7 @@ run!(
 // A union receiver is not a constructor.
 run!(
     collection_union_receiver_rejected,
-    |v: Result<&Value>| v.is_err(),
+    refused("does not contain [null, Array<i64>]"),
     "/test.gx" => r#"
         use Collection::*;
         let x: [Array<i64>, null] = [1, 2];
@@ -156,7 +159,7 @@ run!(
 // hole as its last parameter — a type without parameters is refused.
 run!(
     collection_impl_non_constructor_rejected,
-    |v: Result<&Value>| v.is_err(),
+    refused("impl Collection for i64: Collection is a constructor trait"),
     "/test.gx" => r#"
         impl Collection for i64 { let fold = |a, i, f| i; let filter_map = |a, f| a; let flat_map = |a, f| a };
         let result = 0
@@ -167,7 +170,7 @@ run!(
 // ... and so is a head with the last parameter filled.
 run!(
     collection_impl_head_without_hole_rejected,
-    |v: Result<&Value>| v.is_err(),
+    refused("impl Collection for Bag<i64>: Collection is a constructor trait"),
     "/test.gx" => r#"
         type Bag<'a> = Abstract<Array<'a>>;
         impl Collection for Bag<i64> {
@@ -183,7 +186,7 @@ run!(
 // The hole is legal only in such a head.
 run!(
     collection_hole_outside_impl_rejected,
-    |v: Result<&Value>| v.is_err(),
+    refused("'_ is the hole of a constructor trait's implementation target"),
     "/test.gx" => r#"
         let x: Array<'_> = [1, 2];
         let result = x
@@ -195,7 +198,7 @@ run!(
 // or bare throughout.
 run!(
     collection_trait_mixed_self_rejected,
-    |v: Result<&Value>| v.is_err(),
+    refused("a trait spells its receiver one way throughout"),
     "/test.gx" => r#"
         trait Bad { val a: fn(self<'a>) -> i64; val b: fn(self) -> i64 };
         let result = 0
@@ -251,7 +254,7 @@ run!(
             true => x,
             false => null
         });
-        let result = a == b
+        let result = a == b && array::len(a) == 32
     "#
 );
 
@@ -303,15 +306,6 @@ run!(
     "#
 );
 
-// CR claude for claude: [test-gap] map::fold and the Map impl of Collection::fold both
-// run the 'map_fold intrinsic (map mod.gx:13; core mod.gx:38 and 52), so a == b checks
-// only the trait's wrapper callback, not the fold itself.
-// collection_bodies_filter_array likewise compares two MapOps of one MapQ node. These
-// two have no independent side: fold_array, map_array and fold_list compare against a
-// hand-written recursion, and find_array and flat_map_array against array::fold. A slot
-// or assembly bug the two sides share gives both the same wrong answer, and the literal
-// pins in lib_tests use only 3 to 5 elements. Add the expected value: a == 39800 here,
-// and array::len(a) == 32 in filter_array. (tests-lang-d-10)
 run!(
     collection_bodies_fold_map,
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))),
@@ -320,7 +314,7 @@ run!(
         let m = array::fold(array::init(200, |i| i), empty, |m, i| map::insert(m, i, i * 2));
         let a = map::fold(m, 0, |acc, (_, v)| acc + v);
         let b = Collection::fold(m, 0, |acc, v| acc + v);
-        let result = a == b
+        let result = a == b && a == 39800
     "#
 );
 
