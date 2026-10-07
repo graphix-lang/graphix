@@ -717,29 +717,9 @@ run!(select_ignore_before_nested, SELECT_IGNORE_BEFORE_NESTED, |v: Result<&Value
     matches!(v, Ok(Value::F64(3.0)))
 });
 
-// A struct parent whose `_` fields sort first.
-const SELECT_IGNORE_SORTS_FIRST: &str = r#"
-{
-  let x = { foo: [1.0, 2.0, 4.5], bar: 42, baz: 8.0 };
-  select x {
-    { foo: [a, b, ..], bar: _, baz: _ } => a + b,
-    _ => 0.0
-  }
-}
-"#;
-
-run!(select_ignore_sorts_first, SELECT_IGNORE_SORTS_FIRST, |v: Result<&Value>| {
-    matches!(v, Ok(Value::F64(3.0)))
-});
-
 // An Array local defined by a never()-gated select threads into the
 // downstream fold region as a kernel input (the `#[native]` on the fold
 // is the assertion). Final fold = 9.0.
-// CR claude for claude: [test-gap] The comment says the `#[native]` on the fold is the
-// assertion, but the fold carries none. So nothing checks that the gated `w` reaches
-// the fold's kernel: FuseExpect::Jit passes on any kernel the program runs. Restore
-// `let total = #[native] array::fold(w, 0.0, |a, x| a + x);`, which holds today in both
-// engines and every image mode. (tests-lang-a-05)
 const GATED_WINDOW_FOLD: &str = r#"
 {
   let tick = array::iter([1.0, 2.0, 3.0, 4.0]);
@@ -749,7 +729,7 @@ const GATED_WINDOW_FOLD: &str = r#"
     0 => never(),
     _ => win
   };
-  let total = array::fold(w, 0.0, |a, x| a + x);
+  let total = #[native] array::fold(w, 0.0, |a, x| a + x);
   select count(total) {
     4 => total,
     _ => never()
@@ -1113,15 +1093,8 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// In a callee body: 5 (init + 4).
-// CR claude for claude: [readability] The comment above says 5 (init + 4), but the test
-// expects 4, and 4 is right: at init m has not produced, the consulted guard is
-// unknown, and the select emits nothing. Separately, the comment at lines 2575-2576 ("A
-// nested variant head is a pooled position...") sits on NULL_LITERAL_COVERS_NULL but
-// describes POOL_NESTED_VARIANT_PARTIAL (line 2605). SELECT_IGNORE_SORTS_FIRST (line
-// 736) is the same program as SELECT_NESTED_STRUCT_SLICE (line 627), so it adds no
-// coverage. Fix the count, move the comment, and delete one of the two fixtures.
-// (tests-lang-a-14)
+// In a callee body: 4. At init m has not produced, so the consulted guard
+// is unknown and the select emits nothing.
 const GUARDED_SELECT_IN_CALLEE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -2104,19 +2077,14 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
   step <- select step { s if s < 3 => s + 1, _ => never() };
   let err: [`None, `Bad] = `None;
   let x = { catch(e) err <- e ~ `Bad; select step { 2 => error(`E)?, _ => 0 } };
-  select step { 3 => (err, x), _ => never() }
+  array::group((step, err), |n, _| n == 4)
 }
 "#;
 
-run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| match v {
-    // CR claude for claude: [test-gap] This predicate checks only that err is `Bad at
-    // step 3. A handler that also wrote `Bad without an error (at init, say) would
-    // pass, so the "only" in the test's name is never checked. Assert the history
-    // instead: `array::group((step, err), |n, _| n == 4)` expecting [[0, `None], [1,
-    // `None], [2, `None], [3, `Bad]]. That holds today, and an extra write shows up as
-    // [1, `Bad]. (tests-lang-a-10)
-    Ok(Value::Array(a)) => matches!(&a[..], [Value::String(t), _] if &**t == "Bad"),
-    _ => false,
+// The history: `Bad arrives with the error at step 3 and at no other step.
+run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 // `~` banks triggers that find `v` absent (three writes); `~!` drops
@@ -2564,8 +2532,6 @@ run!(select_undecidable_quiet, SELECT_UNDECIDABLE_QUIET, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:2, i64:6, i64:7]"
 });
 
-// A nested variant head is a pooled position: two arms that miss
-// `(true, `B)` do not cover the tuple.
 // A `null` literal arm covers `null`, its type's one value, beside a
 // type test or a pool of partial struct patterns.
 const NULL_LITERAL_COVERS_NULL: &str = r#"
@@ -2594,6 +2560,8 @@ run!(null_literal_arm_dead, NULL_LITERAL_ARM_DEAD, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("unreachable arm"))
 }; graphix_package_core::testing::FuseExpect::None);
 
+// A nested variant head is a pooled position: two arms that miss
+// `(true, `B)` do not cover the tuple.
 const POOL_NESTED_VARIANT_PARTIAL: &str = r#"
 {
   let v: (bool, [`A, `B]) = (true, `B);
