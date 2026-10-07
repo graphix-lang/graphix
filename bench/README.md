@@ -68,10 +68,13 @@ fuse through `#[native]`. For the admin application and phase profiling,
 see [`design/jit_startup.md`](../design/jit_startup.md).
 
 ```
-cargo build --release -p graphix-shell
-bench/run.sh [iterations] [graphix-binary]
+cargo build --profile quick -p graphix-shell
+bench/run.sh [iterations] [graphix-binary] [corpus-dir]
 ```
 
+The binary defaults to the quick build in cargo's target directory and
+the corpus to `bench/` (`bench/collection/run.sh` runs this script over
+its own directory); the `par_*` programs are `par.sh`'s and are skipped.
 `run.sh` runs each program a few times per mode, keeps the best (min)
 time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and

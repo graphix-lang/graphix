@@ -9,20 +9,24 @@
 # then report the node-walk / JIT ratio. Both run under the default fork
 # mode, `auto`; `GRAPHIX_PAR=off` for one thread.
 #
-# Usage: bench/run.sh [iterations] [graphix-binary]
+# Usage: bench/run.sh [iterations] [graphix-binary] [corpus-dir]
 #   iterations  number of runs per mode (default 3)
-#   graphix     path to the graphix binary (default: target/release/graphix
-#               or $GRAPHIX if set)
+#   graphix     path to the graphix binary (default: $GRAPHIX, else the
+#               quick-profile build in cargo's target directory)
+#   corpus-dir  the directory of programs (default: bench/); the par_*
+#               programs are par.sh's and are skipped
 
 set -u
+here="$(cd "$(dirname "$0")" && pwd)"
 iters=${1:-3}
-graphix=${2:-${GRAPHIX:-target/release/graphix}}
+graphix=${2:-${GRAPHIX:-$(cd "$here/.." && cargo metadata --no-deps --format-version 1 2>/dev/null \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/quick/graphix}}
+dir="$(cd "${3:-$here}" && pwd)"
 timeout_s=120
-dir="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ ! -x "$graphix" ]]; then
     echo "graphix binary not found/executable: $graphix" >&2
-    echo "build it first: cargo build --release -p graphix-shell" >&2
+    echo "build it first: cargo build --profile quick -p graphix-shell" >&2
     exit 1
 fi
 
@@ -55,16 +59,10 @@ best() {
 
 printf '%-18s %14s %14s %12s\n' "bench" "jit(s)" "node-walk(s)" "speedup"
 printf '%-18s %14s %14s %12s\n' "-----" "------" "------------" "-------"
-# CR claude for claude: [bug] This glob also picks up the par_*.gx benches written for
-# par.sh, and the loop runs each of them under --no-fusion as well. par_mandel's
-# node-walk holds 22.8M retained `iterate` activations in its first cycle at about 27 KB
-# each (~620 GB), so that pass can never finish. Under a 6 GB cap it is OOM-killed after
-# 5 s; with no cap it grows at over 1 GB/s and exhausts a 62 GB box well before the 120
-# s timeout. Leave par_* to par.sh: skip them here, or move them to their own directory.
-# Separately, the default binary target/release/graphix never exists, because builds go
-# to ~/tmp/target. probe: design/review-2026-10-05/repro/examples-02.sh (examples-02)
 for prog in "$dir"/*.gx; do
     name=$(basename "$prog" .gx)
+    # par_* measure forking (par.sh); their node-walk pass cannot finish
+    [[ "$name" == par_* ]] && continue
     jit=$(best "$prog")
     nw=$(best "$prog" --no-fusion)
     if [[ "$jit" =~ ^[0-9.eE+-]+$ && "$nw" =~ ^[0-9.eE+-]+$ ]]; then

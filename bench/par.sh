@@ -10,9 +10,10 @@
 
 set -u
 iters=${1:-3}
-graphix=${2:-${GRAPHIX:-target/release/graphix}}
-timeout_s=300
 dir="$(cd "$(dirname "$0")" && pwd)"
+graphix=${2:-${GRAPHIX:-$(cd "$dir/.." && cargo metadata --no-deps --format-version 1 2>/dev/null \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/quick/graphix}}
+timeout_s=300
 
 if [[ ! -x "$graphix" ]]; then
     echo "graphix binary not found/executable: $graphix" >&2
