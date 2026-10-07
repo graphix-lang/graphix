@@ -20,70 +20,95 @@ pub(crate) fn fmt_naked(f: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     fmt_naked_capped(f, v, usize::MAX)
 }
 
+/// The bytes of a string leaf a capped walk writes.
+const MAX_LEAF: usize = 256;
+
 /// `cap` bounds the number of values written before the walk stops
-/// with a `…` (unbalanced by design: a truncated diagnostic dump).
+/// with a `…` (unbalanced by design: a truncated diagnostic dump); a
+/// capped walk also cuts a long string leaf. Each open array or map is a
+/// cursor, so the work is bounded by what is written.
 fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::Result {
-    enum W<'a> {
-        V(&'a Value),
-        S(&'static str),
+    type MapIter<'a> = <&'a netidx_value::Map as IntoIterator>::IntoIter;
+    enum Open<'a> {
+        Array(&'a [Value], usize),
+        Map { pairs: MapIter<'a>, first: bool, value: Option<&'a Value> },
     }
-    let mut stack: SmallVec<[W; 64]> = SmallVec::new();
-    stack.push(W::V(v));
-    while let Some(w) = stack.pop() {
-        match w {
-            W::S(s) => write!(f, "{s}")?,
-            W::V(v) => {
-                if cap == 0 {
-                    return write!(f, "…");
-                }
-                cap -= 1;
-                match v {
-                    Value::Array(a) => {
-                        write!(f, "[")?;
-                        stack.push(W::S("]"));
-                        // CR claude for claude: [perf] The cap counts values written, but
-                        // each visited array pushes all of its elements here, and each
-                        // map collects and pushes all of its pairs (54-63), before the
-                        // cap applies. So NakedPrefix walks and allocates in proportion
-                        // to a value's width: a failed cast<(i64, i64)> of an
-                        // 8M-element array costs about 130 MB of transient stack to
-                        // build a 456-byte InvalidCast message (cast.rs:46). A string
-                        // leaf is written whole, so a failed cast of a large string
-                        // puts the whole string in the message. Keep a cursor per open
-                        // array or map, and cut long string leaves, so the prefix is
-                        // bounded in work and size. (t-cast-setops-15)
-                        for i in (0..a.len()).rev() {
-                            stack.push(W::V(&a[i]));
-                            if i > 0 {
-                                stack.push(W::S(", "));
-                            }
-                        }
-                    }
-                    Value::Map(m) => {
-                        write!(f, "{{")?;
-                        stack.push(W::S("}"));
-                        let pairs: SmallVec<[(&Value, &Value); 16]> =
-                            m.into_iter().collect();
-                        for (i, (k, v)) in pairs.iter().enumerate().rev() {
-                            stack.push(W::V(v));
-                            stack.push(W::S(" => "));
-                            stack.push(W::V(k));
-                            if i > 0 {
-                                stack.push(W::S(", "));
-                            }
-                        }
-                    }
-                    // Debug consults a user Display impl when the hooks are armed.
-                    v @ Value::Abstract(_) => match abstract_value::get(v) {
-                        Some(g) => write!(f, "{g:?}")?,
-                        None => write!(f, "{}", NakedValue(v))?,
-                    },
-                    v => write!(f, "{}", NakedValue(v))?,
-                }
+    let capped = cap != usize::MAX;
+    let mut stack: SmallVec<[Open; 16]> = SmallVec::new();
+    let mut next = Some(v);
+    loop {
+        if let Some(v) = next.take() {
+            if cap == 0 {
+                return write!(f, "…");
             }
+            cap -= 1;
+            match v {
+                Value::Array(a) => {
+                    write!(f, "[")?;
+                    stack.push(Open::Array(&a[..], 0));
+                }
+                Value::Map(m) => {
+                    write!(f, "{{")?;
+                    stack.push(Open::Map {
+                        pairs: m.into_iter(),
+                        first: true,
+                        value: None,
+                    });
+                }
+                Value::String(s) if capped && s.len() > MAX_LEAF => {
+                    let mut end = MAX_LEAF;
+                    while !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let cut = Value::String(s[..end].into());
+                    write!(f, "{}…", NakedValue(&cut))?
+                }
+                // Debug consults a user Display impl when the hooks are armed.
+                v @ Value::Abstract(_) => match abstract_value::get(v) {
+                    Some(g) => write!(f, "{g:?}")?,
+                    None => write!(f, "{}", NakedValue(v))?,
+                },
+                v => write!(f, "{}", NakedValue(v))?,
+            }
+            continue;
+        }
+        match stack.last_mut() {
+            None => return Ok(()),
+            Some(Open::Array(a, i)) => match a.get(*i) {
+                Some(v) => {
+                    if *i > 0 {
+                        write!(f, ", ")?
+                    }
+                    *i += 1;
+                    next = Some(v)
+                }
+                None => {
+                    write!(f, "]")?;
+                    stack.pop();
+                }
+            },
+            Some(Open::Map { pairs, first, value }) => match value.take() {
+                Some(v) => {
+                    write!(f, " => ")?;
+                    next = Some(v)
+                }
+                None => match pairs.next() {
+                    Some((k, v)) => {
+                        if !*first {
+                            write!(f, ", ")?
+                        }
+                        *first = false;
+                        *value = Some(v);
+                        next = Some(k)
+                    }
+                    None => {
+                        write!(f, "}}")?;
+                        stack.pop();
+                    }
+                },
+            },
         }
     }
-    Ok(())
 }
 
 /// Bounded-prefix Display of a value, for diagnostics.
@@ -401,5 +426,26 @@ mod test {
         let s = format_compact!("{}", NakedPrefix(&v));
         assert!(s.ends_with("…"));
         assert!(s.len() < 1024);
+    }
+
+    #[test]
+    fn naked_prefix_is_bounded() {
+        let wide = Value::Array((0..100_000).map(Value::I64).collect());
+        let s = NakedPrefix(&wide).to_string();
+        assert!(s.starts_with("[0, 1, 2") && s.ends_with("…") && s.len() < 1024, "{s}");
+        let long = Value::String("x".repeat(100_000).into());
+        let s = NakedPrefix(&long).to_string();
+        assert!(s.len() < MAX_LEAF + 16 && s.ends_with("…"), "{s}");
+        let m: netidx_value::Map =
+            [(Value::I64(1), Value::from("a")), (Value::I64(2), wide.clone())]
+                .into_iter()
+                .collect();
+        let v = Value::Array([Value::Map(m), Value::Null].into_iter().collect());
+        let mut whole = String::new();
+        fmt_naked(&mut whole, &v).unwrap();
+        assert!(
+            whole.starts_with(r#"[{1 => "a", 2 => [0, 1, "#)
+                && whole.ends_with("99999]}, null]")
+        );
     }
 }
