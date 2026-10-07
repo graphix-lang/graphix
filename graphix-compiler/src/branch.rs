@@ -12,7 +12,7 @@ use crate::{
     node::place::Path,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::Control;
+use graphix_types::stack::{Control, with_control};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -637,22 +637,23 @@ where
     on_pool(control, || {
         branches.par_iter_mut().with_max_len(1).for_each(|b| {
             // a part may run on any thread of the pool
-            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
-            let _tokio = tokio.as_ref().map(|h| h.enter());
-            let mut c = ExecCtx {
-                cx: CxView::Fork(&mut b.cx),
-                image_decoder: decoder,
-                libstate,
-                rt: RtView::Fork(&mut b.rt),
-                core_hook_sites: hooks,
-                control,
-                event: &mut b.event,
-                fork_depth,
-                par,
-                fork,
-            };
-            b.out = Some(f(&mut c, b.part.take().expect("a part")));
-            live.done();
+            with_control(control, || {
+                let _tokio = tokio.as_ref().map(|h| h.enter());
+                let mut c = ExecCtx {
+                    cx: CxView::Fork(&mut b.cx),
+                    image_decoder: decoder,
+                    libstate,
+                    rt: RtView::Fork(&mut b.rt),
+                    core_hook_sites: hooks,
+                    control,
+                    event: &mut b.event,
+                    fork_depth,
+                    par,
+                    fork,
+                };
+                b.out = Some(f(&mut c, b.part.take().expect("a part")));
+                live.done();
+            })
         })
     });
     if branches.first().is_some_and(|b| b.rt.reads.is_some()) {
@@ -719,11 +720,12 @@ pub(crate) fn compile_each<R, E, P, F>(
     let live = Live::start(tasks.len());
     on_pool(control, || {
         tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
-            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
-            let _tokio = tokio.as_ref().map(|h| h.enter());
-            let _level = crate::typ::tvar::AtLevel::enter(level);
-            f(task, p.take().expect("a part"));
-            live.done();
+            with_control(control, || {
+                let _tokio = tokio.as_ref().map(|h| h.enter());
+                let _level = crate::typ::tvar::AtLevel::enter(level);
+                f(task, p.take().expect("a part"));
+                live.done();
+            })
         })
     });
     for (task, _) in tasks.drain(..) {
@@ -785,11 +787,12 @@ where
             },
             || {
                 // the stolen side runs on a thread of its own
-                let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
-                let _tokio = tokio.as_ref().map(|h| h.enter());
-                let r = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
-                live.done();
-                r
+                with_control(control, || {
+                    let _tokio = tokio.as_ref().map(|h| h.enter());
+                    let r = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+                    live.done();
+                    r
+                })
             },
         )
     });
@@ -909,9 +912,10 @@ pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) 
     }
     let tokio = tokio::runtime::Handle::try_current().ok();
     pool.install(|| {
-        let _interrupt = graphix_types::stack::InterruptScope::new(control);
-        let _tokio = tokio.as_ref().map(|h| h.enter());
-        f()
+        with_control(control, || {
+            let _tokio = tokio.as_ref().map(|h| h.enter());
+            f()
+        })
     })
 }
 

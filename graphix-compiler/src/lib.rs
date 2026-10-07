@@ -24,7 +24,7 @@ pub mod node_shape;
 pub(crate) mod perfdbg;
 
 pub use stack::set_stack_budget;
-pub use stack::{Control, CtlFlag, InterruptScope, ParMode};
+pub use stack::{Control, CtlFlag, ParMode, with_control};
 pub mod tval;
 
 use compact_str::CompactString;

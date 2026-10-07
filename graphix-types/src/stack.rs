@@ -397,40 +397,19 @@ pub fn interrupted() -> bool {
     })
 }
 
-/// Points `graphix_interrupted` at a runtime's [`Control`] on
-/// this thread while its cycle's nodes run; dropping it restores the
-/// enclosing runtime's. Create it on the thread that runs the nodes and
-/// drop it there, before the task can migrate, while `control` lives.
-pub struct InterruptScope {
-    prev: *const Control,
-}
-
-impl InterruptScope {
-    // CR claude for claude: [risk] This fn is safe, but InterruptScope has no lifetime,
-    // so safe code can free the Control while CURRENT still points at it in three ways:
-    // return the scope past its control, mem::forget the scope, or drop two nested
-    // scopes out of order (the inner one then restores a pointer to the outer's
-    // control). After that, interrupted(), record_self_blocks and the stack guard in
-    // ensure_sufficient (every deep parse, compile, print or drop on that thread) read
-    // and write freed memory. The probe shows record_self_blocks and one deep recursion
-    // writing 0x5eed and the Abort|Budget bits into an unrelated live Vec. The six
-    // in-tree uses are scope-shaped and correct today. A PhantomData<&'a Control> would
-    // still compile the forget and out-of-order cases; a closure form such as
-    // InterruptScope::with(control, || ..), restoring through an internal guard so an
-    // unwind also restores, closes all three. probe:
-    // design/review-2026-10-05/repro/t-misc-03.rs (copy to
-    // graphix-types/tests/review_t_misc_03.rs, then cargo test -p graphix-types --test
-    // review_t_misc_03). (t-misc-03)
-    pub fn new(control: &Control) -> Self {
-        let prev = CURRENT.with(|c| c.replace(control as *const Control));
-        Self { prev }
+/// Runs `f` with `graphix_interrupted` pointed at a runtime's
+/// [`Control`] on this thread, as while its cycle's nodes run; the
+/// enclosing runtime's is back when `f` returns or unwinds. Run it on
+/// the thread that runs the nodes, before the task can migrate.
+pub fn with_control<T>(control: &Control, f: impl FnOnce() -> T) -> T {
+    struct Restore(*const Control);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CURRENT.with(|c| c.set(self.0));
+        }
     }
-}
-
-impl Drop for InterruptScope {
-    fn drop(&mut self) {
-        CURRENT.with(|c| c.set(self.prev));
-    }
+    let _restore = Restore(CURRENT.with(|c| c.replace(control as *const Control)));
+    f()
 }
 
 /// The stack budget of the runtime whose cycle this thread is running;

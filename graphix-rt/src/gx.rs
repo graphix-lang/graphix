@@ -488,15 +488,16 @@ impl<X: GXExt> GX<X> {
         let mut run_nodes = || {
             // On the thread that runs the nodes: the task may migrate
             // between cycles.
-            let _interrupt = graphix_compiler::InterruptScope::new(&control);
-            self.update_nodes(&mut batch);
-            for (expr, answer) in answering.drain(..) {
-                let v = batch.iter().find_map(|e| match e {
-                    GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
-                    _ => None,
-                });
-                batch.push(GXEvent::Updated(answer, v.unwrap_or(Value::Null)))
-            }
+            graphix_compiler::with_control(&control, || {
+                self.update_nodes(&mut batch);
+                for (expr, answer) in answering.drain(..) {
+                    let v = batch.iter().find_map(|e| match e {
+                        GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
+                        _ => None,
+                    });
+                    batch.push(GXEvent::Updated(answer, v.unwrap_or(Value::Null)))
+                }
+            })
         };
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
