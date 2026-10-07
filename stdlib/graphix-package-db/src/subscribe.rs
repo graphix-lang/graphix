@@ -28,7 +28,7 @@ use std::{
 
 use crate::{
     encoding::{decode_key, decode_value, encode_key},
-    tree::TreeValue,
+    tree::get_tree_inner,
 };
 
 #[derive(Debug, Clone)]
@@ -82,17 +82,22 @@ struct DbEvents(GPooled<Vec<DbEvent>>);
 
 impl CustomBuiltinType for DbEvents {}
 
-fn decode_sled_event(key_typ: Option<Typ>, event: sled::Event) -> Option<DbEvent> {
-    match event {
-        sled::Event::Insert { key, value } => {
-            let k = decode_key(key_typ, &key)?;
-            let v = decode_value(&value)?;
-            Some(DbEvent::Insert { key: k, value: v })
-        }
+fn decode_sled_event(key_typ: Option<Typ>, event: sled::Event) -> Result<DbEvent> {
+    Ok(match event {
+        sled::Event::Insert { key, value } => DbEvent::Insert {
+            key: decode_key(key_typ, &key)?,
+            value: decode_value(&value)?,
+        },
         sled::Event::Remove { key } => {
-            let k = decode_key(key_typ, &key)?;
-            Some(DbEvent::Remove { key: k })
+            DbEvent::Remove { key: decode_key(key_typ, &key)? }
         }
+    })
+}
+
+fn push_event(key_typ: Option<Typ>, event: sled::Event, events: &mut Vec<DbEvent>) {
+    match decode_sled_event(key_typ, event) {
+        Ok(ev) => events.push(ev),
+        Err(e) => log::warn!("db subscription: {e:#}"),
     }
 }
 
@@ -103,22 +108,62 @@ fn drain_ready(
 ) {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(&waker);
-    loop {
-        match Pin::new(&mut *subscriber).poll(&mut cx) {
-            Poll::Ready(Some(event)) => {
-                if let Some(ev) = decode_sled_event(key_typ, event) {
-                    events.push(ev);
-                }
-            }
-            Poll::Ready(None) | Poll::Pending => break,
+    while let Poll::Ready(Some(event)) = Pin::new(&mut *subscriber).poll(&mut cx) {
+        push_event(key_typ, event, events)
+    }
+}
+
+async fn watch(
+    mut subscriber: sled::Subscriber,
+    key_typ: Option<Typ>,
+    bind_id: BindId,
+    mut tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
+) {
+    while let Some(first) = (&mut subscriber).await {
+        let mut events = EVENT_POOL.take();
+        push_event(key_typ, first, &mut events);
+        // CR claude for eric: [bug] A chunk is whatever sled had ready when
+        // this task woke, and the runtime delivers one chunk per bind id
+        // per cycle. So one atomic db::batch or txn::commit reaches
+        // on_insert spread over many cycles: a 2000-insert commit took 51
+        // to 770 cycles, and the commit's reply arrived midway. A
+        // subscriber that derives state from the events sees states the db
+        // never held, such as a debit without its credit. on_insert and
+        // on_remove also split each chunk into two arrays, so when an
+        // insert and a remove of one key arrive in one cycle their order is
+        // lost and a mirror cannot tell whether the key survived. sled's
+        // watch events carry no commit boundary, so delivering a write as
+        // one unit needs this package's own write paths to publish their
+        // write sets. probe: design/review-2026-10-05/repro/db2-07.gx
+        // (db2-07)
+        // 2026-10-07 claude: re-addressed: sled is the process's alone (one handle per
+        // path, tree.rs open_db), so the package's own write paths could publish each
+        // write set as one event in place of sled's watch. Ordering a write set's
+        // publication with the next write's needs a lock per db around apply and publish,
+        // which serializes the db's writes: a trade for Eric. One ordered on_change
+        // stream would also settle the insert/remove interleaving.
+        drain_ready(&mut subscriber, key_typ, &mut events);
+        if events.is_empty() {
+            continue;
+        }
+        let mut batch = CBATCH_POOL.take();
+        batch.push((bind_id, Box::new(DbEvents(events)) as Box<dyn CustomBuiltinType>));
+        if tx.send(batch).await.is_err() {
+            break;
         }
     }
 }
 
+/// A subscription to a tree's changes under a prefix. The watch is
+/// registered in the cycle the subscription fires, so no write issued on
+/// that fire is missed; it pauses while its arm sleeps and while an
+/// argument is bottom.
 #[derive(Debug)]
 pub(crate) struct DbSubscribe {
-    tree_val: Option<Value>,
+    args: CachedVals,
+    bind_id: BindId,
     abort: Option<tokio::task::AbortHandle>,
+    slept: bool,
     out: TagValue,
 }
 
@@ -131,12 +176,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
+        from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(DbSubscribe {
-            tree_val: None,
+            args: CachedVals::new(from),
+            bind_id: BindId::new(),
             abort: None,
+            slept: false,
             out: TagValue::phantom(),
         }))
     }
@@ -146,18 +193,49 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let tree_val = Pack::decode(buf)?;
-        Ok(Box::new(DbSubscribe { tree_val, abort: None, out: TagValue::phantom() }))
+        Ok(Box::new(DbSubscribe {
+            args: CachedVals::image_decode(buf)?,
+            bind_id: BindId::new(),
+            abort: None,
+            slept: false,
+            out: TagValue::phantom(),
+        }))
+    }
+}
+
+impl DbSubscribe {
+    fn stop(&mut self) {
+        if let Some(abort) = self.abort.take() {
+            abort.abort();
+        }
+    }
+
+    /// Watch the cached tree under the cached prefix, reporting under the
+    /// current bind id; a prefix no key can have watches nothing.
+    fn watch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.stop();
+        let Some(tree) = get_tree_inner(&self.args, 1) else { return };
+        let prefix = match self.args.0[0].as_ref() {
+            None => return,
+            Some(Value::Null) => Ok(GPooled::orphan(vec![])),
+            Some(v) => encode_key(tree.key_typ, v),
+        };
+        let Ok(prefix) = prefix else { return };
+        let subscriber = tree.tree.watch_prefix(&*prefix);
+        let (tx, rx) = mpsc::channel(10);
+        ctx.rt.watch(rx);
+        let jh = tokio::task::spawn(watch(subscriber, tree.key_typ, self.bind_id, tx));
+        self.abort = Some(jh.abort_handle());
     }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
-    /// A running watch task exists only once a cycle has run.
+    /// A running watch exists only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.abort.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
-        self.tree_val.encode(buf)
+        self.args.image_encode(buf)
     }
 
     fn update(
@@ -165,107 +243,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // from[0] = optional prefix (null = no prefix), from[1] = tree
-        // CR claude for claude: [bug] The prefix is read with seam_tick and never kept. A
-        // prefix that fires before the tree is thrown away by the early return below,
-        // and a tree that fires without the prefix firing subscribes with the empty
-        // prefix. A constant #prefix fires only at init, while db::open and db::tree
-        // are async, so the ordinary call `db::subscription::new(#prefix: "aa", t)`
-        // sees every key in the tree. Read the prefix on the value plane (seam_value)
-        // so its current value is used whenever the tree fires, and add a test with a
-        // constant #prefix: today no test covers #prefix. probe:
-        // design/review-2026-10-05/repro/db2-04.gx (on_insert delivers key "bb" under
-        // prefix "aa"). (db2-04)
-        let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx))
-            .map(|tv| tv.value_cloned());
-        let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx))
-            .map(|tv| tv.value_cloned());
-        let tree_is_new = tree_changed.is_some();
-        if let Some(v) = tree_changed {
-            self.tree_val = Some(v);
-        }
-        // CR claude for claude: [bug] seam_tick reads a bottomed tree or prefix as no
-        // event, so when the tree goes bottom the old watch keeps running and the last
-        // Subscription rides; the accessors below keep their bind id when `sub` goes
-        // bottom (CachedVals keeps the value) and never consult any_bottom. Both keep
-        // reporting inserts while their argument is bottom, against dense_delivery.md's
-        // rule 13 (a builtin bottoms on any bottomed argument): the output should be
-        // bottom and the watch stopped until the argument returns. sys's net subscribe
-        // and fs watch read bottoms the same way. probe:
-        // design/review-2026-10-05/repro/db2-13.gx (db2-13)
-        if self.tree_val.is_none() || (prefix_val.is_none() && !tree_is_new) {
-            return self.out.ride();
-        }
-        if let Some(Value::Abstract(ref a)) = self.tree_val
-            && let Some(tv) = a.downcast_ref::<TreeValue>()
-        {
-            let tree_inner = tv.inner.clone();
-            let key_typ = tree_inner.key_typ;
-            let prefix_bytes = match &prefix_val {
-                Some(Value::Null) | None => poolshark::global::GPooled::orphan(vec![]),
-                Some(pv) => match encode_key(key_typ, pv) {
-                    Some(buf) => buf,
-                    None => poolshark::global::GPooled::orphan(vec![]),
-                },
-            };
-            let bind_id = BindId::new();
-            let (mut tx, rx) = mpsc::channel(10);
-            ctx.rt.watch(rx);
-            if let Some(abort) = self.abort.take() {
-                abort.abort();
+        match self.args.update(ctx, from) {
+            Invocation::Bottom { fresh } => {
+                self.stop();
+                self.out.set_bottom(fresh)
             }
-            let jh = tokio::task::spawn(async move {
-                // CR claude for claude: [bug] The sled subscriber is registered only when
-                // a tokio worker first polls this task, but the Subscription value
-                // fires in this cycle (line 218). A write the program issues on that
-                // fire can reach sled first, and its event never arrives. In the shell,
-                // `db::insert(t, sub ~ "k", 1)` misses on_insert in about 7% of runs,
-                // and the tests' `key <- sub ~ "k"` form in about 5%. lib_tests/db.rs
-                // passes only because its current_thread runtime polls this task before
-                // the insert's. Registration is an in-memory map insert in sled, so
-                // call watch_prefix in update and move the Subscriber into the task.
-                // probe: design/review-2026-10-05/repro/db2-08.sh (db2-08)
-                let mut subscriber = tree_inner.tree.watch_prefix(&*prefix_bytes);
-                while let Some(first) = (&mut subscriber).await {
-                    let mut events = EVENT_POOL.take();
-                    if let Some(ev) = decode_sled_event(key_typ, first) {
-                        events.push(ev);
-                    }
-                    // CR claude for claude: [bug] A chunk is whatever sled had ready when
-                    // this task woke, and the runtime delivers one chunk per bind id
-                    // per cycle. So one atomic db::batch or txn::commit reaches
-                    // on_insert spread over many cycles: a 2000-insert commit took 51
-                    // to 770 cycles, and the commit's reply arrived midway. A
-                    // subscriber that derives state from the events sees states the db
-                    // never held, such as a debit without its credit. on_insert and
-                    // on_remove also split each chunk into two arrays, so when an
-                    // insert and a remove of one key arrive in one cycle their order is
-                    // lost and a mirror cannot tell whether the key survived. sled's
-                    // watch events carry no commit boundary, so delivering a write as
-                    // one unit needs this package's own write paths to publish their
-                    // write sets. probe: design/review-2026-10-05/repro/db2-07.gx
-                    // (db2-07)
-                    drain_ready(&mut subscriber, key_typ, &mut events);
-                    if events.is_empty() {
-                        continue;
-                    }
-                    let mut batch: GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>> =
-                        CBATCH_POOL.take();
-                    batch.push((bind_id, Box::new(DbEvents(events))));
-                    if tx.send(batch).await.is_err() {
-                        break;
-                    }
+            Invocation::Fired => {
+                self.slept = false;
+                self.bind_id = BindId::new();
+                self.watch(ctx);
+                let sub = SubscriptionValue { bind_id: self.bind_id };
+                self.out.set(TagValue::fired(SUBSCRIPTION_WRAPPER.wrap(sub)))
+            }
+            Invocation::Quiet => {
+                if std::mem::take(&mut self.slept) {
+                    self.watch(ctx);
                 }
-            });
-            self.abort = Some(jh.abort_handle());
-            return self.out.set(TagValue::fired(
-                SUBSCRIPTION_WRAPPER.wrap(SubscriptionValue { bind_id }),
-            ));
+                self.out.ride()
+            }
         }
-        self.out.ride()
     }
 
-    // CR claude for claude: [bug] sleep aborts the watch task and forgets tree_val, and
+    // XCR claude for claude: [bug] sleep aborts the watch task and forgets tree_val, and
     // the accessors' sleep below drops their bind id. Both re-establish only on a FIRED
     // argument, but at a wake the arm's arguments arrive stale. So a subscription, or
     // an on_insert/on_remove accessor, in a select arm that sleeps once never delivers
@@ -275,18 +274,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
     // after a sleep, and have the accessor re-ref the bind id from its stale slot.
     // sys/watch.rs WatchStream has the same shape and goes deaf the same way. probe:
     // design/review-2026-10-05/repro/db2-05.gx (db2-05)
+    // 2026-10-07 claude: the subscription keeps its arguments across a sleep and
+    // watches again, under the same bind id, on its first update after; an accessor
+    // keeps its argument and re-refs. Events while asleep are lost (a pause). No lib
+    // test; design/review-2026-10-05/repro/db2-05.gx prints [{key: "b", value: 2}].
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(abort) = self.abort.take() {
-            abort.abort();
-        }
-        self.tree_val = None;
-        self.out = TagValue::phantom();
+        self.stop();
+        self.slept = true;
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(abort) = self.abort.take() {
-            abort.abort();
-        }
+        self.stop();
     }
 }
 
@@ -371,21 +369,23 @@ macro_rules! db_event_accessor {
                 from: &mut [Node<R, E>],
             ) -> &TagValue {
                 match self.cached.update(ctx, from) {
-                    Invocation::Bottom { fresh } => return self.out.set_bottom(fresh),
-                    Invocation::Quiet => (),
-                    Invocation::Fired => {
+                    Invocation::Bottom { fresh } => {
                         if let Some(bid) = self.bind_id.take() {
                             ctx.unref_var(bid, self.top_id);
                         }
-                        let first = match self.cached.0.first() {
-                            Some(Some(v)) => v,
-                            Some(None) | None => return self.out.ride(),
-                        };
-                        let bid = extract_sub_bind_id(first);
-                        if let Some(bid) = bid {
+                        return self.out.set_bottom(fresh);
+                    }
+                    // after a sleep, the standing subscription again
+                    Invocation::Quiet if self.bind_id.is_some() => (),
+                    Invocation::Quiet | Invocation::Fired => {
+                        if let Some(bid) = self.bind_id.take() {
+                            ctx.unref_var(bid, self.top_id);
+                        }
+                        self.bind_id =
+                            self.cached.0[0].as_ref().and_then(extract_sub_bind_id);
+                        if let Some(bid) = self.bind_id {
                             ctx.rt.ref_var(bid, self.top_id);
                         }
-                        self.bind_id = bid;
                     }
                 }
                 match scan_db_events(self.bind_id, ctx.event, $convert) {
@@ -398,8 +398,6 @@ macro_rules! db_event_accessor {
                 if let Some(bid) = self.bind_id.take() {
                     ctx.unref_var(bid, self.top_id);
                 }
-                self.cached.clear();
-                self.out = TagValue::phantom();
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {

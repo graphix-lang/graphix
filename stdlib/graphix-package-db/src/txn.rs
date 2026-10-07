@@ -1,21 +1,16 @@
 use crate::{
-    encoding::{decode_value, encode_key, encode_value, parse_batch_ops},
+    encoding::decode_value,
     tree::{
-        DEFAULT_TREE_META, META_TREE, check_or_store_meta, extract_key_typ_from_rtype,
-        extract_type_strings_from_rtype, get_db, read_meta, tree_types_decode,
-        tree_types_encode, types_are_concrete,
+        Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes,
+        abstract_arg, batch_arg, get_db, insert_arg, key_arg, meta_key, value_or_null,
     },
 };
 use ahash::AHashMap;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use graphix_compiler::{
-    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, image::ImageBuf,
-    typ::FnType,
-};
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
+use graphix_compiler::errf;
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
-use netidx_core::pack::PackError;
 use netidx_value::Value;
 use poolshark::global::{GPooled, Pool};
 use std::{
@@ -29,7 +24,7 @@ use tokio::sync::oneshot;
 type TxnMsg = (TxnCommand, oneshot::Sender<Value>);
 
 enum TxnCommand {
-    OpenTree { name: Option<ArcStr>, key_typ_str: ArcStr, val_typ_str: ArcStr },
+    OpenTree { name: Option<ArcStr>, types: TreeTypes },
     Get { tree_idx: usize, key: GPooled<Vec<u8>> },
     Insert { tree_idx: usize, key: GPooled<Vec<u8>>, value: GPooled<Vec<u8>> },
     Remove { tree_idx: usize, key: GPooled<Vec<u8>> },
@@ -58,14 +53,8 @@ graphix_package_core::impl_abstract_arc!(
     static TXN_WRAPPER = "db::txn::Txn"
 );
 
-fn get_txn(cached: &CachedVals, idx: usize) -> Option<Arc<TxnInner>> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => {
-            let tv = a.downcast_ref::<TxnValue>()?;
-            Some(tv.inner.clone())
-        }
-        _ => None,
-    }
+fn get_txn(cached: &CachedVals) -> Option<Arc<TxnInner>> {
+    abstract_arg::<TxnValue>(cached, 0).map(|t| t.inner.clone())
 }
 
 pub(crate) struct TxnTreeInner {
@@ -80,6 +69,12 @@ impl fmt::Debug for TxnTreeInner {
     }
 }
 
+impl KeyTyp for &Arc<TxnTreeInner> {
+    fn key_typ(&self) -> Option<Typ> {
+        self.key_typ
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TxnTreeValue {
     inner: Arc<TxnTreeInner>,
@@ -89,16 +84,6 @@ graphix_package_core::impl_abstract_arc!(
     TxnTreeValue,
     static TXN_TREE_WRAPPER = "db::txn::TxnTree"
 );
-
-fn get_txn_tree(cached: &CachedVals, idx: usize) -> Option<Arc<TxnTreeInner>> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => {
-            let tv = a.downcast_ref::<TxnTreeValue>()?;
-            Some(tv.inner.clone())
-        }
-        _ => None,
-    }
-}
 
 async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value {
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -111,68 +96,30 @@ async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value 
     }
 }
 
+fn db_err(e: anyhow::Error) -> Value {
+    errf!("DbErr", "{e:#}")
+}
+
 struct TxnCtx<'a> {
     trees: &'a [sled::transaction::TransactionalTree],
     rx: mpsc::Receiver<TxnMsg>,
     commit_reply: &'a RefCell<Option<oneshot::Sender<Value>>>,
     aborted: &'a Cell<bool>,
     meta_idx: Option<usize>,
-    pending_meta: &'a AHashMap<ArcStr, (ArcStr, ArcStr)>,
+    pending_meta: &'a AHashMap<ArcStr, TreeTypes>,
 }
 
 impl TxnCtx<'_> {
     fn write_meta(&self) -> Result<()> {
         let Some(mi) = self.meta_idx else { return Ok(()) };
-        for (tree_name, (key_typ_str, val_typ_str)) in self.pending_meta {
-            check_or_store_meta(&self.trees[mi], tree_name, key_typ_str, val_typ_str)?;
+        for (tree_name, types) in self.pending_meta {
+            self.trees[mi].check_or_store(tree_name, types)?;
         }
         Ok(())
     }
 
-    fn get(&self, tree_idx: usize, key: &[u8]) -> Result<Value> {
-        if tree_idx >= self.trees.len() {
-            bail!("invalid tree index");
-        }
-        match self.trees[tree_idx].get(key)? {
-            None => Ok(Value::Null),
-            Some(ivec) => decode_value(&ivec)
-                .ok_or_else(|| anyhow::anyhow!("failed to decode value")),
-        }
-    }
-
-    fn insert(&self, tree_idx: usize, key: &[u8], value: &[u8]) -> Result<Value> {
-        if tree_idx >= self.trees.len() {
-            bail!("invalid tree index");
-        }
-        let prev = self.trees[tree_idx].insert(key, value)?;
-        Ok(match prev {
-            None => Value::Null,
-            // CR claude for claude: [bug] An undecodable previous value becomes null here
-            // and at 161, which tells the program the key was absent, although it held
-            // a value that is now gone. db::insert and db::remove (tree.rs:600-603,
-            // 632-635) and TxnCtx::get report DbErr for the same bytes. probe:
-            // design/review-2026-10-05/repro/db2-18.gx (db2-18)
-            Some(ivec) => decode_value(&ivec).unwrap_or(Value::Null),
-        })
-    }
-
-    fn remove(&self, tree_idx: usize, key: &[u8]) -> Result<Value> {
-        if tree_idx >= self.trees.len() {
-            bail!("invalid tree index");
-        }
-        let prev = self.trees[tree_idx].remove(key)?;
-        Ok(match prev {
-            None => Value::Null,
-            Some(ivec) => decode_value(&ivec).unwrap_or(Value::Null),
-        })
-    }
-
-    fn apply_batch(&self, tree_idx: usize, batch: &sled::Batch) -> Result<Value> {
-        if tree_idx >= self.trees.len() {
-            bail!("invalid tree index");
-        }
-        self.trees[tree_idx].apply_batch(batch)?;
-        Ok(Value::Null)
+    fn tree(&self, tree_idx: usize) -> Result<&sled::transaction::TransactionalTree> {
+        self.trees.get(tree_idx).ok_or_else(|| anyhow!("invalid tree index"))
     }
 
     fn abort(&self) -> sled::transaction::ConflictableTransactionResult<(), ()> {
@@ -185,7 +132,7 @@ impl TxnCtx<'_> {
         first_msg: TxnMsg,
     ) -> sled::transaction::ConflictableTransactionResult<(), ()> {
         if let Err(e) = self.write_meta() {
-            let _ = first_msg.1.send(errf!("DbErr", "{e:?}"));
+            let _ = first_msg.1.send(db_err(e));
             return self.abort();
         }
         let mut pending = Some(first_msg);
@@ -199,26 +146,24 @@ impl TxnCtx<'_> {
             };
             let res = match cmd {
                 TxnCommand::OpenTree { .. } => {
-                    Err(anyhow::anyhow!("cannot open trees after data operations"))
+                    Err(anyhow!("cannot open trees after data operations"))
                 }
-                TxnCommand::Get { tree_idx, key } => self.get(tree_idx, &key),
-                TxnCommand::Insert { tree_idx, key, value } => {
-                    self.insert(tree_idx, &key, &value)
-                }
-                TxnCommand::Remove { tree_idx, key } => self.remove(tree_idx, &key),
-                TxnCommand::Batch { tree_idx, ref batch } => {
-                    self.apply_batch(tree_idx, batch)
-                }
-                // CR claude for claude: [bug] Commit replies null but never calls
-                // self.trees[0].flush(), so sled leaves the commit in its in-memory log
-                // until the 500 ms flusher runs. A program that commits and then calls
-                // sys::exit (std::process::exit, so no Drop runs) or crashes loses the
-                // commit. The book calls these ACID transactions. The flusher also
-                // takes sled's process-global concurrency lock, which every open
-                // db::txn holds for its whole life, so while another transaction is
-                // open nothing reaches disk. Either set flush_on_commit here (an fsync
-                // per commit), or document that a commit is durable only after
-                // db::flush. probe: design/review-2026-10-05/repro/db2-09.sh (db2-09)
+                TxnCommand::Get { tree_idx, key } => self
+                    .tree(tree_idx)
+                    .and_then(|t| Ok(t.get(key.as_slice())?))
+                    .and_then(|v| v.map_or(Ok(Value::Null), |v| decode_value(&v))),
+                TxnCommand::Insert { tree_idx, key, value } => self
+                    .tree(tree_idx)
+                    .and_then(|t| Ok(t.insert(key.as_slice(), value.as_slice())?))
+                    .and_then(value_or_null),
+                TxnCommand::Remove { tree_idx, key } => self
+                    .tree(tree_idx)
+                    .and_then(|t| Ok(t.remove(key.as_slice())?))
+                    .and_then(value_or_null),
+                TxnCommand::Batch { tree_idx, ref batch } => self
+                    .tree(tree_idx)
+                    .and_then(|t| Ok(t.apply_batch(batch)?))
+                    .map(|()| Value::Null),
                 TxnCommand::Commit => {
                     *self.commit_reply.borrow_mut() = Some(reply);
                     return Ok(());
@@ -235,7 +180,7 @@ impl TxnCtx<'_> {
                 Err(e) => {
                     let is_txn_err =
                         e.is::<sled::transaction::UnabortableTransactionError>();
-                    let _ = reply.send(errf!("DbErr", "{e:?}"));
+                    let _ = reply.send(db_err(e));
                     if is_txn_err {
                         return self.abort();
                     }
@@ -248,7 +193,7 @@ impl TxnCtx<'_> {
 fn run_transaction(
     trees: &[sled::Tree],
     meta_idx: Option<usize>,
-    pending_meta: &AHashMap<ArcStr, (ArcStr, ArcStr)>,
+    pending_meta: &AHashMap<ArcStr, TreeTypes>,
     rx: mpsc::Receiver<TxnMsg>,
     first_msg: TxnMsg,
 ) {
@@ -281,111 +226,88 @@ fn run_transaction(
                 }
                 .run(first_msg)
             } else {
-                // Conflict retry — we cannot re-run user code, abort
+                // a conflict retry cannot re-run the program's commands
                 sled::transaction::abort(())
             }
         },
     );
-
     if let Some(reply) = commit_reply.borrow_mut().take() {
-        match result {
-            Ok(()) => {
-                let _ = reply.send(Value::Null);
-            }
+        let _ = reply.send(match result {
+            // XCR claude for claude: [bug] Commit replies null but never calls
+            // self.trees[0].flush(), so sled leaves the commit in its in-memory log
+            // until the 500 ms flusher runs. A program that commits and then calls
+            // sys::exit (std::process::exit, so no Drop runs) or crashes loses the
+            // commit. The book calls these ACID transactions. The flusher also
+            // takes sled's process-global concurrency lock, which every open
+            // db::txn holds for its whole life, so while another transaction is
+            // open nothing reaches disk. Either set flush_on_commit here (an fsync
+            // per commit), or document that a commit is durable only after
+            // db::flush. probe: design/review-2026-10-05/repro/db2-09.sh (db2-09)
+            // 2026-10-07 claude: a commit flushes before it answers (an fsync per commit). The
+            // flush takes sled's process-wide lock, so a commit answers only once every other
+            // open txn has ended (db2-01). design/review-2026-10-05/repro/db2-09.sh: k = 42
+            // after every restart.
+            Ok(()) => match trees[0].flush() {
+                Ok(_) => Value::Null,
+                Err(e) => errf!("DbErr", "{e}"),
+            },
             Err(sled::transaction::TransactionError::Abort(())) if aborted.get() => {
-                let _ = reply.send(Value::Null);
+                Value::Null
             }
             Err(sled::transaction::TransactionError::Abort(())) => {
-                let _ = reply.send(errf!("DbErr", "transaction conflict"));
+                errf!("DbErr", "transaction conflict")
             }
-            Err(sled::transaction::TransactionError::Storage(e)) => {
-                let _ = reply.send(errf!("DbErr", "{e}"));
-            }
-        }
+            Err(sled::transaction::TransactionError::Storage(e)) => errf!("DbErr", "{e}"),
+        });
     }
 }
 
 struct BeginTxnCtx {
     trees: GPooled<Vec<sled::Tree>>,
-    pending_meta: GPooled<AHashMap<ArcStr, (ArcStr, ArcStr)>>,
-    db: sled::Db,
+    /// The slot of each tree opened, by meta key: a tree opened twice is
+    /// one slot, so both handles see one overlay.
+    opened: AHashMap<ArcStr, usize>,
+    pending_meta: AHashMap<ArcStr, TreeTypes>,
+    db: Db,
     rx: mpsc::Receiver<TxnMsg>,
 }
 
 impl BeginTxnCtx {
-    fn open_tree(
-        &mut self,
-        name: Option<ArcStr>,
-        key_typ_str: ArcStr,
-        val_typ_str: ArcStr,
-    ) -> Result<usize> {
-        let tree_name =
-            name.as_ref().cloned().unwrap_or_else(|| DEFAULT_TREE_META.clone());
-        if let Some(n) = name.as_ref() {
-            if n == &DEFAULT_TREE_META || n == &META_TREE {
-                bail!("tree name '{n}' is reserved");
-            }
-        }
-        if !types_are_concrete(&key_typ_str, &val_typ_str) {
-            bail!("tree requires concrete type annotations")
-        }
-        // Read-only check for early mismatch detection
-        let meta = self.db.open_tree(&META_TREE)?;
-        // CR claude for claude: [structure] This re-implements check_or_store_meta's
-        // comparison (tree.rs:139-147) with its own message ('Tree<{sk}, {sv}>, but was
-        // opened as' here, no comma there), and read_meta repeats check_or_store_meta's
-        // splitn parse with its '?' fallbacks (tree.rs:120-123 and 139-142). One parse
-        // and one compare-with-message, used by db::tree and both transaction paths,
-        // would leave one place to change when the stored form or the rule changes.
-        // (db2-17)
-        match read_meta(&meta, &tree_name)? {
-            Some((sk, sv)) => {
-                if sk != key_typ_str || sv != val_typ_str {
-                    bail!(
-                        "tree '{tree_name}' has type Tree<{sk}, {sv}>, \
-                         but was opened as Tree<{key_typ_str}, {val_typ_str}>"
-                    );
-                }
-            }
-            None => match self.pending_meta.entry(tree_name.clone()) {
+    fn open_tree(&mut self, name: Option<ArcStr>, types: TreeTypes) -> Result<usize> {
+        types.concrete()?;
+        let key = ArcStr::from(meta_key(name.as_ref())?);
+        if !self.db.open_tree(META_TREE)?.check(&key, &types)? {
+            match self.pending_meta.entry(key.clone()) {
                 Entry::Vacant(e) => {
-                    e.insert((key_typ_str, val_typ_str));
+                    e.insert(types);
                 }
-                Entry::Occupied(e) => {
-                    let (k, v) = e.get();
-                    if k != &key_typ_str || v != &val_typ_str {
-                        bail!(
-                            "conflicting types for tree '{tree_name}' within transaction"
-                        )
-                    }
+                Entry::Occupied(e) if *e.get() != types => {
+                    bail!("conflicting types for tree '{key}' within transaction")
                 }
-            },
+                Entry::Occupied(_) => (),
+            }
         }
-        // CR claude for claude: [bug] Every db::txn::tree call pushes a new slot here,
-        // even for a name this transaction already opened. sled gives each slot its own
-        // overlay (writes map and read cache) and commits the slots in slot order. So a
-        // handle does not see a write made through another handle to the same tree, and
-        // at commit the later-opened handle's write beats a later write made through
-        // the earlier one, with no error. Two helpers that each open the tree in a
-        // shared transaction hit this. Return the existing slot on a repeat open, keyed
-        // by tree name (DEFAULT_TREE_META for null); the read_meta/pending_meta checks
-        // above already hold both opens' types equal. probe:
-        // design/review-2026-10-05/repro/db2-03.gx prints (null, 2), expected (1, 3).
-        // (db2-03)
+        if let Some(idx) = self.opened.get(&key) {
+            return Ok(*idx);
+        }
         let tree = match &name {
-            None => (*self.db).clone(),
+            None => (***self.db).clone(),
             Some(n) => self.db.open_tree(n.as_bytes())?,
         };
         let idx = self.trees.len();
         self.trees.push(tree);
+        self.opened.insert(key, idx);
         Ok(idx)
     }
 
+    /// A transaction that opened trees and touched no data: its new
+    /// trees' types are all it writes.
     fn commit(&mut self) -> Result<()> {
-        let meta = self.db.open_tree(&META_TREE)?;
-        for (tree_name, (key_typ_str, val_typ_str)) in self.pending_meta.drain() {
-            check_or_store_meta(&meta, &tree_name, &key_typ_str, &val_typ_str)?
+        let meta = self.db.open_tree(META_TREE)?;
+        for (tree_name, types) in self.pending_meta.drain() {
+            meta.check_or_store(&tree_name, &types)?
         }
+        meta.flush()?;
         Ok(())
     }
 
@@ -393,17 +315,17 @@ impl BeginTxnCtx {
         loop {
             let Ok((msg, reply)) = self.rx.recv() else { return };
             match msg {
-                TxnCommand::OpenTree { name, key_typ_str, val_typ_str } => {
-                    let res = match self.open_tree(name, key_typ_str, val_typ_str) {
+                TxnCommand::OpenTree { name, types } => {
+                    let res = match self.open_tree(name, types) {
                         Ok(tid) => Value::U64(tid as u64),
-                        Err(e) => errf!("DbErr", "{e:?}"),
+                        Err(e) => db_err(e),
                     };
                     let _ = reply.send(res);
                 }
                 TxnCommand::Commit => {
                     let res = match self.commit() {
                         Ok(()) => Value::Null,
-                        Err(e) => errf!("DbErr", "{e:?}"),
+                        Err(e) => db_err(e),
                     };
                     let _ = reply.send(res);
                     return;
@@ -412,7 +334,7 @@ impl BeginTxnCtx {
                     let _ = reply.send(Value::Null);
                     return;
                 }
-                // First data op transitions to phase 2
+                // the first data op starts the sled transaction
                 first_msg => {
                     if self.trees.is_empty() {
                         let _ =
@@ -420,7 +342,7 @@ impl BeginTxnCtx {
                         return;
                     }
                     let meta_idx = if !self.pending_meta.is_empty() {
-                        match self.db.open_tree(&META_TREE) {
+                        match self.db.open_tree(META_TREE) {
                             Ok(meta) => {
                                 let idx = self.trees.len();
                                 self.trees.push(meta);
@@ -447,24 +369,24 @@ impl BeginTxnCtx {
         }
     }
 
-    fn new(db: sled::Db, rx: mpsc::Receiver<TxnMsg>) -> Self {
+    fn new(db: Db, rx: mpsc::Receiver<TxnMsg>) -> Self {
         static TREES: LazyLock<Pool<Vec<sled::Tree>>> =
             LazyLock::new(|| Pool::new(64, 256));
-        static PENDING: LazyLock<Pool<AHashMap<ArcStr, (ArcStr, ArcStr)>>> =
-            LazyLock::new(|| Pool::new(64, 256));
-        Self { db, rx, pending_meta: PENDING.take(), trees: TREES.take() }
+        Self {
+            db,
+            rx,
+            opened: AHashMap::new(),
+            pending_meta: AHashMap::new(),
+            trees: TREES.take(),
+        }
     }
-}
-
-fn txn_thread(db: sled::Db, cmd_rx: mpsc::Receiver<TxnMsg>) {
-    BeginTxnCtx::new(db, cmd_rx).run();
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct DbTxnBeginEv;
 
 impl EvalCachedAsync for DbTxnBeginEv {
-    type Args = sled::Db;
+    type Args = Db;
 
     const NAME: &str = "db_txn_begin";
 
@@ -475,11 +397,15 @@ impl EvalCachedAsync for DbTxnBeginEv {
     fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             let (cmd_tx, cmd_rx) = mpsc::channel();
-            std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("graphix-db-txn".into())
-                .spawn(move || txn_thread(db, cmd_rx))
-                .expect("failed to spawn transaction thread");
-            TXN_WRAPPER.wrap(TxnValue { inner: Arc::new(TxnInner { cmd_tx }) })
+                .spawn(move || BeginTxnCtx::new(db, cmd_rx).run())
+            {
+                Ok(_) => {
+                    TXN_WRAPPER.wrap(TxnValue { inner: Arc::new(TxnInner { cmd_tx }) })
+                }
+                Err(e) => errf!("DbErr", "could not start the transaction thread: {e}"),
+            }
         }
     }
 }
@@ -487,266 +413,135 @@ impl EvalCachedAsync for DbTxnBeginEv {
 pub(crate) type DbTxnBegin = CachedArgsAsync<DbTxnBeginEv>;
 
 #[derive(Debug)]
-pub(crate) struct DbTxnTreeArgs {
-    txn: Arc<TxnInner>,
-    name: Option<ArcStr>,
-    key_typ: Option<Typ>,
-    key_typ_str: ArcStr,
-    val_typ_str: ArcStr,
-}
+pub(crate) struct FromTxn;
 
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnTreeEv {
-    key_typ: Option<Typ>,
-    key_typ_str: ArcStr,
-    val_typ_str: ArcStr,
-}
-
-impl ImageState for DbTxnTreeEv {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
-    }
-
-    fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Self, PackError> {
-        let (key_typ, key_typ_str, val_typ_str) = tree_types_decode(buf)?;
-        Ok(Self { key_typ, key_typ_str, val_typ_str })
-    }
-}
-
-impl EvalCachedAsync for DbTxnTreeEv {
-    type Args = DbTxnTreeArgs;
-
+impl TreeOpener for FromTxn {
     const NAME: &str = "db_txn_tree";
+    type Handle = Arc<TxnInner>;
 
-    fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: ExprId,
-    ) -> Self {
-        let key_typ = extract_key_typ_from_rtype(resolved);
-        let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved);
-        DbTxnTreeEv { key_typ, key_typ_str, val_typ_str }
+    fn handle(cached: &CachedVals) -> Option<Arc<TxnInner>> {
+        get_txn(cached)
     }
 
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        self.key_typ = extract_key_typ_from_rtype(Some(resolved));
-        let (k, v) = extract_type_strings_from_rtype(Some(resolved));
-        self.key_typ_str = k;
-        self.val_typ_str = v;
-        Ok(())
-    }
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let txn = get_txn(cached, 0)?;
-        let name = match cached.0.get(1)?.as_ref()? {
-            Value::Null => None,
-            Value::String(s) => Some(s.clone()),
-            _ => return None,
-        };
-        Some(DbTxnTreeArgs {
-            txn,
-            name,
-            key_typ: self.key_typ,
-            key_typ_str: self.key_typ_str.clone(),
-            val_typ_str: self.val_typ_str.clone(),
-        })
-    }
-
-    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
+    fn open(
+        txn: Arc<TxnInner>,
+        name: Option<ArcStr>,
+        types: TreeTypes,
+    ) -> impl Future<Output = Value> + Send {
         async move {
-            let DbTxnTreeArgs { txn, name, key_typ, key_typ_str, val_typ_str } = args;
-            let v = txn_send_recv(
-                &txn.cmd_tx,
-                TxnCommand::OpenTree { name, key_typ_str, val_typ_str },
-            )
-            .await;
-            match &v {
+            let key_typ = types.key;
+            match txn_send_recv(&txn.cmd_tx, TxnCommand::OpenTree { name, types }).await {
                 Value::U64(idx) => TXN_TREE_WRAPPER.wrap(TxnTreeValue {
                     inner: Arc::new(TxnTreeInner {
                         txn: txn.clone(),
-                        tree_idx: *idx as usize,
+                        tree_idx: idx as usize,
                         key_typ,
                     }),
                 }),
-                _ => v,
+                v => v,
             }
         }
     }
 }
 
-pub(crate) type DbTxnTree = CachedArgsAsync<DbTxnTreeEv>;
+pub(crate) type DbTxnTree = CachedArgsAsync<OpenTreeEv<FromTxn>>;
 
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnGetEv;
+/// A builtin sending one command for a transaction's tree, built from the
+/// encoding of its arguments; a failed encoding is its DbErr.
+macro_rules! txn_op {
+    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
+     |$a:pat_param, $idx:ident| $cmd:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
 
-impl EvalCachedAsync for DbTxnGetEv {
-    type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
+        impl EvalCachedAsync for $ev {
+            type Args = (Arc<TxnTreeInner>, Result<$arg>);
 
-    const NAME: &str = "db_txn_get";
+            const NAME: &str = $name;
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tt = get_txn_tree(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tt.key_typ, key_val)?;
-        Some((tt, key))
-    }
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                let tt = abstract_arg::<TxnTreeValue>(cached, 0)?.inner.clone();
+                let arg = $enc(&tt, cached)?;
+                Some((tt, arg))
+            }
 
-    fn eval((tt, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let tree_idx = tt.tree_idx;
-            txn_send_recv(&tt.txn.cmd_tx, TxnCommand::Get { tree_idx, key }).await
+            fn eval((tt, arg): Self::Args) -> impl Future<Output = Value> + Send {
+                async move {
+                    match arg {
+                        Err(e) => db_err(e),
+                        Ok($a) => {
+                            let $idx = tt.tree_idx;
+                            txn_send_recv(&tt.txn.cmd_tx, $cmd).await
+                        }
+                    }
+                }
+            }
         }
-    }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
 }
 
-pub(crate) type DbTxnGet = CachedArgsAsync<DbTxnGetEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnInsertEv;
-
-impl EvalCachedAsync for DbTxnInsertEv {
-    type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_txn_insert";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tt = get_txn_tree(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tt.key_typ, key_val)?;
-        let val = encode_value(cached.0.get(2)?.as_ref()?)?;
-        Some((tt, key, val))
-    }
-
-    fn eval((tt, key, val): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let tree_idx = tt.tree_idx;
-            txn_send_recv(
-                &tt.txn.cmd_tx,
-                TxnCommand::Insert { tree_idx, key, value: val },
-            )
-            .await
-        }
-    }
-}
-
-pub(crate) type DbTxnInsert = CachedArgsAsync<DbTxnInsertEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnRemoveEv;
-
-impl EvalCachedAsync for DbTxnRemoveEv {
-    type Args = (Arc<TxnTreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_txn_remove";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tt = get_txn_tree(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tt.key_typ, key_val)?;
-        Some((tt, key))
-    }
-
-    fn eval((tt, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let tree_idx = tt.tree_idx;
-            txn_send_recv(&tt.txn.cmd_tx, TxnCommand::Remove { tree_idx, key }).await
-        }
-    }
-}
-
-pub(crate) type DbTxnRemove = CachedArgsAsync<DbTxnRemoveEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnCommitEv;
-
-impl EvalCachedAsync for DbTxnCommitEv {
-    type Args = Arc<TxnInner>;
-
-    const NAME: &str = "db_txn_commit";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_txn(cached, 0)
-    }
-
-    fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
-        async move { txn_send_recv(&txn.cmd_tx, TxnCommand::Commit).await }
-    }
-}
-
-pub(crate) type DbTxnCommit = CachedArgsAsync<DbTxnCommitEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnRollbackEv;
-
-impl EvalCachedAsync for DbTxnRollbackEv {
-    type Args = Arc<TxnInner>;
-
-    const NAME: &str = "db_txn_rollback";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_txn(cached, 0)
-    }
-
-    fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
-        async move { txn_send_recv(&txn.cmd_tx, TxnCommand::Rollback).await }
-    }
-}
-
-pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTxnBatchEv;
-
-impl EvalCachedAsync for DbTxnBatchEv {
-    type Args = (Arc<TxnTreeInner>, sled::Batch);
-
-    const NAME: &str = "db_txn_batch";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tt = get_txn_tree(cached, 0)?;
-        let arr = match cached.0.get(1)?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        let batch = parse_batch_ops(tt.key_typ, arr)?;
-        Some((tt, batch))
-    }
-
-    fn eval((tt, batch): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let tree_idx = tt.tree_idx;
-            txn_send_recv(&tt.txn.cmd_tx, TxnCommand::Batch { tree_idx, batch }).await
-        }
-    }
-}
-
-pub(crate) type DbTxnBatch = CachedArgsAsync<DbTxnBatchEv>;
-
-graphix_package_core::unit_image_state!(
-    DbTxnBeginEv,
+txn_op!(
     DbTxnGetEv,
-    DbTxnInsertEv,
-    DbTxnRemoveEv,
-    DbTxnCommitEv,
-    DbTxnRollbackEv,
-    DbTxnBatchEv,
+    DbTxnGet,
+    "db_txn_get",
+    key_arg,
+    GPooled<Vec<u8>>,
+    |key, tree_idx| TxnCommand::Get { tree_idx, key }
 );
+txn_op!(
+    DbTxnRemoveEv,
+    DbTxnRemove,
+    "db_txn_remove",
+    key_arg,
+    GPooled<Vec<u8>>,
+    |key, tree_idx| TxnCommand::Remove { tree_idx, key }
+);
+txn_op!(
+    DbTxnInsertEv,
+    DbTxnInsert,
+    "db_txn_insert",
+    insert_arg,
+    (GPooled<Vec<u8>>, GPooled<Vec<u8>>),
+    |(key, value), tree_idx| TxnCommand::Insert { tree_idx, key, value }
+);
+txn_op!(
+    DbTxnBatchEv,
+    DbTxnBatch,
+    "db_txn_batch",
+    batch_arg,
+    sled::Batch,
+    |batch, tree_idx| TxnCommand::Batch { tree_idx, batch }
+);
+
+/// A builtin ending a transaction.
+macro_rules! txn_end {
+    ($ev:ident, $alias:ident, $name:literal, $cmd:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+
+        impl EvalCachedAsync for $ev {
+            type Args = Arc<TxnInner>;
+
+            const NAME: &str = $name;
+
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                get_txn(cached)
+            }
+
+            fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
+                async move { txn_send_recv(&txn.cmd_tx, $cmd).await }
+            }
+        }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
+}
+
+txn_end!(DbTxnCommitEv, DbTxnCommit, "db_txn_commit", TxnCommand::Commit);
+txn_end!(DbTxnRollbackEv, DbTxnRollback, "db_txn_rollback", TxnCommand::Rollback);
+
+graphix_package_core::unit_image_state!(DbTxnBeginEv);

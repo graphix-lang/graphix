@@ -7,6 +7,9 @@ type Db;
 /// also stored as metadata in the database. If a tree is reopened
 /// with different key or value types, `tree` returns a `DbErr` at
 /// run time.
+///
+/// Keys are kept in the language's order (as `<` orders them), which
+/// first, last, get_lt, get_gt and cursor::range follow.
 type Tree<'k, 'v>;
 
 mod cursor;

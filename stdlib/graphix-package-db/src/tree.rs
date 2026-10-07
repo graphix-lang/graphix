@@ -1,9 +1,12 @@
-use anyhow::{Result, bail};
+use ahash::AHashMap;
+use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf,
+    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
+    env::Env,
+    errf,
     expr::ExprId,
     image::ImageBuf,
     typ::{FnType, Type, TypeRef},
@@ -13,14 +16,25 @@ use netidx::{path::Path, publisher::Typ};
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
+use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
-use std::sync::Arc;
+use std::{
+    fmt,
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    ops::Deref,
+    path::PathBuf,
+    sync::{Arc, LazyLock, Weak},
+};
 
 use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
-// CR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
+/// A sled handle whose drop runs on a blocking thread: dropping the last
+/// handle flushes the log and joins sled's flusher, which can wait for a
+/// transaction's lock, and must never stall the runtime.
+// XCR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
 // wherever its last Value does, usually in GX::update_nodes on the runtime thread.
 // TreeInner's sled::Tree, CursorInner's sled::Iter and the subscription task's
 // Arc<TreeInner> work the same way. sled's TreeInner::drop then flushes the log in a
@@ -30,9 +44,47 @@ use crate::encoding::{
 // because only the runtime can send the commit. Hand the sled handles to a blocking
 // thread on drop (spawn_blocking or a reaper channel). probe:
 // design/review-2026-10-05/repro/db2-06.gx (db2-06)
+// 2026-10-07 claude: Reaped hands the last Db, Tree and Iter handle to
+// spawn_blocking. No test holds a txn across a drop; the repro
+// design/review-2026-10-05/repro/db2-06.gx now ticks through to the commit.
+pub(crate) struct Reaped<T: Send + 'static>(ManuallyDrop<T>);
+
+impl<T: Send + 'static> Reaped<T> {
+    pub(crate) fn new(t: T) -> Self {
+        Self(ManuallyDrop::new(t))
+    }
+}
+
+impl<T: Send + 'static> Deref for Reaped<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Send + 'static> Drop for Reaped<T> {
+    fn drop(&mut self) {
+        // SAFETY: the value is not touched again
+        let t = unsafe { ManuallyDrop::take(&mut self.0) };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(move || drop(t))),
+            Err(_) => drop(t),
+        }
+    }
+}
+
+impl<T: Send + 'static> fmt::Debug for Reaped<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Reaped<{}>", std::any::type_name::<T>())
+    }
+}
+
+pub(crate) type Db = Arc<Reaped<sled::Db>>;
+
 #[derive(Debug, Clone)]
 pub struct DbValue {
-    pub(crate) inner: Arc<sled::Db>,
+    pub(crate) inner: Db,
 }
 
 graphix_package_core::impl_abstract_arc!(
@@ -40,19 +92,53 @@ graphix_package_core::impl_abstract_arc!(
     pub(crate) static DB_WRAPPER = "db::Db"
 );
 
-pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<sled::Db> {
+pub(crate) fn abstract_arg<T: std::any::Any + Send + Sync>(
+    cached: &CachedVals,
+    idx: usize,
+) -> Option<&T> {
     match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => {
-            let dv = a.downcast_ref::<DbValue>()?;
-            Some((*dv.inner).clone())
-        }
+        Value::Abstract(a) => a.downcast_ref::<T>(),
         _ => None,
     }
 }
 
+pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<Db> {
+    abstract_arg::<DbValue>(cached, idx).map(|d| d.inner.clone())
+}
+
+/// One sled handle per database in the process: sled locks a database's
+/// files while any handle lives, so a second open would fail.
+static OPEN: LazyLock<Mutex<AHashMap<PathBuf, Weak<Reaped<sled::Db>>>>> =
+    LazyLock::new(|| Mutex::new(AHashMap::new()));
+
+// XCR claude for claude: [bug] Every delivery calls sled::open, and sled holds
+// an exclusive lock on the database while any handle lives, so opening a
+// path this process already has open fails with 'could not acquire lock ...
+// WouldBlock'. That includes this call when its path re-fires with the same
+// value: the working handle is replaced by the error. Two db::open calls on
+// one path, or two runtimes in one process, fail the same way; a
+// process-wide map from canonical path to a weak handle would hand back the
+// live database. probe: design/review-2026-10-05/repro/db2-16.gx (db2-16)
+// 2026-10-07 claude: one handle per canonical path (OPEN, weak). A db dropped and
+// reopened at once can still fail: the last handle's drop runs on a blocking thread
+// (Reaped) and holds sled's lock until it ends. Pin: db_open_twice.
+fn open_db(path: &str) -> Result<Db> {
+    let mut open = OPEN.lock();
+    let canonical = || std::fs::canonicalize(path);
+    if let Ok(p) = canonical()
+        && let Some(db) = open.get(&p).and_then(Weak::upgrade)
+    {
+        return Ok(db);
+    }
+    let db = Arc::new(Reaped::new(sled::open(path)?));
+    open.retain(|_, w| w.strong_count() > 0);
+    open.insert(canonical()?, Arc::downgrade(&db));
+    Ok(db)
+}
+
 #[derive(Debug)]
 pub(crate) struct TreeInner {
-    pub(crate) tree: sled::Tree,
+    pub(crate) tree: Reaped<sled::Tree>,
     pub(crate) key_typ: Option<Typ>,
 }
 
@@ -67,28 +153,162 @@ graphix_package_core::impl_abstract_arc!(
 );
 
 pub(crate) fn get_tree_inner(cached: &CachedVals, idx: usize) -> Option<Arc<TreeInner>> {
-    match cached.0.get(idx)?.as_ref()? {
-        Value::Abstract(a) => {
-            let tv = a.downcast_ref::<TreeValue>()?;
-            Some(tv.inner.clone())
-        }
-        _ => None,
-    }
+    abstract_arg::<TreeValue>(cached, idx).map(|t| t.inner.clone())
 }
 
-pub(crate) fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
+fn wrap_tree(tree: sled::Tree, key_typ: Option<Typ>) -> Value {
+    let tree = Reaped::new(tree);
     TREE_WRAPPER.wrap(TreeValue { inner: Arc::new(TreeInner { tree, key_typ }) })
 }
 
-pub(crate) static META_TREE: ArcStr = literal!("$$__graphix_meta__$$");
-pub(crate) static DEFAULT_TREE_META: ArcStr = literal!("$$__graphix_default__$$");
+/// Run `f` on a blocking thread; its error, or its panic, is a `DbErr`.
+pub(crate) async fn blocking<F>(f: F) -> Value
+where
+    F: FnOnce() -> Result<Value> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Err(e) => errf!("DbErr", "task panicked: {e}"),
+        Ok(Err(e)) => errf!("DbErr", "{e:#}"),
+        Ok(Ok(v)) => v,
+    }
+}
 
-// Unifies sled::Tree (CAS) and TransactionalTree (get+insert) so
-// check_or_store_meta works in both.
+pub(crate) fn value_or_null(v: Option<sled::IVec>) -> Result<Value> {
+    v.map_or(Ok(Value::Null), |v| decode_value(&v))
+}
 
+fn entry(tree: &TreeInner, e: Option<(sled::IVec, sled::IVec)>) -> Result<Value> {
+    match e {
+        None => Ok(Value::Null),
+        Some((k, v)) => Ok(Value::Array(ValArray::from([
+            decode_key(tree.key_typ, &k)?,
+            decode_value(&v)?,
+        ]))),
+    }
+}
+
+pub(crate) const META_TREE: &[u8] = b"$$__graphix_meta__$$";
+const DEFAULT_TREE_META: &str = "$$__graphix_default__$$";
+
+/// The names a program may not open, drop or see: the meta tree, the
+/// default tree's meta key, and sled's own name for the default tree.
+const RESERVED: [&[u8]; 3] =
+    [META_TREE, DEFAULT_TREE_META.as_bytes(), b"__sled__default"];
+
+/// The meta key of the tree a program names, null for the default tree.
+pub(crate) fn meta_key(name: Option<&ArcStr>) -> Result<&str> {
+    match name {
+        None => Ok(DEFAULT_TREE_META),
+        Some(n) if RESERVED.contains(&n.as_bytes()) => {
+            bail!("tree name '{n}' is reserved")
+        }
+        Some(n) => Ok(n),
+    }
+}
+
+/// The version of the stored form: the meta entry's text and the key
+/// encoding. A tree written under another version does not open.
+const META_VERSION: &str = "2";
+
+/// The types a tree was opened with, `key` set when its keys are one
+/// primitive type (stored untagged).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct TreeTypes {
+    pub(crate) key: Option<Typ>,
+    key_str: ArcStr,
+    val_str: ArcStr,
+}
+
+impl TreeTypes {
+    fn of(resolved: Option<&FnType>, env: &Env) -> Self {
+        let Some(params) = resolved.and_then(|ft| tree_params_of_result_type(&ft.rtype))
+        else {
+            return Self::default();
+        };
+        Self {
+            key: prim_typ(&params[0]),
+            key_str: stored_type(&params[0], env),
+            val_str: stored_type(&params[1], env),
+        }
+    }
+
+    pub(crate) fn concrete(&self) -> Result<()> {
+        let concrete = |s: &str| !s.is_empty() && !s.starts_with('\'');
+        if !concrete(&self.key_str) || !concrete(&self.val_str) {
+            bail!("tree requires concrete type annotations")
+        }
+        Ok(())
+    }
+
+    fn entry(&self) -> compact_str::CompactString {
+        format_compact!("{META_VERSION}\0{}\0{}", self.key_str, self.val_str)
+    }
+
+    /// Whether a stored meta entry is these types.
+    fn check(&self, name: &str, stored: &[u8]) -> Result<()> {
+        let (k, v) = parse_meta(name, stored)?;
+        if k != self.key_str || v != self.val_str {
+            bail!(
+                "tree '{name}' has type Tree<{k}, {v}> but was opened as Tree<{}, {}>",
+                self.key_str,
+                self.val_str
+            )
+        }
+        Ok(())
+    }
+}
+
+impl ImageState for TreeTypes {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.key.map(|t| t as u64).encode(buf)?;
+        self.key_str.encode(buf)?;
+        self.val_str.encode(buf)
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let key = <Option<u64>>::decode(buf)?
+            .map(|bits| {
+                BitFlags::<Typ>::from_bits(bits)
+                    .ok()
+                    .and_then(|f| f.exactly_one())
+                    .ok_or(PackError::UnknownTag)
+            })
+            .transpose()?;
+        Ok(Self { key, key_str: ArcStr::decode(buf)?, val_str: ArcStr::decode(buf)? })
+    }
+}
+
+fn parse_meta<'a>(name: &str, stored: &'a [u8]) -> Result<(&'a str, &'a str)> {
+    let mut parts = std::str::from_utf8(stored)?.split('\0');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(META_VERSION), Some(k), Some(v), None) => Ok((k, v)),
+        _ => bail!("tree '{name}' was written by another version of the db package"),
+    }
+}
+
+/// What every tree opener does to the meta tree: an absent entry is
+/// written, a present one must be these types.
 pub(crate) trait MetaStore {
     fn get(&self, key: &[u8]) -> Result<Option<sled::IVec>>;
     fn insert_if_absent(&self, key: &[u8], value: &[u8]) -> Result<Option<sled::IVec>>;
+
+    fn check_or_store(&self, name: &str, types: &TreeTypes) -> Result<()> {
+        match self.insert_if_absent(name.as_bytes(), types.entry().as_bytes())? {
+            None => Ok(()),
+            Some(stored) => types.check(name, &stored),
+        }
+    }
+
+    /// Whether the stored entry, if any, is these types.
+    fn check(&self, name: &str, types: &TreeTypes) -> Result<bool> {
+        match self.get(name.as_bytes())? {
+            None => Ok(false),
+            Some(stored) => types.check(name, &stored).map(|()| true),
+        }
+    }
 }
 
 impl MetaStore for sled::Tree {
@@ -120,51 +340,9 @@ impl MetaStore for sled::transaction::TransactionalTree {
     }
 }
 
-pub(crate) fn read_meta(
-    meta: &impl MetaStore,
-    tree_name: &str,
-) -> Result<Option<(ArcStr, ArcStr)>> {
-    match meta.get(tree_name.as_bytes())? {
-        None => Ok(None),
-        Some(stored) => {
-            let stored = std::str::from_utf8(&stored)?;
-            let mut parts = stored.splitn(2, '\0');
-            let k = parts.next().unwrap_or("?");
-            let v = parts.next().unwrap_or("?");
-            Ok(Some((ArcStr::from(k), ArcStr::from(v))))
-        }
-    }
-}
-
-pub(crate) fn check_or_store_meta(
-    meta: &impl MetaStore,
-    tree_name: &str,
-    key_typ_str: &str,
-    val_typ_str: &str,
-) -> Result<()> {
-    let meta_val = format_compact!("{key_typ_str}\0{val_typ_str}");
-    match meta.insert_if_absent(tree_name.as_bytes(), meta_val.as_bytes())? {
-        None => Ok(()),
-        Some(existing) => {
-            let stored = std::str::from_utf8(&existing)?;
-            let mut parts = stored.splitn(2, '\0');
-            let sk = parts.next().unwrap_or("?");
-            let sv = parts.next().unwrap_or("?");
-            if sk != key_typ_str || sv != val_typ_str {
-                bail!(
-                    "tree '{tree_name}' has type Tree<{sk}, {sv}> \
-                    but was opened as Tree<{key_typ_str}, {val_typ_str}>"
-                )
-            } else {
-                Ok(())
-            }
-        }
-    }
-}
-
 fn prim_typ(t: &Type) -> Option<Typ> {
     match t {
-        Type::Primitive(flags) if flags.iter().count() == 1 => flags.iter().next(),
+        Type::Primitive(flags) => flags.exactly_one(),
         _ => None,
     }
 }
@@ -188,12 +366,10 @@ fn tree_params_of_result_type(t: &Type) -> Option<&[Type]> {
     }
 }
 
-pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Option<Typ> {
-    let ft = resolved_typ?;
-    tree_params_of_result_type(&ft.rtype).and_then(|params| prim_typ(&params[0]))
-}
-
-// CR claude for claude: [bug] The type metadata stored on disk and compared on every open
+/// A key or value type as its tree's meta stores it: printed with every
+/// typedef expanded, a recursive one by name inside its own expansion, so
+/// two programs agree on the text exactly when they agree on the type.
+// XCR claude for claude: [bug] The type metadata stored on disk and compared on every open
 // is the type printer's single-line text. A typedef nested in the type prints as its
 // name, so Tree<string, Array<Rec>> stores "Array<Rec>" and a program whose Rec differs
 // opens the tree without the DbErr the book and mod.gxi promise; the values come back
@@ -202,69 +378,380 @@ pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Optio
 // stored text differs no longer opens. Store a versioned structural encoding of the
 // type with its typedefs resolved and compare that; keep the printed form for messages.
 // probe: design/review-2026-10-05/repro/db2-19.gx (db2-19)
-pub(crate) fn extract_type_strings_from_rtype(
-    resolved_typ: Option<&FnType>,
-) -> (ArcStr, ArcStr) {
-    let Some(ft) = resolved_typ else {
-        return (arcstr::literal!("?"), arcstr::literal!("?"));
-    };
-    match tree_params_of_result_type(&ft.rtype) {
-        Some(params) if params.len() >= 2 => (
-            ArcStr::from(format!("{}", params[0]).as_str()),
-            ArcStr::from(format!("{}", params[1]).as_str()),
-        ),
-        _ => (arcstr::literal!("?"), arcstr::literal!("?")),
-    }
-}
-
-pub(crate) fn types_are_concrete(key_typ_str: &str, val_typ_str: &str) -> bool {
-    fn concrete(s: &str) -> bool {
-        s != "?" && !s.starts_with('\'')
-    }
-    concrete(key_typ_str) && concrete(val_typ_str)
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGetTypeEv;
-
-impl EvalCachedAsync for DbGetTypeEv {
-    type Args = (sled::Db, ArcStr);
-
-    const NAME: &str = "db_get_type";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db = get_db(cached, 0)?;
-        let name = match cached.0.get(1)?.as_ref()? {
-            Value::Null => DEFAULT_TREE_META.clone(),
-            Value::String(s) => s.clone(),
-            _ => return None,
-        };
-        Some((db, name))
-    }
-
-    fn eval((db, name): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || -> Result<Value> {
-                let meta = db.open_tree(&*META_TREE)?;
-                match read_meta(&meta, &name)? {
-                    None => Ok(Value::Null),
-                    Some((k, v)) => Ok(Value::Array(ValArray::from([
-                        Value::String(k),
-                        Value::String(v),
-                    ]))),
-                }
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e:?}"),
-                Ok(Err(e)) => errf!("DbErr", "{e:?}"),
-                Ok(Ok(v)) => v,
+// 2026-10-07 claude: a tree's types are stored printed with every typedef expanded
+// (a recursive one by name inside its own expansion) and normalized, under a format
+// version (META_VERSION 2); a tree written before refuses to open. The printed text
+// is the format: db_typedef_types_stored_expanded pins one, so a printer change that
+// moves it fails there and needs a META_VERSION bump with a reader for the old text.
+fn stored_type(t: &Type, env: &Env) -> ArcStr {
+    const MAX_DEPTH: usize = 256;
+    fn expand(t: &Type, env: &Env, open: &mut Vec<*const ()>) -> Type {
+        if open.len() > MAX_DEPTH {
+            return t.clone();
+        }
+        if let Type::Ref(tr) = t {
+            let Some(r) = tr.resolve_in(env) else { return t.clone() };
+            let id = &*r as *const _ as *const ();
+            if open.contains(&id) {
+                return t.clone();
             }
+            let Ok(body) = t.lookup_ref(env) else { return t.clone() };
+            open.push(id);
+            let body = expand(&body, env, open);
+            open.pop();
+            return body;
+        }
+        let mut go = |t: &Type| expand(t, env, open);
+        match t {
+            Type::Set(ts) => Type::Set(ts.iter().map(go).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(go).collect()),
+            Type::Error(t) => Type::Error(triomphe::Arc::new(go(t))),
+            Type::Array(t) => Type::Array(triomphe::Arc::new(go(t))),
+            Type::List(t) => Type::List(triomphe::Arc::new(go(t))),
+            Type::Map { key, value } => Type::Map {
+                key: triomphe::Arc::new(go(key)),
+                value: triomphe::Arc::new(go(value)),
+            },
+            Type::Struct(fs) => {
+                Type::Struct(fs.iter().map(|(n, t, w)| (n.clone(), go(t), *w)).collect())
+            }
+            Type::Variant(n, ts, w) => {
+                Type::Variant(n.clone(), ts.iter().map(go).collect(), *w)
+            }
+            Type::Abstract { id, params } => {
+                Type::Abstract { id: *id, params: params.iter().map(go).collect() }
+            }
+            t => t.clone(),
         }
     }
+    let t = expand(&t.resolve_tvars(), env, &mut vec![]).normalize();
+    ArcStr::from(format_compact!("{t}").as_str())
 }
 
-pub(crate) type DbGetType = CachedArgsAsync<DbGetTypeEv>;
+/// A builtin over a db, its work on a blocking thread.
+macro_rules! db_op {
+    ($ev:ident, $alias:ident, $name:literal, |$db:ident| $body:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+
+        impl EvalCachedAsync for $ev {
+            type Args = Db;
+
+            const NAME: &str = $name;
+
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                get_db(cached, 0)
+            }
+
+            fn eval($db: Self::Args) -> impl Future<Output = Value> + Send {
+                blocking(move || $body)
+            }
+        }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
+}
+
+/// A builtin over a tree, its work on a blocking thread.
+macro_rules! tree_op {
+    ($ev:ident, $alias:ident, $name:literal, |$t:ident| $body:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+
+        impl EvalCachedAsync for $ev {
+            type Args = Arc<TreeInner>;
+
+            const NAME: &str = $name;
+
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                get_tree_inner(cached, 0)
+            }
+
+            fn eval($t: Self::Args) -> impl Future<Output = Value> + Send {
+                blocking(move || $body)
+            }
+        }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
+}
+
+/// A builtin over a tree and the encoding of its second argument (a key
+/// unless `$enc` says otherwise); a failed encoding is the builtin's DbErr.
+macro_rules! tree_arg_op {
+    ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
+     |$t:ident, $k:pat_param| $body:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+
+        impl EvalCachedAsync for $ev {
+            type Args = (Arc<TreeInner>, Result<$arg>);
+
+            const NAME: &str = $name;
+
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                let tree = get_tree_inner(cached, 0)?;
+                let arg = $enc(&tree, cached)?;
+                Some((tree, arg))
+            }
+
+            fn eval(($t, arg): Self::Args) -> impl Future<Output = Value> + Send {
+                blocking(move || {
+                    let $k = arg?;
+                    $body
+                })
+            }
+        }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
+    ($ev:ident, $alias:ident, $name:literal, |$t:ident, $k:pat_param| $body:expr) => {
+        tree_arg_op!($ev, $alias, $name, key_arg, GPooled<Vec<u8>>, |$t, $k| $body);
+    };
+}
+
+pub(crate) fn key_arg(
+    tree_key: impl KeyTyp,
+    cached: &CachedVals,
+) -> Option<Result<GPooled<Vec<u8>>>> {
+    Some(encode_key(tree_key.key_typ(), cached.0.get(1)?.as_ref()?))
+}
+
+pub(crate) fn batch_arg(
+    tree: impl KeyTyp,
+    cached: &CachedVals,
+) -> Option<Result<sled::Batch>> {
+    match cached.0.get(1)?.as_ref()? {
+        Value::Array(a) => Some(parse_batch_ops(tree.key_typ(), a)),
+        v => Some(Err(anyhow!("not a batch: {v}"))),
+    }
+}
+
+pub(crate) fn insert_arg(
+    tree: impl KeyTyp,
+    cached: &CachedVals,
+) -> Option<Result<(GPooled<Vec<u8>>, GPooled<Vec<u8>>)>> {
+    let k = cached.0.get(1)?.as_ref()?;
+    let v = cached.0.get(2)?.as_ref()?;
+    Some(encode_key(tree.key_typ(), k).and_then(|k| Ok((k, encode_value(v)?))))
+}
+
+/// What knows a tree's key type: a tree or a transaction's tree.
+pub(crate) trait KeyTyp {
+    fn key_typ(&self) -> Option<Typ>;
+}
+
+impl KeyTyp for &Arc<TreeInner> {
+    fn key_typ(&self) -> Option<Typ> {
+        self.key_typ
+    }
+}
+
+fn many_keys_arg(
+    tree: &Arc<TreeInner>,
+    cached: &CachedVals,
+) -> Option<Result<GPooled<Vec<GPooled<Vec<u8>>>>>> {
+    let arr = match cached.0.get(1)?.as_ref()? {
+        Value::Array(a) => a,
+        v => return Some(Err(anyhow!("not an array of keys: {v}"))),
+    };
+    let mut keys = ENCODE_MANY_POOL.take();
+    for k in arr.iter() {
+        match encode_key(tree.key_typ, k) {
+            Ok(k) => keys.push(k),
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    Some(Ok(keys))
+}
+
+type Swap = (GPooled<Vec<u8>>, Option<GPooled<Vec<u8>>>, Option<GPooled<Vec<u8>>>);
+
+fn swap_arg(tree: &Arc<TreeInner>, cached: &CachedVals) -> Option<Result<Swap>> {
+    let opt = |i: usize| -> Option<Result<Option<GPooled<Vec<u8>>>>> {
+        Some(match cached.0.get(i)?.as_ref()? {
+            Value::Null => Ok(None),
+            v => encode_value(v).map(Some),
+        })
+    };
+    let key = key_arg(tree, cached)?;
+    let (old, new) = (opt(2)?, opt(3)?);
+    Some((|| Ok((key?, old?, new?)))())
+}
+
+db_op!(DbFlushEv, DbFlush, "db_flush", |db| {
+    db.flush()?;
+    Ok(Value::Null)
+});
+db_op!(DbGenerateIdEv, DbGenerateId, "db_generate_id", |db| Ok(Value::U64(
+    db.generate_id()?
+)));
+db_op!(DbSizeOnDiskEv, DbSizeOnDisk, "db_size_on_disk", |db| Ok(Value::U64(
+    db.size_on_disk()?
+)));
+db_op!(DbWasRecoveredEv, DbWasRecovered, "db_was_recovered", |db| Ok(Value::Bool(
+    db.was_recovered()
+)));
+db_op!(DbChecksumEv, DbChecksum, "db_checksum", |db| Ok(Value::U32(db.checksum()?)));
+db_op!(DbTreeNamesEv, DbTreeNames, "db_tree_names", |db| {
+    let mut names: LPooled<Vec<Value>> = LPooled::take();
+    for n in db.tree_names() {
+        if !RESERVED.contains(&&*n)
+            && let Ok(s) = std::str::from_utf8(&n)
+        {
+            names.push(Value::String(ArcStr::from(s)));
+        }
+    }
+    Ok(Value::Array(ValArray::from_iter_exact(names.drain(..))))
+});
+
+tree_op!(DbFirstEv, DbFirst, "db_first", |t| entry(&t, t.tree.first()?));
+tree_op!(DbLastEv, DbLast, "db_last", |t| entry(&t, t.tree.last()?));
+tree_op!(DbPopMinEv, DbPopMin, "db_pop_min", |t| entry(&t, t.tree.pop_min()?));
+tree_op!(DbPopMaxEv, DbPopMax, "db_pop_max", |t| entry(&t, t.tree.pop_max()?));
+tree_op!(DbLenEv, DbLen, "db_len", |t| Ok(Value::U64(t.tree.len() as u64)));
+tree_op!(DbIsEmptyEv, DbIsEmpty, "db_is_empty", |t| Ok(Value::Bool(t.tree.is_empty())));
+
+tree_arg_op!(DbGetEv, DbGet, "db_get", |t, k| value_or_null(t.tree.get(&*k)?));
+tree_arg_op!(DbRemoveEv, DbRemove, "db_remove", |t, k| value_or_null(
+    t.tree.remove(&*k)?
+));
+tree_arg_op!(DbContainsKeyEv, DbContainsKey, "db_contains_key", |t, k| Ok(Value::Bool(
+    t.tree.contains_key(&*k)?
+)));
+tree_arg_op!(DbGetLtEv, DbGetLt, "db_get_lt", |t, k| entry(&t, t.tree.get_lt(&*k)?));
+tree_arg_op!(DbGetGtEv, DbGetGt, "db_get_gt", |t, k| entry(&t, t.tree.get_gt(&*k)?));
+tree_arg_op!(
+    DbInsertEv,
+    DbInsert,
+    "db_insert",
+    insert_arg,
+    (GPooled<Vec<u8>>, GPooled<Vec<u8>>),
+    |t, (k, v)| value_or_null(t.tree.insert(&*k, v.as_slice())?)
+);
+tree_arg_op!(DbBatchEv, DbBatch, "db_batch", batch_arg, sled::Batch, |t, b| {
+    t.tree.apply_batch(b)?;
+    Ok(Value::Null)
+});
+tree_arg_op!(
+    DbGetManyEv,
+    DbGetMany,
+    "db_get_many",
+    many_keys_arg,
+    GPooled<Vec<GPooled<Vec<u8>>>>,
+    |t, keys| {
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        for k in keys.iter() {
+            vals.push(value_or_null(t.tree.get(&**k)?)?);
+        }
+        Ok(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+    }
+);
+tree_arg_op!(
+    DbCompareAndSwapEv,
+    DbCompareAndSwap,
+    "db_compare_and_swap",
+    swap_arg,
+    Swap,
+    |t, (k, old, new)| {
+        let old = old.as_ref().map(|v| v.as_slice());
+        let new = new.as_ref().map(|v| v.as_slice());
+        match t.tree.compare_and_swap(k.as_slice(), old, new)? {
+            Ok(()) => Ok(Value::Null),
+            Err(e) => Ok(Value::Array(ValArray::from([
+                Value::String(literal!("Mismatch")),
+                value_or_null(e.current)?,
+            ]))),
+        }
+    }
+);
+
+/// A builtin over a db and a name or path.
+macro_rules! db_name_op {
+    ($ev:ident, $alias:ident, $name:literal, |$db:ident, $n:ident: $nt:ty| $body:expr) => {
+        #[derive(Debug, Default)]
+        pub(crate) struct $ev;
+
+        impl EvalCachedAsync for $ev {
+            type Args = (Db, $nt);
+
+            const NAME: &str = $name;
+
+            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+                Some((get_db(cached, 0)?, cached.get::<$nt>(1)?))
+            }
+
+            fn eval(($db, $n): Self::Args) -> impl Future<Output = Value> + Send {
+                blocking(move || $body)
+            }
+        }
+
+        graphix_package_core::unit_image_state!($ev);
+        pub(crate) type $alias = CachedArgsAsync<$ev>;
+    };
+}
+
+db_name_op!(DbGetTypeEv, DbGetType, "db_get_type", |db, name: Option<ArcStr>| {
+    let key = meta_key(name.as_ref())?;
+    match db.open_tree(META_TREE)?.get(key.as_bytes())? {
+        None => Ok(Value::Null),
+        Some(stored) => {
+            let (k, v) = parse_meta(key, &stored)?;
+            Ok(Value::Array(ValArray::from([
+                Value::String(k.into()),
+                Value::String(v.into()),
+            ])))
+        }
+    }
+});
+
+db_name_op!(DbDropTreeEv, DbDropTree, "db_drop_tree", |db, name: ArcStr| {
+    meta_key(Some(&name))?;
+    let existed = db.drop_tree(name.as_bytes())?;
+    db.open_tree(META_TREE)?.remove(name.as_bytes())?;
+    Ok(Value::Bool(existed))
+});
+
+#[derive(Pack)]
+struct ExportTree {
+    typ: Vec<u8>,
+    name: Vec<u8>,
+    entries: Vec<Vec<Vec<u8>>>,
+}
+
+#[derive(Pack)]
+struct ExportData {
+    trees: Vec<ExportTree>,
+}
+
+db_name_op!(DbExportEv, DbExport, "db_export", |db, path: ArcStr| {
+    use std::io::Write;
+    let data = ExportData {
+        trees: db
+            .export()
+            .into_iter()
+            .map(|(typ, name, iter)| ExportTree { typ, name, entries: iter.collect() })
+            .collect(),
+    };
+    let mut buf = Vec::with_capacity(data.encoded_len());
+    data.encode(&mut buf)?;
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&*path)?);
+    w.write_all(&buf)?;
+    w.flush()?;
+    Ok(Value::Null)
+});
+
+db_name_op!(DbImportEv, DbImport, "db_import", |db, path: ArcStr| {
+    let buf = std::fs::read(&*path)?;
+    let data = ExportData::decode(&mut buf.as_slice())?;
+    let collections: Vec<_> =
+        data.trees.into_iter().map(|t| (t.typ, t.name, t.entries.into_iter())).collect();
+    db.import(collections);
+    Ok(Value::Null)
+});
 
 #[derive(Debug, Default)]
 pub(crate) struct DbOpenEv;
@@ -279,1061 +766,117 @@ impl EvalCachedAsync for DbOpenEv {
     }
 
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            // CR claude for claude: [bug] Every delivery calls sled::open, and sled holds
-            // an exclusive lock on the database while any handle lives, so opening a
-            // path this process already has open fails with 'could not acquire lock ...
-            // WouldBlock'. That includes this call when its path re-fires with the same
-            // value: the working handle is replaced by the error. Two db::open calls on
-            // one path, or two runtimes in one process, fail the same way; a
-            // process-wide map from canonical path to a weak handle would hand back the
-            // live database. probe: design/review-2026-10-05/repro/db2-16.gx (db2-16)
-            match tokio::task::spawn_blocking(move || sled::open(&*path)).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(db)) => DB_WRAPPER.wrap(DbValue { inner: Arc::new(db) }),
-            }
-        }
+        blocking(move || Ok(DB_WRAPPER.wrap(DbValue { inner: open_db(&path)? })))
     }
 }
 
+graphix_package_core::unit_image_state!(DbOpenEv);
 pub(crate) type DbOpen = CachedArgsAsync<DbOpenEv>;
 
-#[derive(Debug, Default)]
-pub(crate) struct DbFlushEv;
+/// How a tree opener reaches its tree: `db::tree` from a database,
+/// `db::txn::tree` from a transaction.
+pub(crate) trait TreeOpener: fmt::Debug + Send + Sync + 'static {
+    const NAME: &str;
+    type Handle: fmt::Debug + Send + Sync + 'static;
 
-impl EvalCachedAsync for DbFlushEv {
-    type Args = sled::Db;
+    fn handle(cached: &CachedVals) -> Option<Self::Handle>;
 
-    const NAME: &str = "db_flush";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.flush()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(_)) => Value::Null,
-            }
-        }
-    }
+    fn open(
+        h: Self::Handle,
+        name: Option<ArcStr>,
+        types: TreeTypes,
+    ) -> impl Future<Output = Value> + Send;
 }
-
-pub(crate) type DbFlush = CachedArgsAsync<DbFlushEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGenerateIdEv;
-
-impl EvalCachedAsync for DbGenerateIdEv {
-    type Args = sled::Db;
-
-    const NAME: &str = "db_generate_id";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.generate_id()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(id)) => Value::U64(id),
-            }
-        }
-    }
-}
-
-pub(crate) type DbGenerateId = CachedArgsAsync<DbGenerateIdEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTreeNamesEv;
-
-impl EvalCachedAsync for DbTreeNamesEv {
-    type Args = sled::Db;
-
-    const NAME: &str = "db_tree_names";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.tree_names()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(names) => {
-                    let mut vals: LPooled<Vec<_>> = names
-                        .into_iter()
-                        .filter_map(|ivec| {
-                            std::str::from_utf8(&ivec)
-                                .ok()
-                                .map(|s| Value::String(ArcStr::from(s)))
-                        })
-                        .collect();
-                    Value::Array(ValArray::from_iter_exact(vals.drain(..)))
-                }
-            }
-        }
-    }
-}
-
-pub(crate) type DbTreeNames = CachedArgsAsync<DbTreeNamesEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbDropTreeEv;
-
-impl EvalCachedAsync for DbDropTreeEv {
-    type Args = (sled::Db, ArcStr);
-
-    const NAME: &str = "db_drop_tree";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db = get_db(cached, 0)?;
-        let name = cached.get::<ArcStr>(1)?;
-        Some((db, name))
-    }
-
-    fn eval((db, name): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            // CR claude for claude: [bug] drop_tree drops the sled tree but leaves the
-            // name's entry in META_TREE. Afterwards get_type still reports the dead
-            // tree's types. db::tree also refuses to recreate the name with any other
-            // types ("tree 'x' has type Tree<string, i64> but was opened as Tree<i64,
-            // f64>"). The entry is on disk, so the name is blocked for good and a
-            // drop-and-recreate migration cannot be done. After a successful drop,
-            // remove the name's metadata entry. probe:
-            // design/review-2026-10-05/repro/db2-10.gx (db2-10)
-            match tokio::task::spawn_blocking(move || db.drop_tree(name.as_bytes())).await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(existed)) => Value::Bool(existed),
-            }
-        }
-    }
-}
-
-pub(crate) type DbDropTree = CachedArgsAsync<DbDropTreeEv>;
 
 #[derive(Debug)]
-pub(crate) struct DbTreeArgs {
-    db: sled::Db,
-    name: Option<ArcStr>,
-    key_typ: Option<Typ>,
-    key_typ_str: ArcStr,
-    val_typ_str: ArcStr,
+pub(crate) struct OpenTreeEv<O> {
+    types: TreeTypes,
+    opener: PhantomData<O>,
 }
 
-pub(crate) fn tree_types_encode(
-    key_typ: Option<Typ>,
-    key_typ_str: &ArcStr,
-    val_typ_str: &ArcStr,
-    buf: &mut ImageBuf,
-) -> Result<(), PackError> {
-    key_typ.map(|t| t as u64).encode(buf)?;
-    key_typ_str.encode(buf)?;
-    val_typ_str.encode(buf)
+impl<O> Default for OpenTreeEv<O> {
+    fn default() -> Self {
+        Self { types: TreeTypes::default(), opener: PhantomData }
+    }
 }
 
-pub(crate) fn tree_types_decode(
-    buf: &mut &[u8],
-) -> Result<(Option<Typ>, ArcStr, ArcStr), PackError> {
-    let key_typ = <Option<u64>>::decode(buf)?
-        .map(|bits| {
-            BitFlags::<Typ>::from_bits(bits)
-                .ok()
-                .and_then(|f| f.exactly_one())
-                .ok_or(PackError::UnknownTag)
-        })
-        .transpose()?;
-    let key_typ_str = ArcStr::decode(buf)?;
-    let val_typ_str = ArcStr::decode(buf)?;
-    Ok((key_typ, key_typ_str, val_typ_str))
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct DbTreeEv {
-    key_typ: Option<Typ>,
-    key_typ_str: ArcStr,
-    val_typ_str: ArcStr,
-}
-
-impl ImageState for DbTreeEv {
+impl<O: TreeOpener> ImageState for OpenTreeEv<O> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
+        self.types.image_encode(buf)
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
-        let (key_typ, key_typ_str, val_typ_str) = tree_types_decode(buf)?;
-        Ok(Self { key_typ, key_typ_str, val_typ_str })
+        Ok(Self { types: TreeTypes::image_decode(ctx, buf)?, opener: PhantomData })
     }
 }
 
-impl EvalCachedAsync for DbTreeEv {
-    type Args = DbTreeArgs;
+impl<O: TreeOpener> EvalCachedAsync for OpenTreeEv<O> {
+    type Args = (O::Handle, Option<ArcStr>, TreeTypes);
 
-    const NAME: &str = "db_tree";
+    const NAME: &str = O::NAME;
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
         _from: &[Node<R, E>],
         _top_id: ExprId,
     ) -> Self {
-        let key_typ = extract_key_typ_from_rtype(resolved);
-        let (key_typ_str, val_typ_str) = extract_type_strings_from_rtype(resolved);
-        DbTreeEv { key_typ, key_typ_str, val_typ_str }
-    }
-
-    fn typecheck0<R: Rt, E: UserEvent>(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
+        Self { types: TreeTypes::of(resolved, &ctx.env), opener: PhantomData }
     }
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.key_typ = extract_key_typ_from_rtype(Some(resolved));
-        let (k, v) = extract_type_strings_from_rtype(Some(resolved));
-        self.key_typ_str = k;
-        self.val_typ_str = v;
+        self.types = TreeTypes::of(Some(resolved), &ctx.env);
         Ok(())
     }
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db = get_db(cached, 0)?;
-        let name = match cached.0.get(1)?.as_ref()? {
-            Value::Null => None,
-            Value::String(s) => Some(s.clone()),
-            _ => return None,
-        };
-        Some(DbTreeArgs {
-            db,
-            name,
-            key_typ: self.key_typ,
-            key_typ_str: self.key_typ_str.clone(),
-            val_typ_str: self.val_typ_str.clone(),
+        let h = O::handle(cached)?;
+        let name = cached.get::<Option<ArcStr>>(1)?;
+        Some((h, name, self.types.clone()))
+    }
+
+    fn eval((h, name, types): Self::Args) -> impl Future<Output = Value> + Send {
+        O::open(h, name, types)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FromDb;
+
+impl TreeOpener for FromDb {
+    const NAME: &str = "db_tree";
+    type Handle = Db;
+
+    fn handle(cached: &CachedVals) -> Option<Db> {
+        get_db(cached, 0)
+    }
+
+    fn open(
+        db: Db,
+        name: Option<ArcStr>,
+        types: TreeTypes,
+    ) -> impl Future<Output = Value> {
+        blocking(move || {
+            types.concrete()?;
+            let key = meta_key(name.as_ref())?;
+            db.open_tree(META_TREE)?.check_or_store(key, &types)?;
+            let tree = match name {
+                None => (***db).clone(),
+                Some(n) => db.open_tree(n.as_bytes())?,
+            };
+            Ok(wrap_tree(tree, types.key))
         })
     }
-
-    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let DbTreeArgs { db, name, key_typ, key_typ_str, val_typ_str } = args;
-            match tokio::task::spawn_blocking(move || -> Result<Value> {
-                if !types_are_concrete(&key_typ_str, &val_typ_str) {
-                    bail!("tree requires concrete type annotations")
-                }
-                let meta = db.open_tree(&META_TREE)?;
-                match name {
-                    Some(name) => {
-                        // CR claude for claude: [bug] This check misses sled's own
-                        // "__sled__default". db.open_tree resolves that name to the
-                        // default tree's data under a metadata key of its own, so the
-                        // default tree reopens with any types (txn.rs:298-301 has the
-                        // same gap). drop_tree (373-382) checks no name, so dropping
-                        // "$$__graphix_meta__$$" erases every tree's stored types, and
-                        // tree_names lists both internal names. The mistyped values
-                        // reach typed code. A fused kernel either panics on a String
-                        // slot and kills the runtime, or reads the i64 through a
-                        // nullable slot as an ArcStr pointer and segfaults; the
-                        // node-walk bottoms silently. One name check shared by tree,
-                        // txn::tree and drop_tree (or a private prefix on every user
-                        // name), plus tree_names hiding the internal names, closes it.
-                        // probe: design/review-2026-10-05/repro/db2-02.gx (db2-02)
-                        if &*name == DEFAULT_TREE_META
-                            || name.as_bytes() == META_TREE.as_bytes()
-                        {
-                            bail!("tree name '{name}' is reserved");
-                        }
-                        check_or_store_meta(&meta, &name, &key_typ_str, &val_typ_str)?;
-                        Ok(db
-                            .open_tree(name.as_bytes())
-                            .map(|tree| wrap_tree(tree, key_typ))?)
-                    }
-                    None => {
-                        check_or_store_meta(
-                            &meta,
-                            &DEFAULT_TREE_META,
-                            &key_typ_str,
-                            &val_typ_str,
-                        )?;
-                        Ok(wrap_tree((*db).clone(), key_typ))
-                    }
-                }
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                // CR claude for claude: [bug] `{e:?}` on an anyhow::Error appends a
-                // 'Stack backtrace:' block whenever RUST_BACKTRACE or
-                // RUST_LIB_BACKTRACE is set, so the DbErr string a program receives,
-                // and may show or compare, changes with the environment and carries a
-                // dozen frames. The same at 241 and txn.rs:183, 223, 355 and 362;
-                // `{e:#}` gives the message and its causes without it. probe:
-                // RUST_BACKTRACE=1 graphix --no-cache
-                // design/review-2026-10-05/repro/db2-14.gx (db2-14)
-                Ok(Err(e)) => errf!("DbErr", "{e:?}"),
-                Ok(Ok(v)) => v,
-            }
-        }
-    }
 }
 
-pub(crate) type DbTree = CachedArgsAsync<DbTreeEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGetEv;
-
-impl EvalCachedAsync for DbGetEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_get";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        Some((tree, key))
-    }
-
-    fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.get(&*key)).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(None)) => Value::Null,
-                Ok(Ok(Some(ivec))) => match decode_value(&ivec) {
-                    Some(v) => v,
-                    None => errf!("DbErr", "failed to decode value"),
-                },
-            }
-        }
-    }
-}
-
-pub(crate) type DbGet = CachedArgsAsync<DbGetEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbInsertEv;
-
-impl EvalCachedAsync for DbInsertEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_insert";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        // CR claude for claude: [bug] When encode_key or encode_value fails, prepare_args
-        // returns None and CachedArgsAsync queues nothing, so the call never replies:
-        // no value and no DbErr. An abstract value cannot be packed, yet Tree<string,
-        // db::Db> passes 'v: Concrete, and db::insert(t, "k", db) stays silent; every
-        // encode and parse_batch_ops failure in tree.rs and txn.rs takes this path.
-        // Return the failure from eval as a DbErr, or refuse unpackable 'k and 'v at
-        // the check. probe: design/review-2026-10-05/repro/db2-15.gx (db2-15)
-        let val = encode_value(cached.0.get(2)?.as_ref()?)?;
-        Some((tree, key, val))
-    }
-
-    fn eval((tree, key, val): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                tree.tree.insert(&*key, val.as_slice())
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(None)) => Value::Null,
-                Ok(Ok(Some(old))) => match decode_value(&old) {
-                    Some(v) => v,
-                    None => errf!("DbErr", "failed to decode previous value"),
-                },
-            }
-        }
-    }
-}
-
-pub(crate) type DbInsert = CachedArgsAsync<DbInsertEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbRemoveEv;
-
-impl EvalCachedAsync for DbRemoveEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_remove";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        Some((tree, key))
-    }
-
-    fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.remove(&*key)).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(None)) => Value::Null,
-                Ok(Ok(Some(old))) => match decode_value(&old) {
-                    Some(v) => v,
-                    None => errf!("DbErr", "failed to decode previous value"),
-                },
-            }
-        }
-    }
-}
-
-pub(crate) type DbRemove = CachedArgsAsync<DbRemoveEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbContainsKeyEv;
-
-impl EvalCachedAsync for DbContainsKeyEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_contains_key";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        Some((tree, key))
-    }
-
-    fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.contains_key(&*key)).await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(exists)) => Value::Bool(exists),
-            }
-        }
-    }
-}
-
-pub(crate) type DbContainsKey = CachedArgsAsync<DbContainsKeyEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGetManyEv;
-
-impl EvalCachedAsync for DbGetManyEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<GPooled<Vec<u8>>>>);
-
-    const NAME: &str = "db_get_many";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let arr = match cached.0.get(1)?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        let mut keys = ENCODE_MANY_POOL.take();
-        for k in arr.iter() {
-            keys.push(encode_key(tree.key_typ, k)?);
-        }
-        Some((tree, keys))
-    }
-
-    fn eval((tree, keys): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let mut results: LPooled<Vec<Value>> = LPooled::take();
-                for key in keys.iter() {
-                    match tree.tree.get(&**key) {
-                        Err(e) => return Err(errf!("DbErr", "{e}")),
-                        Ok(None) => results.push(Value::Null),
-                        Ok(Some(ivec)) => match decode_value(&ivec) {
-                            Some(v) => results.push(v),
-                            None => return Err(errf!("DbErr", "failed to decode value")),
-                        },
-                    }
-                }
-                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => e,
-                Ok(Ok(v)) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbGetMany = CachedArgsAsync<DbGetManyEv>;
-
-fn decode_kv_result(
-    tree: &TreeInner,
-    result: sled::Result<Option<(sled::IVec, sled::IVec)>>,
-) -> Value {
-    match result {
-        Err(e) => errf!("DbErr", "{e}"),
-        Ok(None) => Value::Null,
-        Ok(Some((k, v))) => match (decode_key(tree.key_typ, &k), decode_value(&v)) {
-            (Some(key), Some(val)) => Value::Array(ValArray::from([key, val])),
-            _ => errf!("DbErr", "failed to decode entry"),
-        },
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct DbFirstEv;
-
-impl EvalCachedAsync for DbFirstEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_first";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.first();
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbFirst = CachedArgsAsync<DbFirstEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbLastEv;
-
-impl EvalCachedAsync for DbLastEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_last";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.last();
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbLast = CachedArgsAsync<DbLastEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbPopMinEv;
-
-impl EvalCachedAsync for DbPopMinEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_pop_min";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.pop_min();
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbPopMin = CachedArgsAsync<DbPopMinEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbPopMaxEv;
-
-impl EvalCachedAsync for DbPopMaxEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_pop_max";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.pop_max();
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbPopMax = CachedArgsAsync<DbPopMaxEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGetLtEv;
-
-// CR claude for claude: [structure] 17 of this file's 27 builtins are three shapes
-// written out one by one: db only (flush, generate_id, tree_names, size_on_disk,
-// was_recovered, checksum), tree only (first, last, pop_min, pop_max, len, is_empty)
-// and tree plus key (get, remove, contains_key, get_lt, get_gt); this one and DbGetGtEv
-// differ in one method call, as do first, last, pop_min and pop_max. Every eval repeats
-// the spawn_blocking call and its JoinError and sled-error mapping. DbTxnTreeEv
-// (txn.rs:454-512) is DbTreeEv (423-481) verbatim, down to a typecheck0 that restates
-// the trait default, and get_db, get_tree_inner, get_txn and get_txn_tree are one
-// downcast that cursor.rs and subscribe.rs inline again. One blocking helper, one
-// generic or macro per shape, one shared tree-types struct and one downcast would
-// remove several hundred lines; the copies already disagree on error formatting ({e}
-// against {e:?}) and on what an undecodable previous value means (txn.rs:150 against
-// 600-603). (db2-12)
-impl EvalCachedAsync for DbGetLtEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_get_lt";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        Some((tree, key))
-    }
-
-    fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.get_lt(&*key);
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbGetLt = CachedArgsAsync<DbGetLtEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbGetGtEv;
-
-impl EvalCachedAsync for DbGetGtEv {
-    type Args = (Arc<TreeInner>, GPooled<Vec<u8>>);
-
-    const NAME: &str = "db_get_gt";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        Some((tree, key))
-    }
-
-    fn eval((tree, key): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let result = tree.tree.get_gt(&*key);
-                decode_kv_result(&tree, result)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbGetGt = CachedArgsAsync<DbGetGtEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbCompareAndSwapEv;
-
-impl EvalCachedAsync for DbCompareAndSwapEv {
-    type Args = (
-        Arc<TreeInner>,
-        GPooled<Vec<u8>>,
-        Option<GPooled<Vec<u8>>>,
-        Option<GPooled<Vec<u8>>>,
-    );
-
-    const NAME: &str = "db_compare_and_swap";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let key_val = cached.0.get(1)?.as_ref()?;
-        let key = encode_key(tree.key_typ, key_val)?;
-        let old_val = match cached.0.get(2)?.as_ref()? {
-            Value::Null => None,
-            v => Some(encode_value(v)?),
-        };
-        let new_val = match cached.0.get(3)?.as_ref()? {
-            Value::Null => None,
-            v => Some(encode_value(v)?),
-        };
-        Some((tree, key, old_val, new_val))
-    }
-
-    fn eval(
-        (tree, key, old_val, new_val): Self::Args,
-    ) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let old_ref: Option<&[u8]> = old_val.as_ref().map(|v| v.as_slice());
-                let new_ref: Option<&[u8]> = new_val.as_ref().map(|v| v.as_slice());
-                tree.tree.compare_and_swap(key.as_slice(), old_ref, new_ref)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(Ok(()))) => Value::Null,
-                Ok(Ok(Err(cas_err))) => {
-                    let current = match cas_err.current {
-                        None => Value::Null,
-                        Some(ivec) => match decode_value(&ivec) {
-                            Some(v) => v,
-                            None => {
-                                return errf!("DbErr", "failed to decode current value");
-                            }
-                        },
-                    };
-                    Value::Array(ValArray::from([
-                        Value::String(arcstr::literal!("Mismatch")),
-                        current,
-                    ]))
-                }
-            }
-        }
-    }
-}
-
-pub(crate) type DbCompareAndSwap = CachedArgsAsync<DbCompareAndSwapEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbBatchEv;
-
-impl EvalCachedAsync for DbBatchEv {
-    type Args = (Arc<TreeInner>, sled::Batch);
-
-    const NAME: &str = "db_batch";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 0)?;
-        let arr = match cached.0.get(1)?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        let batch = parse_batch_ops(tree.key_typ, arr)?;
-        Some((tree, batch))
-    }
-
-    fn eval((tree, batch): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.apply_batch(batch)).await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(())) => Value::Null,
-            }
-        }
-    }
-}
-
-pub(crate) type DbBatch = CachedArgsAsync<DbBatchEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbLenEv;
-
-impl EvalCachedAsync for DbLenEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_len";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.len()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(len) => Value::U64(len as u64),
-            }
-        }
-    }
-}
-
-pub(crate) type DbLen = CachedArgsAsync<DbLenEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbIsEmptyEv;
-
-impl EvalCachedAsync for DbIsEmptyEv {
-    type Args = Arc<TreeInner>;
-
-    const NAME: &str = "db_is_empty";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_tree_inner(cached, 0)
-    }
-
-    fn eval(tree: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || tree.tree.is_empty()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(empty) => Value::Bool(empty),
-            }
-        }
-    }
-}
-
-pub(crate) type DbIsEmpty = CachedArgsAsync<DbIsEmptyEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbSizeOnDiskEv;
-
-impl EvalCachedAsync for DbSizeOnDiskEv {
-    type Args = sled::Db;
-
-    const NAME: &str = "db_size_on_disk";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.size_on_disk()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(size)) => Value::U64(size),
-            }
-        }
-    }
-}
-
-pub(crate) type DbSizeOnDisk = CachedArgsAsync<DbSizeOnDiskEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbWasRecoveredEv;
-
-impl EvalCachedAsync for DbWasRecoveredEv {
-    type Args = sled::Db;
-
-    const NAME: &str = "db_was_recovered";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.was_recovered()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(recovered) => Value::Bool(recovered),
-            }
-        }
-    }
-}
-
-pub(crate) type DbWasRecovered = CachedArgsAsync<DbWasRecoveredEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbChecksumEv;
-
-impl EvalCachedAsync for DbChecksumEv {
-    type Args = sled::Db;
-
-    const NAME: &str = "db_checksum";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        get_db(cached, 0)
-    }
-
-    fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || db.checksum()).await {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => errf!("DbErr", "{e}"),
-                Ok(Ok(crc)) => Value::U32(crc),
-            }
-        }
-    }
-}
-
-pub(crate) type DbChecksum = CachedArgsAsync<DbChecksumEv>;
-
-#[derive(Pack)]
-struct ExportTree {
-    typ: Vec<u8>,
-    name: Vec<u8>,
-    entries: Vec<Vec<Vec<u8>>>,
-}
-
-#[derive(Pack)]
-struct ExportData {
-    trees: Vec<ExportTree>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct DbExportEv;
-
-impl EvalCachedAsync for DbExportEv {
-    type Args = (sled::Db, ArcStr);
-
-    const NAME: &str = "db_export";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db = get_db(cached, 0)?;
-        let path = cached.get::<ArcStr>(1)?;
-        Some((db, path))
-    }
-
-    fn eval((db, path): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                use std::io::Write;
-                let data = ExportData {
-                    trees: db
-                        .export()
-                        .into_iter()
-                        .map(|(typ, name, iter)| ExportTree {
-                            typ,
-                            name,
-                            entries: iter.collect(),
-                        })
-                        .collect(),
-                };
-                let mut buf = Vec::with_capacity(data.encoded_len());
-                data.encode(&mut buf).map_err(|e| errf!("DbErr", "{e}"))?;
-                let file =
-                    std::fs::File::create(&*path).map_err(|e| errf!("DbErr", "{e}"))?;
-                let mut w = std::io::BufWriter::new(file);
-                w.write_all(&buf).map_err(|e| errf!("DbErr", "{e}"))?;
-                w.flush().map_err(|e| errf!("DbErr", "{e}"))?;
-                Ok(Value::Null)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => e,
-                Ok(Ok(v)) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbExport = CachedArgsAsync<DbExportEv>;
-
-#[derive(Debug, Default)]
-pub(crate) struct DbImportEv;
-
-impl EvalCachedAsync for DbImportEv {
-    type Args = (sled::Db, ArcStr);
-
-    const NAME: &str = "db_import";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let db = get_db(cached, 0)?;
-        let path = cached.get::<ArcStr>(1)?;
-        Some((db, path))
-    }
-
-    fn eval((db, path): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let buf = std::fs::read(&*path).map_err(|e| errf!("DbErr", "{e}"))?;
-                let data = ExportData::decode(&mut buf.as_slice())
-                    .map_err(|e| errf!("DbErr", "{e}"))?;
-                let collections: Vec<_> = data
-                    .trees
-                    .into_iter()
-                    .map(|t| (t.typ, t.name, t.entries.into_iter()))
-                    .collect();
-                db.import(collections);
-                Ok(Value::Null)
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => e,
-                Ok(Ok(v)) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbImport = CachedArgsAsync<DbImportEv>;
-
-graphix_package_core::unit_image_state!(
-    DbGetTypeEv,
-    DbOpenEv,
-    DbFlushEv,
-    DbGenerateIdEv,
-    DbTreeNamesEv,
-    DbDropTreeEv,
-    DbGetEv,
-    DbInsertEv,
-    DbRemoveEv,
-    DbContainsKeyEv,
-    DbGetManyEv,
-    DbFirstEv,
-    DbLastEv,
-    DbPopMinEv,
-    DbPopMaxEv,
-    DbGetLtEv,
-    DbGetGtEv,
-    DbCompareAndSwapEv,
-    DbBatchEv,
-    DbLenEv,
-    DbIsEmptyEv,
-    DbSizeOnDiskEv,
-    DbWasRecoveredEv,
-    DbChecksumEv,
-    DbExportEv,
-    DbImportEv,
-);
+pub(crate) type DbTree = CachedArgsAsync<OpenTreeEv<FromDb>>;

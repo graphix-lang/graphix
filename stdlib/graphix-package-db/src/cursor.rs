@@ -1,19 +1,36 @@
 use crate::{
     encoding::{decode_key, decode_value, encode_key},
-    tree::{TreeInner, get_tree_inner},
+    tree::{Reaped, abstract_arg, blocking, get_tree_inner},
 };
-use arcstr::ArcStr;
-use graphix_compiler::errf;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use anyhow::Result;
+use graphix_compiler::{ExecCtx, Rt, UserEvent, effects::Effect};
+use graphix_package_core::{
+    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync,
+};
 use netidx::publisher::Typ;
 use netidx_derive::FromValue;
 use netidx_value::{ValArray, Value};
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
-use std::{fmt, sync::Arc};
+use std::{fmt, ops::Bound, sync::Arc};
 
+/// A cursor's iterator; `None` iterates nothing (a prefix no key can have).
 pub(crate) struct CursorInner {
-    iter: parking_lot::Mutex<sled::Iter>,
+    iter: Reaped<Mutex<Option<sled::Iter>>>,
     key_typ: Option<Typ>,
+}
+
+impl CursorInner {
+    fn next(&self) -> Result<Option<Value>> {
+        match self.iter.lock().as_mut().and_then(|i| i.next()) {
+            None => Ok(None),
+            Some(r) => {
+                let (k, v) = r?;
+                let entry = [decode_key(self.key_typ, &k)?, decode_value(&v)?];
+                Ok(Some(Value::Array(ValArray::from(entry))))
+            }
+        }
+    }
 }
 
 impl fmt::Debug for CursorInner {
@@ -32,59 +49,66 @@ graphix_package_core::impl_abstract_arc!(
     static CURSOR_WRAPPER = "db::cursor::Cursor"
 );
 
+fn wrap_cursor(iter: Option<sled::Iter>, key_typ: Option<Typ>) -> Value {
+    let iter = Reaped::new(Mutex::new(iter));
+    CURSOR_WRAPPER.wrap(CursorValue { inner: Arc::new(CursorInner { iter, key_typ }) })
+}
+
+fn get_cursor(cached: &CachedVals) -> Option<Arc<CursorInner>> {
+    abstract_arg::<CursorValue>(cached, 0).map(|c| c.inner.clone())
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorNewEv;
 
-impl EvalCachedAsync for DbCursorNewEv {
-    type Args = (Option<Value>, Arc<TreeInner>);
-
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorNewEv {
     const NAME: &str = "db_cursor_new";
+    const EFFECT: Effect = Effect::Sync;
 
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let prefix_val = match cached.0.get(0)?.as_ref()? {
-            Value::Null => None,
-            v => Some(v.clone()),
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        let tree = get_tree_inner(from, 1)?;
+        let iter = match from.0.first()?.as_ref()? {
+            Value::Null => Some(tree.tree.iter()),
+            v => encode_key(tree.key_typ, v).ok().map(|p| tree.tree.scan_prefix(&*p)),
         };
-        let tree = get_tree_inner(cached, 1)?;
-        Some((prefix_val, tree))
-    }
-
-    // CR claude for claude: [structure] cursor::new and cursor::range (221-240) only
-    // build a sled::Iter, which does no I/O (sled's range stores the bounds; reads
-    // happen in next()), yet both are async builtins that hop through spawn_blocking.
-    // The cursor arrives a cycle late, and the JoinError arm (71, 236) can put a DbErr
-    // where cursor.gxi promises a plain Cursor, which read and read_many then ignore
-    // without a word (their prepare_args return None). Make both sync EvalCached
-    // builtins that return the cursor directly. A prefix encode_key refuses also widens
-    // silently to a full scan (56-59; subscribe.rs:187-190 watches everything the same
-    // way); it should match nothing or be refused. (http-sqlite-db1-15)
-    fn eval((prefix_val, tree): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let iter = match prefix_val {
-                    Some(ref pv) => match encode_key(tree.key_typ, pv) {
-                        Some(encoded) => tree.tree.scan_prefix(&*encoded),
-                        None => tree.tree.iter(),
-                    },
-                    None => tree.tree.iter(),
-                };
-                CURSOR_WRAPPER.wrap(CursorValue {
-                    inner: Arc::new(CursorInner {
-                        iter: parking_lot::Mutex::new(iter),
-                        key_typ: tree.key_typ,
-                    }),
-                })
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
+        Some(wrap_cursor(iter, tree.key_typ))
     }
 }
 
-pub(crate) type DbCursorNew = CachedArgsAsync<DbCursorNewEv>;
+pub(crate) type DbCursorNew = CachedArgs<DbCursorNewEv>;
+
+/// A range bound's key encoded, `None` when no key can have it.
+fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<Option<Bound<Vec<u8>>>> {
+    #[derive(FromValue)]
+    enum Repr {
+        Included(Value),
+        Excluded(Value),
+    }
+    let encode = |k: &Value| encode_key(key_typ, k).ok().map(|k| k.to_vec());
+    Some(match v.clone().cast_to::<Option<Repr>>().ok()? {
+        None => Some(Bound::Unbounded),
+        Some(Repr::Included(k)) => encode(&k).map(Bound::Included),
+        Some(Repr::Excluded(k)) => encode(&k).map(Bound::Excluded),
+    })
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DbCursorRangeEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for DbCursorRangeEv {
+    const NAME: &str = "db_cursor_range";
+    const EFFECT: Effect = Effect::Sync;
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        let tree = get_tree_inner(from, 2)?;
+        let lo = parse_bound(tree.key_typ, from.0.first()?.as_ref()?)?;
+        let hi = parse_bound(tree.key_typ, from.0.get(1)?.as_ref()?)?;
+        let iter = lo.zip(hi).map(|r| tree.tree.range(r));
+        Some(wrap_cursor(iter, tree.key_typ))
+    }
+}
+
+pub(crate) type DbCursorRange = CachedArgs<DbCursorRangeEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct DbCursorReadEv;
@@ -96,35 +120,11 @@ impl EvalCachedAsync for DbCursorReadEv {
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         cached.0.get(1)?.as_ref()?;
-        match cached.0.get(0)?.as_ref()? {
-            Value::Abstract(a) => {
-                a.downcast_ref::<CursorValue>().map(|c| c.inner.clone())
-            }
-            _ => None,
-        }
+        get_cursor(cached)
     }
 
-    fn eval(inner: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            match tokio::task::spawn_blocking(move || {
-                let key_typ = inner.key_typ;
-                inner.iter.lock().next().map(|r| {
-                    r.map(|(k, v)| {
-                        let key = decode_key(key_typ, &k);
-                        let val = decode_value(&v);
-                        (key, val)
-                    })
-                })
-            })
-            .await
-            {
-                Ok(Some(Ok((Some(k), Some(v))))) => Value::Array(ValArray::from([k, v])),
-                Ok(Some(Ok(_))) => errf!("DbErr", "failed to decode entry"),
-                Ok(Some(Err(e))) => errf!("DbErr", "{e}"),
-                Ok(None) => Value::Null,
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-            }
-        }
+    fn eval(c: Self::Args) -> impl Future<Output = Value> + Send {
+        blocking(move || Ok(c.next()?.unwrap_or(Value::Null)))
     }
 }
 
@@ -139,117 +139,24 @@ impl EvalCachedAsync for DbCursorReadManyEv {
     const NAME: &str = "db_cursor_read_many";
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let n = match cached.0.get(1)?.as_ref()? {
-            Value::I64(n) => *n,
-            _ => return None,
-        };
-        match cached.0.get(0)?.as_ref()? {
-            Value::Abstract(a) => {
-                a.downcast_ref::<CursorValue>().map(|c| (c.inner.clone(), n))
-            }
-            _ => None,
-        }
+        Some((get_cursor(cached)?, cached.get::<i64>(1)?))
     }
 
-    fn eval((inner, count): Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let n = count.max(0) as usize;
-            match tokio::task::spawn_blocking(move || {
-                let key_typ = inner.key_typ;
-                let mut results: LPooled<Vec<Value>> = LPooled::take();
-                let mut iter = inner.iter.lock();
-                for _ in 0..n {
-                    match iter.next() {
-                        None => break,
-                        Some(Err(e)) => return Err(errf!("DbErr", "{e}")),
-                        Some(Ok((k, v))) => {
-                            match (decode_key(key_typ, &k), decode_value(&v)) {
-                                (Some(k), Some(v)) => {
-                                    results.push(Value::Array(ValArray::from([k, v])));
-                                }
-                                _ => {
-                                    return Err(errf!("DbErr", "failed to decode entry"));
-                                }
-                            }
-                        }
-                    }
+    fn eval((c, n): Self::Args) -> impl Future<Output = Value> + Send {
+        blocking(move || {
+            let mut entries: LPooled<Vec<Value>> = LPooled::take();
+            for _ in 0..n.max(0) {
+                match c.next()? {
+                    Some(e) => entries.push(e),
+                    None => break,
                 }
-                Ok(Value::Array(ValArray::from_iter_exact(results.drain(..))))
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(Err(e)) => e,
-                Ok(Ok(v)) => v,
             }
-        }
+            Ok(Value::Array(ValArray::from_iter_exact(entries.drain(..))))
+        })
     }
 }
 
 pub(crate) type DbCursorReadMany = CachedArgsAsync<DbCursorReadManyEv>;
-
-fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<std::ops::Bound<Vec<u8>>> {
-    use std::ops::Bound;
-    #[derive(FromValue)]
-    enum Repr {
-        Included(Value),
-        Excluded(Value),
-    }
-    let encode = |k: &Value| -> Option<Vec<u8>> {
-        Some(encode_key(key_typ, k)?.drain(..).collect())
-    };
-    Some(match v.clone().cast_to::<Option<Repr>>().ok()? {
-        None => Bound::Unbounded,
-        Some(Repr::Included(k)) => Bound::Included(encode(&k)?),
-        Some(Repr::Excluded(k)) => Bound::Excluded(encode(&k)?),
-    })
-}
-
-#[derive(Debug)]
-pub(crate) struct RangeArgs {
-    lo: std::ops::Bound<Vec<u8>>,
-    hi: std::ops::Bound<Vec<u8>>,
-    tree: Arc<TreeInner>,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct DbCursorRangeEv;
-
-impl EvalCachedAsync for DbCursorRangeEv {
-    type Args = RangeArgs;
-
-    const NAME: &str = "db_cursor_range";
-
-    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-        let tree = get_tree_inner(cached, 2)?;
-        let lo = parse_bound(tree.key_typ, cached.0.get(0)?.as_ref()?)?;
-        let hi = parse_bound(tree.key_typ, cached.0.get(1)?.as_ref()?)?;
-        Some(RangeArgs { lo, hi, tree })
-    }
-
-    fn eval(args: Self::Args) -> impl Future<Output = Value> + Send {
-        async move {
-            let RangeArgs { lo, hi, tree } = args;
-            let key_typ = tree.key_typ;
-            match tokio::task::spawn_blocking(move || {
-                let iter = tree.tree.range((lo, hi));
-                CURSOR_WRAPPER.wrap(CursorValue {
-                    inner: Arc::new(CursorInner {
-                        iter: parking_lot::Mutex::new(iter),
-                        key_typ,
-                    }),
-                })
-            })
-            .await
-            {
-                Err(e) => errf!("DbErr", "task panicked: {e}"),
-                Ok(v) => v,
-            }
-        }
-    }
-}
-
-pub(crate) type DbCursorRange = CachedArgsAsync<DbCursorRangeEv>;
 
 graphix_package_core::unit_image_state!(
     DbCursorNewEv,

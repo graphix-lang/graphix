@@ -1005,3 +1005,175 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+fn arr<const N: usize>(vs: [Value; N]) -> Value {
+    Value::Array(vs.into())
+}
+
+fn s(x: &str) -> Value {
+    Value::String(x.into())
+}
+
+// Keys sort as the language orders them: negative floats before positive,
+// and -0.0 is the key 0.0.
+run_with_tempdir!(
+    name: db_float_keys_order,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<f64, string> = db::tree(db, null)$;
+        let b = db::batch(t, [`Insert(2.0, "2"), `Insert(0.0 - 3.0, "-3"), `Insert(0.5, "0.5"), `Insert(0.0 - 1.0, "-1"), `Insert(0.0, "0")])$;
+        let first = db::first(b ~ t)$;
+        let lt = db::get_lt(t, b ~ 0.0)$;
+        let z = db::get(t, b ~ 0.0 * (0.0 - 1.0))$;
+        (first, lt, z)
+    }}"#,
+    setup: |td| { td.path().join("float_keys.db") },
+    expect: |v: Value| -> Result<()> {
+        let e = arr([
+            arr([Value::F64(-3.0), s("-3")]),
+            arr([Value::F64(-1.0), s("-1")]),
+            s("0"),
+        ]);
+        assert_eq!(v, e);
+        Ok(())
+    }
+);
+
+// The meta tree and sled's name for the default tree are not a program's
+// to open, drop or list.
+run_with_tempdir!(
+    name: db_reserved_names,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<string, i64> = db::tree(db, null)$;
+        let ins = db::insert(t, "k", 4096)$;
+        let r1: Result<db::Tree<string, string>, `DbErr(string)> = db::tree(db, ins ~ "__sled__default");
+        let r2 = db::drop_tree(db, ins ~ "$$__graphix_meta__$$");
+        let names = db::tree_names(r2 ~ db)$;
+        (is_err(r1), is_err(r2), names)
+    }}"#,
+    setup: |td| { td.path().join("reserved.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::Bool(true), Value::Bool(true), arr([])]));
+        Ok(())
+    }
+);
+
+// A dropped tree's name is free for any types.
+run_with_tempdir!(
+    name: db_drop_tree_frees_name,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let x: db::Tree<string, i64> = db::tree(db, "x")$;
+        let ins = db::insert(x, "k", 1)$;
+        let dropped = db::drop_tree(db, ins ~ "x")$;
+        let y: db::Tree<i64, f64> = db::tree(db, dropped ~ "x")$;
+        db::get_type(db, y ~ "x")$
+    }}"#,
+    setup: |td| { td.path().join("drop.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_tree_type(&v, "i64", "f64");
+        Ok(())
+    }
+);
+
+// A tree opened twice in a transaction is one tree: each handle sees the
+// other's writes and the last write is the one committed.
+run_with_tempdir!(
+    name: db_txn_tree_opened_twice,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let txn = db::txn::begin(db)$;
+        let t1: db::txn::TxnTree<string, i64> = db::txn::tree(txn, "x")$;
+        let t2: db::txn::TxnTree<string, i64> = db::txn::tree(txn, t1 ~ "x")$;
+        let i1 = db::txn::insert(t1, t2 ~ "k", 1)$;
+        let r = db::txn::get(t2, i1 ~ "k")$;
+        let i2 = db::txn::insert(t1, r ~ "k", 2)$;
+        let i3 = db::txn::insert(t2, i2 ~ "k", 3)$;
+        let c = db::txn::commit(i3 ~ txn)$;
+        let t: db::Tree<string, i64> = db::tree(db, c ~ "x")$;
+        (r, db::get(t, t ~ "k")$)
+    }}"#,
+    setup: |td| { td.path().join("txn_twice.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::I64(1), Value::I64(3)]));
+        Ok(())
+    }
+);
+
+// A constant #prefix filters the events, and the write issued on the
+// subscription's fire is seen.
+run_with_tempdir!(
+    name: db_subscription_prefix,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<string, i64> = db::tree(db, null)$;
+        let sub = db::subscription::new(#prefix: "aa", t);
+        let b = db::batch(t, sub ~ [`Insert("bb", 1), `Insert("aa1", 2)])$;
+        db::subscription::on_insert(sub)$
+    }}"#,
+    setup: |td| { td.path().join("prefix.db") },
+    expect: |v: Value| -> Result<()> {
+        let ev = arr([arr([s("key"), s("aa1")]), arr([s("value"), Value::I64(2)])]);
+        assert_eq!(v, arr([ev]));
+        Ok(())
+    }
+);
+
+// A value that cannot be stored is a DbErr, not silence.
+run_with_tempdir!(
+    name: db_unstorable_value,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let t: db::Tree<string, db::Db> = db::tree(db, null)$;
+        is_err(db::insert(t, "k", db))
+    }}"#,
+    setup: |td| { td.path().join("unstorable.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Bool(true));
+        Ok(())
+    }
+);
+
+// A tree's types are stored with their typedefs expanded, so a program
+// whose typedef differs is refused; the stored text is the db format.
+run_with_tempdir!(
+    name: db_typedef_types_stored_expanded,
+    code: r#"{{
+        let db = db::open("{}")$;
+        let wrote = {{
+            type Rec = {{x: i64, label: string}};
+            let t: db::Tree<string, Array<Rec>> = db::tree(db, "arr")$;
+            db::insert(t, "k", [{{x: 42, label: "a"}}])$
+        }};
+        let refused = {{
+            type Rec = {{x: string, label: string}};
+            let t: Result<db::Tree<string, Array<Rec>>, `DbErr(string)> = db::tree(db, wrote ~ "arr");
+            is_err(t)
+        }};
+        (refused, db::get_type(db, wrote ~ "arr")$)
+    }}"#,
+    setup: |td| { td.path().join("typedef.db") },
+    expect: |v: Value| -> Result<()> {
+        let e = arr([Value::Bool(true), arr([s("string"), s("Array<{ label: string, x: i64 }>")])]);
+        assert_eq!(v, e);
+        Ok(())
+    }
+);
+
+// Opening an open database hands back the live handle; sled's lock would
+// refuse a second.
+run_with_tempdir!(
+    name: db_open_twice,
+    code: r#"{{
+        let p = "{}";
+        let a = db::open(p);
+        let b = db::open(a ~ p);
+        (is_err(a), is_err(b))
+    }}"#,
+    setup: |td| { td.path().join("twice.db") },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::Bool(false), Value::Bool(false)]));
+        Ok(())
+    }
+);
