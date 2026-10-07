@@ -146,6 +146,10 @@ fn program(shape: &str, d: usize) -> String {
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
 const FLAT_DEPTH: usize = 3000;
 
+/// A chain of module files, each its own parse, so the parser's limit
+/// bounds none of it: module resolution recurses once per file.
+const MODCHAIN_DEPTH: usize = 1000;
+
 const SHAPES: &[&str] = &[
     "parens",
     "array",
@@ -180,7 +184,20 @@ fn run_child(shape: &str, depth: usize) {
     let dir = env::temp_dir().join(format!("gx-deep-{shape}-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("tmpdir");
     let file = dir.join("deep.gx");
-    fs::write(&file, program(shape, depth)).expect("write");
+    match shape {
+        "modchain" => {
+            let link = "mod m;\nlet x = m::x";
+            fs::write(&file, link).expect("write");
+            let mut at = dir.clone();
+            for i in 0..depth {
+                let text = if i + 1 == depth { "let x = 1" } else { link };
+                fs::write(at.join("m.gx"), text).expect("write");
+                at = at.join("m");
+                fs::create_dir_all(&at).expect("mkdir");
+            }
+        }
+        _ => fs::write(&file, program(shape, depth)).expect("write"),
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_stack_size(STACK)
@@ -248,6 +265,7 @@ fn deep_nesting_does_not_overflow() {
         .flat_map(|s| [(*s, accepted()), (*s, REJECTED)])
         .chain([("parens", REJECTED)])
         .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH)))
+        .chain([("modchain", MODCHAIN_DEPTH)])
         .collect();
     let mut codes: HashMap<(&str, usize), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {
@@ -279,6 +297,12 @@ fn deep_nesting_does_not_overflow() {
         if run(shape, FLAT_DEPTH) != Some(0) {
             failed.push(format!("{shape}@{FLAT_DEPTH}: {:?}", run(shape, FLAT_DEPTH)))
         }
+    }
+    if run("modchain", MODCHAIN_DEPTH) != Some(0) {
+        failed.push(format!(
+            "modchain@{MODCHAIN_DEPTH}: {:?}",
+            run("modchain", MODCHAIN_DEPTH)
+        ))
     }
     // The limit must fire on a shape that genuinely nests.
     if run("parens", REJECTED) != Some(REFUSED) {

@@ -85,6 +85,7 @@ pub(crate) fn of_exprs(exprs: &[graphix_compiler::expr::Expr]) -> Vec<Symbol> {
 /// The top-level declarations of a `.gx` or `.gxi` text; none when it
 /// does not parse.
 fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
+    let text = parser::without_shebang(&text);
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
     if path.extension().is_some_and(|e| e == "gxi") {
         parser::parse_sig(ori).map(|sig| of_sig(&sig)).unwrap_or_default()

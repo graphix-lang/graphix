@@ -1,5 +1,6 @@
-//! Two files that import each other through a file resolver are an
-//! import cycle, reported, not a stack overflow.
+//! Two files that name each other as modules form no cycle: a file's
+//! submodules are beside it, so `b`'s `mod a` is `b/a.gx`, reported
+//! missing, not a stack overflow.
 
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
@@ -26,6 +27,6 @@ async fn two_files_importing_each_other() {
         .check()
         .await;
     let _ = fs::remove_dir_all(&dir);
-    let err = format!("{:#}", checked.expect_err("a cycle does not check"));
-    assert!(err.contains("import cycle: b -> a -> b"), "{err}");
+    let err = format!("{:#}", checked.expect_err("b's `mod a` is not a.gx"));
+    assert!(err.contains("module b::a could not be found"), "{err}");
 }

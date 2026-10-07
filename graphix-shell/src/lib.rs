@@ -10,7 +10,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, ExecState, FusionStats, PrintFlag,
     env::Env,
-    expr::{CouldNotResolve, ExprId, ResolverFactory, ResolverRef, Source, VfsResolver},
+    expr::{CouldNotResolve, ExprId, ModPath, ResolverFactory, ResolverRef, Source},
     format_with_flags,
     typ::TVal,
 };
@@ -375,7 +375,7 @@ impl<X: GXExt> Shell<X> {
             }
             image
         });
-        let mut mods = vec![VfsResolver::new(vfs_modules)];
+        let mut mods = vec![vfs_modules];
         for res in self.module_resolvers.drain(..) {
             mods.push(res);
         }
@@ -480,7 +480,13 @@ impl<X: GXExt> Shell<X> {
                     exprs.extend(res.exprs);
                     *newenv = Some(env.clone())
                 }
-                Err(e) if e.is::<CouldNotResolve>() => {
+                // no init module is no error; anything wrong inside one is
+                Err(e)
+                    if e.chain().any(|c| {
+                        c.downcast_ref::<CouldNotResolve>()
+                            .is_some_and(|c| c.path == ModPath::from(["init"]))
+                    }) =>
+                {
                     env = gx.get_env().await?;
                     *newenv = Some(env.clone())
                 }

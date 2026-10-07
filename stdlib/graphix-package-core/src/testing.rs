@@ -292,7 +292,7 @@ where
         graphix_package::register_packages(&mut ctx, register.iter().copied())?;
     log::info!("package registration time: {:?}", st.elapsed());
     setup(&mut ctx);
-    let mut all_resolvers = vec![VfsResolver::new(modules)];
+    let mut all_resolvers = vec![modules];
     all_resolvers.extend(resolvers);
     let mut cfg = GXConfig::builder(ctx, sub)
         .root(root)

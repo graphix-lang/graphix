@@ -261,12 +261,7 @@ fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
             }
             _ => None,
         },
-        |e, reexport, names| {
-            let mut stmt = Expr::new(ExprKind::Use { reexport, names }, e.pos);
-            stmt.id = e.id;
-            stmt.ori = e.ori.clone();
-            stmt
-        },
+        |e, reexport, names| e.rekind(ExprKind::Use { reexport, names }),
     )
 }
 
@@ -468,19 +463,21 @@ pub fn format_source_unchecked(
 }
 
 /// `text` laid out canonically. The result is reparsed and refused unless
-/// it says exactly what `text` said, comments and attributes included.
-// CR claude for claude: [bug] RootFile::load strips a leading `#!` line
-// (graphix-types/src/expr/resolver.rs:537-540) but this parses the raw text, so
-// `graphix fmt` fails with 'Unexpected `#`' at 1:1 on every script with a shebang that
-// `graphix` runs and `--check` accepts, and the LSP formatting handler returns no edit
-// for it. One helper that splits off the shebang line, used by both, with the formatter
-// writing the line back unchanged. probe:
-// design/review-2026-10-05/repro/t-format-resolver-09.gx (t-format-resolver-09)
+/// it says exactly what `text` said, comments and attributes included. A
+/// `#!` line is kept as it is.
 pub fn format_source(
     kind: SourceKind,
     text: &str,
     cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
+    let n = super::parser::shebang_len(text);
+    if n > 0 {
+        let (line, rest) = text.split_at((n + 1).min(text.len()));
+        let mut out: LPooled<String> = LPooled::take();
+        out.push_str(line);
+        out.push_str(&format_source(kind, rest, cfg)?);
+        return Ok(out);
+    }
     // a file whose every line ends in CRLF keeps them; the layout is LF
     let lines = text.matches('\n').count();
     if lines > 0 && text.matches("\r\n").count() == lines {

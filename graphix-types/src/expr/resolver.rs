@@ -1,17 +1,17 @@
 use crate::{
     PrintFlag,
     expr::{
-        CouldNotResolve, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, Sig,
-        SigItem, SigKind, Source, UseItem, parser, serialize,
+        At, CouldNotResolve, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin,
+        Sig, SigItem, SigKind, Source, UseItem, parser, serialize,
     },
     format_with_flags,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use combine::stream::position::SourcePosition;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use futures::future::try_join_all;
 use indexmap::IndexMap;
 use log::info;
@@ -19,7 +19,13 @@ use netidx_core::path::Path;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{fmt::Write as _, path::PathBuf, pin::Pin, str::FromStr, sync::Arc as SArc};
+use std::{
+    fmt::{self, Write as _},
+    path::PathBuf,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc as SArc,
+};
 use tokio::{task, time::Instant};
 use triomphe::Arc;
 
@@ -95,11 +101,23 @@ pub type ResolverFactory =
 
 /// In-memory module store — the stdlib packages and test sources.
 #[derive(Debug, Clone)]
-pub struct VfsResolver(pub AHashMap<Path, VfsEntry>);
+pub struct VfsResolver {
+    pub vfs: AHashMap<Path, VfsEntry>,
+    /// The registered packages' root modules: what the registration
+    /// loads, never a file's or a netidx path's own `mod` of that name.
+    pub packages: AHashSet<ArcStr>,
+}
 
 impl VfsResolver {
     pub fn new(vfs: AHashMap<Path, VfsEntry>) -> ResolverRef {
-        SArc::new(VfsResolver(vfs))
+        Self::with_packages(vfs, [])
+    }
+
+    pub fn with_packages(
+        vfs: AHashMap<Path, VfsEntry>,
+        packages: impl IntoIterator<Item = ArcStr>,
+    ) -> ResolverRef {
+        SArc::new(VfsResolver { vfs, packages: packages.into_iter().collect() })
     }
 }
 
@@ -111,7 +129,7 @@ impl ModuleResolver for VfsResolver {
         name: &'a Path,
         _errors: &'a mut Vec<anyhow::Error>,
     ) -> Pin<Box<dyn Future<Output = Resolution> + Send + Sync + 'a>> {
-        Box::pin(async move { resolve_from_vfs(scope, parent, name, &self.0) })
+        Box::pin(async move { resolve_from_vfs(scope, parent, name, self) })
     }
 }
 
@@ -273,8 +291,9 @@ fn resolve_from_vfs(
     scope: &ModPath,
     parent: &Arc<Origin>,
     name: &Path,
-    vfs: &AHashMap<Path, VfsEntry>,
+    r: &VfsResolver,
 ) -> Resolution {
+    let vfs = &r.vfs;
     let unit = |e: &VfsEntry| Unit {
         ori: Origin {
             parent: Some(parent.clone()),
@@ -283,28 +302,47 @@ fn resolve_from_vfs(
         },
         packed: e.packed.clone(),
     };
-    // CR claude for claude: [bug] A script's top-level `mod str;` is looked up here at
-    // scope `/`, because resolve_modules_in_scope gives a root file's own statements no
-    // prepend and the shell and the LSP put this VFS first. Every package root sits
-    // here as `/<pkg>/mod.gx`, so the stdlib str source is compiled as the user's
-    // module and the str.gx beside the script is never read. This happens for every
-    // registered package name (db, args, list, map, json, http, core, sys, ...): a
-    // local db.gx defining `connect` gives "db::connect not defined", a str.gx whose
-    // `len` returns 1000 silently runs the stdlib's `len`, a str.gx that does not parse
-    // is never reported, and `mod str;` with no file at all still loads. `--check` and
-    // the LSP compile the file's statements at the root, where `/str` is the registered
-    // package, and refuse the same script with "duplicate module definition str" (a
-    // dynamic `mod str` too), while the run accepts it inside its `#do` block. probe:
-    // design/review-2026-10-05/repro/t-format-resolver-01.sh (t-format-resolver-01)
-    let at = |file: &str| vfs.get(&scope.append(&format_compact!("{name}{file}")));
-    // an interface pairs with the implementation beside it, as on disk
-    for (imp, intf) in MODULE_LAYOUTS {
-        if let Some(e) = at(imp) {
-            let interface = at(intf).map(unit);
-            return Resolution::Resolved { interface, implementation: unit(e) };
-        }
+    // a program's own `mod str` is its module, not the str package
+    if matches!(parent.source, Source::File(_) | Source::Netidx(_))
+        && scope.0 == Path::root()
+        && r.packages.contains(&**name)
+    {
+        return Resolution::TryNextMethod;
     }
-    Resolution::TryNextMethod
+    let path = |file: &str| scope.append(&format_compact!("{name}{file}"));
+    let at = |file: &str| vfs.get(&path(file));
+    // an interface pairs with the implementation beside it, as on disk
+    let [(imp0, intf0), (imp1, intf1)] = MODULE_LAYOUTS;
+    match (at(imp0), at(imp1)) {
+        (Some(_), Some(_)) => Resolution::Broken(anyhow::anyhow!(
+            "{} and {} both define module {name}",
+            path(imp0),
+            path(imp1)
+        )),
+        (Some(_), None) if at(intf1).is_some() => {
+            Resolution::Broken(stray_interface(&path(intf1), &path(imp0)))
+        }
+        (None, Some(_)) if at(intf0).is_some() => {
+            Resolution::Broken(stray_interface(&path(intf0), &path(imp1)))
+        }
+        (Some(e), None) => Resolution::Resolved {
+            interface: at(intf0).map(unit),
+            implementation: unit(e),
+        },
+        (None, Some(e)) => Resolution::Resolved {
+            interface: at(intf1).map(unit),
+            implementation: unit(e),
+        },
+        (None, None) => Resolution::TryNextMethod,
+    }
+}
+
+/// An interface left beside the layout its module does not use: it
+/// would be dropped and the module's every item public.
+fn stray_interface(intf: &dyn fmt::Display, imp: &dyn fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{intf} is no interface: the module is {imp}, and its interface goes beside it"
+    )
 }
 
 async fn resolve_from_files(
@@ -331,36 +369,56 @@ async fn resolve_from_files(
         })
     };
     let rel = Path::parts(&name).collect::<Vec<_>>().join("/");
-    // CR claude for claude: [risk] An interface pairs only with the implementation beside
-    // it, and nothing reports an interface left beside the other layout. With foo.gxi
-    // next to foo/mod.gx, or foo/mod.gxi next to foo.gx, the interface is dropped
-    // without a word and every item it leaves out is public: `mod foo; foo::secret`
-    // prints 2, where the paired layout refuses it. When foo.gx and foo/mod.gx both
-    // exist, foo.gx wins and foo/mod.gx is dead, since no submodule can be named `mod`.
-    // The LSP's scan (graphix-lsp/src/workspace.rs:296) does resolve `mod foo` to the
-    // stray foo.gxi, so it leaves foo/mod.gx out of main.gx's project and checks it as
-    // a root of its own, with false errors such as "`super` goes above the package
-    // root". Refuse these layouts with Resolution::Broken naming both files, here and
-    // in resolve_from_vfs (line 240), whose pin at line 919 would then expect the
-    // refusal. probe: design/review-2026-10-05/repro/t-format-resolver.r2-10.sh
-    // (t-format-resolver.r2-10)
+    let mut found: SmallVec<[(PathBuf, Option<ArcStr>, PathBuf, Option<ArcStr>); 2]> =
+        SmallVec::new();
     for (imp, intf) in MODULE_LAYOUTS {
         let (imp, intf) =
             (base.join(format!("{rel}{imp}")), base.join(format!("{rel}{intf}")));
-        match read(overrides, &imp).await {
-            Ok(None) => continue,
+        let imp_text = match read(overrides, &imp).await {
+            Ok(t) => t,
             Err(e) => return Resolution::Broken(e),
-            Ok(Some(text)) => {
-                let interface = match read(overrides, &intf).await {
-                    Ok(i) => i.map(|text| unit(text, intf)),
-                    Err(e) => return Resolution::Broken(e),
-                };
-                return Resolution::Resolved {
-                    interface,
-                    implementation: unit(text, imp),
-                };
-            }
+        };
+        let intf_text = match read(overrides, &intf).await {
+            Ok(t) => t,
+            Err(e) => return Resolution::Broken(e),
+        };
+        found.push((imp, imp_text, intf, intf_text));
+    }
+    let [(imp0, t0, intf0, i0), (imp1, t1, intf1, i1)] =
+        <[_; 2]>::try_from(found.into_vec()).ok().expect("two layouts");
+    match (t0, t1) {
+        (Some(_), Some(_)) => {
+            return Resolution::Broken(anyhow::anyhow!(
+                "{} and {} both define module {name}",
+                imp0.display(),
+                imp1.display()
+            ));
         }
+        (Some(_), None) if i1.is_some() => {
+            return Resolution::Broken(stray_interface(
+                &intf1.display(),
+                &imp0.display(),
+            ));
+        }
+        (None, Some(_)) if i0.is_some() => {
+            return Resolution::Broken(stray_interface(
+                &intf0.display(),
+                &imp1.display(),
+            ));
+        }
+        (Some(text), None) => {
+            return Resolution::Resolved {
+                interface: i0.map(|text| unit(text, intf0)),
+                implementation: unit(text, imp0),
+            };
+        }
+        (None, Some(text)) => {
+            return Resolution::Resolved {
+                interface: i1.map(|text| unit(text, intf1)),
+                implementation: unit(text, imp1),
+            };
+        }
+        (None, None) => (),
     }
     let [(file, _), (mod_file, _)] = MODULE_LAYOUTS;
     errors.push(anyhow::anyhow!(
@@ -444,6 +502,17 @@ impl Anchor {
     }
 }
 
+/// A declaration that reads no value of its module: a type (its body
+/// resolves lazily) or a trait with no default body. It goes ahead of the
+/// body, where every statement can name it.
+fn needs_no_value(kind: &SigKind) -> bool {
+    match kind {
+        SigKind::TypeDef(_) => true,
+        SigKind::Trait(t) => t.methods.iter().all(|m| m.default.is_none()),
+        _ => false,
+    }
+}
+
 /// `exprs` with the modules, types, traits and uses only `sig` declares
 /// spliced in, keeping their relative location and order; a declaration
 /// without an origin of its own (a packed interface's) takes `ori`, the
@@ -476,27 +545,21 @@ pub fn add_interface_modules(
             end: Default::default(),
         })
     };
-    // the interface-only declarations in interface order, each keyed
-    // after the declaration before it
+    // the interface-only declarations in interface order: what needs no
+    // value before it first, each other one keyed after the declaration
+    // before it
     let mut pending: LPooled<IndexMap<SpliceKey, &SigItem>> = LPooled::take();
     let mut after: LPooled<AHashMap<Anchor, SpliceKey>> = LPooled::take();
+    let mut front: LPooled<Vec<SpliceKey>> = LPooled::take();
     let mut first: Option<SpliceKey> = None;
     let mut last: Option<&SigItem> = None;
     for si in sig.items.iter() {
         if let Some(key) = SpliceKey::of_sig(&si.kind) {
-            // CR claude for claude: [bug] A gxi-only `type` or `trait` is anchored after
-            // the .gx statement that binds the `val` listed before it in the .gxi. The
-            // body compiles under an env cloned before `bind_sig`, so only statements
-            // below that point can name it. If the .gx binds its vals in a different
-            // order than the .gxi, a valid module is refused with "undefined type T in
-            // m" or "no trait `Show` in scope". With `val f: fn(x: T) -> i64; type T =
-            // i64`, no order of the .gx can name T in `let f = |x: T| ..`, and `graphix
-            // fmt m.gxi` can move an anchor when it sorts uses. A type never needs a
-            // value before it (typedef bodies resolve lazily), so types can be placed
-            // first. A `mod` whose body does `use super::x`, or a trait whose default
-            // body calls a module value, does need a value before it. probe:
-            // design/review-2026-10-05/repro/t-format-resolver.r2-04.sh
-            // (t-format-resolver.r2-04)
+            if needs_no_value(&si.kind) {
+                front.push(key.clone());
+                pending.insert(key, si);
+                continue;
+            }
             match last {
                 None => first = Some(key.clone()),
                 Some(prev) => {
@@ -521,6 +584,11 @@ pub fn add_interface_modules(
         return exprs;
     }
     let mut res: LPooled<Vec<Expr>> = LPooled::take();
+    for key in front.drain(..) {
+        if let Some(si) = pending.shift_remove(&key) {
+            res.extend(synth(si));
+        }
+    }
     // the item keyed at `next`, then each one keyed after it in turn
     let mut splice = |mut next: Option<SpliceKey>,
                       after: &mut AHashMap<Anchor, SpliceKey>,
@@ -618,20 +686,7 @@ impl RootFile {
             Some(text) => text,
             None => read_to_arcstr(&file).await?,
         };
-        // CR claude for claude: [bug] Only this reader strips a leading `#!` line.
-        // workspace::extract_mod_decls (graphix-lsp/src/workspace.rs:106),
-        // symbols::declared (graphix-lsp/src/symbols.rs:53) and format_source (`graphix
-        // fmt`, LSP formatting) parse the raw text and fail at the `#`, while running
-        // the script and `--check` accept it. So in the LSP a shebang script has no
-        // `mod` edges, no document symbols and no formatting. Its modules become roots
-        // of their own: they show spurious errors ("`super` goes above the package
-        // root"), and their real errors are never reported. Strip the line in one place
-        // that every program reader shares, keeping the newline so line numbers stay
-        // put. probe: design/review-2026-10-05/repro/lsp-09.py (lsp-09)
-        let text = match text.find('\n') {
-            Some(i) if text.starts_with("#!") => ArcStr::from(&text[i..]),
-            Some(_) | None => text,
-        };
+        let text = parser::without_shebang(&text);
         let intf = file.with_extension("gxi");
         let interface = match file.extension().and_then(|s| s.to_str()) {
             Some("gx") => match buffer(&intf) {
@@ -663,26 +718,6 @@ impl RootFile {
     }
 }
 
-/// `e` with `kind` in place of its own.
-// CR claude for claude: [structure] This is Expr::with_kind
-// (graphix-types/src/expr/mod.rs:1364) with the old id kept, and
-// graphix-types/src/expr/format.rs:217-219 spells it a third way (Expr::new, then id
-// and ori by hand). One Expr method beside with_kind that keeps the id, with with_kind
-// as that plus a fresh id, serves both. holds_unresolved's Resolved arm (lines 649-651)
-// repeats its `_` arm: for_each_child already visits a resolved module's exprs.
-// (t-format-resolver-15)
-fn rekind(e: &Expr, kind: ExprKind) -> Expr {
-    Expr {
-        id: e.id,
-        ori: e.ori.clone(),
-        pos: e.pos,
-        kind,
-        dec: e.dec.clone(),
-        str_form: e.str_form,
-        end: e.end,
-    }
-}
-
 /// Resolve the unresolved `mod` statement `stmt` in `scope`: the
 /// statement with its body, from the first resolver that has it.
 async fn resolve(
@@ -696,20 +731,13 @@ async fn resolve(
     let ts = Instant::now();
     let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
-    // CR claude for claude: [bug] When a nested `mod x;` has no file beside its parent,
-    // resolution falls through to the global chain. Those FilesResolvers ignore
-    // `scope`, so `x.gx` is loaded by its leaf name from the script's directory, the
-    // data dir or GRAPHIX_MODPATH. That contradicts the rule at line 728 and the LSP's
-    // model of it (graphix-lsp/src/workspace.rs:188 looks only at <base>/<rel>/x.gx). A
-    // missing or misplaced `a/x.gx` is never reported. Instead `a::x` silently becomes
-    // a second instance of the top-level `x`, whose abstract types are different
-    // nominal types (`type mismatch T does not contain '_N: T`), and two sibling
-    // modules that each `mod` the other report an import cycle, which is the only way
-    // graphix-shell/tests/import_cycle.rs forms one. A body with a file source should
-    // resolve its submodules only through its prepend and report that resolver's error.
-    // probe: design/review-2026-10-05/repro/t-format-resolver-05.sh
-    // (t-format-resolver-05)
-    for r in prepend.iter().chain(resolvers.iter()) {
+    // a body with a source of its own (a file, a netidx path) keeps its
+    // submodules beside it; only a root's and a VFS body's go to the chain
+    let chain: &[ResolverRef] = match &prepend {
+        Some(_) => &[],
+        None => &resolvers,
+    };
+    for r in prepend.iter().chain(chain.iter()) {
         let (interface, implementation) =
             match r.resolve(&scope, &stmt.ori, &name, &mut errors).await {
                 Resolution::TryNextMethod => continue,
@@ -727,13 +755,13 @@ async fn resolve(
         );
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
         let kind = ExprKind::Module { name: module.clone(), value };
-        return Ok(rekind(stmt, kind));
+        return Ok(stmt.rekind(kind));
     }
-    let mut msg = format_compact!("module {name} could not be found");
+    let mut why = CompactString::new("");
     for (i, e) in errors.iter().enumerate() {
-        let _ = write!(&mut msg, "{}{e}", if i == 0 { ": " } else { "; " });
+        let _ = write!(&mut why, "{}{e}", if i == 0 { ": " } else { "; " });
     }
-    bail!("{msg}")
+    Err(CouldNotResolve { path: ModPath(scope.append(&*name)), why }.into())
 }
 
 impl Expr {
@@ -760,9 +788,6 @@ impl Expr {
     fn holds_unresolved(&self) -> bool {
         crate::stack::ensure_sufficient(|| match &self.kind {
             ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => true,
-            ExprKind::Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
-                exprs.iter().any(|e| e.holds_unresolved())
-            }
             _ => {
                 let mut found = false;
                 self.for_each_child(&mut |c| found = found || c.holds_unresolved());
@@ -792,20 +817,19 @@ impl Expr {
 
     /// `Some` iff a module under `self` was resolved: the tree with it
     /// resolved; an unchanged subtree is neither rebuilt nor cloned.
-    // CR claude for claude: [bug] Module resolution recurses through these boxed futures
-    // with no stack guard. Every nested `mod`, and every expression level above one,
-    // adds four or five poll frames (resolve_children -> TryJoinAll -> TryMaybeDone ->
-    // here) on the tokio worker's 2 MiB stack. Each file is parsed on its own, so the
-    // parser's nesting limit does not bound the depth across files. A chain of 500
-    // nested module files (550 in an opt-level 3 build), or three files that each nest
-    // 330 blocks around their `mod m`, aborts `graphix --check`, a run and `graphix
-    // lsp` with a stack overflow. Poll the returned future under
-    // crate::stack::ensure_sufficient (or resolve through a worklist), and add a
-    // module-file chain to graphix-shell/tests/deep_nesting.rs. probe:
-    // design/review-2026-10-05/repro/x-stack-04.sh (`GRAPHIX=<graphix> bash
-    // x-stack-04.sh 600` and `... 3 330` exit 134; 200 and `2 330` exit 0).
-    // (x-stack-04)
     fn resolve_modules_int<'a>(
+        &'a self,
+        scope: &'a ModPath,
+        prepend: &'a Option<ResolverRef>,
+        chain: &'a Option<Arc<LoadChain>>,
+        resolvers: &'a Resolvers,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
+        // each level of a module chain polls the next: the poll is guarded
+        // like any program-driven recursion
+        Box::pin(Guarded(self.resolve_modules_level(scope, prepend, chain, resolvers)))
+    }
+
+    fn resolve_modules_level<'a>(
         &'a self,
         scope: &'a ModPath,
         prepend: &'a Option<ResolverRef>,
@@ -826,32 +850,7 @@ impl Expr {
                     *from_interface,
                 )
                 .await
-                // CR claude for claude: [bug] This marks every failure of `resolve` as
-                // CouldNotResolve, not just "could not be found": a parse error in the
-                // module file and a Broken read get the marker too, and through line
-                // 704 a failing nested `mod` carries its own. The REPL
-                // (graphix-shell/src/lib.rs:399) treats `e.is::<CouldNotResolve>()` as
-                // "there is no init module", and anyhow matches that anywhere in the
-                // chain. So an init.gx that does not parse, cannot be read, or loads a
-                // broken module is dropped with no message, while a type error in it is
-                // reported. The book's own example init.gx (book/src/shell.md:406) does
-                // not parse and is dropped this way. Mark only the not-found bail in
-                // `resolve`, with the module's path, and have the shell skip only a
-                // missing root `init`; --check then stops headlining a submodule's
-                // parse error as "could not resolve module bad". probe:
-                // design/review-2026-10-05/repro/x-errors-03.py (x-errors-03)
-                // CR claude for claude: [bug] An unresolvable module (none found, or a
-                // Broken read at 602) and an import cycle (LoadChain::push at 720)
-                // leave with no `.at()`. The only context is the positionless
-                // CouldNotResolve, though the `mod` statement is `self`. So `graphix
-                // --check` prints no line or file, and the LSP's error_location finds
-                // no site: the diagnostic lands at (0,0) of the root, over its first
-                // word, even when the `mod` is in another file, and that file shows
-                // nothing. Parse and type errors in the same submodule are placed
-                // correctly. Adding `.at(self)` to this result and to the
-                // LoadChain::push error puts each one on its `mod` statement. probe:
-                // design/review-2026-10-05/repro/lsp-08.py (lsp-08)
-                .with_context(|| CouldNotResolve(name.name.clone()))?;
+                .at(self)?;
                 let scope = ModPath(scope.append(&**name));
                 let r = e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
                 Ok(Some(r.unwrap_or(e)))
@@ -860,30 +859,13 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
-                // CR claude for claude: [bug] The body's source is taken from its first
-                // expression, but add_interface_modules puts a .gxi's leading use,
-                // type, mod or trait that the .gx does not repeat ahead of every
-                // implementation statement, with the interface's origin. Then the load
-                // chain records a.gxi, a netidx module's submodule base (for_source)
-                // becomes the .gxi's path, and compile_module_inner's def_ori
-                // (graphix-compiler/src/node/compiler.rs:249) sends go-to-definition on
-                // `mod a` to a.gxi, while the same .gxi with its `val` first sends it
-                // to a.gx. The import-cycle message also prints the source with Debug,
-                // `(File(".../a.gxi"))`. Record the implementation's origin where
-                // resolve() and RootFile::into_module build ModuleKind::Resolved, and
-                // read it at both sites. probe:
-                // design/review-2026-10-05/repro/t-format-resolver-08.py
-                // (t-format-resolver-08)
-                let source = exprs.iter().find_map(|e| match &e.ori.source {
-                    Source::Unspecified => None,
-                    s => Some(s),
-                });
+                let source = self_kind_origin(&self.kind).map(|o| &o.source);
                 // a file or a netidx path is one place; an `Internal`
                 // source is a VFS module's bare name, and a VFS lookup is
                 // scoped by the module path, so it cannot come round again
                 let chain = match source {
                     Some(s @ (Source::File(_) | Source::Netidx(_))) => {
-                        Some(LoadChain::push(chain, s, name)?)
+                        Some(LoadChain::push(chain, s, name).at(self)?)
                     }
                     _ => chain.clone(),
                 };
@@ -928,7 +910,7 @@ impl Expr {
                     sig: sig.clone(),
                     from_interface: *from_interface,
                 };
-                Ok(Some(rekind(self, ExprKind::Module { value, name: name.clone() })))
+                Ok(Some(self.rekind(ExprKind::Module { value, name: name.clone() })))
             }),
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
@@ -950,6 +932,28 @@ impl Expr {
                 Ok(Some(e))
             }),
         }
+    }
+}
+
+/// The implementation's origin of a resolved module expression.
+fn self_kind_origin(kind: &ExprKind) -> Option<&Arc<Origin>> {
+    match kind {
+        ExprKind::Module { value, .. } => value.implementation_origin(),
+        _ => None,
+    }
+}
+
+/// A future polled under the stack guard.
+struct Guarded<F>(F);
+
+impl<F: Future + Unpin> Future for Guarded<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        crate::stack::ensure_sufficient(|| Pin::new(&mut self.0).poll(cx))
     }
 }
 
@@ -1010,14 +1014,15 @@ pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<A
     let path = path.as_ref();
     let mut f = match tokio::fs::File::open(path).await {
         Ok(f) => f,
-        // CR claude for claude: [bug] Only NotFound reads as absent. For `mod util;`
-        // beside a regular file `util` (a script or a binary), opening `util/mod.gx`
-        // fails with NotADirectory, resolve_from_files returns Broken, and the `util`
-        // module in GRAPHIX_MODPATH or the data dir is never tried, although that path
-        // holds no module. NotADirectory also means the path names no file, so it
-        // belongs with NotFound. probe:
-        // design/review-2026-10-05/repro/t-format-resolver-07.sh (t-format-resolver-07)
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // a path through a file names nothing either
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
     };
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
@@ -1092,13 +1097,30 @@ mod test {
         assert!(matches!(x[0].ori.source, Source::Internal(_)), "{:?}", x[0].ori.source);
     }
 
-    /// An interface pairs with the implementation beside it only.
+    /// An interface pairs with the implementation beside it only: one
+    /// beside the other layout is refused, naming both files.
     #[tokio::test]
     async fn a_vfs_interface_pairs_beside_its_implementation() {
         let lib = vfs(&[("/m/mod.gx", "let x = 1"), ("/m.gxi", "val y: i64")]);
         let main = Origin { text: literal!("mod m;"), ..Origin::default() };
-        let e = resolve_first(main, &[lib]).await.unwrap();
-        assert!(body(&e).1.is_none());
+        let e = format!("{:#}", resolve_first(main, &[lib]).await.unwrap_err());
+        assert!(e.contains("/m.gxi is no interface: the module is /m/mod.gx"), "{e}");
+    }
+
+    /// A program's own `mod` of a package's name is its module, never the
+    /// package root the VFS holds for the registration.
+    #[tokio::test]
+    async fn a_package_root_is_not_a_files_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("str.gx"), "let mine = 1").unwrap();
+        let mut map = AHashMap::default();
+        map.insert(Path::from("/str/mod.gx"), VfsEntry::from(literal!("let len = 2")));
+        let lib = VfsResolver::with_packages(map, [literal!("str")]);
+        let main = file(dir.path().join("main.gx"), "mod str;");
+        let files = FilesResolver::new(dir.path().to_path_buf(), None);
+        let e = resolve_first(main, &[lib, files]).await.unwrap();
+        let (b, _) = body(&e);
+        assert!(matches!(b[0].ori.source, Source::File(_)), "{:?}", b[0].ori.source);
     }
 
     /// A module file that is there but cannot be read fails the load;

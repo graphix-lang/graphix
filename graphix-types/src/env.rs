@@ -706,6 +706,11 @@ impl Env {
             // where the script was compiled, not from the shape of the first component.
             // probe: design/review-2026-10-05/repro/c-analysis-branch-11.gx
             // (c-analysis-branch-11)
+            // 2026-10-07 claude: the resolver half of t-format-resolver-01 is fixed (a
+            // program's own `mod str` no longer gets the str package from the VFS), so a
+            // script beside its str.gx runs; --check still refuses it with "duplicate
+            // module definition str", for the reason this CR gives: the check names the
+            // script's top level `/`, where the package is.
             Some(first) if self.package_roots.contains(first) || is_do_block(first) => {
                 &scope[..1 + first.len()]
             }

@@ -1395,6 +1395,24 @@ where
     })
 }
 
+/// The length of the `#!` line a program text may start with, its
+/// newline excluded; 0 when there is none. Every reader of a program
+/// skips it.
+pub fn shebang_len(text: &str) -> usize {
+    match text.starts_with("#!") {
+        true => text.find('\n').unwrap_or(text.len()),
+        false => 0,
+    }
+}
+
+/// `text` without its `#!` line, its newline kept so lines number alike.
+pub fn without_shebang(text: &ArcStr) -> ArcStr {
+    match shebang_len(text) {
+        0 => text.clone(),
+        n => ArcStr::from(&text[n..]),
+    }
+}
+
 /// Parse the expressions of a file.
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);

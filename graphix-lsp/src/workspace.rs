@@ -7,7 +7,7 @@ use crate::symbols::{self, Symbol};
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use graphix_compiler::expr::{
-    Expr, ExprKind, ModuleKind, Origin, SigKind, Source, parser,
+    Expr, ExprKind, MODULE_LAYOUTS, ModuleKind, Origin, SigKind, Source, parser,
 };
 use std::{
     path::{Path, PathBuf},
@@ -109,6 +109,7 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
 /// A file's `mod` declarations and top-level symbols, from one parse;
 /// none of either when it does not parse.
 fn summarize(path: &Path, kind: FileKind, text: ArcStr) -> (Vec<ArcStr>, Arc<[Symbol]>) {
+    let text = parser::without_shebang(&text);
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
     let mut mods = Vec::new();
     let symbols = match kind {
@@ -261,8 +262,8 @@ pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
 }
 
 /// Resolve `mod name` declared at scope `<rel>` from project base
-/// `<base>`. Tries `<base>/<rel>/<name>.gx`, `.gxi`, then
-/// `<base>/<rel>/<name>/mod.gx`, `mod.gxi`.
+/// `<base>` to its implementation, laid out as the resolver lays modules
+/// out (`MODULE_LAYOUTS`); its interface is the file beside it.
 fn resolve_mod(
     base: &Path,
     rel: &Path,
@@ -270,13 +271,10 @@ fn resolve_mod(
     files: &AHashMap<PathBuf, WorkspaceFile>,
 ) -> Option<PathBuf> {
     let dir = base.join(rel);
-    let candidates = [
-        dir.join(format!("{name}.gx")),
-        dir.join(format!("{name}.gxi")),
-        dir.join(name).join("mod.gx"),
-        dir.join(name).join("mod.gxi"),
-    ];
-    candidates.into_iter().find(|c| files.contains_key(c))
+    MODULE_LAYOUTS
+        .iter()
+        .map(|(imp, _)| dir.join(format!("{name}{imp}")))
+        .find(|c| files.contains_key(c))
 }
 
 #[cfg(test)]

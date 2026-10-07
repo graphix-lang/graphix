@@ -276,10 +276,7 @@ fn compile_module_inner<R: Rt, E: UserEvent>(
         bailat!(spec, "duplicate module definition {}", scope.lexical)
     }
     // the module's own file, where its body's errors are
-    let body_ori = match value {
-        ModuleKind::Resolved { exprs, .. } => exprs.first().map(|e| e.ori.clone()),
-        _ => None,
-    };
+    let body_ori = value.implementation_origin().cloned();
     if ctx.env.ide.is_lsp() {
         ctx.env.push_module_reference(ModuleRefSite {
             pos: name.pos_or(spec.pos),

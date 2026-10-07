@@ -6,6 +6,7 @@ use crate::{
 use arcstr::{ArcStr, literal};
 pub use binop::BinOp;
 use combine::stream::position::SourcePosition;
+use compact_str::CompactString;
 pub use context::{At, ErrorContext, ErrorSite, ParserContext};
 pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path};
@@ -89,14 +90,21 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
+/// No resolver has the module at `path`; `why` holds what each one
+/// that looked reported.
 #[derive(Debug)]
-pub struct CouldNotResolve(ArcStr);
+pub struct CouldNotResolve {
+    pub path: ModPath,
+    why: CompactString,
+}
 
 impl fmt::Display for CouldNotResolve {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "could not resolve module {}", self.0)
+        write!(f, "module {} could not be found{}", self.path, self.why)
     }
 }
+
+impl std::error::Error for CouldNotResolve {}
 
 /// How a lambda parameter is passed.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -383,6 +391,23 @@ pub enum ModuleKind {
     Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
     Resolved { exprs: Arc<[Expr]>, sig: Option<Sig>, from_interface: bool },
     Unresolved { from_interface: bool },
+}
+
+impl ModuleKind {
+    /// Where a resolved module's body comes from: the origin of its first
+    /// statement that is not one its interface added.
+    pub fn implementation_origin(&self) -> Option<&Arc<Origin>> {
+        let ModuleKind::Resolved { exprs, .. } = self else { return None };
+        let is_interface = |o: &Origin| match &o.source {
+            Source::File(p) => p.extension().is_some_and(|e| e == "gxi"),
+            Source::Netidx(p) => p.ends_with(".gxi"),
+            Source::Internal(_) | Source::Unspecified => false,
+        };
+        exprs
+            .iter()
+            .map(|e| &e.ori)
+            .find(|o| !matches!(o.source, Source::Unspecified) && !is_interface(o))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -1465,8 +1490,15 @@ impl Expr {
 
     /// This expression with `kind` in place of its own, under a fresh id.
     pub fn with_kind(&self, kind: ExprKind) -> Self {
+        let mut e = self.rekind(kind);
+        e.id = ExprId::new();
+        e
+    }
+
+    /// This expression with `kind` in place of its own, keeping its id.
+    pub fn rekind(&self, kind: ExprKind) -> Self {
         Expr {
-            id: ExprId::new(),
+            id: self.id,
             ori: self.ori.clone(),
             pos: self.pos,
             kind,

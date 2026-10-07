@@ -13,7 +13,7 @@ use flate2::bufread::MultiGzDecoder;
 use graphix_compiler::{
     ExecState,
     env::Env,
-    expr::{ExprId, VfsEntry},
+    expr::{ExprId, ResolverRef, VfsEntry, VfsResolver},
 };
 /// `packages!()` builds `Vec<Box<dyn Package<X>>>` (owned, feature-gated) and
 /// `package_refs!()` builds `&'static [&'static dyn Package<NoExt>]` (const),
@@ -177,13 +177,14 @@ pub trait Package<X: GXExt>: Send + Sync {
     fn main_program(&self) -> Option<&'static str>;
 }
 
-/// Register `packages` in `ctx`: their Graphix modules by path, and the
-/// root module source naming each (`mod <name>`; core needs no `use`, the
-/// compiler's core prelude makes its root items visible everywhere).
+/// Register `packages` in `ctx`: the resolver of their Graphix modules,
+/// and the root module source naming each (`mod <name>`; core needs no
+/// `use`, the compiler's core prelude makes its root items visible
+/// everywhere).
 pub fn register_packages<'a, X: GXExt + 'a>(
     ctx: &mut ExecState<GXRt<X>, X::UserEvent>,
     packages: impl IntoIterator<Item = &'a dyn Package<X>>,
-) -> Result<(AHashMap<netidx_core::path::Path, VfsEntry>, ArcStr)> {
+) -> Result<(ResolverRef, ArcStr)> {
     let mut modules = AHashMap::default();
     let mut root_mods = IndexSet::new();
     for p in packages {
@@ -197,7 +198,7 @@ pub fn register_packages<'a, X: GXExt + 'a>(
         root.push_str("mod ");
         root.push_str(name);
     }
-    Ok((modules, ArcStr::from(root)))
+    Ok((VfsResolver::with_packages(modules, root_mods), ArcStr::from(root)))
 }
 
 // new-package skeleton templates

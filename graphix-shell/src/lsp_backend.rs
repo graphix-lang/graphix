@@ -8,7 +8,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag,
     env::Env,
-    expr::{BufferOverrides, FilesResolver, ResolverRef, Source, VfsResolver},
+    expr::{BufferOverrides, FilesResolver, ResolverRef, Source},
 };
 use graphix_lsp::{Checked, Connection, LspBackend};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
@@ -49,7 +49,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let (vfs, root) =
         graphix_package::register_packages(&mut ctx, packages.iter().map(|p| &**p))
             .context("registering stdlib modules")?;
-    let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
+    let mut resolvers: Vec<ResolverRef> = vec![vfs];
     // The stdlib layer, shared by every per-project check.
     let base_resolvers = resolvers.clone();
     let search = graphix_rt::search_path(&Default::default(), &mut ctx.libstate)?;
