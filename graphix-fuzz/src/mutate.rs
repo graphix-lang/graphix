@@ -6,7 +6,7 @@
 //! The RNG is a seeded xorshift, so any run replays from its seed.
 
 use graphix_compiler::expr::{
-    BindExpr, Expr, ExprKind, Origin, StructurePattern,
+    BinOp, BindExpr, Expr, ExprKind, Origin, StructurePattern,
     parser::{self, parse_one},
 };
 use netidx_value::Value;
@@ -80,70 +80,23 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     e.map_children(&mut |c| replace_at(c, target, ctr, repl))
 }
 
-// CR claude for claude: [structure] binop_kind and try_swap_binop restate the BinOp table
-// (graphix-types/src/expr/binop.rs), once as strings and once as a variant list;
-// mustreject.rs in this crate already uses BinOp::of. An added or renamed operator is
-// no compile error here, and a typo in a class array panics at the unreachable!()
-// during a run. Make the classes &[BinOp], take the operator with BinOp::of(&e.kind)?,
-// pick from the class that holds it and build with BinOp::build, then delete
-// binop_kind; keeping each class's order keeps seeds replaying the same.
-// (x-expr-walks-07)
-fn binop_kind(name: &str, lhs: Arc<Expr>, rhs: Arc<Expr>) -> ExprKind {
-    use ExprKind::*;
-    match name {
-        "Add" => Add { lhs, rhs },
-        "Sub" => Sub { lhs, rhs },
-        "Mul" => Mul { lhs, rhs },
-        "Div" => Div { lhs, rhs },
-        "Mod" => Mod { lhs, rhs },
-        "CheckedAdd" => CheckedAdd { lhs, rhs },
-        "CheckedSub" => CheckedSub { lhs, rhs },
-        "CheckedMul" => CheckedMul { lhs, rhs },
-        "CheckedDiv" => CheckedDiv { lhs, rhs },
-        "CheckedMod" => CheckedMod { lhs, rhs },
-        "Eq" => Eq { lhs, rhs },
-        "Ne" => Ne { lhs, rhs },
-        "Lt" => Lt { lhs, rhs },
-        "Gt" => Gt { lhs, rhs },
-        "Lte" => Lte { lhs, rhs },
-        "Gte" => Gte { lhs, rhs },
-        "And" => And { lhs, rhs },
-        "Or" => Or { lhs, rhs },
-        _ => unreachable!(),
-    }
-}
-
-const ARITH: &[&str] = &["Add", "Sub", "Mul", "Div", "Mod"];
-const CHECKED: &[&str] =
-    &["CheckedAdd", "CheckedSub", "CheckedMul", "CheckedDiv", "CheckedMod"];
-const CMP: &[&str] = &["Eq", "Ne", "Lt", "Gt", "Lte", "Gte"];
-const BOOLOP: &[&str] = &["And", "Or"];
+const ARITH: &[BinOp] = &[BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod];
+const CHECKED: &[BinOp] = &[
+    BinOp::CheckedAdd,
+    BinOp::CheckedSub,
+    BinOp::CheckedMul,
+    BinOp::CheckedDiv,
+    BinOp::CheckedMod,
+];
+const CMP: &[BinOp] =
+    &[BinOp::Eq, BinOp::Ne, BinOp::Lt, BinOp::Gt, BinOp::Lte, BinOp::Gte];
+const BOOLOP: &[BinOp] = &[BinOp::And, BinOp::Or];
 
 /// If `e` is a binop, return a same-class swap with its operands.
 fn try_swap_binop(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
-    use ExprKind::*;
-    let (class, lhs, rhs) = match &e.kind {
-        Add { lhs, rhs }
-        | Sub { lhs, rhs }
-        | Mul { lhs, rhs }
-        | Div { lhs, rhs }
-        | Mod { lhs, rhs } => (ARITH, lhs, rhs),
-        CheckedAdd { lhs, rhs }
-        | CheckedSub { lhs, rhs }
-        | CheckedMul { lhs, rhs }
-        | CheckedDiv { lhs, rhs }
-        | CheckedMod { lhs, rhs } => (CHECKED, lhs, rhs),
-        Eq { lhs, rhs }
-        | Ne { lhs, rhs }
-        | Lt { lhs, rhs }
-        | Gt { lhs, rhs }
-        | Lte { lhs, rhs }
-        | Gte { lhs, rhs } => (CMP, lhs, rhs),
-        And { lhs, rhs } | Or { lhs, rhs } => (BOOLOP, lhs, rhs),
-        _ => return None,
-    };
-    let op = *rng.pick(class);
-    Some(binop_kind(op, lhs.clone(), rhs.clone()))
+    let (op, lhs, rhs) = BinOp::of(&e.kind)?;
+    let class = [ARITH, CHECKED, CMP, BOOLOP].into_iter().find(|c| c.contains(&op))?;
+    Some(rng.pick(class).build(lhs.clone(), rhs.clone()))
 }
 
 /// If `e` is a numeric/bool constant, return an edge-value perturbation.
@@ -152,14 +105,6 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
         ExprKind::Constant(v) => v,
         _ => return None,
     };
-    // CR claude for claude: [test-gap] Edge perturbation covers only i64, u64, i32, u8,
-    // f64, f32 and bool, so the corpus's i8, i16, u16, u32, v32, v64, z32, z64 and
-    // duration literals never move in the fuzz lane. The generators' literal pools
-    // (generate/types.rs:131-155) carry most narrow-width edges themselves, but z32 and
-    // z64 have no MIN or MAX there and v64 no MAX, so those extremes reach no lane at
-    // all, and varints are the widths kernels carry as two-word opaque values. Add arms
-    // for every numeric width here (MIN, MAX, 0, 1, and -1 where signed), or add the
-    // missing edges to the pools. (fuzz-mutate-19)
     let nv = match v {
         Value::I64(_) => {
             Value::I64(*rng.pick(&[0, 1, -1, i64::MAX, i64::MIN, 2, 100, -100]))
@@ -167,6 +112,19 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
         Value::U64(_) => Value::U64(*rng.pick(&[0u64, 1, u64::MAX, 2, 100])),
         Value::I32(_) => Value::I32(*rng.pick(&[0i32, 1, -1, i32::MAX, i32::MIN])),
         Value::U8(_) => Value::U8(*rng.pick(&[0u8, 1, 255, 100, 200])),
+        Value::I8(_) => Value::I8(*rng.pick(&[0i8, 1, -1, i8::MAX, i8::MIN])),
+        Value::I16(_) => Value::I16(*rng.pick(&[0i16, 1, -1, i16::MAX, i16::MIN])),
+        Value::U16(_) => Value::U16(*rng.pick(&[0u16, 1, u16::MAX])),
+        Value::U32(_) => Value::U32(*rng.pick(&[0u32, 1, u32::MAX])),
+        Value::V32(_) => Value::V32(*rng.pick(&[0u32, 1, u32::MAX])),
+        Value::V64(_) => Value::V64(*rng.pick(&[0u64, 1, u64::MAX])),
+        Value::Z32(_) => Value::Z32(*rng.pick(&[0i32, 1, -1, i32::MAX, i32::MIN])),
+        Value::Z64(_) => Value::Z64(*rng.pick(&[0i64, 1, -1, i64::MAX, i64::MIN])),
+        Value::Duration(_) => Value::from(*rng.pick(&[
+            std::time::Duration::ZERO,
+            std::time::Duration::from_nanos(1),
+            std::time::Duration::MAX,
+        ])),
         Value::F64(_) => Value::F64(*rng.pick(&[
             0.0,
             1.0,
@@ -458,20 +416,10 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
         }
         let mut arity = 0usize;
         e.for_each_child(&mut |_| arity += 1);
-        // CR claude for claude: [bug] AHasher::default() uses keys that ahash draws from
-        // getrandom once per process, so shape_stats gives the same shape a different
-        // signature in every process. In a soak, each work order's gen-batch child
-        // computes the signatures on its N lines, and run_aggregator's ring_sigs in the
-        // parent deduplicates them, so a shape from one order never matches the same
-        // shape from another. As a result the ring admits nearly every agreeing
-        // interesting mutant, becoming a FIFO of recent mutants rather than of novel
-        // shapes, and FuzzStats::novel counts almost all of them. Hash with fixed keys
-        // (ahash::RandomState::with_seeds(..).build_hasher()) so a child's signature
-        // means the same thing in the parent. probe:
-        // design/review-2026-10-05/repro/fuzz-mutate-03.sh (the same work order run
-        // twice prints the same program with two different signatures).
-        // (fuzz-mutate-03)
-        let mut h = ahash::AHasher::default();
+        // fixed keys: a child's signature means the same in the parent
+        let mut h = std::hash::BuildHasher::build_hasher(
+            &ahash::RandomState::with_seeds(1, 2, 3, 4),
+        );
         std::mem::discriminant(&e.kind).hash(&mut h);
         arity.hash(&mut h);
         // order-independent, so a statement shuffle is not novel
