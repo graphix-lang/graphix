@@ -324,7 +324,7 @@ const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
 run!(
     uncaught_in_lambda_throws,
     UNCAUGHT_IN_LAMBDA_THROWS,
-    graphix_package_core::testing::refused("throws '_");
+    graphix_package_core::testing::refused("throws Error<ErrChain<`ArrayIndexError(string)>>");
     FuseExpect::None
 );
 

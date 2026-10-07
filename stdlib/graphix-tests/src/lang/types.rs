@@ -2156,3 +2156,13 @@ const REQUIRED_BOTTOM_KEPT: &str = r#"
 "#;
 
 run!(required_bottom_kept, REQUIRED_BOTTOM_KEPT, refused("does not contain f64"); FuseExpect::None);
+
+/// A type error names an inferred cell by its binding, never its id.
+const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
+{
+    let f = |x| x + 1;
+    f("a")
+}
+"#;
+
+run!(inferred_cell_prints_its_binding, INFERRED_CELL_PRINTS_ITS_BINDING, refused("type mismatch i64 does not contain string"); FuseExpect::None);

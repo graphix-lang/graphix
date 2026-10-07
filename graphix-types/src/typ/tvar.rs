@@ -453,6 +453,29 @@ impl fmt::Debug for TVar {
     }
 }
 
+/// A generated cell's name: `_<id>`, the id short when it was minted
+/// (counted from [`crate::ids::MINT_BASE`]) rather than its full width.
+struct ShortName<'a>(&'a str);
+
+impl fmt::Display for ShortName<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.strip_prefix('_').and_then(|n| n.parse::<u64>().ok()) {
+            Some(n) if n >= crate::ids::MINT_BASE => {
+                write!(f, "_{}", n - crate::ids::MINT_BASE)
+            }
+            _ => write!(f, "{}", self.0),
+        }
+    }
+}
+
+impl TVar {
+    /// Whether the checker made this variable up (an inferred cell), as
+    /// opposed to one a program wrote.
+    fn generated(&self) -> bool {
+        self.name.strip_prefix('_').is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+    }
+}
+
 impl fmt::Display for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !PRINT_FLAGS.get().contains(PrintFlag::DerefTVars) {
@@ -467,7 +490,7 @@ impl fmt::Display for TVar {
                     return write!(f, "{c}");
                 }
             }
-            write!(f, "'{}", self.name)
+            write!(f, "'{}", ShortName(&self.name))
         } else {
             // A cell can be reachable from its own constraints; a
             // revisit on the print stack elides. Contents are cloned
@@ -477,27 +500,19 @@ impl fmt::Display for TVar {
             }
             let addr = self.cell_addr();
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
-                return write!(f, "'{}: …", self.name);
+                return write!(f, "'{}: …", ShortName(&self.name));
             }
             let r = (|| {
-                // CR claude for claude: [readability] Every inferred cell prints here as
-                // `'<name>: binding`, and an inferred cell's name is its raw id
-                // (`_4611686018427394559`, TVar::default below). So the most common
-                // type errors carry a 19-digit internal number: `let f = |x| x + 1;
-                // f("a")` reports "type mismatch '_4611686018427394559: i64 does not
-                // contain string", `a.len` on `[1, 2]` reports "expected struct not
-                // Array<'_4611686018427394466: i64>", and `let {a, c} = {a: 1, b: 2}`
-                // shows "{ a: '_…: i64, c: '_…: unbound }". fntyp.rs's
-                // polymorphic_sig_preserves_tvar_names already requires that auto tvars
-                // not leak into pretty output, but this arm puts them into every error
-                // message. Print a bound generated cell as its binding alone, and give
-                // an unbound one a short name instead of its id. (x-errors-10)
-                write!(f, "'{}: ", self.name)?;
                 let (typ, cons) = {
                     let cell = self.cell();
                     let cell = cell.read();
                     (cell.binding.clone(), cell.constraints.clone())
                 };
+                // a generated cell's binding is all a reader needs of it
+                match (&typ, self.generated()) {
+                    (Some(t), true) => return write!(f, "{t}"),
+                    _ => write!(f, "'{}: ", ShortName(&self.name))?,
+                }
                 match typ {
                     Some(t) => write!(f, "{t}"),
                     None if cons.is_empty() => write!(f, "unbound"),
