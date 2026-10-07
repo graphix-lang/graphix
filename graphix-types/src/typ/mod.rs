@@ -275,6 +275,21 @@ impl<H: IsoPoolable> RefHist<H> {
     }
 }
 
+/// The nodes in `ts`, counted up to a bound: how a walk tells a
+/// definition's params growing at every level from its nested uses.
+pub(crate) fn params_size(ts: &[Type]) -> usize {
+    fn go(t: &Type, n: &mut usize) {
+        if *n > 1 << 16 {
+            return;
+        }
+        *n += 1;
+        ensure_sufficient(|| t.for_each_child(&mut |c| go(c, n)))
+    }
+    let mut n = 0;
+    ts.iter().for_each(|t| go(t, &mut n));
+    n
+}
+
 /// Whether a typedef's body returns to the definition with no
 /// constructor between ([`Type::reaches_unguarded`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

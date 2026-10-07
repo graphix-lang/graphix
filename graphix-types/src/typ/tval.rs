@@ -1,6 +1,6 @@
 use super::{PrintFlag, Type, cast::IsAFlags};
 use crate::{abstract_value, env::Env, typ::format_with_flags};
-use ahash::AHashSet;
+use ahash::AHashMap;
 use netidx_value::{NakedValue, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -133,7 +133,7 @@ impl<'a> TVal<'a> {
     fn fmt_int(
         &self,
         f: &mut fmt::Formatter<'_>,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashMap<(usize, usize), usize>,
     ) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f, hist))
     }
@@ -141,32 +141,29 @@ impl<'a> TVal<'a> {
     fn fmt_inner(
         &self,
         f: &mut fmt::Formatter<'_>,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashMap<(usize, usize), usize>,
     ) -> fmt::Result {
         if crate::dbgenv::graphix_dbg_tval() {
             format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!("TVAL typ={} v={}", self.typ, NakedPrefix(self.v));
             });
         }
+        // an abstract value carries its type: the payload prints as its
+        // representation at the value's params, whatever the static type
+        if let Some(g) = abstract_value::get(self.v)
+            && let Some(rep) = self.env.abstract_reps.get(&g.id)
+        {
+            if let Some(s) = g.displayed() {
+                return f.write_str(&s);
+            }
+            let typ = rep.instantiate_with(&g.params);
+            write!(f, "{}(", g.name)?;
+            TVal { typ: &typ, env: self.env, v: &g.payload }.fmt_int(f, hist)?;
+            return write!(f, ")");
+        }
         match (&self.typ, &self.v) {
             (
                 Type::Primitive(_)
-                // CR claude for claude: [bug] Every typed print of an abstract value
-                // loses the payload's type here. GxAbstract's Debug prints the payload
-                // with fmt_naked, so a struct payload prints as its pair array, a tuple
-                // as an array, a variant as [tag, args] (a nullary one as a quoted
-                // string) and a List as its private nested-array rep. So `"[P({x: 1, y:
-                // 2})]"` is `P([["x", 1], ["y", 2]])` while `"[p.0]"` is `{x: 1, y:
-                // 2}`. Interpolation, println, dbg, the structural default of
-                // Display::fmt and the shell echo all print this, where
-                // design/traits.md and the book promise the type-directed structural
-                // case in Graphix syntax. The env here holds the rep and its formals
-                // (`Env::abstract_reps`), so this arm can print the payload as a TVal
-                // of the rep at the box's params when the Display hook declines. A
-                // process-global rep table keyed by AbstractId would be wrong, because
-                // the id is the path's alone and two contexts may give one path
-                // different reps. probe:
-                // design/review-2026-10-05/repro/t-expr-core-05.gx (t-expr-core-05)
                 | Type::Abstract { .. }
                 | Type::Hole
                 | Type::Concrete
@@ -182,31 +179,26 @@ impl<'a> TVal<'a> {
             ) => fmt_naked(f, v),
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => fmt_naked(f, v),
-            // `hist` is the path: a name met again on the same value
-            // expands without consuming it, so it prints naked.
+            // `hist` is the path: a definition met again on the same value
+            // with params no smaller expands without consuming it (or grows
+            // at every level), so it prints naked; with smaller ones it is
+            // nested (`O<O<X>>`).
             (Type::Ref(tr), v) => {
                 let typ = match self.typ.lookup_ref(&self.env) {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
-                // CR claude for claude: [bug] The path key is the definition alone, while
-                // cast_int and is_a_int key on ref_key(tr), the definition plus its
-                // parameters. Under O<O<X>> with `type O<'a> = ['a, null]` (core's
-                // Option included), the inner O<X> meets the same value under the same
-                // definition. The guard takes it for a name expanding without consuming
-                // structure, and the value prints naked: a List as its private cons rep
-                // [1, [2, []]], a variant as ["Foo", 3], a struct as [["x", 1]]. String
-                // interpolation, print/println/dbg and the shell share this printer, so
-                // programs see the wrong string; A<B<X>> over two definitions prints
-                // right. Key on ref_key(tr) as the cast walks do, ideally through one
-                // path-key type the three walks share. probe:
-                // design/review-2026-10-05/repro/t-cast-setops-10.gx (t-cast-setops-10)
                 let key = (tr.def_key().unwrap_or(0), (*v as *const Value).addr());
-                if !hist.insert(key) {
+                let size = super::params_size(&tr.params);
+                if hist.get(&key).is_some_and(|prev| size >= *prev) {
                     return fmt_naked(f, v);
                 }
+                let outer = hist.insert(key, size);
                 let r = TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist);
-                hist.remove(&key);
+                match outer {
+                    Some(o) => hist.insert(key, o),
+                    None => hist.remove(&key),
+                };
                 r
             }
             (Type::Array(et), Value::Array(a)) => {

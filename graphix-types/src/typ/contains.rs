@@ -6,7 +6,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
-        TraitId, Type, node_addr, probe_key, setops::union_identical,
+        TraitId, Type, node_addr, params_size, probe_key, setops::union_identical,
         tvar::would_cycle_inner,
     },
 };
@@ -74,20 +74,6 @@ pub(super) struct ContainsHist {
 /// that never ends (`type N<'a> = [null, ('a, N<Array<'a>>)]`); nested
 /// applications of one alias shrink theirs.
 const MAX_GROWTH: u32 = 64;
-
-/// The nodes in `ts`, counted up to a bound.
-fn params_size(ts: &[Type]) -> usize {
-    fn go(t: &Type, n: &mut usize) {
-        if *n > 1 << 16 {
-            return;
-        }
-        *n += 1;
-        ensure_sufficient(|| t.for_each_child(&mut |c| go(c, n)))
-    }
-    let mut n = 0;
-    ts.iter().for_each(|t| go(t, &mut n));
-    n
-}
 
 impl Deref for ContainsHist {
     type Target = RefHist<AHashMap<RefPair, usize>>;

@@ -5,7 +5,7 @@ use crate::{
     expr::WrittenAt,
     format_with_flags, list,
     stack::ensure_sufficient,
-    typ::{Type, TypeRef, tval::NakedPrefix},
+    typ::{Type, TypeRef, params_size, tval::NakedPrefix},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -116,17 +116,6 @@ fn cast_elts<T>(
 /// A type reference as a path walk keys it: its definition and the
 /// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
 type RefKey = (usize, Arc<[Type]>);
-
-/// The nodes in `ts`.
-fn params_size(ts: &[Type]) -> usize {
-    fn go(t: &Type, n: &mut usize) {
-        *n += 1;
-        ensure_sufficient(|| t.for_each_child(&mut |c| go(c, n)))
-    }
-    let mut n = 0;
-    ts.iter().for_each(|t| go(t, &mut n));
-    n
-}
 
 /// An `is_a` walk's state: the references on its path with the value
 /// each met, and each reference's expansion, made once a walk. Within a

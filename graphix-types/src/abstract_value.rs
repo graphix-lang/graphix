@@ -104,12 +104,20 @@ impl GxAbstract {
     }
 }
 
+impl GxAbstract {
+    /// The value as a user Display impl prints it, when the hooks are
+    /// armed and one applies.
+    pub(crate) fn displayed(&self) -> Option<ArcStr> {
+        hooked(|h| (h.fmt)(h.state, self))
+    }
+}
+
 impl fmt::Debug for GxAbstract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Debug is the printed form of an abstract value; every
         // printer converges here, so a user Display impl is consulted here.
         crate::stack::ensure_sufficient(|| {
-            if let Some(s) = hooked(|h| (h.fmt)(h.state, self)) {
+            if let Some(s) = self.displayed() {
                 return f.write_str(&s);
             }
             write!(f, "{}(", self.name)?;

@@ -2230,3 +2230,33 @@ const CAST_GROWING_TYPEDEF: &str = r#"
 "#;
 
 run!(cast_growing_typedef, CAST_GROWING_TYPEDEF, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::None);
+
+/// A value under one definition nested in itself (`O<O<X>>`) prints by
+/// its type, as under one level.
+const NESTED_DEFINITION_PRINTS_TYPED: &str = r#"
+{
+    type O<'a> = ['a, null];
+    type S = {a: O<O<List<i64>>>, c: O<O<`Foo(i64)>>, d: O<O<{x: i64}>>};
+    let s: S = {a: [<1, 2>], c: `Foo(3), d: {x: 1}};
+    "[s]"
+}
+"#;
+
+run!(nested_definition_prints_typed, NESTED_DEFINITION_PRINTS_TYPED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s == "{a: [<1, 2>], c: `Foo(3), d: {x: 1}}")
+}; FuseExpect::Jit);
+
+/// An abstract value's payload prints by its representation's type.
+const ABSTRACT_PAYLOAD_PRINTS_TYPED: &str = r#"
+{
+    type P = Abstract<{x: i64, y: i64}>;
+    type V = Abstract<[`A(i64), `B]>;
+    type L = Abstract<List<i64>>;
+    let v: V = V(`A(3));
+    "[P({x: 1, y: 2})] [v] [L([<1, 2>])]"
+}
+"#;
+
+run!(abstract_payload_prints_typed, ABSTRACT_PAYLOAD_PRINTS_TYPED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s == "P({x: 1, y: 2}) V(`A(3)) L([<1, 2>])")
+}; FuseExpect::Jit);
