@@ -62,11 +62,17 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// binding, and inside a function type the cells pair consistently
 /// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    Identity::default().same(t0, t1)
+    Identity { strict: false, pairs: None }.same(t0, t1)
 }
 
-#[derive(Default)]
+/// [`union_identical`] with every unbound cell by identity, inside a
+/// function type too: one signature's variables are its own.
+pub(super) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
+    Identity { strict: true, pairs: None }.same(t0, t1)
+}
+
 struct Identity {
+    strict: bool,
     /// Inside a function type: the cells paired so far, by address.
     pairs: Option<SmallVec<[(usize, usize); 4]>>,
 }
@@ -148,7 +154,7 @@ impl Identity {
                 tg0 == tg1 && self.all(a, b)
             }
             (Type::Fn(f0), Type::Fn(f1)) => {
-                let outer = self.pairs.is_none();
+                let outer = !self.strict && self.pairs.is_none();
                 if outer {
                     self.pairs = Some(SmallVec::new());
                 }

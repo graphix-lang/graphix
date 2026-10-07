@@ -1109,3 +1109,19 @@ run!(
         let f = |x: i64| Collection::map(["a", "b"], |s| x)
     "#
 ; FuseExpect::Jit);
+
+// Two signature variables inside a type are two variables: an
+// implementation that unifies them is less general than its interface.
+run!(
+    nested_signature_variables_stay_distinct,
+    refused("type variable usage mismatch"),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::f([1, 2], ["a", "b"])
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(x: Array<'a>, y: Array<'b>) -> Array<'a>
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |x: 'c, y: 'c| -> 'c y
+    "#; FuseExpect::None);
