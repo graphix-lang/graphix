@@ -86,19 +86,7 @@ fn impl_for(
     if typ.has_unbound() {
         return None;
     }
-    let list = env.impls_of(t.id())?;
-    for im in list.iter() {
-        let canonical = match &im.target {
-            Type::Ref(_) => match im.target.lookup_ref(env) {
-                Ok(t) => t,
-                Err(_) => continue,
-            },
-            t => t.clone(),
-        };
-        match &canonical {
-            Type::Abstract { id: target, .. } if target == id => (),
-            _ => continue,
-        }
+    for (im, canonical) in impls_on(env, t, *id) {
         let open: LPooled<AHashMap<ArcStr, Type>> = im
             .params
             .iter()
@@ -118,6 +106,30 @@ fn impl_for(
         }
     }
     None
+}
+
+/// The implementations of `t` whose target is the abstract type `id`,
+/// with the target looked through.
+fn impls_on(
+    env: &Env,
+    t: CoreTrait,
+    id: AbstractId,
+) -> impl Iterator<Item = (Arc<ImplDef>, Type)> {
+    env.impls_of(t.id())
+        .into_iter()
+        .flat_map(|l| (0..l.len()).map(move |i| l[i].clone()))
+        .filter_map(move |im| {
+            let canonical = match &im.target {
+                Type::Ref(_) => im.target.lookup_ref(env).ok()?,
+                t => t.clone(),
+            };
+            match &canonical {
+                Type::Abstract { id: target, .. } if *target == id => {
+                    Some((im, canonical))
+                }
+                _ => None,
+            }
+        })
 }
 
 /// The method signature behind a binding, for the `Impl` node's
@@ -409,6 +421,13 @@ fn key_bottoms<R: Rt, E: UserEvent>(
     matches!(call_hook(ctx, t, &[k, k]), Some(None))
 }
 
+fn dispatch_eq_applies<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> bool {
+    // SAFETY: `state` points into the live `with_hooks` frame.
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
+    let ctx = unsafe { &mut *s.ctx };
+    impls_on(&ctx.env, CoreTrait::Eq, a.id).next().is_some()
+}
+
 fn dispatch_eq<R: Rt, E: UserEvent>(
     state: *mut u8,
     a: &GxAbstract,
@@ -526,6 +545,7 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
     let handle = ValueHookDispatch {
         state: &mut state as *mut HookState<'_, R, E> as *mut u8,
         eq: dispatch_eq::<R, E>,
+        eq_applies: dispatch_eq_applies::<R, E>,
         cmp: dispatch_cmp::<R, E>,
         fmt: dispatch_fmt::<R, E>,
     };

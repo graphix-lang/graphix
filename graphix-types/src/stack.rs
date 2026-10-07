@@ -19,7 +19,7 @@ pub const RED_ZONE: usize = 1024 * 1024;
 /// for one, not how much memory it holds.
 pub(crate) const SEGMENT: usize = 32 * 1024 * 1024;
 
-/// The budget a new runtime's [`crate::Control`] starts with: unlimited,
+/// The budget a new runtime's [`Control`] starts with: unlimited,
 /// `GRAPHIX_STACK_BUDGET`, or the last [`set_stack_budget`].
 static DEFAULT_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     AtomicUsize::new(match std::env::var("GRAPHIX_STACK_BUDGET") {
@@ -338,8 +338,9 @@ impl Control {
         self.par.store(mode as u8, Ordering::Relaxed)
     }
 
-    /// The bytes of grown stack segments a thread running this runtime
-    /// may hold; `usize::MAX` is unlimited.
+    /// The bytes of grown stack segments a cycle of this runtime may
+    /// hold, summed over every thread it runs on; `usize::MAX` is
+    /// unlimited.
     pub fn stack_budget(&self) -> usize {
         self.stack_budget.load(Ordering::Relaxed)
     }
@@ -348,16 +349,6 @@ impl Control {
         self.stack_budget.store(bytes, Ordering::Relaxed)
     }
 
-    // CR claude for claude: [doc-drift] The interrupt is cleared when the next cycle
-    // starts (graphix-rt/src/gx.rs:495), not at the end of this one, so an interrupt
-    // sent while the runtime is idle is dropped. stack_budget's doc (lines 321-322)
-    // makes the budget per thread, but grow_exceeds_budget (line 103) charges every
-    // thread of a cycle to the one Control. DEFAULT_BUDGET's doc (line 22) links
-    // crate::Control, which graphix-types does not have; the type is
-    // crate::stack::Control. (t-misc-09)
-    // 2026-10-07 claude: interrupt's doc now says when the bit clears; the
-    // dropped idle interrupt, the per-thread budget doc and the
-    // crate::Control link remain.
     /// Request that in-flight loops abort this cycle; cleared when the
     /// next cycle starts, so one sent while the runtime is idle is dropped.
     pub fn interrupt(&self) {

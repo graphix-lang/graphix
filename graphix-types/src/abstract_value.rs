@@ -34,6 +34,10 @@ pub struct ValueHookDispatch {
     /// `Some` is always a definite answer.
     #[doc(hidden)]
     pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
+    /// Whether an implementation of `Eq` may decide this value's
+    /// equality; when not, equality is the payload's.
+    #[doc(hidden)]
+    pub eq_applies: fn(*mut u8, &GxAbstract) -> bool,
     #[doc(hidden)]
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
     #[doc(hidden)]
@@ -216,21 +220,15 @@ impl Ord for GxAbstract {
     }
 }
 
-// Only the id: `eq` may consult a user `Eq` impl, which no hash of the
-// payload can agree with.
-// CR claude for claude: [perf] Every value of one abstract type hashes to its id alone,
-// so a hash container of them is one bucket: array::dedup's AHashSet<Value>
-// (stdlib/graphix-package-array/src/lib.rs:198) makes n²/2 eq calls over them, each a
-// Graphix call under a user Eq, where array/mod.gxi:65 promises O(N). In a debug build,
-// dedup of 8000 values of T = Abstract<i64> with no Eq impl takes about 3.5 s against
-// 1.2 ms for 8000 i64, x4 per doubling, and the runtime is held for all of it. Only a
-// user Eq needs the id-only hash: hashing the payload whenever eq would be structural
-// (no loan, or no Eq impl for this id) keeps Hash consistent with eq and makes dedup
-// linear for every abstract type without one. probe:
-// design/review-2026-10-05/repro/collections-str-09.gx (collections-str-09)
+/// Where an `Eq` implementation may decide equality only the id is
+/// hashed, since no hash of the payload can agree with it; elsewhere
+/// equality is the payload's, and so is the hash.
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+        if hooked(|h| (h.eq_applies)(h.state, self).then_some(())).is_none() {
+            crate::stack::ensure_sufficient(|| self.payload.hash(state))
+        }
     }
 }
 

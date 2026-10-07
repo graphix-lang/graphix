@@ -514,6 +514,30 @@ run!(
     "##
 );
 
+// A type with no Eq implementation dedups by its payload, beside a type
+// that has one and with none anywhere.
+run!(
+    core_eq_absent_dedups_by_payload,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(2)]),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        type T = Abstract<i64>;
+        impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+        let ts = array::len(array::dedup([T(1), T(2), T(1)]));
+        let ks = array::len(array::dedup([Key("a"), Key("A"), Key("b")]));
+        let result = (ts, ks)
+    "##
+);
+
+run!(
+    abstract_dedups_by_payload,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        let result = array::len(array::dedup([T(1), T(2), T(1)]))
+    "##
+);
+
 // Inside a composite the walk calls it per element; the structural
 // parts compare as values.
 run!(

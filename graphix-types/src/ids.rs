@@ -176,25 +176,10 @@ macro_rules! image_id {
                 self.0
             }
 
-            /// Reconstruct from a raw inner value. The counter field is
-            /// otherwise private precisely so distinct ID domains can't be
-            /// mixed; this exists ONLY to round-trip an id that was already
-            /// minted by `new()` across a boundary that can't carry the
-            /// typed value (e.g. a JIT'd kernel emitting `inner()` as a
-            /// constant and reconstructing it on the other side). Do not
-            /// use it to forge ids.
-            // CR claude for claude: [doc-drift] The doc above gives this function's use
-            // as a JIT kernel that emits `inner()` as a constant. No kernel does that,
-            // and one that did would break on a warm start: a record's machine code
-            // installs verbatim and only `Pack` relocates ids (kernels take ids through
-            // recipe constants such as `QopSite`'s `own_top`). The one caller is
-            // `synthesized_bind_ref` (graphix-compiler/src/node/bind.rs:527), which
-            // reads back the `#bind::N` path that `lower_trait_union` spells in the
-            // same compile (node/traits.rs:916-918). Cut the doc to that invariant: a
-            // raw id round-trips only within the compile that holds it, never through
-            // bytes an image keeps. Drop this `#[allow(dead_code)]` too: the method is
-            // used and the types are public. (t-expr-core-07)
-            #[allow(dead_code)]
+            /// Reconstruct an id `new()` minted from its raw value. It
+            /// round-trips only within the compile that holds it (a
+            /// synthesized `#bind::N` path read back in the same compile),
+            /// never through bytes an image keeps: only `Pack` relocates.
             pub fn from_inner(i: u64) -> Self {
                 $name(i)
             }
