@@ -93,7 +93,8 @@ fn stdlib_definitions_are_not_in_the_document() {
         let d = c.definition("main.gx", m);
         assert!(d.as_ref().is_none_or(|(f, _, _)| f != "main.gx"), "{m}: {d:?}");
         let r = c.references("main.gx", m);
-        assert_eq!(r, vec![c.site("main.gx", &m.replace("array::|", "|array::"))]);
+        // a reference stands on the name it refers to
+        assert_eq!(r, vec![c.site("main.gx", m)]);
     }
 }
 
@@ -110,7 +111,7 @@ fn references() {
     assert_eq!(c.references("main.gx", "|y * 2"), y);
     let n = vec![c.site("main.gx", "|n| n + z"), c.site("main.gx", "|n + z")];
     assert_eq!(c.references("main.gx", "|n + z"), n);
-    let bump = vec![c.site("main.gx", "|util::bump"), c.site("util.gx", "let |bump")];
+    let bump = vec![c.site("main.gx", "util::|bump"), c.site("util.gx", "let |bump")];
     assert_eq!(c.references("main.gx", "util::|bump"), bump);
     let shape = vec![
         c.site("main.gx", "use util::{|Shape"),
@@ -356,7 +357,7 @@ fn an_interface_val_and_its_implementation_are_one_symbol() {
         imp.clone(),
         c.site("api.gx", "|double(2)"),
         val,
-        c.site("main.gx", "|api::double"),
+        c.site("main.gx", "api::|double"),
     ];
     assert_eq!(c.references("api.gx", "let |double"), all);
     assert_eq!(c.references("main.gx", "api::|double"), all);
@@ -378,7 +379,12 @@ fn a_use_names_what_it_imports() {
         c.site("util.gx", "let |area"),
     ];
     assert_eq!(c.references("main.gx", "|area(s)"), area);
-    let util = vec![c.site("main.gx", "mod |util"), c.site("main.gx", "use |util")];
+    // a path's segment before its last names the module of its prefix
+    let util = vec![
+        c.site("main.gx", "mod |util"),
+        c.site("main.gx", "use |util"),
+        c.site("main.gx", "|util::bump"),
+    ];
     assert_eq!(c.references("main.gx", "mod |util"), util);
 }
 
@@ -517,4 +523,103 @@ let r = &s.a.b;
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     hover_is(&mut c, "&s.a.|b", "b: i64");
     hover_is(&mut c, "&s.|a", "a: { b: i64 }");
+}
+
+/// A file two projects share stands with what either finds on it, and
+/// keeps one's error when the other's root closes.
+#[test]
+fn a_file_two_projects_share_keeps_what_either_finds() {
+    let tool = "mod util;\nutil::g\n";
+    let mut c = Client::start(&[
+        ("util.gx", "let g = 1 + \"no\";\n"),
+        ("tool_a.gx", tool),
+        ("tool_b.gx", tool),
+    ]);
+    c.open("tool_a.gx");
+    c.open("tool_b.gx");
+    assert_eq!(c.diagnostics("util.gx").len(), 1, "both roots' error, once");
+    c.close("tool_b.gx");
+    assert_eq!(c.diagnostics("util.gx").len(), 1, "tool_a still fails on it");
+}
+
+/// A root that a save makes a module is retired, and what its own checks
+/// left on its files goes with it.
+#[test]
+fn a_root_that_becomes_a_module_is_retired() {
+    let mut c = Client::start(&[
+        ("main.gx", "let cfg = 1;\ncfg\n"),
+        ("helper.gx", "use super::cfg;\nlet h = cfg + 1;\n"),
+    ]);
+    c.open("helper.gx");
+    c.open("main.gx");
+    assert_eq!(c.diagnostics("helper.gx").len(), 1, "helper.gx alone has no `super`");
+    c.edit("main.gx", "let cfg = 1;\nmod helper;\nhelper::h\n");
+    c.save("main.gx");
+    assert_eq!(c.diagnostics("helper.gx"), vec![]);
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+}
+
+/// A file a watcher reports changed on disk rescans the project graph as
+/// a save does.
+#[test]
+fn a_watched_change_rescans() {
+    let mut c = Client::start(&[
+        ("main.gx", "let cfg = 1;\ncfg\n"),
+        ("helper.gx", "use super::cfg;\nlet h = cfg + 1;\n"),
+    ]);
+    c.open("helper.gx");
+    assert_eq!(c.diagnostics("helper.gx").len(), 1);
+    c.disk_changed("main.gx", "let cfg = 1;\nmod helper;\nhelper::h\n");
+    assert_eq!(c.diagnostics("helper.gx"), vec![]);
+}
+
+/// An interface is checked with its implementation, never as a program
+/// of its own.
+#[test]
+fn an_interface_alone_is_checked_with_its_implementation() {
+    let mut c = Client::start(&[
+        ("api.gx", "let double = |n: i64| -> i64 n * 2;\n"),
+        ("api.gxi", "/// twice n\nval double: fn(n: i64) -> i64;\n"),
+    ]);
+    c.open("api.gxi");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+}
+
+#[test]
+fn a_shebang_script_checks() {
+    let mut c =
+        Client::start(&[("main.gx", "#!/usr/bin/env graphix\nlet x = 1;\nx + 1\n")]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "|x + 1", "x: i64");
+}
+
+/// A path's segment before its last names the module of its prefix.
+#[test]
+fn a_path_segment_names_its_module() {
+    let mut c = two_files();
+    let h = c.hover("main.gx", "|util::bump").unwrap();
+    assert!(h.contains("mod "), "{h}");
+    assert_eq!(c.definition("main.gx", "|util::bump"), Some(("util.gx".into(), 0, 0)));
+}
+
+/// A symbol's range spans its declaration, so a cursor inside a body is
+/// inside the symbol.
+#[test]
+fn a_symbol_spans_its_declaration() {
+    let mut c = Client::start(&[("util.gx", UTIL)]);
+    c.open("util.gx");
+    let spans = c.symbol_spans("util.gx");
+    let bump = spans.iter().find(|(n, _)| n == "bump").unwrap();
+    assert_eq!(bump.1, "let bump = |n: i64| -> i64 n + 1");
+}
+
+/// Columns are UTF-16 units: a name after non-ASCII and astral text on
+/// its line is found where the client counts it.
+#[test]
+fn columns_count_utf16_units() {
+    let mut c = Client::start(&[("main.gx", "let s = \"é𝒜\"; let t = s;\nt\n")]);
+    c.open("main.gx");
+    assert_eq!(c.definition("main.gx", "let t = |s"), Some(c.site("main.gx", "let |s")));
+    hover_is(&mut c, "let |t", "t: string");
 }

@@ -6,9 +6,14 @@
 //! Positions are written as markers: `"let y = |x + 1"` is the first
 //! occurrence of `let y = x + 1` in the file's current text, cursor at
 //! the `|`; a marker that needs a literal `|` marks the cursor with `^`
-//! (`"|^acc, x| acc"`). Fixtures are ASCII.
+//! (`"|^acc, x| acc"`). Columns count UTF-16 units, the server's default.
+//!
+//! A fresh root's directory holds a space, brackets and a colon, and the
+//! client spells URIs as VS Code does, which is not the server's own
+//! spelling: diagnostics for an open document must come back under the
+//! client's.
 
-use graphix_lsp::uri::{path_to_uri, uri_to_path};
+use graphix_lsp::uri::uri_to_path;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     notification::{self as notif, Notification as _},
@@ -17,7 +22,8 @@ use lsp_types::{
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    str::FromStr,
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -43,12 +49,13 @@ impl Client {
     /// Write `files` under a fresh root and start a server on it.
     pub fn start(files: &[(&str, &str)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj [x] (copy) a:b");
         for (name, text) in files {
-            let path = dir.path().join(name);
+            let path = root.join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         }
-        Self::start_at(dir.path().to_path_buf(), Some(dir))
+        Self::start_at(root, Some(dir))
     }
 
     /// Start a server on a directory of this repository.
@@ -71,7 +78,7 @@ impl Client {
             buffers: HashMap::new(),
             diagnostics: HashMap::new(),
         };
-        let root = path_to_uri(&t.root).unwrap();
+        let root = client_uri(&t.root);
         #[allow(deprecated)]
         let params = InitializeParams {
             workspace_folders: Some(vec![WorkspaceFolder {
@@ -89,19 +96,8 @@ impl Client {
         self.root.join(file)
     }
 
-    // CR claude for claude: [test-gap] The harness spells every URI with the server's own
-    // path_to_uri, so client and server agree by construction: a client spelling that
-    // differs (VS Code percent-encodes `[ ] ( ) ! $ & ' + , ; = @`) never reaches the
-    // server, and a root holding `[` cannot start here (path_to_uri gives None and the
-    // unwraps here and in start_at panic), though the server panics in
-    // ServerState::diagnostic on one. `at` counts chars while the server runs the
-    // UTF-16 default, which is why fixtures must be ASCII, so no test crosses
-    // decode/encode on non-ASCII text. Spell URIs as VS Code does, add a root with a
-    // space and brackets, and count marker columns in UTF-16. Also unpinned: a file in
-    // two projects, a root that stops being one after a save, a lone .gxi, a shebang
-    // script. (lsp-17)
     fn uri(&self, file: &str) -> Uri {
-        path_to_uri(&self.path(file)).unwrap()
+        client_uri(&self.path(file))
     }
 
     fn file_of(&self, uri: &Uri) -> String {
@@ -129,7 +125,7 @@ impl Client {
             text.find(&needle).unwrap_or_else(|| panic!("`{needle}` is not in {file}"));
         let before = &text[..start + cursor];
         let line = before.matches('\n').count() as u32;
-        let character = before.rsplit('\n').next().unwrap().chars().count() as u32;
+        let character = before.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
         Position { line, character }
     }
 
@@ -165,6 +161,13 @@ impl Client {
                     let p: PublishDiagnosticsParams =
                         serde_json::from_value(n.params).unwrap();
                     let file = self.file_of(&p.uri);
+                    if self.buffers.contains_key(&file) {
+                        assert_eq!(
+                            p.uri,
+                            self.uri(&file),
+                            "published under another spelling"
+                        );
+                    }
                     self.diagnostics.insert(file, p.diagnostics);
                 }
                 _ => (),
@@ -235,6 +238,18 @@ impl Client {
         self.notify::<notif::DidSaveTextDocument>(DidSaveTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: self.uri(file) },
             text: None,
+        });
+    }
+
+    /// Write `text` to `file` on disk behind the editor's back, and tell the
+    /// server the way a file watcher does.
+    pub fn disk_changed(&mut self, file: &str, text: &str) {
+        fs::write(self.path(file), text).unwrap();
+        self.notify::<notif::DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: self.uri(file),
+                typ: FileChangeType::CHANGED,
+            }],
         });
     }
 
@@ -377,6 +392,27 @@ impl Client {
         }
     }
 
+    /// Document symbols: (name, the text its range spans).
+    pub fn symbol_spans(&mut self, file: &str) -> Vec<(String, String)> {
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri: self.uri(file) },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let text = self.text(file);
+        match self.request::<req::DocumentSymbolRequest>(params) {
+            Some(DocumentSymbolResponse::Nested(s)) => s
+                .into_iter()
+                .map(|s| {
+                    let span =
+                        &text[offset(&text, s.range.start)..offset(&text, s.range.end)];
+                    (s.name, span.to_string())
+                })
+                .collect(),
+            r => panic!("unexpected symbols {r:?}"),
+        }
+    }
+
     /// Document symbols: (name, detail).
     pub fn symbols(&mut self, file: &str) -> Vec<(String, Option<String>)> {
         let params = DocumentSymbolParams {
@@ -407,9 +443,38 @@ impl Drop for Client {
     }
 }
 
-/// The byte offset of `p` in `text`.
+/// The byte offset of `p` (UTF-16 columns) in `text`.
 fn offset(text: &str, p: Position) -> usize {
-    let line: usize =
-        text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
-    line + p.character as usize
+    let mut lines = text.split_inclusive('\n');
+    let start: usize = lines.by_ref().take(p.line as usize).map(|l| l.len()).sum();
+    let mut units = 0;
+    let mut bytes = 0;
+    for c in lines.next().unwrap_or("").chars() {
+        if units >= p.character as usize {
+            break;
+        }
+        units += c.len_utf16();
+        bytes += c.len_utf8();
+    }
+    start + bytes
+}
+
+/// `path` as VS Code spells a file URI: every byte but `A-Za-z0-9-._~/`
+/// percent-encoded.
+fn client_uri(path: &Path) -> Uri {
+    let mut s = String::from("file://");
+    for b in path.as_os_str().as_encoded_bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/' => s.push(*b as char),
+            _ => s.push_str(&format!("%{b:02X}")),
+        }
+    }
+    Uri::from_str(&s).unwrap()
 }

@@ -460,7 +460,7 @@ defaults; a malformed file is an error; `--width`/`--indent` override.
 A new layout setting is a field there, never a constant in the printer
 (`PrettyBuf::nested` is the one indent step). The LSP serves
 `textDocument/formatting` from the same `format_source`
-(`graphix-lsp/src/handlers/formatting.rs`): one whole-document edit,
+(`graphix-lsp/src/formatting.rs`): one whole-document edit,
 no edit for a document that does not parse, an error response only for
 `format::Refused` (the formatter declined its own output).
 

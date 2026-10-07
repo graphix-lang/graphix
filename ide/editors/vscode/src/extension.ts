@@ -19,7 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'graphix' }],
         synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.gx'),
+            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{gx,gxi}'),
         },
     };
 
