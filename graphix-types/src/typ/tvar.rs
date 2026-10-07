@@ -331,6 +331,10 @@ pub struct TCell {
     /// production binds a cell, so one still open once its writers are
     /// checked had only ⊥ produced into it (`TVar::settle`).
     pub(crate) bottom_fed: bool,
+    /// The cell is bound to ⊥ because something required it (`⊥ ⊇ 'x`:
+    /// a `_` annotation, a `-> _` return): a fact the gate keeps, where
+    /// a ⊥ nothing required is vacuous and reopens.
+    pub(crate) bottom_required: bool,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
@@ -349,6 +353,7 @@ impl Default for TCell {
             constraints: SmallVec::new(),
             cycle_refused: false,
             bottom_fed: false,
+            bottom_required: false,
             rigid_gates: 0,
             level: current_level(),
             task: TASK.get(),
@@ -1072,6 +1077,17 @@ impl TVar {
         self.read().cell.read().rigid_gates > 0
     }
 
+    /// Bind the open cell to ⊥ as a requirement; see
+    /// [`TCell::bottom_required`].
+    pub(super) fn bind_bottom_required(&self) {
+        self.bind(Type::Bottom);
+        let cell = self.cell();
+        let mut c = cell.write();
+        if decided(&c) {
+            c.bottom_required = true;
+        }
+    }
+
     /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
     pub(super) fn mark_bottom_fed(&self) {
         if graphix_dbg_bind() {
@@ -1644,7 +1660,7 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                // CR claude for claude: [bug] This reopens every cell bound to ⊥,
+                // CR claude for eric: [bug] This reopens every cell bound to ⊥,
                 // including a ⊥ the body required. A `⊥ ⊇ 'x` from a `_` annotation, a
                 // `-> _` return, or a callback formal like publish's `#on_write` is a
                 // fact, not a vacuous observation, so the signature drops it even
@@ -1655,7 +1671,19 @@ impl Type {
                 // holds f64:3.5 in the node-walk, and the JIT panics linking the
                 // instance (Verifier errors). probe:
                 // design/review-2026-10-05/repro/t-tvar-02.gx (t-tvar-02)
-                if tv.binding().is_some_and(|t| t == Type::Bottom) {
+                // 2026-10-07 claude: re-addressed: half fixed, half a semantics question.
+                // Fixed: a committing `⊥ ⊇ 'x` marks the cell bottom_required and this
+                // reopen skips it, so the probe is refused at `f(2.5)` ("'a: _ does not
+                // contain f64") and `|x| { let b: _ = x; x }` keeps x: ⊥. Open: refusing
+                // the rigid bind in contains' (Bottom, TVar) arm breaks
+                // lang::collection::collection_user_cons_list, whose impl passes the
+                // trait's `fn(..) throws 'e` callback to a helper declared `fn(..)` (an
+                // implicit `throws ⊥`), meeting `⊥ ⊇ 'e` with 'e rigid. Is a fn type's
+                // implicit throws in a parameter a promise that the callback does not
+                // throw (then that impl is wrong and the rigid bind should be refused),
+                // or no statement at all (then an unwritten throws should not be ⊥)?
+                let required = tv.cell().read().bottom_required;
+                if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()
                 }
             }

@@ -2142,3 +2142,17 @@ run!(
     UNION_FORMAL_INLINE_LITERAL,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(7)))
 );
+
+/// A ⊥ the body required stays in the signature.
+const REQUIRED_BOTTOM_KEPT: &str = r#"
+{
+    let f = 'a: Number |x: 'a| {
+        let b: _ = x;
+        x + 1
+    };
+    let r: i64 = f(2.5);
+    r
+}
+"#;
+
+run!(required_bottom_kept, REQUIRED_BOTTOM_KEPT, refused("does not contain f64"); FuseExpect::None);

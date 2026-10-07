@@ -850,7 +850,7 @@ impl Type {
                 Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
                 None => {
                     if commit {
-                        t0.bind(Self::Bottom);
+                        t0.bind_bottom_required();
                     }
                     Ok(true)
                 }
