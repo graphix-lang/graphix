@@ -32,8 +32,8 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::Mutex,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf},
+    sync::{Mutex, MutexGuard},
 };
 
 pub(crate) mod dir;
@@ -185,36 +185,93 @@ pub trait StreamMark: 'static + Send + Sync {
     const PATH: &'static str;
 }
 
+/// A stream's read and write halves, locked apart so a read waiting on
+/// its peer never holds up a write. An operation on the whole stream (a
+/// seek, a TLS upgrade) takes both halves, the read half first. A half is
+/// `None` once closed.
+pub struct Halves {
+    r: Mutex<Option<ReadHalf<StreamKind>>>,
+    w: Mutex<Option<WriteHalf<StreamKind>>>,
+    /// A socket's (peer, local) addresses, read when it was made.
+    addrs: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+}
+
+impl std::fmt::Debug for Halves {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Halves").field("addrs", &self.addrs).finish()
+    }
+}
+
+impl Halves {
+    fn new(kind: StreamKind) -> Self {
+        let addrs = kind
+            .tcp_ref()
+            .and_then(|t| Some((t.peer_addr().ok()?, t.local_addr().ok()?)));
+        let (r, w) = tokio::io::split(kind);
+        Self { r: Mutex::new(Some(r)), w: Mutex::new(Some(w)), addrs }
+    }
+
+    pub(crate) async fn reader(&self) -> MutexGuard<'_, Option<ReadHalf<StreamKind>>> {
+        self.r.lock().await
+    }
+
+    pub(crate) async fn writer(&self) -> MutexGuard<'_, Option<WriteHalf<StreamKind>>> {
+        self.w.lock().await
+    }
+
+    pub(crate) fn addrs(&self) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
+        self.addrs
+    }
+
+    /// The whole stream, taken out; `None` if it is closed.
+    pub(crate) async fn take(&self) -> Option<StreamKind> {
+        let mut r = self.r.lock().await;
+        let mut w = self.w.lock().await;
+        match (r.take(), w.take()) {
+            (Some(rh), Some(wh)) => Some(rh.unsplit(wh)),
+            (rh, wh) => {
+                *r = rh;
+                *w = wh;
+                None
+            }
+        }
+    }
+
+    /// Put back what [`Self::take`] took.
+    pub(crate) async fn put(&self, kind: StreamKind) {
+        let (rh, wh) = tokio::io::split(kind);
+        let mut r = self.r.lock().await;
+        let mut w = self.w.lock().await;
+        *r = Some(rh);
+        *w = Some(wh);
+    }
+
+    /// Shut the write half down and drop both: the read half at once if
+    /// no read holds it, else when that read ends.
+    pub(crate) async fn close(self: &Arc<Self>) -> std::io::Result<()> {
+        let res = match self.w.lock().await.take() {
+            Some(mut w) => w.shutdown().await,
+            None => Ok(()),
+        };
+        match self.r.try_lock() {
+            Ok(mut r) => drop(r.take()),
+            Err(_) => {
+                let this = self.clone();
+                tokio::spawn(async move { drop(this.r.lock().await.take()) });
+            }
+        }
+        res
+    }
+}
+
 pub struct Stream<K: StreamMark> {
-    // CR claude for claude: [bug] One lock guards the whole stream, and every read holds
-    // it across its await: the lines reader at io.rs:79-81, and read and read_exact at
-    // io.rs:40-47 and 221-230. So on a TcpStream or TlsStream, a pending read blocks
-    // write, write_exact, flush, close, shutdown, peer_addr and local_addr until the
-    // peer sends. A server that follows `Lines::lines(s)` and answers each line sends
-    // each answer only when the client's next line arrives. `close(s)` cannot stop a
-    // reader whose peer is silent, and the book's tcp.md example hangs if its
-    // write_exact and read_all statements are swapped. The socket needs read and write
-    // halves that lock independently (`TcpStream::into_split`, `tokio::io::split` for
-    // TLS). probe: design/review-2026-10-05/repro/sys-io-01.gx (sys-io-01)
-    pub inner: Arc<Mutex<Option<StreamKind>>>,
+    pub inner: Arc<Halves>,
     mark: PhantomData<K>,
 }
 
 impl<K: StreamMark> Stream<K> {
     fn new(kind: StreamKind) -> Self {
-        Self::from_inner(Arc::new(Mutex::new(Some(kind))))
-    }
-
-    /// A handle of this kind onto an EXISTING stream. `tls::connect`
-    /// mints one: the TLS session and the TCP handle it was built
-    /// from are the same socket, and both handles see it.
-    // CR claude for claude: [doc-drift] The doc above is false: tls::connect does not
-    // share the TCP handle's socket. It takes the StreamKind out of that handle and
-    // wraps the session in a fresh one through wrap_tls (Stream::new), leaving the TCP
-    // handle empty. from_inner's only caller is Stream::new (line 196), in this repo
-    // and in ../netidx. Inline it into new and delete it with its doc. (sys-io-16)
-    pub(crate) fn from_inner(inner: Arc<Mutex<Option<StreamKind>>>) -> Self {
-        Stream { inner, mark: PhantomData }
+        Stream { inner: Arc::new(Halves::new(kind)), mark: PhantomData }
     }
 }
 
@@ -287,7 +344,7 @@ macro_rules! stream_kinds {
 
         /// The stream behind `v`, whatever kind of handle it is; the Graphix
         /// type and its trait impls decide which operations are legal.
-        pub fn stream_of(v: &Value) -> Option<Arc<Mutex<Option<StreamKind>>>> {
+        pub fn stream_of(v: &Value) -> Option<Arc<Halves>> {
             let Value::Abstract(a) = v else { return None };
             $(
                 if let Some(s) = a.downcast_ref::<Stream<$mark>>() {
@@ -307,10 +364,7 @@ stream_kinds! {
     StdioMark => "sys::io::Stdio", STDIO_WRAPPER, wrap_stdio;
 }
 
-pub fn get_stream(
-    cached: &CachedVals,
-    idx: usize,
-) -> Option<Arc<Mutex<Option<StreamKind>>>> {
+pub fn get_stream(cached: &CachedVals, idx: usize) -> Option<Arc<Halves>> {
     stream_of(cached.0.get(idx)?.as_ref()?)
 }
 

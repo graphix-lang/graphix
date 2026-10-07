@@ -9,7 +9,7 @@
 // the file uses something it does not. Nothing reports an unused import today, so a
 // warning through Env::warn (the LSP already publishes those) would stop them coming
 // back. (gx-ui-13)
-use super::{button, checkbox, color, Color, container, menu, pick_list, progress_bar, radio, rule, scrollable, slider, text, text_editor, text_input, toggler};
+use super::{button, checkbox, color, Color, container, menu, pick_list, progress_bar, radio, rule, scrollable, slider, text_editor, text_input, toggler};
 type Palette = {
   background: Color,
   danger: Color,

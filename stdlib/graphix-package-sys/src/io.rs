@@ -19,15 +19,14 @@ use poolshark::{
 };
 use std::sync::{Arc, LazyLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
 
-use crate::{StreamKind, get_stream, stream_of, wrap_stdio};
+use crate::{Halves, StreamKind, get_stream, stream_of, wrap_stdio};
 
 #[derive(Debug, Default)]
 pub(crate) struct IoReadEv;
 
 impl EvalCachedAsync for IoReadEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
+    type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read";
 
@@ -37,7 +36,7 @@ impl EvalCachedAsync for IoReadEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.reader().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
@@ -74,7 +73,7 @@ static LBATCH: LazyLock<Pool<Vec<(BindId, Value)>>> =
 /// `batched` sends ONE array per read; unbatched sends one event per
 /// line, which the runtime spreads across cycles.
 async fn line_reader(
-    stream: Arc<Mutex<Option<StreamKind>>>,
+    stream: Arc<Halves>,
     id: BindId,
     batched: bool,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
@@ -84,7 +83,7 @@ async fn line_reader(
     chunk.resize(65536, 0);
     loop {
         let n = {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.reader().await;
             let Some(s) = guard.as_mut() else { break };
             match s.read(&mut chunk).await {
                 Ok(0) => {
@@ -156,7 +155,7 @@ pub(crate) struct IoLines<const BATCHED: bool> {
     id: BindId,
     top_id: ExprId,
     /// The stream being read and its reader.
-    reading: Option<(Arc<Mutex<Option<StreamKind>>>, tokio::task::AbortHandle)>,
+    reading: Option<(Arc<Halves>, tokio::task::AbortHandle)>,
     out: TagValue,
 }
 
@@ -252,7 +251,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
 pub(crate) struct IoReadExactEv;
 
 impl EvalCachedAsync for IoReadExactEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
+    type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_io_read_exact";
 
@@ -262,7 +261,7 @@ impl EvalCachedAsync for IoReadExactEv {
 
     fn eval((stream, n): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.reader().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
@@ -283,7 +282,7 @@ pub(crate) type IoReadExact = CachedArgsAsync<IoReadExactEv>;
 pub(crate) struct IoReadAllEv;
 
 impl EvalCachedAsync for IoReadAllEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_io_read_all";
 
@@ -293,7 +292,7 @@ impl EvalCachedAsync for IoReadAllEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.reader().await;
             let Some(s) = guard.as_mut() else {
                 return errf!("IOError", "stream unavailable");
             };
@@ -312,7 +311,7 @@ pub(crate) type IoReadAll = CachedArgsAsync<IoReadAllEv>;
 pub(crate) struct IoWriteEv;
 
 impl EvalCachedAsync for IoWriteEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
+    type Args = (Arc<Halves>, Bytes);
 
     const NAME: &str = "sys_io_write";
 
@@ -322,7 +321,7 @@ impl EvalCachedAsync for IoWriteEv {
 
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.writer().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
@@ -341,7 +340,7 @@ pub(crate) type IoWrite = CachedArgsAsync<IoWriteEv>;
 pub(crate) struct IoWriteExactEv;
 
 impl EvalCachedAsync for IoWriteExactEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, Bytes);
+    type Args = (Arc<Halves>, Bytes);
 
     const NAME: &str = "sys_io_write_exact";
 
@@ -351,7 +350,7 @@ impl EvalCachedAsync for IoWriteExactEv {
 
     fn eval((stream, data): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.writer().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
@@ -370,7 +369,7 @@ pub(crate) type IoWriteExact = CachedArgsAsync<IoWriteExactEv>;
 pub(crate) struct IoFlushEv;
 
 impl EvalCachedAsync for IoFlushEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_io_flush";
 
@@ -380,7 +379,7 @@ impl EvalCachedAsync for IoFlushEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
+            let mut guard = stream.writer().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("IOError", "stream unavailable"),
@@ -399,7 +398,7 @@ pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
 pub(crate) struct IoCloseEv;
 
 impl EvalCachedAsync for IoCloseEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_io_close";
 
@@ -409,13 +408,7 @@ impl EvalCachedAsync for IoCloseEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            // Take the kind out first: concurrent ops see the stream
-            // closed immediately, and a second close is a no-op.
-            let kind = stream.lock().await.take();
-            let Some(mut kind) = kind else {
-                return Value::Null;
-            };
-            match kind.shutdown().await {
+            match stream.close().await {
                 Ok(()) => Value::Null,
                 Err(e) => errf!("IOError", "close failed: {e}"),
             }

@@ -1,4 +1,4 @@
-use super::{button, Widget};
+use super::Widget;
 type MouseButton = [`Left, `Right, `Middle];
 
 type MouseArea = {

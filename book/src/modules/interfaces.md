@@ -286,7 +286,7 @@ type NumericBox<'a: Number> = Abstract<{ value: 'a }>;
 `Abstract<..>` is legal only as the whole body of a `type` definition —
 the name is what gives the type its identity. A type hidden by an
 interface must be defined this way (or be a Rust-backed type, declared
-`type T;` on both sides); hiding a transparent alias is an error.
+`type T;` in the interface alone); hiding a transparent alias is an error.
 
 ### The Three Faces
 

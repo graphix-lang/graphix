@@ -1,4 +1,4 @@
-use super::{text, Widget};
+use super::Widget;
 type KeyEvent = {
   key: string,
   modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool},

@@ -1,4 +1,3 @@
-use super::{image, text};
 type ClipboardImage = { height: u32, pixels: bytes, width: u32 };
 type HtmlContent = { alt_text: string, html: string };
 

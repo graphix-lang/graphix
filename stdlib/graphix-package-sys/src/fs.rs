@@ -4,9 +4,9 @@ use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::{io::SeekFrom, sync::Arc};
-use tokio::{io::AsyncSeekExt, sync::Mutex};
+use tokio::io::AsyncSeekExt;
 
-use crate::{StreamKind, get_stream, metadata::convert_metadata, wrap_file};
+use crate::{Halves, StreamKind, get_stream, metadata::convert_metadata, wrap_file};
 
 #[derive(Debug, Default)]
 pub(crate) struct FileOpenEv;
@@ -58,7 +58,7 @@ pub(crate) type FileOpen = CachedArgsAsync<FileOpenEv>;
 pub(crate) struct FileSeekEv;
 
 impl EvalCachedAsync for FileSeekEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, SeekFrom);
+    type Args = (Arc<Halves>, SeekFrom);
 
     const NAME: &str = "sys_fs_seek";
 
@@ -71,15 +71,18 @@ impl EvalCachedAsync for FileSeekEv {
 
     fn eval((stream, pos): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let mut guard = stream.lock().await;
-            match guard.as_mut() {
-                Some(StreamKind::File(f)) => match f.seek(pos).await {
+            let Some(mut kind) = stream.take().await else {
+                return errf!("IOError", "stream unavailable");
+            };
+            let res = match &mut kind {
+                StreamKind::File(f) => match f.seek(pos).await {
                     Ok(n) => Value::U64(n),
                     Err(e) => errf!("IOError", "seek failed: {e}"),
                 },
-                Some(_) => errf!("IOError", "seek is only supported on file streams"),
-                None => errf!("IOError", "stream unavailable"),
-            }
+                _ => errf!("IOError", "seek is only supported on file streams"),
+            };
+            stream.put(kind).await;
+            res
         }
     }
 }
@@ -100,7 +103,7 @@ pub(crate) type FileSeek = CachedArgsAsync<FileSeekEv>;
 pub(crate) struct FileFstatEv;
 
 impl EvalCachedAsync for FileFstatEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_fs_fstat";
 
@@ -110,15 +113,18 @@ impl EvalCachedAsync for FileFstatEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let guard = stream.lock().await;
-            match guard.as_ref() {
-                Some(StreamKind::File(f)) => match f.metadata().await {
+            let Some(kind) = stream.take().await else {
+                return errf!("IOError", "stream unavailable");
+            };
+            let res = match &kind {
+                StreamKind::File(f) => match f.metadata().await {
                     Ok(m) => convert_metadata(m),
                     Err(e) => errf!("IOError", "fstat failed: {e}"),
                 },
-                Some(_) => errf!("IOError", "fstat is only supported on file streams"),
-                None => errf!("IOError", "stream unavailable"),
-            }
+                _ => errf!("IOError", "fstat is only supported on file streams"),
+            };
+            stream.put(kind).await;
+            res
         }
     }
 }
@@ -129,7 +135,7 @@ pub(crate) type FileFstat = CachedArgsAsync<FileFstatEv>;
 pub(crate) struct FileTruncateEv;
 
 impl EvalCachedAsync for FileTruncateEv {
-    type Args = (Arc<Mutex<Option<StreamKind>>>, u64);
+    type Args = (Arc<Halves>, u64);
 
     const NAME: &str = "sys_fs_truncate";
 
@@ -139,17 +145,18 @@ impl EvalCachedAsync for FileTruncateEv {
 
     fn eval((stream, len): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let guard = stream.lock().await;
-            match guard.as_ref() {
-                Some(StreamKind::File(f)) => match f.set_len(len).await {
+            let Some(kind) = stream.take().await else {
+                return errf!("IOError", "stream unavailable");
+            };
+            let res = match &kind {
+                StreamKind::File(f) => match f.set_len(len).await {
                     Ok(()) => Value::Null,
                     Err(e) => errf!("IOError", "truncate failed: {e}"),
                 },
-                Some(_) => {
-                    errf!("IOError", "truncate is only supported on file streams")
-                }
-                None => errf!("IOError", "stream unavailable"),
-            }
+                _ => errf!("IOError", "truncate is only supported on file streams"),
+            };
+            stream.put(kind).await;
+            res
         }
     }
 }

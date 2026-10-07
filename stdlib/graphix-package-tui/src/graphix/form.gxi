@@ -1,4 +1,4 @@
-use super::{input_handler, Line, Tui};
+use super::{input_handler, Tui};
 
 /// One form field: its label and its initial text.
 type Field = { label: string, value: string };

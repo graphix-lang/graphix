@@ -1,4 +1,4 @@
-use super::{Color, Line, line, Marker, Tui};
+use super::{Color, Line, Marker, Tui};
 type CanvasLine = {
   color: Color,
   x1: f64,

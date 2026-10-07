@@ -7,12 +7,9 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
-};
+use tokio::net::{TcpListener, TcpStream};
 
-use crate::{StreamKind, get_stream, wrap_tcp};
+use crate::{Halves, StreamKind, get_stream, wrap_tcp};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TcpListenerValue {
@@ -140,7 +137,7 @@ pub(crate) type TcpAccept = CachedArgsAsync<TcpAcceptEv>;
 pub(crate) struct TcpShutdownEv;
 
 impl EvalCachedAsync for TcpShutdownEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_tcp_shutdown";
 
@@ -151,7 +148,7 @@ impl EvalCachedAsync for TcpShutdownEv {
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             use tokio::io::AsyncWriteExt;
-            let mut guard = stream.lock().await;
+            let mut guard = stream.writer().await;
             let s = match guard.as_mut() {
                 Some(s) => s,
                 None => return errf!("TCPError", "stream unavailable"),
@@ -170,7 +167,7 @@ pub(crate) type TcpShutdown = CachedArgsAsync<TcpShutdownEv>;
 pub(crate) struct TcpPeerAddrEv;
 
 impl EvalCachedAsync for TcpPeerAddrEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_tcp_peer_addr";
 
@@ -180,19 +177,11 @@ impl EvalCachedAsync for TcpPeerAddrEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let guard = stream.lock().await;
-            let s = match guard.as_ref() {
-                Some(s) => s,
-                None => return errf!("TCPError", "stream unavailable"),
-            };
-            match s.tcp_ref() {
-                Some(tcp) => match tcp.peer_addr() {
-                    Ok(addr) => Value::String(
-                        compact_str::format_compact!("{addr}").as_str().into(),
-                    ),
-                    Err(e) => errf!("TCPError", "peer_addr failed: {e}"),
-                },
-                None => errf!("TCPError", "peer_addr not supported on file streams"),
+            match stream.addrs() {
+                Some((peer, _local)) => Value::String(
+                    compact_str::format_compact!("{}", peer).as_str().into(),
+                ),
+                None => errf!("TCPError", "peer_addr: not a socket"),
             }
         }
     }
@@ -204,7 +193,7 @@ pub(crate) type TcpPeerAddr = CachedArgsAsync<TcpPeerAddrEv>;
 pub(crate) struct TcpLocalAddrEv;
 
 impl EvalCachedAsync for TcpLocalAddrEv {
-    type Args = Arc<Mutex<Option<StreamKind>>>;
+    type Args = Arc<Halves>;
 
     const NAME: &str = "sys_tcp_local_addr";
 
@@ -214,19 +203,11 @@ impl EvalCachedAsync for TcpLocalAddrEv {
 
     fn eval(stream: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let guard = stream.lock().await;
-            let s = match guard.as_ref() {
-                Some(s) => s,
-                None => return errf!("TCPError", "stream unavailable"),
-            };
-            match s.tcp_ref() {
-                Some(tcp) => match tcp.local_addr() {
-                    Ok(addr) => Value::String(
-                        compact_str::format_compact!("{addr}").as_str().into(),
-                    ),
-                    Err(e) => errf!("TCPError", "local_addr failed: {e}"),
-                },
-                None => errf!("TCPError", "local_addr not supported on file streams"),
+            match stream.addrs() {
+                Some((_peer, local)) => Value::String(
+                    compact_str::format_compact!("{}", local).as_str().into(),
+                ),
+                None => errf!("TCPError", "local_addr: not a socket"),
             }
         }
     }

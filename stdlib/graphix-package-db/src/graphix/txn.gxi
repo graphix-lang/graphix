@@ -1,4 +1,4 @@
-use super::{Db, txn};
+use super::Db;
 /// An open transaction handle.
 type Txn;
 

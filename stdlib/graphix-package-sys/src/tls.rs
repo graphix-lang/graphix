@@ -1,18 +1,17 @@
-use crate::{StreamKind, get_stream, wrap_tls};
+use crate::{Halves, StreamKind, get_stream, wrap_tls};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx_value::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 #[derive(Debug, Default)]
 pub(crate) struct TlsConnectEv;
 
 impl EvalCachedAsync for TlsConnectEv {
-    type Args = (Option<Bytes>, ArcStr, Arc<Mutex<Option<StreamKind>>>);
+    type Args = (Option<Bytes>, ArcStr, Arc<Halves>);
 
     const NAME: &str = "sys_tls_connect";
 
@@ -29,16 +28,13 @@ impl EvalCachedAsync for TlsConnectEv {
 
     fn eval((ca_cert, hostname, sv): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let tcp = {
-                let mut guard = sv.lock().await;
-                match guard.take() {
-                    Some(StreamKind::Tcp(tcp)) => tcp,
-                    Some(other) => {
-                        *guard = Some(other);
-                        return errf!("TLSError", "stream is not a plain TCP stream");
-                    }
-                    None => return errf!("TLSError", "stream unavailable"),
+            let tcp = match sv.take().await {
+                Some(StreamKind::Tcp(tcp)) => tcp,
+                Some(other) => {
+                    sv.put(other).await;
+                    return errf!("TLSError", "stream is not a plain TCP stream");
                 }
+                None => return errf!("TLSError", "stream unavailable"),
             };
             let mut root_store = rustls::RootCertStore::empty();
             match &ca_cert {
@@ -47,13 +43,13 @@ impl EvalCachedAsync for TlsConnectEv {
                     {
                         Ok(c) => c,
                         Err(e) => {
-                            *sv.lock().await = Some(StreamKind::Tcp(tcp));
+                            sv.put(StreamKind::Tcp(tcp)).await;
                             return errf!("TLSError", "invalid ca_cert PEM: {e}");
                         }
                     };
                     for cert in certs {
                         if let Err(e) = root_store.add(cert) {
-                            *sv.lock().await = Some(StreamKind::Tcp(tcp));
+                            sv.put(StreamKind::Tcp(tcp)).await;
                             return errf!("TLSError", "invalid CA cert: {e}");
                         }
                     }
@@ -73,14 +69,14 @@ impl EvalCachedAsync for TlsConnectEv {
             ) {
                 Ok(sn) => sn,
                 Err(e) => {
-                    *sv.lock().await = Some(StreamKind::Tcp(tcp));
+                    sv.put(StreamKind::Tcp(tcp)).await;
                     return errf!("TLSError", "invalid hostname: {e}");
                 }
             };
             match connector.connect(server_name, tcp).await {
                 // The upgrade CONSUMES the TCP handle: the session moves into its
                 // own handle and the caller's `TcpStream` is left empty, so a stray
-                // plaintext read errors. A failed upgrade puts the socket back.
+                // plaintext read errors. A failed handshake spends the socket.
                 Ok(tls_stream) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Client(tls_stream)))
                 }
@@ -98,7 +94,7 @@ pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 pub(crate) struct TlsAcceptEv;
 
 impl EvalCachedAsync for TlsAcceptEv {
-    type Args = (Bytes, Bytes, Arc<Mutex<Option<StreamKind>>>);
+    type Args = (Bytes, Bytes, Arc<Halves>);
 
     const NAME: &str = "sys_tls_accept";
 
@@ -128,16 +124,13 @@ impl EvalCachedAsync for TlsAcceptEv {
                 Err(e) => return errf!("TLSError", "TLS config error: {e}"),
             };
             let acceptor = TlsAcceptor::from(Arc::new(config));
-            let tcp = {
-                let mut guard = sv.lock().await;
-                match guard.take() {
-                    Some(StreamKind::Tcp(tcp)) => tcp,
-                    Some(other) => {
-                        *guard = Some(other);
-                        return errf!("TLSError", "stream is not a plain TCP stream");
-                    }
-                    None => return errf!("TLSError", "stream unavailable"),
+            let tcp = match sv.take().await {
+                Some(StreamKind::Tcp(tcp)) => tcp,
+                Some(other) => {
+                    sv.put(other).await;
+                    return errf!("TLSError", "stream is not a plain TCP stream");
                 }
+                None => return errf!("TLSError", "stream unavailable"),
             };
             match acceptor.accept(tcp).await {
                 // consumes the TCP handle, as `connect` does

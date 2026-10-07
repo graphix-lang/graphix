@@ -1,16 +1,3 @@
-// CR claude for claude: [dead] `use super::args;` is unused: `args` appears here and in
-// net.gx only as a parameter name. The pass that turned the globs into explicit names
-// counted parameter and field names, and left the same kind of import in db txn.gxi:1
-// (`txn`), gui clipboard.gxi (`image`, `text`), mouse_area.gxi (`button`),
-// keyboard_area.gxi and style.gxi (`text`), data_table.gxi (`column`), canvas.gxi
-// (`color`) and tui canvas.gxi (`line`); tui form.gxi's `Line` is unused as well.
-// Separately, db/mod.gx:1-2, http/mod.gx:1-2, fs/tempdir.gx:1 and fs/watch.gx:1-2
-// repeat their gxi's `mod` and bodyless `type` declarations, which
-// add_interface_modules already splices into the body (fs.gx uses `File` and db uses
-// `subscription` with no copy). book/src/modules/interfaces.md:289 ("declared `type T;`
-// on both sides") reads as asking for that copy, which contradicts lines 136-138 of the
-// same chapter. (gx-stdlib.r2-15)
-use super::args;
 type Table = { rows: Array<string>, columns: Array<string> };
 type RpcArg<'a> = { default: 'a, doc: string };
 

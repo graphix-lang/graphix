@@ -1,5 +1,3 @@
-mod cursor;
-mod txn;
 let open = |path: string| -> Result<Db, `DbErr(string)> 'db_open;
 let flush = |db: Db| -> Result<null, `DbErr(string)> 'db_flush;
 let generate_id = |db: Db| -> Result<u64, `DbErr(string)> 'db_generate_id;
