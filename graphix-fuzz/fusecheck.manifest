@@ -316,6 +316,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 4	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 1	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
+3	review-oct2026/01_defaulted_label_handler.gx
 0	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 0	rigid-commit-sep2026/01_annotation_variable_split.gx
 0	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
