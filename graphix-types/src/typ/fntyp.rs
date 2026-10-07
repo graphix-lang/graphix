@@ -353,12 +353,6 @@ impl FnType {
         self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
     }
 
-    /// Every reachable cell's conjuncts, declared or not (an inferred
-    /// impl's constraints sit on auto `'_N` cells).
-    pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
-        self.constraint_pairs(|_| true)
-    }
-
     /// The canonical bytes the image keys this type by: the shape with
     /// every variable by identity, and the lambda ids cell by identity.
     pub(crate) fn content_key(&self, out: &mut Vec<u8>) {
@@ -1449,25 +1443,12 @@ mod tests {
 impl FnType {
     // The constraints wire slot is a derived view of the cells: decode
     // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
-    // CR claude for claude: [dead] The constraints slot carries nothing either decoder
-    // needs. Under an image, each cell is a shared object whose definition already
-    // holds its conjuncts (image/mod.rs cell_encode). Under the syntax codec, each TVar
-    // occurrence writes its cell's conjuncts inline, and the slot's own TVars decode to
-    // fresh cells nothing references, so shape_decode's add_cell_constraint only
-    // touches orphans. The slot costs a cell_constraint_pairs walk (normalize, sort and
-    // dedup over every reachable cell) in shape_encode, a second one in shape_len under
-    // the syntax codec, and on an image decode a re-add of each conjunct to a cell that
-    // already holds it. Drop the slot and cell_constraint_pairs (bump the image and AST
-    // pack formats), and the sentence in design/tvar_constraints.md that calls it the
-    // Pack wire slot. (t-fntyp-11)
+    /// The conjuncts travel with their cells: each TVar writes its own,
+    /// or the image's shared cell definition holds them.
     fn shape_len(&self) -> usize {
-        // The full cell pairs, not the declared-quantifier view: anonymous
-        // cells carry inference facts that must cross the wire.
-        let constraints = self.cell_constraint_pairs();
         self.args.encoded_len()
             + self.vargs.encoded_len()
             + self.rtype.encoded_len()
-            + <Vec<(TVar, Type)> as Pack>::encoded_len(&constraints)
             + self.throws.encoded_len()
             + self.explicit_throws.encoded_len()
             + self.quantifiers.encoded_len()
@@ -1477,8 +1458,6 @@ impl FnType {
         self.args.encode(buf)?;
         self.vargs.encode(buf)?;
         self.rtype.encode(buf)?;
-        let constraints = self.cell_constraint_pairs();
-        <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
         self.explicit_throws.encode(buf)?;
         self.quantifiers.encode(buf)
@@ -1491,13 +1470,9 @@ impl FnType {
         let args = <Arc<[FnArgType]> as Pack>::decode(buf)?;
         let vargs = <Option<Type> as Pack>::decode(buf)?;
         let rtype = <Type as Pack>::decode(buf)?;
-        let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
         let quantifiers = <Arc<[ArcStr]> as Pack>::decode(buf)?;
-        for (tv, tc) in constraints {
-            tv.add_cell_constraint(tc);
-        }
         // Provenance only; excluded from FnType identity.
         let lambda_ids = LambdaIds::default();
         if let Some(id) = own {

@@ -395,9 +395,9 @@ point that sentence at FnType::instantiate. (t-fntyp-12) -->
   bound check: a variable with one bound meets it (an open one binds to
   it); with several, only a bound variable is checked, since an open
   conjunction settles by a witness and the cell enforces it at every
-  binding meanwhile. `cell_constraint_pairs()` is the same listing over
-  every reachable cell, declared or not; it is the Pack wire slot
-  (decode re-seeds cells; `add_cell_constraint` dedups).
+  binding meanwhile. On the wire a cell's conjuncts travel with the cell
+  (each TVar writes its own, or the image's shared cell definition
+  holds them); a fn type writes none of its own.
 - `FnType.quantifiers: Arc<[ArcStr]>` — the names the `fn<...>` header
   declared, in source order; the constraint types stay in the cells. The
   names decide which cells a call freshens or holds rigid and which
