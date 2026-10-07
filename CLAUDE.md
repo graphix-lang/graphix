@@ -868,10 +868,10 @@ test is a result.
 - PRs carry a concise summary, testing notes and related issues. Rebuild
   the book when docs or examples change.
 - Examples in `book/src/examples/` are documentation and test corpus at
-  once; TUI/GUI examples are tested by hand
-  (`cargo run --bin graphix -- examples/tui/barchart_basic.gx`). Some
-  are snippets that reference undefined names on purpose; they must stay
-  syntactically valid.
+  once: each is included by a book page, and `graphix-shell/tests/
+  examples_compile.rs` typechecks every one in the plain gate; TUI/GUI
+  examples are run by hand
+  (`cargo run --bin graphix -- examples/tui/barchart_basic.gx`).
 - A new compiler walk must name the loss without it before it is added;
   the typechecker must stay instant (measure the GUI suite after typing
   changes); predictable fusion is a core value — push on de-fuse corner

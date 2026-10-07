@@ -214,6 +214,16 @@ An arbitrary path built from `PathSegment` values. Supports fill, stroke, or bot
 
 ![Canvas](./media/canvas.png)
 
+### Per-Pixel Drawing
+
+The Mandelbrot set, one rectangle per pixel. The escape loop, its
+coloring and the `array::init` over the grid compile to native code,
+which the `#[native]` on the init asserts.
+
+```graphix
+{{#include ../../examples/gui/mandelbrot.gx}}
+```
+
 ## See Also
 
 - [chart](chart.md) - Pre-built chart widget for data visualization

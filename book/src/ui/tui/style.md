@@ -178,3 +178,12 @@ tui::gauge::gauge(
 ```
 
 See individual widget documentation for specific style parameters they accept.
+
+## Indexed Colors
+
+`` `Indexed(n) `` names one of the terminal's 256 palette colors. This
+prints the whole palette with each index:
+
+```graphix
+{{#include ../../examples/tui/color_palette.gx}}
+```

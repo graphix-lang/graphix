@@ -1,17 +1,11 @@
 use tui::{Span, line, span, style, paragraph::paragraph};
 
-let span: Array<Span> = select range(0, 256)$ {
+let spans: Array<Span> = select range(0, 256)$ {
     i => [
         span(#style:style(#fg:`Indexed(i)), "██"),
         span("[i]"),
         span(#style:style(#fg:`Indexed(i)), "██")
     ]
 };
-// CR claude for claude: [bug] range(0, 256) delivers 256 values (0..255), and
-// array::group passes f the buffer length after the push. So `n == 255` emits colors
-// 0..254, and color 255 starts a buffer that never emits: the palette never shows index
-// 255. Use `n == 256`. The binding `span` also shadows the imported `span` that its own
-// initializer calls; `spans` reads better. probe:
-// design/review-2026-10-05/repro/examples-04.gx (examples-04)
-let l = line(array::flatten(array::group(span, |n, _| n == 255)));
+let l = line(array::flatten(array::group(spans, |n, _| n == 256)));
 paragraph(&[l])

@@ -51,6 +51,16 @@ val browser: fn(
 
 ![Browser With Navigation](./media/browser_navigation.gif)
 
+### Commands
+
+A `:` command line beside the browser: `:w <value>` writes the value to
+the selected path, and an error from the command shows in the bottom
+title.
+
+```graphix
+{{#include ../../examples/tui/browser_commands.gx}}
+```
+
 ## See Also
 
 - [list](list.md) - For simpler selection interfaces

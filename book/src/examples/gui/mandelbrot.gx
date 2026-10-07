@@ -1,15 +1,6 @@
-// This is an example how NOT to use graphix, at least not for anything but a
-// short term solution to a problem. You'd do this properly by writing iterate
-// as a rust builtin and leaving everything else in graphix. This example
-// exists to show that it is possible, if not performant, to do this kind of
-// calculation in graphix
-// CR claude for claude: [doc-drift] The header says this loop belongs in a Rust builtin
-// and is 'possible, if not performant' in Graphix. At HEAD, iterate, color_for and
-// color compile to kernels, and `#[native]` on the `array::init` at line 40 holds in a
-// build (--expand). A `#[native]` on the sys::time::now line is refused, so the check
-// is live. The header contradicts the performance model the book advertises. Say what
-// the example shows, a fused per-pixel loop feeding a canvas, and consider keeping the
-// `#[native]` so the claim stays checked. (examples-10)
+// The Mandelbrot set drawn on a canvas, one rectangle per pixel. The
+// per-pixel escape loop, its coloring and the array::init over the grid
+// compile to native code; the #[native] on the init asserts it.
 use gui::{color, window, canvas::canvas};
 
 let start = cast<f64>(sys::time::now(once(null)))$;
@@ -44,7 +35,7 @@ let color_for = |n: i64| select n {
     }
 };
 
-let shapes = array::init(w * h, |idx| {
+let shapes = #[native] array::init(w * h, |idx| {
     let px = idx % w;
     let py = idx / w;
     let cr = xmin + cast<f64>(px)$ * dx;

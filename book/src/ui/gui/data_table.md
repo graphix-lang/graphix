@@ -335,6 +335,17 @@ selection echoed in the footer.
 
 ![Data Table — Dashboard](./media/data_table_dashboard.png)
 
+### Scrolling
+
+Enough rows and columns that both scrollbars appear at the default
+window size. The rows are real netidx paths, so scrolling also
+subscribes the rows that enter the viewport and drops the ones that
+leave it.
+
+```graphix
+{{#include ../../examples/gui/data_table_scrolling.gx}}
+```
+
 ## See Also
 
 - [Table](table.md) -- static row/column layout from graphix

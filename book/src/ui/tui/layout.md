@@ -83,6 +83,15 @@ val layout: fn(
 
 ![Layout With Header and Footer](./media/layout_header_footer.png)
 
+### Nested Layout with Focus and Scrolling
+
+Nested layouts whose focused pane is highlighted, with a long paragraph
+scrolled beside a scrollbar.
+
+```graphix
+{{#include ../../examples/tui/layout_nested_focus.gx}}
+```
+
 ## See Also
 
 - [block](block.md) - Common child widget for layouts
