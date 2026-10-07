@@ -542,6 +542,196 @@ pub(crate) fn write_through<R: Rt, E: UserEvent>(
     }
 }
 
+/// How `iter` and `iterq` walk a collection: a cursor over a value's
+/// elements, one at a time.
+pub trait Elements: Debug + Send + Sync + 'static {
+    const ITER: &str;
+    const ITERQ: &str;
+    type Cursor: Debug + Send + Sync + 'static;
+
+    /// A cursor at the first element, or `None` when `v` holds none.
+    fn cursor(v: Value) -> Option<Self::Cursor>;
+
+    /// The cursor's element, the cursor moved past it; `None` at the end.
+    fn next(c: &mut Self::Cursor) -> Option<Value>;
+}
+
+/// `iter`: every element of each collection that fires, in one cycle.
+#[derive(Debug)]
+pub struct Iter<C> {
+    id: BindId,
+    top_id: ExprId,
+    out: TagValue,
+    elems: PhantomData<fn() -> C>,
+}
+
+impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for Iter<C> {
+    const NAME: &str = C::ITER;
+
+    fn init<'a, 'b, 'c, 'd>(
+        ctx: &'a mut CompileCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.record_ref(id, top_id);
+        Ok(Box::new(Self { id, top_id, out: TagValue::phantom(), elems: PhantomData }))
+    }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.record_ref(id, top_id);
+        Ok(Box::new(Self { id, top_id, out: TagValue::phantom(), elems: PhantomData }))
+    }
+}
+
+impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        from: &mut [Node<R, E>],
+    ) -> &TagValue {
+        if let Some(v) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
+            && let Some(mut c) = C::cursor(v)
+        {
+            while let Some(e) = C::next(&mut c) {
+                if ctx.interrupted() {
+                    return self.out.ride();
+                }
+                ctx.rt.set_var(self.id, e);
+            }
+        }
+        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        ctx.unref_var(self.id, self.top_id)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        ctx.unref_var(self.id, self.top_id);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
+        self.out = TagValue::phantom();
+    }
+}
+
+/// `iterq`: one element per `#clock` fire, the collections queued in the
+/// order they fired.
+#[derive(Debug)]
+pub struct IterQ<C: Elements> {
+    triggered: usize,
+    queue: VecDeque<C::Cursor>,
+    id: BindId,
+    top_id: ExprId,
+    out: TagValue,
+}
+
+impl<R: Rt, E: UserEvent, C: Elements> BuiltIn<R, E> for IterQ<C> {
+    const NAME: &str = C::ITERQ;
+
+    fn init<'a, 'b, 'c, 'd>(
+        ctx: &'a mut CompileCtx<R, E>,
+        _typ: &'a FnType,
+        _resolved: Option<&'d FnType>,
+        _scope: &'b Scope,
+        _from: &'c [Node<R, E>],
+        top_id: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        let id = BindId::new();
+        ctx.record_ref(id, top_id);
+        let queue = VecDeque::new();
+        Ok(Box::new(Self { triggered: 0, queue, id, top_id, out: TagValue::phantom() }))
+    }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.record_ref(id, top_id);
+        let queue = VecDeque::new();
+        Ok(Box::new(Self { triggered: 0, queue, id, top_id, out: TagValue::phantom() }))
+    }
+}
+
+impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
+    /// The queue and the banked fires exist only once a cycle has run.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.triggered > 0 || !self.queue.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
+    fn update(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        from: &mut [Node<R, E>],
+    ) -> &TagValue {
+        if seam_tick(from[0].update(ctx)).is_some() {
+            self.triggered += 1;
+        }
+        if let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
+            && let Some(c) = C::cursor(v)
+        {
+            self.queue.push_back(c);
+        }
+        while self.triggered > 0
+            && let Some(c) = self.queue.front_mut()
+        {
+            if ctx.interrupted() {
+                return self.out.ride();
+            }
+            match C::next(c) {
+                Some(e) => {
+                    ctx.rt.set_var(self.id, e);
+                    self.triggered -= 1;
+                }
+                None => {
+                    self.queue.pop_front();
+                }
+            }
+        }
+        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+            Some(v) => self.out.set(TagValue::fired(v)),
+            None => self.out.ride(),
+        }
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        ctx.unref_var(self.id, self.top_id)
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        ctx.unref_var(self.id, self.top_id);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
+        self.queue.clear();
+        self.triggered = 0;
+        self.out = TagValue::phantom();
+    }
+}
+
 /// A pure builtin whose eval is its fast fn: the unit evaluator `$ev`,
 /// its `CachedArgs` alias `$alias`, its name and its fast fn.
 #[macro_export]

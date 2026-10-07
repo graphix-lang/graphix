@@ -415,181 +415,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 }
 
+/// An array's elements, in order.
 #[derive(Debug)]
-struct Iter(BindId, ExprId, TagValue);
+struct ArrayElems;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
-    const NAME: &str = "array_iter";
+impl graphix_package_core::Elements for ArrayElems {
+    const ITER: &str = "array_iter";
+    const ITERQ: &str = "array_iterq";
+    type Cursor = (usize, ValArray);
 
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
+    fn cursor(v: Value) -> Option<Self::Cursor> {
+        match v {
+            Value::Array(a) if !a.is_empty() => Some((0, a)),
+            _ => None,
+        }
     }
 
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
+    fn next((i, a): &mut Self::Cursor) -> Option<Value> {
+        let v = a.get(*i)?.clone();
+        *i += 1;
+        Some(v)
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.0.encode(buf)?;
-        self.1.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if let Some(Value::Array(a)) =
-            seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
-        {
-            for v in a.iter() {
-                // Cooperative interrupt: abort a wedged iter over a huge
-                // array (partial emit is accepted for a deliberate kill).
-                if ctx.interrupted() {
-                    return self.2.ride();
-                }
-                ctx.rt.set_var(self.0, v.clone());
-            }
-        }
-        let res = ctx.event.variables.get(&self.0).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.2.set(TagValue::fired(v)),
-            None => self.2.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.0, self.1)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.0, self.1);
-        self.0 = BindId::new();
-        ctx.rt.ref_var(self.0, self.1);
-        self.2 = TagValue::phantom();
-    }
-}
-
-#[derive(Debug)]
-struct IterQ {
-    triggered: usize,
-    queue: VecDeque<(usize, ValArray)>,
-    id: BindId,
-    top_id: ExprId,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
-    const NAME: &str = "array_iterq";
-
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(IterQ {
-            triggered: 0,
-            queue: VecDeque::new(),
-            id,
-            top_id,
-            out: TagValue::phantom(),
-        }))
-    }
-
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let triggered = usize::decode(buf)?;
-        let queue = Pack::decode(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(IterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.triggered.encode(buf)?;
-        self.queue.encode(buf)?;
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
-            self.triggered += 1;
-        }
-        if let Some(Value::Array(a)) =
-            seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
-        {
-            if a.len() > 0 {
-                self.queue.push_back((0, a));
-            }
-        }
-        while self.triggered > 0 && self.queue.len() > 0 {
-            let (i, a) = self.queue.front_mut().unwrap();
-            while self.triggered > 0 && *i < a.len() {
-                if ctx.interrupted() {
-                    return self.out.ride();
-                }
-                ctx.rt.set_var(self.id, a[*i].clone());
-                *i += 1;
-                self.triggered -= 1;
-            }
-            if *i == a.len() {
-                self.queue.pop_front();
-            }
-        }
-        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
-        self.queue.clear();
-        self.triggered = 0;
-        self.out = TagValue::phantom();
-    }
-}
+type Iter = graphix_package_core::Iter<ArrayElems>;
+type IterQ = graphix_package_core::IterQ<ArrayElems>;
 
 fn fc_rotate(args: &[Value]) -> Option<Value> {
     match args {

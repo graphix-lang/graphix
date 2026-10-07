@@ -2,17 +2,9 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::Result;
-use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    expr::ExprId, image::ImageBuf, typ::FnType,
-};
-use graphix_package_core::seam_tick;
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::ValArray;
-use poolshark::local::LPooled;
-use std::{collections::VecDeque, fmt::Debug};
+use std::fmt::Debug;
 
 fn fc_get(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -54,201 +46,38 @@ fn fc_remove(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove);
 
+/// A map's `(key, value)` pairs in key order; the cursor holds the map and
+/// the last key it gave, so a queued map is never copied.
 #[derive(Debug)]
-struct Iter {
-    id: BindId,
-    top_id: ExprId,
-    out: TagValue,
-}
+struct MapElems;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
-    const NAME: &str = "map_iter";
+impl graphix_package_core::Elements for MapElems {
+    const ITER: &str = "map_iter";
+    const ITERQ: &str = "map_iterq";
+    type Cursor = (immutable_chunkmap::map::Map<Value, Value, 32>, Option<Value>);
 
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
+    fn cursor(v: Value) -> Option<Self::Cursor> {
+        match v {
+            Value::Map(m) if m.len() > 0 => Some((m, None)),
+            _ => None,
+        }
     }
 
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
+    fn next((m, last): &mut Self::Cursor) -> Option<Value> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let (k, v) = match last {
+            None => m.into_iter().next()?,
+            Some(l) => m.range::<Value, _>((Excluded(&*l), Unbounded)).next()?,
+        };
+        let pair =
+            Value::Array(ValArray::from_iter_exact([k.clone(), v.clone()].into_iter()));
+        *last = Some(k.clone());
+        Some(pair)
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if let Some(Value::Map(m)) =
-            seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
-        {
-            for (k, v) in m.into_iter() {
-                let pair = Value::Array(ValArray::from_iter_exact(
-                    [k.clone(), v.clone()].into_iter(),
-                ));
-                ctx.rt.set_var(self.id, pair);
-            }
-        }
-        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
-        self.out = TagValue::phantom();
-    }
-}
-
-#[derive(Debug)]
-struct IterQ {
-    triggered: usize,
-    queue: VecDeque<(usize, LPooled<Vec<(Value, Value)>>)>,
-    id: BindId,
-    top_id: ExprId,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
-    const NAME: &str = "map_iterq";
-
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(IterQ {
-            triggered: 0,
-            queue: VecDeque::new(),
-            id,
-            top_id,
-            out: TagValue::phantom(),
-        }))
-    }
-
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let triggered = usize::decode(buf)?;
-        let n = decode_varint(buf)? as usize;
-        let mut queue = VecDeque::with_capacity(n);
-        for _ in 0..n {
-            let i = usize::decode(buf)?;
-            let len = decode_varint(buf)? as usize;
-            let mut pairs: LPooled<Vec<(Value, Value)>> = LPooled::take();
-            for _ in 0..len {
-                pairs.push(<(Value, Value)>::decode(buf)?);
-            }
-            queue.push_back((i, pairs));
-        }
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(IterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.triggered.encode(buf)?;
-        encode_varint(self.queue.len() as u64, buf);
-        for (i, pairs) in self.queue.iter() {
-            i.encode(buf)?;
-            encode_varint(pairs.len() as u64, buf);
-            for p in pairs.iter() {
-                p.encode(buf)?;
-            }
-        }
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
-            self.triggered += 1;
-        }
-        if let Some(Value::Map(m)) =
-            seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
-        {
-            let pairs: LPooled<Vec<(Value, Value)>> =
-                m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            if !pairs.is_empty() {
-                self.queue.push_back((0, pairs));
-            }
-        }
-        while self.triggered > 0 && !self.queue.is_empty() {
-            let (i, pairs) = self.queue.front_mut().unwrap();
-            while self.triggered > 0 && *i < pairs.len() {
-                let (k, v) = pairs[*i].clone();
-                let pair = Value::Array(ValArray::from_iter_exact([k, v].into_iter()));
-                ctx.rt.set_var(self.id, pair);
-                *i += 1;
-                self.triggered -= 1;
-            }
-            if *i == pairs.len() {
-                self.queue.pop_front();
-            }
-        }
-        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
-        self.queue.clear();
-        self.triggered = 0;
-        self.out = TagValue::phantom();
-    }
-}
+type Iter = graphix_package_core::Iter<MapElems>;
+type IterQ = graphix_package_core::IterQ<MapElems>;
 
 graphix_derive::defpackage! {
     builtins => [

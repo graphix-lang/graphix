@@ -2,23 +2,15 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::Result;
-use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    expr::ExprId,
-    image::ImageBuf,
-    node::list::{
-        Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list,
-        is_nil, len as count_list, nil as make_nil, split as get_cons, to_array,
-    },
-    typ::FnType,
+use graphix_compiler::node::list::{
+    Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list, is_nil,
+    len as count_list, nil as make_nil, split as get_cons, to_array,
 };
-use graphix_package_core::{seam_tick, sort_values};
+use graphix_package_core::sort_values;
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
-use std::{collections::VecDeque, fmt::Debug};
+use std::fmt::Debug;
 
 fn list_to_array(list: &Value) -> Option<Value> {
     to_array(list).map(Value::Array)
@@ -170,8 +162,12 @@ graphix_package_core::fast_builtin!(ToArray, ToArrayEv, "list_to_array", fc_to_a
 /// The list's elements as an array in REVERSE order, in one walk: the
 /// finish for a front-to-back accumulator that consed as it went.
 fn fc_to_array_rev(args: &[Value]) -> Option<Value> {
-    let a = to_array(&args[0])?;
-    Some(Value::Array(ValArray::from_iter_exact(a.iter().rev().cloned())))
+    let list = &args[0];
+    if !is_list(list) {
+        return None;
+    }
+    let mut buf: LPooled<Vec<Value>> = ListIter::new(list.clone()).collect();
+    Some(Value::Array(ValArray::from_iter_exact(buf.drain(..).rev())))
 }
 
 graphix_package_core::fast_builtin!(
@@ -195,25 +191,18 @@ graphix_package_core::fast_builtin!(
     fc_from_array
 );
 
-// CR claude for claude: [perf] concat copies every list, the last included: the loop
-// walks them all into buf and from_iter_back rebuilds every cell, so nothing is shared
-// with the last list and the cost is O(total size), not "O(n) in the total size of all
-// lists except the last" (list/mod.gxi:47). concat([<1>], long) is linear in long (18
-// ms at 100k elements in a debug build, against 10 us for cons), and an accumulator
-// that prepends a batch per step goes quadratic. Consing the earlier lists' elements
-// onto args.last() from the back is what the doc describes. to_array_rev (line 327)
-// likewise says one walk and makes three: len, the Iter collect, and a reversed copy
-// into a second array. probe: design/review-2026-10-05/repro/collections-str-13.gx
-// (collections-str-13)
+/// The lists in order; the last is shared, the others' elements consed
+/// onto it from the back, so the cost is the size of all but the last.
 fn fc_concat(args: &[Value]) -> Option<Value> {
+    let (last, front) = args.split_last()?;
+    if !args.iter().all(is_list) {
+        return None;
+    }
     let mut buf: LPooled<Vec<Value>> = LPooled::take();
-    for l in args {
-        if !is_list(l) {
-            return None;
-        }
+    for l in front {
         buf.extend(ListIter::new(l.clone()));
     }
-    Some(from_iter_back(buf.drain(..)))
+    Some(buf.drain(..).rev().fold(last.clone(), |rest, v| make_cons(v, rest)))
 }
 
 graphix_package_core::fast_builtin!(Concat, ConcatEv, "list_concat", fc_concat);
@@ -293,198 +282,29 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Unzip, UnzipEv, "list_unzip", fc_unzip);
 
+/// A list's elements, front to back; the cursor is the rest of the
+/// list, so a queued list is never copied.
 #[derive(Debug)]
-struct ListIterBI(BindId, ExprId, TagValue);
+struct ListElems;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
-    const NAME: &str = "list_iter";
+impl graphix_package_core::Elements for ListElems {
+    const ITER: &str = "list_iter";
+    const ITERQ: &str = "list_iterq";
+    type Cursor = Value;
 
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(ListIterBI(id, top_id, TagValue::phantom())))
+    fn cursor(v: Value) -> Option<Value> {
+        (is_list(&v) && !is_nil(&v)).then_some(v)
     }
 
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(ListIterBI(id, top_id, TagValue::phantom())))
+    fn next(rest: &mut Value) -> Option<Value> {
+        let (head, tail) = get_cons(rest).map(|(h, t)| (h.clone(), t.clone()))?;
+        *rest = tail;
+        Some(head)
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.0.encode(buf)?;
-        self.1.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        // CR claude for claude: [structure] iter and iterq are written six times (array,
-        // list, map), and the copies have drifted. Only array polls ctx.interrupted()
-        // in its set_var loop, so an interrupt or Ctrl-C cannot cut short a list or map
-        // iter cycle. Probe: design/review-2026-10-05/repro/x-dup-05.gx. After a SIGINT
-        // at the loop's start, a 4M-element list runs its whole 0.2 s loop, while the
-        // array copy stops within 1 ms. list::iterq also copies each queued list into
-        // an unpooled Vec<Value>, where it could queue the list's remaining tail, and
-        // only ListIterQ checks is_list. One Iter/IterQ pair over an element source
-        // would end the drift. (x-dup-05)
-        // CR claude for claude: [structure] array (array/src/lib.rs:491-664), list
-        // (523-687 here) and map (map/src/lib.rs:106-299) each hand-write iter and
-        // iterq, six copies of two builtins that differ only in how they enumerate
-        // elements, and they have drifted: only array's loops poll `ctx.interrupted()`,
-        // and the iterq queues are imaged three ways (derived Pack of `(usize,
-        // ValArray)`, of `(usize, Vec<Value>)`, hand-rolled varints) although a queue
-        // is runtime state, empty whenever an image is written. One `Iter`/`IterQ` in
-        // package-core over an element source would replace all six. opt.rs repeats the
-        // shape: OptMap and OptFlatMap (350-497) are identical but for NAME, and
-        // OptIsSomeAnd and OptIsNoneOr (606-755) differ only in the null result.
-        // (x-builtin-effects-16)
-        if let Some(list) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
-            for v in ListIter::new(list) {
-                ctx.rt.set_var(self.0, v);
-            }
-        }
-        let res = ctx.event.variables.get(&self.0).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.2.set(TagValue::fired(v)),
-            None => self.2.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.0, self.1)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.0, self.1);
-        self.0 = BindId::new();
-        ctx.rt.ref_var(self.0, self.1);
-        self.2 = TagValue::phantom();
-    }
-}
-
-#[derive(Debug)]
-struct ListIterQ {
-    triggered: usize,
-    queue: VecDeque<(usize, Vec<Value>)>,
-    id: BindId,
-    top_id: ExprId,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
-    const NAME: &str = "list_iterq";
-
-    fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        let id = BindId::new();
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(ListIterQ {
-            triggered: 0,
-            queue: VecDeque::new(),
-            id,
-            top_id,
-            out: TagValue::phantom(),
-        }))
-    }
-
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let triggered = usize::decode(buf)?;
-        let queue = Pack::decode(buf)?;
-        let id = BindId::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        ctx.record_ref(id, top_id);
-        Ok(Box::new(ListIterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.triggered.encode(buf)?;
-        self.queue.encode(buf)?;
-        self.id.encode(buf)?;
-        self.top_id.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if seam_tick(from[0].update(ctx)).is_some() {
-            self.triggered += 1;
-        }
-        if let Some(list) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) {
-            if is_list(&list) {
-                // CR claude for claude: [perf] Each fire copies the whole list into an
-                // unpooled Vec<Value>, cloning every element, before the first is
-                // emitted. A list's tail is O(1) (list::split), and array::iterq queues
-                // the ValArray it is given without copying. Queueing the unconsumed
-                // lists themselves (VecDeque<Value>) and splitting a head off per
-                // trigger copies nothing. (x-alloc-12)
-                let elems: Vec<Value> = ListIter::new(list).collect();
-                if !elems.is_empty() {
-                    self.queue.push_back((0, elems));
-                }
-            }
-        }
-        while self.triggered > 0 && !self.queue.is_empty() {
-            let (i, elems) = self.queue.front_mut().unwrap();
-            while self.triggered > 0 && *i < elems.len() {
-                ctx.rt.set_var(self.id, elems[*i].clone());
-                *i += 1;
-                self.triggered -= 1;
-            }
-            if *i == elems.len() {
-                self.queue.pop_front();
-            }
-        }
-        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
-        self.id = BindId::new();
-        ctx.rt.ref_var(self.id, self.top_id);
-        self.queue.clear();
-        self.triggered = 0;
-        self.out = TagValue::phantom();
-    }
-}
+type ListIterBI = graphix_package_core::Iter<ListElems>;
+type ListIterQ = graphix_package_core::IterQ<ListElems>;
 
 graphix_derive::defpackage! {
     builtins => [
