@@ -2,35 +2,84 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use cargo_toml::Manifest;
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::{env, path::PathBuf, sync::LazyLock};
+use std::{env, path::PathBuf};
 use syn::{
     Ident, Pat, Result, Token, parse_macro_input,
     punctuated::{Pair, Punctuated},
     token::{self, Comma},
 };
-static PROJECT_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-    env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir").into()
-});
 
-static GRAPHIX_SRC: LazyLock<PathBuf> =
-    LazyLock::new(|| PROJECT_ROOT.join("src").join("graphix"));
+/// What an expansion names the package's dependencies through, so a
+/// package need not depend on each at a version that unifies.
+fn private() -> TokenStream {
+    quote! { ::graphix_package::__private }
+}
 
-static CARGO_MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
-    Manifest::from_path(PROJECT_ROOT.join("Cargo.toml"))
-        .expect("failed to load cargo manifest")
-});
+/// A `graphix-package-*` dependency of the calling crate.
+struct Dep {
+    /// the short name, `graphix-package-` stripped
+    name: String,
+    optional: bool,
+    /// a dev-dependency only
+    dev: bool,
+}
 
-static CRATE_NAME: LazyLock<String> =
-    LazyLock::new(|| env::var("CARGO_CRATE_NAME").expect("missing crate name"));
+/// The calling crate, its manifest read once per expansion.
+struct Crate {
+    root: PathBuf,
+    /// the package's short name, `graphix_package_` stripped
+    name: String,
+    /// `[dependencies]` then `[dev-dependencies]` in document order,
+    /// each once, core first
+    deps: Vec<Dep>,
+    doc: toml_edit::DocumentMut,
+}
 
-static PACKAGE_NAME: LazyLock<String> =
-    LazyLock::new(|| match CRATE_NAME.strip_prefix("graphix_package_") {
-        Some(name) => name.into(),
-        None => CRATE_NAME.clone(),
-    });
+impl Crate {
+    fn load() -> Self {
+        let root: PathBuf =
+            env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir").into();
+        let crate_name = env::var("CARGO_CRATE_NAME").expect("missing crate name");
+        let name =
+            crate_name.strip_prefix("graphix_package_").unwrap_or(&crate_name).into();
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(root.join("Cargo.toml"))
+                .expect("failed to read Cargo.toml")
+                .parse()
+                .expect("failed to parse Cargo.toml");
+        let mut deps: Vec<Dep> = vec![];
+        for (section, dev) in [("dependencies", false), ("dev-dependencies", true)] {
+            let Some(table) = doc.get(section).and_then(|v| v.as_table()) else {
+                continue;
+            };
+            for (key, val) in table.iter() {
+                if let Some(short) = key.strip_prefix("graphix-package-")
+                    && !deps.iter().any(|d| d.name == short)
+                {
+                    let optional =
+                        val.get("optional").and_then(|o| o.as_bool()).unwrap_or(false);
+                    deps.push(Dep { name: short.into(), optional, dev });
+                }
+            }
+        }
+        if let Some(pos) = deps.iter().position(|d| d.name == "core") {
+            let core = deps.remove(pos);
+            deps.insert(0, core);
+        }
+        Crate { root, name, deps, doc }
+    }
+
+    /// the dependencies `register` reaches: never a dev-dependency
+    fn runtime(&self) -> impl Iterator<Item = &Dep> {
+        self.deps.iter().filter(|d| !d.dev)
+    }
+
+    fn graphix_src(&self) -> PathBuf {
+        self.root.join("src").join("graphix")
+    }
+}
 
 /* example
 defpackage! {
@@ -70,156 +119,76 @@ impl syn::parse::Parse for BuiltinEntry {
     }
 }
 
-// CR claude for claude: [risk] is_custom and init_custom are independent Options, so
-// defpackage! accepts either one alone. With is_custom alone, __init_custom's body is
-// `unreachable!()` (line 344): the first value the predicate claims panics the shell at
-// display time instead of failing the package's build. With init_custom alone,
-// __is_custom is `false` and the display never runs. A repeated key also silently keeps
-// the last value. Hold the pair as one `custom: Option<(ExprClosure, ExprClosure)>` and
-// return a syn::Error when only one is given or a key repeats. (shell-14)
 struct DefPackage {
     builtins: Vec<BuiltinEntry>,
-    is_custom: Option<syn::ExprClosure>,
-    init_custom: Option<syn::ExprClosure>,
+    /// `is_custom` and `init_custom`, which make sense only together
+    custom: Option<(syn::ExprClosure, syn::ExprClosure)>,
 }
 
 impl syn::parse::Parse for DefPackage {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
-        let mut builtins = Vec::new();
+        let mut builtins = None;
         let mut is_custom = None;
         let mut init_custom = None;
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             let _arrow: Token![=>] = input.parse()?;
-            if key == "builtins" {
+            let repeated = if key == "builtins" {
                 let content;
                 let _bracket: token::Bracket = syn::bracketed!(content in input);
-                builtins = content
+                let b = content
                     .parse_terminated(BuiltinEntry::parse, Token![,])?
                     .into_pairs()
                     .map(|p| p.into_value())
                     .collect();
+                builtins.replace(b).is_some()
             } else if key == "is_custom" {
-                is_custom = Some(input.parse::<syn::ExprClosure>()?);
+                is_custom.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else if key == "init_custom" {
-                init_custom = Some(input.parse::<syn::ExprClosure>()?);
+                init_custom.replace(input.parse::<syn::ExprClosure>()?).is_some()
             } else {
-                return Err(input.error("unknown key"));
+                return Err(syn::Error::new(key.span(), "unknown key"));
+            };
+            if repeated {
+                return Err(syn::Error::new(key.span(), format!("{key} is given twice")));
             }
             if !input.is_empty() {
                 let _comma: Option<Token![,]> = input.parse()?;
             }
         }
-        Ok(DefPackage { builtins, is_custom, init_custom })
+        let custom = match (is_custom, init_custom) {
+            (Some(is), Some(init)) => Some((is, init)),
+            (None, None) => None,
+            (Some(is), None) => {
+                return Err(syn::Error::new_spanned(is, "is_custom needs init_custom"));
+            }
+            (None, Some(init)) => {
+                return Err(syn::Error::new_spanned(init, "init_custom needs is_custom"));
+            }
+        };
+        Ok(DefPackage { builtins: builtins.unwrap_or_default(), custom })
     }
 }
 
-fn check_invariants() {
-    if !CARGO_MANIFEST.bin.is_empty() {
+fn check_invariants(c: &Crate) {
+    let src = c.root.join("src");
+    let bins = c
+        .doc
+        .get("bin")
+        .and_then(|b| b.as_array_of_tables())
+        .is_some_and(|b| !b.is_empty());
+    if bins || src.join("main.rs").exists() || src.join("bin").is_dir() {
         panic!("graphix package crates may not have binary targets")
     }
-    if !CARGO_MANIFEST.lib.is_some() {
+    if c.doc.get("lib").is_none() && !src.join("lib.rs").exists() {
         panic!("graphix package crates must have a lib target")
     }
-    let md = std::fs::metadata(&*GRAPHIX_SRC)
-        .expect("graphix projects must have a graphix-src directory");
-    if !md.is_dir() {
-        panic!("graphix projects must have a graphix-src directory")
+    if !c.graphix_src().is_dir() {
+        panic!("graphix projects must have a src/graphix directory")
     }
-    // every package must depend on graphix-package-core (except core itself)
-    let is_core = *PACKAGE_NAME == "core";
-    if !is_core && !CARGO_MANIFEST.dependencies.contains_key("graphix-package-core") {
+    if c.name != "core" && !c.runtime().any(|d| d.name == "core") {
         panic!("graphix packages must depend on graphix-package-core")
     }
-}
-
-/// Collect graphix-package-* dependency names from a Cargo.toml section,
-/// preserving document order.
-fn collect_package_deps(
-    doc: &toml_edit::DocumentMut,
-    section: &str,
-    seen: &mut std::collections::HashSet<String>,
-    result: &mut Vec<String>,
-) {
-    if let Some(deps) = doc.get(section).and_then(|v| v.as_table()) {
-        for (key, _) in deps.iter() {
-            if let Some(name) = key.strip_prefix("graphix-package-") {
-                if seen.insert(name.to_string()) {
-                    result.push(name.to_string());
-                }
-            }
-        }
-    }
-}
-
-/// Collect graphix-package-* deps from [dependencies] only; register()
-/// must compile without dev-dependencies.
-// CR claude for claude: [structure] runtime_deps, package_deps and graphix_deps_ordered
-// each read and parse Cargo.toml again. One defpackage! expansion parses it three times
-// (cargo_toml at line 21, plus toml_edit in package_deps and runtime_deps).
-// graphix_deps_ordered also repeats collect_package_deps' loop just to read `optional`.
-// One parse per expansion and one walker returning (name, optional) would serve all
-// three. The expansion also names ::anyhow, ::ahash, ::arcstr, ::netidx_core, ::tokio,
-// ::graphix_rt, ::graphix_compiler and ::graphix_package directly, so every package
-// must depend on all eight at versions that unify with the shell's
-// (graphix-package/src/skel/Cargo.toml.hbs lists them for that reason). Re-exporting
-// what the expansion needs from graphix_package removes that requirement. (shell-15)
-fn runtime_deps() -> Vec<String> {
-    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
-        .expect("failed to read Cargo.toml");
-    let doc: toml_edit::DocumentMut =
-        content.parse().expect("failed to parse Cargo.toml");
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
-    collect_package_deps(&doc, "dependencies", &mut seen, &mut result);
-    result
-}
-
-/// Collect graphix-package-* deps from [dependencies] and
-/// [dev-dependencies] in document order, core first. Used for TEST_REGISTER.
-fn package_deps() -> Vec<String> {
-    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
-        .expect("failed to read Cargo.toml");
-    let doc: toml_edit::DocumentMut =
-        content.parse().expect("failed to parse Cargo.toml");
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
-    // core always first
-    seen.insert("core".to_string());
-    result.push("core".to_string());
-    collect_package_deps(&doc, "dependencies", &mut seen, &mut result);
-    collect_package_deps(&doc, "dev-dependencies", &mut seen, &mut result);
-    // include ourselves if not already present
-    if seen.insert(PACKAGE_NAME.clone()) {
-        result.push(PACKAGE_NAME.clone());
-    }
-    result
-}
-
-/// The calling crate's `[dependencies]` `graphix-package-*` entries as
-/// `(short_name, optional)` in document order, core first. Used by
-/// `packages!()`/`package_refs!()`, which run in embedder crates and so
-/// must not call `check_invariants`.
-fn graphix_deps_ordered() -> Vec<(String, bool)> {
-    let content = std::fs::read_to_string(PROJECT_ROOT.join("Cargo.toml"))
-        .expect("failed to read Cargo.toml");
-    let doc: toml_edit::DocumentMut =
-        content.parse().expect("failed to parse Cargo.toml");
-    let mut out: Vec<(String, bool)> = Vec::new();
-    if let Some(deps) = doc.get("dependencies").and_then(|v| v.as_table()) {
-        for (key, val) in deps.iter() {
-            if let Some(short) = key.strip_prefix("graphix-package-") {
-                let optional =
-                    val.get("optional").and_then(|o| o.as_bool()).unwrap_or(false);
-                out.push((short.to_string(), optional));
-            }
-        }
-    }
-    if let Some(pos) = out.iter().position(|(n, _)| n == "core") {
-        let core = out.remove(pos);
-        out.insert(0, core);
-    }
-    out
 }
 
 fn package_crate_ident(short: &str) -> syn::Ident {
@@ -230,25 +199,28 @@ fn package_crate_ident(short: &str) -> syn::Ident {
 }
 
 /// Generate the per-crate TEST_REGISTER (a const slice of `&dyn Package<NoExt>`
-/// instances) from Cargo.toml deps + the crate itself.
-fn test_harness() -> TokenStream {
-    let deps = package_deps();
-    let refs: Vec<TokenStream> = deps
-        .iter()
-        .map(|name| {
-            if *name == *PACKAGE_NAME {
-                quote! { &crate::P }
-            } else {
-                let crate_ident = package_crate_ident(name);
-                quote! { &#crate_ident::P }
-            }
-        })
-        .collect();
+/// instances) from Cargo.toml deps, dev-dependencies included, and the
+/// crate itself, core first.
+fn test_harness(c: &Crate) -> TokenStream {
+    let p = private();
+    let mut names: Vec<&str> = vec!["core"];
+    names.extend(c.deps.iter().map(|d| d.name.as_str()).filter(|n| *n != "core"));
+    if !names.contains(&c.name.as_str()) {
+        names.push(&c.name);
+    }
+    let refs = names.iter().map(|name| {
+        if *name == c.name {
+            quote! { &crate::P }
+        } else {
+            let crate_ident = package_crate_ident(name);
+            quote! { &#crate_ident::P }
+        }
+    });
     quote! {
         /// Package instances for all dependencies + this crate (for testing).
         #[cfg(test)]
         pub(crate) const TEST_REGISTER:
-            &[&dyn ::graphix_package::Package<::graphix_rt::NoExt>] = &[
+            &[&dyn ::graphix_package::Package<#p::graphix_rt::NoExt>] = &[
             #(#refs),*
         ];
     }
@@ -256,6 +228,7 @@ fn test_harness() -> TokenStream {
 
 // the vfs for this package, decoded from the build.rs AST blob
 fn graphix_files() -> Vec<TokenStream> {
+    let p = private();
     // Each module stays packed in `VfsEntry.packed` and is decoded when
     // it is resolved.
     vec![quote! {
@@ -263,10 +236,10 @@ fn graphix_files() -> Vec<TokenStream> {
             const GRAPHIX_AST_BLOB: &[u8] =
                 include_bytes!(concat!(env!("OUT_DIR"), "/graphix_ast.pack"));
             for (path, entry) in
-                ::graphix_compiler::expr::serialize::unpack_index(GRAPHIX_AST_BLOB)?
+                #p::graphix_compiler::expr::serialize::unpack_index(GRAPHIX_AST_BLOB)?
             {
                 if modules.contains_key(&path) {
-                    ::anyhow::bail!("duplicate graphix module {path}")
+                    #p::anyhow::bail!("duplicate graphix module {path}")
                 }
                 modules.insert(path, entry);
             }
@@ -274,9 +247,8 @@ fn graphix_files() -> Vec<TokenStream> {
     }]
 }
 
-fn main_program_impl() -> TokenStream {
-    let main_gx = GRAPHIX_SRC.join("main.gx");
-    if main_gx.exists() {
+fn main_program_impl(c: &Crate) -> TokenStream {
+    if c.graphix_src().join("main.gx").exists() {
         quote! {
             fn main_program(&self) -> Option<&'static str> {
                 if cfg!(feature = "standalone") {
@@ -293,18 +265,19 @@ fn main_program_impl() -> TokenStream {
     }
 }
 
-fn register_builtins(builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
-    let package_name = &*PACKAGE_NAME;
+fn register_builtins(c: &Crate, builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
+    let p = private();
+    let package_name = &c.name;
     builtins.iter().map(|entry| {
         let reg_type = &entry.reg_type;
         quote! {
             {
-                let name: &str = <#reg_type as ::graphix_compiler::BuiltIn<::graphix_rt::GXRt<X>, X::UserEvent>>::NAME;
+                let name: &str = <#reg_type as #p::graphix_compiler::BuiltIn<#p::graphix_rt::GXRt<X>, X::UserEvent>>::NAME;
                 if name.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
-                    ::anyhow::bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
+                    #p::anyhow::bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
                 }
                 if !name.starts_with(#package_name) {
-                    ::anyhow::bail!("invalid builtin {} name must start with package name {}", name, #package_name)
+                    #p::anyhow::bail!("invalid builtin {} name must start with package name {}", name, #package_name)
                 }
                 ctx.register_builtin::<#reg_type>()?
             }
@@ -345,135 +318,132 @@ fn check_args(name: &str, mut req: Vec<&'static str>, args: &Punctuated<Pat, Com
     }
 }
 
-fn is_custom(is_custom: &Option<syn::ExprClosure>) -> TokenStream {
-    match is_custom {
-        None => quote! { false },
-        Some(cl) => {
-            check_args("is_custom", vec!["gx", "env", "e"], &cl.inputs);
-            let body = &cl.body;
-            quote! { #body }
-        }
-    }
-}
-
-fn init_custom(init_custom: &Option<syn::ExprClosure>) -> TokenStream {
-    match init_custom {
-        None => quote! { unreachable!() },
-        Some(cl) => {
-            check_args(
-                "init_custom",
-                vec!["gx", "env", "stop", "e", "run_on_main"],
-                &cl.inputs,
-            );
-            let body = &cl.body;
-            quote! { #body }
-        }
-    }
-}
-
-#[proc_macro]
-pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    check_invariants();
-    let input = parse_macro_input!(input as DefPackage);
-    let register_builtins = register_builtins(&input.builtins);
-    let is_custom = is_custom(&input.is_custom);
-    let init_custom = init_custom(&input.init_custom);
-    let graphix_files = graphix_files();
-    let main_program = main_program_impl();
-    let test_harness = test_harness();
-    let package_name = &*PACKAGE_NAME;
-
-    let dep_registers: Vec<TokenStream> = runtime_deps()
-        .iter()
-        .filter(|name| **name != *PACKAGE_NAME)
-        .map(|name| {
-            let crate_ident = package_crate_ident(name);
-            quote! {
-                ::graphix_package::Package::<X>::register(
-                    &#crate_ident::P,
-                    ctx,
-                    modules,
-                    root_mods,
-                )?;
-            }
-        })
-        .collect();
-
-    quote! {
-        pub struct P;
-
+/// The package's helpers for its custom display, and the body of
+/// `maybe_init_custom`: a package without one claims nothing.
+fn custom(
+    custom: &Option<(syn::ExprClosure, syn::ExprClosure)>,
+) -> (TokenStream, TokenStream) {
+    let p = private();
+    let Some((is, init)) = custom else {
+        return (
+            quote! {},
+            quote! { Box::pin(async move { Ok(::graphix_package::CustomResult::NotCustom(e)) }) },
+        );
+    };
+    check_args("is_custom", vec!["gx", "env", "e"], &is.inputs);
+    check_args(
+        "init_custom",
+        vec!["gx", "env", "stop", "e", "run_on_main"],
+        &init.inputs,
+    );
+    let (is, init) = (&is.body, &init.body);
+    let helpers = quote! {
         impl P {
             // The author's bodies keep their exact signatures; the trait's
             // `maybe_init_custom` orchestrates them.
             #[allow(unused)]
-            fn __is_custom<X: ::graphix_rt::GXExt>(
-                gx: &::graphix_rt::GXHandle<X>,
-                env: &::graphix_compiler::env::Env,
-                e: &::graphix_rt::CompExp<X>,
+            fn __is_custom<X: #p::graphix_rt::GXExt>(
+                gx: &#p::graphix_rt::GXHandle<X>,
+                env: &#p::graphix_compiler::env::Env,
+                e: &#p::graphix_rt::CompExp<X>,
             ) -> bool {
-                #is_custom
+                #is
             }
 
             #[allow(unused)]
-            async fn __init_custom<X: ::graphix_rt::GXExt>(
-                gx: &::graphix_rt::GXHandle<X>,
-                env: &::graphix_compiler::env::Env,
+            async fn __init_custom<X: #p::graphix_rt::GXExt>(
+                gx: &#p::graphix_rt::GXHandle<X>,
+                env: &#p::graphix_compiler::env::Env,
                 stop: ::graphix_package::Stop,
-                e: ::graphix_rt::CompExp<X>,
+                e: #p::graphix_rt::CompExp<X>,
                 run_on_main: ::graphix_package::MainThreadHandle,
-            ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
-                #init_custom
+            ) -> #p::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {
+                #init
             }
         }
+    };
+    let body = quote! {
+        Box::pin(async move {
+            if !P::__is_custom::<X>(gx, env, &e) {
+                return Ok(::graphix_package::CustomResult::NotCustom(e));
+            }
+            let (tx, rx) = #p::tokio::sync::oneshot::channel();
+            let custom =
+                P::__init_custom::<X>(gx, env, tx, e, run_on_main.clone())
+                    .await?;
+            Ok(::graphix_package::CustomResult::Custom(
+                ::graphix_package::Cdc { stop: rx, custom },
+            ))
+        })
+    };
+    (helpers, body)
+}
 
-        impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
+#[proc_macro]
+pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let c = Crate::load();
+    check_invariants(&c);
+    let input = parse_macro_input!(input as DefPackage);
+    let p = private();
+    let register_builtins = register_builtins(&c, &input.builtins);
+    let (custom_helpers, maybe_init_custom) = custom(&input.custom);
+    let graphix_files = graphix_files();
+    let main_program = main_program_impl(&c);
+    let test_harness = test_harness(&c);
+    let package_name = &c.name;
+    let dep_registers = c.runtime().filter(|d| d.name != c.name).map(|d| {
+        let crate_ident = package_crate_ident(&d.name);
+        quote! {
+            ::graphix_package::Package::<X>::register(
+                &#crate_ident::P,
+                ctx,
+                modules,
+                root_mods,
+            )?;
+        }
+    });
+    quote! {
+        pub struct P;
+
+        #custom_helpers
+
+        impl<X: #p::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
                 &self,
-                ctx: &mut ::graphix_compiler::ExecState<::graphix_rt::GXRt<X>, X::UserEvent>,
-                modules: &mut ::ahash::AHashMap<
-                    ::netidx_core::path::Path,
-                    ::graphix_compiler::expr::VfsEntry,
+                ctx: &mut #p::graphix_compiler::ExecState<#p::graphix_rt::GXRt<X>, X::UserEvent>,
+                modules: &mut #p::ahash::AHashMap<
+                    #p::netidx_core::path::Path,
+                    #p::graphix_compiler::expr::VfsEntry,
                 >,
-                root_mods: &mut ::graphix_package::IndexSet<::arcstr::ArcStr>,
-            ) -> ::anyhow::Result<()> {
+                root_mods: &mut ::graphix_package::IndexSet<#p::arcstr::ArcStr>,
+            ) -> #p::anyhow::Result<()> {
                 if root_mods.contains(#package_name) {
                     return Ok(());
                 }
                 #(#dep_registers)*
                 #(#register_builtins;)*
                 #(#graphix_files;)*
-                root_mods.insert(::arcstr::literal!(#package_name));
+                root_mods.insert(#p::arcstr::literal!(#package_name));
                 ctx.env
                     .package_roots
-                    .insert(::arcstr::literal!(#package_name));
+                    .insert(#p::arcstr::literal!(#package_name));
                 Ok(())
             }
 
             fn maybe_init_custom<'a>(
                 &'a self,
-                gx: &'a ::graphix_rt::GXHandle<X>,
-                env: &'a ::graphix_compiler::env::Env,
-                e: ::graphix_rt::CompExp<X>,
+                gx: &'a #p::graphix_rt::GXHandle<X>,
+                env: &'a #p::graphix_compiler::env::Env,
+                e: #p::graphix_rt::CompExp<X>,
                 run_on_main: &'a ::graphix_package::MainThreadHandle,
             ) -> ::std::pin::Pin<
                 Box<
                     dyn ::std::future::Future<
-                        Output = ::anyhow::Result<::graphix_package::CustomResult<X>>,
+                        Output = #p::anyhow::Result<::graphix_package::CustomResult<X>>,
                     > + 'a,
                 >,
             > {
-                Box::pin(async move {
-                    if !P::__is_custom::<X>(gx, env, &e) {
-                        return Ok(::graphix_package::CustomResult::NotCustom(e));
-                    }
-                    let (tx, rx) = ::tokio::sync::oneshot::channel();
-                    let custom =
-                        P::__init_custom::<X>(gx, env, tx, e, run_on_main.clone())
-                            .await?;
-                    Ok(::graphix_package::CustomResult::Custom(
-                        ::graphix_package::Cdc { stop: rx, custom },
-                    ))
-                })
+                #maybe_init_custom
             }
 
             #main_program
@@ -490,9 +460,10 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// `.add_packages(...)`) so `_` resolves.
 #[proc_macro]
 pub fn packages(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let pushes: Vec<TokenStream> = graphix_deps_ordered()
-        .iter()
-        .map(|(short, optional)| {
+    let c = Crate::load();
+    let pushes: Vec<TokenStream> = c
+        .runtime()
+        .map(|Dep { name: short, optional, .. }| {
             let crate_ident = package_crate_ident(short);
             let push = quote! {
                 v.push(
@@ -528,10 +499,11 @@ pub fn packages(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// Use as `const X: &[&dyn Package<NoExt>] = graphix_package::package_refs!();`.
 #[proc_macro]
 pub fn package_refs(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let refs: Vec<TokenStream> = graphix_deps_ordered()
-        .iter()
-        .map(|(short, _optional)| {
-            let crate_ident = package_crate_ident(short);
+    let c = Crate::load();
+    let refs: Vec<TokenStream> = c
+        .runtime()
+        .map(|d| {
+            let crate_ident = package_crate_ident(&d.name);
             quote! { &#crate_ident::P }
         })
         .collect();

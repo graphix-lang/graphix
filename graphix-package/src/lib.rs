@@ -23,6 +23,13 @@ pub use graphix_derive::{package_refs, packages};
 use graphix_rt::{CompExp, GXExt, GXHandle, GXRt};
 use handlebars::Handlebars;
 pub use indexmap::IndexSet;
+
+/// What `defpackage!` expands to names, so a package depends on these
+/// only through this crate.
+#[doc(hidden)]
+pub mod __private {
+    pub use {ahash, anyhow, arcstr, graphix_compiler, graphix_rt, netidx_core, tokio};
+}
 use netidx_value::Value;
 use reqwest::Url;
 use serde_json::json;
