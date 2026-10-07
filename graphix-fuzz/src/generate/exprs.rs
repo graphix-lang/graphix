@@ -291,7 +291,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
     }
     let d = depth - 1;
     match ty {
-        GenType::Array(e) => match rng.below(6) {
+        GenType::Array(e) => match rng.below(7) {
             0 => {
                 let d_ty = map_source_elem(rng, e);
                 let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
@@ -325,9 +325,6 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                     "list::to_array(list::filter(list::from_array({src}), |{binder}| {body}))"
                 ))
             }
-            // flat_map's callback returns ['b, Array<'b>] and the checker
-            // binds 'b to the body without backtracking, so only a scalar
-            // element body is unambiguous
             // CR claude for claude: [test-gap] This arm is the only flat_map the
             // generator draws, and its callback returns a scalar, so the splice is
             // never generated. try_hof never draws array::filter_map or find_map (two
@@ -340,10 +337,22 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // array-returning flat_map bodies, filter_map and find_map arms, and the
             // list and map twins (map::map, map::fold, map::filter_map, map::union with
             // overlapping keys). (x-engine-collections-11)
-            2 if e.is_scalar() => {
-                let d_ty = types::scalar_type(rng);
-                let HofParts { src, binder, body } = map_parts(ctx, rng, e, d_ty, d);
+            // 2026-10-06 claude: flat_map's callback returns an array of any element
+            // type, filter_map's an option and find_map's (below) an option; the
+            // list and map twins remain.
+            // flat_map's callback returns the collection it splices
+            2 => {
+                let d_ty = map_source_elem(rng, e);
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, &GenType::Array(e.clone()), d_ty, d);
                 Some(format!("array::flat_map({src}, |{binder}| {body})"))
+            }
+            // filter_map keeps the payloads its callback does not null
+            3 if e.is_scalar() => {
+                let d_ty = map_source_elem(rng, e);
+                let HofParts { src, binder, body } =
+                    map_parts(ctx, rng, &GenType::Nullable(e.clone()), d_ty, d);
+                Some(format!("array::filter_map({src}, |{binder}| {body})"))
             }
             _ => {
                 // occasionally an over-limit count (> MAX_ARRAY_INIT_LEN):
@@ -392,6 +401,12 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             }
             _ => None,
         },
+        // find_map: the first payload its callback does not null
+        GenType::Nullable(e) if e.is_scalar() && rng.below(3) == 0 => {
+            let d_ty = map_source_elem(rng, e);
+            let HofParts { src, binder, body } = map_parts(ctx, rng, ty, d_ty, d);
+            Some(format!("array::find_map({src}, |{binder}| {body})"))
+        }
         // find: the union return `[e, null]` is the Nullable type
         GenType::Nullable(e) if e.is_scalar() => {
             let src = gen_pinned(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
@@ -427,7 +442,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 format!(
                     "{{ let rec {lp} = |{ln}: i64, {la}: i64| -> i64 \
                      select {ln} {{ i64:0 => {la}, _ => {lp}({ln} - i64:1, {la} + {ln}) }}; \
-                     ({lp}(i64:{depth}, i64:0) * i64:0) + {combine} }}"
+                     {lp}(i64:{depth}, i64:0) + {combine} }}"
                 )
             } else {
                 gen_typed(&inner, rng, ty, d.min(2))

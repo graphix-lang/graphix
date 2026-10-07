@@ -440,18 +440,6 @@ fn gen_slots(
         } else if chance(rng, cfg.p_catch) {
             let n = stmts.len();
             let acc = format!("cerr{n}");
-            // CR claude for claude: [test-gap] This sink never receives an error, and
-            // nothing reads it. Every `?` the static generator emits sits in its own `{
-            // catch(e) dflt; x? }` (exprs.rs:523, funcs.rs:423), and `cerrN` never
-            // enters the vocabulary. Inside that wrapper a raise only makes the block
-            // bottom (a catch never produces), so `dflt` goes unobserved too. As a
-            // result this lane never compares a raise routed across a statement or a
-            // call, or the error value delivered: `{ let c: Error<Any> = never();
-            // catch(e) c <- e; let v = (i64:7 /? i64:0)?; i64:3 }` traces `[0:i64:3]`
-            // whether or not the raise reaches `c`. Emit a bare `x?` where a slot catch
-            // covers the block (also inside a lambda called from it), and make the sink
-            // observable, e.g. `n <- c ~ (n + i64:1)` with `n` pushed as I64 (that
-            // traces 0 then 1 on the program above). (fuzz-gen-a-03)
             stmts.push(format!("let {acc}: Error<Any> = never()"));
             let handler = if rng.below(2) == 0 {
                 format!("{acc} <- e")
@@ -459,6 +447,27 @@ fn gen_slots(
                 format!("{{ let m = e; {acc} <- m }}")
             };
             stmts.push(format!("catch(e) {handler}"));
+            // the count of errors caught: observable, so a raise routed
+            // to the wrong handler, or lost, diverges
+            let count = format!("ncerr{n}");
+            stmts.push(format!("let {count} = i64:0"));
+            stmts.push(format!("{count} <- {acc} ~ ({count} + i64:1)"));
+            ctx.push(count, I64);
+            // a raise the slot catch handles: from the block itself, or
+            // from a lambda called in it (the handler follows the call)
+            let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
+            let a = exprs::gen_typed(ctx, rng, &I64, 1);
+            let b = exprs::gen_typed(ctx, rng, &I64, 1);
+            let raised = ctx.fresh();
+            if chance(rng, 0.5) {
+                stmts.push(format!("let {raised} = ({a} {op} {b})?"));
+            } else {
+                let f = ctx.fresh();
+                let x = ctx.fresh();
+                stmts.push(format!("let {f} = |{x}: i64| -> i64 ({x} {op} {b})?"));
+                stmts.push(format!("let {raised} = {f}({a})"));
+            }
+            ctx.push(raised, I64);
         } else if chance(rng, cfg.p_labeled_hof)
             && let hof = funcs::gen_labeled_hof(ctx, rng, cfg, stats)
             && !hof.is_empty()

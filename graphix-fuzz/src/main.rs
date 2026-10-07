@@ -207,7 +207,6 @@ fn feature_report(progs: &[String], ok: &[bool], reactive: bool) {
         ("list-lit", Box::new(sub("[<"))),
         ("collection-trait", Box::new(sub("Collection::"))),
         ("str", Box::new(sub("str::"))),
-        ("re", Box::new(sub("re::"))),
         ("variant", Box::new(sub("`"))),
         ("connect", Box::new(sub("<-"))),
         ("cast", Box::new(sub("cast<"))),
@@ -219,7 +218,8 @@ fn feature_report(progs: &[String], ok: &[bool], reactive: bool) {
         features.push(("reactive", Box::new(sub("schedule-v1"))));
     } else {
         features.extend([
-            ("trait-union-call", Box::new(sub("::both(")) as Box<dyn Fn(&str) -> bool>),
+            ("re", Box::new(sub("re::")) as Box<dyn Fn(&str) -> bool>),
+            ("trait-union-call", Box::new(sub("::both("))),
             ("bounded-hof-call", Box::new(sub("::tsum("))),
             ("collection-generic-call", Box::new(sub("::csize("))),
             ("use-super", Box::new(sub("use super::"))),

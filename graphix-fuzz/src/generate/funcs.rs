@@ -209,10 +209,8 @@ pub(super) fn gen_labeled_hof(
 /// A polymorphic lambda binding in the explicit constraint form
 /// (`let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y`) plus, with
 /// `p_mono_pair`, two immediate call-site bindings at distinct numeric
-/// types. The explicit form is load-bearing: a bare unannotated lambda's
-/// params share one widening tvar, so its results poison any annotated
-/// context (see `gen_bare_lambda`). The body is params-only `+ - *` so
-/// the result type follows the args.
+/// types. The body is params-only `+ - *` so the result type follows the
+/// args.
 pub(super) fn gen_poly_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -252,9 +250,8 @@ pub(super) fn gen_poly_lambda(
 }
 
 /// A bare unannotated lambda (`let f = |a| a + a`) with two unannotated
-/// call sites at distinct numeric types. The params share one widening
-/// tvar, so the results are Number-wide and never enter the typed
-/// vocabulary; the bindings exist to create the two instantiation sites.
+/// call sites at distinct numeric types: each result has its arguments'
+/// type, and the lambda is callable vocabulary like an explicit one.
 pub(super) fn gen_bare_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -265,18 +262,7 @@ pub(super) fn gen_bare_lambda(
     let body = poly_body(rng, &names);
     let f = ctx.name_for_bind(rng, cfg);
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];
-    // f stays out of the callable vocabulary but must mask whatever it
-    // shadowed
-    // CR claude for claude: [test-gap] The premise here and in the doc comments at lines
-    // 231-234 and 273-276 is stale: a bare lambda's call result has its arguments'
-    // exact type, not a Number-wide one. `let f = |a, b| ((a * b) - (b + a)); let c: u8
-    // = f(u8:2, u8:2)` and `let g = |a| ((a * a) - a); let m: Array<v32> =
-    // array::map([v32:2, v32:1], g)` check and run at all 14 numeric types. As a result
-    // the bare lambda is never called again, and neither site binding below is pushed,
-    // so neither instance's value can reach the tail. Push `f` as `GenType::PolyFn {
-    // arity }` and each site's binding at its type (`Array<ty>` for the map form), and
-    // delete the stale rationale. (fuzz-gen-a-07)
-    ctx.push(f.clone(), GenType::Opaque);
+    ctx.push(f.clone(), GenType::PolyFn { arity });
     let (ta, tb) = distinct_numeric_pair(rng);
     // the two sites: calls, or (one param) the lambda passed as a value,
     // which instantiates per use only because the binding is generalized
@@ -286,9 +272,11 @@ pub(super) fn gen_bare_lambda(
         if values {
             let xs: Vec<_> = (0..2).map(|_| types::literal(rng, &ty)).collect();
             stmts.push(format!("let {cname} = array::map([{}], {f})", xs.join(", ")));
+            ctx.push(cname, GenType::Array(Box::new(ty)));
         } else {
             let args: Vec<_> = (0..arity).map(|_| types::literal(rng, &ty)).collect();
             stmts.push(format!("let {cname} = {f}({})", args.join(", ")));
+            ctx.push(cname, ty);
         }
     }
     stmts
@@ -495,21 +483,21 @@ pub(super) fn gen_rec_lambda(
     ctx.push(f.clone(), GenType::Opaque);
     let n = ctx.fresh();
     let m = ctx.fresh();
+    let shape = rng.below(4);
+    // the tail loop's accumulator, which the base arm returns
+    let acc = (shape == 1).then(|| ctx.fresh());
     let mark = ctx.mark();
     ctx.push(m.clone(), I64);
-    // CR claude for claude: [test-gap] `base` is generated before arm 1 creates `acc`
-    // (line 507), so the accumulator tail loop always returns `base` and its carried
-    // `acc + m` is dead in every instance. The fold callback's let rec (exprs.rs:436)
-    // is multiplied by `i64:0`, which erases its value the same way. A JIT tail loop
-    // that carries a parameter wrongly therefore agrees unless it bottoms: `let rec v0
-    // = |v1: i64, v3: i64| -> i64 select v1 { v2 if v2 <= i64:0 => i64:-100, v2 =>
-    // v0(v2 - i64:1, v3 + v2) }; v0(i64:5, i64:0)` is -100 whatever `v3` holds (fused,
-    // same in both engines). Draw the arm first and let arm 1's `base` see `acc` (or
-    // return `base + acc`), and drop the `* i64:0` (the loop's sum is at most 79,800).
-    // (fuzz-gen-a-05)
+    if let Some(acc) = &acc {
+        ctx.push(acc.clone(), I64);
+    }
     let base = exprs::gen_typed(ctx, rng, &I64, 1);
+    let base = match &acc {
+        Some(acc) => format!("({base} + {acc})"),
+        None => base,
+    };
     ctx.truncate(mark);
-    let (sig, stmt_args, step) = match rng.below(4) {
+    let (sig, stmt_args, step) = match shape {
         // non-tail
         0 => (
             format!("|{n}: i64| -> i64"),
@@ -518,7 +506,7 @@ pub(super) fn gen_rec_lambda(
         ),
         // tail loop with an accumulator
         1 => {
-            let acc = ctx.fresh();
+            let acc = acc.as_ref().expect("the tail loop's accumulator");
             (
                 format!("|{n}: i64, {acc}: i64| -> i64"),
                 format!("{}, i64:0", 1 + rng.below(12)),
