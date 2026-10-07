@@ -4527,21 +4527,6 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
             if ca != cb {
                 return Some(format!("verdicts differ: {ca:?} vs {cb:?}"));
             }
-            // CR claude for claude: [bug] This compares the two dumps in print order.
-            // fusion::fuse_each emits disjoint parts in rayon tasks (the children get
-            // RAYON_NUM_THREADS=2), and maybe_dump_clif prints each kernel as its task
-            // emits it, so the blocks come out in scheduling order and normalize_clif's
-            // first-seen numbering follows that order. Any program with two disjoint
-            // parts that call a function therefore reports a FLAP even though both
-            // children fused the same kernels. `(array::map(array::iter([[1, 2], [3]]),
-            // |x| x * 2), array::map(array::iter([[4], [5, 6]]), |x| x + 3))` flaps in
-            // 4 of 6 pairs with equal per-block multisets, and in 0 of 6 under
-            // GRAPHIX_FUSE_SERIAL=1; the corpus pins p6_two_folds and
-            // 00_map_filter_refire_rides_shared_cache flap in every pair, so the gate
-            // cannot pass. Compare the dumps as a sorted multiset of blocks, each
-            // normalized on its own, or print the dump at link from the pending list,
-            // which is in join order with final ids. probe:
-            // design/review-2026-10-05/repro/fuzz-lib-b-03.py (fuzz-lib-b-03)
             if da != db {
                 return Some(first_clif_difference(&da, &db));
             }

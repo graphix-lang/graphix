@@ -356,16 +356,25 @@ fn backend(
 }
 
 /// Every function of `pending`, its spill thunks and chunks included,
-/// in order; `pending` keeps the rest of each.
+/// in order; `pending` keeps the rest of each. This is where the CLIF is
+/// dumped: in join order with final ids, so a dump does not depend on
+/// how the compile tasks were scheduled.
 fn take_functions(pending: &mut [Pending]) -> Vec<(FuncId, Function)> {
     let mut work = Vec::with_capacity(pending.len());
     for p in pending.iter_mut() {
+        let name = &p.kernel.fn_name;
+        match &p.of {
+            PendingOf::Body { .. } => maybe_dump_clif(&p.func, name),
+            PendingOf::Wrapper { .. } => maybe_dump_clif(&p.func, "wrapper"),
+        }
         work.push((p.id, std::mem::replace(&mut p.func, Function::new())));
         if let PendingOf::Body { thunk, chunks, .. } = &mut p.of {
             if let Some((tid, t)) = thunk {
+                maybe_dump_clif(t, &format_compact!("{name} spill thunk"));
                 work.push((*tid, std::mem::replace(t, Function::new())));
             }
             for c in chunks.iter_mut() {
+                maybe_dump_clif(&c.func, &format_compact!("{name} chunk"));
                 work.push((c.id, std::mem::replace(&mut c.func, Function::new())));
             }
         }
@@ -1772,11 +1781,7 @@ fn emit_kernel_body(
         }
     };
     let emitted: EmittedBody = emitted.expect("emitted on success");
-    maybe_dump_clif(&func, &kernel.fn_name);
     let chunks = chunks.into_inner();
-    for c in chunks.iter() {
-        maybe_dump_clif(&c.func, &format_compact!("{} chunk", kernel.fn_name));
-    }
     let thunk = match self_thunk_id {
         None => None,
         Some(tid) => Some((tid, emit_trampoline(em, tid, func_id, &sig, false)?)),
@@ -1809,7 +1814,7 @@ fn emit_trampoline(
     id: FuncId,
     target: FuncId,
     target_sig: &Signature,
-    wrapper: bool,
+    #[cfg_attr(not(debug_assertions), expect(unused_variables))] wrapper: bool,
 ) -> Result<Function> {
     let sig = trampoline_signature(&*em.shared.isa);
     let func = em.build(id, sig, |names, helpers, b| {
@@ -1871,7 +1876,6 @@ fn emit_trampoline(
         b.ins().return_(&[]);
         Ok(())
     })?;
-    maybe_dump_clif(&func, if wrapper { "wrapper" } else { "spill thunk" });
     Ok(func)
 }
 

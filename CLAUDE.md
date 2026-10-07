@@ -835,7 +835,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_KERNELS=1` | each lambda kernel built: name, return type, ABI, state/site words |
 | `GRAPHIX_DBG_INVOKE=1` | each fused-kernel invocation with per-input fired/present |
 | `GRAPHIX_DBG_REGION=1` / `_FREEZE=1` | fused-region input wiring / freeze outcomes |
-| `GRAPHIX_DUMP_CLIF=1` | every kernel's CLIF (`u0:N` = helper registration order in `emit_helpers.rs`) |
+| `GRAPHIX_DUMP_CLIF=1` | every linked function's CLIF, at link in join order (`u0:N` = helper registration order in `emit_helpers.rs`) |
 | `GXDBG_CALLRET=1` | from inside JIT code (debug builds): each kernel's entry init word (tag 4) and return disc (2) and scrutinee accumulator (3) |
 | `GRAPHIX_DBG_VARS=1` | runtime variable events (ref/unref, set, same-cycle notify) — graphix-rt |
 | `GRAPHIX_DBG_PERF=1` | interp lazy-bind phase counters every 250ms |
