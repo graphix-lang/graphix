@@ -12,15 +12,6 @@ const LAMBDA: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The note "ASPIRE: Jit — the body does not fuse into a
-// kernel yet" is false here and above fused_arith (343), fused_tail_loop (361),
-// fused_mandelbrot (433), lazy_no_annotations (465), dyncall_hof (496),
-// nested_optional0 (684) and arg_update_after_bind (728): each body builds its kernel,
-// and `#[native]` on the call holds today. Delete these notes. On the fused_* tests,
-// put `#[native]` on the call so the name's claim is pinned, since FuseExpect::Jit
-// passes on any kernel. The note is still true for lambdamatch0 and
-// arg_update_before_bind, which build no kernel. (tests-lang-a-09)
 run!(lambda, LAMBDA, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
@@ -34,17 +25,23 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 }
 "#;
 
-// A monomorphic fn-typed param: `f(y) + 1` with `f: fn<'a: Number>` is
-// ill-typed (concrete arithmetic on an arbitrary rigid 'a).
-// CR claude for claude: [doc-drift] This comment describes the fixture this test
-// replaced, and its claim is now false. Under the rank-2 rule a call copies the
-// formal's own quantifier, so `let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
-// g(|x| x, 1)` checks and yields 2. Delete the comment; if that rank-2 case matters,
-// pin it in its own test. (tests-lang-a-13)
 run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A formal with its own quantifier is rank-2: each call of it copies 'a,
+// so the body may apply it at i64.
+const RANK2_FORMAL_APPLIED_AT_A_NUMBER: &str = r#"
+{
+  let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
+  g(|x| x, 1)
+}
+"#;
+
+run!(rank2_formal_applied_at_a_number, RANK2_FORMAL_APPLIED_AT_A_NUMBER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+});
 
 const TWO_RIGID_VARS_INDEPENDENT: &str = r#"
 {
@@ -349,11 +346,10 @@ run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
 const KIR_FUSED_ARITH: &str = r#"
 {
     let f = |a: i64, b: i64| -> i64 a * a + b * b;
-    f(3, 4)
+    #[native] f(3, 4)
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
@@ -367,11 +363,10 @@ const KIR_FUSED_TAIL_LOOP: &str = r#"
             0 => acc,
             _ => countdown(n - 1, acc + n)
         };
-    countdown(100, 0)
+    #[native] countdown(100, 0)
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -439,11 +434,10 @@ const KIR_FUSED_MANDELBROT: &str = r#"
             _ if zr * zr + zi * zi > 4.0 => i,
             _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
         };
-    iterate(0.0, 0.0, 1.0, 0.0, 10)
+    #[native] iterate(0.0, 0.0, 1.0, 0.0, 10)
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
@@ -475,7 +469,6 @@ const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
     Ok(Value::I64(5050)) => true,
     _ => false,
@@ -506,7 +499,6 @@ const KIR_DYNCALL_HOF: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
@@ -694,7 +686,6 @@ const NESTED_OPTIONAL0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(nested_optional0, NESTED_OPTIONAL0, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -738,7 +729,6 @@ const ARG_UPDATE_AFTER_BIND: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(arg_update_after_bind, ARG_UPDATE_AFTER_BIND, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 4]>() {
         Ok([0, 10, 20, 30]) => true,
@@ -841,21 +831,12 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
 // Taint escalation: a locally-unconsumed bottom bottoms only the
 // consuming path, never the whole kernel.
 
-// A fold whose init bottoms never dispatches; the independent tail fires.
-// CR claude for claude: [doc-drift] The comment above is false: this first fold returns 7
-// in both engines, because its callback never reads acc (as fold_tainted_init_recovers
-// asserts), so it does dispatch. The comment at line 844 describes a callback consuming
-// a bottom acc, but UNUSED_BOTTOM_COMPOSITE_WITH_HOF has no fold.
-// find_bottom_after_match, fold_tainted_init_consumed_bottoms and
-// nontail_result_as_fold_init claim a bottom or a fire their predicates never observe:
-// they check only `false` or an independent tail. Observe each claim with `any(r, -1)`;
-// today the consuming fold and the find give -1, and the first nontail fold gives 42.
-// (tests-lang-a-07)
+// A fold whose init is bottom still dispatches a callback that never
+// reads acc: the fold yields 7.
 const FOLD_BOTTOM_INIT_UNREAD_ACC: &str = r#"
 {
   let b = i64:1 / i64:0;
-  array::fold([i64:5, i64:7], b, |acc, x| x);
-  array::fold([i64:5, i64:7], i64:0, |acc, x| x)
+  any(array::fold([i64:5, i64:7], b, |acc, x| x), i64:-1)
 }
 "#;
 
@@ -863,7 +844,8 @@ run!(fold_bottom_init_unread_acc, FOLD_BOTTOM_INIT_UNREAD_ACC, |v: Result<&Value
     matches!(v, Ok(Value::I64(7)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// The dual: the callback consumes the bottom acc; the tail still fires.
+// A bottom beside a collection operation in a composite bottoms the
+// composite, not the block: the tail still fires.
 const UNUSED_BOTTOM_COMPOSITE_WITH_HOF: &str = r#"
 {
   let v = (array::map([i64:1], |i| i), (i64:1 / i64:0));
@@ -896,13 +878,13 @@ run!(unused_bottom_map_slot, UNUSED_BOTTOM_MAP_SLOT, |v: Result<&Value>| matches
 const FIND_BOTTOM_AFTER_MATCH: &str = r#"
 {
   let r = array::find([i64:1, i64:0], |x| (i64:5 / x) > i64:0);
-  false
+  any(r, i64:-1)
 }
 "#;
 
 run!(find_bottom_after_match, FIND_BOTTOM_AFTER_MATCH, |v: Result<&Value>| matches!(
     v,
-    Ok(Value::Bool(false))
+    Ok(Value::I64(-1))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
 // A tainted fold init poisons the acc delivery only: a callback that
@@ -925,14 +907,14 @@ const FOLD_TAINTED_INIT_CONSUMED_BOTTOMS: &str = r#"
   let rec f = |n: i64| -> i64 select n { m if m <= i64:0 => i64:1 % m, m => f(m - i64:1) };
   let v = f(i64:1);
   let r = array::fold([i64:5, i64:7], v, |a, x| a + x);
-  false
+  any(r, i64:-1)
 }
 "#;
 
 run!(
     fold_tainted_init_consumed_bottoms,
     FOLD_TAINTED_INIT_CONSUMED_BOTTOMS,
-    |v: Result<&Value>| matches!(v, Ok(Value::Bool(false)))
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(-1)))
 );
 
 // A capture read only by a sleeping select arm does not re-fire the
@@ -1090,13 +1072,11 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A recursion's result as a fold's init beside an independent fold:
-// both fire.
+// A non-tail recursion's result as a fold's init: the fold fires.
 const NONTAIL_RESULT_AS_FOLD_INIT: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n { i64:0 => i64:0, _ => n + f(n - i64:1) };
-  array::fold([i64:41], f(i64:256), |acc, x| x + i64:1);
-  array::fold([i64:41], i64:0, |acc, x| x + i64:1)
+  any(array::fold([i64:41], f(i64:256), |acc, x| x + i64:1), i64:-1)
 }
 "#;
 
