@@ -60,9 +60,9 @@ let radio_style = |
 
 let rule_style = |
   #color: [Color, null] = null,
-  #radius: [f64, null] = null,
-  #width: [f64, null] = null
-| -> RuleStyle { color, radius, width };
+  #fill_percent: [f64, null] = null,
+  #radius: [f64, null] = null
+| -> RuleStyle { color, fill_percent, radius };
 
 let scrollable_style = |
   #background: [Color, null] = null,

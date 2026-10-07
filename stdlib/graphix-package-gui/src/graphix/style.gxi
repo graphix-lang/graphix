@@ -81,7 +81,9 @@ type RadioStyle = {
   text_color: [Color, null]
 };
 
-type RuleStyle = { color: [Color, null], radius: [f64, null], width: [f64, null] };
+/// fill_percent is how much of its container's length the line covers,
+/// 0 to 100; the line's thickness is the rule widget's own #height or #width.
+type RuleStyle = { color: [Color, null], fill_percent: [f64, null], radius: [f64, null] };
 
 type ScrollableStyle = {
   background: [Color, null],
@@ -201,8 +203,8 @@ val radio_style: fn(
 /// Build a RuleStyle with optional overrides
 val rule_style: fn(
   ?#color: [Color, null],
-  ?#radius: [f64, null],
-  ?#width: [f64, null]
+  ?#fill_percent: [f64, null],
+  ?#radius: [f64, null]
 ) -> RuleStyle;
 
 /// Build a ScrollableStyle with optional overrides

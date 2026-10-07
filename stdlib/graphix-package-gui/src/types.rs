@@ -405,20 +405,6 @@ impl ImageSourceV {
                 if pixels.is_empty() {
                     return Ok(None);
                 }
-                // CR claude for claude: [risk] Nothing checks width and height against
-                // pixels.len() before this call. winit computes width * height in u32,
-                // so an icon like `Rgba({width: u32:65536, height: u32:65536, pixels:
-                // ..})` overflows. In a dev build that panics on the GUI main thread,
-                // and main.rs runs the event loop without catch_unwind, so the shell
-                // exits. In release the product wraps and the platform gets an icon
-                // header that disagrees with its buffer. clipboard.rs
-                // image_args_from_value has the same gap: on X11 a length mismatch hits
-                // the image crate's assert_eq in the PNG encoder and returns as
-                // ClipboardError("spawn_blocking: ... panicked"), and that function
-                // also copies the pixels twice. Check u64 width * height * 4 ==
-                // pixels.len() where the value is decoded (the "Rgba" arm of
-                // ImageSourceV::from_value and image_args_from_value) and refuse the
-                // rest. Not run: needs a window. (gui-core-14)
                 Ok(Some(winit::window::Icon::from_rgba(
                     pixels.to_vec(),
                     *width,
@@ -427,6 +413,16 @@ impl ImageSourceV {
             }
         }
     }
+}
+
+/// An RGBA image's pixels are four bytes for every one of its width x
+/// height pixels.
+pub(crate) fn check_rgba(width: u32, height: u32, len: usize) -> Result<()> {
+    let want = width as u64 * height as u64 * 4;
+    if want != len as u64 {
+        bail!("an RGBA image of {width} x {height} needs {want} bytes, not {len}")
+    }
+    Ok(())
 }
 
 fn decode_svg_icon(data: &[u8]) -> Result<Option<winit::window::Icon>> {
@@ -464,6 +460,7 @@ impl FromValue for ImageSourceV {
                             pixels: iced_core::Bytes,
                         }
                         let Fields { width, height, pixels } = val.cast_to()?;
+                        check_rgba(width, height, pixels.len())?;
                         Ok(Self::Rgba { width, height, pixels })
                     }
                     s => bail!("invalid ImageSource variant: {s}"),

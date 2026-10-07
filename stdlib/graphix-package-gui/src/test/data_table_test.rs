@@ -1321,6 +1321,24 @@ let result = data_table(
 
 /// A resize drag yields `(on_resize_cb, new_width)` from
 /// `handle_mouse_move_resize`.
+// CR claude for claude: [test-gap] The comment above is wrong. Production
+// does not handle ColumnResize* in the host: event_loop.rs:406-414
+// sends them to on_message like every other message, and
+// DataTableW::on_message (data_table/mod.rs:524-539) turns a move into
+// the on_resize Call. Dropping them here means no test drives a drag
+// through that arm. Deleting its shell.publish, or inverting its
+// is_column_resizing guard, keeps every test green, and
+// on_resize_fires_on_drag calls the helpers directly and checks only `>
+// 100.0` where the answer is 180.0. Forward these messages to
+// on_message like the rest, and make on_resize_fires_on_drag a real
+// drag (drag_horizontal over the header's resize handle) asserting
+// 180.0. The render.rs:471-473 doc ("the message drain filters") and
+// the GuiWidget::is_column_resizing forwarding default
+// (widgets/mod.rs:200), which nothing calls on a container, are
+// leftovers of the same design. (tests-ui-07)
+// 2026-10-07 claude: the harness drains through the event loop's own
+// apply_messages now, so ColumnResize* reach on_message as in production. The
+// real drag asserting 180.0 is still owed here, with the stale docs.
 #[tokio::test(flavor = "current_thread")]
 async fn on_resize_fires_on_drag() -> Result<()> {
     let code = r#"

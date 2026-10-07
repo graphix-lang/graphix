@@ -54,9 +54,9 @@ fn file_list_from_non_array_returns_none() {
 }
 
 #[test]
-fn image_args_from_bad_value_returns_none() {
-    assert!(image_args_from_value(&Value::Null).is_none());
-    assert!(image_args_from_value(&Value::from("not a struct")).is_none());
+fn image_args_from_bad_value_is_an_error() {
+    assert!(image_args_from_value(&Value::Null).is_err());
+    assert!(image_args_from_value(&Value::from("not a struct")).is_err());
 }
 
 #[test]
@@ -65,66 +65,31 @@ fn html_args_from_bad_value_returns_none() {
     assert!(html_args_from_value(&Value::from(42)).is_none());
 }
 
-// These share the real system clipboard; run with --test-threads=1.
-
-// CR claude for claude: [test-gap] These four ignored tests call arboard directly, so
-// they test the third-party crate; graphix's clipboard builtins (ClipboardBuiltin,
-// with_clipboard, the nine ops and their ClipboardError mapping) have no test. They
-// also share the system clipboard and need --test-threads=1, which CLAUDE.md says never
-// to rely on: under --include-ignored, clipboard_clear can clear the clipboard between
-// clipboard_write_read_text's set and get. Replace them with one ignored test, with a
-// reason, that writes and reads back through the graphix builtins in a single program.
-// (tests-ui.r2-15)
-// CR claude for claude: [dead] These four #[ignore] tests call arboard directly and
-// exercise no graphix code. A plain ignore runs in no gate, and the comment asks for
-// --test-threads=1, which the project never relies on: delete them. What goes unpinned
-// is the graphix side. image_args_from_value (clipboard.rs:300) accepts pixels whose
-// length is not width*height*4, and on Linux arboard's PNG encode hits image's
-// assert_eq in PngEncoder::write_image. So write_image panics inside spawn_blocking,
-// and the program gets ClipboardError("spawn_blocking: task .. panicked ..") with a
-// panic on stderr. Check the length there and pin it beside
-// image_args_from_bad_value_returns_none. (tests-ui-15)
+/// An image whose pixels are not width x height x 4 bytes is refused
+/// where it is decoded, before arboard's encoder asserts on it.
 #[test]
-#[ignore]
-fn clipboard_write_read_text() {
-    let mut cb = arboard::Clipboard::new().unwrap();
-    cb.set_text("graphix_clipboard_test").unwrap();
-    let text = cb.get_text().unwrap();
-    assert_eq!(text, "graphix_clipboard_test");
-}
-
-#[test]
-#[ignore]
-fn clipboard_clear() {
-    let mut cb = arboard::Clipboard::new().unwrap();
-    cb.set_text("graphix_clear_test").unwrap();
-    assert!(cb.get_text().is_ok());
-    cb.clear().unwrap();
-    assert!(cb.get_text().is_err());
-}
-
-#[test]
-#[ignore]
-fn clipboard_image_roundtrip() {
-    let pixels = vec![255, 0, 0, 255, 0, 255, 0, 255];
-    let img = arboard::ImageData {
-        width: 2,
+fn image_args_refuse_a_wrong_length() {
+    let v = image_to_value(arboard::ImageData {
+        width: 3,
         height: 1,
-        bytes: std::borrow::Cow::Owned(pixels.clone()),
-    };
-    let mut cb = arboard::Clipboard::new().unwrap();
-    cb.set_image(img).unwrap();
-    let read_back = cb.get_image().unwrap();
-    assert_eq!(read_back.width, 2);
-    assert_eq!(read_back.height, 1);
-    assert_eq!(read_back.bytes.as_ref(), pixels.as_slice());
+        bytes: std::borrow::Cow::Owned(vec![0; 8]),
+    });
+    assert!(image_args_from_value(&v).is_err());
 }
 
-#[test]
-#[ignore]
-fn clipboard_html_roundtrip() {
-    let mut cb = arboard::Clipboard::new().unwrap();
-    cb.set().html("<b>hello</b>", Some("hello")).unwrap();
-    let html = cb.get().html().unwrap();
-    assert!(html.contains("<b>hello</b>"));
+/// The builtins write and read back the system clipboard.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "uses the system clipboard and a display"]
+async fn clipboard_text_round_trips() -> anyhow::Result<()> {
+    let code = "\
+        use gui::text::text;\n\
+        let got = \"\";\n\
+        got <- gui::clipboard::read_text(gui::clipboard::write_text(\"graphix_clip\")$)$;\n\
+        let result = text(&got)";
+    let mut h = super::GuiTestHarness::new(code).await?;
+    h.watch("test::got").await?;
+    let back = |h: &mut super::GuiTestHarness| {
+        h.get_watched("test::got") == Some(&Value::from("graphix_clip"))
+    };
+    h.wait_until(back, std::time::Duration::from_secs(5), "read back").await
 }

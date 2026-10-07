@@ -1,6 +1,6 @@
 use super::{InteractionHarness, expect_call, expect_call_with_args};
 use anyhow::Result;
-use iced_core::{Point, Size};
+use iced_core::{Event, Point, Size, mouse};
 use netidx::publisher::Value;
 
 const IMPORTS: &str = "\
@@ -462,7 +462,8 @@ async fn scrollable_on_scroll_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 50.0)).await?;
     h.move_cursor(Point::new(10.0, 10.0));
-    let msgs = h.scroll(0.0, 3.0);
+    // down: the first frame published the viewport at the top
+    let msgs = h.scroll(0.0, -3.0);
     expect_call(&msgs);
     Ok(())
 }
@@ -634,5 +635,38 @@ async fn stack_children_follow_rotation() -> Result<()> {
     let msgs = h.click(WIDGET_HIT);
     h.dispatch_calls(&msgs).await?;
     assert_eq!(order(&h), [1, 0]);
+    Ok(())
+}
+
+/// Ctrl+V pastes into a focused text input: the input takes Ctrl from the
+/// ModifiersChanged event the loop forwards.
+#[tokio::test(flavor = "current_thread")]
+async fn text_input_ctrl_v_pastes() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let result = text_input(#on_input: |s| null, &\"\")"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    h.clipboard.0 = Some("pasted".into());
+    h.click(WIDGET_HIT);
+    let msgs = h.press_ctrl("v");
+    expect_call_with_args(
+        &msgs,
+        |args| matches!(args.iter().next(), Some(Value::String(s)) if &**s == "pasted"),
+    );
+    Ok(())
+}
+
+/// The pointer leaving the window leaves a mouse area too.
+#[tokio::test(flavor = "current_thread")]
+async fn mouse_area_exits_when_the_cursor_leaves_the_window() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let result = mouse_area(#on_exit: |c| null, &text(&\"Zone\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    h.move_cursor(WIDGET_HIT);
+    let msgs = h.process_events(&[Event::Mouse(mouse::Event::CursorLeft)]);
+    expect_call(&msgs);
     Ok(())
 }

@@ -16,6 +16,7 @@ mod canvas_test;
 mod chart_test;
 mod clipboard_test;
 mod data_table_test;
+mod frame_test;
 mod interaction_test;
 mod theme_test;
 mod widgets_test;
@@ -177,43 +178,13 @@ impl GuiTestHarness {
     /// Dispatch iced Messages through the runtime and widget as
     /// `GuiHandler::about_to_wait` does, then drain.
     async fn dispatch_calls(&mut self, msgs: &[Message]) -> Result<()> {
-        // FIFO like the real event loop, so CellEdit precedes
-        // CellEditSubmit.
-        let mut pending: std::collections::VecDeque<Message> =
-            msgs.iter().cloned().collect();
-        while let Some(msg) = pending.pop_front() {
-            match msg {
-                Message::Nop => {}
-                Message::Call(id, args) => {
-                    self.gx.call(id, args)?;
-                }
-                // Host-handled in production; tests call the widget
-                // helpers directly.
-                // CR claude for claude: [test-gap] The comment above is wrong. Production
-                // does not handle ColumnResize* in the host: event_loop.rs:406-414
-                // sends them to on_message like every other message, and
-                // DataTableW::on_message (data_table/mod.rs:524-539) turns a move into
-                // the on_resize Call. Dropping them here means no test drives a drag
-                // through that arm. Deleting its shell.publish, or inverting its
-                // is_column_resizing guard, keeps every test green, and
-                // on_resize_fires_on_drag calls the helpers directly and checks only `>
-                // 100.0` where the answer is 180.0. Forward these messages to
-                // on_message like the rest, and make on_resize_fires_on_drag a real
-                // drag (drag_horizontal over the header's resize handle) asserting
-                // 180.0. The render.rs:471-473 doc ("the message drain filters") and
-                // the GuiWidget::is_column_resizing forwarding default
-                // (widgets/mod.rs:200), which nothing calls on a container, are
-                // leftovers of the same design. (tests-ui-07)
-                Message::ColumnResizeStart(_)
-                | Message::ColumnResizeMove(_)
-                | Message::ColumnResizeEnd => {}
-                other => {
-                    let mut shell = MessageShell::new(iced_core::Point::ORIGIN);
-                    self.widget.on_message(&other, &mut shell);
-                    pending.extend(shell.out.drain(..));
-                }
-            }
-        }
+        // the event loop's own drain
+        let widget = &mut self.widget;
+        crate::frame::apply_messages(&self.gx, msgs.iter().cloned(), |msg, pending| {
+            let mut shell = MessageShell::new(iced_core::Point::ORIGIN);
+            widget.on_message(msg, &mut shell);
+            pending.extend(shell.out.drain(..));
+        });
         self.drain().await?;
         Ok(())
     }
@@ -229,6 +200,9 @@ impl GuiTestHarness {
     // these tests stay green. Add a draw step (ui.draw after update in
     // InteractionHarness, or Program::draw on chart and canvas roots as
     // chart_test.rs:342-348 does) and make the *_renders tests call it. (tests-ui-08)
+    // 2026-10-07 claude: InteractionHarness's frame is the event loop's
+    // frame::frame now, which draws (tests-ui.r2-05, merged here). The *_renders
+    // tests still build their element and drop it; they need to go through it.
     fn view(&self) -> crate::widgets::IcedElement<'_> {
         self.widget.view()
     }
@@ -324,7 +298,7 @@ impl GuiTestHarness {
 }
 
 use iced_core::{Event, Point, Size, clipboard, mouse};
-use iced_runtime::user_interface::{self, UserInterface};
+use iced_runtime::user_interface;
 use iced_wgpu::{graphics::Shell, wgpu};
 use tokio::sync::OnceCell;
 
@@ -404,6 +378,23 @@ struct InteractionHarness {
     cache: user_interface::Cache,
     viewport: Size,
     cursor_position: Point,
+    /// The pointer as the event loop tracks it from the events sent.
+    cursor: mouse::Cursor,
+    clipboard: TestClipboard,
+}
+
+/// A clipboard holding one text.
+#[derive(Default)]
+struct TestClipboard(Option<String>);
+
+impl clipboard::Clipboard for TestClipboard {
+    fn read(&self, _kind: clipboard::Kind) -> Option<String> {
+        self.0.clone()
+    }
+
+    fn write(&mut self, _kind: clipboard::Kind, contents: String) {
+        self.0 = Some(contents)
+    }
 }
 
 impl InteractionHarness {
@@ -421,46 +412,32 @@ impl InteractionHarness {
             cache: user_interface::Cache::default(),
             viewport,
             cursor_position: Point::ORIGIN,
+            cursor: mouse::Cursor::Unavailable,
+            clipboard: TestClipboard::default(),
         })
     }
 
     /// Build a UserInterface, feed events, and return the messages the
     /// widgets produced.
-    // CR claude for claude: [test-gap] This rebuilds the event loop's frame by hand, and
-    // dispatch_calls copies its message drain (already differing: it drops the
-    // ColumnResize messages the loop passes to the widget), so no test drives
-    // about_to_wait. The loop's departures from iced's protocol therefore cannot fail.
-    // It never sends window::Event::RedrawRequested, so iced buttons, checkboxes,
-    // togglers and text inputs never set a status and draw Disabled. It never forwards
-    // ModifiersChanged, so text_input's Ctrl+C/X/V/A never fire. It also presents
-    // without a clear color, keeps the cursor Available after CursorLeft, and applies
-    // messages after the draw. Extract the per-window frame into one function the loop
-    // and this harness share, and pin it: an enabled button resolves Status::Active,
-    // Ctrl+V into a focused text_input with a stub clipboard yields on_input, and
-    // CursorLeft fires a mouse_area's on_exit. (gui-core-18)
     fn process_events(&mut self, events: &[Event]) -> Vec<Message> {
-        let element = self.inner.widget.view();
-        let cache = std::mem::take(&mut self.cache);
-        let mut ui =
-            UserInterface::build(element, self.viewport, cache, &mut self.renderer);
+        // the event loop's own frame, the draw included
         let mut messages = Vec::new();
-        let mut clipboard = clipboard::Null;
-        let cursor = mouse::Cursor::Available(self.cursor_position);
-        let (_state, _statuses) =
-            ui.update(events, cursor, &mut self.renderer, &mut clipboard, &mut messages);
-        // CR claude for claude: [test-gap] Apart from two direct Program::draw calls in
-        // chart_test, no GUI test draws: this loop lays out and routes events but never
-        // calls `ui.draw`, and the *_renders tests in canvas_test, chart_test and
-        // widgets_test only build the element tree (for a chart or canvas, just
-        // `Canvas::new(self)`). So canvas draw_shape, every chart mode but Numeric, the
-        // data table's SparklineCanvas and every widget's draw run in no test.
-        // markers_draw_on_every_series_kind checks plot_info, which draw.rs sets before
-        // the mesh and series are drawn, and chart draw errors are only logged, so it
-        // sees a panic but not the error its doc names. Call `ui.draw` here after
-        // `update` with the headless renderer this harness holds, route the *_renders
-        // tests through the same render, and make chart draw errors visible to a test.
-        // (tests-ui.r2-05)
-        self.cache = ui.into_cache();
+        let theme =
+            crate::theme::GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+        for ev in events {
+            crate::window::track_cursor(&mut self.cursor, ev);
+        }
+        crate::frame::frame(
+            self.inner.widget.view(),
+            self.viewport,
+            &mut self.cache,
+            &mut self.renderer,
+            events,
+            self.cursor,
+            &mut self.clipboard,
+            &mut messages,
+            &theme,
+        );
         messages
     }
 
@@ -578,6 +555,28 @@ impl InteractionHarness {
             text: None,
             repeat: false,
         })])
+    }
+
+    /// Ctrl and a letter, the modifiers delivered first as the event loop
+    /// does.
+    fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
+        use iced_core::keyboard;
+        let ctrl = keyboard::Modifiers::CTRL;
+        let s: iced_core::SmolStr = c.into();
+        self.process_events(&[
+            Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(s.clone()),
+                modified_key: keyboard::Key::Character(s),
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: ctrl,
+                text: None,
+                repeat: false,
+            }),
+        ])
     }
 
     fn release_key(&mut self, named: iced_core::keyboard::key::Named) -> Vec<Message> {

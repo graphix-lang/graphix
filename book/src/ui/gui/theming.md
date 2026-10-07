@@ -225,7 +225,7 @@ The remaining widget style types follow the same pattern -- a struct of optional
 | `PickListStyle` | `pick_list_style` | `background`, `border_color`, `border_radius`, `border_width`, `handle_color`, `placeholder_color`, `text_color` |
 | `ProgressBarStyle` | `progress_bar_style` | `background`, `bar_color`, `border_radius` |
 | `RadioStyle` | `radio_style` | `background`, `border_color`, `border_width`, `dot_color`, `text_color` |
-| `RuleStyle` | `rule_style` | `color`, `radius`, `width` |
+| `RuleStyle` | `rule_style` | `color`, `fill_percent` (the share of the container the line covers, 0 to 100), `radius` |
 | `ScrollableStyle` | `scrollable_style` | `background`, `border_color`, `border_radius`, `border_width`, `scroller_color` |
 | `TextEditorStyle` | `text_editor_style` | `background`, `border_color`, `border_radius`, `border_width`, `placeholder_color`, `selection_color`, `value_color` |
 | `TogglerStyle` | `toggler_style` | `background`, `background_border_color`, `border_radius`, `foreground`, `foreground_border_color`, `text_color` |

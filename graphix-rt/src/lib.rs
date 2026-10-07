@@ -233,6 +233,12 @@ impl<X: GXExt, T: Into<Value> + FromValue + Clone> TRef<X, T> {
         self.t = Some(t.clone());
         self.r.set(t)
     }
+
+    /// Set the value the reference names, as `*r <- t` does.
+    pub fn set_deref(&mut self, t: T) -> Result<()> {
+        self.t = Some(t.clone());
+        self.r.set_deref(t)
+    }
 }
 
 atomic_id!(CallableId);

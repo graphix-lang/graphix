@@ -23,7 +23,7 @@ let result = `Custom(stylesheet(
     warning: color(#g: 1.0)$
   },
   #button: button_style(#background: color(#r: 0.25)$, #border_width: 2.0),
-  #rule: rule_style(#width: 3.0)
+  #rule: rule_style(#fill_percent: 3.0)
 ))
 "#;
     let (tx, mut rx) = mpsc::channel(100);
@@ -50,7 +50,7 @@ let result = `Custom(stylesheet(
     assert_eq!(button.background.map(|c| c.0.r), Some(0.25));
     assert_eq!(button.border_width, Some(2.0));
     assert!(button.text_color.is_none() && button.border_radius.is_none());
-    assert_eq!(overrides.rule.and_then(|r| r.width), Some(3.0));
+    assert_eq!(overrides.rule.and_then(|r| r.fill_percent), Some(3.0));
     assert!(overrides.slider.is_none() && overrides.toggler.is_none());
     Ok(())
 }

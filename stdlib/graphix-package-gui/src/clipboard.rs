@@ -5,6 +5,7 @@ use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageSt
 use netidx::publisher::Value;
 use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
+use parking_lot::Mutex;
 use std::{fmt::Debug, marker::PhantomData, path::PathBuf};
 
 /// Trait for individual clipboard operations, parameterizing the generic
@@ -17,8 +18,8 @@ pub(crate) trait ClipboardOp: Debug + Default + Send + Sync + 'static {
     fn exec(args: Self::Args) -> Value;
 }
 
-/// Generic [`EvalCachedAsync`] impl wrapping any [`ClipboardOp`].
-/// `arboard::Clipboard` is `!Send`, so each op creates one inside `spawn_blocking`.
+/// Generic [`EvalCachedAsync`] impl wrapping any [`ClipboardOp`], each op
+/// on a blocking thread.
 #[derive(Debug, Default)]
 pub(crate) struct ClipboardBuiltin<Op: ClipboardOp>(PhantomData<Op>);
 
@@ -54,26 +55,26 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
     }
 }
 
-// CR claude for claude: [risk] The doc comment on ClipboardBuiltin says
-// arboard::Clipboard is !Send, but arboard 3.6 asserts Clipboard: Send + Sync. This
-// opens and drops an instance on every call. Without the wayland-data-control feature
-// arboard always uses X11 on Linux, and dropping the last instance destroys the
-// selection owner after at most a 100 ms clipboard-manager handoff. So outside a
-// running GUI, whose event-loop instance keeps the context alive, write_text returns
-// null yet nothing can paste the text unless a clipboard manager took it. Every call
-// also connects to X and spawns and joins arboard's server thread. Keep one long-lived
-// instance shared with the event loop's Clipboard, drop it at shutdown so the handoff
-// still runs, and delete the false comment. (gui-core-15)
+/// The process's clipboard, one instance for every call and the event
+/// loop: on X11 the instance owns what was written, so dropping it after
+/// each call would lose the text unless a clipboard manager took it.
+static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
+
+pub(crate) fn clipboard<T>(
+    f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
+) -> Result<T, arboard::Error> {
+    let mut cb = CLIPBOARD.lock();
+    let cb = match &mut *cb {
+        Some(cb) => cb,
+        slot @ None => slot.insert(arboard::Clipboard::new()?),
+    };
+    f(cb)
+}
+
 fn with_clipboard(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<Value, arboard::Error>,
 ) -> Value {
-    match arboard::Clipboard::new() {
-        Ok(mut cb) => match f(&mut cb) {
-            Ok(v) => v,
-            Err(e) => errf!("ClipboardError", "{e}"),
-        },
-        Err(e) => errf!("ClipboardError", "{e}"),
-    }
+    clipboard(f).unwrap_or_else(|e| errf!("ClipboardError", "{e}"))
 }
 
 #[derive(Debug, Default)]
@@ -152,20 +153,24 @@ pub(crate) struct ImageArgs {
 pub(crate) struct WriteImageOp;
 
 impl ClipboardOp for WriteImageOp {
-    type Args = ImageArgs;
+    type Args = Result<ImageArgs, Value>;
 
     const NAME: &str = "gui_clipboard_write_image";
 
-    fn prepare(cached: &CachedVals) -> Option<ImageArgs> {
-        image_args_from_value(cached.0[0].as_ref()?)
+    fn prepare(cached: &CachedVals) -> Option<Self::Args> {
+        Some(image_args_from_value(cached.0[0].as_ref()?))
     }
 
-    fn exec(args: ImageArgs) -> Value {
+    fn exec(args: Self::Args) -> Value {
+        let args = match args {
+            Ok(args) => args,
+            Err(e) => return e,
+        };
         with_clipboard(|cb| {
             let img = arboard::ImageData {
                 width: args.width,
                 height: args.height,
-                bytes: std::borrow::Cow::Owned(args.pixels.to_vec()),
+                bytes: std::borrow::Cow::Borrowed(&args.pixels),
             };
             cb.set_image(img)?;
             Ok(Value::Null)
@@ -307,13 +312,12 @@ pub(crate) fn image_to_value(img: arboard::ImageData<'_>) -> Value {
     .into()
 }
 
-pub(crate) fn image_args_from_value(v: &Value) -> Option<ImageArgs> {
-    let ClipboardImage { width, height, pixels } = v.clone().cast_to().ok()?;
-    Some(ImageArgs {
-        width: width as usize,
-        height: height as usize,
-        pixels: Bytes::copy_from_slice(&pixels),
-    })
+pub(crate) fn image_args_from_value(v: &Value) -> Result<ImageArgs, Value> {
+    let ClipboardImage { width, height, pixels } =
+        v.clone().cast_to().map_err(|e| errf!("ClipboardError", "{e}"))?;
+    crate::types::check_rgba(width, height, pixels.len())
+        .map_err(|e| errf!("ClipboardError", "{e}"))?;
+    Ok(ImageArgs { width: width as usize, height: height as usize, pixels })
 }
 
 pub(crate) fn html_args_from_value(v: &Value) -> Option<HtmlArgs> {

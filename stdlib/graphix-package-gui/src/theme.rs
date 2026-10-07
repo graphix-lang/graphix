@@ -151,8 +151,9 @@ pub struct ProgressBarSpec {
 #[derive(Clone, Copy, Debug, FromValue)]
 pub struct RuleSpec {
     pub color: Option<ColorV>,
+    /// How much of its container's length the line covers, 0 to 100.
+    pub fill_percent: Option<f32>,
     pub radius: Option<f32>,
-    pub width: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
@@ -581,16 +582,8 @@ impl RuleSpec {
         if let Some(r) = self.radius {
             s.radius = r.into();
         }
-        // CR claude for claude: [readability] RuleStyle's width becomes
-        // FillMode::Percent: the share of the container's length the line covers, 0 to
-        // 100. It is not the rule's thickness, which is the widget's own #height/#width
-        // (vertical_rule(#width) is thickness). rule_style(#width: 3.0) therefore draws
-        // a centred rule 3% as long as its container, and neither style.gxi nor the
-        // book's theming table says so. Rename the field (e.g. fill_percent) in
-        // RuleSpec, style.gxi, style.gx and book/src/ui/gui/theming.md, and document
-        // the range. (gui-core-16)
-        if let Some(w) = self.width {
-            s.fill_mode = rule::FillMode::Percent(w);
+        if let Some(p) = self.fill_percent {
+            s.fill_mode = rule::FillMode::Percent(p);
         }
         s
     }

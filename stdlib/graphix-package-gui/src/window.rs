@@ -1,4 +1,5 @@
 use crate::{
+    render::WindowSurface,
     types::{ImageSourceV, SizeV, ThemeV},
     widgets::{EmptyW, GuiW, compile},
 };
@@ -6,6 +7,7 @@ use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
+use iced_runtime::user_interface::Cache;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use std::{sync::Arc, time::Instant};
@@ -85,11 +87,13 @@ impl<X: GXExt> ResolvedWindow<X> {
             .with_window_icon(self.decoded_icon.clone())
     }
 
-    /// Consume self and attach an OS window, producing a TrackedWindow.
+    /// Consume self and attach an OS window and its surface, producing a
+    /// TrackedWindow.
     pub fn into_tracked(
         self,
         window_ref: Ref<X>,
         window: Arc<Window>,
+        surface: WindowSurface,
     ) -> TrackedWindow<X> {
         TrackedWindow {
             window_ref,
@@ -102,7 +106,10 @@ impl<X: GXExt> ResolvedWindow<X> {
             decoded_icon: self.decoded_icon,
             content_ref: self.content_ref,
             content: self.content,
-            cursor_position: iced_core::Point::ORIGIN,
+            surface,
+            cache: Cache::default(),
+            cursor: mouse::Cursor::Unavailable,
+            ime_enabled: false,
             last_mouse_interaction: mouse::Interaction::default(),
             pending_events: Vec::new(),
             needs_redraw: true,
@@ -111,6 +118,20 @@ impl<X: GXExt> ResolvedWindow<X> {
             resize_render_timer_armed: false,
             last_render: Instant::now(),
         }
+    }
+}
+
+/// The pointer as iced sees it after `ev`: where it last moved, and
+/// unavailable once it has left the window.
+pub fn track_cursor(cursor: &mut mouse::Cursor, ev: &iced_core::Event) {
+    match ev {
+        iced_core::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            *cursor = mouse::Cursor::Available(*position)
+        }
+        iced_core::Event::Mouse(mouse::Event::CursorLeft) => {
+            *cursor = mouse::Cursor::Unavailable
+        }
+        _ => (),
     }
 }
 
@@ -126,7 +147,13 @@ pub struct TrackedWindow<X: GXExt> {
     pub decoded_icon: Option<winit::window::Icon>,
     pub content_ref: Ref<X>,
     pub content: GuiW<X>,
-    pub cursor_position: iced_core::Point,
+    pub surface: WindowSurface,
+    /// The interface's state between frames.
+    pub cache: Cache,
+    /// Where the pointer is, unavailable while it is outside the window.
+    pub cursor: mouse::Cursor,
+    /// Whether the window takes IME input, as the interface last asked.
+    pub ime_enabled: bool,
     pub last_mouse_interaction: mouse::Interaction,
     pub pending_events: Vec<iced_core::Event>,
     pub needs_redraw: bool,
@@ -229,19 +256,8 @@ impl<X: GXExt> TrackedWindow<X> {
         }
     }
 
-    // CR claude for claude: [bug] cursor() always returns Cursor::Available.
-    // cursor_position starts at Point::ORIGIN (line 105) and only a CursorMoved writes
-    // it (event_loop.rs:191-196), while iced_winit returns Unavailable until the
-    // pointer enters and again after CursorLeft. Effects: a mouse_area covering (0,0)
-    // fires #on_enter on the first frame while the pointer is still outside the window.
-    // One the pointer leaves through a window edge never fires #on_exit, nor #on_enter
-    // when the pointer comes back inside it, and a tooltip left that way stays open.
-    // Store the position as an Option<Point> that is None until the first CursorMoved
-    // and again after CursorLeft. The InteractionHarness (src/test/mod.rs:415-445) uses
-    // the same always-Available model, so no interaction test can catch this. probe:
-    // design/review-2026-10-05/repro/gui-core-08.rs (full-window mouse_area; (entered,
-    // exited) ends at (1,0) where iced_winit's model gives (2,1)). (gui-core-08)
-    pub fn cursor(&self) -> mouse::Cursor {
-        mouse::Cursor::Available(self.cursor_position)
+    /// The pointer's last position, the origin when it never entered.
+    pub fn cursor_position(&self) -> iced_core::Point {
+        self.cursor.position().unwrap_or(iced_core::Point::ORIGIN)
     }
 }
