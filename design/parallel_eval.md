@@ -697,7 +697,8 @@ but those are CompileCtx fields. (c-lib-10) -->
   per key and detects no conflict. Runtime binds write fresh ids
   (`by_id`, `bind_to_lambda` keyed by new `BindId`s) and balanced pairs
   (`resolving_lambdas`, the temporary `lambda_defs` entry), so two forks
-  write disjoint keys. Under `GRAPHIX_PAR_AUDIT` the join asserts it.
+  write disjoint keys. Nothing asserts it: `GRAPHIX_PAR_AUDIT` checks
+  variable reads, not joins.
 
 **Dynamic modules** compile in their branch's task too. Their checks'
 internal `par_iter` (C/node/mod.rs:949) nests in the evaluation pool. A

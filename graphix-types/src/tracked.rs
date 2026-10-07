@@ -11,9 +11,9 @@ use std::{fmt::Debug, hash::Hash, ops::Deref};
 /// container it joins; `None` when it wrote none.
 fn merged_keys<K: Hash + Eq + Clone>(
     generation: &mut u64,
-    mine: &mut Option<Vec<K>>,
-    theirs: Option<Vec<K>>,
-) -> Option<Vec<K>> {
+    mine: &mut Option<LPooled<Vec<K>>>,
+    theirs: Option<LPooled<Vec<K>>>,
+) -> Option<LPooled<Vec<K>>> {
     let mut keys = theirs.filter(|t| !t.is_empty())?;
     let mut seen: LPooled<AHashSet<K>> = LPooled::take();
     keys.retain(|k| seen.insert(k.clone()));
@@ -29,16 +29,7 @@ fn merged_keys<K: Hash + Eq + Clone>(
 pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
-    // CR claude for claude: [perf] Each fork's touched log is a plain Vec. It allocates
-    // at the fork's first write and grows by one entry per write, repeats included
-    // (TrackedSet's at line 175 does the same), and compile tasks fork per statement
-    // and per static bind. remove_many, clear and retain (lines 93-130, 229-248) also
-    // collect their keys into plain Vecs, where env.rs:371-387 uses LPooled<Vec<K>> for
-    // the same collect-then-remove_many. Pool them: LPooled for the scratch lists and
-    // GPooled for touched, since a branch's fork is made on a pool worker
-    // (graphix-compiler/src/branch.rs:541) and joined on the parent's thread.
-    // (t-misc-11)
-    touched: Option<Vec<K>>,
+    touched: Option<LPooled<Vec<K>>>,
     /// Bumped by every write.
     generation: u64,
     /// The generation of the map this one forked from, at the fork.
@@ -100,11 +91,13 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     }
 
     pub fn clear(&mut self) {
-        let all: Vec<K> = self.map.into_iter().map(|(k, _)| k.clone()).collect();
-        self.remove_many(all)
+        let mut all: LPooled<Vec<K>> =
+            self.map.into_iter().map(|(k, _)| k.clone()).collect();
+        self.remove_many(all.drain(..))
     }
 
     pub fn get_mut(&mut self, k: &K) -> Option<&mut V> {
+        self.map.get(k)?;
         self.touch(k);
         self.map.get_mut_cow(k)
     }
@@ -118,23 +111,23 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     }
 
     pub fn remove_many(&mut self, ks: impl IntoIterator<Item = K>) {
-        let ks: Vec<K> = ks.into_iter().collect();
+        let mut ks: LPooled<Vec<K>> = ks.into_iter().collect();
         for k in ks.iter() {
             self.touch(k);
         }
-        self.map = self.map.remove_many(ks);
+        self.map = self.map.remove_many(ks.drain(..));
     }
 
     /// Keep only the entries `keep` accepts.
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
-        let gone: Vec<K> = self
+        let mut gone: LPooled<Vec<K>> = self
             .map
             .into_iter()
             .filter(|(k, v)| !keep(k, v))
             .map(|(k, _)| k.clone())
             .collect();
         if !gone.is_empty() {
-            self.remove_many(gone)
+            self.remove_many(gone.drain(..))
         }
     }
 
@@ -142,7 +135,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     pub fn fork(&self) -> Self {
         Self {
             map: self.map.clone(),
-            touched: Some(Vec::new()),
+            touched: Some(LPooled::take()),
             generation: self.generation,
             forked_at: self.generation,
         }
@@ -159,21 +152,26 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     // variable reads. get_mut (line 98) also touches a key it does not find, and a
     // slow-path join turns that into a removal of whatever an earlier sibling put
     // there. (t-misc-06)
+    // 2026-10-07 claude: get_mut touches only a key it finds. The audit is not
+    // built: forks that insert and remove one key (resolving_lambdas) both touch
+    // it, so telling a conflict needs the fork-time value, which V does not
+    // compare; design/parallel_eval.md now says the join detects nothing.
     pub fn join(&mut self, fork: Self) {
         let Self { map, touched, generation, forked_at } = fork;
         if self.generation == forked_at {
             self.map = map;
             self.generation = generation;
-            if let (Some(mine), Some(theirs)) = (&mut self.touched, touched) {
-                mine.extend(theirs)
+            if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
+                mine.extend(theirs.drain(..))
             }
             return;
         }
-        let Some(touched) = merged_keys(&mut self.generation, &mut self.touched, touched)
+        let Some(mut touched) =
+            merged_keys(&mut self.generation, &mut self.touched, touched)
         else {
             return;
         };
-        for k in touched {
+        for k in touched.drain(..) {
             match map.get(&k) {
                 Some(v) => {
                     self.map.insert_cow(k, v.clone());
@@ -190,7 +188,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 #[derive(Clone, Debug)]
 pub struct TrackedSet<K: Hash + Eq + Clone + Debug> {
     set: Set<K>,
-    touched: Option<Vec<K>>,
+    touched: Option<LPooled<Vec<K>>>,
     /// See [`TrackedMap`].
     generation: u64,
     forked_at: u64,
@@ -245,30 +243,31 @@ impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
     }
 
     pub fn remove_many(&mut self, ks: impl IntoIterator<Item = K>) {
-        let ks: Vec<K> = ks.into_iter().collect();
+        let mut ks: LPooled<Vec<K>> = ks.into_iter().collect();
         for k in ks.iter() {
             self.touch(k);
         }
-        self.set = self.set.remove_many(ks);
+        self.set = self.set.remove_many(ks.drain(..));
     }
 
     /// Keep only the members `keep` accepts.
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
-        let gone: Vec<K> = self.set.into_iter().filter(|k| !keep(k)).cloned().collect();
+        let mut gone: LPooled<Vec<K>> =
+            self.set.into_iter().filter(|k| !keep(k)).cloned().collect();
         if !gone.is_empty() {
-            self.remove_many(gone)
+            self.remove_many(gone.drain(..))
         }
     }
 
     pub fn clear(&mut self) {
-        let all: Vec<K> = self.set.into_iter().cloned().collect();
-        self.remove_many(all)
+        let mut all: LPooled<Vec<K>> = self.set.into_iter().cloned().collect();
+        self.remove_many(all.drain(..))
     }
 
     pub fn fork(&self) -> Self {
         Self {
             set: self.set.clone(),
-            touched: Some(Vec::new()),
+            touched: Some(LPooled::take()),
             generation: self.generation,
             forked_at: self.generation,
         }
@@ -279,16 +278,17 @@ impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
         if self.generation == forked_at {
             self.set = set;
             self.generation = generation;
-            if let (Some(mine), Some(theirs)) = (&mut self.touched, touched) {
-                mine.extend(theirs)
+            if let (Some(mine), Some(mut theirs)) = (&mut self.touched, touched) {
+                mine.extend(theirs.drain(..))
             }
             return;
         }
-        let Some(touched) = merged_keys(&mut self.generation, &mut self.touched, touched)
+        let Some(mut touched) =
+            merged_keys(&mut self.generation, &mut self.touched, touched)
         else {
             return;
         };
-        for k in touched {
+        for k in touched.drain(..) {
             match set.contains(&k) {
                 true => self.set.insert_cow(k),
                 false => self.set.remove_cow(&k),
