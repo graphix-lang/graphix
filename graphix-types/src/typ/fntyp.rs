@@ -1298,24 +1298,57 @@ impl fmt::Display for ArgPrefix<'_> {
 
 /// A return type as written after `->`: a function type is
 /// parenthesized, bare or behind a reference.
-enum Ret<'a> {
-    Fn(&'a FnType),
-    RefFn(Mutability, &'a FnType),
-    Ref(Mutability, &'a Type),
-    Plain(&'a Type),
+pub(crate) struct Ret<'a> {
+    pub(crate) open: &'static str,
+    pub(crate) typ: &'a dyn PrettyDisplay,
+    pub(crate) close: &'static str,
 }
 
 impl<'a> Ret<'a> {
-    fn of(t: &'a Type) -> Self {
-        match t {
-            Type::Fn(ft) => Ret::Fn(ft),
-            Type::ByRef(m, t) => match &**t {
-                Type::Fn(ft) => Ret::RefFn(*m, ft),
-                t => Ret::Ref(*m, t),
+    pub(crate) fn of(t: &'a Type) -> Self {
+        let (open, typ, close): (_, &dyn PrettyDisplay, _) = match t {
+            Type::Fn(ft) => ("(", &**ft, ")"),
+            Type::ByRef(m, t) => match (&**t, m) {
+                (Type::Fn(ft), Mutability::Shared) => ("&(", &**ft, ")"),
+                (Type::Fn(ft), Mutability::Mut) => ("&mut (", &**ft, ")"),
+                (t, m) => (m.prefix(), t, ""),
             },
-            t => Ret::Plain(t),
+            t => ("", t, ""),
+        };
+        Ret { open, typ, close }
+    }
+
+    /// Laid out over lines, a newline after.
+    pub(crate) fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        write!(buf, "{}", self.open)?;
+        self.typ.fmt_pretty(buf)?;
+        if !self.close.is_empty() {
+            buf.kill_newline();
+            writeln!(buf, "{}", self.close)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Ret<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}{}", self.open, self.typ, self.close)
+    }
+}
+
+/// Bounds as written: a variable's adjacent bounds joined with ` + `.
+pub(crate) fn write_bounds(
+    f: &mut impl fmt::Write,
+    bounds: &[(TVar, Type)],
+) -> fmt::Result {
+    for (i, (tv, t)) in bounds.iter().enumerate() {
+        match i.checked_sub(1).map(|j| &bounds[j].0) {
+            Some(prev) if prev.name == tv.name => write!(f, " + {t}")?,
+            Some(_) => write!(f, ", '{}: {t}", tv.name)?,
+            None => write!(f, "'{}: {t}", tv.name)?,
         }
     }
+    Ok(())
 }
 
 impl fmt::Display for FnType {
@@ -1325,13 +1358,7 @@ impl fmt::Display for FnType {
             write!(f, "fn(")?;
         } else {
             write!(f, "fn<")?;
-            for (i, (tv, t)) in constraints.iter().enumerate() {
-                match i.checked_sub(1).map(|j| &constraints[j].0) {
-                    Some(prev) if prev.name == tv.name => write!(f, " + {t}")?,
-                    Some(_) => write!(f, ", '{}: {t}", tv.name)?,
-                    None => write!(f, "'{}: {t}", tv.name)?,
-                }
-            }
+            write_bounds(f, &constraints)?;
             write!(f, ">(")?;
         }
         for (i, a) in self.args.iter().enumerate() {
@@ -1347,12 +1374,7 @@ impl fmt::Display for FnType {
         if let Some(vargs) = &self.vargs {
             write!(f, "@args: {}", vargs)?;
         }
-        match Ret::of(&self.rtype) {
-            Ret::Fn(ft) => write!(f, ") -> ({ft})")?,
-            Ret::RefFn(m, ft) => write!(f, ") -> {}({ft})", m.prefix())?,
-            Ret::Ref(m, t) => write!(f, ") -> {}{t}", m.prefix())?,
-            Ret::Plain(t) => write!(f, ") -> {t}")?,
-        }
+        write!(f, ") -> {}", Ret::of(&self.rtype))?;
         if self.suppress_throws() {
             Ok(())
         } else {
@@ -1407,28 +1429,8 @@ impl PrettyDisplay for FnType {
             }
             Ok(())
         })?;
-        match Ret::of(&self.rtype) {
-            Ret::Fn(ft) => {
-                write!(buf, ") -> (")?;
-                ft.fmt_pretty(buf)?;
-                buf.kill_newline();
-                writeln!(buf, ")")?;
-            }
-            Ret::RefFn(m, ft) => {
-                write!(buf, ") -> {}(", m.prefix())?;
-                ft.fmt_pretty(buf)?;
-                buf.kill_newline();
-                writeln!(buf, ")")?;
-            }
-            Ret::Ref(m, t) => {
-                write!(buf, ") -> {}", m.prefix())?;
-                t.fmt_pretty(buf)?;
-            }
-            Ret::Plain(t) => {
-                write!(buf, ") -> ")?;
-                t.fmt_pretty(buf)?;
-            }
-        }
+        write!(buf, ") -> ")?;
+        Ret::of(&self.rtype).fmt_pretty(buf)?;
         if self.suppress_throws() {
             Ok(())
         } else {

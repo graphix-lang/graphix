@@ -329,16 +329,15 @@ impl Parsed {
 
     /// What equality does not see that the formatter must hand back, in
     /// source order: every comment and attribute, and every string
-    /// literal's delimiters.
-    fn ornaments(&self) -> LPooled<Vec<Ornament<'_>>> {
-        let mut acc: LPooled<Vec<Ornament>> = LPooled::take();
+    /// literal's delimiters, each with the preorder ordinal of the node it
+    /// stands on, so one that moves to a neighbour is a difference.
+    fn ornaments(&self) -> LPooled<Vec<(usize, Ornament<'_>)>> {
+        let mut w = Ornaments { node: 0, acc: LPooled::take() };
         match self {
-            Self::Program(exprs) => {
-                exprs.iter().for_each(|e| expr_ornaments(e, &mut acc))
-            }
-            Self::Interface(sig) => sig_ornaments(sig, &mut acc),
+            Self::Program(exprs) => exprs.iter().for_each(|e| w.expr(e)),
+            Self::Interface(sig) => w.sig(sig),
         }
-        acc
+        w.acc
     }
 
     /// The first place `other` says something else, as the text each
@@ -394,48 +393,52 @@ enum Ornament<'a> {
     Delimiters(StrForm),
 }
 
-// CR claude for claude: [bug] The guard compares ornaments as one flat preorder list and
-// Expr equality ignores `dec`, so a decoration that moves to the neighbouring node
-// passes. The parser keeps no ExplicitParens around a postfix base
-// (graphix-types/src/expr/parser/arithexp.rs:200-206) and the printer writes a
-// decorated base bare, so `let y = (#[native] f)(1)`, refused ('annotates a computation
-// or a call, not a function'), formats with exit 0 to `#[native]` on the call `f(1)`,
-// which runs and prints 2; formatting that output changes it again. A comment above `a`
-// inside `( .. )[0]` moves to `a[0]` the same way. Pair each ornament with its node's
-// preorder ordinal so a move is refused, and keep the parentheses around a decorated
-// postfix base. probe: design/review-2026-10-05/repro/t-format-resolver-14.gx
-// (t-format-resolver-14)
-fn expr_ornaments<'a>(e: &'a Expr, acc: &mut Vec<Ornament<'a>>) {
-    ensure_sufficient(|| {
-        if let Some(d) = &e.dec {
-            acc.push(Ornament::Decorations(d))
-        }
-        match &e.kind {
-            ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } => {
-                acc.push(Ornament::Delimiters(e.str_form))
-            }
-            ExprKind::Trait(t) => {
-                for m in t.methods.iter() {
-                    acc.push(Ornament::Comments(m.comments.lines()))
-                }
-            }
-            ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
-                sig_ornaments(sig, acc)
-            }
-            _ => (),
-        }
-        e.for_each_child(&mut |c| expr_ornaments(c, acc))
-    })
+/// The ornaments of a tree in preorder, each beside its node's ordinal.
+struct Ornaments<'a> {
+    node: usize,
+    acc: LPooled<Vec<(usize, Ornament<'a>)>>,
 }
 
-fn sig_ornaments<'a>(sig: &'a Sig, acc: &mut Vec<Ornament<'a>>) {
-    for si in sig.items.iter() {
-        acc.push(Ornament::Comments(si.comments.lines()));
-        if let SigKind::Trait(t) = &si.kind {
-            for m in t.methods.iter() {
-                acc.push(Ornament::Comments(m.comments.lines()));
-                if let Some(d) = &m.default {
-                    expr_ornaments(d, acc)
+impl<'a> Ornaments<'a> {
+    fn push(&mut self, o: Ornament<'a>) {
+        self.acc.push((self.node, o))
+    }
+
+    fn expr(&mut self, e: &'a Expr) {
+        ensure_sufficient(|| {
+            self.node += 1;
+            if let Some(d) = &e.dec {
+                self.push(Ornament::Decorations(d))
+            }
+            match &e.kind {
+                ExprKind::Constant(Value::String(_))
+                | ExprKind::StringInterpolate { .. } => {
+                    self.push(Ornament::Delimiters(e.str_form))
+                }
+                ExprKind::Trait(t) => {
+                    for m in t.methods.iter() {
+                        self.push(Ornament::Comments(m.comments.lines()))
+                    }
+                }
+                ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
+                    self.sig(sig)
+                }
+                _ => (),
+            }
+            e.for_each_child(&mut |c| self.expr(c))
+        })
+    }
+
+    fn sig(&mut self, sig: &'a Sig) {
+        for si in sig.items.iter() {
+            self.node += 1;
+            self.push(Ornament::Comments(si.comments.lines()));
+            if let SigKind::Trait(t) = &si.kind {
+                for m in t.methods.iter() {
+                    self.push(Ornament::Comments(m.comments.lines()));
+                    if let Some(d) = &m.default {
+                        self.expr(d)
+                    }
                 }
             }
         }
@@ -512,10 +515,10 @@ fn format_lf(
     if *was != *now {
         let lost = was.iter().zip(now.iter()).find(|(a, b)| a != b);
         let msg = match lost.map(|(a, _)| a).or_else(|| was.get(now.len())) {
-            Some(Ornament::Delimiters(_)) => {
+            Some((_, Ornament::Delimiters(_))) => {
                 "the formatted text changed a string's delimiters"
             }
-            _ => "the formatted text lost a comment or an attribute",
+            _ => "the formatted text lost or moved a comment or an attribute",
         };
         bail!(Refused(arcstr::ArcStr::from(msg)))
     }
@@ -558,6 +561,11 @@ mod tests {
         stable(SourceKind::Program, "seq (m{k}) { h()? }");
         stable(SourceKind::Program, "seq ({ a }) { h()? }");
         stable(SourceKind::Program, "seq (flush(x)) { h()? }");
+        stable(SourceKind::Program, "seq *r { h()? }");
+        stable(SourceKind::Program, "seq x ~ *r { h()? }");
+        stable(SourceKind::Program, "seq let v = *r { v + 1 }");
+        stable(SourceKind::Program, "seq let c = { a: go, b: 2 } { c.a }");
+        stable(SourceKind::Program, "seqq let v = flush(go) { v }");
     }
 
     #[test]

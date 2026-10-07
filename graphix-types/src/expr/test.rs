@@ -35,15 +35,51 @@ fn pbytes() -> impl Strategy<Value = PBytes> {
 }
 
 fn arcstr() -> impl Strategy<Value = ArcStr> {
-    // CR claude for claude: [test-gap] proptest's `any::<String>()` draws from `\PC*`,
-    // which excludes every control character, `\n`, `\r`, `\t` and `\0` included. So
-    // expr_round_trip and expr_pp_round_trip never print a multi-line string, a
-    // control-character escape or a doc that spans lines. A strategy that mixes those
-    // characters in finds that a string holding BEL prints as `"\u{7}"`, which does not
-    // parse. Seq triggers are generated only as bare references (line 1420), so the
-    // head printer's parenthesization of prefix operators, brace forms in a `let`
-    // trigger and a `flush` call is never round-tripped. (t-print-14)
-    any::<String>().prop_map(ArcStr::from)
+    prop_oneof![
+        3 => any::<String>(),
+        1 => "[ab \\n\\r\\t\\x00\\x07\\x1b\"\\[\\]\\\\#]{0,12}",
+    ]
+    .prop_map(ArcStr::from)
+}
+
+/// A doc's text: lines, and none ends in a `\r`, which ends a line.
+fn doc_text() -> impl Strategy<Value = ArcStr> {
+    prop_oneof![
+        3 => any::<String>(),
+        1 => "[ab \\n\\t\\x07\\[\\]]{0,12}",
+    ]
+    .prop_map(ArcStr::from)
+}
+
+/// A seq trigger the head reads bare: a name, or a prefix operator over one.
+fn bare_trigger() -> impl Strategy<Value = Expr> {
+    use ExprKind::*;
+    prop_oneof![
+        3 => reference(),
+        1 => reference().prop_map(|e| Deref(Arc::new(e)).to_expr_nopos()),
+        1 => reference().prop_map(|e| Not { expr: Arc::new(e) }.to_expr_nopos()),
+        1 => reference().prop_map(|e| Neg(Arc::new(e)).to_expr_nopos()),
+        1 => reference().prop_map(|e| ByRef(Mutability::Mut, Arc::new(e)).to_expr_nopos()),
+    ]
+}
+
+/// A `let` trigger's value: also a brace form or a call of `flush`, which
+/// a bare trigger would read as the body or the clause.
+fn bound_trigger() -> impl Strategy<Value = Expr> {
+    use ExprKind::*;
+    prop_oneof![
+        3 => bare_trigger(),
+        1 => reference().prop_map(|e| {
+            Struct(StructExpr { args: Arc::from_iter([(literal!("a"), e)]) }).to_expr_nopos()
+        }),
+        1 => reference().prop_map(|e| {
+            Apply(ApplyExpr {
+                function: Arc::new(Ref { name: ModPath::from(["flush"]) }.to_expr_nopos()),
+                args: Arc::from_iter([(None, e)]),
+            })
+            .to_expr_nopos()
+        }),
+    ]
 }
 
 /// `#[name]` / `#[name(arg, ..)]`. The args are leaves: a decorated arg
@@ -1133,17 +1169,19 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
 
 fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
     prop_oneof![
-        (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
-            SigItem {
-                kind: SigKind::Bind(BindSig { name: name.into(), typ }),
-                comments: Comments::default(),
-                doc: Doc(doc),
-                pos: Default::default(),
-                ori: None,
+        (random_fname(), typexp(), option::of(doc_text())).prop_map(
+            |(name, typ, doc)| {
+                SigItem {
+                    kind: SigKind::Bind(BindSig { name: name.into(), typ }),
+                    comments: Comments::default(),
+                    doc: Doc(doc),
+                    pos: Default::default(),
+                    ori: None,
+                }
             }
-        }),
-        (typedef(), option::of(arcstr())).prop_map(
-            |(mut td, doc)| match std::mem::replace(&mut td.kind, ExprKind::NoOp,) {
+        ),
+        (typedef(), option::of(doc_text())).prop_map(|(mut td, doc)| {
+            match std::mem::replace(&mut td.kind, ExprKind::NoOp) {
                 ExprKind::TypeDef(td) => SigItem {
                     kind: SigKind::TypeDef(td),
                     comments: Comments::default(),
@@ -1153,8 +1191,8 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                 },
                 _ => unreachable!(),
             }
-        ),
-        (reexport(), collection::vec(use_item(), 1..4), option::of(arcstr())).prop_map(
+        }),
+        (reexport(), collection::vec(use_item(), 1..4), option::of(doc_text())).prop_map(
             |(reexport, paths, doc)| SigItem {
                 kind: SigKind::Use { reexport, names: UseItem::sorted(paths) },
                 comments: Comments::default(),
@@ -1163,15 +1201,15 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                 ori: None,
             }
         ),
-        (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
+        (random_fname(), option::of(doc_text())).prop_map(|(name, doc)| SigItem {
             kind: SigKind::Module(name.into()),
             comments: Comments::default(),
             doc: Doc(doc),
             pos: Default::default(),
             ori: None,
         }),
-        (trait_decl!(constant(), option::of(arcstr())), option::of(arcstr())).prop_map(
-            |(mut t, doc)| {
+        (trait_decl!(constant(), option::of(doc_text())), option::of(doc_text()))
+            .prop_map(|(mut t, doc)| {
                 match std::mem::replace(&mut t.kind, ExprKind::NoOp) {
                     ExprKind::Trait(t) => SigItem {
                         kind: SigKind::Trait(t),
@@ -1182,9 +1220,8 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
                     },
                     _ => unreachable!(),
                 }
-            }
-        ),
-        (impl_decl!(constant()), option::of(arcstr())).prop_map(|(mut i, doc)| {
+            }),
+        (impl_decl!(constant()), option::of(doc_text())).prop_map(|(mut i, doc)| {
             match std::mem::replace(&mut i.kind, ExprKind::NoOp) {
                 ExprKind::Impl(i) => SigItem {
                     kind: SigKind::Impl(Arc::new(ImplExpr {
@@ -1453,8 +1490,8 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             (
                 any::<bool>(),
                 option::of(prop_oneof![
-                    reference().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
-                    (reference(), structure_pattern_no_or(), option::of(typexp()))
+                    bare_trigger().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
+                    (bound_trigger(), structure_pattern_no_or(), option::of(typexp()))
                         .prop_map(|(value, pattern, typ)| {
                             SeqTrigger::Bind(Arc::new(BindExpr {
                                 rec: false,

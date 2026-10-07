@@ -1,19 +1,19 @@
 use crate::{
     expr::{
-        ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
-        ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqKind,
-        SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr, StructWithExpr,
-        StructurePattern, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseItem,
-        format::FormatConfig, parser,
+        ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
+        Doc, Expr, ExprKind, ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox,
+        SelectExpr, SeqKind, SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr,
+        StructWithExpr, StructurePattern, TraitExpr, TraitMethod, TypeDefBody,
+        TypeDefExpr, UseItem, format::FormatConfig, parser,
     },
     print_as_written,
     stack::ensure_sufficient,
-    typ::{Mutability, Type},
+    typ::fntyp::{Ret, write_bounds},
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use netidx_core::path::Path;
-use netidx_value::{Value, parser::VAL_ESC};
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -49,20 +49,10 @@ fn bare_postfix_source(e: &ExprKind) -> Option<&Expr> {
 }
 
 /// A seq trigger is parenthesized exactly where the head parser would
-/// not read it back bare: a leading `{` is the body, a map access is
-/// refused outside brackets, a call of `flush` is the clause, and the
-/// head admits operator expressions only.
-// CR claude for claude: [bug] Both callers also pass a `let` trigger's value here. After
-// `let p =` the head parser reads a leading `{` or a `flush(..)` call bare, so the
-// brace/clause test adds parens there that the parser does not need. Separately,
-// reads_bare has no arm for the prefix operators `*` `!` `-` `&`, which arith(false)
-// also reads bare. The added parens reparse as ExplicitParens, so `graphix fmt` and LSP
-// formatting refuse valid files with "the formatted text says something else": `seq *r
-// { 1 }`, `seq go ~ *r { 1 }`, `seq let v = *r { v + 1 }`, `seq let c = { a: go, b: 2 }
-// { c.a }`, `seqq let v = flush(go) { v }`. The round-trip proptest only generates
-// reference triggers (expr/test.rs:1420), so it cannot catch this. probe:
-// design/review-2026-10-05/repro/t-print-02.sh (t-print-02)
-fn trigger_needs_parens(t: &Expr) -> bool {
+/// not read it back bare: a leading `{` is the body and a call of `flush`
+/// the clause (not after `let p =`), a map access is refused outside
+/// brackets, and the head admits operator expressions only.
+fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
     use ExprKind::*;
     // the expression whose first token the head parser meets first, and
     // whether an argument list follows it directly
@@ -94,6 +84,7 @@ fn trigger_needs_parens(t: &Expr) -> bool {
             | Never { .. }
             | Any { .. }
             | StringInterpolate { .. } => true,
+            Deref(e) | Not { expr: e } | Neg(e) | ByRef(_, e) => reads_bare(e),
             k => match (BinOp::of(k), bare_postfix_source(k)) {
                 (Some((_, lhs, rhs)), _) => reads_bare(lhs) && reads_bare(rhs),
                 (None, Some(source)) => reads_bare(source),
@@ -111,6 +102,7 @@ fn trigger_needs_parens(t: &Expr) -> bool {
         }
     }
     let reads_as_body_or_clause = match leftmost(t, false) {
+        _ if bound => false,
         (Expr { kind: Ref { name }, .. }, true) => &*name.0 == "/flush",
         (e, _) => {
             matches!(&e.kind, Block { .. } | Struct(_) | StructWith(_) | Map { .. })
@@ -349,6 +341,19 @@ pub(crate) fn write_leading_flat(
     write_leading(f, dec)
 }
 
+/// A doc in a flat form: on a fresh line unless comments above it began
+/// one.
+fn write_doc_flat(
+    f: &mut impl fmt::Write,
+    comments: &Comments,
+    doc: &Doc,
+) -> fmt::Result {
+    if comments.lines().is_empty() && doc.0.is_some() {
+        writeln!(f)?;
+    }
+    write!(f, "{doc}")
+}
+
 /// `write_comments` in a flat form.
 fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
     if !lines.is_empty() {
@@ -395,7 +400,7 @@ impl fmt::Display for Literal<'_> {
             Value::I64(v) => write!(f, "{v}"),
             Value::F64(v) if v.is_finite() => write!(f, "{v:?}"),
             v @ Value::String(_) => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
-            v => v.fmt_ext(f, &VAL_ESC, true),
+            v => v.fmt_ext(f, &parser::VALUE_ESC, true),
         }
     }
 }
@@ -576,28 +581,18 @@ pub trait PrettyDisplay: fmt::Display {
     }
 }
 
-impl fmt::Display for Doc {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(doc) = self.0.as_ref() {
-            if doc == "" {
-                writeln!(f, "///")?;
-            } else {
-                // CR claude for claude: [bug] `doc.lines()` loses parts of the doc. It
-                // drops a doc's final empty line (`/// a` over `///` parses to " a\n").
-                // It also strips the '\r' before each '\n' that a CRLF file's doc lines
-                // keep. The reprinted doc then differs, so `graphix fmt` and LSP
-                // formatting refuse the interface, and the was/now texts in the message
-                // read the same. The PrettyDisplay impl at line 552 repeats this body.
-                // Fix both with one writer, used by both impls, that prints `///{line}`
-                // for each item of `doc.split('\n')`; that also makes the `doc == ""`
-                // branch unnecessary. probe:
-                // design/review-2026-10-05/repro/t-print-05.sh (t-print-05)
-                for line in doc.lines() {
-                    writeln!(f, "///{line}")?;
-                }
-            }
+impl Doc {
+    fn write(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        for line in self.0.iter().flat_map(|doc| doc.split('\n')) {
+            writeln!(f, "///{line}")?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Doc {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.write(f)
     }
 }
 
@@ -620,16 +615,7 @@ impl fmt::Display for Attr {
 
 impl PrettyDisplay for Doc {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        if let Some(doc) = self.0.as_ref() {
-            if doc == "" {
-                writeln!(buf, "///")?;
-            } else {
-                for line in doc.lines() {
-                    writeln!(buf, "///{line}")?;
-                }
-            }
-        }
-        Ok(())
+        self.write(buf)
     }
 }
 
@@ -686,7 +672,8 @@ impl PrettyDisplay for TypeDefExpr {
 impl fmt::Display for TraitMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write_comments_flat(f, self.comments.lines())?;
-        write!(f, "{}val {}: {}", self.doc, self.name, self.typ)?;
+        write_doc_flat(f, &self.comments, &self.doc)?;
+        write!(f, "val {}: {}", self.name, self.typ)?;
         match &self.default {
             None => Ok(()),
             Some(d) => write!(f, " = {d}"),
@@ -878,7 +865,7 @@ impl PrettyDisplay for BindSig {
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write_comments_flat(f, self.comments.lines())?;
-        write!(f, "{}", self.doc)?;
+        write_doc_flat(f, &self.comments, &self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
             SigKind::Trait(t) => write!(f, "{t}"),
@@ -1170,9 +1157,18 @@ fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result 
 
 impl StructWithExpr {
     fn write_head(&self, f: &mut impl Write) -> fmt::Result {
-        match &self.source.kind {
-            ExprKind::Ref { .. } => write!(f, "{{ {} with", self.source),
-            _ => write!(f, "{{ ({}) with", self.source),
+        fn chain_on_name(e: &Expr) -> bool {
+            match &e.kind {
+                ExprKind::Ref { .. } => e.dec.is_none(),
+                ExprKind::Qop(s) | ExprKind::OrNever(s) => {
+                    e.dec.is_none() && chain_on_name(s)
+                }
+                _ => false,
+            }
+        }
+        match chain_on_name(&self.source) {
+            true => write!(f, "{{ {} with", self.source),
+            false => write!(f, "{{ ({}) with", self.source),
         }
     }
 }
@@ -1223,10 +1219,13 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 }
 
 /// Whether `e` can be the bare source of a postfix operator without parens:
-/// true exactly for identifiers and postfix-chain nodes (`?`/`$` included). Anything else
-/// must be parenthesized (`(a+b).c`; `(42).0` would lex as a float).
+/// a name, a postfix chain (`?`/`$` included) or a bracketed primary, which
+/// the parser reads as a source bare. Anything else must be parenthesized
+/// (`(a+b).c`; `(42).0` would lex as a float; the editor grammar reads no
+/// select, block or cast as a source), and so is a decorated source, whose
+/// decorations would otherwise stand above the whole chain.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
-    // CR claude for claude: [readability] This admits only names and postfix chains, but
+    // XCR claude for claude: [readability] This admits only names and postfix chains, but
     // the parser reads any bracket-delimited primary bare as a postfix source and drops
     // parens around one. So the formatter adds a pair it does not need: `(1, 2).0`
     // becomes `((1, 2)).0`, `[1, 2][0]` becomes `([1, 2])[0]`, `{ a: 1 }.a` becomes `({
@@ -1234,18 +1233,32 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     // StructWithExpr::write_head has the same gap against the parser's with_source: `{
     // u$ with b: 5 }` becomes `{ (u$) with b: 5 }`. Numeric constants (`(42).0`) and
     // ExplicitParens still need the parens. (t-print-13)
-    matches!(
-        &e.kind,
-        ExprKind::Ref { .. }
-            | ExprKind::StructRef { .. }
-            | ExprKind::TupleRef { .. }
-            | ExprKind::ArrayRef { .. }
-            | ExprKind::ArraySlice { .. }
-            | ExprKind::MapRef { .. }
-            | ExprKind::Apply(_)
-            | ExprKind::Qop(_)
-            | ExprKind::OrNever(_)
-    )
+    // 2026-10-07 claude: every bracketed primary but a select, a block and a cast now
+    // prints bare (prints_as_bare_postfix), and a struct-with head takes a `?`/`$`
+    // chain on a name bare. A select, block or cast keeps its parens: the tree-sitter
+    // grammar reads none of them as a postfix source, and ts_expr refuses the bare
+    // form. A decorated source keeps its parens too (t-format-resolver-14). Pinned by
+    // the print proptests and ts_expr.
+    use ExprKind::*;
+    e.dec.is_none()
+        && matches!(
+            &e.kind,
+            Ref { .. }
+                | StructRef { .. }
+                | TupleRef { .. }
+                | ArrayRef { .. }
+                | ArraySlice { .. }
+                | MapRef { .. }
+                | Apply(_)
+                | Qop(_)
+                | OrNever(_)
+                | Tuple { .. }
+                | Array { .. }
+                | List { .. }
+                | Map { .. }
+                | Struct(_)
+                | StructWith(_)
+        )
 }
 
 impl fmt::Display for ApplyExpr {
@@ -1272,10 +1285,8 @@ impl PrettyDisplay for ApplyExpr {
         if prints_as_bare_postfix(function) {
             function.fmt_pretty(buf)?
         } else {
-            write!(buf, "(")?;
-            function.fmt_pretty(buf)?;
+            pretty_parens(buf, function)?;
             buf.kill_newline();
-            write!(buf, ")")?;
         }
         buf.kill_newline();
         if let [(None, arg)] = &args[..]
@@ -1308,8 +1319,9 @@ impl PrettyDisplay for ApplyExpr {
     }
 }
 
-impl fmt::Display for Arg {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Arg {
+    /// `[#]pattern[: T]`, what stands before a default.
+    fn write_head(&self, f: &mut impl Write) -> fmt::Result {
         if self.kind.is_labeled() {
             write!(f, "#")?;
         }
@@ -1317,6 +1329,13 @@ impl fmt::Display for Arg {
         if let Some(t) = &self.constraint {
             write!(f, ": {t}")?
         }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Arg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.write_head(f)?;
         match self.kind.default() {
             Some(def) => write!(f, " = {def}"),
             None => Ok(()),
@@ -1328,18 +1347,9 @@ impl LambdaExpr {
     /// The quantifiers in front of the opening bar, and the space
     /// between them and it.
     fn write_constraints(&self, f: &mut impl Write) -> fmt::Result {
-        // CR claude for claude: [style] The parser stores `'a: Number + Singleton` as one
-        // (tvar, bound) pair per conjunct, and this loop prints each pair on its own.
-        // So the formatter rewrites `'a: Number + Singleton |x: 'a, y: 'a|` as `'a:
-        // Number, 'a: Singleton |x: 'a, y: 'a|`, and the book's `'a: [Number, null] +
-        // OneNumber |x: 'a|` (functions/polymorphism.md) as `'a: [null, Number], 'a:
-        // OneNumber |x: 'a|`. FnType's Display (typ/fntyp.rs) and ImplExpr::write_head
-        // join one variable's bounds with ` + `, each in a loop of its own. One writer
-        // over `&[(TVar, Type)]` that joins adjacent bounds of the same variable would
-        // serve all three. (t-print-11)
-        for (i, (tvar, typ)) in self.constraints.iter().enumerate() {
-            let sep = if i + 1 < self.constraints.len() { ", " } else { " " };
-            write!(f, "{tvar}: {typ}{sep}")?;
+        if !self.constraints.is_empty() {
+            write_bounds(f, &self.constraints)?;
+            write!(f, " ")?;
         }
         Ok(())
     }
@@ -1359,22 +1369,33 @@ impl LambdaExpr {
         }
     }
 
+    /// The arguments one to a line, each default placed after its `=` as
+    /// a value after its head.
+    fn pretty_args(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        let n = self.args.len() + self.vargs.is_some() as usize;
+        for (i, a) in self.args.iter().enumerate() {
+            a.write_head(buf)?;
+            if let Some(def) = a.kind.default() {
+                write!(buf, " =")?;
+                pretty_tail(buf, def)?;
+                buf.kill_newline();
+            }
+            match i + 1 < n {
+                true => writeln!(buf, ",")?,
+                false => writeln!(buf)?,
+            }
+        }
+        match &self.vargs {
+            None => Ok(()),
+            Some(None) => writeln!(buf, "@args"),
+            Some(Some(typ)) => writeln!(buf, "@args: {typ}"),
+        }
+    }
+
     /// What follows the closing bar, up to the body.
     fn write_returns(&self, f: &mut impl Write) -> fmt::Result {
-        // CR claude for claude: [structure] This match and the one in pretty_returns
-        // below each restate the rule that a function return type is parenthesized,
-        // whether bare or behind `&` (Type::Fn, Type::ByRef(Fn)). typ/fntyp.rs already
-        // holds that rule as Ret::of for fn types, and three copies of one delimiting
-        // rule can drift apart. Make Ret pub(crate) and drive both lambda printers from
-        // Ret::of. (t-print-12)
-        match &self.rtype {
-            None => (),
-            Some(Type::Fn(ft)) => write!(f, " -> ({ft})")?,
-            Some(Type::ByRef(m, t)) => match &**t {
-                Type::Fn(ft) => write!(f, " -> {}({ft})", m.prefix())?,
-                t => write!(f, " -> {}{t}", m.prefix())?,
-            },
-            Some(t) => write!(f, " -> {t}")?,
+        if let Some(t) = &self.rtype {
+            write!(f, " -> {}", Ret::of(t))?
         }
         match &self.throws {
             None => Ok(()),
@@ -1401,19 +1422,8 @@ impl LambdaExpr {
     /// `write_returns` with the return type laid out over lines.
     fn pretty_returns(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if let Some(rtype) = &self.rtype {
-            let (open, typ, close): (&str, &dyn PrettyDisplay, &str) = match rtype {
-                Type::Fn(ft) => (" -> (", &**ft, ")"),
-                Type::ByRef(Mutability::Shared, t) => match &**t {
-                    Type::Fn(ft) => (" -> &(", &**ft, ")"),
-                    t => (" -> &", t, ""),
-                },
-                Type::ByRef(Mutability::Mut, t) => match &**t {
-                    Type::Fn(ft) => (" -> &mut (", &**ft, ")"),
-                    t => (" -> &mut ", t, ""),
-                },
-                t => (" -> ", t, ""),
-            };
-            write!(buf, "{open}")?;
+            let Ret { open, typ, close } = Ret::of(rtype);
+            write!(buf, " -> {open}")?;
             typ.fmt_pretty_inner(buf)?;
             buf.kill_newline();
             write!(buf, "{close}")?;
@@ -1442,21 +1452,13 @@ impl PrettyDisplay for LambdaExpr {
             LambdaBody::Expr(_) => 2,
         };
         let has_args = !self.args.is_empty() || self.vargs.is_some();
-        if buf.col() + opener > buf.limit && has_args {
+        let decorated_default =
+            self.args.iter().any(|a| a.kind.default().is_some_and(decorated));
+        if (buf.col() + opener > buf.limit || decorated_default) && has_args {
             buf.rollback(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
-            // CR claude for claude: [bug] Both lambda heads (this one-argument-per-line
-            // form and the one-line form at 1335) write each argument through Arg's
-            // Display, so a labeled default is never laid out. A default holding a
-            // comment prints as `|#cfg: { alpha: i64, beta: i64 } = { // the alpha`
-            // with the next field unindented on the following line. A long default runs
-            // past the width: a 9-field struct default gives a 101-column line at width
-            // 90. Write the `#name[: T] =` head here and place the default with
-            // pretty_tail, the way a struct field's value is placed, and use this form
-            // whenever a default is decorated. Probe:
-            // design/review-2026-10-05/repro/t-print-07.gx. (t-print-07)
-            buf.nested(|buf| self.write_args(buf, ",\n", "\n"))?;
+            buf.nested(|buf| self.pretty_args(buf))?;
             let closing = buf.mark();
             write!(buf, "|")?;
             self.write_returns(buf)?;
@@ -1552,11 +1554,31 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
     writeln!(buf, "{suffix}")
 }
 
+/// `(e)`; a decorated `e` stands on lines of its own inside.
+fn pretty_parens(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
+    if decorated(e) {
+        writeln!(buf, "(")?;
+        buf.nested(|buf| e.fmt_pretty(buf))?;
+        buf.kill_newline();
+        writeln!(buf)?;
+        writeln!(buf, ")")
+    } else {
+        write!(buf, "(")?;
+        e.fmt_pretty(buf)?;
+        buf.kill_newline();
+        writeln!(buf, ")")
+    }
+}
+
 /// A postfix form: its source, parenthesized unless it reads bare, and
 /// then the suffix.
 fn pretty_postfix(buf: &mut PrettyBuf, source: &Expr, suffix: &str) -> fmt::Result {
     if prints_as_bare_postfix(source) {
         pretty_then(buf, source, suffix)
+    } else if decorated(source) {
+        pretty_parens(buf, source)?;
+        buf.kill_newline();
+        writeln!(buf, "{suffix}")
     } else {
         write!(buf, "(")?;
         pretty_then(buf, source, &format_compact!("){suffix}"))
@@ -1571,8 +1593,16 @@ impl PrettyDisplay for ExprKind {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         use ExprKind::*;
         if let Some((op, lhs, rhs)) = BinOp::of(self) {
-            pretty_then(buf, lhs, &format_compact!(" {}", op.token()))?;
-            return rhs.fmt_pretty(buf);
+            pretty_operand(
+                buf,
+                lhs,
+                under(lhs, op, false),
+                &format_compact!(" {}", op.token()),
+            )?;
+            return match under(rhs, op, true) {
+                false => rhs.fmt_pretty(buf),
+                true => pretty_parens(buf, rhs),
+            };
         }
         match self {
             NoOp => Ok(()),
@@ -1610,11 +1640,12 @@ impl PrettyDisplay for ExprKind {
             Seq { kind, trigger, abort, body } => {
                 write!(buf, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
+                    let bound = matches!(t, SeqTrigger::Bind(_));
                     if let SeqTrigger::Bind(b) = t {
                         write_seq_let(buf, b)?;
                     }
                     let t = t.expr();
-                    let parens = trigger_needs_parens(t);
+                    let parens = trigger_needs_parens(t, bound);
                     if parens {
                         write!(buf, "(")?;
                     }
@@ -1723,7 +1754,13 @@ impl PrettyDisplay for ExprKind {
                 pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",", true)
             }
             Struct(st) => st.fmt_pretty_inner(buf),
-            Qop(e) | Rethrow(e) => pretty_then(buf, e, "?"),
+            Qop(e) => pretty_operand(buf, e, suffixed(e), "?"),
+            Rethrow(e) => {
+                write!(buf, "rethrow(")?;
+                e.fmt_pretty(buf)?;
+                buf.kill_newline();
+                writeln!(buf, ")")
+            }
             SeqGuard(e) | SeqAbort(e) => e.fmt_pretty(buf),
             SeqCapture(c) => {
                 write!(buf, "capture(")?;
@@ -1754,22 +1791,18 @@ impl PrettyDisplay for ExprKind {
                 })?;
                 writeln!(buf, "}}")
             }
-            OrNever(e) => pretty_then(buf, e, "$"),
-            // CR claude for claude: [readability] A Catch prints as `catch(e) handler`
-            // whatever its role, and Rethrow prints as `e?` (1614, 2233), so --expand
-            // (node/compiler.rs:459) hides a seq machine's error edges: a Machine
-            // catch's action (pc <- `Idle) and abort event, and a Try catch's jump to
-            // the with step and its capture. For `let r = seq { let v = try { f(1)? }
-            // with(e) { 0 }; v }` it prints `catch(e) e?;` and, in `S0`,
-            // `catch(seqtry…) never();`, so nothing visibly enters `S1` or writes
-            // `seqe…`. Print the role's action, manual event and capture, and print
-            // Rethrow as its own form, here and in Display (2251). (x-expr-walks.r2-12)
+            OrNever(e) => pretty_operand(buf, e, suffixed(e), "$"),
             Catch(c) => {
                 match &c.constraint {
                     None => write!(buf, "catch({})", c.bind)?,
                     Some(t) => write!(buf, "catch({}: {t})", c.bind)?,
                 }
-                pretty_tail(buf, &c.handler)
+                pretty_tail(buf, &c.handler)?;
+                if !matches!(c.role, CatchRole::User) {
+                    buf.kill_newline();
+                    writeln!(buf, "{}", Role(&c.role))?
+                }
+                Ok(())
             }
             Apply(ae) => ae.fmt_pretty_inner(buf),
             Lambda(l) => l.fmt_pretty_inner(buf),
@@ -2010,10 +2043,11 @@ fn pretty_use_names(
     }
 }
 
-/// Whether the canonical form may write `s` raw: a `\r` there would not
-/// survive an editor's line endings.
+/// Whether the canonical form may write `s` raw: as itself, with no
+/// control character but a newline or a tab (a `\r` would not survive an
+/// editor's line endings).
 fn raw_writable(s: &str) -> bool {
-    !s.contains('\r')
+    !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
 /// The hashes a raw string needs so that no `"#..` inside `s` closes it.
@@ -2118,10 +2152,46 @@ fn write_template<'a>(
     write!(f, "\"\"\"")
 }
 
+/// A string literal, written in one piece: a layout indents only at the
+/// start of a write, never inside a multi-line literal.
+fn write_str_constant(
+    f: &mut Formatter<'_>,
+    v: &Value,
+    s: &str,
+    form: StrForm,
+) -> fmt::Result {
+    in_one_piece(f, |f| str_constant_pieces(f, v, s, form))
+}
+
+/// `write_str_constant` for an interpolated string.
+fn write_interpolation(
+    f: &mut Formatter<'_>,
+    args: &[Expr],
+    form: StrForm,
+) -> fmt::Result {
+    in_one_piece(f, |f| interpolation_pieces(f, args, form))
+}
+
+/// What `w` writes, handed to `f` in one write.
+fn in_one_piece(
+    f: &mut Formatter<'_>,
+    w: impl Fn(&mut Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    struct Pieces<W>(W);
+    impl<W: Fn(&mut Formatter<'_>) -> fmt::Result> fmt::Display for Pieces<W> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            (self.0)(f)
+        }
+    }
+    let mut s: LPooled<String> = LPooled::take();
+    write!(s, "{}", Pieces(w))?;
+    f.write_str(&s)
+}
+
 /// A string constant between the delimiters its author chose when
 /// printing as written, else raw exactly when it spans lines; quoted
 /// wherever the delimiters cannot hold it.
-fn write_str_constant(
+fn str_constant_pieces(
     f: &mut Formatter<'_>,
     v: &Value,
     s: &str,
@@ -2141,7 +2211,7 @@ fn write_str_constant(
 }
 
 /// `write_str_constant` for an interpolated string.
-fn write_interpolation(
+fn interpolation_pieces(
     f: &mut Formatter<'_>,
     args: &[Expr],
     form: StrForm,
@@ -2226,7 +2296,9 @@ impl ExprKind {
             write!(f, "{close}")
         }
         if let Some((op, lhs, rhs)) = BinOp::of(self) {
-            return write!(f, "{lhs} {} {rhs}", op.token());
+            let (l, r) =
+                (Operand(lhs, under(lhs, op, false)), Operand(rhs, under(rhs, op, true)));
+            return write!(f, "{l} {} {r}", op.token());
         }
         match self {
             ExprKind::Constant(v @ Value::String(s)) => {
@@ -2278,11 +2350,12 @@ impl ExprKind {
             ExprKind::Seq { kind, trigger, abort, body } => {
                 write!(f, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
+                    let bound = matches!(t, SeqTrigger::Bind(_));
                     if let SeqTrigger::Bind(b) = t {
                         write_seq_let(f, b)?;
                     }
                     let t = t.expr();
-                    if trigger_needs_parens(t) {
+                    if trigger_needs_parens(t, bound) {
                         write!(f, "({t})")?;
                     } else {
                         write!(f, "{t}")?;
@@ -2344,20 +2417,8 @@ impl ExprKind {
             }
             ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
-            // CR claude for claude: [readability] `?` and `$` (2250) print their operand
-            // bare, as binary operators do theirs (2115; the pretty forms at 1462, 1614
-            // and 1645). This relies on the ExplicitParens the parser keeps, which a
-            // compiler-built tree lacks. The seq rewrite turns a `?` over a level in a
-            // step into `Qop(StrictSample(pc, x))`, and `graphix --expand` prints it as
-            // `seqpc… ~! x?`, which reads as `seqpc… ~! (x?)`. The fix is to
-            // parenthesize an operand of lower precedence: for `?`/`$`, anything but a
-            // primary or a postfix form; for a binary operator, a child of lower
-            // precedence, or of equal precedence on the right. That corrects
-            // compiler-built trees and leaves parser-built ones as they are. Probe:
-            // `graphix --expand` on `let x: [i64, null] = null; seq
-            // sys::time::timer(duration:10.ms, false) { let v = try { x? } with(e) { 0
-            // }; v }`. (t-print-10)
-            ExprKind::Qop(e) | ExprKind::Rethrow(e) => write!(f, "{}?", e),
+            ExprKind::Qop(e) => write!(f, "{}?", Operand(e, suffixed(e))),
+            ExprKind::Rethrow(e) => write!(f, "rethrow({e})"),
             ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
             ExprKind::SeqCapture(c) => {
                 write!(f, "capture({} or live {})", c.snapshot, c.live)
@@ -2374,11 +2435,14 @@ impl ExprKind {
                 }
                 write!(f, "}}")
             }
-            ExprKind::OrNever(e) => write!(f, "{}$", e),
-            ExprKind::Catch(c) => match &c.constraint {
-                None => write!(f, "catch({}) {}", c.bind, c.handler),
-                Some(t) => write!(f, "catch({}: {t}) {}", c.bind, c.handler),
-            },
+            ExprKind::OrNever(e) => write!(f, "{}$", Operand(e, suffixed(e))),
+            ExprKind::Catch(c) => {
+                match &c.constraint {
+                    None => write!(f, "catch({}) {}", c.bind, c.handler)?,
+                    Some(t) => write!(f, "catch({}: {t}) {}", c.bind, c.handler)?,
+                }
+                write!(f, "{}", Role(&c.role))
+            }
             ExprKind::StringInterpolate { args } => {
                 write_interpolation(f, args, StrForm::Quoted)
             }
@@ -2416,6 +2480,75 @@ impl ExprKind {
                 _ => write!(f, "-{e}"),
             },
             ExprKind::Not { expr } => write!(f, "!{expr}"),
+        }
+    }
+}
+
+/// Whether `e`, an operand of `op` on the `right` or the left, needs
+/// parens: of lower precedence, or of equal on the right, since every
+/// operator is left-associative. A parsed tree holds its parens; a tree
+/// the compiler built does not.
+fn under(e: &Expr, op: BinOp, right: bool) -> bool {
+    BinOp::of(&e.kind).is_some_and(|(c, _, _)| {
+        c.precedence() < op.precedence() || (right && c.precedence() == op.precedence())
+    })
+}
+
+/// Whether `e`, the operand of `?` or `$`, needs parens: it is an
+/// operator's, which binds looser than a postfix form.
+fn suffixed(e: &Expr) -> bool {
+    use ExprKind::*;
+    BinOp::of(&e.kind).is_some()
+        || matches!(&e.kind, Deref(_) | Not { .. } | Neg(_) | ByRef(..))
+}
+
+/// An operand, in parens when `parens` says so.
+struct Operand<'a>(&'a Expr, bool);
+
+impl fmt::Display for Operand<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.1 {
+            true => write!(f, "({})", self.0),
+            false => write!(f, "{}", self.0),
+        }
+    }
+}
+
+/// `pretty_then` of an operand, in parens when `parens` says so.
+fn pretty_operand(
+    buf: &mut PrettyBuf,
+    e: &Expr,
+    parens: bool,
+    suffix: &str,
+) -> fmt::Result {
+    match parens {
+        false => pretty_then(buf, e, suffix),
+        true => {
+            pretty_parens(buf, e)?;
+            buf.kill_newline();
+            writeln!(buf, "{suffix}")
+        }
+    }
+}
+
+/// What a catch seq lowering installed does past its handler; nothing for
+/// the program's own. Printed for `--expand`, never parsed.
+struct Role<'a>(&'a CatchRole);
+
+impl fmt::Display for Role<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            CatchRole::User => Ok(()),
+            CatchRole::Machine { action, manual, pc } => {
+                write!(f, " then {action} (machine {pc}")?;
+                match manual {
+                    None => write!(f, ")"),
+                    Some(m) => write!(f, ", abort on {m})"),
+                }
+            }
+            CatchRole::Try { action, capture } => {
+                write!(f, " then {action} (error to {capture})")
+            }
         }
     }
 }

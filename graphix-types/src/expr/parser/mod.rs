@@ -84,6 +84,14 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     Escape::new('\\', &esc, &NAMED, None).unwrap()
 });
 
+/// The escape for strings nested in a value literal (`error:"..."`):
+/// netidx's, whose generic `\u{..}` arm its own parser cannot read back,
+/// so other control characters print raw.
+pub static VALUE_ESC: LazyLock<Escape> = LazyLock::new(|| {
+    const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
+    Escape::new('\\', &['\\', '"', '\n', '\r', '\0', '\t'], &NAMED, None).unwrap()
+});
+
 /// How a reserved word may be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Keyword {
