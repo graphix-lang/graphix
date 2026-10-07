@@ -176,11 +176,11 @@ serially and under `GRAPHIX_PAR=auto`, pinned with taskset (serial and 4
 threads on the P-cores, 12 on the P- and E-cores; never the low-power
 cores), at normal priority. `par_symbolic` is `symbolic` with its seeds
 mapped under `#[parallel]`; `par_wide` is a node-walked map whose slots
-the cost model learns to fork, timed over its 59 cycles after the first;
+the cost model learns to fork, timed over its 60 cycles after the first;
 `par_growth` builds 20000 slots in one cycle, nearly all instance
 construction (both run `--no-fusion`: fused, each takes milliseconds);
 `par_mandel` is a fused `array::init` over 480000 pixels whose kernel
-loop forks as chunks, timed over the 9 cycles after the first. Quick
+loop forks as chunks, timed over the 10 cycles after the first. Quick
 build, `max` mode, best of three (2026-10-04):
 
 | bench          | serial | auto P x4 | auto P+E x12 |
@@ -191,7 +191,7 @@ build, `max` mode, best of three (2026-10-04):
 | `par_wide`     | 5.29 s | 2.47 s    | 1.89 s       |
 
 Of `par_mandel`'s cycle, the fold over the grid, building its array and
-dropping the last one stay serial (8 ms of the 4-thread cycle's 50); the
+dropping the last one stay serial (8 ms of the 4-thread cycle's 45); the
 pixels run at about 92% of four cores.
 
 Hybrid cores make these noisy: which parts land on E-cores is the OS's

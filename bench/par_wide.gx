@@ -1,9 +1,9 @@
-// A wide node-walked cycle, recomputed 60 times: 16 independent slots,
+// A wide node-walked cycle, computed 61 times: 16 independent slots,
 // each a fixed-shape recursion (2^11 activations) over a value that
 // changes every cycle, so the cost model learns the slots and forks
 // them without an attribute. Fusion would turn the map into one native
 // loop with nothing to fork: run it --no-fusion (bench/par.sh does). It
-// prints the first cycle (the activations' construction) and the 59
+// prints the first cycle (the activations' construction) and the 60
 // that follow separately.
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$ % 2;
