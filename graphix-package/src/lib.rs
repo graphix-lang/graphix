@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::Local;
-use compact_str::{CompactString, format_compact};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
 use graphix_compiler::{
@@ -139,24 +139,27 @@ pub trait Package<X: GXExt>: Send + Sync {
     fn main_program(&self) -> Option<&'static str>;
 }
 
-/// Build the root-module prelude from the registered package names:
-/// `mod <name>` for each package, joined by `;\n`. Core needs no `use`;
-/// the compiler's core prelude makes its root items visible everywhere.
-// CR claude for claude: [structure] root_module_source is only ever called right after
-// the same register-every-package loop, which is written out at
-// graphix-shell/src/lib.rs:238-244, graphix-shell/src/lsp_backend.rs:47-54 and
-// stdlib/graphix-package-core/src/testing.rs:280-288. So a registration rule has to
-// change in three crates, and the test harness can drift from what the shell registers.
-// One `register_packages(ctx, packages) -> Result<(AHashMap<Path, VfsEntry>, ArcStr)>`
-// here would replace the three loops and let root_module_source go private. It can also
-// build the root source in one buffer instead of a Vec of format!ed Strings.
-// (package-16)
-pub fn root_module_source(root_mods: &IndexSet<ArcStr>) -> ArcStr {
-    let mut parts = Vec::new();
-    for name in root_mods {
-        parts.push(format!("mod {name}"));
+/// Register `packages` in `ctx`: their Graphix modules by path, and the
+/// root module source naming each (`mod <name>`; core needs no `use`, the
+/// compiler's core prelude makes its root items visible everywhere).
+pub fn register_packages<'a, X: GXExt + 'a>(
+    ctx: &mut ExecState<GXRt<X>, X::UserEvent>,
+    packages: impl IntoIterator<Item = &'a dyn Package<X>>,
+) -> Result<(AHashMap<netidx_core::path::Path, VfsEntry>, ArcStr)> {
+    let mut modules = AHashMap::default();
+    let mut root_mods = IndexSet::new();
+    for p in packages {
+        p.register(ctx, &mut modules, &mut root_mods)?;
     }
-    ArcStr::from(parts.join(";\n"))
+    let mut root = String::new();
+    for name in &root_mods {
+        if !root.is_empty() {
+            root.push_str(";\n");
+        }
+        root.push_str("mod ");
+        root.push_str(name);
+    }
+    Ok((modules, ArcStr::from(root)))
 }
 
 // new-package skeleton templates
@@ -258,7 +261,7 @@ fn is_stdlib_package(name: &str) -> bool {
 /// A package entry in packages.toml — either a version string or a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageEntry {
-    Version(String),
+    Version(CompactString),
     Path(PathBuf),
 }
 
@@ -279,16 +282,16 @@ impl std::fmt::Display for PackageEntry {
 /// live in `external`, keyed by short-name, still carrying a version or path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Packages {
-    stdlib_installed: BTreeSet<String>,
-    stdlib_removed: BTreeSet<String>,
-    external: BTreeMap<String, PackageEntry>,
+    stdlib_installed: BTreeSet<CompactString>,
+    stdlib_removed: BTreeSet<CompactString>,
+    external: BTreeMap<CompactString, PackageEntry>,
 }
 
 impl Packages {
     /// `core` is mandatory and can never be removed; a name can't be both
     /// installed and removed (installed wins). Call after every load/mutation.
     fn enforce_invariants(&mut self) {
-        self.stdlib_installed.insert("core".to_string());
+        self.stdlib_installed.insert("core".to_compact_string());
         let Self { stdlib_installed, stdlib_removed, external: _ } = self;
         stdlib_removed.retain(|n| !stdlib_installed.contains(n));
     }
@@ -311,14 +314,14 @@ impl Packages {
 /// [`Packages::build_plan`]). `features` is sorted (it comes from a `BTreeSet`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BuildPlan {
-    features: Vec<String>,
-    external: BTreeMap<String, PackageEntry>,
+    features: Vec<CompactString>,
+    external: BTreeMap<CompactString, PackageEntry>,
 }
 
 /// Parse a single external entry value (`"1.2.3"` or `{ path = "..." }`).
 fn parse_entry(k: &str, v: &toml::Value) -> Result<PackageEntry> {
     match v {
-        toml::Value::String(s) => Ok(PackageEntry::Version(s.clone())),
+        toml::Value::String(s) => Ok(PackageEntry::Version(s.as_str().into())),
         toml::Value::Table(t) => {
             if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
                 Ok(PackageEntry::Path(PathBuf::from(p)))
@@ -332,12 +335,12 @@ fn parse_entry(k: &str, v: &toml::Value) -> Result<PackageEntry> {
 
 fn parse_external_table(
     tbl: Option<&toml::Value>,
-) -> Result<BTreeMap<String, PackageEntry>> {
+) -> Result<BTreeMap<CompactString, PackageEntry>> {
     let mut external = BTreeMap::new();
     let Some(tbl) = tbl else { return Ok(external) };
     let tbl = tbl.as_table().ok_or_else(|| anyhow!("[packages] must be a table"))?;
     for (k, v) in tbl {
-        external.insert(k.clone(), parse_entry(k, v)?);
+        external.insert(k.as_str().into(), parse_entry(k, v)?);
     }
     Ok(external)
 }
@@ -358,13 +361,13 @@ fn parse_v2(doc: &toml::Value) -> Result<Packages> {
         .get("stdlib")
         .and_then(|v| v.as_table())
         .ok_or_else(|| anyhow!("packages.toml missing [stdlib] table"))?;
-    let read_names = |key: &str| -> Result<BTreeSet<String>> {
+    let read_names = |key: &str| -> Result<BTreeSet<CompactString>> {
         match stdlib.get(key) {
             None => Ok(BTreeSet::new()),
             Some(toml::Value::Array(a)) => a
                 .iter()
                 .map(|v| {
-                    v.as_str().map(|s| s.to_string()).ok_or_else(|| {
+                    v.as_str().map(|s| s.to_compact_string()).ok_or_else(|| {
                         anyhow!("[stdlib].{key} must be an array of strings")
                     })
                 })
@@ -395,7 +398,7 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
                 "warning: package '{k}' is now part of '{replacement}'; installing \
                  '{replacement}' (use {replacement}::{k} instead of {k})"
             );
-            stdlib_installed.insert(replacement.to_string());
+            stdlib_installed.insert(replacement.to_compact_string());
             continue;
         }
         let entry = parse_entry(k, v)?;
@@ -407,16 +410,16 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
                     p.display()
                 );
             }
-            stdlib_installed.insert(k.clone());
+            stdlib_installed.insert(k.as_str().into());
         } else {
-            external.insert(k.clone(), entry);
+            external.insert(k.as_str().into(), entry);
         }
     }
     // Stdlib names absent from the old file were removed by the user.
     let stdlib_removed = DEFAULT_PACKAGES
         .iter()
         .filter(|n| !stdlib_installed.contains(**n))
-        .map(|n| n.to_string())
+        .map(|n| n.to_compact_string())
         .collect();
     let mut p = Packages { stdlib_installed, stdlib_removed, external };
     p.enforce_invariants();
@@ -425,8 +428,8 @@ fn migrate_old(doc: &toml::Value) -> Result<Packages> {
 
 /// Serialize a `Packages` to the v2 on-disk format.
 fn to_toml_string(p: &Packages) -> Result<String> {
-    let to_arr = |s: &BTreeSet<String>| -> toml::Value {
-        toml::Value::Array(s.iter().map(|n| toml::Value::String(n.clone())).collect())
+    let to_arr = |s: &BTreeSet<CompactString>| -> toml::Value {
+        toml::Value::Array(s.iter().map(|n| toml::Value::String(n.to_string())).collect())
     };
     let mut stdlib = toml::value::Table::new();
     stdlib.insert("installed".to_string(), to_arr(&p.stdlib_installed));
@@ -435,7 +438,7 @@ fn to_toml_string(p: &Packages) -> Result<String> {
     for (k, entry) in &p.external {
         match entry {
             PackageEntry::Version(v) => {
-                pkgs.insert(k.clone(), toml::Value::String(v.clone()));
+                pkgs.insert(k.to_string(), toml::Value::String(v.to_string()));
             }
             PackageEntry::Path(path) => {
                 let mut t = toml::value::Table::new();
@@ -443,7 +446,7 @@ fn to_toml_string(p: &Packages) -> Result<String> {
                     "path".to_string(),
                     toml::Value::String(path.to_string_lossy().into_owned()),
                 );
-                pkgs.insert(k.clone(), toml::Value::Table(t));
+                pkgs.insert(k.to_string(), toml::Value::Table(t));
             }
         }
     }
@@ -465,7 +468,8 @@ async fn read_packages() -> Result<Packages> {
         Ok(contents) => Ok(parse_packages(&contents)?.0),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut p = Packages::default();
-            p.stdlib_installed = DEFAULT_PACKAGES.iter().map(|n| n.to_string()).collect();
+            p.stdlib_installed =
+                DEFAULT_PACKAGES.iter().map(|n| n.to_compact_string()).collect();
             p.enforce_invariants();
             Ok(p)
         }
@@ -490,15 +494,7 @@ async fn write_packages(p: &Packages) -> Result<()> {
 /// `[dependencies]` — every `graphix-package-<name>` key (the trailing dash
 /// excludes the `graphix-package` crate itself; the value shape is ignored, so
 /// the `optional` gui entry is included).
-fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<String>> {
-    // CR claude for claude: [style] toml_edit::DocumentMut is imported inside three
-    // functions (here, 506 and 1148) where one top-level import belongs, and line 1245
-    // writes std::time::Duration though Duration is imported at the top. Package names
-    // and versions are String throughout (Packages, PackageEntry::Version, UpdatePlan,
-    // Item, Selection) where PackageId already uses CompactString. In test.rs,
-    // BUILD_LOCK is a std Mutex with hand-written poison recovery (12-18) where
-    // parking_lot::Mutex needs none, and line 776 carries a milestone tag '(M2)'.
-    // (package-18)
+fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<CompactString>> {
     let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
     let deps = doc
         .get("dependencies")
@@ -506,12 +502,14 @@ fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<String>> {
         .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
     Ok(deps
         .iter()
-        .filter_map(|(k, _)| k.strip_prefix("graphix-package-").map(|s| s.to_string()))
+        .filter_map(|(k, _)| {
+            k.strip_prefix("graphix-package-").map(|s| s.to_compact_string())
+        })
         .collect())
 }
 
 /// The stdlib set shipped by an unpacked graphix-shell source tree.
-async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>> {
+async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<CompactString>> {
     let cargo_toml = source_dir.join("Cargo.toml");
     let content = fs::read_to_string(&cargo_toml)
         .await
@@ -522,9 +520,11 @@ async fn stdlib_packages_in_source(source_dir: &Path) -> Result<BTreeSet<String>
 /// Parse the shell `[features]` table into forward edges: each feature
 /// mapped to the package features it directly enables. Only bare feature
 /// references are edges; `dep:`, `crate/feat` and `crate?/feat` are ignored.
-fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
+fn feature_edges(
+    content: &str,
+) -> Result<BTreeMap<CompactString, BTreeSet<CompactString>>> {
     let doc: DocumentMut = content.parse().context("parsing shell Cargo.toml")?;
-    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut edges: BTreeMap<CompactString, BTreeSet<CompactString>> = BTreeMap::new();
     let Some(features) = doc.get("features").and_then(|f| f.as_table()) else {
         return Ok(edges);
     };
@@ -534,9 +534,9 @@ fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
             .iter()
             .filter_map(|v| v.as_str())
             .filter(|s| !s.contains(':') && !s.contains('/'))
-            .map(|s| s.to_string())
+            .map(|s| s.to_compact_string())
             .collect();
-        edges.insert(feat.to_string(), deps);
+        edges.insert(feat.to_compact_string(), deps);
     }
     Ok(edges)
 }
@@ -546,9 +546,9 @@ fn feature_edges(content: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
 fn feature_depends_on(
     pkg: &str,
     target: &str,
-    edges: &BTreeMap<String, BTreeSet<String>>,
+    edges: &BTreeMap<CompactString, BTreeSet<CompactString>>,
 ) -> bool {
-    let mut stack = vec![pkg.to_string()];
+    let mut stack = vec![pkg.to_compact_string()];
     let mut seen = BTreeSet::new();
     while let Some(cur) = stack.pop() {
         if !seen.insert(cur.clone()) {
@@ -569,9 +569,9 @@ fn feature_depends_on(
 /// still pulls `target` in — silently un-removed).
 fn installed_dependents(
     target: &str,
-    installed: &BTreeSet<String>,
-    edges: &BTreeMap<String, BTreeSet<String>>,
-) -> Vec<String> {
+    installed: &BTreeSet<CompactString>,
+    edges: &BTreeMap<CompactString, BTreeSet<CompactString>>,
+) -> Vec<CompactString> {
     installed
         .iter()
         .filter(|p| p.as_str() != target && feature_depends_on(p, target, edges))
@@ -584,7 +584,7 @@ fn installed_dependents(
 /// by Cargo feature; neither they nor `[features]` are touched.
 fn with_external(
     content: &str,
-    external: &BTreeMap<String, PackageEntry>,
+    external: &BTreeMap<CompactString, PackageEntry>,
 ) -> Result<String> {
     let mut doc: DocumentMut = content.parse().context("parsing Cargo.toml")?;
     let deps = doc["dependencies"]
@@ -594,7 +594,7 @@ fn with_external(
         let crate_name = format!("graphix-package-{name}");
         match entry {
             PackageEntry::Version(version) => {
-                deps[&crate_name] = toml_edit::value(version);
+                deps[&crate_name] = toml_edit::value(version.as_str());
             }
             PackageEntry::Path(path) => {
                 let mut tbl = toml_edit::InlineTable::new();
@@ -614,7 +614,7 @@ fn with_external(
 /// whole registration.
 async fn rewrite_manifest(
     source_dir: &Path,
-    external: &BTreeMap<String, PackageEntry>,
+    external: &BTreeMap<CompactString, PackageEntry>,
 ) -> Result<()> {
     let path = source_dir.join("Cargo.toml");
     let content = fs::read_to_string(&path).await?;
@@ -627,7 +627,7 @@ async fn rewrite_manifest(
 /// that the record never named is announced.
 async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
     let shipped = stdlib_packages_in_source(source_dir).await?;
-    let gone: Vec<String> = packages
+    let gone: Vec<CompactString> = packages
         .stdlib_installed
         .iter()
         .filter(|n| *n != "core" && !shipped.contains(*n))
@@ -686,8 +686,8 @@ impl Saved {
 }
 
 /// The newest stable version a crate has, else its newest.
-fn newest(c: &crates_io_api::Crate) -> String {
-    c.max_stable_version.clone().unwrap_or_else(|| c.max_version.clone())
+fn newest(c: &crates_io_api::Crate) -> CompactString {
+    c.max_stable_version.as_deref().unwrap_or(&c.max_version).into()
 }
 
 /// True if version `a` is strictly newer than `b` by semver. Falls back to
@@ -700,7 +700,7 @@ fn version_gt(a: &str, b: &str) -> bool {
 }
 
 /// Get the graphix version string from the running binary
-async fn graphix_version() -> Result<String> {
+async fn graphix_version() -> Result<CompactString> {
     let graphix = which::which("graphix").context("can't find the graphix command")?;
     let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
     let line = BufReader::new(c.stdout.unwrap())
@@ -709,7 +709,7 @@ async fn graphix_version() -> Result<String> {
         .await?
         .ok_or_else(|| anyhow!("graphix did not return a version"))?;
     // version output may be "graphix 0.3.2" or just "0.3.2"
-    Ok(line.split_whitespace().last().unwrap_or(&line).to_string())
+    Ok(line.split_whitespace().last().unwrap_or(&line).to_compact_string())
 }
 
 // fetch our source from the local cargo cache (preferred method)
@@ -872,16 +872,16 @@ struct UpdatePlan {
     /// A newer shell version, when one is available.
     shell: Option<ShellBump>,
     /// `(name, old, new)` for each external package with a newer version.
-    external_updates: Vec<(String, String, String)>,
+    external_updates: Vec<(CompactString, CompactString, CompactString)>,
 }
 
 /// A newer shell, and the stdlib packages it ships that the record has
 /// not seen (installed or removed): only that shell builds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ShellBump {
-    current: String,
-    latest: String,
-    new_stdlib: Vec<String>,
+    current: CompactString,
+    latest: CompactString,
+    new_stdlib: Vec<CompactString>,
 }
 
 impl UpdatePlan {
@@ -894,8 +894,8 @@ impl UpdatePlan {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Selection {
     shell: bool,
-    new_stdlib: BTreeSet<String>,
-    external: BTreeSet<String>,
+    new_stdlib: BTreeSet<CompactString>,
+    external: BTreeSet<CompactString>,
 }
 
 impl Selection {
@@ -917,14 +917,14 @@ impl Selection {
 fn compute_update_plan(
     current_shell: &str,
     latest_shell: &str,
-    stdlib_set_from_source: &BTreeSet<String>,
+    stdlib_set_from_source: &BTreeSet<CompactString>,
     packages: &Packages,
-    external_latest: &BTreeMap<String, String>,
+    external_latest: &BTreeMap<CompactString, CompactString>,
 ) -> UpdatePlan {
     // BTreeSet iterates sorted, so new_stdlib comes out sorted.
     let shell = version_gt(latest_shell, current_shell).then(|| ShellBump {
-        current: current_shell.to_string(),
-        latest: latest_shell.to_string(),
+        current: current_shell.to_compact_string(),
+        latest: latest_shell.to_compact_string(),
         new_stdlib: stdlib_set_from_source
             .iter()
             .filter(|n| {
@@ -957,7 +957,7 @@ fn apply_selection(
     plan: &UpdatePlan,
     sel: &Selection,
     packages: &mut Packages,
-) -> String {
+) -> CompactString {
     let build_version = match &plan.shell {
         Some(bump) if sel.shell => {
             for name in &bump.new_stdlib {
@@ -971,7 +971,7 @@ fn apply_selection(
             }
             bump.latest.clone()
         }
-        _ => current_shell.to_string(),
+        _ => current_shell.to_compact_string(),
     };
     for (name, _old, new) in &plan.external_updates {
         if sel.external.contains(name) {
@@ -984,9 +984,9 @@ fn apply_selection(
 
 /// A single presentable/selectable line of an `UpdatePlan`.
 enum Item {
-    Shell { current: String, latest: String },
-    NewStdlib(String),
-    External { name: String, old: String, new: String },
+    Shell { current: CompactString, latest: CompactString },
+    NewStdlib(CompactString),
+    External { name: CompactString, old: CompactString, new: CompactString },
 }
 
 impl Item {
@@ -998,13 +998,15 @@ impl Item {
         }
     }
 
-    fn render(&self) -> String {
+    fn render(&self) -> CompactString {
         match self {
             Item::Shell { current, latest } => {
-                format!("graphix-shell   {current} -> {latest}")
+                format_compact!("graphix-shell   {current} -> {latest}")
             }
             Item::NewStdlib(n) => n.clone(),
-            Item::External { name, old, new } => format!("{name}   {old} -> {new}"),
+            Item::External { name, old, new } => {
+                format_compact!("{name}   {old} -> {new}")
+            }
         }
     }
 }
@@ -1159,7 +1161,10 @@ async fn prompt_y_e_n(items: &[Item]) -> Result<Outcome> {
 /// If the shell item is deselected, force every new-stdlib item off (they can't
 /// build against the current shell). Returns the names that were forced off, so
 /// the caller can note them. Pure.
-fn normalize_selection(items: &[Item], selected: &mut BTreeSet<usize>) -> Vec<String> {
+fn normalize_selection(
+    items: &[Item],
+    selected: &mut BTreeSet<usize>,
+) -> Vec<CompactString> {
     let Some(si) = items.iter().position(|it| matches!(it, Item::Shell { .. })) else {
         return Vec::new();
     };
@@ -1375,7 +1380,7 @@ impl GraphixPM {
     }
 
     /// Read the version from a package crate's Cargo.toml at the given path
-    async fn read_package_version(path: &Path) -> Result<String> {
+    async fn read_package_version(path: &Path) -> Result<CompactString> {
         let cargo_toml_path = path.join("Cargo.toml");
         let contents = fs::read_to_string(&cargo_toml_path)
             .await
@@ -1385,7 +1390,7 @@ impl GraphixPM {
         doc.get("package")
             .and_then(|p| p.get("version"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_compact_string())
             .ok_or_else(|| anyhow!("no version found in {}", cargo_toml_path.display()))
     }
 
@@ -1410,7 +1415,7 @@ impl GraphixPM {
                     )
                 }
                 installed.stdlib_removed.remove(name);
-                if installed.stdlib_installed.insert(name.to_string()) {
+                if installed.stdlib_installed.insert(name.to_compact_string()) {
                     println!("Adding stdlib package {name}");
                     changed = true;
                 } else {
@@ -1429,7 +1434,7 @@ impl GraphixPM {
                 match pkg.version() {
                     Some(v) => {
                         println!("Adding {name}@{v}");
-                        PackageEntry::Version(v.to_string())
+                        PackageEntry::Version(v.to_compact_string())
                     }
                     None => bail!(
                         "version is required for {name} when using --skip-crates-io-check"
@@ -1442,7 +1447,7 @@ impl GraphixPM {
                         format!("package {crate_name} not found on crates.io")
                     })?;
                 let version = match pkg.version() {
-                    Some(v) => v.to_string(),
+                    Some(v) => v.to_compact_string(),
                     None => newest(&cr.crate_data),
                 };
                 println!("Adding {name}@{version}");
@@ -1452,7 +1457,7 @@ impl GraphixPM {
                 println!("{name} is already installed as {entry}");
                 continue;
             }
-            installed.external.insert(name.to_string(), entry);
+            installed.external.insert(name.to_compact_string(), entry);
             changed = true;
         }
         if changed {
@@ -1491,7 +1496,7 @@ impl GraphixPM {
             None
         };
         // the whole removal, decided against the set installed now
-        let mut stdlib: BTreeSet<String> = BTreeSet::new();
+        let mut stdlib: BTreeSet<CompactString> = BTreeSet::new();
         let mut external: Vec<&str> = Vec::new();
         for pkg in packages {
             let name = pkg.name();
@@ -1500,7 +1505,7 @@ impl GraphixPM {
             } else if is_stdlib_package(name) || installed.stdlib_installed.contains(name)
             {
                 if installed.stdlib_installed.contains(name) {
-                    stdlib.insert(name.to_string());
+                    stdlib.insert(name.to_compact_string());
                 } else {
                     println!("{name} is already removed");
                 }
@@ -1510,7 +1515,7 @@ impl GraphixPM {
                 println!("{name} is not installed");
             }
         }
-        let mut cascade: BTreeSet<String> = BTreeSet::new();
+        let mut cascade: BTreeSet<CompactString> = BTreeSet::new();
         if let Some((_, edges)) = &prepared {
             for name in &stdlib {
                 let dependents =
@@ -1655,10 +1660,13 @@ impl GraphixPM {
         // features: the feature graph pulls their closure and `core` is always
         // compiled.
         let mut external = BTreeMap::new();
-        external.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
+        external.insert(
+            short_name.to_compact_string(),
+            PackageEntry::Path(package_dir.clone()),
+        );
         let shell_manifest = fs::read_to_string(source_dir.join("Cargo.toml")).await?;
         let shipped = stdlib_packages_in_cargo_toml(&shell_manifest)?;
-        let features: Vec<String> = stdlib_packages_in_cargo_toml(&contents)?
+        let features: Vec<CompactString> = stdlib_packages_in_cargo_toml(&contents)?
             .into_iter()
             .filter(|n| n != "core" && shipped.contains(n))
             .collect();
@@ -1688,8 +1696,8 @@ impl GraphixPM {
     async fn build_embedding(
         &self,
         source_dir: &Path,
-        external: &BTreeMap<String, PackageEntry>,
-        features: &[String],
+        external: &BTreeMap<CompactString, PackageEntry>,
+        features: &[CompactString],
         crate_name: &str,
     ) -> Result<PathBuf> {
         println!("Updating Cargo.toml...");
@@ -1699,7 +1707,7 @@ impl GraphixPM {
         // cannot move the binary out from under the copy.
         let target_dir = source_dir.join("target");
         let mut f = features.to_vec();
-        f.push(format!("{crate_name}/standalone"));
+        f.push(format_compact!("{crate_name}/standalone"));
         let status = Command::new(&self.cargo)
             .arg("build")
             .arg("--release")
@@ -1721,7 +1729,7 @@ impl GraphixPM {
     }
 
     /// Query crates.io for the latest version of a crate
-    async fn latest_version(&self, crate_name: &str) -> Result<String> {
+    async fn latest_version(&self, crate_name: &str) -> Result<CompactString> {
         let cr = self
             .cratesio
             .get_crate(crate_name)

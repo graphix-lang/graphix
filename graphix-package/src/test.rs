@@ -1,8 +1,5 @@
-use std::{
-    path::Path,
-    sync::{Mutex, Once},
-    time::Duration,
-};
+use parking_lot::Mutex;
+use std::{path::Path, sync::Once, time::Duration};
 
 // vendor.py must only run once — concurrent runs would clobber each other.
 static VENDOR_ONCE: Once = Once::new();
@@ -11,10 +8,8 @@ static VENDOR_ONCE: Once = Once::new();
 // file, and the builds are the `slow-tests` cost.
 static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
-// The lock guards only mutual exclusion, so a poisoned lock is reused
-// rather than cascading one panic into the next test.
-fn build_lock() -> std::sync::MutexGuard<'static, ()> {
-    BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+fn build_lock() -> parking_lot::MutexGuard<'static, ()> {
+    BUILD_LOCK.lock()
 }
 
 /// Extract the version string from a TOML dependency item.
@@ -150,8 +145,7 @@ fn with_external_preserves_stdlib_and_features() {
     let content =
         std::fs::read_to_string(ws.join("graphix-shell").join("Cargo.toml")).unwrap();
     let mut external = std::collections::BTreeMap::new();
-    external
-        .insert("widgets".to_string(), super::PackageEntry::Version("1.2.3".to_string()));
+    external.insert("widgets".into(), super::PackageEntry::Version("1.2.3".into()));
     let updated = super::with_external(&content, &external).unwrap();
     let orig: toml_edit::DocumentMut = content.parse().unwrap();
     let new: toml_edit::DocumentMut = updated.parse().unwrap();
@@ -379,21 +373,22 @@ mod pure {
         parse_toggles, plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
         to_toml_string, version_gt,
     };
+    use compact_str::{CompactString, ToCompactString};
     use std::{
         collections::{BTreeMap, BTreeSet},
         path::{Path, PathBuf},
     };
 
-    fn sset(names: &[&str]) -> BTreeSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
+    fn sset(names: &[&str]) -> BTreeSet<CompactString> {
+        names.iter().map(|s| s.to_compact_string()).collect()
     }
 
-    fn ext(pairs: &[(&str, PackageEntry)]) -> BTreeMap<String, PackageEntry> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    fn ext(pairs: &[(&str, PackageEntry)]) -> BTreeMap<CompactString, PackageEntry> {
+        pairs.iter().map(|(k, v)| (k.to_compact_string(), v.clone())).collect()
     }
 
     fn ver(v: &str) -> PackageEntry {
-        PackageEntry::Version(v.to_string())
+        PackageEntry::Version(v.to_compact_string())
     }
 
     fn parse(s: &str) -> Packages {
@@ -556,14 +551,18 @@ anyhow = \"1\"\n";
         // math is new; bench is internal; xls is already removed
         let src = sset(&["core", "math", "bench", "xls"]);
         let mut latest = BTreeMap::new();
-        latest.insert("widgets".to_string(), "1.5.0".to_string());
+        latest.insert("widgets".to_compact_string(), "1.5.0".to_compact_string());
         let plan = compute_update_plan("0.9.0", "0.10.0", &src, &pkgs, &latest);
         let bump = plan.shell.as_ref().unwrap();
         assert_eq!((bump.current.as_str(), bump.latest.as_str()), ("0.9.0", "0.10.0"));
-        assert_eq!(bump.new_stdlib, vec!["math".to_string()]);
+        assert_eq!(bump.new_stdlib, vec!["math".to_compact_string()]);
         assert_eq!(
             plan.external_updates,
-            vec![("widgets".to_string(), "1.2.0".to_string(), "1.5.0".to_string())]
+            vec![(
+                "widgets".to_compact_string(),
+                "1.2.0".to_compact_string(),
+                "1.5.0".to_compact_string()
+            )]
         );
     }
 
@@ -576,14 +575,14 @@ anyhow = \"1\"\n";
         };
         let plan = UpdatePlan {
             shell: Some(ShellBump {
-                current: "0.9.0".to_string(),
-                latest: "0.10.0".to_string(),
-                new_stdlib: vec!["math".to_string(), "time".to_string()],
+                current: "0.9.0".to_compact_string(),
+                latest: "0.10.0".to_compact_string(),
+                new_stdlib: vec!["math".to_compact_string(), "time".to_compact_string()],
             }),
             external_updates: vec![(
-                "widgets".to_string(),
-                "1.2.0".to_string(),
-                "1.5.0".to_string(),
+                "widgets".to_compact_string(),
+                "1.2.0".to_compact_string(),
+                "1.5.0".to_compact_string(),
             )],
         };
         // accept math, decline time
@@ -608,14 +607,14 @@ anyhow = \"1\"\n";
         };
         let plan = UpdatePlan {
             shell: Some(ShellBump {
-                current: "0.9.0".to_string(),
-                latest: "0.10.0".to_string(),
-                new_stdlib: vec!["math".to_string()],
+                current: "0.9.0".to_compact_string(),
+                latest: "0.10.0".to_compact_string(),
+                new_stdlib: vec!["math".to_compact_string()],
             }),
             external_updates: vec![(
-                "widgets".to_string(),
-                "1.2.0".to_string(),
-                "1.5.0".to_string(),
+                "widgets".to_compact_string(),
+                "1.2.0".to_compact_string(),
+                "1.5.0".to_compact_string(),
             )],
         };
         let sel = Selection {
@@ -645,21 +644,21 @@ anyhow = \"1\"\n";
         // items: [0]=shell, [1]=new stdlib "math", [2]=external "widgets"
         let plan = UpdatePlan {
             shell: Some(ShellBump {
-                current: "0.9.0".to_string(),
-                latest: "0.10.0".to_string(),
-                new_stdlib: vec!["math".to_string()],
+                current: "0.9.0".to_compact_string(),
+                latest: "0.10.0".to_compact_string(),
+                new_stdlib: vec!["math".to_compact_string()],
             }),
             external_updates: vec![(
-                "widgets".to_string(),
-                "1.2.0".to_string(),
-                "1.5.0".to_string(),
+                "widgets".to_compact_string(),
+                "1.2.0".to_compact_string(),
+                "1.5.0".to_compact_string(),
             )],
         };
         let items = plan_items(&plan);
         // shell (0) deselected, math (1) + widgets (2) still selected
         let mut selected: BTreeSet<usize> = [1usize, 2].into_iter().collect();
         let off = normalize_selection(&items, &mut selected);
-        assert_eq!(off, vec!["math".to_string()]);
+        assert_eq!(off, vec!["math".to_compact_string()]);
         // math forced off; the external is untouched (independent of the shell)
         assert!(!selected.contains(&1));
         assert!(selected.contains(&2));
@@ -673,14 +672,14 @@ anyhow = \"1\"\n";
     fn selection_from_indices_maps_items() {
         let plan = UpdatePlan {
             shell: Some(ShellBump {
-                current: "0.9.0".to_string(),
-                latest: "0.10.0".to_string(),
-                new_stdlib: vec!["math".to_string()],
+                current: "0.9.0".to_compact_string(),
+                latest: "0.10.0".to_compact_string(),
+                new_stdlib: vec!["math".to_compact_string()],
             }),
             external_updates: vec![(
-                "widgets".to_string(),
-                "1.2.0".to_string(),
-                "1.5.0".to_string(),
+                "widgets".to_compact_string(),
+                "1.2.0".to_compact_string(),
+                "1.5.0".to_compact_string(),
             )],
         };
         let items = plan_items(&plan);
@@ -763,10 +762,10 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         // is_stdlib_package routes by the hand-kept lists: they are the
         // shell's stdlib packages, no more and no fewer
         let shipped = stdlib_packages_in_cargo_toml(&content).unwrap();
-        let listed: BTreeSet<String> = DEFAULT_PACKAGES
+        let listed: BTreeSet<CompactString> = DEFAULT_PACKAGES
             .iter()
             .chain(INTERNAL_PACKAGES)
-            .map(|s| s.to_string())
+            .map(|s| s.to_compact_string())
             .collect();
         assert_eq!(shipped, listed);
         // core is non-optional — never a feature

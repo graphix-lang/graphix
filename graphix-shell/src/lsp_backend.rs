@@ -45,13 +45,10 @@ pub fn serve(connection: Connection) -> Result<()> {
 
 async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let mut ctx = GXRt::<NoExt>::new_state().context("creating graphix context")?;
-    let mut vfs = AHashMap::default();
-    let mut root_mods = graphix_package::IndexSet::new();
-    for pkg in crate::stdlib_packages::<NoExt>() {
-        pkg.register(&mut ctx, &mut vfs, &mut root_mods)
+    let packages = crate::stdlib_packages::<NoExt>();
+    let (vfs, root) =
+        graphix_package::register_packages(&mut ctx, packages.iter().map(|p| &**p))
             .context("registering stdlib modules")?;
-    }
-    let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
     // The stdlib layer, shared by every per-project check.
     // CR claude for claude: [bug] base_resolvers holds only the stdlib VFS. GX::new adds

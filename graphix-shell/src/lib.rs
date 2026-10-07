@@ -14,9 +14,7 @@ use graphix_compiler::{
     format_with_flags,
     typ::TVal,
 };
-use graphix_package::{
-    Cdc, CustomResult, IndexSet, MainThreadHandle, Package, root_module_source,
-};
+use graphix_package::{Cdc, CustomResult, MainThreadHandle, Package, register_packages};
 use graphix_package_core::ProgramArgs;
 use graphix_rt::{CompExp, GXConfig, GXEvent, GXExt, GXHandle, GXRt, RegistrationImage};
 use input::InputReader;
@@ -254,13 +252,9 @@ impl<X: GXExt> Shell<X> {
         if !args.is_empty() {
             ctx.libstate.set(ProgramArgs(args));
         }
-        let mut vfs_modules = AHashMap::default();
-        let mut root_mods = IndexSet::new();
-        for pkg in &self.packages {
-            pkg.register(&mut ctx, &mut vfs_modules, &mut root_mods)
+        let (vfs_modules, root) =
+            register_packages(&mut ctx, self.packages.iter().map(|p| &**p))
                 .context("register package modules")?;
-        }
-        let root = root_module_source(&root_mods);
         if let Some(main) = self.packages.iter().find_map(|p| p.main_program()) {
             if matches!(self.mode, Mode::Repl) {
                 self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));

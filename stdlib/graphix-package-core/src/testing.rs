@@ -287,15 +287,11 @@ where
     let st = std::time::Instant::now();
     let mut ctx = GXRt::<NoExt>::new_state()?;
     log::info!("context creation time: {:?}", st.elapsed());
-    let mut modules = ahash::AHashMap::default();
-    let mut root_mods = graphix_package::IndexSet::new();
-    for p in register {
-        let st = std::time::Instant::now();
-        p.register(&mut ctx, &mut modules, &mut root_mods)?;
-        log::info!("package registration time: {:?}", st.elapsed());
-    }
+    let st = std::time::Instant::now();
+    let (modules, root) =
+        graphix_package::register_packages(&mut ctx, register.iter().copied())?;
+    log::info!("package registration time: {:?}", st.elapsed());
     setup(&mut ctx);
-    let root = graphix_package::root_module_source(&root_mods);
     let mut all_resolvers = vec![VfsResolver::new(modules)];
     all_resolvers.extend(resolvers);
     let mut cfg = GXConfig::builder(ctx, sub)
