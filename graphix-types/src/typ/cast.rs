@@ -566,7 +566,7 @@ impl Type {
                 let Value::Array(elts) = v else {
                     return Err(self.cast_fail("not a struct", v));
                 };
-                if elts.len() != ts.len() {
+                if elts.len() > ts.len() {
                     return Err(self.cast_fail("struct size mismatch", v));
                 }
                 let mut fields: SmallVec<[(&ArcStr, &Value); 8]> =
@@ -576,9 +576,30 @@ impl Type {
                             return Err(self.cast_fail("expected an array of pairs", v));
                         }
                     };
-                let sorted = fields.is_sorted_by_key(|(n, _)| *n);
+                let mut sorted = fields.is_sorted_by_key(|(n, _)| *n);
                 if !sorted {
                     fields.sort_by_key(|(n, _)| *n);
+                }
+                // a field the data omits reads as null where null casts to its
+                // type (an optional field, a key a document leaves out)
+                if fields.len() < ts.len() {
+                    static NULL: Value = Value::Null;
+                    let mut filled: SmallVec<[(&ArcStr, &Value); 8]> = SmallVec::new();
+                    let mut have = fields.iter().copied().peekable();
+                    for (fname, ftyp, _) in ts.iter() {
+                        match have.peek() {
+                            Some((n, _)) if *n == fname => filled.extend(have.next()),
+                            _ if ftyp.cast_int(env, hist, None, &NULL).is_ok() => {
+                                filled.push((fname, &NULL))
+                            }
+                            _ => return Err(self.cast_fail("struct size mismatch", v)),
+                        }
+                    }
+                    if have.next().is_some() {
+                        return Err(self.cast_fail("struct fields mismatch", v));
+                    }
+                    fields = filled;
+                    sorted = false;
                 }
                 if ts.iter().zip(fields.iter()).any(|((fname, _, _), (n, _))| n != &fname)
                 {

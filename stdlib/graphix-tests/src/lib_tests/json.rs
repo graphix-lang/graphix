@@ -167,3 +167,22 @@ run!(json_read_never_an_error, JSON_READ_NEVER_AN_ERROR, |v: Result<&Value>| mat
     }
     _ => false,
 });
+
+// What json::write_str makes of a datetime and of bytes reads back, and a
+// map key is written bare.
+run!(json_round_trips, r#"{
+    let d = datetime:"2020-01-02T03:04:05Z";
+    let b = bytes:AQID;
+    let d2: datetime = json::read(json::write_str(d)$)$;
+    let b2: bytes = json::read(json::write_str(b)$)$;
+    let m = json::write_str({"a" => 1})$;
+    (d2 == d, b2 == b, m)
+}"#, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        a.len() == 3
+            && a[0] == Value::Bool(true)
+            && a[1] == Value::Bool(true)
+            && a[2] == Value::String(literal!("{\"a\":1}"))
+    }
+    _ => false,
+}; FuseExpect::Jit);

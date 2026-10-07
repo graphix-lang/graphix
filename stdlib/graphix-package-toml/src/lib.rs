@@ -50,7 +50,19 @@ fn toml_to_value(v: toml::Value) -> Value {
     }
 }
 
+/// The deepest nesting a value writes as TOML: as deep as toml::read
+/// reads.
+const MAX_DEPTH: usize = 80;
+
 fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
+    to_toml(value, 0)
+}
+
+fn to_toml(value: &Value, depth: usize) -> Result<toml::Value, String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
+    }
+    let value_to_toml = |v: &Value| to_toml(v, depth + 1);
     match value {
         Value::Null => Err("cannot represent null in TOML".into()),
         Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
@@ -83,10 +95,12 @@ fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
             if is_struct(arr) {
                 let mut table = toml::map::Map::new();
                 for v in arr.iter() {
-                    if let Value::Array(pair) = v {
-                        if let Value::String(k) = &pair[0] {
-                            table.insert(k.to_string(), value_to_toml(&pair[1])?);
-                        }
+                    if let Value::Array(pair) = v
+                        && let Value::String(k) = &pair[0]
+                        // TOML has no null: a null field is a key left out
+                        && pair[1] != Value::Null
+                    {
+                        table.insert(k.to_string(), value_to_toml(&pair[1])?);
                     }
                 }
                 Ok(toml::Value::Table(table))
@@ -99,7 +113,13 @@ fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
         Value::Bytes(_) => Err("cannot represent bytes in TOML".into()),
         Value::Duration(_) => Err("cannot represent duration in TOML".into()),
         Value::Decimal(_) => Err("cannot represent decimal in TOML".into()),
-        Value::Map(_) => Err("cannot represent map in TOML".into()),
+        Value::Map(m) => {
+            let mut table = toml::map::Map::new();
+            for (k, v) in m.into_iter().filter(|(_, v)| **v != Value::Null) {
+                table.insert(graphix_package_core::map_key(k), value_to_toml(v)?);
+            }
+            Ok(toml::Value::Table(table))
+        }
         Value::Error(_) => Err("cannot serialize Error to TOML".into()),
         Value::Abstract(_) => Err("cannot serialize abstract type to TOML".into()),
     }

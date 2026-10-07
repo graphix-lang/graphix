@@ -49,19 +49,19 @@ fn json_to_value(json: serde_json::Value) -> Value {
     }
 }
 
-// CR claude for claude: [bug] value_to_json recurses once per nesting level with no depth
-// bound and no ensure_sufficient. A native List is one nesting level per element
-// (design/list_native.md keeps that shape on the wire), so
-// `json::write_str(list::init(1000, |i| i))` aborts the whole process with a stack
-// overflow (exit 134) in both engines: from 400 elements in the dev build, from 1000 in
-// a quick build. value_to_toml (graphix-package-toml/src/lib.rs:59) aborts the same way
-// from 3000 elements, and hbs::render (graphix-package-hbs/src/lib.rs:88) aborts
-// through this function from 1000. ensure_sufficient alone does not fix it, because
-// serde_json's serializer and the drop of the built serde_json::Value recurse too.
-// Bound the depth and return JsonErr/TomlErr/HbsErr past it; json::read stops at 128
-// levels and toml::read at 80, so nothing deeper reads back anyway. probe:
-// design/review-2026-10-05/repro/x-panics-07.gx (x-panics-07)
+/// The deepest nesting a value writes as JSON: as deep as json::read reads,
+/// and short of the serializer's recursion running out of stack.
+const MAX_DEPTH: usize = 128;
+
 pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
+    to_json(value, 0)
+}
+
+fn to_json(value: &Value, depth: usize) -> Result<serde_json::Value, String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
+    }
+    let value_to_json = |v: &Value| to_json(v, depth + 1);
     match value {
         Value::Null => Ok(serde_json::Value::Null),
         Value::Bool(b) => Ok(serde_json::Value::Bool(*b)),
@@ -94,7 +94,7 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         }
         Value::Decimal(d) => Ok(serde_json::Value::String(d.to_string())),
         Value::String(s) => Ok(serde_json::Value::String(s.to_string())),
-        // CR claude for claude: [bug] json::write_str writes bytes as an array of numbers
+        // XCR claude for claude: [bug] json::write_str writes bytes as an array of numbers
         // (here) and a datetime as an RFC3339 string (line 96), but json::read's cast
         // (line 180) takes neither back: reading the output into the type it was
         // written from raises InvalidCast (the reader takes a datetime only as epoch
@@ -105,6 +105,11 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         // mismatch), so a struct with an optional field goes through TOML in neither
         // direction. probe: design/review-2026-10-05/repro/small-pkgs-13.gx
         // (small-pkgs-13)
+        // 2026-10-07 claude: netidx-value's cast takes a bare RFC3339 string to a datetime and
+        // an array of bytes to bytes; toml writes a map as a table and leaves a null field's
+        // key out; and a struct cast reads a field the data omits as null where null casts
+        // to its type (graphix-types cast.rs) — a rule every cast now follows, hence the X.
+        // Pins: json_round_trips, toml_optional_field_round_trips, toml_map_round_trips.
         Value::Bytes(b) => {
             let mut arr: LPooled<Vec<serde_json::Value>> =
                 b.iter().map(|byte| serde_json::Value::from(*byte)).collect();
@@ -125,6 +130,9 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         // readers' cast already turns back into a List once its shape guess
         // (graphix-types/src/typ/cast.rs:373) stops reading `[x, []]` as a cons cell.
         // probe: design/review-2026-10-05/repro/x-stack-06.gx (x-stack-06)
+        // 2026-10-07 claude: a List is told from an array only by its type, which a fast
+        // call does not see: deferred with small-pkgs-11 to a fast-call form that carries
+        // the argument types. The depth bound keeps a long list from aborting meanwhile.
         Value::Array(arr) => {
             if is_struct(arr) {
                 let mut map = serde_json::Map::with_capacity(arr.len());
@@ -145,20 +153,7 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         Value::Map(m) => {
             let mut map = serde_json::Map::with_capacity(m.len());
             for (k, v) in m.into_iter() {
-                // CR claude for claude: [bug] A Map key is written through Value's
-                // Display, which is netidx's typed-literal syntax. A string key keeps
-                // its quotes and escapes: `{"a" => 1}` writes `{"\"a\"":1}`, and
-                // json::read turns that back into a different map. Any other key gets a
-                // type prefix: `{1 => "x"}` writes `{"i64:1":"x"}`. hbs::render
-                // converts its data through this function, so Map data renders empty
-                // (`hello {{name}}` over `{"name" => "Eric"}` gives `hello `), and
-                // register_partials (graphix-package-hbs/src/lib.rs:56) registers Map
-                // partials under the quoted name, so `{{> hdr}}` fails with `Partial
-                // not found hdr`. A string key should be written as its bare text and
-                // any other key in its naked form (`to_string_naked`), in both places.
-                // probe: design/review-2026-10-05/repro/small-pkgs-03.gx
-                // (small-pkgs-03)
-                map.insert(format!("{k}"), value_to_json(v)?);
+                map.insert(graphix_package_core::map_key(k), value_to_json(v)?);
             }
             Ok(serde_json::Value::Object(map))
         }

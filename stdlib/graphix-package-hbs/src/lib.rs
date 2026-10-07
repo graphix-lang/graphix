@@ -2,26 +2,14 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
-use graphix_compiler::{
-    CompileCtx, ExecCtx, FastCall, Rt, UserEvent, deref_typ,
-    effects::Effect,
-    errf,
-    typ::{FnType, Type},
-};
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, FastMemo, fast_eval, is_struct,
-};
+use graphix_compiler::errf;
+use graphix_package_core::{FastMemo, is_struct};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
-use netidx::publisher::Typ;
 use netidx_value::Value;
 use std::cell::RefCell;
-
-fn is_null_type(t: &Type) -> bool {
-    matches!(t, Type::Primitive(flags) if flags.iter().count() == 1 && flags.contains(Typ::Null))
-}
 
 fn register_partials(
     registry: &mut Handlebars<'static>,
@@ -53,7 +41,10 @@ fn register_partials(
                 match v {
                     Value::String(tmpl) => {
                         registry
-                            .register_partial(&format!("{k}"), tmpl.as_str())
+                            .register_partial(
+                                &graphix_package_core::map_key(k),
+                                tmpl.as_str(),
+                            )
                             .map_err(|e| format!("{e}"))?;
                     }
                     _ => return Err(format!("partial values must be strings, got {v}")),
@@ -85,6 +76,17 @@ fn build_registry(
 fn fc_render(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
+            let is_map = match data {
+                Value::Map(_) => true,
+                Value::Array(a) => is_struct(a),
+                _ => false,
+            };
+            if !is_map {
+                return Some(errf!(
+                    "HbsErr",
+                    "the data must be a struct or a map, not {data}"
+                ));
+            }
             let json_data = match value_to_json(data) {
                 Ok(j) => j,
                 Err(e) => return Some(errf!("HbsErr", "{e}")),
@@ -108,6 +110,9 @@ fn fc_render(args: &[Value]) -> Option<Value> {
                         // the template, and `{{> (lookup this "pn")}}` computes the
                         // name from data. probe:
                         // design/review-2026-10-05/repro/x-panics-08.gx (x-panics-08)
+                        // 2026-10-07 claude: open. handlebars 6.4 has no recursion limit and no hook on a
+                        // partial's render to count depth through; an inline or data-named partial
+                        // escapes any guard set from here. Needs an upstream limit or a vendored patch.
                         |registry| match registry.render("main", &json_data) {
                             Ok(s) => Value::String(ArcStr::from(s.as_str())),
                             Err(e) => errf!("HbsErr", "{e}"),
@@ -120,69 +125,24 @@ fn fc_render(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct HbsRenderEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_render)));
-    const NAME: &str = "hbs_render";
-
-    fn typecheck0(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [graphix_compiler::Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    // CR claude for claude: [bug] This hook refuses a #partials that is not a struct, map
-    // or null, and data that is not a struct or map. The check (--check, the LSP) never
-    // runs typecheck1, and the signature's 'a and 'b admit anything, so the editor
-    // shows no error and the build refuses; graphix-fuzz check reports this as a
-    // type-system bug. sys::net::call's typecheck1 (graphix-package-sys/src/net.rs:487)
-    // and sys::net::rpc's validate_spec (net.rs:890) refuse the same way, although
-    // design/tvar_constraints.md:205 says these hooks never refuse. Through a dynamic
-    // call, a run-time bind only logs the refusal ("did not elaborate"): hbs::render
-    // then renders 42 as "v=42", and sys::net::rpc with #spec {x: 5} reaches the
-    // unreachable!() at net.rs:1149 and kills the runtime. Move each rule to where the
-    // check sees it (a bound on the signature's variable, the open item at
-    // design/parallel_compile.md:408), or check it at run time and return an error
-    // value. probe: design/review-2026-10-05/repro/x-builtin-effects-08.sh
-    // (x-builtin-effects-08)
-    fn typecheck1(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        _from: &mut [graphix_compiler::Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        if let Some(partials_arg) = resolved.args.get(1) {
-            deref_typ!("struct, map, or null", ctx, &partials_arg.typ,
-                Some(Type::Struct(_)) => Ok(()),
-                Some(Type::Map { .. }) => Ok(()),
-                Some(t @ Type::Primitive(_)) => {
-                    if is_null_type(t) { Ok(()) }
-                    else { bail!("hbs::render #partials must be a struct, map, or null") }
-                },
-                None => Ok(()) // unresolved = using default
-            )?;
-        }
-        if let Some(data_arg) = resolved.args.get(3) {
-            deref_typ!("struct or map", ctx, &data_arg.typ,
-                Some(Type::Struct(_)) => Ok(()),
-                Some(Type::Map { .. }) => Ok(())
-            )?;
-        }
-        Ok(())
-    }
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_render, from)
-    }
-}
-
-type HbsRender = CachedArgs<HbsRenderEv>;
-
-graphix_package_core::unit_image_state!(HbsRenderEv);
+// CR claude for claude: [bug] This hook refuses a #partials that is not a struct, map
+// or null, and data that is not a struct or map. The check (--check, the LSP) never
+// runs typecheck1, and the signature's 'a and 'b admit anything, so the editor
+// shows no error and the build refuses; graphix-fuzz check reports this as a
+// type-system bug. sys::net::call's typecheck1 (graphix-package-sys/src/net.rs:487)
+// and sys::net::rpc's validate_spec (net.rs:890) refuse the same way, although
+// design/tvar_constraints.md:205 says these hooks never refuse. Through a dynamic
+// call, a run-time bind only logs the refusal ("did not elaborate"): hbs::render
+// then renders 42 as "v=42", and sys::net::rpc with #spec {x: 5} reaches the
+// unreachable!() at net.rs:1149 and kills the runtime. Move each rule to where the
+// check sees it (a bound on the signature's variable, the open item at
+// design/parallel_compile.md:408), or check it at run time and return an error
+// value. probe: design/review-2026-10-05/repro/x-builtin-effects-08.sh
+// (x-builtin-effects-08)
+// 2026-10-07 claude: hbs refuses at run time now: bad #partials and data that is not a
+// struct or a map are an HbsErr, and the typecheck1 hook is gone. The sys::net::call
+// and rpc halves stand.
+graphix_package_core::fast_builtin!(HbsRender, HbsRenderEv, "hbs_render", fc_render);
 
 graphix_derive::defpackage! {
     builtins => [

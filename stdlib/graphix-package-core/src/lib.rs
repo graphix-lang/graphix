@@ -411,6 +411,15 @@ pub mod testing;
 
 pub use memo::FastMemo;
 
+/// A map key as a text format (JSON, TOML, a template's data) writes it:
+/// a string bare, any other value in its naked form.
+pub fn map_key(k: &Value) -> String {
+    match k {
+        Value::String(s) => s.to_string(),
+        k => k.to_string_naked(),
+    }
+}
+
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
 // CR claude for claude: [bug] is_struct decides from the value alone, but a struct, an

@@ -94,3 +94,23 @@ run!(toml_null_err, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+// An optional field goes through TOML both ways: a null field is a key left
+// out, and a key the document leaves out reads as null.
+run!(toml_optional_field_round_trips, r#"{
+    type Cfg = {host: string, port: [i64, null]};
+    let c: Cfg = {host: "h", port: null};
+    let back: Cfg = toml::read(toml::write_str(c)$)$;
+    "[back.host] [back.port]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "h null")
+}; FuseExpect::Jit);
+
+// A map writes as a table.
+run!(toml_map_round_trips, r#"{
+    let m: Map<string, string> = {"serde" => "1.0"};
+    let back: Map<string, string> = toml::read(toml::write_str(m)$)$;
+    map::get(back, "serde")$
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "1.0")
+}; FuseExpect::Jit);
