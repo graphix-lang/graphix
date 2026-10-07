@@ -13,6 +13,10 @@
 /// The first minted id; every reserved block lies below it.
 pub(crate) const MINT_BASE: u64 = 1 << 62;
 
+/// One past the last id an image may hold: a minted id's wire form is
+/// its offset from [`MINT_BASE`] shifted up a bit.
+const MINT_LIMIT: u64 = 1 << 63;
+
 /// The ids of one region an image holds: `floor` is the smallest,
 /// `extent` one past the largest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +34,12 @@ impl Default for IdSpan {
 impl IdSpan {
     pub fn len(&self) -> u64 {
         self.extent.saturating_sub(self.floor)
+    }
+
+    /// Empty, or ids in `[lo, hi)`.
+    fn within(&self, lo: u64, hi: u64) -> bool {
+        *self == IdSpan::default()
+            || (lo <= self.floor && self.floor < self.extent && self.extent <= hi)
     }
 
     pub(crate) fn contains(&self, raw: u64) -> bool {
@@ -50,6 +60,12 @@ pub struct IdSpans {
 }
 
 impl IdSpans {
+    /// Each region's span lies in its region, as any image written holds:
+    /// a read refuses other counts before any counter moves.
+    pub(crate) fn valid(&self) -> bool {
+        self.reserved.within(0, MINT_BASE) && self.minted.within(MINT_BASE, MINT_LIMIT)
+    }
+
     /// The size of the block a reader reserves.
     pub fn len(&self) -> u64 {
         self.reserved.len() + self.minted.len()
@@ -85,19 +101,6 @@ pub(crate) fn reserve_above(
     spans: IdSpans,
 ) -> Option<IdRelocation> {
     use std::sync::atomic::Ordering::Relaxed;
-    // CR claude for claude: [bug] A failed read has a side effect: this line lifts the
-    // process-wide minted counter to whatever minted extent the image's trailer claims,
-    // before the fit check below can refuse the block. IdCounts::decode
-    // (image/mod.rs:95) also accepts any floor and extent, so len (:55) can overflow
-    // too. With a corrupt trailer, the read panics in debug at :55, or the cold
-    // fallback mints ids near u64::MAX and writing the program image panics at :41.
-    // With an extent of 3*2^62 the fallback runs, but to_wire (:107) shifts the top bit
-    // out of its ids, so the program entry it writes never reads again and every later
-    // run is cold. This breaks the rule that an entry which fails to read leaves the
-    // session untouched and starts cold. Validate the counts before any counter moves
-    // (floor <= extent, reserved spans below MINT_BASE, minted extents well below
-    // 3*2^62, checked sum); probe: design/review-2026-10-05/repro/x-image-06.sh
-    // (x-image-06)
     minted.fetch_max(spans.minted.extent, Relaxed);
     let len = spans.len();
     if len == 0 {

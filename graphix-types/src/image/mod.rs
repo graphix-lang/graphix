@@ -99,6 +99,9 @@ impl Pack for IdCounts {
         let mut each = [IdSpans::default(); 5];
         for s in each.iter_mut() {
             *s = IdSpans { reserved: span()?, minted: span()? };
+            if !s.valid() {
+                return Err(PackError::InvalidFormat);
+            }
         }
         Ok(IdCounts::from_each(each))
     }
@@ -1515,6 +1518,37 @@ mod tests {
     };
     use arcstr::literal;
     use netidx_value::Value;
+
+    /// Counts no image writes are refused at decode, before a reader
+    /// reserves anything or lifts a counter.
+    #[test]
+    fn id_counts_out_of_their_regions_are_refused() {
+        use crate::ids::{IdSpan, IdSpans, MINT_BASE};
+        let empty = IdSpans::default();
+        let good = IdSpans {
+            reserved: IdSpan { floor: 0, extent: 10 },
+            minted: IdSpan { floor: MINT_BASE, extent: MINT_BASE + 10 },
+        };
+        let bad = [
+            IdSpans { reserved: IdSpan { floor: 0, extent: MINT_BASE + 1 }, ..empty },
+            IdSpans { reserved: IdSpan { floor: 5, extent: 2 }, ..empty },
+            IdSpans { minted: IdSpan { floor: 0, extent: u64::MAX - 1 }, ..empty },
+            IdSpans {
+                minted: IdSpan { floor: MINT_BASE, extent: 3 * MINT_BASE },
+                ..empty
+            },
+        ];
+        let round = |s: IdSpans| {
+            let counts = IdCounts::from_each([s, empty, empty, empty, empty]);
+            let mut buf = BytesMut::new();
+            counts.encode(&mut buf).unwrap();
+            IdCounts::decode(&mut buf.freeze())
+        };
+        assert!(round(empty).is_ok() && round(good).is_ok());
+        for b in bad {
+            assert!(round(b).is_err(), "{b:?}");
+        }
+    }
 
     fn expr_start(dec: &ImageDecoder) -> u64 {
         match dec.relocations.expr {
