@@ -355,13 +355,28 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 spec: Arc::new(self.spec.clone()),
             });
         }
-        if let Some(fv) = self.lambda_def_value() {
+        if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
             self.pattern.ids(&mut |id| {
                 if crate::dbgenv::gxdbg_resolve() {
                     eprintln!("B2L-INS {id:?} {}", self.spec);
                 }
                 ctx.bind_to_lambda.insert(id, fv.clone());
             });
+        }
+    }
+
+    /// The LambdaDef `Value` of the binding this one aliases (`let h =
+    /// f`), when `f` resolves statically and no `<-` writes it.
+    fn aliased_lambda(&self, ctx: &CompileCtx<R, E>) -> Option<Value> {
+        let mut view = self.node.view();
+        while let NodeView::ExplicitParens(p) = view {
+            view = p.n.view();
+        }
+        match view {
+            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => {
+                ctx.bind_to_lambda.get(&r.id).cloned()
+            }
+            _ => None,
         }
     }
 
