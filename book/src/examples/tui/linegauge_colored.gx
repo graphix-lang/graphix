@@ -8,7 +8,7 @@ let color = select power {
     x => `Green
 };
 
-let percentage = cast<i64>(power * 100.0)?;
+let percentage = cast<i64>(power * 100.0)$;
 
 block(
     #border: &`All,
