@@ -1,4 +1,4 @@
-use super::{Client, Response, request};
+use super::{Client, Method, Response, request};
 
 /// GET with JSON Accept header and optional bearer auth.
 val get: fn(

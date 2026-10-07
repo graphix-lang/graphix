@@ -125,23 +125,6 @@ fn fc_render(args: &[Value]) -> Option<Value> {
     }
 }
 
-// CR claude for claude: [bug] This hook refuses a #partials that is not a struct, map
-// or null, and data that is not a struct or map. The check (--check, the LSP) never
-// runs typecheck1, and the signature's 'a and 'b admit anything, so the editor
-// shows no error and the build refuses; graphix-fuzz check reports this as a
-// type-system bug. sys::net::call's typecheck1 (graphix-package-sys/src/net.rs:487)
-// and sys::net::rpc's validate_spec (net.rs:890) refuse the same way, although
-// design/tvar_constraints.md:205 says these hooks never refuse. Through a dynamic
-// call, a run-time bind only logs the refusal ("did not elaborate"): hbs::render
-// then renders 42 as "v=42", and sys::net::rpc with #spec {x: 5} reaches the
-// unreachable!() at net.rs:1149 and kills the runtime. Move each rule to where the
-// check sees it (a bound on the signature's variable, the open item at
-// design/parallel_compile.md:408), or check it at run time and return an error
-// value. probe: design/review-2026-10-05/repro/x-builtin-effects-08.sh
-// (x-builtin-effects-08)
-// 2026-10-07 claude: hbs refuses at run time now: bad #partials and data that is not a
-// struct or a map are an HbsErr, and the typecheck1 hook is gone. The sys::net::call
-// and rpc halves stand.
 graphix_package_core::fast_builtin!(HbsRender, HbsRenderEv, "hbs_render", fc_render);
 
 graphix_derive::defpackage! {

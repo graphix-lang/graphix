@@ -4,7 +4,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
-    UserEvent, deref_typ,
+    UserEvent,
     effects::Effect,
     err, errf,
     expr::ExprId,
@@ -12,26 +12,21 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{CastTarget, castable, seam_arg};
+use graphix_package_core::{CastTarget, Handler, Reply, castable, seam_arg};
 use netidx::{
     path::Path,
-    publisher::{Typ, Val},
+    publisher::Val,
     subscriber::{Dval, UpdatesFlags, Value},
 };
 use netidx_core::{
     pack::{Pack, PackError},
     utils::Either,
 };
+use netidx_derive::FromValue;
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
-use smallvec::{SmallVec, smallvec};
+use poolshark::local::LPooled;
 use std::any::Any;
-use std::collections::VecDeque;
-use triomphe::Arc as TArc;
-
-fn is_null_type(t: &Type) -> bool {
-    matches!(t, Type::Primitive(flags) if flags.iter().count() == 1 && flags.contains(Typ::Null))
-}
 
 fn as_path(v: Value) -> Option<Path> {
     match v.cast_to::<String>() {
@@ -522,21 +517,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
         self.target.refresh(resolved);
-        if let Some(args_arg) = resolved.args.get(1) {
-            deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
-                Some(Type::Struct(_)) => Ok(()),
-                Some(Type::Any) => Ok(()),
-                Some(t @ Type::Primitive(_)) => {
-                    if is_null_type(t) { Ok(()) }
-                    else { bail!("sys::net::call args must be a struct or null") }
-                }
-            )?;
-        }
         Ok(())
     }
 
@@ -932,6 +917,42 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
     }
 }
 
+/// A call's reply.
+#[derive(Debug)]
+struct RpcReply(server::RpcCall);
+
+impl Reply for RpcReply {
+    fn reply(mut self, v: Value) {
+        self.0.reply.send(v)
+    }
+}
+
+/// An rpc's spec, from `#spec`: each field's `{default, doc}`.
+fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
+    #[derive(FromValue)]
+    struct RpcArg {
+        default: Value,
+        doc: Value,
+    }
+    let fields = match spec {
+        Value::Null => return Ok(vec![]),
+        Value::Array(fields) => fields,
+        v => bail!("rpc #spec must be a struct or null, not {v}"),
+    };
+    fields
+        .iter()
+        .map(|field| match field {
+            Value::Array(p) if let [Value::String(name), arg] = &p[..] => {
+                let RpcArg { default, doc } = arg.clone().cast_to::<RpcArg>().map_err(|e| {
+                    anyhow!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}: {e}")
+                })?;
+                Ok(ArgSpec { name: name.clone(), doc, default_value: default })
+            }
+            v => bail!("rpc #spec must be a struct, not {v}"),
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     /// Wake catch-up: `sleep()` drops the published proc, so the first
@@ -939,126 +960,70 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     slept: bool,
     id: BindId,
     top_id: ExprId,
-    f: Node<R, E>,
-    pid: BindId,
-    x: BindId,
-    queue: VecDeque<server::RpcCall>,
-    // CR claude for claude: [dead] argbuf is scratch: set! extends, sorts and drains it
-    // within one expansion (lines 1177-1182), so it is empty between updates. The
-    // !self.argbuf.is_empty() guard in image_encode (line 1085) never fires and the
-    // clear in sleep (line 1286) does nothing, and both suggest state that does not
-    // exist. Make it a local SmallVec in set! and drop the field, the guard and the
-    // clear. sort_by_key(|(n, _)| n.clone()) clones an ArcStr each time it computes a
-    // key, while sort_unstable_by(|a, b| a.0.cmp(&b.0)) does not, and argument names
-    // are unique. (sys-net-18)
-    argbuf: SmallVec<[(ArcStr, Value); 6]>,
-    ready: bool,
+    handler: Handler<R, E, RpcReply>,
     current: Option<(Path, server::Proc)>,
+    /// The handler's argument type, which a call's arguments are cast to.
     cast_typ: Option<Type>,
     out: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
-    fn validate_spec(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        resolved: &FnType,
-    ) -> Result<()> {
-        let (spec_is_null, spec_fields) = if let Some(spec_arg) = resolved.args.get(2) {
-            deref_typ!("struct or null", ctx, &spec_arg.typ,
-                Some(Type::Struct(fields)) => Ok((false, fields.clone())),
-                Some(t @ Type::Primitive(_)) => {
-                    if is_null_type(t) { Ok((true, TArc::from_iter([]))) }
-                    else { bail!("rpc #spec must be a struct or null") }
-                }
-            )?
-        } else {
-            bail!("rpc #spec type not available")
-        };
-        for (name, field_typ, _) in spec_fields.iter() {
-            deref_typ!("RpcArg {{default: 'a, doc: string}}", ctx, field_typ,
-                Some(Type::Struct(inner)) => {
-                    if inner.len() == 2 {
-                        let has_default = inner.iter().any(|(n, _, _)| n.as_str() == "default");
-                        let has_doc = inner.iter().any(|(n, _, _)| n.as_str() == "doc");
-                        if has_default && has_doc { Ok(()) }
-                        else { bail!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}") }
-                    } else {
-                        bail!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}")
-                    }
-                }
-            )?;
+    fn handler_arg(resolved: &FnType) -> Option<Type> {
+        match &resolved.args.get(3)?.typ {
+            Type::Fn(ft) => Some(ft.args.first()?.typ.clone()),
+            _ => None,
         }
-        let cb_fn = if let Some(f_arg) = resolved.args.get(3) {
-            deref_typ!("fn", ctx, &f_arg.typ,
-                Some(Type::Fn(ft)) => Ok(ft.clone())
-            )?
-        } else {
-            bail!("rpc #f must be a function with an argument")
-        };
-        if cb_fn.args.is_empty() {
-            bail!("rpc #f must be a function with an argument")
-        }
-        let cb_arg_typ = &cb_fn.args[0].typ;
-        if spec_is_null {
-            deref_typ!("null", ctx, cb_arg_typ,
-                Some(t @ Type::Primitive(_)) => {
-                    if is_null_type(t) { Ok(()) }
-                    else { bail!("rpc #f argument must be null when #spec is null") }
-                }
-            )?;
-            self.cast_typ = Some(cb_arg_typ.clone());
-            return Ok(());
-        }
-        let cb_fields = deref_typ!("struct", ctx, cb_arg_typ,
-            Some(Type::Struct(fields)) => Ok(fields.clone())
-        )?;
+    }
 
-        if spec_fields.len() != cb_fields.len() {
-            bail!(
-                "rpc #spec has {} fields but #f argument has {}",
-                spec_fields.len(),
-                cb_fields.len()
-            )
+    /// The call's arguments as the handler takes them: sorted into a
+    /// struct and cast to its argument type.
+    fn arg(&self, ctx: &ExecCtx<'_, R, E>, call: &server::RpcCall) -> Value {
+        let mut args: LPooled<Vec<(ArcStr, Value)>> =
+            call.args.iter().map(|(n, v)| (n.clone(), v.clone())).collect();
+        args.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let args = Value::Array(ValArray::from_iter_exact(
+            args.drain(..)
+                .map(|(n, v)| Value::Array(ValArray::from([Value::String(n), v]))),
+        ));
+        match &self.cast_typ {
+            Some(typ) => typ.cast_value(&ctx.env, args),
+            None => args,
         }
-        for (spec_name, spec_field_typ, _) in spec_fields.iter() {
-            // extract the value type T from {default: T, doc: string}
-            let value_typ = deref_typ!(
-                "{{default: 'a, doc: string}}", ctx, spec_field_typ,
-                Some(Type::Struct(inner)) => {
-                    match inner.iter().find(|(n, _, _)| n.as_str() == "default") {
-                        Some((_, t, _)) => Ok(t.clone()),
-                        None => bail!("rpc #spec field '{spec_name}' missing 'default'"),
-                    }
+    }
+
+    fn publish(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        path: &Value,
+        doc: &Value,
+        spec: &Value,
+    ) -> Result<()> {
+        let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path {path}"))?;
+        let spec = parse_spec(spec)?;
+        if let Some(typ) = &self.cast_typ {
+            let mut defaults: LPooled<Vec<(ArcStr, Value)>> =
+                spec.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
+            defaults.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            let defaults = match defaults.is_empty() {
+                true => Value::Null,
+                false => {
+                    Value::Array(ValArray::from_iter_exact(defaults.drain(..).map(
+                        |(n, v)| Value::Array(ValArray::from([Value::String(n), v])),
+                    )))
                 }
-            )?;
-            let cb_field = cb_fields.iter().find(|(n, _, _)| n == spec_name);
-            match cb_field {
-                None => bail!("rpc #f argument missing field '{spec_name}'"),
-                Some((_, cb_typ, _)) => {
-                    let check = |t: &Type| -> Result<()> {
-                        if !t.contains(&ctx.env, &value_typ)? {
-                            bail!(
-                                "rpc field '{spec_name}' type mismatch: \
-                                 #f argument type {t} does not contain \
-                                 #spec default type {value_typ}"
-                            )
-                        }
-                        Ok(())
-                    };
-                    deref_typ!("type", ctx, cb_typ,
-                        Some(Type::Any | Type::Bottom) => Ok(()),
-                        Some(t @ (
-                            Type::Primitive(_) | Type::Fn(_) | Type::Set(_)
-                            | Type::Error(_) | Type::Array(_) | Type::ByRef(..)
-                            | Type::Tuple(_) | Type::Struct(_) | Type::Variant(_, _, _)
-                            | Type::Map { .. } | Type::Abstract { .. }
-                        )) => check(t)
-                    )?;
-                }
+            };
+            if let Value::Error(e) = typ.cast_value(&ctx.env, defaults) {
+                bail!("rpc #spec does not fit #f's argument {typ}: {e}")
             }
         }
-        self.cast_typ = Some(cb_arg_typ.clone());
+        let proc = NetState::get(ctx).publish_rpc(
+            ctx,
+            path.clone(),
+            doc.clone(),
+            spec,
+            self.id,
+        )?;
+        self.current = Some((path, proc));
         Ok(())
     }
 }
@@ -1075,48 +1040,20 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        match from {
-            [_, _, _, _] => {
-                let typ = resolved.unwrap_or(typ);
-                let scope = scope.append_block("fn", LambdaId::new().inner());
-                let id = BindId::new();
-                ctx.record_ref(id, top_id);
-                let pid = BindId::new();
-                let mftyp = match &typ.args[3].typ {
-                    Type::Fn(ft) => ft.clone(),
-                    t => bail!("expected a function not {t}"),
-                };
-                let (x, xn) = genn::bind(
-                    ctx,
-                    &scope.lexical,
-                    "x",
-                    mftyp.args[0].typ.clone(),
-                    top_id,
-                );
-                let fnode = genn::reference(ctx, pid, Type::Fn(mftyp.clone()), top_id);
-                let f =
-                    genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
-                let mut t = PublishRpc {
-                    slept: false,
-                    queue: VecDeque::new(),
-                    x,
-                    id,
-                    top_id,
-                    f,
-                    pid,
-                    argbuf: smallvec![],
-                    ready: true,
-                    current: None,
-                    cast_typ: None,
-                    out: TagValue::phantom(),
-                };
-                if let Some(resolved) = resolved {
-                    let _ = t.validate_spec(ctx, resolved);
-                }
-                Ok(Box::new(t))
-            }
-            _ => bail!("expected four arguments"),
-        }
+        let [_, _, _, _] = from else { bail!("expected four arguments") };
+        let typ = resolved.unwrap_or(typ);
+        let handler = Handler::new(ctx, &typ.args[3].typ, scope, top_id)?;
+        let id = BindId::new();
+        ctx.record_ref(id, top_id);
+        Ok(Box::new(PublishRpc {
+            slept: false,
+            id,
+            top_id,
+            handler,
+            current: None,
+            cast_typ: resolved.and_then(Self::handler_arg),
+            out: TagValue::phantom(),
+        }))
     }
 
     fn image_decode(
@@ -1127,22 +1064,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         let slept = bool::decode(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let f = image::decode_node(ctx, buf)?;
-        let pid = BindId::decode(buf)?;
-        let x = BindId::decode(buf)?;
-        let ready = bool::decode(buf)?;
+        let handler = Handler::image_decode(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
         ctx.record_ref(id, top_id);
         Ok(Box::new(PublishRpc {
             slept,
             id,
             top_id,
-            f,
-            pid,
-            x,
-            queue: VecDeque::new(),
-            argbuf: smallvec![],
-            ready,
+            handler,
             current: None,
             cast_typ,
             out: TagValue::phantom(),
@@ -1151,19 +1080,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
-    /// `current` is a live procedure; `queue` holds calls awaiting a
-    /// reply.
+    /// `current` is a live procedure.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.current.is_some() || !self.queue.is_empty() || !self.argbuf.is_empty() {
+        if self.current.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
-        self.f.image_encode(buf)?;
-        self.pid.encode(buf)?;
-        self.x.encode(buf)?;
-        self.ready.encode(buf)?;
+        self.handler.image_encode(buf)?;
         self.cast_typ.encode(buf)
     }
 
@@ -1177,10 +1102,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1]);
         let (specv, spec_fired) = seam_arg(ctx, &mut from[2]);
         let (fv, f_fired) = seam_arg(ctx, &mut from[3]);
-        if f_fired && let Some(v) = fv {
-            ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            ctx.event.variables.insert(self.pid, TagValue::fired(v));
-        }
+        self.handler.set_fn(ctx, fv, f_fired);
+        let mut failed = None;
         if path_fired || doc_fired || spec_fired || woke {
             if crate::netstate::rpc_dbg() {
                 eprintln!(
@@ -1192,135 +1115,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
             // dropping the proc unpublishes it
             self.current = None;
-            if let (Some(Value::String(path)), Some(doc)) = (&pathv, &docv) {
-                let path = Path::from(path);
-                let spec = match &specv {
-                    Some(Value::Null) => vec![],
-                    Some(Value::Array(spec)) => spec
-                        .iter()
-                        .map(|field| match field {
-                            Value::Array(pair) if pair.len() == 2 => {
-                                let name = match &pair[0] {
-                                    Value::String(n) => n.clone(),
-                                    _ => unreachable!(),
-                                };
-                                // pair[1] is {default: val, doc: docstr} struct
-                                // fields sorted: "default" < "doc"
-                                match &pair[1] {
-                                    Value::Array(rpc_arg) if rpc_arg.len() == 2 => {
-                                        let default_value = match &rpc_arg[0] {
-                                            Value::Array(p) => p[1].clone(),
-                                            _ => unreachable!(),
-                                        };
-                                        let doc = match &rpc_arg[1] {
-                                            Value::Array(p) => p[1].clone(),
-                                            _ => unreachable!(),
-                                        };
-                                        ArgSpec { name, doc, default_value }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
-                            _ => unreachable!(),
-                        })
-                        .collect::<Vec<_>>(),
-                    _ => vec![],
-                };
-                let proc = match NetState::get(ctx).publish_rpc(
-                    ctx,
-                    path.clone(),
-                    doc.clone(),
-                    spec,
-                    self.id,
-                ) {
-                    Ok(proc) => proc,
-                    Err(e) => {
-                        let e: ArcStr = format_compact!("{e:?}").as_str().into();
-                        let e: Value = (literal!("PublishRpcError"), e).into();
-                        return self.out.set(TagValue::fired(Value::Error(e.into())));
-                    }
-                };
-                self.current = Some((path, proc));
-            }
-        }
-        macro_rules! set {
-            ($c:expr) => {{
-                self.ready = false;
-                self.argbuf.extend($c.args.iter().map(|(n, v)| (n.clone(), v.clone())));
-                self.argbuf.sort_by_key(|(n, _)| n.clone());
-                let args =
-                    ValArray::from_iter_exact(self.argbuf.drain(..).map(|(n, v)| {
-                        Value::Array(ValArray::from([Value::String(n), v]))
-                    }));
-                let args = match &self.cast_typ {
-                    Some(typ) => typ.cast_value(&ctx.env, Value::Array(args)),
-                    None => Value::Array(args),
-                };
-                ctx.rt.store_insert(self.x, TagValue::fired(args.clone()));
-                ctx.event.variables.insert(self.x, TagValue::fired(args));
-            }};
-        }
-        if let Some(mut cbt) = ctx.event.take_custom(&self.id) {
-            if let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>() {
-                if let Some(c) = c.0.take() {
-                    if crate::netstate::rpc_dbg() {
-                        eprintln!(
-                            "RPCDBG publish_rpc {:?}: call queued (ready={} qlen={})",
-                            self.id,
-                            self.ready,
-                            self.queue.len()
-                        );
-                    }
-                    self.queue.push_back(c);
-                }
-            }
-        }
-        // CR claude for eric: [bug] Calls are answered strictly in order, and only a
-        // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
-        // every later call is blocked forever: they pile up in `queue` without bound,
-        // and their callers hang because netidx's client call has no timeout. Any
-        // client can cause this. An argument that fails the cast in `set!` puts an
-        // InvalidCast error in `x`, and the handler's field read bottoms; a call that
-        // omits an argument fails the same cast, because the spec's defaults are never
-        // filled in. A handler that throws (rpc's type allows `throws 'e`) or bottoms
-        // on one input (integer div0) wedges the server too. A call whose cast fails
-        // should get the error as its reply instead of being dispatched, and one
-        // unanswered call should not hold up the queue. probe:
-        // design/review-2026-10-05/repro/sys-net-03.gx (sys-net-03)
-        if self.ready && self.queue.len() > 0 {
-            if let Some(c) = self.queue.front() {
-                if crate::netstate::rpc_dbg() {
-                    eprintln!("RPCDBG publish_rpc {:?}: dispatch", self.id);
-                }
-                set!(c)
-            }
-        }
-        loop {
-            match graphix_package_core::seam_tick(self.f.update(ctx)).map(|tv| tv.clone())
+            if let (Some(path), Some(doc), Some(spec)) = (&pathv, &docv, &specv)
+                && let Err(e) = self.publish(ctx, path, doc, spec)
             {
-                None => break self.out.ride(),
-                Some(v) => {
-                    self.ready = true;
-                    if let Some(mut call) = self.queue.pop_front() {
-                        if crate::netstate::rpc_dbg() {
-                            eprintln!("RPCDBG publish_rpc {:?}: reply {v:?}", self.id);
-                        }
-                        call.reply.send(v.value());
-                    }
-                    match self.queue.front() {
-                        Some(c) => {
-                            if crate::netstate::rpc_dbg() {
-                                eprintln!(
-                                    "RPCDBG publish_rpc {:?}: dispatch next",
-                                    self.id
-                                );
-                            }
-                            set!(c)
-                        }
-                        None => break self.out.ride(),
-                    }
-                }
+                failed = Some(errf!(literal!("PublishRpcError"), "{e:#}"));
             }
+        }
+        if let Some(mut cbt) = ctx.event.take_custom(&self.id)
+            && let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>()
+            && let Some(c) = c.0.take()
+        {
+            // CR claude for eric: [bug] Calls are answered strictly in order, and only a
+            // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
+            // every later call is blocked forever: they pile up in `queue` without bound,
+            // and their callers hang because netidx's client call has no timeout. Any
+            // client can cause this. An argument that fails the cast in `set!` puts an
+            // InvalidCast error in `x`, and the handler's field read bottoms; a call that
+            // omits an argument fails the same cast, because the spec's defaults are never
+            // filled in. A handler that throws (rpc's type allows `throws 'e`) or bottoms
+            // on one input (integer div0) wedges the server too. A call whose cast fails
+            // should get the error as its reply instead of being dispatched, and one
+            // unanswered call should not hold up the queue. probe:
+            // design/review-2026-10-05/repro/sys-net-03.gx (sys-net-03)
+            // 2026-10-07 claude: the queue, dispatch and reply are graphix-package-core's
+            // Handler now, shared with http::serve: a handler that raises or bottoms on a
+            // call answers it with an error and no longer holds up the rest. A call whose
+            // cast fails is still dispatched, and an omitted argument still fails it.
+            let arg = self.arg(ctx, &c);
+            self.handler.push(arg, RpcReply(c));
+        }
+        self.handler.update(ctx);
+        match failed {
+            Some(e) => self.out.set(TagValue::fired(e)),
+            None => self.out.ride(),
         }
     }
 
@@ -1329,46 +1156,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
-        self.f.typecheck0(ctx)?;
-        Ok(())
+        self.handler.typecheck0(ctx)
     }
 
     fn typecheck1(
         &mut self,
-        ctx: &mut CompileCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        self.validate_spec(ctx, resolved)?;
+        self.cast_typ = Self::handler_arg(resolved);
         Ok(())
     }
 
     fn refs(&self, refs: &mut graphix_compiler::Refs) {
-        self.f.refs(refs)
+        self.handler.refs(refs)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.current = None;
-        ctx.rt.store_remove(&self.x);
-        ctx.env.unbind_variable(self.x);
-        ctx.rt.store_remove(&self.pid);
-        self.f.delete(ctx);
+        self.handler.delete(ctx);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
-        if crate::netstate::rpc_dbg() {
-            eprintln!("RPCDBG publish_rpc {:?}: sleep (id re-minted)", self.id);
-        }
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.current = None;
-        self.queue.clear();
-        self.argbuf.clear();
-        self.ready = true;
-        self.f.sleep(ctx);
+        self.handler.sleep(ctx);
     }
 }

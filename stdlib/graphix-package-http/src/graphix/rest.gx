@@ -1,53 +1,32 @@
-let add_auth = |bearer, base| select bearer {
-    string as b => array::concat(base, [("authorization", "Bearer [b]")]),
-    null as _ => base
-};
-
-// CR claude for claude: [structure] get, post, put, delete and patch are five copies of
-// one `request` call. They differ only in `#method` and in whether a JSON body (and its
-// content-type header) is sent; post, put and patch are identical except for the
-// method. A change to the JSON headers or the auth rule has to be made five times. One
-// hidden helper, `send(method, bearer, headers, body: [string, null], client, url)`,
-// that adds content-type when body is non-null makes each of the five a one-line call
-// (that shape passes --check). (gx-stdlib-18)
-let get = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
+let send = |method: Method, bearer: [string, null], headers: Array<(string, string)>, body: [string, null], client: Client, url: string| {
+    let json = select body {
+        string as _ => [("content-type", "application/json"), ("accept", "application/json")],
+        null as _ => [("accept", "application/json")]
+    };
+    let auth = select bearer {
+        string as b => [("authorization", "Bearer [b]")],
+        null as _ => []
+    };
     request(
-        #headers: array::concat(add_auth(bearer, [("accept", "application/json")]), headers),
-        client,
-        url
-    );
-
-let post = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
-    request(
-        #method: `POST,
-        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
-        #body: body,
-        client,
-        url
-    );
-
-let put = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
-    request(
-        #method: `PUT,
-        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
-        #body: body,
-        client,
-        url
-    );
-
-let delete = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
-    request(
-        #method: `DELETE,
-        #headers: array::concat(add_auth(bearer, [("accept", "application/json")]), headers),
-        client,
-        url
-    );
-
-let patch = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
-    request(
-        #method: `PATCH,
-        #headers: array::concat(add_auth(bearer, [("content-type", "application/json"), ("accept", "application/json")]), headers),
+        #method: method,
+        #headers: array::concat(json, auth, headers),
         #body: body,
         client,
         url
     )
+};
+
+let get = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
+    send(`GET, bearer, headers, null, client, url);
+
+let post = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    send(`POST, bearer, headers, body, client, url);
+
+let put = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    send(`PUT, bearer, headers, body, client, url);
+
+let delete = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], client, url|
+    send(`DELETE, bearer, headers, null, client, url);
+
+let patch = |#bearer: [string, null] = null, #headers: Array<(string, string)> = [], #body: string, client, url|
+    send(`PATCH, bearer, headers, body, client, url)

@@ -14,12 +14,15 @@ type BinResponse = {
     url: string
 };
 
+/// A request to a server: `body` is the body as text, null when it is
+/// empty or not UTF-8; `raw` is the body as sent.
 type Request = {
     body: [string, null],
     headers: Array<(string, string)>,
     method: string,
     path: string,
-    query: [string, null]
+    query: [string, null],
+    raw: bytes
 };
 
 type Client;
@@ -66,12 +69,16 @@ val get_bin: fn(client: Client, url: string) -> Result<BinResponse, `HTTPError(s
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -> string;
 
-/// Start an HTTP server.
+/// Start an HTTP server. Each request goes to `#handler` in turn and is
+/// answered by its next value; one it raises on, or has no value for, is
+/// answered 500. A body over `#max_body` bytes (16 MiB by default) is
+/// answered 413 without reaching the handler.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
+    ?#max_body: i64,
     #handler: fn(req: Request) -> Response throws 'e
 ) -> Result<Server, `HTTPError(string)> throws 'e;
 
