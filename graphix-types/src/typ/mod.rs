@@ -275,6 +275,18 @@ impl<H: IsoPoolable> RefHist<H> {
     }
 }
 
+impl Type {
+    /// Whether this type's values are arrays at run time: an array, a
+    /// tuple, a struct, a variant with a payload (a bare one is a string).
+    pub(crate) fn array_shaped(&self) -> bool {
+        match self {
+            Type::Array(_) | Type::Tuple(_) | Type::Struct(_) => true,
+            Type::Variant(_, args, _) => !args.is_empty(),
+            _ => false,
+        }
+    }
+}
+
 /// The nodes in `ts`, counted up to a bound: how a walk tells a
 /// definition's params growing at every level from its nested uses.
 pub(crate) fn params_size(ts: &[Type]) -> usize {

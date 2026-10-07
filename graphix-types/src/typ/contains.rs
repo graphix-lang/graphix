@@ -891,10 +891,13 @@ impl Type {
                         .0)
             }
             (Self::Primitive(p0), Self::Primitive(p1)) => Ok(p0.contains(*p1)),
-            (
-                Self::Primitive(p),
-                Self::Array(_) | Self::Tuple(_) | Self::Struct(_) | Self::Variant(..),
-            ) => Ok(p.contains(Typ::Array)),
+            (Self::Primitive(p), Self::Array(_) | Self::Tuple(_) | Self::Struct(_)) => {
+                Ok(p.contains(Typ::Array))
+            }
+            // a bare variant is a string at run time
+            (Self::Primitive(p), Self::Variant(_, args, _)) => {
+                Ok(!args.is_empty() && p.contains(Typ::Array))
+            }
             (Self::Array(t0), Self::Array(t1)) => t0.contains_int(flags, env, hist, t1),
             (Self::List(t0), Self::List(t1)) => t0.contains_int(flags, env, hist, t1),
             (

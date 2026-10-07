@@ -2260,3 +2260,30 @@ const ABSTRACT_PAYLOAD_PRINTS_TYPED: &str = r#"
 run!(abstract_payload_prints_typed, ABSTRACT_PAYLOAD_PRINTS_TYPED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "P({x: 1, y: 2}) V(`A(3)) L([<1, 2>])")
 }; FuseExpect::Jit);
+
+/// A bare variant is a string at run time: `array` does not cover it.
+const ARRAY_DOES_NOT_COVER_A_BARE_VARIANT: &str = r#"
+{
+    let f = |x: [`Foo, i64, Array<i64>]| select x { array as _ => 1, i64 as _ => 2 };
+    f(3)
+}
+"#;
+
+run!(array_does_not_cover_a_bare_variant, ARRAY_DOES_NOT_COVER_A_BARE_VARIANT, |v: Result<&Value>| {
+    refused("missing match cases")(v)
+}; FuseExpect::None);
+
+const BARE_VARIANT_AFTER_ARRAY: &str = r#"
+{
+    let f = |x: [`Foo, i64, Array<i64>]| select x {
+        array as _ => 1,
+        i64 as _ => 2,
+        `Foo => 3
+    };
+    (f(3), f([1]), f(`Foo))
+}
+"#;
+
+run!(bare_variant_after_array, BARE_VARIANT_AFTER_ARRAY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(1), Value::I64(3)])
+}; FuseExpect::None);

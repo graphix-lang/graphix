@@ -272,14 +272,11 @@ impl Type {
                 s.insert(*s1);
                 Ok(Type::Primitive(s))
             }
-            (
-                Type::Primitive(p),
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
-            )
-            | (
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
-                Type::Primitive(p),
-            ) if p.contains(Typ::Array) => Ok(Type::Primitive(*p)),
+            (Type::Primitive(p), t) | (t, Type::Primitive(p))
+                if t.array_shaped() && p.contains(Typ::Array) =>
+            {
+                Ok(Type::Primitive(*p))
+            }
             (Type::Primitive(p), Type::Map { .. })
             | (Type::Map { .. }, Type::Primitive(p))
                 if p.contains(Typ::Map) =>
@@ -549,20 +546,7 @@ impl Type {
                     Ok(Type::Primitive(*p))
                 }
             }
-            // CR claude for claude: [bug] A nullary variant is a Value::String at runtime
-            // (Type::is_a, cast.rs:764), but this arm makes `Foo - array empty,
-            // contains.rs:638 says array contains `Foo, and the union arm at line 255
-            // folds `Foo into array. So select x { array as _ => .., i64 as _ => .. }
-            // over [`Foo, i64, Array<i64>] checks as exhaustive yet produces nothing
-            // for `Foo in both engines; a `Foo arm placed after array as _ is refused
-            // as dead although it is taken; and let x: array = `Foo is accepted while
-            // Array<Any> refuses `Foo. In all three places only a Variant with a
-            // payload is array-shaped. probe:
-            // design/review-2026-10-05/repro/t-cast-setops-09.gx (t-cast-setops-09)
-            (
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
-                Type::Primitive(p),
-            ) => {
+            (t, Type::Primitive(p)) if t.array_shaped() => {
                 if p.contains(Typ::Array) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
