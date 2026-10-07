@@ -8,7 +8,12 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
-use std::{iter, mem::Discriminant};
+use smallvec::SmallVec;
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    iter,
+    mem::Discriminant,
+};
 use triomphe::Arc;
 
 /// Per-pass [`Type::normalize`] state: `cells` are the visited TVar
@@ -88,6 +93,89 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
     }
 }
 
+/// What a member can merge with beyond the unkeyed members: a variant
+/// only with one of its tag and arity, a struct only with one of its
+/// field names.
+#[derive(PartialEq, Eq, Hash)]
+enum MergeKey {
+    Variant(ArcStr, usize),
+    Struct(u64, usize),
+}
+
+impl MergeKey {
+    fn of(t: &Type) -> Option<Self> {
+        match t {
+            Type::Variant(tag, args, _) => Some(Self::Variant(tag.clone(), args.len())),
+            Type::Struct(fields) => {
+                let mut h = DefaultHasher::new();
+                fields.iter().for_each(|(n, _, _)| n.hash(&mut h));
+                Some(Self::Struct(h.finish(), fields.len()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A union's merge-saturated members in arrival order, indexed by
+/// [`MergeKey`] so an incoming member is tried only against those it
+/// could merge with: a union of N tags normalizes in linear time.
+#[derive(Default)]
+struct Kept {
+    members: LPooled<Vec<Option<Type>>>,
+    keyed: LPooled<AHashMap<MergeKey, SmallVec<[usize; 2]>>>,
+    unkeyed: LPooled<Vec<usize>>,
+}
+
+impl Kept {
+    /// Take out the earliest kept member `t` merges with, and the merge.
+    fn merge_with(&mut self, t: &Type) -> Option<Type> {
+        let key = MergeKey::of(t);
+        let keyed: &[usize] = match &key {
+            Some(k) => self.keyed.get(k).map(|v| &v[..]).unwrap_or(&[]),
+            None => &[],
+        };
+        let mut candidates: SmallVec<[usize; 8]> = SmallVec::new();
+        match key {
+            Some(_) => {
+                candidates.extend(keyed.iter().copied());
+                candidates.extend(self.unkeyed.iter().copied());
+                candidates.sort_unstable();
+            }
+            None => candidates.extend(
+                self.members
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| m.is_some())
+                    .map(|(i, _)| i),
+            ),
+        }
+        let (j, m) = candidates.iter().find_map(|&j| {
+            self.members[j].as_ref().and_then(|kept| t.merge(kept)).map(|m| (j, m))
+        })?;
+        let kept = self.members[j].take().expect("live");
+        match MergeKey::of(&kept) {
+            Some(k) => self.keyed.get_mut(&k).expect("indexed").retain(|i| *i != j),
+            None => self.unkeyed.retain(|i| *i != j),
+        }
+        Some(m)
+    }
+
+    fn push(&mut self, t: Type) {
+        let j = self.members.len();
+        match MergeKey::of(&t) {
+            Some(k) => self.keyed.entry(k).or_default().push(j),
+            None => self.unkeyed.push(j),
+        }
+        self.members.push(Some(t));
+    }
+
+    fn into_members(mut self) -> LPooled<Vec<Type>> {
+        let mut out: LPooled<Vec<Type>> = LPooled::take();
+        out.extend(self.members.drain(..).flatten());
+        out
+    }
+}
+
 impl Type {
     pub(crate) fn flatten_set(set: impl IntoIterator<Item = Self>) -> Self {
         Self::flatten_set_tracked(set).0
@@ -98,11 +186,11 @@ impl Type {
     /// Conservative: `true` may be reported for an identical result.
     fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
         let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
-        let mut acc: LPooled<Vec<Self>> = LPooled::take();
+        let mut acc = Kept::default();
         let mut saw_bottom = false;
         let mut changed = false;
         let mut absorb =
-            |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>, acc: &mut Vec<Self>| {
+            |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>, acc: &mut Kept| {
                 match t {
                     Type::Set(ref s) => {
                         changed = true;
@@ -118,8 +206,7 @@ impl Type {
                         // `acc` is merge-saturated, so only the incoming
                         // element (or its merge result) can enable a new
                         // merge.
-                        let mut incoming = t;
-                        // CR claude for claude: [perf] Each incoming member is tried
+                        // XCR claude for claude: [perf] Each incoming member is tried
                         // against every kept one, so normalizing an N-member union
                         // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
                         // union that its idle select normalizes in check_dead_arms, so
@@ -134,18 +221,18 @@ impl Type {
                         // the N² scan. Separately, seqarm needs no more than about 10k
                         // statements to exercise the lowering's stack.
                         // (tests-shell-compiler-18)
-                        'merge: loop {
-                            for j in 0..acc.len() {
-                                if let Some(m) = incoming.merge(&acc[j]) {
-                                    changed = true;
-                                    acc.remove(j);
-                                    incoming = m;
-                                    continue 'merge;
-                                }
-                            }
-                            acc.push(incoming);
-                            break;
+                        // 2026-10-07 claude: kept members are indexed by MergeKey (a
+                        // variant's tag and arity, a struct's field names), so a union
+                        // of N tags normalizes in linear time: the 32k-step seq checks
+                        // in 1.3 s, was 7.9. A hand-written select over N tags stays
+                        // quadratic (4000 tags 4.1 s): check_dead_arms diffs and
+                        // could_matches the whole remaining union at every arm.
+                        let mut incoming = t;
+                        while let Some(m) = acc.merge_with(&incoming) {
+                            changed = true;
+                            incoming = m;
                         }
+                        acc.push(incoming);
                     }
                 }
                 true
@@ -189,6 +276,7 @@ impl Type {
                 }
             }
         }
+        let mut acc = acc.into_members();
         if !acc.is_sorted() {
             changed = true;
             acc.sort();
