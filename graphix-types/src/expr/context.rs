@@ -57,7 +57,10 @@ impl fmt::Display for ErrorContext {
             Source::Internal(_) | Source::Unspecified => (),
             source => write!(f, " in {source}")?,
         }
-        write!(f, ", in: {snippet}{suffix}")
+        match snippet.is_empty() {
+            true => Ok(()),
+            false => write!(f, ", in: {snippet}{suffix}"),
+        }
     }
 }
 

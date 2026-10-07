@@ -354,15 +354,25 @@ where
     I::Range: Range,
 {
     (
+        position(),
         optional(attempt(typ().skip(spaces1()).skip(string("as")).skip(spaces1()))),
         structure_pattern_or(),
+        position(),
         optional(attempt(spaces1().with(string("if")).with(spaces1()).with(expr()))),
     )
         .map(
-            |(type_predicate, structure_predicate, guard): (
+            |(pos, type_predicate, structure_predicate, end, guard): (
+                SourcePosition,
                 Option<Type>,
                 StructurePattern,
+                SourcePosition,
                 Option<Expr>,
-            )| { Pattern { type_predicate, structure_predicate, guard } },
+            )| Pattern {
+                type_predicate,
+                structure_predicate,
+                guard,
+                pos: WrittenAt(pos),
+                end: WrittenAt(end),
+            },
         )
 }

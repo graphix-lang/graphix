@@ -29,6 +29,18 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
+/// Where an error in a pattern is placed: the pattern's text when it was
+/// parsed, else its arm's body.
+fn pattern_site(pat: &Pattern, body: &Expr) -> Expr {
+    match (pat.pos.get(), pat.end.get()) {
+        (Some(pos), Some(end)) => {
+            let mut site = ExprKind::NoOp.to_expr(pos).ending(end);
+            site.ori = body.ori.clone();
+            site
+        }
+        _ => body.clone(),
+    }
+}
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
     /// The selected arm. Semantic state: survives sleep.
@@ -227,7 +239,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     body.pos,
                     body.ori.clone(),
                 )
-                .at(body)?;
+                .at(&pattern_site(pat, body))?;
                 pat.structure_predicate
                     .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
                 let n = compile(ctx, flags, body.clone(), &scope, top_id)?;
@@ -1375,7 +1387,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     let t = spec_pat
                         .structure_predicate
                         .complete_type_predicate(&ctx.env, &pat.type_predicate, &scrut)
-                        .at(body.spec())?;
+                        .at(&pattern_site(spec_pat, body.spec()))?;
                     if let Some(t) = t {
                         pat.structure_predicate.realign(&ctx.env, &t)?;
                         pat.type_predicate = t;

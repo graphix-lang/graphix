@@ -578,4 +578,9 @@ pub struct Pattern {
     pub type_predicate: Option<Type>,
     pub structure_predicate: StructurePattern,
     pub guard: Option<Expr>,
+    /// Where the pattern's text starts, if it was parsed (the guard
+    /// excluded); decides nothing.
+    pub pos: WrittenAt,
+    /// Where it ends (exclusive), if it was parsed.
+    pub end: WrittenAt,
 }

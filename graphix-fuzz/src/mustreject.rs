@@ -14,7 +14,7 @@ use graphix_compiler::{
     SourcePosition,
     expr::{
         ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
-        ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern,
+        ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
     },
     ide::ExprTypeSite,
     typ::{FnType, Mutability, Type},
@@ -241,6 +241,8 @@ fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) 
                 type_predicate: None,
                 structure_predicate: StructurePattern::Ignore,
                 guard: None,
+                pos: WrittenAt::NOWHERE,
+                end: WrittenAt::NOWHERE,
             };
             let never =
                 ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
@@ -1213,5 +1215,7 @@ fn bool_arm(b: bool) -> Pattern {
         type_predicate: None,
         structure_predicate: StructurePattern::Literal(netidx_value::Value::Bool(b)),
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }

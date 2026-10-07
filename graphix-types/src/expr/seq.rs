@@ -1699,6 +1699,8 @@ fn pat_bind(name: &str) -> Pattern {
         type_predicate: None,
         structure_predicate: StructurePattern::Bind(Name::from(name)),
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }
 
@@ -1707,6 +1709,8 @@ fn pat_wild() -> Pattern {
         type_predicate: None,
         structure_predicate: StructurePattern::Ignore,
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }
 
@@ -1715,6 +1719,8 @@ fn pat_lit(v: Value) -> Pattern {
         type_predicate: None,
         structure_predicate: StructurePattern::Literal(v),
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }
 
@@ -1727,6 +1733,8 @@ fn pat_variant(tag: &ArcStr) -> Pattern {
             binds: Arc::from(Vec::<StructurePattern>::new()),
         },
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }
 
@@ -1742,6 +1750,8 @@ fn pat_last(n: usize, name: &str) -> Pattern {
             binds: Arc::from_iter(binds),
         },
         guard: None,
+        pos: WrittenAt::NOWHERE,
+        end: WrittenAt::NOWHERE,
     }
 }
 

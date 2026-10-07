@@ -22,7 +22,7 @@ use crate::{
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, LambdaExpr, ModPath, Origin, Pattern, SelectExpr, StructurePattern,
-        TraitExpr,
+        TraitExpr, WrittenAt,
     },
     image::{
         ImageBuf,
@@ -921,6 +921,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                                 binds: Arc::from_iter([l, r]),
                             },
                             guard: None,
+                            pos: WrittenAt::NOWHERE,
+                            end: WrittenAt::NOWHERE,
                         },
                         body,
                     )
@@ -1012,6 +1014,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 type_predicate: Some(mem),
                 structure_predicate: StructurePattern::Bind(literal!("#t").into()),
                 guard: None,
+                pos: WrittenAt::NOWHERE,
+                end: WrittenAt::NOWHERE,
             };
             (pat, call)
         });

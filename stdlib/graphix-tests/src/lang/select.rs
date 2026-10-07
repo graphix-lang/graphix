@@ -2847,7 +2847,7 @@ run!(or_explicit_union_order, OR_EXPLICIT_UNION_ORDER, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("variant patterns can't match"))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A pattern error is sited at its arm.
+// A pattern error is sited at the pattern.
 const PATTERN_ERROR_SITE: &str = r#"select 1 {
   (a, a) => 0,
   _ => 1
@@ -2856,14 +2856,7 @@ const PATTERN_ERROR_SITE: &str = r#"select 1 {
 run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
     Err(e) => e
         .downcast_ref::<graphix_compiler::expr::ErrorSite>()
-        // CR claude for claude: [bug] A pattern error is sited at the arm's body, not at
-        // the pattern. graphix-compiler/src/node/select.rs:230 wraps the pattern
-        // compile in `.at(body)` because `Pattern` has no position, and this test pins
-        // the body's (2, 13). The language server uses the site's [pos, end), so a
-        // mistake like `(a, a) => { .. }` underlines the whole body block. Site pattern
-        // errors at the pattern (or at the offending bind's `Name`), and pin (2, 3).
-        // probe: design/review-2026-10-05/repro/tests-lang-a-12.gx (tests-lang-a-12)
-        .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 13)),
+        .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 3)),
     Ok(_) => false,
 }; graphix_package_core::testing::FuseExpect::None);
 

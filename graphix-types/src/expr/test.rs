@@ -536,6 +536,8 @@ fn pattern() -> impl Strategy<Value = Pattern> {
             type_predicate,
             structure_predicate,
             guard: None,
+            pos: WrittenAt::NOWHERE,
+            end: WrittenAt::NOWHERE,
         },
     )
 }
