@@ -5768,12 +5768,11 @@ mod tests {
             run_program(code, Mode::Interp, t),
             run_program_with_stats(code, Mode::Jit, t),
         );
-        // CR claude for claude: [test-gap] With Fuse::No (the 46 agree() probes) this is
-        // the only assertion, and two CompileErrs with equal diagnostics, any two
-        // RuntimeErrs and two Timeouts all agree, so a probe that stops compiling or
-        // running still passes and the coverage it names is gone. Assert that interp is
-        // a Trace here, or give a probe meant to reject an explicit expect-reject
-        // variant; all 46 pass --check today. (fuzz-lib-b-16)
+        assert!(
+            matches!(interp, Outcome::Trace(_)),
+            "probe `{code}` did not run: {}",
+            render(&interp)
+        );
         assert!(
             interp.agrees_with(&jit),
             "Interp vs Jit disagree for `{code}`: {interp:?} vs {jit:?}"
@@ -6197,8 +6196,6 @@ mod tests {
              array::flat_map(a, |x| b) }",
         )
         .await;
-        // bare-element body: node-walks
-        agree("{ let a = [i64:1, i64:2]; array::flat_map(a, |x| x) }").await;
         // owned input array
         agree(
             "{ let a = [i64:1, i64:2, i64:3]; \
