@@ -5,7 +5,8 @@ let accept = |#cert: bytes, #key: bytes, stream: TcpStream|
 
 impl Read for TlsStream {
     let read = |s, n| 'sys_io_read;
-    let read_exact = |s, n| 'sys_io_read_exact
+    let read_exact = |s, n| 'sys_io_read_exact;
+    let read_all = |s| 'sys_io_read_all
 };
 
 impl Lines for TlsStream {

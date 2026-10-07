@@ -622,6 +622,7 @@ graphix_derive::defpackage! {
         dir::RemoveDir,
         io::IoRead,
         io::IoReadExact,
+        io::IoReadAll,
         io::IoLines<false>,
         io::IoLines<true>,
         io::IoWrite,

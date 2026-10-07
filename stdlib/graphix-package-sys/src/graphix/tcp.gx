@@ -5,7 +5,8 @@ let listener_addr = |listener: TcpListener| -> Result<string, `TCPError(string)>
 
 impl Read for TcpStream {
     let read = |s, n| 'sys_io_read;
-    let read_exact = |s, n| 'sys_io_read_exact
+    let read_exact = |s, n| 'sys_io_read_exact;
+    let read_all = |s| 'sys_io_read_all
 };
 
 impl Lines for TcpStream {
