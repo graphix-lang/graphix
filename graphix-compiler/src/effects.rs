@@ -56,7 +56,8 @@ pub enum Effect {
     /// semantics bug: tail-loop iterations would share state. The
     /// payload is the JIT's direct-call entry; `None` for a builtin
     /// that must not be called from a kernel (an effect that may
-    /// re-evaluate, or one that needs partial argument delivery).
+    /// re-evaluate, or a raw `Apply` that answers before all its
+    /// arguments arrive: a `CachedArgs` builtin never sees a missing one).
     Stateless(Option<crate::FastCall>),
 }
 

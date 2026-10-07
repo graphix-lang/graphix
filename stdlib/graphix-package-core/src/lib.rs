@@ -6,8 +6,8 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope,
-    Tag, TagValue, TagView, TypedFastFn, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, Node, Refs, Rt, Scope, Tag,
+    TagValue, TagView, TypedFastFn, UserEvent,
     effects::Effect,
     env::Env,
     err, errf,
@@ -514,6 +514,38 @@ pub trait ImageState: Sized {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError>;
+}
+
+/// A pure builtin whose eval is its fast fn: the unit evaluator `$ev`,
+/// its `CachedArgs` alias `$alias`, its name and its fast fn.
+#[macro_export]
+macro_rules! fast_builtin {
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
+        $(#[$meta])*
+        #[derive(Debug, Default)]
+        $vis struct $ev;
+        $crate::unit_image_state!($ev);
+
+        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
+            $crate::EvalCached<R, E> for $ev
+        {
+            const EFFECT: ::graphix_compiler::effects::Effect =
+                ::graphix_compiler::effects::Effect::Stateless(Some(
+                    ::graphix_compiler::FastCall::Plain($fc),
+                ));
+            const NAME: &str = $name;
+
+            fn eval(
+                &mut self,
+                ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
+                from: &$crate::CachedVals,
+            ) -> Option<::netidx_value::Value> {
+                $crate::fast_eval(ctx, $fc, from)
+            }
+        }
+
+        $vis type $alias = $crate::CachedArgs<$ev>;
+    };
 }
 
 /// [`ImageState`] for a unit struct; the destructuring fails to
@@ -1183,20 +1215,7 @@ fn fc_is_err(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct IsErrEv;
-unit_image_state!(IsErrEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_err)));
-    const NAME: &str = "core_is_err";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_is_err, from)
-    }
-}
-
-type IsErr = CachedArgs<IsErrEv>;
+crate::fast_builtin!(IsErr, IsErrEv, "core_is_err", fc_is_err);
 
 #[derive(Debug, Default)]
 struct FilterErr {
@@ -1255,20 +1274,7 @@ fn fc_error(args: &[Value]) -> Option<Value> {
     Some(Value::Error(args[0].clone().into()))
 }
 
-#[derive(Debug, Default)]
-struct ToErrorEv;
-unit_image_state!(ToErrorEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_error)));
-    const NAME: &str = "core_error";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_error, from)
-    }
-}
-
-type ToError = CachedArgs<ToErrorEv>;
+crate::fast_builtin!(ToError, ToErrorEv, "core_error", fc_error);
 
 #[derive(Debug)]
 struct Once {
@@ -1363,25 +1369,29 @@ fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     }
 }
 
+/// `take` (`TAKE`) passes `#n` updates and drops the rest; `skip` drops
+/// `#n` updates and passes the rest.
 #[derive(Debug)]
-struct Take {
+struct Counted<const TAKE: bool> {
     n: Option<usize>,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
+type Take = Counted<true>;
+type Skip = Counted<false>;
+
+impl<R: Rt, E: UserEvent, const TAKE: bool> BuiltIn<R, E> for Counted<TAKE> {
     fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = ctx;
         let n = Option::<u64>::decode(buf)?.map(|n| n as usize);
-        Ok(Box::new(Take { n, out: TagValue::phantom() }))
+        Ok(Box::new(Self { n, out: TagValue::phantom() }))
     }
 
     const EFFECT: Effect = Effect::Sync;
-    const NAME: &str = "core_take";
+    const NAME: &str = if TAKE { "core_take" } else { "core_skip" };
 
     fn init<'a, 'b, 'c, 'd>(
         _ctx: &'a mut CompileCtx<R, E>,
@@ -1391,11 +1401,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
         _from: &'c [Node<R, E>],
         _top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Take { n: None, out: TagValue::phantom() }))
+        Ok(Box::new(Self { n: None, out: TagValue::phantom() }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
+impl<R: Rt, E: UserEvent, const TAKE: bool> Apply<R, E> for Counted<TAKE> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.n.map(|n| n as u64).encode(buf)
     }
@@ -1406,76 +1416,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         seed_count(from[0].update(ctx), &mut self.n);
-        let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
-            None => None,
-            Some(n) if *n > 0 => {
+        let res = seam_tick(from[1].update(ctx)).and_then(|tv| {
+            let counting = matches!(self.n, Some(n) if n > 0);
+            if let Some(n) = &mut self.n
+                && *n > 0
+            {
                 *n -= 1;
-                Some(tv.value_cloned())
             }
-            Some(_) => None,
-        });
-        match res {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.n = None;
-        self.out = TagValue::phantom();
-    }
-}
-
-#[derive(Debug)]
-struct Skip {
-    n: Option<usize>,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = ctx;
-        let n = Option::<u64>::decode(buf)?.map(|n| n as usize);
-        Ok(Box::new(Skip { n, out: TagValue::phantom() }))
-    }
-
-    const EFFECT: Effect = Effect::Sync;
-    const NAME: &str = "core_skip";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Skip { n: None, out: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.n.map(|n| n as u64).encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        seed_count(from[0].update(ctx), &mut self.n);
-        let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
-            None => Some(tv.value_cloned()),
-            Some(n) if *n > 0 => {
-                *n -= 1;
-                None
-            }
-            Some(_) => Some(tv.value_cloned()),
+            // take passes while its count runs; skip once it has run out,
+            // or when it has none
+            (counting == TAKE).then(|| tv.value_cloned())
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -1502,32 +1452,19 @@ fn fc_all(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct AllEv;
-unit_image_state!(AllEv);
+crate::fast_builtin!(All, AllEv, "core_all", fc_all);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_all)));
-    const NAME: &str = "core_all";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_all, from)
-    }
+/// The arguments with every array spread into its elements.
+fn flat(args: &[Value]) -> impl Iterator<Item = Value> + '_ {
+    args.iter().flat_map(|v| v.clone().flatten())
 }
-
-type All = CachedArgs<AllEv>;
 
 /// `op` over the flattened arguments, left to right. A failed step (a
 /// division by zero, an overflow) is logged and the result is nothing,
 /// as the `/` operator does, never an error the type does not admit.
-fn arith_fold(
-    name: &str,
-    from: &CachedVals,
-    op: fn(Value, Value) -> Value,
-) -> Option<Value> {
+fn arith(name: &str, args: &[Value], op: fn(Value, Value) -> Value) -> Option<Value> {
     let mut acc: Option<Value> = None;
-    for v in from.flat_iter() {
-        let v = v?;
+    for v in flat(args) {
         let next = match acc {
             None => v,
             Some(l) => op(l, v),
@@ -1541,161 +1478,53 @@ fn arith_fold(
     acc
 }
 
-#[derive(Debug, Default)]
-struct SumEv;
-unit_image_state!(SumEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_sum";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        arith_fold("sum", from, |l, r| l + r)
-    }
+fn fc_sum(args: &[Value]) -> Option<Value> {
+    arith("sum", args, |l, r| l + r)
 }
 
-type Sum = CachedArgs<SumEv>;
-
-#[derive(Debug, Default)]
-struct ProductEv;
-unit_image_state!(ProductEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_product";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        arith_fold("product", from, |l, r| l * r)
-    }
+fn fc_product(args: &[Value]) -> Option<Value> {
+    arith("product", args, |l, r| l * r)
 }
 
-type Product = CachedArgs<ProductEv>;
-
-#[derive(Debug, Default)]
-struct DivideEv;
-unit_image_state!(DivideEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_divide";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        arith_fold("divide", from, |l, r| l / r)
-    }
+fn fc_divide(args: &[Value]) -> Option<Value> {
+    arith("divide", args, |l, r| l / r)
 }
 
-type Divide = CachedArgs<DivideEv>;
-
-#[derive(Debug, Default)]
-struct MinEv;
-unit_image_state!(MinEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_min";
-
-    // Each argument is compared as a whole value; no flattening, as
-    // the declared type `fn(a: 'a, @args: 'a) -> 'a` promises.
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        coretraits::with_hooks(ctx, || {
-            let mut res: Option<&Value> = None;
-            for v in from.0.iter() {
-                match (res, v) {
-                    (_, None) => return None,
-                    (None, Some(v)) => res = Some(v),
-                    (Some(v0), Some(v)) => {
-                        if v < v0 {
-                            res = Some(v)
-                        }
-                    }
-                }
-            }
-            res.cloned()
-        })
-    }
-}
-
-type Min = CachedArgs<MinEv>;
-
-#[derive(Debug, Default)]
-struct MaxEv;
-unit_image_state!(MaxEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_max";
-
-    // Whole-value comparison, no flattening — see `MinEv`.
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        coretraits::with_hooks(ctx, || {
-            let mut res: Option<&Value> = None;
-            for v in from.0.iter() {
-                match (res, v) {
-                    (_, None) => return None,
-                    (None, Some(v)) => res = Some(v),
-                    (Some(v0), Some(v)) => {
-                        if v > v0 {
-                            res = Some(v)
-                        }
-                    }
-                }
-            }
-            res.cloned()
-        })
-    }
-}
-
-type Max = CachedArgs<MaxEv>;
-
-#[derive(Debug, Default)]
-struct AndEv;
-unit_image_state!(AndEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_and";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = Some(Value::Bool(true));
-        for v in from.flat_iter() {
-            match v {
-                None => return None,
-                Some(Value::Bool(true)) => (),
-                Some(_) => {
-                    res = Some(Value::Bool(false));
-                }
-            }
+/// The least (`keep` = Less) or greatest argument, each compared as a
+/// whole value, as `fn(a: 'a, @args: 'a) -> 'a` promises.
+fn extremum(args: &[Value], keep: std::cmp::Ordering) -> Option<Value> {
+    let mut res = args.first()?;
+    for v in &args[1..] {
+        if v.partial_cmp(res) == Some(keep) {
+            res = v
         }
-        res
     }
+    Some(res.clone())
 }
 
-type And = CachedArgs<AndEv>;
-
-#[derive(Debug, Default)]
-struct OrEv;
-unit_image_state!(OrEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_or";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res = Some(Value::Bool(false));
-        for v in from.flat_iter() {
-            match v {
-                None => return None,
-                Some(Value::Bool(true)) => {
-                    res = Some(Value::Bool(true));
-                }
-                Some(_) => (),
-            }
-        }
-        res
-    }
+fn fc_min(args: &[Value]) -> Option<Value> {
+    extremum(args, std::cmp::Ordering::Less)
 }
 
-type Or = CachedArgs<OrEv>;
+fn fc_max(args: &[Value]) -> Option<Value> {
+    extremum(args, std::cmp::Ordering::Greater)
+}
+
+fn fc_and(args: &[Value]) -> Option<Value> {
+    Some(Value::Bool(flat(args).all(|v| v == Value::Bool(true))))
+}
+
+fn fc_or(args: &[Value]) -> Option<Value> {
+    Some(Value::Bool(flat(args).any(|v| v == Value::Bool(true))))
+}
+
+crate::fast_builtin!(Sum, SumEv, "core_sum", fc_sum);
+crate::fast_builtin!(Product, ProductEv, "core_product", fc_product);
+crate::fast_builtin!(Divide, DivideEv, "core_divide", fc_divide);
+crate::fast_builtin!(Min, MinEv, "core_min", fc_min);
+crate::fast_builtin!(Max, MaxEv, "core_max", fc_max);
+crate::fast_builtin!(And, AndEv, "core_and", fc_and);
+crate::fast_builtin!(Or, OrEv, "core_or", fc_or);
 
 macro_rules! int_binop {
     ($l:expr, $r:expr, $op:tt) => {
@@ -1757,62 +1586,11 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
     int_shift!(&args[0], &args[1], wrapping_shr)
 }
 
-// CR claude for claude: [structure] Twelve fast-fn builtins in this file repeat one shell
-// (unit struct, unit_image_state!, an EvalCached impl whose eval is fast_eval of the
-// fast fn, a CachedArgs alias): IsErr, ToError, All, BitAnd, BitOr, BitXor, BitNot,
-// Shl, Shr, ArrayLen, MapLen and MapUnion; math.rs's three macros and str's split_fn!
-// generate the same shell. One exported macro here, `fast_builtin!(Ev, Alias, "core_x",
-// fc_x)`, would replace them all. In the same file Take and Skip differ only in their
-// match on n, add_vals/prod_vals/div_vals and the Sum/Product/Divide evals only in the
-// operator, and MinEv/MaxEv only in `<` against `>`. One parameterized copy of each
-// would stop the pairs drifting, as Divide (Stateless) and Sum/Product (Sync) already
-// have. (core-lib-13)
-// 2026-10-07 claude: Sum, Product and Divide share arith_fold now. The fast-builtin shell
-// macro and the Take/Skip and Min/Max pairs stand.
-#[derive(Debug, Default)]
-struct BitAndEv;
-unit_image_state!(BitAndEv);
+crate::fast_builtin!(BitAnd, BitAndEv, "core_bit_and", fc_bit_and);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_and)));
-    const NAME: &str = "core_bit_and";
+crate::fast_builtin!(BitOr, BitOrEv, "core_bit_or", fc_bit_or);
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bit_and, from)
-    }
-}
-
-type BitAnd = CachedArgs<BitAndEv>;
-
-#[derive(Debug, Default)]
-struct BitOrEv;
-unit_image_state!(BitOrEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_or)));
-    const NAME: &str = "core_bit_or";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bit_or, from)
-    }
-}
-
-type BitOr = CachedArgs<BitOrEv>;
-
-#[derive(Debug, Default)]
-struct BitXorEv;
-unit_image_state!(BitXorEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_xor)));
-    const NAME: &str = "core_bit_xor";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bit_xor, from)
-    }
-}
-
-type BitXor = CachedArgs<BitXorEv>;
+crate::fast_builtin!(BitXor, BitXorEv, "core_bit_xor", fc_bit_xor);
 
 fn fc_bit_not(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -1832,50 +1610,11 @@ fn fc_bit_not(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct BitNotEv;
-unit_image_state!(BitNotEv);
+crate::fast_builtin!(BitNot, BitNotEv, "core_bit_not", fc_bit_not);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_not)));
-    const NAME: &str = "core_bit_not";
+crate::fast_builtin!(Shl, ShlEv, "core_shl", fc_shl);
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bit_not, from)
-    }
-}
-
-type BitNot = CachedArgs<BitNotEv>;
-
-#[derive(Debug, Default)]
-struct ShlEv;
-unit_image_state!(ShlEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shl)));
-    const NAME: &str = "core_shl";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_shl, from)
-    }
-}
-
-type Shl = CachedArgs<ShlEv>;
-
-#[derive(Debug, Default)]
-struct ShrEv;
-unit_image_state!(ShrEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shr)));
-    const NAME: &str = "core_shr";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_shr, from)
-    }
-}
-
-type Shr = CachedArgs<ShrEv>;
+crate::fast_builtin!(Shr, ShrEv, "core_shr", fc_shr);
 
 /// Feeds each input value to `pred` and emits it when `pred` returns
 /// `true`. A new input arriving while `pred` is still working replaces
@@ -2512,41 +2251,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 }
 
-#[derive(Debug, Default)]
-struct MeanEv;
-unit_image_state!(MeanEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_mean";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        static TAG: ArcStr = literal!("MeanError");
-        let mut total = 0.;
-        let mut samples = 0;
-        let mut error = None;
-        for v in from.flat_iter() {
-            if let Some(v) = v {
-                match v.cast_to::<f64>() {
-                    Err(e) => error = Some(errf!(TAG, "{e:?}")),
-                    Ok(v) => {
-                        total += v;
-                        samples += 1;
-                    }
-                }
+fn fc_mean(args: &[Value]) -> Option<Value> {
+    static TAG: ArcStr = literal!("MeanError");
+    let mut total = 0.;
+    let mut samples = 0;
+    for v in flat(args) {
+        match v.cast_to::<f64>() {
+            Err(e) => return Some(errf!(TAG, "{e:?}")),
+            Ok(v) => {
+                total += v;
+                samples += 1;
             }
         }
-        if let Some(e) = error {
-            Some(e)
-        } else if samples == 0 {
-            Some(err!(TAG, "mean requires at least one argument"))
-        } else {
-            Some(Value::F64(total / samples as f64))
-        }
     }
+    Some(match samples {
+        0 => err!(TAG, "mean requires at least one argument"),
+        n => Value::F64(total / n as f64),
+    })
 }
 
-type Mean = CachedArgs<MeanEv>;
+crate::fast_builtin!(Mean, MeanEv, "core_mean", fc_mean);
 
 /// The last value, as compared; the output; the argument type when it
 /// holds a reference, which compares by what it names.
@@ -2982,20 +2706,11 @@ macro_rules! printfn {
 printfn!(Print, "core_print", "");
 printfn!(Println, "core_println", "\n");
 
-/// `array::len` — registered here (the array package binds the name)
-/// because core's `Collection` implementation for `Array` needs it.
-#[derive(Debug, Default)]
-struct ArrayLenEv;
-unit_image_state!(ArrayLenEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(array_len)));
-    const NAME: &str = "core_array_len";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, array_len, from)
-    }
-}
+crate::fast_builtin!(
+    /// `array::len` — registered here (the array package binds the name)
+    /// because core's `Collection` implementation for `Array` needs it.
+    ArrayLen, ArrayLenEv, "core_array_len", array_len
+);
 
 fn array_len(args: &[Value]) -> Option<Value> {
     match args {
@@ -3004,22 +2719,11 @@ fn array_len(args: &[Value]) -> Option<Value> {
     }
 }
 
-type ArrayLen = CachedArgs<ArrayLenEv>;
-
-/// `map::len` — registered here for the `Collection` implementation
-/// for `Map`; the map package binds the name.
-#[derive(Debug, Default)]
-struct MapLenEv;
-unit_image_state!(MapLenEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(map_len)));
-    const NAME: &str = "core_map_len";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, map_len, from)
-    }
-}
+crate::fast_builtin!(
+    /// `map::len` — registered here for the `Collection` implementation
+    /// for `Map`; the map package binds the name.
+    MapLen, MapLenEv, "core_map_len", map_len
+);
 
 fn map_len(args: &[Value]) -> Option<Value> {
     match args {
@@ -3027,8 +2731,6 @@ fn map_len(args: &[Value]) -> Option<Value> {
         _ => None,
     }
 }
-
-type MapLen = CachedArgs<MapLenEv>;
 
 /// `map::union` — the union of two maps, the second's value on a key in
 /// both. In core for `Collection::flat_map` over `Map`.
@@ -3044,20 +2746,7 @@ fn fc_map_union(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct MapUnionEv;
-unit_image_state!(MapUnionEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_map_union)));
-    const NAME: &str = "core_map_union";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_map_union, from)
-    }
-}
-
-type MapUnion = CachedArgs<MapUnionEv>;
+crate::fast_builtin!(MapUnion, MapUnionEv, "core_map_union", fc_map_union);
 
 graphix_derive::defpackage! {
     builtins => [

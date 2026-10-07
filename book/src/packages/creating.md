@@ -199,15 +199,13 @@ site's return type (`str::parse` casting to its target) declares
 `FastCall::Typed` instead: the same contract, plus the resolved type
 and the environment it resolves in.
 
-One correctness caveat: because the fast function only ever sees
-present values, an `eval` that deliberately *produces on partial
-delivery* — short-circuiting on its first argument while another is
-still undelivered, the way an option-`or` yields its left side without
-waiting for the right — must **not** convert. That short-circuit is
-observable interpreter semantics; routing it through `fast_eval` would
-make the builtin wait for every argument. Most of the standard
-library's pure `Sync` builtins are fast calls; the handful that
-short-circuit stay on plain `eval` for exactly this reason.
+A `CachedArgs` builtin never sees a missing argument: an invocation
+with one undelivered or bottom is bottom before `eval` runs. So every
+pure one can take a fast function, and the standard library's do,
+through `graphix_package_core::fast_builtin!`, which writes the whole
+shell from a name and the function. A builtin that must answer before
+all its arguments arrive is a raw `Apply` (below), not an
+`EvalCached`, and has no fast function.
 
 ### The Full-Control Path: `BuiltIn` + `Apply`
 

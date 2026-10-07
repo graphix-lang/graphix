@@ -4,10 +4,10 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
+use graphix_package_core::seam_tick;
 use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::ValArray;
@@ -21,19 +21,7 @@ fn fc_get(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct GetEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get)));
-    const NAME: &str = "map_get";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_get, from)
-    }
-}
-
-type Get = CachedArgs<GetEv>;
+graphix_package_core::fast_builtin!(Get, GetEv, "map_get", fc_get);
 
 fn fc_get_or(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -44,19 +32,7 @@ fn fc_get_or(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct GetOrEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get_or)));
-    const NAME: &str = "map_get_or";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_get_or, from)
-    }
-}
-
-type GetOr = CachedArgs<GetOrEv>;
+graphix_package_core::fast_builtin!(GetOr, GetOrEv, "map_get_or", fc_get_or);
 
 fn fc_insert(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -67,19 +43,7 @@ fn fc_insert(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct InsertEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_insert)));
-    const NAME: &str = "map_insert";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_insert, from)
-    }
-}
-
-type Insert = CachedArgs<InsertEv>;
+graphix_package_core::fast_builtin!(Insert, InsertEv, "map_insert", fc_insert);
 
 fn fc_remove(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -88,19 +52,7 @@ fn fc_remove(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct RemoveEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_remove)));
-    const NAME: &str = "map_remove";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_remove, from)
-    }
-}
-
-type Remove = CachedArgs<RemoveEv>;
+graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove);
 
 #[derive(Debug)]
 struct Iter {
@@ -297,8 +249,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.out = TagValue::phantom();
     }
 }
-
-graphix_package_core::unit_image_state!(GetEv, GetOrEv, InsertEv, RemoveEv);
 
 graphix_derive::defpackage! {
     builtins => [

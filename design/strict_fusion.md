@@ -93,10 +93,10 @@ The stdlib is converted maximally (~110 fast fns across core, array,
 map, list, str, re, hbs, sys::time, sys paths, the json/toml/pack
 writers). What remains is out by rule, not by gap: the partial-delivery
 producers, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
-`hold`/`window`/`group`), the pure aggregates without a fast call
-(`sum`/`min`/`max`/`mean`/`product`/`and`/`or`, `Stateless(None)`), the
-lambda-taking HOFs, effects, and the json/toml/pack readers (async by
-design).
+`hold`/`window`/`group`), the lambda-taking HOFs, effects, and the
+json/toml/pack readers (async by design). The pure aggregates (`sum`/
+`min`/`max`/`mean`/`product`/`and`/`or`) and the pure option builtins
+have fast calls.
 
 ## The `?` delivery queue
 

@@ -276,12 +276,12 @@ run!(tail_stateful_per_iteration, TAIL_STATEFUL_PER_ITERATION, |v: Result<&Value
 ); FuseExpect::None);
 
 // A stateful builtin in a value-position select arm inside native
-// recursion node-walks; each activation owns its `max`.
+// recursion node-walks; each activation owns its `once`.
 const TAIL_STATEFUL_SCALAR: &str = r#"
 {
   let rec f = |n: i64, acc: i64| -> i64 select n {
     i64:0 => acc,
-    _ => f(n - i64:1, acc + max(n))
+    _ => f(n - i64:1, acc + once(n))
   };
   f(i64:10, i64:0)
 }
@@ -1561,13 +1561,13 @@ run!(
 
 const DYNCALL_SITE_IDENTITY_STATE: &str = r#"
 {
-  let f0 = |v: f64| -> f64 mean(v)$;
+  let f0 = |v: f64| -> f64 once(v);
   f0(f0(10.0) + 10.0)
 }
 "#;
 
-// Two call sites of one callee own separate builtin instances: `mean`
-// at the outer site sees 20, not mean(10, 20).
+// Two call sites of one callee own separate builtin instances: `once`
+// at the outer site passes 20, its own first value.
 run!(dyncall_site_identity_state, DYNCALL_SITE_IDENTITY_STATE, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(x)) => *x == 20.0,

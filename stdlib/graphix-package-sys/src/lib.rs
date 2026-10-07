@@ -6,7 +6,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -14,8 +14,7 @@ use graphix_compiler::{
     typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, FireOnce,
-    ProgramArgs, seam_tick,
+    CachedArgsAsync, CachedVals, EvalCachedAsync, FireOnce, ProgramArgs, seam_tick,
 };
 use graphix_rt::GXRt;
 use netidx_core::pack::{Pack, PackError};
@@ -424,9 +423,6 @@ impl EvalCachedAsync for GxTempDirEv {
 
 pub(crate) type GxTempDir = CachedArgsAsync<GxTempDirEv>;
 
-#[derive(Debug, Default)]
-pub(crate) struct TempDirPathEv;
-
 fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Abstract(a) => {
@@ -437,16 +433,7 @@ fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
     }
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_tempdir_path)));
-    const NAME: &str = "sys_tempdir_path";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_tempdir_path, from)
-    }
-}
-
-pub(crate) type TempDirPath = CachedArgs<TempDirPathEv>;
+graphix_package_core::fast_builtin!(pub(crate) TempDirPath, TempDirPathEv, "sys_tempdir_path", fc_tempdir_path);
 
 pub(crate) fn convert_path(path: &Path) -> ArcStr {
     thread_local! {
@@ -459,9 +446,6 @@ pub(crate) fn convert_path(path: &Path) -> ArcStr {
         ArcStr::from(buf.as_str())
     })
 }
-
-#[derive(Debug, Default)]
-pub(crate) struct JoinPathEv;
 
 fn fc_join_path(args: &[Value]) -> Option<Value> {
     let mut parts: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -491,18 +475,9 @@ fn fc_join_path(args: &[Value]) -> Option<Value> {
     })
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join_path)));
-    const NAME: &str = "sys_join_path";
+graphix_package_core::fast_builtin!(pub(crate) JoinPath, JoinPathEv, "sys_join_path", fc_join_path);
 
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_join_path, from)
-    }
-}
-
-pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
-
-graphix_package_core::unit_image_state!(GxTempDirEv, TempDirPathEv, JoinPathEv);
+graphix_package_core::unit_image_state!(GxTempDirEv);
 
 #[derive(Debug)]
 pub(crate) struct Args {

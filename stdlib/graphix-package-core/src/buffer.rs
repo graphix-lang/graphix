@@ -13,20 +13,7 @@ fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesToStringEv;
-crate::unit_image_state!(BytesToStringEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string)));
-    const NAME: &str = "core_bytes_to_string";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_to_string, from)
-    }
-}
-
-pub(crate) type BytesToString = CachedArgs<BytesToStringEv>;
+crate::fast_builtin!(pub(crate) BytesToString, BytesToStringEv, "core_bytes_to_string", fc_bytes_to_string);
 
 fn fc_bytes_to_string_lossy(args: &[Value]) -> Option<Value> {
     let b = fast_get::<Bytes>(args, 0)?;
@@ -54,20 +41,7 @@ fn fc_bytes_from_string(args: &[Value]) -> Option<Value> {
     Some(Value::Bytes(PBytes::new(Bytes::copy_from_slice(s.as_bytes()))))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesFromStringEv;
-crate::unit_image_state!(BytesFromStringEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_string)));
-    const NAME: &str = "core_bytes_from_string";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_from_string, from)
-    }
-}
-
-pub(crate) type BytesFromString = CachedArgs<BytesFromStringEv>;
+crate::fast_builtin!(pub(crate) BytesFromString, BytesFromStringEv, "core_bytes_from_string", fc_bytes_from_string);
 
 fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
     let mut buf = BytesMut::new();
@@ -88,40 +62,14 @@ fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
     Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesConcatEv;
-crate::unit_image_state!(BytesConcatEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_concat)));
-    const NAME: &str = "core_bytes_concat";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_concat, from)
-    }
-}
-
-pub(crate) type BytesConcat = CachedArgs<BytesConcatEv>;
+crate::fast_builtin!(pub(crate) BytesConcat, BytesConcatEv, "core_bytes_concat", fc_bytes_concat);
 
 fn fc_bytes_to_array(args: &[Value]) -> Option<Value> {
     let b = fast_get::<Bytes>(args, 0)?;
     Some(Value::Array(ValArray::from_iter_exact(b.iter().map(|byte| Value::U8(*byte)))))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesToArrayEv;
-crate::unit_image_state!(BytesToArrayEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_array)));
-    const NAME: &str = "core_bytes_to_array";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_to_array, from)
-    }
-}
-
-pub(crate) type BytesToArray = CachedArgs<BytesToArrayEv>;
+crate::fast_builtin!(pub(crate) BytesToArray, BytesToArrayEv, "core_bytes_to_array", fc_bytes_to_array);
 
 fn fc_bytes_from_array(args: &[Value]) -> Option<Value> {
     let arr = match &args[0] {
@@ -138,40 +86,14 @@ fn fc_bytes_from_array(args: &[Value]) -> Option<Value> {
     Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesFromArrayEv;
-crate::unit_image_state!(BytesFromArrayEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_array)));
-    const NAME: &str = "core_bytes_from_array";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_from_array, from)
-    }
-}
-
-pub(crate) type BytesFromArray = CachedArgs<BytesFromArrayEv>;
+crate::fast_builtin!(pub(crate) BytesFromArray, BytesFromArrayEv, "core_bytes_from_array", fc_bytes_from_array);
 
 fn fc_bytes_len(args: &[Value]) -> Option<Value> {
     let b = fast_get::<Bytes>(args, 0)?;
     Some(Value::U64(b.len() as u64))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct BytesLenEv;
-crate::unit_image_state!(BytesLenEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_len)));
-    const NAME: &str = "core_bytes_len";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_bytes_len, from)
-    }
-}
-
-pub(crate) type BytesLen = CachedArgs<BytesLenEv>;
+crate::fast_builtin!(pub(crate) BytesLen, BytesLenEv, "core_bytes_len", fc_bytes_len);
 
 fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     match v {
@@ -238,20 +160,7 @@ fn fc_encode(args: &[Value]) -> Option<Value> {
     Some(Value::Bytes(PBytes::new(buf.freeze())))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct EncodeEv;
-crate::unit_image_state!(EncodeEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_encode)));
-    const NAME: &str = "core_buffer_encode";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_encode, from)
-    }
-}
-
-pub(crate) type BufferEncode = CachedArgs<EncodeEv>;
+crate::fast_builtin!(pub(crate) BufferEncode, EncodeEv, "core_buffer_encode", fc_encode);
 
 /// One decode pass: a cursor over the buffer and the writes it makes,
 /// held until the whole spec decodes.

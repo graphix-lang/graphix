@@ -31,19 +31,12 @@ fn fc_starts_with(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StartsWithEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StartsWithEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_starts_with)));
-    const NAME: &str = "str_starts_with";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_starts_with, from)
-    }
-}
-
-type StartsWith = CachedArgs<StartsWithEv>;
+graphix_package_core::fast_builtin!(
+    StartsWith,
+    StartsWithEv,
+    "str_starts_with",
+    fc_starts_with
+);
 
 fn fc_ends_with(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -54,19 +47,7 @@ fn fc_ends_with(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct EndsWithEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for EndsWithEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_ends_with)));
-    const NAME: &str = "str_ends_with";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_ends_with, from)
-    }
-}
-
-type EndsWith = CachedArgs<EndsWithEv>;
+graphix_package_core::fast_builtin!(EndsWith, EndsWithEv, "str_ends_with", fc_ends_with);
 
 fn fc_contains(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -77,19 +58,7 @@ fn fc_contains(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct ContainsEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_contains)));
-    const NAME: &str = "str_contains";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_contains, from)
-    }
-}
-
-type Contains = CachedArgs<ContainsEv>;
+graphix_package_core::fast_builtin!(Contains, ContainsEv, "str_contains", fc_contains);
 
 fn fc_strip_prefix(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -101,19 +70,12 @@ fn fc_strip_prefix(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StripPrefixEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripPrefixEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_prefix)));
-    const NAME: &str = "str_strip_prefix";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_strip_prefix, from)
-    }
-}
-
-type StripPrefix = CachedArgs<StripPrefixEv>;
+graphix_package_core::fast_builtin!(
+    StripPrefix,
+    StripPrefixEv,
+    "str_strip_prefix",
+    fc_strip_prefix
+);
 
 fn fc_strip_suffix(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -125,19 +87,12 @@ fn fc_strip_suffix(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StripSuffixEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripSuffixEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_suffix)));
-    const NAME: &str = "str_strip_suffix";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_strip_suffix, from)
-    }
-}
-
-type StripSuffix = CachedArgs<StripSuffixEv>;
+graphix_package_core::fast_builtin!(
+    StripSuffix,
+    StripSuffixEv,
+    "str_strip_suffix",
+    fc_strip_suffix
+);
 
 fn fc_trim(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -146,19 +101,7 @@ fn fc_trim(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct TrimEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim)));
-    const NAME: &str = "str_trim";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_trim, from)
-    }
-}
-
-type Trim = CachedArgs<TrimEv>;
+graphix_package_core::fast_builtin!(Trim, TrimEv, "str_trim", fc_trim);
 
 fn fc_trim_start(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -167,19 +110,12 @@ fn fc_trim_start(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct TrimStartEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimStartEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_start)));
-    const NAME: &str = "str_trim_start";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_trim_start, from)
-    }
-}
-
-type TrimStart = CachedArgs<TrimStartEv>;
+graphix_package_core::fast_builtin!(
+    TrimStart,
+    TrimStartEv,
+    "str_trim_start",
+    fc_trim_start
+);
 
 fn fc_trim_end(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -188,19 +124,7 @@ fn fc_trim_end(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct TrimEndEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEndEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_end)));
-    const NAME: &str = "str_trim_end";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_trim_end, from)
-    }
-}
-
-type TrimEnd = CachedArgs<TrimEndEv>;
+graphix_package_core::fast_builtin!(TrimEnd, TrimEndEv, "str_trim_end", fc_trim_end);
 
 fn fc_replace(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -211,19 +135,7 @@ fn fc_replace(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct ReplaceEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReplaceEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_replace)));
-    const NAME: &str = "str_replace";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_replace, from)
-    }
-}
-
-type Replace = CachedArgs<ReplaceEv>;
+graphix_package_core::fast_builtin!(Replace, ReplaceEv, "str_replace", fc_replace);
 
 fn fc_dirname(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -245,19 +157,7 @@ fn fc_dirname(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct DirnameEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DirnameEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dirname)));
-    const NAME: &str = "str_dirname";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_dirname, from)
-    }
-}
-
-type Dirname = CachedArgs<DirnameEv>;
+graphix_package_core::fast_builtin!(Dirname, DirnameEv, "str_dirname", fc_dirname);
 
 fn fc_basename(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -269,19 +169,7 @@ fn fc_basename(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct BasenameEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for BasenameEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_basename)));
-    const NAME: &str = "str_basename";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_basename, from)
-    }
-}
-
-type Basename = CachedArgs<BasenameEv>;
+graphix_package_core::fast_builtin!(Basename, BasenameEv, "str_basename", fc_basename);
 
 fn fc_row_col(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -307,19 +195,7 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct RowColEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_row_col)));
-    const NAME: &str = "str_row_col";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_row_col, from)
-    }
-}
-
-type RowCol = CachedArgs<RowColEv>;
+graphix_package_core::fast_builtin!(RowCol, RowColEv, "str_row_col", fc_row_col);
 
 // CR claude for claude: [bug] `buf.is_empty()` stands in for "first part", so the parts
 // after a run of leading empty strings lose their separators: str::join(#sep: ",", "",
@@ -388,19 +264,7 @@ fn fc_join(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringJoinEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringJoinEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join)));
-    const NAME: &str = "str_join";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_join, from)
-    }
-}
-
-type StringJoin = CachedArgs<StringJoinEv>;
+graphix_package_core::fast_builtin!(StringJoin, StringJoinEv, "str_join", fc_join);
 
 fn fc_concat(args: &[Value]) -> Option<Value> {
     thread_local! {
@@ -425,19 +289,12 @@ fn fc_concat(args: &[Value]) -> Option<Value> {
     })
 }
 
-#[derive(Debug, Default)]
-struct StringConcatEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringConcatEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
-    const NAME: &str = "str_concat";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_concat, from)
-    }
-}
-
-type StringConcat = CachedArgs<StringConcatEv>;
+graphix_package_core::fast_builtin!(
+    StringConcat,
+    StringConcatEv,
+    "str_concat",
+    fc_concat
+);
 
 fn build_escape(esc: Value) -> Result<Escape> {
     fn escape_non_printing(c: char) -> bool {
@@ -534,25 +391,7 @@ escape_fn!(StringUnescapeEv, StringUnescape, "str_unescape", fc_unescape, unesca
 // go with it. (collections-str-14)
 macro_rules! split_fn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident) => {
-        #[derive(Debug, Default)]
-        struct $ev;
-
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));
-            const NAME: &str = $builtin;
-
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $fc, from)
-            }
-        }
-
-        type $name = CachedArgs<$ev>;
-
-        graphix_package_core::unit_image_state!($ev);
+        graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
     };
 }
 
@@ -634,19 +473,12 @@ fn fc_split_escaped(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringSplitEscapedEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitEscapedEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_escaped)));
-    const NAME: &str = "str_split_escaped";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_split_escaped, from)
-    }
-}
-
-type StringSplitEscaped = CachedArgs<StringSplitEscapedEv>;
+graphix_package_core::fast_builtin!(
+    StringSplitEscaped,
+    StringSplitEscapedEv,
+    "str_split_escaped",
+    fc_split_escaped
+);
 
 fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitNEscError");
@@ -670,19 +502,12 @@ fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringSplitNEscapedEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitNEscapedEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_splitn_escaped)));
-    const NAME: &str = "str_splitn_escaped";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_splitn_escaped, from)
-    }
-}
-
-type StringSplitNEscaped = CachedArgs<StringSplitNEscapedEv>;
+graphix_package_core::fast_builtin!(
+    StringSplitNEscaped,
+    StringSplitNEscapedEv,
+    "str_splitn_escaped",
+    fc_splitn_escaped
+);
 
 fn fc_split_once(args: &[Value]) -> Option<Value> {
     let pat = match &args[0] {
@@ -701,19 +526,12 @@ fn fc_split_once(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringSplitOnceEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitOnceEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_once)));
-    const NAME: &str = "str_split_once";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_split_once, from)
-    }
-}
-
-type StringSplitOnce = CachedArgs<StringSplitOnceEv>;
+graphix_package_core::fast_builtin!(
+    StringSplitOnce,
+    StringSplitOnceEv,
+    "str_split_once",
+    fc_split_once
+);
 
 fn fc_rsplit_once(args: &[Value]) -> Option<Value> {
     let pat = match &args[0] {
@@ -732,19 +550,12 @@ fn fc_rsplit_once(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringRSplitOnceEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringRSplitOnceEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rsplit_once)));
-    const NAME: &str = "str_rsplit_once";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_rsplit_once, from)
-    }
-}
-
-type StringRSplitOnce = CachedArgs<StringRSplitOnceEv>;
+graphix_package_core::fast_builtin!(
+    StringRSplitOnce,
+    StringRSplitOnceEv,
+    "str_rsplit_once",
+    fc_rsplit_once
+);
 
 fn fc_to_lower(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -753,19 +564,12 @@ fn fc_to_lower(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringToLowerEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToLowerEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_lower)));
-    const NAME: &str = "str_to_lower";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_to_lower, from)
-    }
-}
-
-type StringToLower = CachedArgs<StringToLowerEv>;
+graphix_package_core::fast_builtin!(
+    StringToLower,
+    StringToLowerEv,
+    "str_to_lower",
+    fc_to_lower
+);
 
 fn fc_to_upper(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -774,19 +578,12 @@ fn fc_to_upper(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct StringToUpperEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToUpperEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_upper)));
-    const NAME: &str = "str_to_upper";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_to_upper, from)
-    }
-}
-
-type StringToUpper = CachedArgs<StringToUpperEv>;
+graphix_package_core::fast_builtin!(
+    StringToUpper,
+    StringToUpperEv,
+    "str_to_upper",
+    fc_to_upper
+);
 
 fn fc_sprintf(args: &[Value]) -> Option<Value> {
     match args {
@@ -801,31 +598,9 @@ fn fc_sprintf(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct SprintfEv;
+graphix_package_core::fast_builtin!(Sprintf, SprintfEv, "str_sprintf", fc_sprintf);
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SprintfEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sprintf)));
-    const NAME: &str = "str_sprintf";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_sprintf, from)
-    }
-}
-
-type Sprintf = CachedArgs<SprintfEv>;
-
-#[derive(Debug, Default)]
-struct LenEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(str_len)));
-    const NAME: &str = "str_len";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, str_len, from)
-    }
-}
+graphix_package_core::fast_builtin!(Len, LenEv, "str_len", str_len);
 
 fn str_len(args: &[Value]) -> Option<Value> {
     match args {
@@ -833,8 +608,6 @@ fn str_len(args: &[Value]) -> Option<Value> {
         _ => None,
     }
 }
-
-type Len = CachedArgs<LenEv>;
 
 fn fc_sub(args: &[Value]) -> Option<Value> {
     match args {
@@ -858,19 +631,7 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct SubEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sub)));
-    const NAME: &str = "str_sub";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_sub, from)
-    }
-}
-
-type Sub = CachedArgs<SubEv>;
+graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
 fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
@@ -944,32 +705,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
 }
 
 type Parse = CachedArgs<ParseEv>;
-
-graphix_package_core::unit_image_state!(
-    StartsWithEv,
-    EndsWithEv,
-    ContainsEv,
-    StripPrefixEv,
-    StripSuffixEv,
-    TrimEv,
-    TrimStartEv,
-    TrimEndEv,
-    ReplaceEv,
-    DirnameEv,
-    BasenameEv,
-    RowColEv,
-    StringJoinEv,
-    StringConcatEv,
-    StringSplitEscapedEv,
-    StringSplitNEscapedEv,
-    StringSplitOnceEv,
-    StringRSplitOnceEv,
-    StringToLowerEv,
-    StringToUpperEv,
-    SprintfEv,
-    LenEv,
-    SubEv,
-);
 
 graphix_derive::defpackage! {
     builtins => [

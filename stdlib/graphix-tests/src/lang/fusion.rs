@@ -72,11 +72,11 @@ async fn load_qop_unwraps_result() -> Result<()> {
 
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
-async fn load_variadic_node_walks() -> Result<()> {
-    // A variadic builtin call node-walks; the value is unchanged.
+async fn load_variadic_fuses() -> Result<()> {
+    // A variadic builtin with a fast call fuses like any other.
     let (v, (_, inv)) = load_and_count("and(true, true, false)").await?;
     assert_eq!(v, Value::Bool(false));
-    assert!(inv == 0, "strict fusion: the variadic DynCall path must node-walk");
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — the variadic fast call didn't run via JIT");
     Ok(())
 }
 

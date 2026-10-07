@@ -199,7 +199,7 @@ run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
         _ => false,
     }
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const MAX_VALUE_LEVEL: &str = r#"
    max([1, 9], [3, 4])
@@ -210,7 +210,7 @@ run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
         _ => false,
     }
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
@@ -219,7 +219,7 @@ const MIN: &str = r#"
 run!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
@@ -228,7 +228,7 @@ const MAX: &str = r#"
 run!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const AND: &str = r#"
 {
@@ -251,7 +251,7 @@ const OR: &str = r#"
 run!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 const INDEX: &str = r#"
 {

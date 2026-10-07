@@ -1,92 +1,44 @@
 use arcstr::ArcStr;
-use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
+use graphix_compiler::errf;
 use netidx_value::Value;
 
-use crate::{CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
+use crate::fast_get;
 
 /// Variant tag for the catchable error `math::clamp` returns on an
 /// invalid range (`Error<`ClampError(string)>`).
 static CLAMP_ERR_TAG: ArcStr = arcstr::literal!("ClampError");
 
-macro_rules! unary_f64 {
-    ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-        $crate::unit_image_state!($ev);
+/// A math builtin over f64 arguments: each `$x` read in order, `$body`
+/// the result.
+macro_rules! f64_fn {
+    ($ev:ident, $ty:ident, $name:literal, |$($x:ident),+| $body:expr) => {
+        crate::fast_builtin!(pub(crate) $ty, $ev, $name, $ev::fast);
+
         impl $ev {
             fn fast(args: &[Value]) -> Option<Value> {
-                let x = fast_get::<f64>(args, 0)?;
-                Some(Value::F64(x.$op()))
+                let mut args = args.iter();
+                $(let $x = args.next()?.clone().cast_to::<f64>().ok()?;)+
+                Some($body)
             }
         }
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
-            const NAME: &str = $name;
+    };
+}
 
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $ev::fast, from)
-            }
-        }
-        pub(crate) type $ty = CachedArgs<$ev>;
+macro_rules! unary_f64 {
+    ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
+        f64_fn!($ev, $ty, $name, |x| Value::F64(x.$op()));
     };
 }
 
 macro_rules! binary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-        $crate::unit_image_state!($ev);
-        impl $ev {
-            fn fast(args: &[Value]) -> Option<Value> {
-                let x = fast_get::<f64>(args, 0)?;
-                let y = fast_get::<f64>(args, 1)?;
-                Some(Value::F64(x.$op(y)))
-            }
-        }
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
-            const NAME: &str = $name;
-
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $ev::fast, from)
-            }
-        }
-        pub(crate) type $ty = CachedArgs<$ev>;
+        f64_fn!($ev, $ty, $name, |x, y| Value::F64(x.$op(y)));
     };
 }
 
 macro_rules! unary_f64_pred {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-        $crate::unit_image_state!($ev);
-        impl $ev {
-            fn fast(args: &[Value]) -> Option<Value> {
-                let x = fast_get::<f64>(args, 0)?;
-                Some(Value::Bool(x.$op()))
-            }
-        }
-        impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
-            const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($ev::fast)));
-            const NAME: &str = $name;
-
-            fn eval(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &CachedVals,
-            ) -> Option<Value> {
-                fast_eval(ctx, $ev::fast, from)
-            }
-        }
-        pub(crate) type $ty = CachedArgs<$ev>;
+        f64_fn!($ev, $ty, $name, |x| Value::Bool(x.$op()));
     };
 }
 
@@ -147,18 +99,7 @@ fn fc_clamp(args: &[Value]) -> Option<Value> {
     Some(Value::F64(x.clamp(lo, hi)))
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct MathClampEv;
-crate::unit_image_state!(MathClampEv);
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_clamp)));
-    const NAME: &str = "core_math_clamp";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_clamp, from)
-    }
-}
-pub(crate) type MathClamp = CachedArgs<MathClampEv>;
+crate::fast_builtin!(pub(crate) MathClamp, MathClampEv, "core_math_clamp", fc_clamp);
 
 unary_f64_pred!(MathIsNanEv, MathIsNan, "core_math_is_nan", is_nan);
 unary_f64_pred!(MathIsFiniteEv, MathIsFinite, "core_math_is_finite", is_finite);

@@ -6,10 +6,9 @@ use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use chrono::Utc;
-use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
+use graphix_compiler::errf;
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, ReadFormat, ReadInput,
-    TypedRead, is_struct,
+    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, TypedRead, is_struct,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -137,9 +136,6 @@ impl ReadFormat for Toml {
 
 type TomlRead = CachedArgsAsync<TypedRead<Toml>>;
 
-#[derive(Debug, Default)]
-struct TomlWriteStrEv;
-
 /// `[pretty, value]` as TOML, or the error to answer with.
 fn encode(args: &[Value]) -> Option<Result<String, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
@@ -159,23 +155,12 @@ fn fc_write_str(args: &[Value]) -> Option<Value> {
     Some(encode(args)?.map_or_else(|e| e, |s| Value::String(ArcStr::from(s.as_str()))))
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
-    const NAME: &str = "toml_write_str";
-
-    fn eval(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_write_str, cached)
-    }
-}
-
-type TomlWriteStr = CachedArgs<TomlWriteStrEv>;
-
-#[derive(Debug, Default)]
-struct TomlWriteBytesEv;
+graphix_package_core::fast_builtin!(
+    TomlWriteStr,
+    TomlWriteStrEv,
+    "toml_write_str",
+    fc_write_str
+);
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     Some(
@@ -186,22 +171,12 @@ fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     )
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
-    const NAME: &str = "toml_write_bytes";
-
-    fn eval(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
-    }
-}
-
-type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
-
-graphix_package_core::unit_image_state!(TomlWriteStrEv, TomlWriteBytesEv);
+graphix_package_core::fast_builtin!(
+    TomlWriteBytes,
+    TomlWriteBytesEv,
+    "toml_write_bytes",
+    fc_write_bytes
+);
 
 graphix_derive::defpackage! {
     builtins => [

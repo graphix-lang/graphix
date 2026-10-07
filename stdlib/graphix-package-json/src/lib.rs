@@ -5,10 +5,9 @@
 use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use graphix_compiler::{ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
+use graphix_compiler::errf;
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, EvalCached, ReadFormat, ReadInput,
-    TypedRead, is_struct,
+    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, TypedRead, is_struct,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -196,9 +195,6 @@ impl ReadFormat for Json {
 
 type JsonRead = CachedArgsAsync<TypedRead<Json>>;
 
-#[derive(Debug, Default)]
-struct JsonWriteStrEv;
-
 /// `[pretty, value]` as JSON, or the error to answer with.
 fn encode(args: &[Value]) -> Option<Result<LPooled<Vec<u8>>, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
@@ -223,23 +219,12 @@ fn fc_write_str(args: &[Value]) -> Option<Value> {
     ))
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
-    const NAME: &str = "json_write_str";
-
-    fn eval(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_write_str, cached)
-    }
-}
-
-type JsonWriteStr = CachedArgs<JsonWriteStrEv>;
-
-#[derive(Debug, Default)]
-struct JsonWriteBytesEv;
+graphix_package_core::fast_builtin!(
+    JsonWriteStr,
+    JsonWriteStrEv,
+    "json_write_str",
+    fc_write_str
+);
 
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     Some(encode(args)?.map_or_else(
@@ -248,22 +233,12 @@ fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     ))
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
-    const NAME: &str = "json_write_bytes";
-
-    fn eval(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
-    }
-}
-
-type JsonWriteBytes = CachedArgs<JsonWriteBytesEv>;
-
-graphix_package_core::unit_image_state!(JsonWriteStrEv, JsonWriteBytesEv);
+graphix_package_core::fast_builtin!(
+    JsonWriteBytes,
+    JsonWriteBytesEv,
+    "json_write_bytes",
+    fc_write_bytes
+);
 
 graphix_derive::defpackage! {
     builtins => [

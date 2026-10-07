@@ -4,12 +4,9 @@
 )]
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
-use graphix_compiler::{
-    ExecCtx, FastCall, Rt, UserEvent, effects::Effect, env::Env, errf,
-};
+use graphix_compiler::{env::Env, errf};
 use graphix_package_core::{
-    CachedArgs, CachedArgsAsync, CachedVals, CastTarget, EvalCached, ReadFormat,
-    TypedRead,
+    CachedArgsAsync, CachedVals, CastTarget, ReadFormat, TypedRead,
 };
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, ValArray, Value};
@@ -49,9 +46,6 @@ impl ReadFormat for Packed {
 
 type PackRead = CachedArgsAsync<TypedRead<Packed>>;
 
-#[derive(Debug, Default)]
-struct PackWriteBytesEv;
-
 fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     let v = args.first()?;
     let len = v.encoded_len();
@@ -62,22 +56,12 @@ fn fc_write_bytes(args: &[Value]) -> Option<Value> {
     })
 }
 
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
-    const NAME: &str = "pack_write_bytes";
-
-    fn eval(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        cached: &CachedVals,
-    ) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
-    }
-}
-
-type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
-
-graphix_package_core::unit_image_state!(PackWriteBytesEv);
+graphix_package_core::fast_builtin!(
+    PackWriteBytes,
+    PackWriteBytesEv,
+    "pack_write_bytes",
+    fc_write_bytes
+);
 
 graphix_derive::defpackage! {
     builtins => [

@@ -5,8 +5,8 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, LambdaId, Node, Refs, Rt,
-    Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope,
+    TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -14,7 +14,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value, sort_values,
+    CachedArgs, CachedVals, EvalCached, seam_tick, seam_value, sort_values,
 };
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
@@ -35,19 +35,7 @@ fn fc_concat(args: &[Value]) -> Option<Value> {
     Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
 }
 
-#[derive(Debug, Default)]
-struct ConcatEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
-    const NAME: &str = "array_concat";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_concat, from)
-    }
-}
-
-type Concat = CachedArgs<ConcatEv>;
+graphix_package_core::fast_builtin!(Concat, ConcatEv, "array_concat", fc_concat);
 
 fn fc_push_back(args: &[Value]) -> Option<Value> {
     match args {
@@ -71,19 +59,12 @@ fn fc_push_back(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct PushBackEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_back)));
-    const NAME: &str = "array_push_back";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_push_back, from)
-    }
-}
-
-type PushBack = CachedArgs<PushBackEv>;
+graphix_package_core::fast_builtin!(
+    PushBack,
+    PushBackEv,
+    "array_push_back",
+    fc_push_back
+);
 
 fn fc_push_front(args: &[Value]) -> Option<Value> {
     match args {
@@ -97,19 +78,12 @@ fn fc_push_front(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct PushFrontEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_front)));
-    const NAME: &str = "array_push_front";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_push_front, from)
-    }
-}
-
-type PushFront = CachedArgs<PushFrontEv>;
+graphix_package_core::fast_builtin!(
+    PushFront,
+    PushFrontEv,
+    "array_push_front",
+    fc_push_front
+);
 
 #[derive(Debug, Default, netidx_derive::Pack)]
 struct WindowEv(SmallVec<[Value; 32]>);
@@ -187,19 +161,7 @@ fn fc_flatten(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct FlattenEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_flatten)));
-    const NAME: &str = "array_flatten";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_flatten, from)
-    }
-}
-
-type Flatten = CachedArgs<FlattenEv>;
+graphix_package_core::fast_builtin!(Flatten, FlattenEv, "array_flatten", fc_flatten);
 
 fn fc_sort(args: &[Value]) -> Option<Value> {
     match args {
@@ -211,19 +173,7 @@ fn fc_sort(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct SortEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sort)));
-    const NAME: &str = "array_sort";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(ctx, fc_sort, from)
-    }
-}
-
-type Sort = CachedArgs<SortEv>;
+graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort);
 
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -252,19 +202,7 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct DedupEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dedup)));
-    const NAME: &str = "array_dedup";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_dedup, from)
-    }
-}
-
-type Dedup = CachedArgs<DedupEv>;
+graphix_package_core::fast_builtin!(Dedup, DedupEv, "array_dedup", fc_dedup);
 
 fn fc_enumerate(args: &[Value]) -> Option<Value> {
     match &args[0] {
@@ -275,19 +213,12 @@ fn fc_enumerate(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct EnumerateEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_enumerate)));
-    const NAME: &str = "array_enumerate";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_enumerate, from)
-    }
-}
-
-type Enumerate = CachedArgs<EnumerateEv>;
+graphix_package_core::fast_builtin!(
+    Enumerate,
+    EnumerateEv,
+    "array_enumerate",
+    fc_enumerate
+);
 
 fn fc_zip(args: &[Value]) -> Option<Value> {
     match args {
@@ -300,19 +231,7 @@ fn fc_zip(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct ZipEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_zip)));
-    const NAME: &str = "array_zip";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_zip, from)
-    }
-}
-
-type Zip = CachedArgs<ZipEv>;
+graphix_package_core::fast_builtin!(Zip, ZipEv, "array_zip", fc_zip);
 
 fn fc_unzip(args: &[Value]) -> Option<Value> {
     match args {
@@ -338,19 +257,7 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct UnzipEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
-    const NAME: &str = "array_unzip";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_unzip, from)
-    }
-}
-
-type Unzip = CachedArgs<UnzipEv>;
+graphix_package_core::fast_builtin!(Unzip, UnzipEv, "array_unzip", fc_unzip);
 
 #[derive(Debug)]
 struct Group<R: Rt, E: UserEvent> {
@@ -745,19 +652,7 @@ fn fc_iota(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct IotaEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_iota)));
-    const NAME: &str = "array_iota";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_iota, from)
-    }
-}
-
-type Iota = CachedArgs<IotaEv>;
+graphix_package_core::fast_builtin!(Iota, IotaEv, "array_iota", fc_iota);
 
 fn fc_rotate(args: &[Value]) -> Option<Value> {
     match args {
@@ -775,33 +670,7 @@ fn fc_rotate(args: &[Value]) -> Option<Value> {
     }
 }
 
-#[derive(Debug, Default)]
-struct RotateEv;
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for RotateEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rotate)));
-    const NAME: &str = "array_rotate";
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(ctx, fc_rotate, from)
-    }
-}
-
-type Rotate = CachedArgs<RotateEv>;
-
-graphix_package_core::unit_image_state!(
-    ConcatEv,
-    PushBackEv,
-    PushFrontEv,
-    FlattenEv,
-    SortEv,
-    DedupEv,
-    EnumerateEv,
-    ZipEv,
-    UnzipEv,
-    IotaEv,
-    RotateEv,
-);
+graphix_package_core::fast_builtin!(Rotate, RotateEv, "array_rotate", fc_rotate);
 
 graphix_derive::defpackage! {
     builtins => [
