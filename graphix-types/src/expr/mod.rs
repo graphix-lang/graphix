@@ -193,6 +193,14 @@ pub struct Decorations {
     pub attrs: Arc<[Attr]>,
 }
 
+/// One accessor of a place, from the root outward.
+pub enum PlaceAccess<'a> {
+    Index(&'a Expr),
+    Tuple(usize),
+    Field(&'a Name),
+    Key(&'a Expr),
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TypeDefExpr {
@@ -1409,6 +1417,49 @@ impl Expr {
             dec: None,
             str_form: Default::default(),
             end: Default::default(),
+        }
+    }
+
+    /// This expression without its grouping parentheses.
+    pub fn unparen(&self) -> &Expr {
+        let mut e = self;
+        while let ExprKind::ExplicitParens(inner) = &e.kind {
+            e = inner;
+        }
+        e
+    }
+
+    /// This expression as a place: the expression it is reached from
+    /// (a variable or a dereference) and the accessors from there, root
+    /// first, grouping parentheses removed at every step. A bare
+    /// variable is a place with no accessors; anything else is none.
+    pub fn place(&self) -> Option<(&Expr, SmallVec<[PlaceAccess<'_>; 4]>)> {
+        let mut steps: SmallVec<[PlaceAccess<'_>; 4]> = SmallVec::new();
+        let mut cur = self.unparen();
+        loop {
+            cur = match &cur.kind {
+                ExprKind::ArrayRef { source, i } => {
+                    steps.push(PlaceAccess::Index(i));
+                    source.unparen()
+                }
+                ExprKind::TupleRef { source, field } => {
+                    steps.push(PlaceAccess::Tuple(*field));
+                    source.unparen()
+                }
+                ExprKind::StructRef { source, field } => {
+                    steps.push(PlaceAccess::Field(field));
+                    source.unparen()
+                }
+                ExprKind::MapRef { source, key } => {
+                    steps.push(PlaceAccess::Key(key));
+                    source.unparen()
+                }
+                ExprKind::Ref { .. } | ExprKind::Deref(_) => {
+                    steps.reverse();
+                    return Some((cur, steps));
+                }
+                _ => return None,
+            }
         }
     }
 

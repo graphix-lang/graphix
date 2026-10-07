@@ -13,7 +13,7 @@ use crate::{
     compiler::compile,
     dbgenv,
     env::Env,
-    expr::{self, At, Expr, ExprId, ExprKind, ModPath},
+    expr::{self, At, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
     format_with_flags,
     fusion::{
         emit::{BodyCx, CompiledExpr, emit_ref_node},
@@ -117,7 +117,7 @@ fn builtin_binding<R: Rt, E: UserEvent>(
     value: &Expr,
 ) -> Option<BuiltinBindInfo> {
     let (Some(l), ExprKind::Lambda(lam), Type::Fn(typ)) =
-        (lambda_value(node), &unparen(value).kind, node.typ())
+        (lambda_value(node), &value.unparen().kind, node.typ())
     else {
         return None;
     };
@@ -201,7 +201,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
-            if !matches!(unparen(value).kind, ExprKind::Lambda(_)) {
+            if !matches!(value.unparen().kind, ExprKind::Lambda(_)) {
                 bailat!(spec, "let rec may only be used for lambdas")
             }
             // a name for the definition's scheme: it lowers nothing it binds
@@ -958,14 +958,6 @@ fn lambda_value<R: Rt, E: UserEvent>(
     }
 }
 
-/// `e` without its grouping parentheses.
-fn unparen(mut e: &Expr) -> &Expr {
-    while let ExprKind::ExplicitParens(inner) = &e.kind {
-        e = inner;
-    }
-    e
-}
-
 /// Where a place resolved to this cycle.
 struct Address<'a> {
     /// The binding at the bottom of the reference chain.
@@ -1028,35 +1020,23 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     /// The accessor chain of `expr` down to a variable or a
-    /// dereference, root first; `None` for anything else.
+    /// dereference, root first; `None` for anything else, a bare
+    /// variable included.
     fn of(expr: &Expr) -> Option<(Expr, Vec<PlaceSpec>)> {
-        let mut steps = vec![];
-        let mut cur = unparen(expr);
-        loop {
-            match &cur.kind {
-                ExprKind::ArrayRef { source, i } => {
-                    steps.push(PlaceSpec::Index((**i).clone()));
-                    cur = unparen(source);
-                }
-                ExprKind::TupleRef { source, field } => {
-                    steps.push(PlaceSpec::Tuple(*field));
-                    cur = unparen(source);
-                }
-                ExprKind::StructRef { source, field } => {
-                    steps.push(PlaceSpec::Field(field.clone()));
-                    cur = unparen(source);
-                }
-                ExprKind::MapRef { source, key } => {
-                    steps.push(PlaceSpec::Key((**key).clone()));
-                    cur = unparen(source);
-                }
-                ExprKind::Ref { .. } | ExprKind::Deref(_) if !steps.is_empty() => {
-                    steps.reverse();
-                    return Some((cur.clone(), steps));
-                }
-                _ => return None,
-            }
+        let (root, steps) = expr.place()?;
+        if steps.is_empty() {
+            return None;
         }
+        let specs = steps
+            .into_iter()
+            .map(|s| match s {
+                PlaceAccess::Index(i) => PlaceSpec::Index(i.clone()),
+                PlaceAccess::Tuple(f) => PlaceSpec::Tuple(f),
+                PlaceAccess::Field(f) => PlaceSpec::Field(f.clone()),
+                PlaceAccess::Key(k) => PlaceSpec::Key(k.clone()),
+            })
+            .collect();
+        Some((root.clone(), specs))
     }
 
     fn compile(
@@ -1283,7 +1263,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 )
             }
             None => {
-                let child = compile(ctx, flags, unparen(expr).clone(), scope, top_id)?;
+                let child = compile(ctx, flags, expr.unparen().clone(), scope, top_id)?;
                 let named = match (&*child as &dyn Any).downcast_ref::<Ref>() {
                     Some(c) => {
                         ctx.env.byref_chain.insert(id, c.id);

@@ -280,6 +280,30 @@ run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
+// A module declared in a seq body is a scope of its own: the seq's
+// rewrite and its catch refusal do not reach into its file.
+run!(
+    seq_module_is_its_own_scope,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(29))),
+    "/test.gx" => r#"
+let x = 100;
+let t = 1;
+let a = seqq t { let f = |y| { mod m2; m2::z + y }; f(1) };
+let b = seq t { let v = select t { _ => { mod m3; m3::z } }; v };
+let result = a + b
+"#,
+    "/test/m2.gx" => r#"
+let x = 7;
+let z = x * 2
+"#,
+    "/test/m3.gx" => r#"
+let z = {
+  catch(e) println("[e]");
+  14
+}
+"#
+    ; FuseExpect::Jit);
+
 // A module's check decides no type the code around it left open: its
 // siblings check concurrently and see each other through interfaces.
 run!(

@@ -131,6 +131,12 @@ wrote sees the old value, and an error in one statement does not
 retract a write a sibling already issued. `until` and `try` are refused
 inside a block.
 
+A declaration (`use`, `type`, `trait`, `impl`, `mod`) is not a step: write
+it in a block with the code that uses it, or outside the seq. An
+attribute on a statement annotates the statement's computation, as it
+would outside a seq (`#[native] let y = x * 2;`); a `try` statement takes
+none.
+
 **`try { steps } with(e) { steps }`** is the sequence's error handling.
 An error raised in the try body transfers control to the with body; see
 [Errors](#errors).
