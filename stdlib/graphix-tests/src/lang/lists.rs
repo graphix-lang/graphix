@@ -1,7 +1,10 @@
 // Native List literals and list-slice patterns (design/list_native.md).
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 
 const LIST_LIT_BASIC: &str = r#"
@@ -13,7 +16,7 @@ run!(list_lit_basic, LIST_LIT_BASIC, |v: Result<&Value>| {
         Ok(v) => matches!(v.clone().cast_to::<[i64; 3]>(), Ok([1, 2, 3])),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_LIT_EMPTY: &str = r#"
   list::len([<>])
@@ -22,7 +25,7 @@ const LIST_LIT_EMPTY: &str = r#"
 run!(list_lit_empty, LIST_LIT_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(0))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const LIST_LIT_NESTED: &str = r#"
 {
@@ -34,7 +37,7 @@ const LIST_LIT_NESTED: &str = r#"
 run!(list_lit_nested, LIST_LIT_NESTED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The canonical ladder: `[<>]` + `[<h, t..>]` is exhaustive and the
 // tail bind is the k-th tail, O(1); fuses end to end.
@@ -49,7 +52,7 @@ const LIST_PAT_SUM: &str = r#"
 run!(list_pat_sum, LIST_PAT_SUM, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Exact-length arms miss on other lengths; anonymous rest `..`.
 const LIST_PAT_SHAPES: &str = r#"
@@ -64,7 +67,7 @@ const LIST_PAT_SHAPES: &str = r#"
 run!(list_pat_shapes, LIST_PAT_SHAPES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(-199))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Guards consult after structure; the @-bind captures the whole list.
 const LIST_PAT_GUARD_AT: &str = r#"
@@ -81,7 +84,7 @@ const LIST_PAT_GUARD_AT: &str = r#"
 run!(list_pat_guard_at, LIST_PAT_GUARD_AT, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(12))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The tail bind shares the spine: it is the k-th tail.
 const LIST_PAT_TAIL: &str = r#"
@@ -94,7 +97,7 @@ const LIST_PAT_TAIL: &str = r#"
 run!(list_pat_tail, LIST_PAT_TAIL, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(2))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const LIST_PAT_NONEXHAUSTIVE: &str = r#"
 {
@@ -104,7 +107,7 @@ const LIST_PAT_NONEXHAUSTIVE: &str = r#"
 "#;
 
 run!(list_pat_nonexhaustive, LIST_PAT_NONEXHAUSTIVE, refused("missing match cases");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 const LIST_PAT_DEAD_WILDCARD: &str = r#"
 {
@@ -114,7 +117,7 @@ const LIST_PAT_DEAD_WILDCARD: &str = r#"
 "#;
 
 run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, refused("unreachable arm");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 // The suffix form is refused for lists: the front is an O(n) walk.
 const LIST_PAT_SUFFIX_REFUSED: &str = r#"
@@ -125,7 +128,7 @@ const LIST_PAT_SUFFIX_REFUSED: &str = r#"
 "#;
 
 run!(list_pat_suffix_refused, LIST_PAT_SUFFIX_REFUSED, refused("list patterns have no suffix form");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 // `list::flat_map` fuses: its callback's List return is an opaque value
 // the extend helper walks.
@@ -142,4 +145,4 @@ run!(list_flat_map_native, LIST_FLAT_MAP_NATIVE, |v: Result<&Value>| {
         Ok(v) => matches!(v.clone().cast_to::<[i64; 4]>(), Ok([1, 2, 2, 3])),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

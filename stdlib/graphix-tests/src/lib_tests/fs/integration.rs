@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 const WRITE_THEN_READ: &str = r#"{
@@ -67,7 +67,7 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
 
 run!(test_write_then_watch_modify, WRITE_THEN_WATCH_MODIFY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const WRITE_BIN_THEN_READ_BIN: &str = r#"{
   let temp = sys::fs::tempdir::create(null)?;

@@ -1,26 +1,29 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 run!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_null, r#"{let v: null = json::read(json::write_str(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_string, r#"{let v: string = json::read(json::write_str("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_array, r#"{
     let arr: Array<i64> = json::read(json::write_str([1, 2, 3])$)?;
@@ -34,7 +37,7 @@ run!(json_array, r#"{
     } else {
         false
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // CR claude for claude: [test-gap] The predicate accepts any two-element array and never
 // looks at x = 42 or y = "hi"; json_struct_cast's x + y would not notice swapped fields
@@ -53,7 +56,7 @@ run!(json_struct, r#"{
     } else {
         false
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(json_read_bytes, r#"{
     let b = json::write_bytes(42)$;
@@ -61,7 +64,7 @@ run!(json_read_bytes, r#"{
     v
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(json_pretty, r#"{
     let compact = json::write_str({a: 1, b: 2})$;
@@ -69,14 +72,14 @@ run!(json_pretty, r#"{
     str::len(pretty) > str::len(compact)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(json_invalid, r#"{
     let r: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("not json{{{");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(json_nested, r#"{
     type Nested = {items: Array<i64>, meta: {count: i64}};
@@ -84,7 +87,7 @@ run!(json_nested, r#"{
     obj
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // json over a tcp stream, read back from the other end.
 // CR claude for claude: [risk] write_exact and shutdown both fire when `client` fires and
@@ -112,7 +115,7 @@ run!(json_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // json over a tcp stream, read back into a nested struct.
 run!(json_stream_nested, r#"{
@@ -132,7 +135,7 @@ run!(json_stream_nested, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A struct round-trip through a json string with a typed read.
 run!(json_struct_cast, r#"{
@@ -143,7 +146,7 @@ run!(json_struct_cast, r#"{
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A nested struct round-trip through a json string.
 run!(json_nested_struct_cast, r#"{
@@ -156,7 +159,7 @@ run!(json_nested_struct_cast, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // json::read without a concrete return type is a compile error.
-run!(json_no_concrete_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
+run!(json_no_concrete_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);

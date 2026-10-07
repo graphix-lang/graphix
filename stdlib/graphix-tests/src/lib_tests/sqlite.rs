@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 // CR claude for claude: [test-gap] This test cannot fail. The block's value is the
@@ -17,7 +17,7 @@ run!(sqlite_open_memory, r#"{
     true
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A typed struct query: exec_batch creates the schema, query reads back
 // structs.
@@ -32,7 +32,7 @@ run!(sqlite_typed_query, r#"{
     (rows[0]$).name == "alice" && (rows[1]$).name == "bob" && (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A raw map query: the same data annotated as Map.
 run!(sqlite_raw_map_query, r#"{
@@ -51,7 +51,7 @@ run!(sqlite_raw_map_query, r#"{
     cast<string>(n0)? == "alice" && cast<string>(n1)? == "bob"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // exec with params, verified via a typed query.
 run!(sqlite_exec_params, r#"{
@@ -62,7 +62,7 @@ run!(sqlite_exec_params, r#"{
     (rows[0]$).id == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(sqlite_transaction, r#"{
     let db = sqlite::open(":memory:")$;
@@ -77,7 +77,7 @@ run!(sqlite_transaction, r#"{
     array::len(rows) == 2
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(sqlite_rollback, r#"{
     let db = sqlite::open(":memory:")$;
@@ -92,7 +92,7 @@ run!(sqlite_rollback, r#"{
     array::len(rows) == 1
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Nullable fields: `[i64, null]` for a column that may be NULL.
 run!(sqlite_nullable_field, r#"{
@@ -110,7 +110,7 @@ run!(sqlite_nullable_field, r#"{
     a && b
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A typed query on an empty table returns an empty array.
 run!(sqlite_empty_result, r#"{
@@ -120,4 +120,4 @@ run!(sqlite_empty_result, r#"{
     array::len(rows) == 0
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

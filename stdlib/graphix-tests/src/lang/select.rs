@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{eval, refused},
+    testing::{FuseExpect, eval, refused},
 };
 use netidx::publisher::Value;
 
@@ -23,7 +23,7 @@ const SELECT0: &str = r#"
 run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LOOPING_SELECT: &str = r#"
 {
@@ -40,7 +40,7 @@ const LOOPING_SELECT: &str = r#"
 run!(looping_select, LOOPING_SELECT, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SELECTSTRUCT: &str = r#"
 {
@@ -56,7 +56,7 @@ const SELECTSTRUCT: &str = r#"
 run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const MATCH_EXHAUST0: &str = r#"
 select 42 {
@@ -66,7 +66,7 @@ select 42 {
 }
 "#;
 
-run!(match_exhaust0, MATCH_EXHAUST0, refused("missing match cases"); graphix_package_core::testing::FuseExpect::None);
+run!(match_exhaust0, MATCH_EXHAUST0, refused("missing match cases"); FuseExpect::None);
 
 const MATCH_EXHAUST1: &str = r#"
 #[native] select 42 {
@@ -79,7 +79,7 @@ const MATCH_EXHAUST1: &str = r#"
 run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NESTEDMATCH0: &str = r#"
 {
@@ -93,7 +93,7 @@ const NESTEDMATCH0: &str = r#"
 run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A partial pattern annotated through an alias of an alias expands the
 // whole chain to the struct.
@@ -110,7 +110,7 @@ const NESTEDMATCH0_ALIAS: &str = r#"
 run!(nestedmatch0_alias, NESTEDMATCH0_ALIAS, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NESTEDMATCH1: &str = r#"
 {
@@ -125,7 +125,7 @@ const NESTEDMATCH1: &str = r#"
 run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NESTEDMATCH2: &str = r#"
 {
@@ -142,7 +142,7 @@ run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
         true
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const NESTEDMATCH3: &str = r#"
 {
@@ -157,7 +157,7 @@ const NESTEDMATCH3: &str = r#"
 run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A missing region input consumed only on a dead arm yields a real
 // value, not bottom.
@@ -387,7 +387,7 @@ const SELECT_SLICE_COVER_SUFFIX: &str = r#"
 
 run!(select_slice_cover_suffix, SELECT_SLICE_COVER_SUFFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(90)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SELECT_SLICE_COVER_PREFIX: &str = r#"
 {
@@ -401,7 +401,7 @@ const SELECT_SLICE_COVER_PREFIX: &str = r#"
 
 run!(select_slice_cover_prefix, SELECT_SLICE_COVER_PREFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(69)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An exact-length ladder under the rest form.
 const SELECT_SLICE_COVER_LADDER: &str = r#"
@@ -417,7 +417,7 @@ const SELECT_SLICE_COVER_LADDER: &str = r#"
 
 run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The pool covers the array member; the null member needs its own arm.
 const SELECT_SLICE_COVER_UNION: &str = r#"
@@ -433,7 +433,7 @@ const SELECT_SLICE_COVER_UNION: &str = r#"
 
 run!(select_slice_cover_union, SELECT_SLICE_COVER_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A hole in the length ladder refuses and the message names it.
 const SELECT_SLICE_HOLE: &str = r#"
@@ -446,7 +446,7 @@ const SELECT_SLICE_HOLE: &str = r#"
 }
 "#;
 
-run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, refused("leave array length 1 uncovered"); graphix_package_core::testing::FuseExpect::None);
+run!(select_slice_hole_rejected, SELECT_SLICE_HOLE, refused("leave array length 1 uncovered"); FuseExpect::None);
 
 // Exact-length arms alone never cover every length.
 const SELECT_SLICE_NO_REST: &str = r#"
@@ -459,7 +459,7 @@ const SELECT_SLICE_NO_REST: &str = r#"
 }
 "#;
 
-run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, refused("cover finitely many lengths"); graphix_package_core::testing::FuseExpect::None);
+run!(select_slice_no_rest_rejected, SELECT_SLICE_NO_REST, refused("cover finitely many lengths"); FuseExpect::None);
 
 // A guarded arm claims no coverage.
 const SELECT_SLICE_GUARDED_REST: &str = r#"
@@ -476,7 +476,7 @@ run!(
     select_slice_guarded_rest_rejected,
     SELECT_SLICE_GUARDED_REST,
     refused("a guarded slice arm cannot establish length");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // A wildcard behind a complete slice ladder is dead.
@@ -495,7 +495,7 @@ run!(
     select_slice_dead_wildcard_rejected,
     SELECT_SLICE_DEAD_WILDCARD,
     refused("unreachable arm");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // A slice arm whose whole length range is taken by earlier arms is dead.
@@ -514,7 +514,7 @@ run!(
     select_slice_dead_shadow_rejected,
     SELECT_SLICE_DEAD_SHADOW,
     refused("every array length this slice pattern can match is covered");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // A trailing wildcard after `true` + `false` is dead.
@@ -533,7 +533,7 @@ run!(
     select_bool_dead_wildcard_rejected,
     SELECT_BOOL_DEAD_WILDCARD,
     refused("unreachable arm");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // A partial ladder keeps its wildcard; a refutable-element arm neither
@@ -552,7 +552,7 @@ run!(
     select_slice_partial_wildcard_live,
     SELECT_SLICE_PARTIAL_WILDCARD_LIVE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(69))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 const SELECT_SLICE_REFUT_THEN_COVER_LIVE: &str = r#"
@@ -570,7 +570,7 @@ run!(
     select_slice_refut_then_cover_live,
     SELECT_SLICE_REFUT_THEN_COVER_LIVE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(-30))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A refutable element pattern claims no coverage.
@@ -588,7 +588,7 @@ run!(
     select_slice_refutable_elem_rejected,
     SELECT_SLICE_REFUTABLE_ELEM,
     refused("refutable element patterns");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // Nested structural select patterns with scalar leaf binds fuse.
@@ -739,7 +739,7 @@ const GATED_WINDOW_FOLD: &str = r#"
 run!(gated_window_fold, GATED_WINDOW_FOLD, |v: Result<&Value>| matches!(
     v,
     Ok(Value::F64(9.0))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A builtin call whose arg is a never()-gated string local fuses.
 const GATED_STRING_BUILTIN: &str = r#"
@@ -762,7 +762,7 @@ const GATED_STRING_BUILTIN: &str = r#"
 run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(8))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const GATED_SCALAR_UNANNOTATED: &str = r#"
 {
@@ -782,7 +782,7 @@ const GATED_SCALAR_UNANNOTATED: &str = r#"
 run!(gated_scalar_unannotated, GATED_SCALAR_UNANNOTATED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(9))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A guarded arm before a bind-all final arm is exhaustive.
 const GUARDED_ARM_THEN_BINDALL: &str = r#"
@@ -795,7 +795,7 @@ const GUARDED_ARM_THEN_BINDALL: &str = r#"
 run!(guarded_arm_then_bindall, GUARDED_ARM_THEN_BINDALL, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A guard must be `bool`.
 const GUARD_STRING: &str = r#"
@@ -806,7 +806,7 @@ const GUARD_STRING: &str = r#"
 "#;
 
 run!(guard_string_rejected, GUARD_STRING, refused("bool does not contain string");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 const GUARD_INT: &str = r#"
 {
@@ -816,7 +816,7 @@ const GUARD_INT: &str = r#"
 "#;
 
 run!(guard_int_rejected, GUARD_INT, refused("bool does not contain i64");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 // A nullable bool is not a bool guard either.
 const GUARD_NULLABLE_BOOL: &str = r#"
@@ -826,7 +826,7 @@ const GUARD_NULLABLE_BOOL: &str = r#"
 }
 "#;
 
-run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, refused("bool does not contain [bool, null]"); graphix_package_core::testing::FuseExpect::None);
+run!(guard_nullable_bool_rejected, GUARD_NULLABLE_BOOL, refused("bool does not contain [bool, null]"); FuseExpect::None);
 
 // An unannotated lambda used as a guard infers a bool return.
 const GUARD_INFERS_BOOL: &str = r#"
@@ -839,7 +839,7 @@ const GUARD_INFERS_BOOL: &str = r#"
 run!(guard_infers_bool, GUARD_INFERS_BOOL, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(0))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The dual shape: the guarded arm names a different tag than the value.
 const GUARDED_OTHER_TAG_THEN_BINDALL: &str = r#"
@@ -853,7 +853,7 @@ run!(
     guarded_other_tag_then_bindall,
     GUARDED_OTHER_TAG_THEN_BINDALL,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A select's result union re-collapses once an arm's `$`-result TVar
@@ -871,7 +871,7 @@ const ARM_UNION_TVAR_COLLAPSE: &str = r#"
 run!(arm_union_tvar_collapse, ARM_UNION_TVAR_COLLAPSE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Bind-all arm types narrow by position: `s` after an unguarded
 // irrefutable arm cannot be null, so it is `string`.
@@ -886,7 +886,7 @@ const BINDALL_NARROWS_BY_POSITION: &str = r#"
 run!(bindall_narrows_by_position, BINDALL_NARROWS_BY_POSITION, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A variant arm with a payload bind narrows the arms after it: the
 // residual reaching `n` cannot be `` `Bad ``.
@@ -903,7 +903,7 @@ const VARIANT_PAYLOAD_ARM_NARROWS: &str = r#"
 run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(45))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The same through a named member and an ignored payload.
 const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
@@ -929,7 +929,7 @@ const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
 run!(variant_ignored_payload_arm_narrows, VARIANT_IGNORED_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A guarded select fires only when an input feeding it fired: count 1
 // on both engines despite an unrelated reactive input in the region.
@@ -944,7 +944,7 @@ const GUARDED_SELECT_FIRING_COUNT: &str = r#"
 
 run!(guarded_select_firing_count, GUARDED_SELECT_FIRING_COUNT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A guard-dep fire emits whether or not the selection changes; a guard
 // that has never produced bottoms the select. m fires per x delivery: 4.
@@ -962,7 +962,7 @@ run!(guarded_select_selection_memory, GUARDED_SELECT_SELECTION_MEMORY, |v: Resul
     &Value,
 >| {
     matches!(v, Ok(Value::I64(4)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The same inside a collection loop: 4.
 const GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY: &str = r#"
@@ -979,7 +979,7 @@ run!(
     guarded_select_in_loop_selection_memory,
     GUARDED_SELECT_IN_LOOP_SELECTION_MEMORY,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Two slots with different stable selections both emit per guard fire: 4.
@@ -996,7 +996,7 @@ run!(
     guarded_select_per_slot_independence,
     GUARDED_SELECT_PER_SLOT_INDEPENDENCE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Across a source resize (1 -> 2 mid-run): 4.
@@ -1016,7 +1016,7 @@ run!(
     guarded_select_slot_table_resize,
     GUARDED_SELECT_SLOT_TABLE_RESIZE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Two loops deep: 4.
@@ -1034,7 +1034,7 @@ run!(
     guarded_select_nested_loop_selection_memory,
     GUARDED_SELECT_NESTED_LOOP_SELECTION_MEMORY,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Four slot pairs with different stable selections: 4.
@@ -1051,7 +1051,7 @@ run!(
     guarded_select_nested_per_pair_independence,
     GUARDED_SELECT_NESTED_PER_PAIR_INDEPENDENCE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Ragged inner lengths plus an outer resize mid-run: 4.
@@ -1071,7 +1071,7 @@ run!(
     guarded_select_nested_ragged_resize,
     GUARDED_SELECT_NESTED_RAGGED_RESIZE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Loop depth 3: 4.
@@ -1089,7 +1089,7 @@ run!(
     guarded_select_triple_nested,
     GUARDED_SELECT_TRIPLE_NESTED,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // In a callee body: 4. At init m has not produced, so the consulted guard
@@ -1106,7 +1106,7 @@ const GUARDED_SELECT_IN_CALLEE: &str = r#"
 
 run!(guarded_select_in_callee, GUARDED_SELECT_IN_CALLEE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // One callee at two call sites with different stable selections:
 // 44 = 4*10 + 4.
@@ -1125,7 +1125,7 @@ run!(
     guarded_select_callee_two_sites,
     GUARDED_SELECT_CALLEE_TWO_SITES,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(44))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A callee called inside a loop: 4.
@@ -1143,7 +1143,7 @@ run!(
     guarded_select_callee_in_loop,
     GUARDED_SELECT_CALLEE_IN_LOOP,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A callee whose own body has a loop-select: 4.
@@ -1161,7 +1161,7 @@ run!(
     guarded_select_callee_internal_loop,
     GUARDED_SELECT_CALLEE_INTERNAL_LOOP,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A callee with an internal loop-select, called from inside a loop: 4.
@@ -1180,7 +1180,7 @@ run!(
     guarded_select_callee_loop_in_loop,
     GUARDED_SELECT_CALLEE_LOOP_IN_LOOP,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Inside a tail-recursive callee: 4.
@@ -1201,7 +1201,7 @@ run!(
     guarded_select_in_tail_recursive_callee,
     GUARDED_SELECT_IN_TAIL_RECURSIVE_CALLEE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(4))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // An arm-local `<-` target persists across the arm's sleep: a wake
@@ -1227,7 +1227,7 @@ run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Same shape with the connect RHS computed by a fold: re-entry sees 6.
 const SELECT_ARM_LOCAL_PERSISTS_FOLD: &str = r#"
@@ -1250,7 +1250,7 @@ run!(select_arm_local_persists_fold, SELECT_ARM_LOCAL_PERSISTS_FOLD, |v: Result<
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A guard reading a capture inside a rec callee's tail select emits per
 // m fire; the init-phantom guard bottoms init: [1, 1, 2].
@@ -1278,7 +1278,7 @@ run!(
             _ => false,
         }
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A guard flip wakes a catch-all arm whose fold callback reads only the
@@ -1307,7 +1307,7 @@ run!(
             _ => false,
         }
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 const SELECT_GUARD_AFTER_TAINTED_INIT: &str = r#"
@@ -1330,7 +1330,7 @@ run!(
     select_guard_after_tainted_init,
     SELECT_GUARD_AFTER_TAINTED_INIT,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(200)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A pattern's inferred type predicate over a recursive type must not
@@ -1352,7 +1352,7 @@ run!(
     select_recursive_type_tuple_arms,
     SELECT_RECURSIVE_TYPE_TUPLE_ARMS,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "other");
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // The shape it was found in: two recursive functions over a recursive
@@ -1386,7 +1386,7 @@ run!(
     select_recursive_adt_chain,
     SELECT_RECURSIVE_ADT_CHAIN,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(_)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A partial struct pattern `{x, ..}` completes from the scrutinee.
@@ -1403,7 +1403,7 @@ run!(
     select_partial_struct,
     SELECT_PARTIAL_STRUCT,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // `y` names the second field of the member; the binder reads "z".
@@ -1423,7 +1423,7 @@ run!(
     select_partial_in_variant,
     SELECT_PARTIAL_IN_VARIANT,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "z");
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 const SELECT_PARTIAL_UNION_MEMBER: &str = r#"
@@ -1438,7 +1438,7 @@ run!(
     select_partial_union_member,
     SELECT_PARTIAL_UNION_MEMBER,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A partial matching several union members must be annotated.
@@ -1457,7 +1457,7 @@ run!(
     |v: Result<&Value>| {
         matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
     };
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // An explicit predicate on a Rust-backed abstract type is a nominal tag
@@ -1476,7 +1476,7 @@ run!(
     select_abstract_predicate,
     SELECT_ABSTRACT_PREDICATE,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) };
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // A union-typed arm plus a never() arm returns the declared union.
@@ -1495,7 +1495,7 @@ run!(
     select_union_return_never_arm,
     SELECT_UNION_RETURN_NEVER_ARM,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42)));
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // The bare-cell face: the produced union carries the signature's own
@@ -1511,7 +1511,7 @@ run!(
     select_union_param_never_arm,
     SELECT_UNION_PARAM_NEVER_ARM,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a");
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A select's type is the union of its arm types; a free tvar arm beside
@@ -1555,7 +1555,7 @@ run!(
         };
         let result = pick(`A(2)) + pick(`A("x"))
     "#;
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 run!(
@@ -1573,7 +1573,7 @@ run!(
         let result = score(`Pair(20, 1)) + score(`One(2))
             + score(`Nil) + score(2.0) + score([1, 2])
     "#;
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Or-patterns
@@ -1584,7 +1584,7 @@ select 2 { 1 | 2 | 3 => "small", _ => "big" }
 
 run!(or_literals, OR_LITERALS, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "small")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const OR_TUPLE_BINDS: &str = r#"
 select (0, 5) { (0, y) | (y, 0) => y, _ => 0 - 1 }
@@ -1661,7 +1661,7 @@ select 1 { 1 | x => 0, _ => 1 }
 "#;
 
 run!(or_same_binds_err, OR_SAME_BINDS_ERR, refused("must bind the same names");
- graphix_package_core::testing::FuseExpect::None);
+ FuseExpect::None);
 
 // Payload binds must have exactly equal types across alternatives. Under
 // an explicit type predicate the rule is what refuses; inferred, the same
@@ -1671,7 +1671,7 @@ select (1, "a") { (i64, string) as (1, y) | (y, "b") => 1, _ => 0 }
 "#;
 
 run!(or_equal_types_err, OR_EQUAL_TYPES_ERR, refused("must bind y at exactly equal types");
- graphix_package_core::testing::FuseExpect::None);
+ FuseExpect::None);
 
 // Dead alternatives are errors, like dead arms.
 const OR_DUP_ALT_ERR: &str = r#"
@@ -1679,14 +1679,14 @@ select 1 { 1 | 1 => 0, _ => 2 }
 "#;
 
 run!(or_dup_alt_err, OR_DUP_ALT_ERR, refused("duplicate of an earlier alternative");
- graphix_package_core::testing::FuseExpect::None);
+ FuseExpect::None);
 
 const OR_DEAD_ALT_ERR: &str = r#"
 select 1 { _ | 1 => 0 }
 "#;
 
 run!(or_dead_alt_err, OR_DEAD_ALT_ERR, refused("already matches anything");
- graphix_package_core::testing::FuseExpect::None);
+ FuseExpect::None);
 
 // Zero-residue: the whole or-select compiles native.
 const OR_NATIVE: &str = r#"
@@ -1697,7 +1697,7 @@ const OR_NATIVE: &str = r#"
 "#;
 
 run!(or_native, OR_NATIVE, |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
-graphix_package_core::testing::FuseExpect::Jit);
+FuseExpect::Jit);
 
 // Owned binds through the or-chain are dropped at arm exit.
 const OR_OWNED_BINDS: &str = r#"
@@ -1709,7 +1709,7 @@ const OR_OWNED_BINDS: &str = r#"
 
 run!(or_owned_binds, OR_OWNED_BINDS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A calling guard on an or-arm runs the guard prologue; on a `C
 // scrutinee no alternative matches and the guard is not consulted.
@@ -1723,7 +1723,7 @@ const OR_GUARD_PROLOGUE: &str = r#"
 
 run!(or_guard_prologue, OR_GUARD_PROLOGUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A scrutinee member whose variant payload is a union is exhausted by
 // per-member arms: `[`P(A), `P(B)]` covers `P([A, B])`; fuses.
@@ -1745,7 +1745,7 @@ run!(
     select_variant_union_payload_exhausts,
     SELECT_VARIANT_UNION_PAYLOAD,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Multi-argument distribution pools through one position: rectangular
@@ -1766,7 +1766,7 @@ run!(
     select_variant_union_rect_exhausts,
     SELECT_VARIANT_UNION_RECT,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A diagonal arm set claims nothing: `P(`A, `Y) matches neither arm.
@@ -1786,7 +1786,7 @@ run!(
     select_variant_union_diagonal_rejected,
     SELECT_VARIANT_UNION_DIAGONAL,
     refused("missing match cases");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // The same through a tuple head.
@@ -1805,7 +1805,7 @@ run!(
     select_tuple_union_member_exhausts,
     SELECT_TUPLE_UNION_MEMBER,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(9))) };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // An @-capture in an or-arm types as the union of its per-alternative
@@ -1830,7 +1830,7 @@ const OR_CAPTURE_UNION: &str = r#"
 
 run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "up")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An enclosing select's pattern binds are facets of one delivery: arm 0
 // handles the key through `ev`, so `k` is spent and the flip to arm 1
@@ -1877,7 +1877,7 @@ run!(
             a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
         _ => false,
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A select over an optional callback `[fn(..), null]` compiles: the
@@ -1914,7 +1914,7 @@ const BOOL_PAIR_LADDER: &str = r#"
 run!(bool_pair_ladder_covers, BOOL_PAIR_LADDER, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(321))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const VARIANT_BOOL_LADDER: &str = r#"
 {
@@ -1930,7 +1930,7 @@ const VARIANT_BOOL_LADDER: &str = r#"
 run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(99))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A wildcard behind a complete bool ladder is dead.
 const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
@@ -1945,7 +1945,7 @@ const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"
 }
 "#;
 
-run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, refused("unreachable arm"); graphix_package_core::testing::FuseExpect::None);
+run!(bool_pair_ladder_dead_tail, BOOL_PAIR_LADDER_DEAD_TAIL, refused("unreachable arm"); FuseExpect::None);
 
 // A destructuring `let`'s siblings are facets of one delivery: arm 0
 // handles the pair through `a`, so `b` is spent.
@@ -1976,7 +1976,7 @@ run!(
             a[0] == Value::I64(1) && a[1] == Value::I64(1) && a[2] == Value::I64(0),
         _ => false,
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // Nested never() arms absorb at typecheck0: the type test below is
@@ -1995,7 +1995,7 @@ const NEVER_ARMS_ABSORB: &str = r#"
 run!(never_arms_absorb, NEVER_ARMS_ABSORB, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // `never<T>()` carries `T` where nothing else fixes the type.
 const NEVER_TYPED: &str = r#"
@@ -2009,7 +2009,7 @@ const NEVER_TYPED: &str = r#"
 run!(never_typed, NEVER_TYPED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // never's arguments stay live: a connect inside them keeps writing.
 const NEVER_ARGS_LIVE: &str = r#"
@@ -2025,7 +2025,7 @@ const NEVER_ARGS_LIVE: &str = r#"
 run!(never_args_live, NEVER_ARGS_LIVE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(3))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A sampled write in an arm keeps the sample as its trigger: `x` is 30
 // at step 6.
@@ -2044,7 +2044,7 @@ const ARM_SAMPLED_WRITE_KEEPS_TRIGGER: &str = r#"
 run!(arm_sampled_write_keeps_trigger, ARM_SAMPLED_WRITE_KEEPS_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(30)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An ungated write is not sampled on the scrutinee: three `Go`
 // deliveries write the sampled counter three times, the constant once.
@@ -2068,7 +2068,7 @@ const ARM_UNGATED_CONST_WRITES_ONCE: &str = r#"
 run!(arm_ungated_const_writes_once, ARM_UNGATED_CONST_WRITES_ONCE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(1)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
 {
@@ -2084,7 +2084,7 @@ const HANDLER_WRITE_ON_ERROR_ONLY: &str = r#"
 run!(handler_write_on_error_only, HANDLER_WRITE_ON_ERROR_ONLY, |v: Result<&Value>| {
     format!("{}", v.unwrap())
         == r#"[[i64:0, "None"], [i64:1, "None"], [i64:2, "None"], [i64:3, "Bad"]]"#
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `~` banks triggers that find `v` absent (three writes); `~!` drops
 // them (one write).
@@ -2106,7 +2106,7 @@ const STRICT_SAMPLE_NO_BANK: &str = r#"
 run!(strict_sample_no_bank, STRICT_SAMPLE_NO_BANK, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(4), Value::I64(1)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A write arm under a scrutinee that starts as `never()` wakes on the
 // first delivery and the nested write fires.
@@ -2138,7 +2138,7 @@ const ARM_WRITE_FROM_NEVER: &str = r#"
 run!(arm_write_from_never, ARM_WRITE_FROM_NEVER, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "Remove this install?",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A pure (skip-sleep) arm over a delayed scrutinee computes on first
 // take.
@@ -2159,7 +2159,7 @@ const SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE: &str = r#"
 run!(skip_sleep_arm_computes_on_first_take, SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAKE, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "CA (tls)",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A scrutinee that went bottom while its select slept is bottom at the
 // wake: x=4 reselects the arm and emits nothing.
@@ -2185,7 +2185,7 @@ run!(wake_stale_bottom_scrutinee, WAKE_STALE_BOTTOM_SCRUTINEE, |v: Result<&Value
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The same through a let inside the arm.
 const WAKE_STALE_BOTTOM_LET: &str = r#"
@@ -2209,7 +2209,7 @@ run!(wake_stale_bottom_let, WAKE_STALE_BOTTOM_LET, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The same through a call argument.
 const WAKE_STALE_BOTTOM_CALL: &str = r#"
@@ -2234,7 +2234,7 @@ run!(wake_stale_bottom_call, WAKE_STALE_BOTTOM_CALL, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The same through a collection source.
 const WAKE_STALE_BOTTOM_MAP_SOURCE: &str = r#"
@@ -2258,7 +2258,7 @@ run!(wake_stale_bottom_map_source, WAKE_STALE_BOTTOM_MAP_SOURCE, |v: Result<&Val
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A source back from bottom with no slot firing (the callback ignores
 // its element): the map is present again, so x=1 re-emits the arm.
@@ -2284,7 +2284,7 @@ run!(map_source_recovers_quietly, MAP_SOURCE_RECOVERS_QUIETLY, |v: Result<&Value
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A connect target born `never()` keeps its written value across the
 // arm's sleep: the wake at the last x=1 reads 42.
@@ -2315,7 +2315,7 @@ run!(
             }
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::Jit
+    }; FuseExpect::Jit
 );
 
 // A reference cell born in a sleepable arm delivers the cycle it is
@@ -2330,7 +2330,7 @@ select 1 {
 
 run!(byref_born_in_sleepable_arm, BYREF_BORN_IN_SLEEPABLE_ARM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const BYREF_BORN_IN_FUSED_ARM: &str = r#"
 select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }
@@ -2338,7 +2338,7 @@ select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }
 
 run!(byref_born_in_fused_arm, BYREF_BORN_IN_FUSED_ARM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A `name@ pattern` capture has the type of what the arm matched in the
 // SCRUTINEE, never the type inferred from the pattern: a partial struct
@@ -2565,7 +2565,7 @@ const NULL_LITERAL_ARM_DEAD: &str = r#"
 
 run!(null_literal_arm_dead, NULL_LITERAL_ARM_DEAD, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("unreachable arm"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A nested variant head is a pooled position: two arms that miss
 // `(true, `B)` do not cover the tuple.
@@ -2578,7 +2578,7 @@ const POOL_NESTED_VARIANT_PARTIAL: &str = r#"
 
 run!(pool_nested_variant_partial, POOL_NESTED_VARIANT_PARTIAL, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const POOL_NESTED_VARIANT_COMPLETE: &str = r#"
 {
@@ -2601,7 +2601,7 @@ const POOL_BOOL_IN_UNION: &str = r#"
 
 run!(pool_bool_in_union, POOL_BOOL_IN_UNION, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A tuple pattern of binds is a wildcard only over a tuple scrutinee.
 const TUPLE_ARM_OVER_UNION: &str = r#"
@@ -2613,7 +2613,7 @@ const TUPLE_ARM_OVER_UNION: &str = r#"
 
 run!(tuple_arm_over_union, TUPLE_ARM_OVER_UNION, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Completion picks the member the pattern can match, not the first
 // struct: `{x: ..}` is exhaustive, so it cannot be the member with `a`.
@@ -2638,7 +2638,7 @@ const COMPLETE_TUPLE_AMBIGUOUS: &str = r#"
 
 run!(complete_tuple_ambiguous, COMPLETE_TUPLE_AMBIGUOUS, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Slice arms cover a union of arrays whichever member a type test names.
 const ARRAY_UNION_TYPE_TEST: &str = r#"
@@ -2663,7 +2663,7 @@ const ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL: &str = r#"
 "#;
 
 run!(array_element_test_keeps_residual, ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL, refused("string does not contain [i64, string]");
- graphix_package_core::testing::FuseExpect::None);
+ FuseExpect::None);
 
 const ARRAY_ELEMENT_TEST_RESIDUAL_MIXED: &str = r#"
 {
@@ -2709,7 +2709,7 @@ const ARRAY_LIST_LADDERS: &str = r#"
 
 run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Two members with one runtime form can't be told apart by any test:
 // a tuple and an array, a bare variant and a string, two references,
@@ -2726,7 +2726,7 @@ const SAME_FORM_TUPLE_ARRAY: &str = r#"
 
 run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const SAME_FORM_TAG_STRING: &str = r#"
 {
@@ -2737,7 +2737,7 @@ const SAME_FORM_TAG_STRING: &str = r#"
 
 run!(same_form_tag_string_refused, SAME_FORM_TAG_STRING, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const SAME_FORM_REFERENCES: &str = r#"
 {
@@ -2749,7 +2749,7 @@ const SAME_FORM_REFERENCES: &str = r#"
 
 run!(same_form_references_refused, SAME_FORM_REFERENCES, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
@@ -2763,7 +2763,7 @@ const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 
 run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A compared type and a map key type may hold no two members with one
 // runtime form: `"A" == `A` would be true, and they would be one key.
@@ -2777,7 +2777,7 @@ const SAME_FORM_COMPARE: &str = r#"
 
 run!(same_form_compare_refused, SAME_FORM_COMPARE, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const SAME_FORM_MAP_KEY: &str = r#"
 {
@@ -2789,7 +2789,7 @@ const SAME_FORM_MAP_KEY: &str = r#"
 
 run!(same_form_map_key_refused, SAME_FORM_MAP_KEY, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Members that share a constructor are told apart by their parts, and
 // an empty array of either element type is both.
@@ -2808,7 +2808,7 @@ const SAME_FORM_DISTINCT_PARTS: &str = r#"
 
 run!(same_form_distinct_parts, SAME_FORM_DISTINCT_PARTS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // An or-arm narrows what the later arms see, per alternative.
 const OR_ARM_NARROWS: &str = r#"
@@ -2844,7 +2844,7 @@ const OR_EXPLICIT_UNION_ORDER: &str = r#"
 
 run!(or_explicit_union_order, OR_EXPLICIT_UNION_ORDER, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("variant patterns can't match"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A pattern error is sited at the pattern.
 const PATTERN_ERROR_SITE: &str = r#"select 1 {
@@ -2857,7 +2857,7 @@ run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
         .downcast_ref::<graphix_compiler::expr::ErrorSite>()
         .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 3)),
     Ok(_) => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // An error in a scrutinee or a guard is placed there, not on the select.
 #[tokio::test(flavor = "current_thread")]

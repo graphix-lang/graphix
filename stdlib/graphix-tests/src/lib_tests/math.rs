@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 const SIN_ZERO: &str = "math::sin(f64:0.0)";
@@ -61,7 +61,7 @@ run!(math_atan2, ATAN2, |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true)))
 const CLAMP_INVALID: &str = "is_err(math::clamp(f64:42.0, f64:0.0, f64:-1.0))";
 run!(math_clamp_invalid_errors, CLAMP_INVALID, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CONSTANT_SANITY: &str = "math::tau > math::pi \
       && math::pi > f64:3.14 \

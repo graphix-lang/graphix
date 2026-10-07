@@ -1,12 +1,11 @@
 // Basic language feature tests: bindings, arithmetic, scoping
 
-use crate::init;
-use anyhow::{Result, bail};
-use arcstr::ArcStr;
-use graphix_package_core::{run, testing::refused};
-use graphix_rt::GXEvent;
+use anyhow::Result;
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
-use tokio::sync::mpsc;
 
 const BIND_REF_ARITH: &str = r#"
 {
@@ -59,7 +58,7 @@ const CORE_USE: &str = r#"
 run!(core_use, CORE_USE, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(84)] => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NAME_MODPATH: &str = r#"
 {
@@ -71,7 +70,7 @@ const NAME_MODPATH: &str = r#"
 run!(name_modpath, NAME_MODPATH, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "foo, bar, baz",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STATIC_SCOPE: &str = r#"
 {
@@ -81,7 +80,7 @@ const STATIC_SCOPE: &str = r#"
 }
 "#;
 
-run!(static_scope, STATIC_SCOPE, refused("y not defined"); graphix_package_core::testing::FuseExpect::None);
+run!(static_scope, STATIC_SCOPE, refused("y not defined"); FuseExpect::None);
 
 const UNDEFINED: &str = r#"
 {
@@ -92,7 +91,7 @@ const UNDEFINED: &str = r#"
 }
 "#;
 
-run!(undefined, UNDEFINED, refused("x not defined"); graphix_package_core::testing::FuseExpect::None);
+run!(undefined, UNDEFINED, refused("x not defined"); FuseExpect::None);
 
 // A sync variadic builtin called with no positional args can never fire:
 // a compile error pointing at never().
@@ -103,7 +102,7 @@ const DEAD_VARIADIC_ZERO_ARGS: &str = r#"
 }
 "#;
 
-run!(dead_variadic_zero_args, DEAD_VARIADIC_ZERO_ARGS, refused("calling `str::concat` with no positional arguments can never produce a value"); graphix_package_core::testing::FuseExpect::None);
+run!(dead_variadic_zero_args, DEAD_VARIADIC_ZERO_ARGS, refused("calling `str::concat` with no positional arguments can never produce a value"); FuseExpect::None);
 
 // Labeled args are config, not data: `join(#sep: ",")` is as dead as
 // `concat()`.
@@ -114,7 +113,7 @@ const DEAD_VARIADIC_LABELED_ONLY: &str = r#"
 }
 "#;
 
-run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, refused("calling `str::join` with no positional arguments can never produce a value"); graphix_package_core::testing::FuseExpect::None);
+run!(dead_variadic_labeled_only, DEAD_VARIADIC_LABELED_ONLY, refused("calling `str::join` with no positional arguments can never produce a value"); FuseExpect::None);
 
 // never() stays legal; the binding never fires and the tail still does.
 const NEVER_ZERO_ARGS_OK: &str = r#"
@@ -127,7 +126,7 @@ const NEVER_ZERO_ARGS_OK: &str = r#"
 run!(never_zero_args_ok, NEVER_ZERO_ARGS_OK, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ANY0: &str = r#"
 {
@@ -141,7 +140,7 @@ const ANY0: &str = r#"
 run!(any0, ANY0, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ANY1: &str = r#"
 {
@@ -160,7 +159,7 @@ run!(any1, ANY1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const OR_NEVER: &str = r#"
 {
@@ -172,7 +171,7 @@ const OR_NEVER: &str = r#"
 run!(or_never, OR_NEVER, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const WRAP_OVERFLOW: &str = r#"
 {
@@ -191,7 +190,7 @@ const WRAP_OVERFLOW: &str = r#"
 run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The compact integer types keep their type through every operator,
 // checked and unchecked.
@@ -232,4 +231,4 @@ const MUL_DIV_MOD_LEFT: &str = r#"
 run!(mul_div_mod_left, MUL_DIV_MOD_LEFT, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

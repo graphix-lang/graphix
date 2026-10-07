@@ -1,26 +1,29 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 // Deserialization builtins require a concrete result type at compile time.
 
 // json::read without a concrete return type is a compile error.
-run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
+run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
 
 // toml::read without a concrete return type is a compile error.
-run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
+run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
 
 // pack::read without a concrete return type is a compile error.
 run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| v
-    .is_err(); graphix_package_core::testing::FuseExpect::None);
+    .is_err(); FuseExpect::None);
 
 // str::parse without a concrete return type is a compile error.
-run!(str_parse_no_type, r#"str::parse("42")"#, refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
+run!(str_parse_no_type, r#"str::parse("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
 
 // json::read with a concrete type.
 run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // json::read with a struct type.
 run!(
@@ -30,7 +33,7 @@ run!(
     let v: P = json::read(json::write_str({x: 1, y: "a"})$)?;
     v.x
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }; FuseExpect::Jit);
 
 // Late binding: deserializers passed through higher-order functions.
 
@@ -42,7 +45,7 @@ run!(
     let v: i64 = decoder("42")?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
 
 // A function wrapping a deserializer with an explicit return type.
 run!(
@@ -52,7 +55,7 @@ run!(
     let v: i64 = decode(json::write_str(99)$)?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(99))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(99))) }; FuseExpect::None);
 
 // Multiple calls to the same typed wrapper.
 run!(
@@ -63,7 +66,7 @@ run!(
     let b: i64 = apply(json::read, json::write_str(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; FuseExpect::Jit);
 
 // json + pack through one typed call site over bytes; the error types
 // unify to the superset.
@@ -75,7 +78,7 @@ run!(
     let b: i64 = apply(pack::read, pack::write_bytes(42)$)?;
     a + b
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; FuseExpect::Jit);
 
 // Struct types through a typed wrapper.
 run!(
@@ -86,7 +89,7 @@ run!(
     let p: Point = decode(json::write_str({x: 10, y: 20})$)?;
     p.x + p.y
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(30))) }; FuseExpect::Jit);
 
 // Type propagation through higher-order functions.
 
@@ -103,7 +106,7 @@ run!(
     |v: Result<&Value>| {
         matches!(v, Ok(Value::I64(42)))
     }
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 run!(
     hof_map_json_untyped,
@@ -112,7 +115,7 @@ run!(
     let results = array::map(data, json::read);
     results[0]
 }"#,
-    refused("the type 'b must be fully known here"); graphix_package_core::testing::FuseExpect::None);
+    refused("the type 'b must be fully known here"); FuseExpect::None);
 
 // array::fold: json::read in the fold closure receives its concrete type.
 run!(
@@ -125,7 +128,7 @@ run!(
         ];
         array::fold(data, 0, |acc, s| acc + json::read(s)$)
     }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::Jit);
 
 // array::init: json::read in an unannotated init closure.
 run!(
@@ -136,7 +139,7 @@ run!(
         array::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     results[0]
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::Jit);
 
 // list::init: json::read in an unannotated init closure.
 run!(
@@ -148,7 +151,7 @@ run!(
         list::init(1, |i| -> Result<i64, [`JsonErr(string), `IOErr(string), `InvalidCast(string)]> json::read(s));
     list::head(results)
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(7))) }; FuseExpect::Jit);
 
 // Nested array::map with json::read passed as a bare fn value to the
 // inner map: the annotated result type reaches it through the inner
@@ -163,7 +166,7 @@ run!(
     row[0]$
 }"#,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // core::filter: json::read piped through filter.
 run!(
@@ -173,7 +176,7 @@ run!(
     let v: i64 = filter(json::read(s)$, |x| x > 0);
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::Jit);
 
 // Subscribe type-aware casting.
 
@@ -185,7 +188,7 @@ run!(
     let v: i64 = sys::net::subscribe("/local/typed_sub")?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
 
 // subscribe with Primitive (no cast).
 run!(
@@ -195,7 +198,7 @@ run!(
     let v: Primitive = sys::net::subscribe("/local/prim_sub")?;
     cast<i64>(v)?
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
 
 // subscribe without a type annotation is a compile error.
 run!(
@@ -205,7 +208,7 @@ run!(
     sys::net::subscribe("/local/untyped_sub")
 }"#,
     |v: Result<&Value>| { v.is_err() }
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // RPC client type-aware casting.
 
@@ -222,7 +225,7 @@ run!(
     let v: i64 = sys::net::call("/local/typed_call_rpc", {x: 21})?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::None);
 
 // Publish on_write type-aware casting.
 
@@ -243,7 +246,7 @@ run!(
         } else {
             false
         }
-    }; graphix_package_core::testing::FuseExpect::Jit);
+    }; FuseExpect::Jit);
 
 // RPC with a typed spec and callback.
 
@@ -260,4 +263,4 @@ run!(
     let v: string = sys::net::call("/local/typed_rpc", {name: "graphix", count: 1})?;
     v
 }"#,
-    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hello graphix") }; graphix_package_core::testing::FuseExpect::None);
+    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "hello graphix") }; FuseExpect::None);

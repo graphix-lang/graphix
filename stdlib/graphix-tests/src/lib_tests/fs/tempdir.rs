@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 use std::path::Path;
 
@@ -11,7 +11,7 @@ const TEMPDIR_BASIC: &str = r#"{
 
 run!(test_tempdir_basic, TEMPDIR_BASIC, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WITH_IN: &str = r#"{
   use sys::fs::{self, *};
@@ -22,7 +22,7 @@ const TEMPDIR_WITH_IN: &str = r#"{
 
 run!(test_tempdir_with_in, TEMPDIR_WITH_IN, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WITH_PREFIX: &str = r#"{
   use sys::fs::{self, *};
@@ -42,7 +42,7 @@ run!(test_tempdir_with_prefix, TEMPDIR_WITH_PREFIX, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WITH_SUFFIX: &str = r#"{
   use sys::fs::{self, *};
@@ -62,7 +62,7 @@ run!(test_tempdir_with_suffix, TEMPDIR_WITH_SUFFIX, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
   use sys::fs::{self, *};
@@ -83,7 +83,7 @@ run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Va
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WITH_IN_AND_SUFFIX: &str = r#"{
   use sys::fs::{self, *};
@@ -104,14 +104,14 @@ run!(test_tempdir_with_in_and_suffix, TEMPDIR_WITH_IN_AND_SUFFIX, |v: Result<&Va
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_INVALID_PARENT: &str =
     r#"sys::fs::tempdir::create(#in: "/this/path/should/not/exist/anywhere", null)"#;
 
 run!(test_tempdir_invalid_parent, TEMPDIR_INVALID_PARENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
   use sys::fs::{self, *};
@@ -126,4 +126,4 @@ const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
 
 run!(test_tempdir_write_read_cycle, TEMPDIR_WRITE_READ_CYCLE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "Hello from tempdir!")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

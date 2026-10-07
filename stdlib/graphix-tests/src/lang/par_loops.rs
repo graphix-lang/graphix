@@ -3,7 +3,7 @@
 // where each slot of a loop of two or more is a chunk of its own.
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::publisher::Value;
 
 // Chunks queue their raises apart; the kernel delivers them in slot
@@ -26,7 +26,7 @@ run!(chunk_raises_in_slot_order, CHUNK_RAISES_IN_SLOT_ORDER, |v: Result<&Value>|
     matches!(v, Ok(Value::Array(a))
         if a.iter().cloned().collect::<Vec<_>>()
             == [Value::I64(3), Value::I64(6), Value::I64(9)])
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A find takes the lowest slot's match whichever chunk finds one first;
 // the filter family concatenates its chunks in slot order.
@@ -44,4 +44,4 @@ const CHUNK_FIND_TAKES_LOWEST: &str = r#"
 run!(chunk_find_takes_lowest, CHUNK_FIND_TAKES_LOWEST, |v: Result<&Value>| {
     let want = "8 800 [8, 3, 9, 7] [1, -1, 2, -2, 8, -8, 3, -3, 9, -9, 7, -7]";
     matches!(v, Ok(Value::String(s)) if s == want)
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

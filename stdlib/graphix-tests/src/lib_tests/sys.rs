@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{ProgramArgs, run, testing};
+use graphix_package_core::{ProgramArgs, run, testing, testing::FuseExpect};
 use netidx::publisher::Value;
 
 const ARGS_EMPTY: &str = r#"
@@ -10,7 +10,7 @@ const ARGS_EMPTY: &str = r#"
 run!(args_empty, ARGS_EMPTY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => a.is_empty(),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 // None: sys::args is once-latched, so Async.
 
 #[tokio::test(flavor = "current_thread")]
@@ -49,7 +49,7 @@ const STDOUT_WRITE: &str = r#"
 
 run!(stdout_write, STDOUT_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STDERR_WRITE: &str = r#"
 {
@@ -63,7 +63,7 @@ const STDERR_WRITE: &str = r#"
 
 run!(stderr_write, STDERR_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // stdin is a valid stream (no data can be fed in a test).
 const STDIN_CREATE: &str = r#"
@@ -75,7 +75,7 @@ const STDIN_CREATE: &str = r#"
 
 run!(stdin_create, STDIN_CREATE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Writing to stdin is an error.
 const STDIN_WRITE_ERR: &str = r#"
@@ -88,4 +88,4 @@ const STDIN_WRITE_ERR: &str = r#"
 
 run!(stdin_write_err, STDIN_WRITE_ERR, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);

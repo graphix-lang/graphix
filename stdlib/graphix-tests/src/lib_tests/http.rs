@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 // CR claude for claude: [risk] certs/server.pem is signed for 730 days (certs/gen.sh:21)
@@ -40,7 +40,7 @@ run!(http_round_trip, r#"{
     resp.body
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
@@ -64,7 +64,7 @@ run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
     resp.body
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(http_status_round_trip, r#"{
     let handler = |req: http::Request| {
@@ -80,7 +80,7 @@ run!(http_status_round_trip, r#"{
     resp.status
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::U16(201)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(http_invalid_status_is_500, r#"{
     let handler = |req: http::Request| {
@@ -96,7 +96,7 @@ run!(http_invalid_status_is_500, r#"{
     resp.status
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::U16(500)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(http_invalid_header_is_500, r#"{
     let handler = |req: http::Request| {
@@ -112,4 +112,4 @@ run!(http_invalid_header_is_500, r#"{
     resp.status
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::U16(500)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

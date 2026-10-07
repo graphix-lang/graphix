@@ -1,14 +1,17 @@
 use anyhow::Result;
 use arcstr::ArcStr;
 // CR claude for claude: [style] array.rs, core.rs and list.rs spell out
-// `graphix_package_core::testing::FuseExpect::` 145 times, and graphix-tests does the
+// `FuseExpect::` 145 times, and graphix-tests does the
 // same in 42 other files. Import it once with `use graphix_package_core::{run,
 // testing::FuseExpect};`, as lift.rs and lang/fusion.rs do. The `use sys::*;` in
 // core.rs's QUEUEFN_NET_SUBSCRIBE (557) and QUEUEFN_DELTA_PER_CYCLE (594) is unused:
 // both fixtures spell `sys::net::` and `sys::time::` in full and check without it, so
 // delete it. callable.rs spells graphix_compiler::expr::VfsEntry and
 // arcstr::ArcStr::from 8 times each; import them. (tests-lib-a-15)
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 const ARRAY_MAP0: &str = r#"
@@ -49,7 +52,7 @@ run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
         },
         Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A nested map with a constant callback body over a loop-invariant
 // captured source still fuses.
@@ -69,7 +72,7 @@ run!(array_map_nested_const, ARRAY_MAP_NESTED_CONST, |v: Result<&Value>| {
         },
         Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Composite-output `array::map`: `Array<(i64, i64)>`.
 const ARRAY_MAP_TUPLE: &str = r#"
@@ -143,7 +146,7 @@ const ARRAY_MAP2: &str = r#"
   array::map([1, 2], |x| str::len(x))
 "#;
 
-run!(array_map2, ARRAY_MAP2, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(array_map2, ARRAY_MAP2, refused("string does not contain"); FuseExpect::None);
 
 const ARRAY_FILTER: &str = r#"
 {
@@ -364,7 +367,7 @@ run!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
         Ok(Value::I64(4)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ARRAY_ITERQ: &str = r#"
 {
@@ -373,16 +376,13 @@ const ARRAY_ITERQ: &str = r#"
    let clock: Any = once(null);
    let v = array::iterq(#clock, a);
    clock <- v;
-   filter(v, |x| x == 8)
+   array::group(v, |n, _| n == 8)
 }
 "#;
 
 run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
-    match v {
-        Ok(Value::I64(8)) => true,
-        _ => false,
-    }
-}; graphix_package_core::testing::FuseExpect::Jit);
+    matches!(v.map(|v| v.clone().cast_to::<[i64; 8]>()), Ok(Ok([1, 2, 3, 4, 5, 6, 7, 8])))
+}; FuseExpect::Jit);
 
 const ARRAY_FOLD0: &str = r#"
 {
@@ -447,7 +447,7 @@ const ARRAY_FOLD_MIDCHAIN_FIRE: &str = r#"
 
 run!(array_fold_midchain_fire, ARRAY_FOLD_MIDCHAIN_FIRE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A Value-shaped fold acc (`[Array, Error]` from a slice init) whose
 // body's own shape is a narrower union member.
@@ -530,24 +530,14 @@ run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
     }
 });
 
-// A scalar `array::fold` result flowing into a `connect` sets `s` once
-// and quiesces.
-// CR claude for claude: [test-gap] This fixture only checks s's initial 0, which a
-// connect that never writes also gives, so 'sets s once and quiesces' is not tested
-// here. Its stream twin, lift.rs fold_into_connect_quiesces, cannot see a spin either,
-// because collect_n (lift.rs:18) returns after n values. `{ let a = [1, 2, 3]; let s =
-// 0; s <- s ~ array::fold(a, 0, |acc, e| acc + e); s }` streams 0, 6, 6, 6, ... and
-// still passes assert_stream(&[0, 6]). connect_const_then_quiesces,
-// array_connect_const_quiesces and fold_captured_*_fires_then_quiesces have the same
-// gap. After the n-th value, collect_n should wait for idle under a timeout that fails
-// the test and assert no further result update. Here, assert `filter(s, |v| v == 6)` or
-// drop the claim. (tests-lib-a-13)
+// A scalar `array::fold` result flowing into a `connect` sets `s`
+// (lift.rs fold_into_connect_quiesces pins that it then quiesces).
 const FOLD_INTO_CONNECT: &str = r#"
-{ let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }
+{ let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); filter(s, |v| v == 6) }
 "#;
 
 run!(fold_into_connect, FOLD_INTO_CONNECT, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(0)))
+    matches!(v, Ok(Value::I64(6)))
 });
 
 // A fold whose input array grows each cycle re-emits per resize.
@@ -596,7 +586,7 @@ const ARRAY_FOLD1: &str = r#"
 }
 "#;
 
-run!(array_fold1, ARRAY_FOLD1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(array_fold1, ARRAY_FOLD1, refused("string does not contain"); FuseExpect::None);
 
 const ARRAY_CONCAT: &str = r#"
   array::concat([1, 2, 3], [4, 5], [6])
@@ -628,7 +618,7 @@ run!(array_push, ARRAY_PUSH, |v: Result<&Value>| {
         Ok([(1, 2), (3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_PUSH_FRONT: &str = r#"
   array::push_front([(1, 2), (3, 4)], (5, 6))
@@ -639,7 +629,7 @@ run!(array_push_front, ARRAY_PUSH_FRONT, |v: Result<&Value>| {
         Ok([(5, 6), (1, 2), (3, 4)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A select-union callback (`[string, Spec]`) whose result array feeds
 // push_front with a bare Spec compiles regardless of typecheck order.
@@ -664,7 +654,7 @@ run!(
             _ => false,
         }
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 const ARRAY_WINDOW0: &str = r#"
@@ -676,7 +666,7 @@ run!(array_window0, ARRAY_WINDOW0, |v: Result<&Value>| {
         Ok([(5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ARRAY_WINDOW1: &str = r#"
   array::window(#n:2, [(1, 2), (3, 4)], (5, 6))
@@ -687,7 +677,7 @@ run!(array_window1, ARRAY_WINDOW1, |v: Result<&Value>| {
         Ok([(3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ARRAY_WINDOW2: &str = r#"
   array::window(#n:3, [(1, 2), (3, 4)], (5, 6))
@@ -698,7 +688,7 @@ run!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
         Ok([(1, 2), (3, 4), (5, 6)]) => true,
         Ok(_) | Err(_) => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ARRAY_LEN: &str = r#"
 {
@@ -715,7 +705,7 @@ run!(array_len, ARRAY_LEN, |v: Result<&Value>| {
         Ok(Value::I64(6)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A per-slot HOF callback whose body is a non-numeric `cast` (bool ->
 // i64).
@@ -730,7 +720,7 @@ run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_FLATTEN: &str = r#"
   array::flatten([[1, 2, 3], [4, 5], [6]])
@@ -746,7 +736,7 @@ run!(array_flatten, ARRAY_FLATTEN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_GROUP0: &str = r#"
 {
@@ -763,7 +753,7 @@ run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ARRAY_GROUP1: &str = r#"
 {
@@ -772,7 +762,7 @@ const ARRAY_GROUP1: &str = r#"
 }
 "#;
 
-run!(array_group1, ARRAY_GROUP1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(array_group1, ARRAY_GROUP1, refused("string does not contain"); FuseExpect::None);
 
 const ARRAY_GROUP2: &str = r#"
 {
@@ -781,7 +771,7 @@ const ARRAY_GROUP2: &str = r#"
 }
 "#;
 
-run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); graphix_package_core::testing::FuseExpect::None);
+run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); FuseExpect::None);
 
 const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
@@ -855,7 +845,7 @@ const ARRAY_INIT4: &str = r#"
   array::init(3, |i| str::len(i))
 "#;
 
-run!(array_init4, ARRAY_INIT4, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(array_init4, ARRAY_INIT4, refused("string does not contain"); FuseExpect::None);
 
 const ARRAY_SORT0: &str = r#"
 {
@@ -872,7 +862,7 @@ run!(array_sort0, ARRAY_SORT0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Both labels defaulted: the plain spelling is a native fastcall.
 const ARRAY_SORT_NATIVE_DEFAULTS: &str = r#"{
@@ -902,7 +892,7 @@ run!(array_sort1, ARRAY_SORT1, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_SORT2: &str = r#"
 {
@@ -929,7 +919,7 @@ run!(array_sort2, ARRAY_SORT2, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_SORT3: &str = r#"
 {
@@ -956,7 +946,7 @@ run!(array_sort3, ARRAY_SORT3, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_DEDUP0: &str = r#"
 {
@@ -973,7 +963,7 @@ run!(array_dedup0, ARRAY_DEDUP0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_DEDUP1: &str = r#"
 {
@@ -987,7 +977,7 @@ run!(array_dedup1, ARRAY_DEDUP1, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_DEDUP2: &str = r#"
 {
@@ -1006,7 +996,7 @@ run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // HOFs over String / Value-shape elements: the no-match, found-at-last
 // and used-twice paths.
@@ -1022,7 +1012,7 @@ const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s)
 run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // filter moves the kept string element into the output.
 const HOF_STR_FILTER: &str = r#"array::filter(["a", "bb", "ccc"], |s| str::len(s) > 1)"#;
@@ -1041,7 +1031,7 @@ run!(hof_str_filter_none, HOF_STR_FILTER_NONE, |v: Result<&Value>| matches!(
 const HOF_STR_FOLD: &str =
     r#"array::fold(["a", "bb", "ccc"], 0, |acc, s| acc + str::len(s))"#;
 run!(hof_str_fold, HOF_STR_FOLD, |v: Result<&Value>| matches!(v, Ok(Value::I64(6)));
-    graphix_package_core::testing::FuseExpect::Jit);
+    FuseExpect::Jit);
 
 // find returns the matched string element; non-matches drop.
 const HOF_STR_FIND: &str = r#"array::find(["a", "bb", "ccc"], |s| str::len(s) == 2)"#;
@@ -1076,7 +1066,7 @@ array::map([1, null], |v| select v { i64 as n => n, null as _ => i64:0 })
 run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 2]>()),
     Ok(Ok([1, 0]))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A Value-shape (variant) element in a filter whose predicate is a select.
 const HOF_VARIANT_FILTER: &str = r#"
@@ -1111,7 +1101,7 @@ run!(array_enumerate, ARRAY_ENUMERATE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ZIP: &str = r#"
 {
@@ -1129,7 +1119,7 @@ run!(array_zip, ARRAY_ZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_UNZIP: &str = r#"
 {
@@ -1146,7 +1136,7 @@ run!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ROTATE_FORWARD: &str = r#"
 {
@@ -1169,7 +1159,7 @@ run!(array_rotate_forward, ARRAY_ROTATE_FORWARD, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ROTATE_BACKWARD: &str = r#"
 {
@@ -1191,7 +1181,7 @@ run!(array_rotate_backward, ARRAY_ROTATE_BACKWARD, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ROTATE_ZERO_AND_SINGLE: &str = r#"
 (array::rotate(#n: 0, [1, 2, 3]), array::rotate([7]), array::rotate(#n: -5, [7]))
@@ -1205,7 +1195,7 @@ run!(array_rotate_zero_and_single, ARRAY_ROTATE_ZERO_AND_SINGLE, |v: Result<&Val
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ROTATE_EMPTY: &str = r#"
 {
@@ -1221,7 +1211,7 @@ run!(array_rotate_empty, ARRAY_ROTATE_EMPTY, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_ROTATE_EXTREME_N: &str = r#"
 {
@@ -1240,7 +1230,7 @@ run!(array_rotate_extreme_n, ARRAY_ROTATE_EXTREME_N, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `|(k, v)|` callbacks whose leaf is itself composite/string/value.
 
@@ -1258,7 +1248,7 @@ array::fold([("a", 1), ("bb", 2)], 0, |acc, (s, n)| acc + str::len(s) + n)
 run!(hof_leaf_string, HOF_LEAF_STRING, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // filter: the leaf drops on both edges; no-match and all-match covered.
 const HOF_LEAF_FILTER: &str = r#"
@@ -1286,7 +1276,7 @@ array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false 
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Composite-returning callbacks: a `['b, null]` return over a composite
 // body widens to an owned Value.
@@ -1295,7 +1285,7 @@ const FIND_MAP_CAPTURED_ARRAY: &str = r#"
 "#;
 run!(find_map_captured_array, FIND_MAP_CAPTURED_ARRAY, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[i64; 2]>()), Ok(Ok([1, 2])))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FILTER_MAP_FRESH_ARRAY: &str = r#"
 {
@@ -1306,7 +1296,7 @@ const FILTER_MAP_FRESH_ARRAY: &str = r#"
 run!(filter_map_fresh_array, FILTER_MAP_FRESH_ARRAY, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[[i64; 2]; 3]>()),
         Ok(Ok([[1, 2], [2, 3], [3, 4]])))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The select-arm variant: null in one arm, a tuple in the other.
 const FIND_MAP_TUPLE_ARM: &str = r#"
@@ -1315,4 +1305,4 @@ const FIND_MAP_TUPLE_ARM: &str = r#"
 run!(find_map_tuple_arm, FIND_MAP_TUPLE_ARM, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, ArcStr)>()),
         Ok(Ok((2, s))) if &*s == "s")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

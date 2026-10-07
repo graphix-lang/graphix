@@ -2,7 +2,10 @@
 
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 
 const MAP0: &str = r#"
@@ -142,7 +145,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("does not contain Map<"); graphix_package_core::testing::FuseExpect::None);
+run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("does not contain Map<"); FuseExpect::None);
 
 const MAP_NESTED: &str = r#"
 {
@@ -179,7 +182,7 @@ run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const MAP_WITH_ARRAYS: &str = r#"
 {
@@ -196,4 +199,4 @@ run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
             && arr.get(2).map(|v| *v == Value::I64(3)).unwrap_or(false)
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

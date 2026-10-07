@@ -1,15 +1,88 @@
 //! The embedder-callable path (`GXHandle::compile_callable`): a callee
 //! instance born lazily at its first dispatch must resolve `*st <- v`
-//! from the standing store, like `Deref`'s read side.
+//! from the standing store, like `Deref`'s read side; and a handler's
+//! arm woken by a state change reads the event that changed it stale.
 
-use ahash::AHashMap;
-use anyhow::{Context, Result, bail};
-use graphix_compiler::expr::VfsResolver;
-use graphix_package_core::testing;
-use graphix_rt::{GXEvent, NoExt};
-use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
-use std::time::Duration;
-use tokio::sync::mpsc;
+use anyhow::{Context, Result};
+use graphix_compiler::expr::VfsEntry;
+use graphix_package_core::testing::{
+    Events, Mode, TestCtx, compile_named_callable, compile_result, find_bind_id,
+    fixture_runtime,
+};
+use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
+use netidx::{protocol::valarray::ValArray, publisher::Value};
+
+/// A program's runtime with its `result` compiled and the callables it
+/// handed out kept alive.
+struct Fixture {
+    ctx: TestCtx,
+    rx: Events,
+    res: CompRes<NoExt>,
+    held: Vec<(&'static str, Ref<NoExt>, Callable<NoExt>)>,
+    last: Option<Value>,
+}
+
+impl Fixture {
+    async fn new(src: &'static str, mode: Mode) -> Result<Self> {
+        let (ctx, rx) = fixture_runtime(
+            [("/test.gx", VfsEntry::from(arcstr::ArcStr::from(src)))],
+            crate::TEST_REGISTER,
+            mode,
+            |_| {},
+        )
+        .await?;
+        let res = compile_result(&ctx).await?;
+        Ok(Self { ctx, rx, res, held: vec![], last: None })
+    }
+
+    /// Call the lambda bound to `name` with `args`.
+    async fn call<const N: usize>(
+        &mut self,
+        name: &'static str,
+        args: [Value; N],
+    ) -> Result<()> {
+        let i = match self.held.iter().position(|(n, _, _)| *n == name) {
+            Some(i) => i,
+            None => {
+                let (r, cb) =
+                    compile_named_callable(&self.ctx.rt, &self.res.env, name).await?;
+                self.held.push((name, r, cb));
+                self.held.len() - 1
+            }
+        };
+        self.held[i].2.call(ValArray::from(args)).await
+    }
+
+    /// The value bound to `name`.
+    async fn value_of(&self, name: &str) -> Result<Value> {
+        let bid = find_bind_id(&self.res.env, name)?;
+        self.ctx.rt.compile_ref(bid).await?.last.clone().context("no value")
+    }
+
+    /// Run the runtime until it is idle; the result's latest value.
+    async fn settle(&mut self) -> Result<Option<Value>> {
+        self.ctx.rt.wait_idle().await?;
+        let id = self.res.exprs[0].id;
+        while let Ok(mut batch) = self.rx.try_recv() {
+            for e in batch.drain(..) {
+                if let GXEvent::Updated(eid, v) = e
+                    && eid == id
+                {
+                    self.last = Some(v);
+                }
+            }
+        }
+        Ok(self.last.clone())
+    }
+
+    /// Cycles that run nothing of the program.
+    async fn idle_cycles(&self, n: usize) -> Result<()> {
+        for _ in 0..n {
+            self.ctx.rt.compile(arcstr::literal!("i64:0")).await?;
+        }
+        Ok(())
+    }
+}
 
 const PROG: &str = r#"
 type St = { value: string, cursor: i64 };
@@ -26,60 +99,15 @@ let handle = |tag: string| -> null poke(&mut ed, tag);
 let result = ed.value
 "#;
 
-// CR claude for claude: [structure] find_bind_id is copied byte for byte in
-// stdlib/graphix-package-gui/src/test/mod.rs:317 and
-// stdlib/graphix-package-tui/src/testing.rs:368. All three crates depend on
-// graphix-package-core, and its pub `testing` module can hold the one copy. This file
-// also repeats the channel/Vfs/init/compile/compile_callable setup in every test, and
-// the same 'bail on 2, wait for 1, sleep 500 ms, drain' loop four times (lines 156,
-// 388, 474, 686). A setup helper and one settle helper built on wait_idle would replace
-// them. (tests-lib-a-14)
-// 2026-10-06 claude: find_bind_id is graphix_package_core::testing's now, shared by
-// gui, tui and this file; the setup and settle helpers remain.
-#[tokio::test(flavor = "multi_thread")]
-async fn callable_handler_writes_through_ref_param() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(PROG)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_bid = testing::find_bind_id(&compiled.env, "test::handle")?;
-    let r = gx.compile_ref(handle_bid).await?;
-    let lambda = r.last.clone().context("handle has no value")?;
-    let callable = gx.compile_callable(lambda).await?;
+async fn handler_writes_through_ref_param(mode: Mode) -> Result<()> {
+    let mut f = Fixture::new(PROG, mode).await?;
+    f.settle().await?;
     // Cycles between the callable's init and its first dispatch: the
     // reference value delivered at init must survive to the instance.
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    callable.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => bail!(
-                "the write through the ref param never landed"
-            ),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id && v == Value::from("x") {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    f.idle_cycles(3).await?;
+    f.call("test::handle", ["x".into()]).await?;
+    assert_eq!(f.settle().await?, Some(Value::from("x")));
+    Ok(())
 }
 
 /// A handler whose interior select routes by a state variable: flipping
@@ -110,97 +138,17 @@ let handle = |e: string| -> i64 select active {
 let result = submitted
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(PHANTOM)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let get = |name: &str| testing::find_bind_id(&compiled.env, name);
-    let handle_l = {
-        let r = gx.compile_ref(get("test::handle")?).await?;
-        gx.compile_callable(r.last.clone().context("no handle")?).await?
-    };
-    let set_active = {
-        let r = gx.compile_ref(get("test::set_active")?).await?;
-        gx.compile_callable(r.last.clone().context("no set_active")?).await?
-    };
+async fn arm_wake_delivers_standing_args_stale(mode: Mode) -> Result<()> {
+    let mut f = Fixture::new(PHANTOM, mode).await?;
     // route to `A, deliver one real event, then flip to `B with no new
     // event: the flip must not fire the `B arm's callee with the standing "x"
-    set_active.call(ValArray::from_iter_exact([Value::Bool(false)].into_iter())).await?;
-    handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
-    set_active.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
-    // CR claude for claude: [test-gap] This settle (three `compile("i64:0")` round trips)
-    // does not guarantee that the `B arm's wake ran before the legitimate event, and
-    // nothing asserts the count was still 0 before that event. So a final 1 is accepted
-    // even when it came from a phantom fire at the wake, either in the same cycle as
-    // the legitimate event or with the legitimate event lost. The same holds in
-    // arm_wake_does_not_redeliver_the_key_to_the_woken_callee,
-    // alias_read_consumes_the_formals_fire and
-    // arm_wake_switch_binds_the_standing_key_stale. After the wake, call
-    // `gx.wait_idle().await`, drain, and assert the count is still 0; after the
-    // legitimate event, call wait_idle again and assert exactly 1. These tests also run
-    // in one mode only (fusion on, ParMode from the environment), never under
-    // FusionDisabled or ParMode::Force as run! fixtures do. (tests-lib-a-11)
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    // one REAL event while `B is selected — the only legitimate fire
-    handle_l.call(ValArray::from_iter_exact(["y".into()].into_iter())).await?;
-    // settle, then read the count: phantom + legit = 2, legit only = 1
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id {
-                                last = Some(v.clone());
-                                if v == Value::I64(2) {
-                                    bail!(
-                                        "phantom fire: the arm-wake delivered the \
-                                         standing event as fired (submitted=2)"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    if last == Some(Value::I64(1)) {
-                        // the legit fire landed and nothing further is
-                        // pending behind it — give one more batch a
-                        // chance to contradict, then accept
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        while let Ok(mut b) = rx.try_recv() {
-                            for ev in b.drain(..) {
-                                if let GXEvent::Updated(id, v) = ev {
-                                    if id == expr_id && v == Value::I64(2) {
-                                        bail!("phantom fire arrived late (submitted=2)");
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    bail!("the legitimate fire never landed (last={last:?})")
+    f.call("test::set_active", [Value::Bool(false)]).await?;
+    f.call("test::handle", ["x".into()]).await?;
+    f.call("test::set_active", [Value::Bool(true)]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(0)), "a phantom fire at the wake");
+    f.call("test::handle", ["y".into()]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(1)));
+    Ok(())
 }
 
 /// A callable's body flips its own routing state from a key it consumed:
@@ -242,117 +190,29 @@ let handle = |e: Event| -> [`Stop, `Continue] select e {
 let result = (screen, fired)
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(FLIP)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_l = {
-        let r =
-            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
-        gx.compile_callable(r.last.clone().context("no handle")?).await?
+fn key_event(code: &'static str) -> Value {
+    let field = |k: &'static str, v: &'static str| {
+        Value::Array(ValArray::from([k.into(), v.into()]))
     };
-    handle_l
-        .call(ValArray::from_iter_exact(
-            [Value::Array(ValArray::from_iter_exact(
-                [
-                    Value::from("Key"),
-                    Value::Array(ValArray::from_iter_exact(
-                        [
-                            Value::Array(ValArray::from_iter_exact(
-                                [Value::from("code"), Value::from("Enter")].into_iter(),
-                            )),
-                            Value::Array(ValArray::from_iter_exact(
-                                [Value::from("kind"), Value::from("Press")].into_iter(),
-                            )),
-                        ]
-                        .into_iter(),
-                    )),
-                ]
-                .into_iter(),
-            ))]
-            .into_iter(),
-        ))
-        .await?;
-    // settle: the request flips the screen with no further key
-    for _ in 0..4 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    let deadline = tokio::time::sleep(Duration::from_secs(20));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev
-                            && id == expr_id
-                        {
-                            last = Some(v);
-                        }
-                    }
-                    if let Some(Value::Array(pair)) = &last
-                        && pair[0] == Value::I64(1)
-                    {
-                        // the screen flipped; one more batch for a phantom
-                        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-                        if let Ok(Some(mut b)) = tokio::time::timeout(
-                            Duration::from_millis(500),
-                            rx.recv(),
-                        )
-                        .await
-                        {
-                            for ev in b.drain(..) {
-                                if let GXEvent::Updated(id, v) = ev && id == expr_id {
-                                    last = Some(v);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    match last {
-        Some(Value::Array(pair))
-            if pair[0] == Value::I64(1) && pair[1] == Value::I64(0) =>
-        {
-            Ok(())
-        }
-        Some(Value::Array(pair)) if pair[0] == Value::I64(1) => bail!(
-            "phantom fire: the screen flip dispatched the connect arm's callee on \
-             the standing key (fired={})",
-            pair[1]
-        ),
-        v => bail!("the screen never flipped: {v:?}"),
-    }
+    let key = Value::Array(ValArray::from([field("code", code), field("kind", "Press")]));
+    Value::Array(ValArray::from(["Key".into(), key]))
+}
+
+async fn callable_body_flip_reads_standing_key_stale(mode: Mode) -> Result<()> {
+    let mut f = Fixture::new(FLIP, mode).await?;
+    f.call("test::handle", [key_event("Enter")]).await?;
+    // the request flips the screen with no further key: (screen, fired)
+    let want = Value::Array(ValArray::from([Value::I64(1), Value::I64(0)]));
+    assert_eq!(f.settle().await?, Some(want));
+    Ok(())
 }
 
 /// The screen dispatcher shape of a TUI: the handler routes the key to
 /// one of two callees by a screen variable that the callee itself
 /// moves. The key that moved the screen must not be delivered again to
-/// the callee the move woke. The woken callee reads its formal stale
-/// (`opened <- e ~ ..` stays quiet), but a select arm that binds that
-/// stale formal delivers the binding fresh, and `kk ~ ..` fires.
-// CR claude for claude: [doc-drift] The doc's last sentence ('but a select arm that binds
-// that stale formal delivers the binding fresh, and `kk ~ ..` fires') says the opposite
-// of what the test below asserts:
-// arm_wake_does_not_redeliver_the_key_to_the_woken_callee fails if pan_handle's `kk ~
-// ..` counts the Enter that woke it. WAKE_SWITCH's doc (line 632) states the rule: the
-// woken arm binds the standing key stale, and `kk ~ ..` stays quiet. Replace the
-// sentence with that rule. (tests-lib-a-10)
+/// the callee the move woke: it reads its formal stale, a select arm
+/// that binds that formal binds the standing key stale, and `kk ~ ..`
+/// stays quiet.
 const DISPATCH: &str = r#"
 let screen: [`Landing, `Panels] = `Landing;
 let opened = 0;
@@ -374,68 +234,32 @@ let handle = |e: string| -> i64 select e {
 let result = opened
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(DISPATCH)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_l = {
-        let r =
-            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
-        gx.compile_callable(r.last.clone().context("no handle")?).await?
-    };
-    // Enter on the landing moves the screen; the panels callee it wakes
-    // must not see that Enter. A second Enter is the one legitimate count.
-    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+/// `handle` with each of `first`, which move the screen: the count must
+/// not move. `second` is the one legitimate count.
+async fn woken_callee_counts_once(
+    src: &'static str,
+    mode: Mode,
+    first: &[&'static str],
+    second: &'static str,
+) -> Result<()> {
+    let mut f = Fixture::new(src, mode).await?;
+    for k in first {
+        f.call("test::handle", [(*k).into()]).await?;
+        assert_eq!(
+            f.settle().await?,
+            Some(Value::I64(0)),
+            "counted the key that woke it"
+        );
     }
-    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id {
-                                last = Some(v.clone());
-                                if v == Value::I64(2) {
-                                    bail!("the woken callee counted the key that woke it");
-                                }
-                            }
-                        }
-                    }
-                    if last == Some(Value::I64(1)) {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        while let Ok(mut b) = rx.try_recv() {
-                            for ev in b.drain(..) {
-                                if let GXEvent::Updated(id, v) = ev {
-                                    if id == expr_id && v == Value::I64(2) {
-                                        bail!("the woken callee counted the key late");
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    bail!("the second Enter never counted (last={last:?})")
+    f.call("test::handle", [second.into()]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(1)));
+    Ok(())
+}
+
+async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee(
+    mode: Mode,
+) -> Result<()> {
+    woken_callee_counts_once(DISPATCH, mode, &["enter"], "enter").await
 }
 
 /// The dispatcher hands one callee the pattern bind `ev` and the other
@@ -463,66 +287,8 @@ let handle = |e: string| -> i64 select e {
 let result = opened
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn alias_read_consumes_the_formals_fire() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(ALIAS)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_l = {
-        let r =
-            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
-        gx.compile_callable(r.last.clone().context("no handle")?).await?
-    };
-    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id {
-                                last = Some(v.clone());
-                                if v == Value::I64(2) {
-                                    bail!("the woken callee caught up a key its alias had consumed");
-                                }
-                            }
-                        }
-                    }
-                    if last == Some(Value::I64(1)) {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        while let Ok(mut b) = rx.try_recv() {
-                            for ev in b.drain(..) {
-                                if let GXEvent::Updated(id, v) = ev {
-                                    if id == expr_id && v == Value::I64(2) {
-                                        bail!("the woken callee caught up the key late");
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    bail!("the second Enter never counted (last={last:?})")
+async fn alias_read_consumes_the_formals_fire(mode: Mode) -> Result<()> {
+    woken_callee_counts_once(ALIAS, mode, &["enter"], "enter").await
 }
 
 /// A bind delivered by a sampled scrutinee aliases the trigger only:
@@ -547,93 +313,26 @@ let handle = |k: string| -> i64 select k {
 let result = ticks
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn banked_bind_does_not_consume_the_level() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(BANKED)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let callable = |name: &str| {
-        let gx = gx.clone();
-        let bid = testing::find_bind_id(&compiled.env, name);
-        async move {
-            let r = gx.compile_ref(bid?).await?;
-            gx.compile_callable(r.last.clone().context("no value")?).await
-        }
-    };
-    let handle_l = callable("test::handle").await?;
-    let set_toast = callable("test::set_toast").await?;
-    let set_mode = callable("test::set_mode").await?;
+async fn banked_bind_does_not_consume_the_level(mode: Mode) -> Result<()> {
+    let mut f = Fixture::new(BANKED, mode).await?;
     // a key binds `one` from the banked tuple; then the toast fires
     // while the false arm, which reads `one`, is selected; then the
     // mode flips and the true arm must catch the toast up
-    handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    set_toast.call(ValArray::from_iter_exact(["hi".into()].into_iter())).await?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
-    set_mode.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(10));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id {
-                                last = Some(v.clone());
-                            }
-                        }
-                    }
-                    if last == Some(Value::I64(1)) {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    bail!("the woken arm never caught the toast up (last={last:?})")
+    f.call("test::handle", ["x".into()]).await?;
+    f.settle().await?;
+    f.call("test::set_toast", ["hi".into()]).await?;
+    f.settle().await?;
+    f.call("test::set_mode", [Value::Bool(true)]).await?;
+    assert_eq!(f.settle().await?, Some(Value::I64(1)));
+    Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
-    let (tx, _rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(PROG)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let lambda = |name: &str| -> Result<Value> {
-        let bid = testing::find_bind_id(&compiled.env, name)?;
-        let gx = gx.clone();
-        Ok(tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { gx.compile_ref(bid).await })
-        })?
-        .last
-        .clone()
-        .context("no value")?)
-    };
-    let handle = lambda("test::handle")?;
-    let poke = lambda("test::poke")?;
+    let f = Fixture::new(PROG, Mode::Jit).await?;
+    let handle = f.value_of("test::handle").await?;
+    let poke = f.value_of("test::poke").await?;
+    let gx = &f.ctx.rt;
     let mut current = None;
     gx.update_callable(&mut current, handle.clone()).await?;
     let first = current.as_ref().context("no callable")?.id();
@@ -670,70 +369,19 @@ let handle = |e: Key| -> i64 select e {
 let result = closed
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn arm_wake_switch_binds_the_standing_key_stale() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(100);
-    let tbl = AHashMap::from_iter([(
-        Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(WAKE_SWITCH)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx =
-        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
-    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
-    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_l = {
-        let r =
-            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
-        gx.compile_callable(r.last.clone().context("no handle")?).await?
-    };
-    // Enter on the panels selects its Enter arm and moves to the landing,
-    // so the panels handler sleeps. Esc on the landing moves back: the
-    // panels handler wakes to Esc and must not count it. A second Esc is
-    // the one legitimate count.
-    for k in ["Enter", "Esc"] {
-        handle_l.call(ValArray::from_iter_exact([k.into()].into_iter())).await?;
-        for _ in 0..3 {
-            let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-        }
-    }
-    handle_l.call(ValArray::from_iter_exact(["Esc".into()].into_iter())).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(30));
-    tokio::pin!(deadline);
-    let mut last = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for ev in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = ev {
-                            if id == expr_id {
-                                last = Some(v.clone());
-                                if v == Value::I64(2) {
-                                    bail!("the woken handler counted the key that woke it");
-                                }
-                            }
-                        }
-                    }
-                    if last == Some(Value::I64(1)) {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        while let Ok(mut b) = rx.try_recv() {
-                            for ev in b.drain(..) {
-                                if let GXEvent::Updated(id, v) = ev {
-                                    if id == expr_id && v == Value::I64(2) {
-                                        bail!("the woken handler counted the key late");
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    bail!("the second Esc never counted (last={last:?})")
+// Enter on the panels selects its Enter arm and moves to the landing, so
+// the panels handler sleeps. Esc on the landing moves back: the panels
+// handler wakes to Esc and must not count it.
+async fn arm_wake_switch_binds_the_standing_key_stale(mode: Mode) -> Result<()> {
+    woken_callee_counts_once(WAKE_SWITCH, mode, &["Enter", "Esc"], "Esc").await
 }
+
+modes!(
+    handler_writes_through_ref_param,
+    arm_wake_delivers_standing_args_stale,
+    callable_body_flip_reads_standing_key_stale,
+    arm_wake_does_not_redeliver_the_key_to_the_woken_callee,
+    alias_read_consumes_the_formals_fire,
+    banked_bind_does_not_consume_the_level,
+    arm_wake_switch_binds_the_standing_key_stale,
+);

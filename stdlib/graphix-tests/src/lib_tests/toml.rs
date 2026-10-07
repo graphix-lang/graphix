@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 run!(toml_i64, r#"{
@@ -8,7 +8,7 @@ run!(toml_i64, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_f64, r#"{
     let s = toml::write_str({value: 3.14})$;
@@ -16,7 +16,7 @@ run!(toml_f64, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_bool, r#"{
     let s = toml::write_str({value: true})$;
@@ -24,7 +24,7 @@ run!(toml_bool, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_string, r#"{
     let s = toml::write_str({value: "hello"})$;
@@ -32,7 +32,7 @@ run!(toml_string, r#"{
     obj.value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_struct, r#"{
     type Point = {x: i64, y: i64};
@@ -42,7 +42,7 @@ run!(toml_struct, r#"{
     p2.x + p2.y
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(30)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_nested_struct, r#"{
     type Inner = {label: string, value: i64};
@@ -54,7 +54,7 @@ run!(toml_nested_struct, r#"{
     out.count + (items[0]$).value + (items[1]$).value
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_array, r#"{
     let s = toml::write_str({items: [1, 2, 3]})$;
@@ -63,7 +63,7 @@ run!(toml_array, r#"{
     arr[0]$ + arr[1]$ + arr[2]$
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(6)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_stream_tcp, r#"{
     use sys::io::{Read, Write};
@@ -79,18 +79,18 @@ run!(toml_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_invalid, r#"{
     let r: Result<i64, [`TomlErr(string), `InvalidCast(string)]> = toml::read("not valid toml \[\[\[");
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(toml_null_err, r#"{
     let r = toml::write_str(null);
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

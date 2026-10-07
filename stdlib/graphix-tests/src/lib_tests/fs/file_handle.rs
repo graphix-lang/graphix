@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 const WRITE_SEEK_READ: &str = r#"{
@@ -44,7 +44,7 @@ const OPEN_NONEXISTENT: &str = r#"{
 
 run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(_)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // fstat after write; flush is required (macOS updates metadata on flush).
 const FSTAT_AFTER_WRITE: &str = r#"{

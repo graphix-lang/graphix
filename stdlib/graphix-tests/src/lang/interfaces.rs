@@ -3,7 +3,10 @@
 // where the definition is visible (design/nominal_abstract_types.md).
 
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 
 // The interface declares an abstract type; the implementation defines it.
@@ -42,7 +45,7 @@ run!(
         type Handle = Abstract<{ value: string }>;
         let make = |x: string| -> Handle Handle({ value: x });
         let get_name = |h: Handle| h.0.value
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An interface without abstract types.
 run!(
@@ -132,7 +135,7 @@ run!(
         type First = Abstract<i64>;
         let make_pair = |a: i64, b: string| -> Pair { first: First(a), second: b };
         let get_first = |p: Pair| -> i64 p.first.0
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An abstract type in a variant.
 run!(
@@ -156,7 +159,7 @@ run!(
             `Some(t) => t.0.value,
             `None => default
         }
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An abstract type in a tuple.
 run!(
@@ -220,7 +223,7 @@ run!(
             `Cons(x, rest) => x.0 + sum(rest),
             `Nil => 0
         }
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An abstract type behind a byref parameter.
 run!(
@@ -299,7 +302,7 @@ run!(
             null as _ => dyn::double(dyn::make(42))
         }
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // A gxi `type T;` the gx does not define is a Rust-backed type: it
 // compiles.
@@ -317,7 +320,7 @@ run!(
     "/test/inner.gx" => r#"
         let x = 42
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // An abstract type in the implementation is allowed (stays opaque).
 run!(
@@ -335,7 +338,7 @@ run!(
         type T;
         let x = 42
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // Error: the function returns the wrong type.
 run!(
@@ -353,7 +356,7 @@ run!(
         type T = Abstract<string>;
         let make = |x: i64| -> i64 x
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // Error: abstract type parameter constraint mismatch.
 run!(
@@ -371,7 +374,7 @@ run!(
         type T<'a> = Abstract<{ val: 'a }>;
         let make = |x: 'a| -> T<'a> T({ val: x })
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // The constraint on `Box<'a: Number>` propagates to wrap/unwrap without
 // repeating it in the val declarations.
@@ -393,7 +396,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // Error: string does not satisfy `Box<'a: Number>`.
 run!(
@@ -414,7 +417,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let unwrap = |b: Box<'a>| -> 'a b.0.value
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // An interface declares every bound its implementation's variables
 // carry: a call through it is checked by it alone.
@@ -446,7 +449,7 @@ run!(
     "/test/inner.gx" => r#"
         let add = |x, y| x + y
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 run!(
     interface_omits_number,
@@ -461,7 +464,7 @@ run!(
     "/test/inner.gx" => r#"
         let double = |x| x + x
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // Error: extra type parameter in the implementation.
 run!(
@@ -479,7 +482,7 @@ run!(
         type T<'a, 'b> = Abstract<('a, 'b)>;
         let x = 42
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // Error: the implementation's argument type does not match the
 // signature's abstract type.
@@ -498,7 +501,7 @@ run!(
         type T = Abstract<string>;
         let get = |t: i64| -> i64 t
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // A parameterized abstract type.
 run!(
@@ -518,7 +521,7 @@ run!(
         type Box<'a> = Abstract<{ value: 'a }>;
         let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let unwrap = |b: Box<'a>| -> 'a b.0.value
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // A parameterized abstract type at different concrete types.
 run!(
@@ -539,7 +542,7 @@ run!(
         type Box<'a> = Abstract<{ value: 'a }>;
         let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let unwrap = |b: Box<'a>| -> 'a b.0.value
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // A parameterized abstract type with a constraint, instantiated
 // concretely in the interface.
@@ -560,7 +563,7 @@ run!(
         type NumWrapper<'a: Number> = Abstract<'a>;
         let wrap = |x: i64| -> IntWrapper NumWrapper(x);
         let double = |w: IntWrapper| -> i64 w.0 + w.0
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // A parameterized abstract type in nested position (Array of Box).
 run!(
@@ -581,7 +584,7 @@ run!(
         let wrap = |x: 'a| -> Box<'a> Box({ value: x });
         let sum_boxes = |boxes: IntBoxArray| -> i64
             array::fold(boxes, 0, |acc, b| acc + b.0.value)
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // Two type parameters.
 run!(
@@ -603,7 +606,7 @@ run!(
         let make = |a: 'a, b: 'b| -> Pair<'a, 'b> Pair({ first: a, second: b });
         let get_first = |p: Pair<'a, 'b>| -> 'a p.0.first;
         let get_second = |p: Pair<'a, 'b>| -> 'b p.0.second
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An abstract type as a Map key.
 run!(
@@ -705,7 +708,7 @@ run!(
     "/test/inner.gx" => r#"
         type ErrPayload = Abstract<{ code: i64, msg: string }>;
         let risky = |x: i64| -> i64 x
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // An abstract type with a throwing function whose `?` is caught by the
 // enclosing catch.
@@ -736,7 +739,7 @@ run!(
             let a = [t.0.value + 41];
             a[0]?
         }
-    "#; graphix_package_core::testing::FuseExpect::Jit);
+    "#; FuseExpect::Jit);
 
 // Two modules with separate abstract types, combined by the caller.
 run!(
@@ -788,7 +791,7 @@ run!(
         type T = Abstract<i64>;
         let get = |t: T| -> i64 t.0
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 run!(
     abstract_payload_outside_refused,
@@ -805,7 +808,7 @@ run!(
         type T = Abstract<i64>;
         let make = |x: i64| -> T T(x)
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 run!(
     abstract_pattern_outside_refused,
@@ -822,7 +825,7 @@ run!(
         type T = Abstract<i64>;
         let make = |x: i64| -> T T(x)
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // A type hidden by the interface must be Abstract<..> (or Rust-backed):
 // hiding a transparent alias is the two-view case itself.
@@ -843,7 +846,7 @@ run!(
         let make = |x: i64| -> T x;
         let get = |t: T| -> i64 t
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // A PUBLIC newtype: the interface exports the body, so anyone can
 // construct and read it — nominal without being hidden.
@@ -957,7 +960,7 @@ run!(
         type T = Abstract<i64>;
         let show = || -> string "[T(5) == T(5)] [T(5) == T(6)] [T(5)]"
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // A destructuring `let` implements every `val` it binds.
 run!(
@@ -974,7 +977,7 @@ run!(
     "/test/inner.gx" => r#"
         let (a, b) = (1, 2)
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // An interface-only type declared after a `val` the implementation binds
 // by destructuring lands after that `let`, where the body can name it.
@@ -995,7 +998,7 @@ run!(
         let (a, c) = (1, 1);
         let b: T = 1
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // A binding behind an interface goes bottom through it: a reader that
 // arrives after it went bottom sees bottom, not the value before.
@@ -1018,7 +1021,7 @@ run!(
         let k = 0;
         let x = select k { 0 => 1, _ => never() }
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // An error in an interface item carries the item's position and file.
 #[tokio::test(flavor = "current_thread")]
@@ -1072,7 +1075,7 @@ run!(
         trait Pick { val pick: fn(self, y: 'b) -> 'b };
         impl Pick for i64 { let pick = |s, y| y }
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);
 
 // ... and a re-declaration that means something else is refused.
 run!(
@@ -1088,7 +1091,7 @@ run!(
     "/test/inner.gx" => r#"
         trait Show { val show: fn(self) -> i64 }
     "#
-; graphix_package_core::testing::FuseExpect::None);
+; FuseExpect::None);
 
 // An implementation's type may be a constructor application the
 // signature spells out: `Collection::map` returns `self<'b>`, an array.
@@ -1105,4 +1108,4 @@ run!(
     "/test/inner.gx" => r#"
         let f = |x: i64| Collection::map(["a", "b"], |s| x)
     "#
-; graphix_package_core::testing::FuseExpect::Jit);
+; FuseExpect::Jit);

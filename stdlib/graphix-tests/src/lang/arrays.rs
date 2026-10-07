@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::{
     run,
-    testing::{Mode, refused},
+    testing::{FuseExpect, Mode, refused},
 };
 use netidx::publisher::Value;
 
@@ -214,7 +214,7 @@ const ARRAY_INDEXING5: &str = r#"
 }
 "#;
 
-run!(array_indexing5, ARRAY_INDEXING5, refused("cannot compute ["); graphix_package_core::testing::FuseExpect::None);
+run!(array_indexing5, ARRAY_INDEXING5, refused("cannot compute ["); FuseExpect::None);
 
 const ARRAY_INDEXING6: &str = r#"
 {
@@ -240,14 +240,14 @@ run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
             ] =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A slice of a select is the select's type: an annotation cannot retype it.
 run!(
     array_slice_of_select_refuses_annotation,
     r#"{ let t: i64 = (select 1 { 1 => ["a"], _ => ["b"] })[..-1]$; t }"#,
     |v: Result<&Value>| v.is_err_and(|e| format!("{e:?}").contains("does not contain"));
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 // ... and a call that dispatches on its argument's type sees it.
@@ -264,13 +264,13 @@ const ARRAY_SLICE_NON_ARRAY: &str = r#"
   ("foo")[..]
 "#;
 
-run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
+run!(array_slice_non_array, ARRAY_SLICE_NON_ARRAY, refused("does not contain string"); FuseExpect::None);
 
 const ARRAY_INDEX_NON_ARRAY: &str = r#"
   ("foo")[0]
 "#;
 
-run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, refused("does not contain string"); graphix_package_core::testing::FuseExpect::None);
+run!(array_index_non_array, ARRAY_INDEX_NON_ARRAY, refused("does not contain string"); FuseExpect::None);
 
 const ARRAY_MATCH0: &str = r#"
 {
@@ -285,7 +285,7 @@ const ARRAY_MATCH0: &str = r#"
 run!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_MATCH1: &str = r#"
 {
@@ -321,7 +321,7 @@ run!(array_match1, ARRAY_MATCH1, |v: Result<&Value>| match v {
         }
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ARRAY_MATCH2: &str = r#"
 {
@@ -341,7 +341,7 @@ run!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A fold over an empty but present array is the init, not bottom.
 const FOLD_EMPTY: &str = r#"
@@ -374,7 +374,7 @@ array::find({let a: Array<i64> = []; a}, |x| true)
 run!(find_empty, FIND_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::Null)
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // An oversize array::init (> MAX_ARRAY_INIT_LEN) bottoms locally:
 // unrelated outputs in the same region still fire.
@@ -387,7 +387,7 @@ const INIT_RUNAWAY_LOCAL_BOTTOM: &str = r#"
 
 run!(init_runaway_local_bottom, INIT_RUNAWAY_LOCAL_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A fold over the oversize init whose init argument fires on the
 // over-limit cycle is bottom; the previous value stands.
@@ -417,7 +417,7 @@ array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
 run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(6), Value::I64(6)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FOLD_STRUCT_ACC: &str = r#"
 {
@@ -432,7 +432,7 @@ const FOLD_STRUCT_ACC: &str = r#"
 run!(fold_struct_acc, FOLD_STRUCT_ACC, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(306))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const FOLD_ARRAY_ACC: &str = r#"
 {
@@ -448,7 +448,7 @@ const FOLD_ARRAY_ACC: &str = r#"
 run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(4)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FOLD_STRING_ACC: &str = r#"
 array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
@@ -457,7 +457,7 @@ array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "123",
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Ownership edges of the owned-acc carry: a body that returns the acc
 // unchanged, and a body that returns the element.
@@ -468,7 +468,7 @@ array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| acc)
 run!(fold_acc_identity, FOLD_ACC_IDENTITY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(9)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FOLD_ACC_ELEM_BODY: &str = r#"
 array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
@@ -477,7 +477,7 @@ array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
 run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2)]),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A bottoming predicate poisons the whole collection for that cycle:
 // three honest deliveries, so the group closes at n == 3.
@@ -506,7 +506,7 @@ run!(filter_div0_slot_cache, FILTER_DIV0_SLOT_CACHE, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An index into a parameter whose type is not known yet types the
 // element from the argument: the source is assumed an array, not bytes.

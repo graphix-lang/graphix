@@ -3,7 +3,10 @@
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 
 const TUPLES0: &str = r#"
@@ -19,7 +22,7 @@ run!(tuples0, TUPLES0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit;
+}; FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 // A composite literal with a value-shape (Duration) field fuses.
@@ -50,7 +53,7 @@ run!(struct_computed_bool_field, STRUCT_COMPUTED_BOOL_FIELD, |v: Result<&Value>|
             if matches!(&f[..], [Value::String(_), Value::Bool(false)])
     ),
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit;
+}; FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const TUPLES1: &str = r#"
@@ -64,7 +67,7 @@ const TUPLES1: &str = r#"
 run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const TUPLES2: &str = r#"
 {
@@ -79,7 +82,7 @@ const TUPLES2: &str = r#"
 run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const TUPLEACCESSOR: &str = r#"
 {
@@ -91,7 +94,7 @@ const TUPLEACCESSOR: &str = r#"
 run!(tupleaccessor, TUPLEACCESSOR, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit;
+}; FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const STRUCTS0: &str = r#"
@@ -123,7 +126,7 @@ run!(structs0, STRUCTS0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit;
+}; FuseExpect::Jit;
    shape: NodeShape::contains_fused(KernelMatcher::new()));
 
 const BINDSTRUCT: &str = r#"
@@ -137,7 +140,7 @@ const BINDSTRUCT: &str = r#"
 run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STRUCTACCESSOR: &str = r#"
 {
@@ -159,7 +162,7 @@ const STRUCTWITH0: &str = r#"
 }
 "#;
 
-run!(structwith0, STRUCTWITH0, refused("string does not contain i64"); graphix_package_core::testing::FuseExpect::None);
+run!(structwith0, STRUCTWITH0, refused("string does not contain i64"); FuseExpect::None);
 
 const STRUCTWITH1: &str = r#"
 {
@@ -173,7 +176,7 @@ const STRUCTWITH1: &str = r#"
 run!(structwith1, STRUCTWITH1, |v: Result<&Value>| match v {
     Ok(Value::F64(85.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STRUCTWITH2: &str = r#"
 {
@@ -251,7 +254,7 @@ run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STRUCTWITH5: &str = r#"
 {
@@ -273,7 +276,7 @@ run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A struct-with copying an unchanged composite field while replacing a
 // scalar; reading a field back proves the copy.
@@ -333,7 +336,7 @@ const CALL_TUPLE_ARG: &str = r#"
 run!(call_tuple_arg, CALL_TUPLE_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(35)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CALL_STRUCT_ARG: &str = r#"
 {
@@ -346,7 +349,7 @@ const CALL_STRUCT_ARG: &str = r#"
 run!(call_struct_arg, CALL_STRUCT_ARG, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A value-shape (nullable) return from a lambda called inside the
 // result block.
@@ -363,7 +366,7 @@ const CALL_NULLABLE_RETURN: &str = r#"
 run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // String equality.
 const VALUE_EQ_STRING: &str = r#"
@@ -409,7 +412,7 @@ const TUPLE_INDEX_OOB: &str = r#"
 "#;
 
 run!(tuple_index_oob, TUPLE_INDEX_OOB, refused("no such field 5");
-    graphix_package_core::testing::FuseExpect::None);
+    FuseExpect::None);
 
 // `{src with f}` where the source type sits behind TVars and the
 // replacement typechecks a select over the same struct.

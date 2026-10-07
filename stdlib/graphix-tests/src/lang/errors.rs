@@ -1,7 +1,7 @@
 // Tests for try/catch and error handling
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::publisher::Value;
 
 const UNCHECKED0: &str = r#"
@@ -11,7 +11,7 @@ const UNCHECKED0: &str = r#"
 run!(unchecked0, UNCHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED0: &str = r#"
 2 +? 2
@@ -20,7 +20,7 @@ const CHECKED0: &str = r#"
 run!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_DIV0: &str = r#"
 {
@@ -67,7 +67,7 @@ const CATCH1: &str = r#"
 run!(catch1, CATCH1, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Nested catches in one block: the second covers the ?s below it; its
 // handler's rethrow resolves to the first, seen the same cycle.
@@ -92,7 +92,7 @@ run!(catch4, CATCH4, |v: Result<&Value>| match v
 {
     Ok([Value::Error(_), Value::Error(_)]) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_DOLLAR: &str = r#"
 {
@@ -104,7 +104,7 @@ const CHECKED_DOLLAR: &str = r#"
 run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Composite-success `$`.
 const COMPOSITE_DOLLAR: &str = r#"
@@ -117,7 +117,7 @@ const COMPOSITE_DOLLAR: &str = r#"
 run!(composite_dollar, COMPOSITE_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => &**a == &[Value::I64(2), Value::I64(3)],
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The borrowed-inner variant: the qop inner is a read of a nullable
 // local.
@@ -136,7 +136,7 @@ run!(
         Ok(Value::Array(a)) => &**a == &[Value::I64(2), Value::I64(3)],
         _ => false,
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // A `$` over a nested fallible union strips every error member; the
@@ -154,7 +154,7 @@ const QOP_NESTED_UNION_STRING: &str = r#"
 
 run!(qop_nested_union_string, QOP_NESTED_UNION_STRING, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A Sync builtin that produces no value bound to an unconsumed local:
 // the block's unrelated result still emits. (The logged error each fire
@@ -168,7 +168,7 @@ const DYNCALL_PENDING_UNCONSUMED: &str = r#"
 
 run!(dyncall_pending_unconsumed, DYNCALL_PENDING_UNCONSUMED, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 0.)
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The same in statement position: the statement's bottom is discarded.
 const DYNCALL_PENDING_STATEMENT: &str = r#"
@@ -180,7 +180,7 @@ const DYNCALL_PENDING_STATEMENT: &str = r#"
 
 run!(dyncall_pending_statement, DYNCALL_PENDING_STATEMENT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(7)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The bottom value consumed by `buffer::len`, whose result is itself
 // unconsumed: the tuple still emits.
@@ -196,7 +196,7 @@ run!(
     dyncall_pending_consumed_local,
     DYNCALL_PENDING_CONSUMED_LOCAL,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 // The bottom inside a cross-kernel callee: the caller still emits 5.
@@ -210,7 +210,7 @@ const DYNCALL_PENDING_CALLEE: &str = r#"
 
 run!(dyncall_pending_callee, DYNCALL_PENDING_CALLEE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The bottom inside a HOF callback slot: the map local bottoms while the
 // block's unrelated output still emits.
@@ -223,7 +223,7 @@ const DYNCALL_PENDING_HOF_SLOT: &str = r#"
 
 run!(dyncall_pending_hof_slot, DYNCALL_PENDING_HOF_SLOT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(9)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A handler-ful `?` that succeeds inside a fusable region fuses.
 const QOP_HANDLER_DELIVER: &str = r#"
@@ -237,7 +237,7 @@ const QOP_HANDLER_DELIVER: &str = r#"
 
 run!(qop_handler_deliver, QOP_HANDLER_DELIVER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(110)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A lambda whose select merges a scalar arm with an error arm, called so
 // the error arm is taken: the return is the union [i64, Error<f64>].
@@ -250,7 +250,7 @@ const ERROR_ARM_LAMBDA_RETURN: &str = r#"
 
 run!(error_arm_lambda_return, ERROR_ARM_LAMBDA_RETURN, |v: Result<&Value>| {
     matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::F64(f) if *f == 0.0))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A catch covers only the statements below it in its block. The
 // handler's index-only select proves it by exhaustiveness.
@@ -268,7 +268,7 @@ const CATCH_POSITIONAL: &str = r#"
 run!(catch_positional, CATCH_POSITIONAL, |v: Result<&Value>| matches!(
     v,
     Ok(Value::String(s)) if &**s == "index"
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A catch inside a nested block covers only that block.
 const CATCH_BLOCK_SCOPE: &str = r#"
@@ -287,7 +287,7 @@ const CATCH_BLOCK_SCOPE: &str = r#"
 run!(catch_block_scope, CATCH_BLOCK_SCOPE, |v: Result<&Value>| matches!(
     v,
     Ok(Value::String(s)) if &**s == "index"
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A catch covering a lambda body's `?` keeps those errors out of the
 // lambda's inferred throws.
@@ -307,7 +307,7 @@ const CATCH_IN_LAMBDA_THROWS: &str = r#"
 run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Without the catch the lambda throws, and the ascription refuses it.
 const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
@@ -325,7 +325,7 @@ run!(
     uncaught_in_lambda_throws,
     UNCAUGHT_IN_LAMBDA_THROWS,
     graphix_package_core::testing::refused("throws '_");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 /// A catch installed by one `GXHandle::compile` input covers later
@@ -383,7 +383,7 @@ const CATCH_PER_ACTIVATION: &str = r#"
 run!(catch_per_activation, CATCH_PER_ACTIVATION, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A callee's handler covers the callee's body only.
 const CATCH_IN_CALLEE_STAYS_IN_CALLEE: &str = r#"
@@ -405,7 +405,7 @@ const CATCH_IN_CALLEE_STAYS_IN_CALLEE: &str = r#"
 run!(catch_in_callee_stays_in_callee, CATCH_IN_CALLEE_STAYS_IN_CALLEE, |v: Result<&Value>| match v {
     Ok(Value::I64(11)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A `?` in a body that installs no handler reaches the caller's.
 const CATCH_THROUGH_CALL: &str = r#"
@@ -424,7 +424,7 @@ const CATCH_THROUGH_CALL: &str = r#"
 run!(catch_through_call, CATCH_THROUGH_CALL, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A `?` in an inline collection callback is baked into the calling
 // kernel, so two instances of `g` under different catches are two kernels.
@@ -487,7 +487,7 @@ const CATCH_ASCRIPTION_RETHROW_NO_THROW: &str = r#"
 
 run!(catch_ascription_rethrow_no_throw, CATCH_ASCRIPTION_RETHROW_NO_THROW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(7)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An ascribed rethrow still delivers to the enclosing catch.
 const CATCH_ASCRIPTION_RETHROW: &str = r#"
@@ -505,7 +505,7 @@ const CATCH_ASCRIPTION_RETHROW: &str = r#"
 
 run!(catch_ascription_rethrow, CATCH_ASCRIPTION_RETHROW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // T must still contain every thrown error.
 #[tokio::test]
@@ -535,7 +535,7 @@ const ARM_INPUT_RAISE_FUSES: &str = r#"
 run!(arm_input_raise_fuses, ARM_INPUT_RAISE_FUSES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // `$` over a nullable waits out the null, and says nothing about it.
 const OR_NEVER_NULL: &str = r#"
@@ -547,7 +547,7 @@ const OR_NEVER_NULL: &str = r#"
 
 run!(or_never_null, OR_NEVER_NULL, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `?` over a nullable raises `NullError` naming its operand; the
 // handler's one arm select proves that is the whole error type.
@@ -579,7 +579,7 @@ const QOP_NULL_PASSES: &str = r#"
 
 run!(qop_null_passes, QOP_NULL_PASSES, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Errors come off first: one `$` leaves a Result's null success in
 // place, a second takes it.
@@ -605,7 +605,7 @@ const QOP_NULL_SUCCESS_SURVIVES: &str = r#"
 
 run!(qop_null_success_survives, QOP_NULL_SUCCESS_SURVIVES, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // `?`/`$` sit inside a postfix chain, and chain with each other.
 const QOP_IN_POSTFIX_CHAIN: &str = r#"
@@ -633,7 +633,7 @@ const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
 
 run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"Caught\""
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Two raises to one handler in one cycle: the first is delivered that
 // cycle, the second the next, from forked siblings as from serial ones.

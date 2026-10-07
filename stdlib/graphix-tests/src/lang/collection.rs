@@ -3,11 +3,11 @@
 // `map(c, f)` mean the same thing whatever `c` is.
 
 use anyhow::Result;
+
 use graphix_package_core::{
     run,
     testing::{FuseExpect, refused},
 };
-
 use netidx::publisher::Value;
 
 // The built-in Array implementation: the intrinsics, reached through
@@ -330,7 +330,7 @@ const FILTER_MAP_TOTAL_CALLBACK: &str = r#"
 run!(filter_map_total_callback, FILTER_MAP_TOTAL_CALLBACK, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(145))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A collection callback with a labeled-default parameter before its
 // positional one receives the element in the positional slot; an outer
@@ -347,7 +347,7 @@ const LABELED_CALLBACK_OUTER_SHADOW: &str = r#"
 
 run!(labeled_callback_outer_shadow, LABELED_CALLBACK_OUTER_SHADOW,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
-    graphix_package_core::testing::FuseExpect::Jit);
+    FuseExpect::Jit);
 
 // The labeled default is read in the body: (42+10)+(42+20)+(42+30) = 186.
 const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
@@ -363,7 +363,7 @@ const LABELED_CALLBACK_DEFAULT_USED: &str = r#"
 
 run!(labeled_callback_default_used, LABELED_CALLBACK_DEFAULT_USED,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(186)));
-    graphix_package_core::testing::FuseExpect::Jit);
+    FuseExpect::Jit);
 
 // A HOF nested under its own callback is a nested loop, not recursion:
 // instantiation keys on identity, so the shape fuses.
@@ -377,7 +377,7 @@ const NESTED_SAME_INTRINSIC: &str = r#"
 run!(nested_same_intrinsic, NESTED_SAME_INTRINSIC, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(59900))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The same through `map`, with the inner loop reached via a named lambda.
 const NESTED_MAP_IN_MAP: &str = r#"
@@ -391,7 +391,7 @@ const NESTED_MAP_IN_MAP: &str = r#"
 run!(nested_map_in_map, NESTED_MAP_IN_MAP, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(200))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // The same for a user-written HOF: `apply` nested under its own callback.
 const USER_HOF_NESTED: &str = r#"
@@ -406,7 +406,7 @@ const USER_HOF_NESTED: &str = r#"
 run!(user_hof_nested, USER_HOF_NESTED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(20100))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Nested same-def use with different element types: each instantiation
 // gets its own cells.
@@ -421,4 +421,4 @@ const NESTED_MIXED_TYPES: &str = r#"
 run!(nested_mixed_types, NESTED_MIXED_TYPES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(9))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);

@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 const LIST_NIL: &str = r#"
@@ -9,7 +12,7 @@ const LIST_NIL: &str = r#"
 
 run!(list_nil, LIST_NIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_CONS: &str = r#"
   list::to_array(list::cons(1, list::cons(2, list::cons(3, list::nil(null)))))
@@ -23,7 +26,7 @@ run!(list_cons, LIST_CONS, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_SINGLETON: &str = r#"
   list::to_array(list::singleton(42))
@@ -37,7 +40,7 @@ run!(list_singleton, LIST_SINGLETON, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_HEAD_NONEMPTY: &str = r#"
   list::head(list::from_array([10, 20, 30]))
@@ -45,7 +48,7 @@ const LIST_HEAD_NONEMPTY: &str = r#"
 
 run!(list_head_nonempty, LIST_HEAD_NONEMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_HEAD_EMPTY: &str = r#"
   list::head(list::nil(null))
@@ -53,7 +56,7 @@ const LIST_HEAD_EMPTY: &str = r#"
 
 run!(list_head_empty, LIST_HEAD_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_TAIL_NONEMPTY: &str = r#"
   list::to_array(list::tail(list::from_array([1, 2, 3]))$)
@@ -61,7 +64,7 @@ const LIST_TAIL_NONEMPTY: &str = r#"
 
 run!(list_tail_nonempty, LIST_TAIL_NONEMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(2), Value::I64(3)])
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_TAIL_EMPTY: &str = r#"
   list::tail(list::nil(null))
@@ -69,7 +72,7 @@ const LIST_TAIL_EMPTY: &str = r#"
 
 run!(list_tail_empty, LIST_TAIL_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_UNCONS_NONEMPTY: &str = r#"
 {
@@ -80,7 +83,7 @@ const LIST_UNCONS_NONEMPTY: &str = r#"
 
 run!(list_uncons_nonempty, LIST_UNCONS_NONEMPTY, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, [i64; 2])>()), Ok(Ok((10, [20, 30]))))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_UNCONS_EMPTY: &str = r#"
   list::uncons(list::nil(null))
@@ -88,7 +91,7 @@ const LIST_UNCONS_EMPTY: &str = r#"
 
 run!(list_uncons_empty, LIST_UNCONS_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_IS_EMPTY_FALSE: &str = r#"
   list::is_empty(list::singleton(1))
@@ -96,7 +99,7 @@ const LIST_IS_EMPTY_FALSE: &str = r#"
 
 run!(list_is_empty_false, LIST_IS_EMPTY_FALSE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(false)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_NTH: &str = r#"
 {
@@ -113,7 +116,7 @@ run!(list_nth, LIST_NTH, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_NTH_OOB: &str = r#"
 {
@@ -130,7 +133,7 @@ run!(list_nth_oob, LIST_NTH_OOB, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_LEN: &str = r#"
   list::len(list::from_array([1, 2, 3, 4, 5]))
@@ -138,7 +141,7 @@ const LIST_LEN: &str = r#"
 
 run!(list_len, LIST_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_LEN_EMPTY: &str = r#"
   list::len(list::nil(null))
@@ -146,7 +149,7 @@ const LIST_LEN_EMPTY: &str = r#"
 
 run!(list_len_empty, LIST_LEN_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_REVERSE: &str = r#"
   list::to_array(list::reverse(list::from_array([1, 2, 3])))
@@ -160,7 +163,7 @@ run!(list_reverse, LIST_REVERSE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_TAKE: &str = r#"
   list::to_array(list::take(2, list::from_array([1, 2, 3, 4, 5])))
@@ -174,7 +177,7 @@ run!(list_take, LIST_TAKE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_TAKE_MORE: &str = r#"
   list::to_array(list::take(10, list::from_array([1, 2, 3])))
@@ -188,7 +191,7 @@ run!(list_take_more, LIST_TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_DROP: &str = r#"
   list::to_array(list::drop(2, list::from_array([1, 2, 3, 4, 5])))
@@ -202,7 +205,7 @@ run!(list_drop, LIST_DROP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_DROP_MORE: &str = r#"
   list::to_array(list::drop(10, list::from_array([1, 2, 3])))
@@ -213,7 +216,7 @@ run!(list_drop_more, LIST_DROP_MORE, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_ROUNDTRIP: &str = r#"
   list::to_array(list::from_array([10, 20, 30]))
@@ -227,7 +230,7 @@ run!(list_roundtrip, LIST_ROUNDTRIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_CONCAT: &str = r#"
 {
@@ -248,7 +251,7 @@ run!(list_concat, LIST_CONCAT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_FLATTEN: &str = r#"
 {
@@ -268,7 +271,7 @@ run!(list_flatten, LIST_FLATTEN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_MAP: &str = r#"
 {
@@ -285,7 +288,7 @@ run!(list_map, LIST_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_MAP_TYPE_ERR: &str = r#"
 {
@@ -294,7 +297,7 @@ const LIST_MAP_TYPE_ERR: &str = r#"
 }
 "#;
 
-run!(list_map_type_err, LIST_MAP_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(list_map_type_err, LIST_MAP_TYPE_ERR, refused("string does not contain"); FuseExpect::None);
 
 const LIST_FILTER: &str = r#"
 {
@@ -317,7 +320,7 @@ run!(list_filter, LIST_FILTER, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_FILTER_MAP: &str = r#"
 {
@@ -337,7 +340,7 @@ run!(list_filter_map, LIST_FILTER_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_FLAT_MAP: &str = r#"
 {
@@ -354,7 +357,7 @@ run!(list_flat_map, LIST_FLAT_MAP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_FOLD: &str = r#"
 {
@@ -365,7 +368,7 @@ const LIST_FOLD: &str = r#"
 
 run!(list_fold, LIST_FOLD, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(55)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Dynamic re-firing is a convergence test: `list_fold_dynamic_init_converges`.
 
@@ -376,7 +379,7 @@ const LIST_FOLD_TYPE_ERR: &str = r#"
 }
 "#;
 
-run!(list_fold_type_err, LIST_FOLD_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(list_fold_type_err, LIST_FOLD_TYPE_ERR, refused("string does not contain"); FuseExpect::None);
 
 const LIST_FIND: &str = r#"
 {
@@ -394,7 +397,7 @@ run!(list_find, LIST_FIND, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_FIND_MISS: &str = r#"
 {
@@ -405,7 +408,7 @@ const LIST_FIND_MISS: &str = r#"
 
 run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A heterogeneous list with a Fn member flowing through find into
 // Number-constrained arith is rejected.
@@ -423,7 +426,7 @@ run!(
     list_find_het_fn_fold_type_err,
     LIST_FIND_HET_FN_FOLD_TYPE_ERR,
     refused("arithmetic is fn(");
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );
 
 const LIST_FIND_MAP: &str = r#"
@@ -439,7 +442,7 @@ const LIST_FIND_MAP: &str = r#"
 
 run!(list_find_map, LIST_FIND_MAP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_SORT_ASC: &str = r#"
   list::to_array(list::sort(list::from_array([5, 3, 1, 4, 2])))
@@ -453,7 +456,7 @@ run!(list_sort_asc, LIST_SORT_ASC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_SORT_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, list::from_array([5, 3, 1, 4, 2])))
@@ -467,7 +470,7 @@ run!(list_sort_desc, LIST_SORT_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC: &str = r#"
   list::to_array(list::sort(#numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -483,7 +486,7 @@ run!(list_sort_numeric, LIST_SORT_NUMERIC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_SORT_NUMERIC_DESC: &str = r#"
   list::to_array(list::sort(#dir:`Descending, #numeric:true, list::from_array(["5", "50", "6", "40", "1"])))
@@ -499,7 +502,7 @@ run!(list_sort_numeric_desc, LIST_SORT_NUMERIC_DESC, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_ENUMERATE: &str = r#"
 {
@@ -516,7 +519,7 @@ run!(list_enumerate, LIST_ENUMERATE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_ZIP: &str = r#"
 {
@@ -534,7 +537,7 @@ run!(list_zip, LIST_ZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_ZIP_UNEQUAL: &str = r#"
 {
@@ -552,7 +555,7 @@ run!(list_zip_unequal, LIST_ZIP_UNEQUAL, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_UNZIP: &str = r#"
 {
@@ -570,7 +573,7 @@ run!(list_unzip, LIST_UNZIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_INIT: &str = r#"
   list::to_array(list::init(5, |i| i * 2))
@@ -584,7 +587,7 @@ run!(list_init, LIST_INIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_INIT_ZERO: &str = r#"
   list::to_array(list::init(0, |i| i))
@@ -595,13 +598,13 @@ run!(list_init_zero, LIST_INIT_ZERO, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.is_empty(),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const LIST_INIT_TYPE_ERR: &str = r#"
   list::init(3, |i| str::len(i))
 "#;
 
-run!(list_init_type_err, LIST_INIT_TYPE_ERR, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(list_init_type_err, LIST_INIT_TYPE_ERR, refused("string does not contain"); FuseExpect::None);
 
 const LIST_ITER: &str = r#"
   filter(list::iter(list::from_array([1, 2, 3, 4])), |x| x == 4)
@@ -609,7 +612,7 @@ const LIST_ITER: &str = r#"
 
 run!(list_iter, LIST_ITER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const LIST_ITERQ: &str = r#"
 {
@@ -618,13 +621,13 @@ const LIST_ITERQ: &str = r#"
    let clock: Any = once(null);
    let v = list::iterq(#clock, l);
    clock <- v;
-   filter(v, |x| x == 8)
+   array::group(v, |n, _| n == 8)
 }
 "#;
 
 run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
-    matches!(v, Ok(Value::I64(8)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+    matches!(v.map(|v| v.clone().cast_to::<[i64; 8]>()), Ok(Ok([1, 2, 3, 4, 5, 6, 7, 8])))
+}; FuseExpect::Jit);
 
 // `list::fold`'s init changes 0 -> 100 on the second cycle and the fold
 // recomputes (106); `eval_converged` reads the settled value.
@@ -653,7 +656,7 @@ const LIST_FIND_MAP_TUPLE: &str = r#"
 "#;
 run!(list_find_map_tuple, LIST_FIND_MAP_TUPLE, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, i64)>()), Ok(Ok((1, 2))))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Direct List-HOF lowering: the loops compile to native kernels.
 

@@ -1,8 +1,10 @@
 // Tests for by-reference operations
 
 use anyhow::Result;
-use graphix_package_core::run;
-use graphix_package_core::testing::Mode;
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, Mode},
+};
 use netidx::publisher::Value;
 
 const BYREF_DEREF: &str = r#"
@@ -16,7 +18,7 @@ const BYREF_DEREF: &str = r#"
 run!(byref_deref, BYREF_DEREF, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const BYREF_TUPLE: &str = r#"
 {
@@ -29,7 +31,7 @@ const BYREF_TUPLE: &str = r#"
 run!(byref_tuple, BYREF_TUPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const BYREF_PATTERN: &str = r#"
 {
@@ -43,7 +45,7 @@ const BYREF_PATTERN: &str = r#"
 run!(byref_pattern, BYREF_PATTERN, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const CONNECT_DEREF0: &str = r#"
 {
@@ -60,7 +62,7 @@ run!(connect_deref0, CONNECT_DEREF0, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CONNECT_DEREF1: &str = r#"
 {
@@ -77,7 +79,7 @@ run!(connect_deref1, CONNECT_DEREF1, |v: Result<&Value>| match v {
         _ => false,
     },
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Refs are first-class runtime values, so a ref read back out of a
 // container derefs like any other (`*(a[0]$)` over `Array<&i64>`).
@@ -92,7 +94,7 @@ const DEREF_FROM_ARRAY: &str = r#"
 run!(deref_from_array, DEREF_FROM_ARRAY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(42))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 const DEREF_FROM_TUPLE_FIELD: &str = r#"
 {
@@ -106,7 +108,7 @@ const DEREF_FROM_TUPLE_FIELD: &str = r#"
 run!(deref_from_tuple_field, DEREF_FROM_TUPLE_FIELD, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(14))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // Place references (design/place_references.md).
 
@@ -138,7 +140,7 @@ const PLACE_READ_WRITE: &str = r#"
 run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
     format!("{}", v.unwrap())
         == r#"[[i64:20, i64:5, "p", i64:8, i64:9], [i64:10, i64:21, i64:30], [["tags", ["P", "q"]], ["x", i64:6]], [i64:7, i64:88], i64:99, [i64:21, i64:6, "P", i64:88, i64:99]]"#
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A moving reference points where its key says when it fires; two
 // writes to one root in one cycle both land; a write into a missing
@@ -167,7 +169,7 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 
 run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:1, [i64:100, i64:2, i64:300], i64:300]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A lambda over `&State` reaches an editor held in an array through a
 // place reference passed as its argument.
@@ -191,7 +193,7 @@ const PLACE_THROUGH_PARAM: &str = r#"
 run!(place_through_param, PLACE_THROUGH_PARAM, |v: Result<&Value>| {
     format!("{}", v.unwrap())
         == r#"[[["cursor", i64:1], ["value", "a"]], [["cursor", i64:2], ["value", "b!"]]]"#
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A reference that became null dereferences to bottom, never to the
 // old target: the late read finds nothing and the deadline wins.
@@ -207,7 +209,7 @@ const DEREF_NULL_REF_IS_BOTTOM: &str = r#"
 
 run!(deref_null_ref_is_bottom, DEREF_NULL_REF_IS_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A fired address fires the dereference even when the new target is
 // standing: switching from &x to &y delivers y.
@@ -224,7 +226,7 @@ const DEREF_FIRES_ON_ADDRESS: &str = r#"
 
 run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:10, i64:20]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place's address is evaluated once: a key with an effect runs it
 // once per fire (`n` fires at its binding and once more, not twice
@@ -241,7 +243,7 @@ const PLACE_KEY_EVALUATED_ONCE: &str = r#"
 
 run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:2, i64:10]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // An undetermined key is a bottom reference: a write through it lands
 // nowhere; when the key returns the reference retargets (and, as at
@@ -268,7 +270,7 @@ const PLACE_BOTTOM_KEY: &str = r#"
 
 run!(place_bottom_key, PLACE_BOTTOM_KEY, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:10, i64:20], [i64:10, i64:99], [i64:10, i64:20, i64:99]]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place the root no longer has is bottom, not its last value: a
 // connect sampling it then writes nothing.
@@ -293,7 +295,7 @@ const PLACE_REMOVED_ELEMENT: &str = r#"
 
 run!(place_removed_element, PLACE_REMOVED_ELEMENT, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:20, i64:7], null]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The referent type is the container's element type: an Error-valued
 // field is referenced as such.
@@ -308,7 +310,7 @@ const PLACE_ERROR_FIELD: &str = r#"
 
 run!(place_error_field, PLACE_ERROR_FIELD, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"Caught\""
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Parentheses are transparent in a place, and a place through a
 // dereferenced place reference composes the paths: the write reaches
@@ -329,7 +331,7 @@ const PLACE_THROUGH_DEREF: &str = r#"
 
 run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:20, i64:20]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place through a dereference whose reference went bottom has no
 // address: it reads nothing and a write through it lands nowhere; when
@@ -359,7 +361,7 @@ const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
 
 run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:10, i64:20], null, [i64:7, i64:20]]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place indexed past i64::MAX addresses nothing, never from the end:
 // its read is bottom and the sample banks.
@@ -377,7 +379,7 @@ const PLACE_INDEX_U64_ABOVE_I64_MAX: &str = r#"
 
 run!(place_index_u64_above_i64_max, PLACE_INDEX_U64_ABOVE_I64_MAX, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place's index is an integer, as in an access.
 const PLACE_INDEX_IS_AN_INTEGER: &str = r#"
@@ -390,7 +392,7 @@ const PLACE_INDEX_IS_AN_INTEGER: &str = r#"
 
 run!(place_index_is_an_integer, PLACE_INDEX_IS_AN_INTEGER, |v: Result<&Value>| {
     matches!(v, Err(e) if format!("{e:#}").contains("Int does not contain string"))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 /// A composed place's cell, which an embedder reads, holds its element.
 #[tokio::test(flavor = "multi_thread")]
@@ -457,7 +459,7 @@ const DEREF_MOVED_TO_UNDELIVERED: &str = r#"
 
 run!(deref_moved_to_undelivered, DEREF_MOVED_TO_UNDELIVERED, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A place reaches an abstract value's payload where its definition is
 // visible, and an error's; writes rebuild them.
@@ -481,7 +483,7 @@ const PLACE_PAYLOAD: &str = r#"
 
 run!(place_payload, PLACE_PAYLOAD, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:5, i64:1], i64:7, i64:8, i64:7, i64:8]"
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 /// A place whose root goes bottom sets its cell, which an embedder
 /// reads, bottom.
@@ -535,7 +537,7 @@ const BYREF_PRINTS_OPAQUE: &str = r#"
 
 run!(byref_prints_opaque, BYREF_PRINTS_OPAQUE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "&ref {a: 2, r: &ref}")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `==` and `!=` compare references by what they point to: a binding, or
 // a place's root and path. Each `&x` mints a cell of its own, so its
@@ -566,7 +568,7 @@ run!(byref_eq_compares_targets, BYREF_EQ_COMPARES_TARGETS, |v: Result<&Value>| {
         Ok(Value::Array(a)) => a.iter().map(|v| *v == Value::Bool(true)).eq(want),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // References have no order: a reference's value is its cell, numbered in
 // whatever order compiling made it. The orderings, sorting, `min`/`max`
@@ -605,4 +607,4 @@ const BYREF_UNIQ_COMPARES_TARGETS: &str = r#"
 
 run!(byref_uniq_compares_targets, BYREF_UNIQ_COMPARES_TARGETS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(2)])
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

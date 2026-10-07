@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 #[cfg(unix)]
@@ -39,7 +39,7 @@ const PROCESS_STDOUT_PIPE: &str = r#"
 
 run!(process_stdout_pipe, PROCESS_STDOUT_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // CR claude for claude: [doc-drift] CLAUDE.md (Stdlib notes) says the shell tests are
 // Unix-gated with cmd.exe twins, but only PROCESS_STDOUT_PIPE and PROCESS_WAIT_STATUS
@@ -74,7 +74,7 @@ const PROCESS_STDIN_PIPE: &str = r#"
 #[cfg(unix)]
 run!(process_stdin_pipe, PROCESS_STDIN_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "ping")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_WAIT_STATUS: &str = r#"
@@ -109,7 +109,7 @@ run!(process_wait_status, PROCESS_WAIT_STATUS, |v: Result<&Value>| match v {
             && matches!(&a[1], Value::Array(pair) if pair.len() == 2 && matches!((&pair[0], &pair[1]), (Value::String(k), Value::Bool(false)) if &**k == "success"))
     }
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_CONCURRENT_WAIT: &str = r#"
@@ -129,7 +129,7 @@ const PROCESS_CONCURRENT_WAIT: &str = r#"
 #[cfg(unix)]
 run!(process_concurrent_wait, PROCESS_CONCURRENT_WAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_KILL_DURING_WAIT: &str = r#"
@@ -149,7 +149,7 @@ const PROCESS_KILL_DURING_WAIT: &str = r#"
 #[cfg(unix)]
 run!(process_kill_during_wait, PROCESS_KILL_DURING_WAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_STDIN_EOF: &str = r#"
@@ -176,7 +176,7 @@ const PROCESS_STDIN_EOF: &str = r#"
 #[cfg(unix)]
 run!(process_stdin_eof, PROCESS_STDIN_EOF, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 const PROCESS_ENV: &str = r#"
@@ -199,7 +199,7 @@ const PROCESS_ENV: &str = r#"
 #[cfg(unix)]
 run!(process_env, PROCESS_ENV, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "bar")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 #[cfg(unix)]
 // CR claude for claude: [risk] The kill fires 100 ms after init, and `~` banks that fire
@@ -227,7 +227,7 @@ const PROCESS_GRACEFUL_KILL: &str = r#"
 #[cfg(unix)]
 run!(process_graceful_kill, PROCESS_GRACEFUL_KILL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const PROCESS_SPAWN_FAIL: &str = r#"
 {
@@ -241,7 +241,7 @@ const PROCESS_SPAWN_FAIL: &str = r#"
 
 run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `Lines::lines` frames at the byte level: a line split across two
 // reads, a CRLF line, and a trailing fragment with no newline.
@@ -290,7 +290,7 @@ run!(io_lines, IO_LINES, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The batched form delivers one event per read carrying every line that
 // read made available: two writes arrive as two arrays.
@@ -322,4 +322,4 @@ const IO_LINES_BATCHED: &str = r#"
 #[cfg(unix)]
 run!(io_lines_batched, IO_LINES_BATCHED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "a1,a2,a3,b1,b2")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

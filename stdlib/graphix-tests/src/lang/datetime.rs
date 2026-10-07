@@ -2,7 +2,10 @@
 
 use anyhow::Result;
 use chrono::prelude::*;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::publisher::Value;
 use std::time::Duration;
 
@@ -18,7 +21,7 @@ run!(datetime_arith00, DATETIME_ARITH00, |v: Result<&Value>| match v {
         if **dt == "2024-11-05T01:00:00Z".parse::<DateTime<Utc>>().unwrap() =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH01: &str = r#"
 {
@@ -32,7 +35,7 @@ run!(datetime_arith01, DATETIME_ARITH01, |v: Result<&Value>| match v {
         if **dt == "2024-11-04T23:00:00Z".parse::<DateTime<Utc>>().unwrap() =>
         true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH02: &str = r#"
 {
@@ -44,7 +47,7 @@ const DATETIME_ARITH02: &str = r#"
 run!(datetime_arith02, DATETIME_ARITH02, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(7200) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH03: &str = r#"
 {
@@ -56,7 +59,7 @@ const DATETIME_ARITH03: &str = r#"
 run!(datetime_arith03, DATETIME_ARITH03, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(7200) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH04: &str = r#"
 {
@@ -68,7 +71,7 @@ const DATETIME_ARITH04: &str = r#"
 run!(datetime_arith04, DATETIME_ARITH04, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH05: &str = r#"
 {
@@ -80,7 +83,7 @@ const DATETIME_ARITH05: &str = r#"
 run!(datetime_arith05, DATETIME_ARITH05, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH06: &str = r#"
 {
@@ -92,7 +95,7 @@ const DATETIME_ARITH06: &str = r#"
 run!(datetime_arith06, DATETIME_ARITH06, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(1800) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH07: &str = r#"
 {
@@ -101,7 +104,7 @@ const DATETIME_ARITH07: &str = r#"
 }
 "#;
 
-run!(datetime_arith07, DATETIME_ARITH07, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith07, DATETIME_ARITH07, refused("Number does not contain duration"); FuseExpect::None);
 
 const DATETIME_ARITH08: &str = r#"
 {
@@ -110,7 +113,7 @@ const DATETIME_ARITH08: &str = r#"
 }
 "#;
 
-run!(datetime_arith08, DATETIME_ARITH08, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith08, DATETIME_ARITH08, refused("Number does not contain duration"); FuseExpect::None);
 
 const DATETIME_ARITH09: &str = r#"
 {
@@ -119,7 +122,7 @@ const DATETIME_ARITH09: &str = r#"
 }
 "#;
 
-run!(datetime_arith09, DATETIME_ARITH09, refused("Number does not contain duration"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith09, DATETIME_ARITH09, refused("Number does not contain duration"); FuseExpect::None);
 
 const DATETIME_ARITH10: &str = r#"
 {
@@ -128,7 +131,7 @@ const DATETIME_ARITH10: &str = r#"
 }
 "#;
 
-run!(datetime_arith10, DATETIME_ARITH10, refused("cannot compute duration + u32"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith10, DATETIME_ARITH10, refused("cannot compute duration + u32"); FuseExpect::None);
 
 const DATETIME_ARITH11: &str = r#"
 {
@@ -137,7 +140,7 @@ const DATETIME_ARITH11: &str = r#"
 }
 "#;
 
-run!(datetime_arith11, DATETIME_ARITH11, refused("cannot compute duration - u32"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith11, DATETIME_ARITH11, refused("cannot compute duration - u32"); FuseExpect::None);
 
 const DATETIME_ARITH12: &str = r#"
 {
@@ -146,7 +149,7 @@ const DATETIME_ARITH12: &str = r#"
 }
 "#;
 
-run!(datetime_arith12, DATETIME_ARITH12, refused("cannot compute datetime - i64"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith12, DATETIME_ARITH12, refused("cannot compute datetime - i64"); FuseExpect::None);
 
 const DATETIME_ARITH13: &str = r#"
 {
@@ -155,7 +158,7 @@ const DATETIME_ARITH13: &str = r#"
 }
 "#;
 
-run!(datetime_arith13, DATETIME_ARITH13, refused("cannot compute datetime + i64"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith13, DATETIME_ARITH13, refused("cannot compute datetime + i64"); FuseExpect::None);
 
 const DATETIME_ARITH14: &str = r#"
 {
@@ -164,7 +167,7 @@ const DATETIME_ARITH14: &str = r#"
 }
 "#;
 
-run!(datetime_arith14, DATETIME_ARITH14, refused("cannot compute datetime * i64"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith14, DATETIME_ARITH14, refused("cannot compute datetime * i64"); FuseExpect::None);
 
 const DATETIME_ARITH15: &str = r#"
 {
@@ -173,7 +176,7 @@ const DATETIME_ARITH15: &str = r#"
 }
 "#;
 
-run!(datetime_arith15, DATETIME_ARITH15, refused("cannot compute datetime / i64"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith15, DATETIME_ARITH15, refused("cannot compute datetime / i64"); FuseExpect::None);
 
 const DATETIME_ARITH16: &str = r#"
 {
@@ -182,7 +185,7 @@ const DATETIME_ARITH16: &str = r#"
 }
 "#;
 
-run!(datetime_arith16, DATETIME_ARITH16, refused("cannot compute datetime % i64"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith16, DATETIME_ARITH16, refused("cannot compute datetime % i64"); FuseExpect::None);
 
 const DATETIME_ARITH17: &str = r#"
 {
@@ -191,7 +194,7 @@ const DATETIME_ARITH17: &str = r#"
 }
 "#;
 
-run!(datetime_arith17, DATETIME_ARITH17, refused("cannot compute duration - datetime"); graphix_package_core::testing::FuseExpect::None);
+run!(datetime_arith17, DATETIME_ARITH17, refused("cannot compute duration - datetime"); FuseExpect::None);
 
 const DATETIME_ARITH18: &str = r#"
     duration:1.s *? duration:2.s
@@ -200,7 +203,7 @@ const DATETIME_ARITH18: &str = r#"
 // duration is not a Number: the operator rejects at compile time
 // (scaling is sys::time::scale).
 run!(datetime_arith18, DATETIME_ARITH18, refused("Number does not contain duration");
-     graphix_package_core::testing::FuseExpect::None);
+     FuseExpect::None);
 
 const DATETIME_MINUS_DATETIME: &str = r#"
     datetime:"2024-11-05T01:00:00Z" - datetime:"2024-11-05T00:00:00Z"
@@ -208,7 +211,7 @@ const DATETIME_MINUS_DATETIME: &str = r#"
 
 // datetime is not a Number either: the difference is sys::time::diff.
 run!(datetime_minus_datetime, DATETIME_MINUS_DATETIME, refused("Number does not contain datetime");
-     graphix_package_core::testing::FuseExpect::None);
+     FuseExpect::None);
 
 const DATETIME_ARITH19: &str = r#"
 {
@@ -220,7 +223,7 @@ const DATETIME_ARITH19: &str = r#"
 run!(datetime_arith19, DATETIME_ARITH19, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::from_secs(3600) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DATETIME_ARITH20: &str = r#"
 {
@@ -233,4 +236,4 @@ const DATETIME_ARITH20: &str = r#"
 run!(datetime_arith20, DATETIME_ARITH20, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::ZERO => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

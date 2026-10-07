@@ -4,7 +4,7 @@
 // determinism guard.
 
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 // Inexact: 0.1 + 0.2 is not 0.3.
@@ -91,7 +91,7 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
 const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
 run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 1.0)
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // f32 inexact add.
 const F32_ADD_INEXACT: &str = "f32:0.1 + f32:0.2";
@@ -104,38 +104,38 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_SUB_UNDERFLOW: &str = "is_err(i64:-9223372036854775808 -? i64:1)";
 run!(checked_sub_underflow_errs, CHECKED_SUB_UNDERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_MUL_OVERFLOW: &str = "is_err(i64:9223372036854775807 *? i64:2)";
 run!(checked_mul_overflow_errs, CHECKED_MUL_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_U8_OVERFLOW: &str = "is_err(u8:200 +? u8:100)";
 run!(checked_u8_overflow_errs, CHECKED_U8_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_U8_UNDERFLOW: &str = "is_err(u8:0 -? u8:1)";
 run!(checked_u8_underflow_errs, CHECKED_U8_UNDERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const CHECKED_DIV_ZERO: &str = "is_err(i64:10 /? i64:0)";
 run!(checked_div_zero_errs, CHECKED_DIV_ZERO, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // No overflow: the checked op returns the bare value, not an error.
 const CHECKED_NO_OVERFLOW: &str = "i64:5 +? i64:3";
 run!(checked_no_overflow_ok, CHECKED_NO_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Unchecked overflow wraps.
 const UNCHECKED_OVERFLOW_WRAPS: &str = "i64:9223372036854775807 + i64:1";
@@ -169,7 +169,7 @@ run!(div_in_untaken_arm, DIV_IN_ARM, |v: Result<&Value>| {
 const ERR_DYNCALL_ARG: &str = "is_err(error(1))";
 run!(err_as_dyncall_arg, ERR_DYNCALL_ARG, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Interpolating a non-scalar part (`Nullable<string>` from an index)
 // node-walks the interpolation instead of crashing.
@@ -177,7 +177,7 @@ const INTERP_NONSCALAR: &str =
     "{ let words = [\"alpha\", \"beta\"]; \"first=[words[0]]\" }";
 run!(interp_nonscalar_part, INTERP_NONSCALAR, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s == "first=alpha")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A bottom in a dead non-tail statement does not poison the tail.
 
@@ -284,7 +284,7 @@ run!(sink_nested_stmt, SINK_NESTED_STMT, |v: Result<&Value>| {
 const SINK_RAND_STAYS_EAGER: &str = "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(99)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A bottom scrutinee bottoms the whole select (pinned in
 // findings/bottom-scrutinee-jun2026, since `run!` cannot assert bottom);

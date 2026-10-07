@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{eval, refusal, refused},
+    testing::{FuseExpect, eval, refusal, refused},
 };
 use netidx::publisher::Value;
 
@@ -35,7 +35,7 @@ const DYNAMIC_MODULE0: &str = r#"
 run!(dynamic_module0, DYNAMIC_MODULE0, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE1: &str = r#"
 {
@@ -65,7 +65,7 @@ const DYNAMIC_MODULE1: &str = r#"
 run!(dynamic_module1, DYNAMIC_MODULE1, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE2: &str = r#"
 {
@@ -88,7 +88,7 @@ const DYNAMIC_MODULE2: &str = r#"
 run!(dynamic_module2, DYNAMIC_MODULE2, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE3: &str = r#"
 {
@@ -119,7 +119,7 @@ const DYNAMIC_MODULE3: &str = r#"
 run!(dynamic_module3, DYNAMIC_MODULE3, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE4: &str = r#"
 {
@@ -151,7 +151,7 @@ const DYNAMIC_MODULE4: &str = r#"
 run!(dynamic_module4, DYNAMIC_MODULE4, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE5: &str = r#"
 {
@@ -183,7 +183,7 @@ const DYNAMIC_MODULE5: &str = r#"
 run!(dynamic_module5, DYNAMIC_MODULE5, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE6: &str = r#"
 {
@@ -214,7 +214,7 @@ const DYNAMIC_MODULE6: &str = r#"
 run!(dynamic_module6, DYNAMIC_MODULE6, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE7: &str = r#"
 {
@@ -246,7 +246,7 @@ const DYNAMIC_MODULE7: &str = r#"
 run!(dynamic_module7, DYNAMIC_MODULE7, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DYNAMIC_MODULE8: &str = r#"
 {
@@ -278,7 +278,7 @@ const DYNAMIC_MODULE8: &str = r#"
 run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
     Ok(Value::String(s)) if s == "hello world" => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A module's check decides no type the code around it left open: its
 // siblings check concurrently and see each other through interfaces.
@@ -296,7 +296,7 @@ val y: i64;
     "/test/m.gx" => r#"
 let y = super::x + 1
 "#
-    ; graphix_package_core::testing::FuseExpect::None);
+    ; FuseExpect::None);
 
 // Two siblings that would decide the same outer type are both refused,
 // and the first in order is the one reported, whatever ran first.
@@ -322,7 +322,7 @@ val y: i64;
     "/test/b.gx" => r#"
 let y = super::x + 2
 "#
-    ; graphix_package_core::testing::FuseExpect::None);
+    ; FuseExpect::None);
 
 // Annotated, the outer binding's type is the module's to read.
 run!(
@@ -367,7 +367,7 @@ val wrap: fn(x: U) -> U;
     "/test/m.gx" => r#"
 let wrap = |x: U| -> U x
 "#
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A module-private type annotating a public lambda's body.
 run!(
@@ -387,7 +387,7 @@ let f = |x: i64| -> i64 {
     y + 1
 }
 "#
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A use-imported bare type name annotating a binding inside a public
 // lambda's body.
@@ -415,7 +415,7 @@ let f = |x: i64| -> i64 {
     y
 }
 "#
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // `use` and static `mod` are declarations: value position (a `let` RHS,
 // a call arg, a block's value slot) is rejected at typecheck. A dynamic
@@ -508,7 +508,7 @@ let f = |x: i64| -> i64 {
     }
 }
 "#
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A `mod` declared inside a field access's source, a labeled default
 // and a map key resolves like one in a lambda body.
@@ -524,7 +524,7 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
     "/test/helper.gx" => "let x = 2",
     "/test/helper2.gx" => "let x = 2",
     "/test/helper3.gx" => "let x = 2"
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A module inside a module of its own name is another module, not an
 // import cycle (a real cycle: graphix-shell/tests/import_cycle.rs).
@@ -535,7 +535,7 @@ run!(
     "/test/a.gx" => "mod b;\nlet x = b::y",
     "/test/a/b.gx" => "mod a;\nlet y = a::z",
     "/test/a/b/a.gx" => "let z = 3"
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // The same source imported on two branches is not a cycle.
 run!(
@@ -550,7 +550,7 @@ let result = x::a + y::b
     "/test/y.gx" => "mod shared;\nlet b = shared::v",
     "/test/x/shared.gx" => "let v = 1",
     "/test/y/shared.gx" => "let v = 1"
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A blacklisted package takes its submodules with it.
 const DYNAMIC_MODULE_BLACKLIST_ROOT: &str = r#"
@@ -583,7 +583,7 @@ const DYNAMIC_MODULE_BLACKLIST_ROOT: &str = r#"
 run!(dynamic_module_blacklist_root, DYNAMIC_MODULE_BLACKLIST_ROOT, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A loaded body's deferred import must name something, as a file's must.
 const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
@@ -605,7 +605,7 @@ const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
 run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // Sleep is pause: a loaded body whose arm sleeps resumes at the wake
 // even though its source does not fire again.
@@ -632,7 +632,7 @@ const DYNAMIC_MODULE_SLEEP: &str = r#"
 run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, |v: Result<&Value>| match v {
     Ok(Value::I64(n)) => *n >= 40,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 async fn compile_error(
     files: &[(&str, &str)],

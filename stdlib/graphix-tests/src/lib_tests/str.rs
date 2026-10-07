@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 const STR_STARTS_WITH: &str = r#"
@@ -206,7 +209,7 @@ run!(str_escape, STR_ESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "\\/foo\\/bar",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The defaulted `#esc` marshals the site's compiled default node, so
 // the common spelling fuses natively; the escape table is a
@@ -232,7 +235,7 @@ run!(str_unescape, STR_UNESCAPE, |v: Result<&Value>| {
         Ok(Value::String(s)) => s == "/foo/bar",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_SPLIT: &str = r#"
 {
@@ -251,7 +254,7 @@ run!(str_split, STR_SPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_RSPLIT: &str = r#"
 {
@@ -270,7 +273,7 @@ run!(str_rsplit, STR_RSPLIT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_SPLITN: &str = r#"
 {
@@ -287,7 +290,7 @@ run!(str_splitn, STR_SPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_RSPLITN: &str = r#"
 {
@@ -304,7 +307,7 @@ run!(str_rsplitn, STR_RSPLITN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_SPLIT_ESCAPED: &str = r#"
 {
@@ -321,7 +324,7 @@ run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_SPLITN_ESCAPED: &str = r#"
 {
@@ -340,7 +343,7 @@ run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const STR_SPLIT_ONCE: &str = r#"
   str::split_once(#pat:", ", "foo, bar, baz")
@@ -424,7 +427,7 @@ run!(str_parse, STR_PARSE, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A read can't forge a reference: `Concrete` excludes one.
 const STR_PARSE_REF_TARGET: &str = r#"{
@@ -434,7 +437,7 @@ const STR_PARSE_REF_TARGET: &str = r#"{
   x
 }"#;
 
-run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("Concrete"); graphix_package_core::testing::FuseExpect::None);
+run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("Concrete"); FuseExpect::None);
 
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.

@@ -15,6 +15,36 @@ pub(crate) async fn init(
 }
 
 #[cfg(test)]
+/// One test per `testing::Mode` for each named `async fn(Mode) -> Result<()>`.
+macro_rules! modes {
+    ($($test:ident),+ $(,)?) => {$(
+        mod $test {
+            use graphix_package_core::testing::Mode;
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn interp() -> anyhow::Result<()> {
+                super::$test(Mode::Interp).await
+            }
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn jit() -> anyhow::Result<()> {
+                super::$test(Mode::Jit).await
+            }
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn par() -> anyhow::Result<()> {
+                super::$test(Mode::Par).await
+            }
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn jit_par() -> anyhow::Result<()> {
+                super::$test(Mode::JitPar).await
+            }
+        }
+    )+};
+}
+
+#[cfg(test)]
 mod lang;
 #[cfg(test)]
 mod lib_tests;

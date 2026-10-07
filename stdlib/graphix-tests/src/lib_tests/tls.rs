@@ -1,5 +1,5 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 fn cert_dir() -> String {
@@ -23,7 +23,7 @@ run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
     buffer::to_string(Read::read(server ~ client, u64:1024)?)?
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello tls")
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // Trait dispatch over a union of two Rust-backed abstract types: each
 // member's tag test answers by its registered wrapper UUID.
@@ -43,4 +43,4 @@ run!(socket_union_dispatch, { let cd = cert_dir(); format!(r#"{{
     str::len(Socket::peer_addr(server ~ either)?) > 0
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);

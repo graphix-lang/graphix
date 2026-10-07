@@ -9,7 +9,7 @@
 // so these pins are the only check sys::net has. Add one per case with its fix.
 // (sys-net-19)
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 const NET_PUB_SUB: &str = r#"
@@ -25,7 +25,7 @@ run!(net_pub_sub, NET_PUB_SUB, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const NET_WRITE0: &str = r#"
 {
@@ -46,7 +46,7 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // CR claude for claude: [test-gap] NET_WRITE1 is said to pin that on_write casts the
 // written i64 to the callback's `string` type. But `cast<i64>(v)?` gives 43 whether v
@@ -78,7 +78,7 @@ run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NET_LIST: &str = r#"
 {
@@ -100,7 +100,7 @@ run!(net_list, NET_LIST, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const NET_LIST_TABLE: &str = r#"
 {
@@ -119,7 +119,7 @@ run!(net_list_table, NET_LIST_TABLE, |v: Result<&Value>| {
         Ok(Value::Bool(true)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NET_RPC0: &str = r#"
 {
@@ -150,7 +150,7 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         Ok(Value::I64(42)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A re-woken arm's subscribe re-establishes from the present path (the
 // path is a binding). The matcher wants a delivery, a sleep marker (-1),
@@ -196,7 +196,7 @@ run!(net_subscribe_arm_rewake, NET_SUB_REWAKE, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // The publish twin: a re-woken arm republishes from the present
 // path/value; the observer subscription rides netidx's durable
@@ -228,4 +228,4 @@ run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);

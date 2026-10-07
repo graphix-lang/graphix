@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::refused};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 const IS_ERR: &str = r#"
@@ -15,7 +18,7 @@ const IS_ERR: &str = r#"
 run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FILTER_ERR: &str = r#"
 {
@@ -29,7 +32,7 @@ const FILTER_ERR: &str = r#"
 run!(filter_err, FILTER_ERR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ERROR: &str = r#"
   error("foo")
@@ -39,29 +42,16 @@ const ERROR: &str = r#"
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
-// CR claude for claude: [test-gap] run! checks only the first batch that updates the
-// result, and array::iter delivers one element per cycle. So this fixture, TAKE (103),
-// UNIQ (658) and HOLD_MULTIPLE (782) all pass with the builtin replaced by the
-// identity: `once(array::iter(x))` and `array::iter(x)` both start with 1, the group
-// opens with [1, 2, 3] with or without `take(#n: 3, ..)`, and HOLD_MULTIPLE's length is
-// 3 without hold. ARRAY_ITERQ and LIST_ITERQ only wait for 8, so an iterq that drops
-// any element except the last also passes. Nothing else tests take's cut-off. Check the
-// stream at its end instead: `{ let x = array::iter([1, 2, 3, 4, 5, 6]); filter(x, |v|
-// v == 6) ~ count(take(#n: 3, x)) }` gives 3 (6 for the identity), and the same shape
-// gives 1 for once. (tests-lib-a-04)
 const ONCE: &str = r#"
 {
-  let x = [1, 2, 3, 4, 5, 6];
-  once(array::iter(x))
+  let x = array::iter([1, 2, 3, 4, 5, 6]);
+  filter(x, |v| v == 6) ~ count(once(x))
 }
 "#;
 
-run!(once, ONCE, |v: Result<&Value>| match v {
-    Ok(Value::I64(1)) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+run!(once, ONCE, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
 
 const SKIP: &str = r#"
 {
@@ -78,7 +68,7 @@ run!(skip, SKIP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SKIP_ZERO: &str = r#"
 {
@@ -95,7 +85,7 @@ run!(skip_zero, SKIP_ZERO, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SKIP_ALL: &str = r#"
 {
@@ -107,24 +97,16 @@ const SKIP_ALL: &str = r#"
 run!(skip_all, SKIP_ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TAKE: &str = r#"
 {
-  let x = [1, 2, 3, 4, 5, 6];
-  array::group(take(#n: 3, array::iter(x)), |n, _| n == 3)
+  let x = array::iter([1, 2, 3, 4, 5, 6]);
+  filter(x, |v| v == 6) ~ count(take(#n: 3, x))
 }
 "#;
 
-run!(take, TAKE, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(1), Value::I64(2), Value::I64(3)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; graphix_package_core::testing::FuseExpect::Jit);
+run!(take, TAKE, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
 
 const TAKE_ZERO: &str = r#"
 {
@@ -136,7 +118,7 @@ const TAKE_ZERO: &str = r#"
 run!(take_zero, TAKE_ZERO, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const TAKE_MORE: &str = r#"
 {
@@ -153,7 +135,7 @@ run!(take_more, TAKE_MORE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const ALL: &str = r#"
 {
@@ -167,7 +149,7 @@ const ALL: &str = r#"
 run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SUM: &str = r#"
 {
@@ -179,7 +161,7 @@ const SUM: &str = r#"
 run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const PRODUCT: &str = r#"
 {
@@ -193,7 +175,7 @@ const PRODUCT: &str = r#"
 run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const DIVIDE: &str = r#"
 {
@@ -205,7 +187,7 @@ const DIVIDE: &str = r#"
 run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // min/max compare each argument as a whole value under the total order.
 const MIN_VALUE_LEVEL: &str = r#"
@@ -217,7 +199,7 @@ run!(min_value_level, MIN_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(1), Value::I64(9)]),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const MAX_VALUE_LEVEL: &str = r#"
    max([1, 9], [3, 4])
@@ -228,7 +210,7 @@ run!(max_value_level, MAX_VALUE_LEVEL, |v: Result<&Value>| {
         Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(3), Value::I64(4)]),
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const MIN: &str = r#"
    min(1, 2, 3, 4, 5, 6, 0)
@@ -237,7 +219,7 @@ const MIN: &str = r#"
 run!(min, MIN, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const MAX: &str = r#"
    max(1, 2, 3, 4, 5, 6, 0)
@@ -246,7 +228,7 @@ const MAX: &str = r#"
 run!(max, MAX, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const AND: &str = r#"
 {
@@ -260,7 +242,7 @@ const AND: &str = r#"
 run!(and, AND, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const OR: &str = r#"
   or(false, false, true)
@@ -269,7 +251,7 @@ const OR: &str = r#"
 run!(or, OR, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const INDEX: &str = r#"
 {
@@ -281,7 +263,7 @@ const INDEX: &str = r#"
 run!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SLICE: &str = r#"
 {
@@ -298,7 +280,7 @@ run!(slice, SLICE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FILTER0: &str = r#"
 {
@@ -312,7 +294,7 @@ run!(filter0, FILTER0, |v: Result<&Value>| {
         Ok(Value::I64(8)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const FILTER1: &str = r#"
 {
@@ -321,7 +303,7 @@ const FILTER1: &str = r#"
 }
 "#;
 
-run!(filter1, FILTER1, refused("string does not contain"); graphix_package_core::testing::FuseExpect::None);
+run!(filter1, FILTER1, refused("string does not contain"); FuseExpect::None);
 
 const QUEUE: &str = r#"
 {
@@ -346,7 +328,7 @@ run!(queue, QUEUE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const QUEUEFN_IMMEDIATE: &str = r#"
 {
@@ -360,7 +342,7 @@ run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
         Ok(Value::I64(70)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const QUEUEFN_QUEUE_POP: &str = r#"
 {
@@ -380,7 +362,7 @@ run!(queuefn_queue_pop, QUEUEFN_QUEUE_POP, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const QUEUEFN_MULTI_ARG: &str = r#"
 {
@@ -402,7 +384,7 @@ run!(queuefn_multi_arg, QUEUEFN_MULTI_ARG, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const QUEUEFN_CLOSURE_CAPTURE: &str = r#"
 {
@@ -423,7 +405,7 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // `#count` is written each time the queue grows; with `#trigger=never()`
 // nothing pops, so depth ramps up.
@@ -447,37 +429,20 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // A queuefn passed as a HOF callback must not be statically resolved
 // (that would bypass the queue): the callback stays dynamic, `qf(7) -> 70`.
-// CR claude for claude: [test-gap] queuefn's pop_count starts at 1, so the first
-// invocation dispatches at once with or without the queue. Mapping over the single
-// element [7] therefore gives [70] whether or not the HOF callback bypasses the queue:
-// using the plain lambda `|x: i64| -> i64 x * 10` in place of qf also gives [70]. This
-// test cannot fail for the static-resolution bypass it names. Two elements show the
-// queue: `{ let depth = 0; let qf = queuefn(#count: &depth, #trigger: never(), |x: i64|
-// -> i64 x * 10); let r = array::map([i64:7, i64:8], qf); depth }` reaches 1 through
-// the queue but stays 0 for a bypassed callback (whose map gives [70, 80]). Assert that
-// instead. (tests-lib-a-08)
-// 2026-10-06 claude: #count now takes `&mut`: the suggested program is `queuefn(#count:
-// &mut depth, ..)`.
 const QUEUEFN_HOF_CALLBACK: &str = r#"
 {
-  let qf = queuefn(#trigger: never(), |x: i64| -> i64 x * 10);
-  array::map([i64:7], qf)
+  let depth = 0;
+  let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64| -> i64 x * 10);
+  let r = array::map([i64:7, i64:8], qf);
+  filter(depth, |d| d == 1)
 }
 "#;
 
-run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| {
-    match v {
-        Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(70)] => true,
-            _ => false,
-        },
-        _ => false,
-    }
-}; graphix_package_core::testing::FuseExpect::None);
+run!(queuefn_hof_callback, QUEUEFN_HOF_CALLBACK, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
 
 // Feeding the wrapper output back to the trigger drains every queued
 // invocation.
@@ -501,7 +466,7 @@ run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 // A trigger arriving before any invocation banks pop_count, so later
 // calls dispatch immediately.
@@ -528,7 +493,7 @@ run!(
             },
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; FuseExpect::None);
 
 // A wrapped fn with a trigger-style arg (`tick ~ x + 1000`) emits once
 // per tick/x pair and never when one fires alone.
@@ -558,13 +523,12 @@ run!(
             },
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; FuseExpect::None);
 
 // A netidx subscription inside the wrapped lambda: queuefn serializes
 // the three subscribes via feedback.
 const QUEUEFN_NET_SUBSCRIBE: &str = r#"
 {
-  use sys::*;
   sys::net::publish("/local/q_async/a", 100);
   sys::net::publish("/local/q_async/b", 200);
   sys::net::publish("/local/q_async/c", 300);
@@ -595,13 +559,12 @@ run!(
             },
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::None);
+    }; FuseExpect::None);
 
 // Per-cycle delta semantics: a pop sets only the queued arg, so an x
 // queued without a tick emits nothing. Total emits: 2.
 const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 {
-  use sys::*;
   let feedback: Any = never();
   let qf = queuefn(
     #trigger: feedback,
@@ -626,7 +589,7 @@ run!(
             Ok(Value::I64(2)) => true,
             _ => false,
         }
-    }; graphix_package_core::testing::FuseExpect::Jit);
+    }; FuseExpect::Jit);
 
 const COUNT: &str = r#"
 {
@@ -643,7 +606,7 @@ run!(count, COUNT, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const SAMPLE: &str = r#"
 {
@@ -663,21 +626,16 @@ run!(sample, SAMPLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const UNIQ: &str = r#"
 {
-  let a = [1, 1, 1, 1, 1, 1, 1];
-  uniq(array::iter(a))
+  let x = array::iter([1, 1, 1, 2, 2, 2, 3]);
+  filter(count(x), |n| n == 7) ~ count(uniq(x))
 }
 "#;
 
-run!(uniq, UNIQ, |v: Result<&Value>| {
-    match v {
-        Ok(Value::I64(1)) => true,
-        _ => false,
-    }
-}; graphix_package_core::testing::FuseExpect::Jit);
+run!(uniq, UNIQ, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::None);
 
 const RANGE: &str = r#"
   array::group(range(0, 4), |n, _| n == 4)
@@ -691,7 +649,7 @@ run!(range, RANGE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const THROTTLE: &str = r#"
 {
@@ -709,7 +667,7 @@ run!(throttle, THROTTLE, |v: Result<&Value>| {
         },
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NEVER: &str = r#"
 {
@@ -723,7 +681,7 @@ run!(never, NEVER, |v: Result<&Value>| {
         Ok(Value::I64(0)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const MEAN: &str = r#"
 {
@@ -737,7 +695,7 @@ run!(mean, MEAN, |v: Result<&Value>| {
         Ok(Value::F64(1.5)) => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const RAND: &str = r#"
   rand::rand(#clock:null)
@@ -748,7 +706,7 @@ run!(rand, RAND, |v: Result<&Value>| {
         Ok(Value::F64(v)) if *v >= 0. && *v < 1.0 => true,
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const RAND_PICK: &str = r#"
   rand::pick(["Chicken is coming", "Grape", "Pilot!"])
@@ -759,7 +717,7 @@ run!(rand_pick, RAND_PICK, |v: Result<&Value>| {
         Ok(Value::String(v)) => v == "Chicken is coming" || v == "Grape" || v == "Pilot!",
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const RAND_SHUFFLE: &str = r#"
   rand::shuffle(["Chicken is coming", "Grape", "Pilot!"])
@@ -774,7 +732,7 @@ run!(rand_shuffle, RAND_SHUFFLE, |v: Result<&Value>| {
         }
         _ => false,
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const HOLD_BASIC: &str = r#"
 {
@@ -787,24 +745,18 @@ const HOLD_BASIC: &str = r#"
 run!(hold_basic, HOLD_BASIC, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const HOLD_MULTIPLE: &str = r#"
 {
-  let values = [10, 20, 30];
-  let triggers = [1, 1, 1];
-  let v = hold(#clock:array::iter(triggers), array::iter(values));
-  let held_values = array::group(v, |n, _| n == 3);
-  array::len(held_values)
+  let v = array::iter([10, 20, 30]);
+  let c = filter(v, |x| x == 30);
+  hold(#clock: c, v)
 }
 "#;
 
-// The hold call node-walks (hold is Sync, which strict fusion does not
-// fuse); Jit means the scalar sub-regions around it fuse.
-run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
-    Ok(Value::I64(3)) => true,
-    _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+// hold releases only the value standing when its clock fires.
+run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| matches!(v, Ok(Value::I64(30))); FuseExpect::None);
 
 const HOLD_NO_TRIGGER: &str = r#"
 {
@@ -818,7 +770,7 @@ const HOLD_NO_TRIGGER: &str = r#"
 run!(hold_no_trigger, HOLD_NO_TRIGGER, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const HOLD_MULTIPLE_VALUES: &str = r#"
 {
@@ -833,14 +785,14 @@ const HOLD_MULTIPLE_VALUES: &str = r#"
 run!(hold_multiple_values, HOLD_MULTIPLE_VALUES, |v: Result<&Value>| match v {
     Ok(Value::I64(300)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 const NOW: &str = r#"sys::time::now(null)"#;
 
 run!(now, NOW, |v: Result<&Value>| match v {
     Ok(Value::DateTime(_)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 const ONCE_TAINTED_NOT_COUNTED: &str = r#"
 {
@@ -874,7 +826,7 @@ run!(
             _ => false,
         }
     };
-    graphix_package_core::testing::FuseExpect::Jit
+    FuseExpect::Jit
 );
 
 const TVAL_UNION_BLIND_PRINT: &str = r#"
@@ -899,5 +851,5 @@ run!(
             _ => false,
         }
     };
-    graphix_package_core::testing::FuseExpect::None
+    FuseExpect::None
 );

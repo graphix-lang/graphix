@@ -2,11 +2,11 @@
 // dispatch over a union self type.
 
 use anyhow::Result;
+
 use graphix_package_core::{
     run,
     testing::{FuseExpect, Mode, refused},
 };
-
 use netidx::publisher::Value;
 
 // A trait with one required method, implemented for an abstract type;
@@ -180,7 +180,7 @@ val csize: fn(c: Collection) -> i64;
     "/test/m.gx" => r#"
 let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
 "#
-    ; graphix_package_core::testing::FuseExpect::Jit);
+    ; FuseExpect::Jit);
 
 // A `never()` arm is the identity of the dispatch union: `[⊥, Counter]`
 // dispatches on Counter.
@@ -304,7 +304,7 @@ run!(
     "/test/b.gx" => r#"
         let shown = super::t::Show::show(1)
     "#
-    ; graphix_package_core::testing::FuseExpect::None);
+    ; FuseExpect::None);
 
 run!(
     trait_undeclared_impl_seen_after_its_siblings,
@@ -419,7 +419,7 @@ run!(
     "/test/m.gx" => r#"
         let csize = 'c: Number |c: 'c| 0
     "#
-    ; graphix_package_core::testing::FuseExpect::None);
+    ; FuseExpect::None);
 
 // An abstract type's implementation may live in the type's package.
 run!(
@@ -740,7 +740,7 @@ run!(
         let xs = array::sort(#dir: `Ascending, [T(2), T(3), T(1)]);
         let result = "[xs]|[min(T(2), T(3), T(1))]|[max(T(2), T(3), T(1))]"
     "##
-    ; graphix_package_core::testing::FuseExpect::Jit
+    ; FuseExpect::Jit
 );
 
 // A bottoming Ord resolves per key like NaN: a bottom key sorts below
@@ -761,7 +761,7 @@ run!(
         let xs = array::sort(#dir: `Ascending, [T(2), T(0), T(1)]);
         let result = "[xs]|[T(0) == T(1)]|[T(0) == T(0)]|[T(0) < T(1)]"
     "##
-    ; graphix_package_core::testing::FuseExpect::Jit
+    ; FuseExpect::Jit
 );
 
 // An implementation method may be a builtin reference; the trait's
@@ -1284,7 +1284,7 @@ const TRAIT_RESULT_IS_FILLED: &str = r#"
 run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(7))
-); graphix_package_core::testing::FuseExpect::Jit);
+); FuseExpect::Jit);
 
 // A generic core implementation (`impl<'a> Eq for Box<'a>`) is the one
 // the value's operator consults.

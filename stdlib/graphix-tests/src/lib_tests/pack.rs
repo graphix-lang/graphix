@@ -1,31 +1,31 @@
 use anyhow::Result;
-use graphix_package_core::run;
+use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 // A `bytes` literal bound to a let-local and returned as a Value.
 run!(bytes_const_local, r#"{ let x = bytes:SGVsbG8=; x }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bytes(b)) if b.as_ref() == b"Hello")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 run!(pack_i64, r#"{let v: i64 = pack::read(pack::write_bytes(42)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_f64, r#"{let v: f64 = pack::read(pack::write_bytes(3.14)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_bool, r#"{let v: bool = pack::read(pack::write_bytes(true)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_null, r#"{let v: null = pack::read(pack::write_bytes(null)$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_string, r#"{let v: string = pack::read(pack::write_bytes("hello")$)?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_array, r#"{
     let arr: Array<i64> = pack::read(pack::write_bytes([1, 2, 3])$)?;
@@ -39,7 +39,7 @@ run!(pack_array, r#"{
     } else {
         false
     }
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_struct, r#"{
     type S = {x: i64, y: string};
@@ -52,7 +52,7 @@ run!(pack_struct, r#"{
     // sqlite_exec_params (sqlite.rs:48) has the same weakness: it binds [1, 3.14] and
     // checks only the id; check `(rows[0]$).val == 3.14` too. (tests-lib-b2-13)
     matches!(v, Ok(Value::Array(arr)) if arr.len() == 2)
-}; graphix_package_core::testing::FuseExpect::None);
+}; FuseExpect::None);
 
 run!(pack_bytes, r#"{
     let b = buffer::from_string("abc");
@@ -61,7 +61,7 @@ run!(pack_bytes, r#"{
     buffer::to_string(decoded)$
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // CR claude for claude: [risk] The write_exact and the shutdown below (lines 69-70) both
 // fire when `client` fires, and nothing orders the shutdown after the write: their two
@@ -85,7 +85,7 @@ run!(pack_stream_tcp, r#"{
     msg.name
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
 
 // CR claude for claude: [test-gap] pack_invalid, json_invalid (json.rs:68) and
 // toml_invalid (toml.rs:84) annotate the whole `Result<i64, [..]>`. That is the one
@@ -101,4 +101,4 @@ run!(pack_invalid, r#"{
     is_err(r)
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; FuseExpect::Jit);
