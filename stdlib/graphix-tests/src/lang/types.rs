@@ -2166,3 +2166,15 @@ const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
 "#;
 
 run!(inferred_cell_prints_its_binding, INFERRED_CELL_PRINTS_ITS_BINDING, refused("type mismatch i64 does not contain string"); FuseExpect::None);
+
+/// A nested fn type's quantifier is its own, though the enclosing
+/// signature names a variable alike.
+const NESTED_QUANTIFIER_SCOPED: &str = r#"
+{
+    let h = |x: 'a, f: fn<'a: Number>(y: 'a) -> 'a| f(f64:2.5);
+    let g = |y: i64| y;
+    h(1, g)
+}
+"#;
+
+run!(nested_quantifier_scoped, NESTED_QUANTIFIER_SCOPED, refused("does not contain fn(y: i64) -> i64"); FuseExpect::None);

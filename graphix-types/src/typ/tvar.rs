@@ -1435,20 +1435,19 @@ impl Type {
                     e.insert(tv.clone());
                 }
             },
-            // CR claude for claude: [bug] This arm hands a nested function type the
-            // enclosing signature's name map, so a quantifier the nested type declares
-            // itself (`fn<'a: Number>`) is merged with a same-named variable of the
-            // enclosing signature; Lambda::compile and .gxi vals both reach it. In `|x:
-            // 'a, f: fn<'a: Number>(y: 'a) -> 'a|` the body still picks f's quantifier
-            // anew per call, but at a call `x: 1` binds the shared cell to i64 before
-            // f's argument is checked, so `fn(y: i64)` passes the rigid check (renaming
-            // the quantifier to 'b, or putting f before x, refuses it). With a static
-            // callee elaboration then refuses what the check accepted; with a dynamic
-            // one the i64 function runs on 2.5 and the fused run panics at
-            // kernel.rs:243 (node-walk: the i64 `st * 3` is 7.5). A nested type's
-            // declared quantifiers need a scope of their own here, or the reuse
-            // refused. probe: design/review-2026-10-05/repro/x-typecheck-generics-F9.gx
-            // (x-typecheck-generics-F9)
+            // a nested fn type's own quantifiers are its own, whatever an
+            // enclosing signature names alike
+            Type::Fn(ft) if !ft.quantifiers.is_empty() => {
+                let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
+                    ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
+                ft.alias_tvars(known);
+                for (q, tv) in outer {
+                    known.remove(&q);
+                    if let Some(tv) = tv {
+                        known.insert(q, tv);
+                    }
+                }
+            }
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
         })
