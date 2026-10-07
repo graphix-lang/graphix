@@ -5,7 +5,7 @@
 //! widths and resize callbacks; sort order, selection, header clicks,
 //! activation and edits are driven by graphix refs and callables.
 
-use super::{GuiW, GuiWidget, IcedElement, Message, Renderer};
+use super::{GuiW, GuiWidget, IcedElement, Message, Renderer, TableId, TableMsg};
 use ahash::{AHashMap, AHashSet, AHasher};
 use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
@@ -83,6 +83,8 @@ pub(super) enum DisplayMode {
 }
 
 pub(crate) struct DataTableW<X: GXExt> {
+    /// What this table's messages are addressed to.
+    id: TableId,
     gx: GXHandle<X>,
     subscriber: Subscriber,
     table_ref: Ref<X>,
@@ -241,6 +243,7 @@ impl<X: GXExt> DataTableW<X> {
         let (update_tx, update_rx) = mpsc::channel(SUB_CHANNEL_SLACK);
         spawn_dispatch_task(&rt, &cells, update_rx);
         let mut w = Self {
+            id: TableId::new(),
             gx,
             subscriber,
             table_ref,
@@ -546,20 +549,25 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         msg: &super::Message,
         shell: &mut super::MessageShell,
     ) -> bool {
-        use super::Message;
         use netidx::protocol::valarray::ValArray;
+        let Message::Table(id, msg) = msg else { return false };
+        if *id != self.id {
+            return false;
+        }
         match msg {
-            Message::CellClick(row, col) => self.handle_cell_click(*row, col.clone()),
-            Message::CellEdit(row, col) => self.handle_cell_edit(*row, col.clone()),
-            Message::CellEditInput(text) => self.handle_cell_edit_input(text.clone()),
-            Message::CellEditSubmit => self.handle_cell_edit_submit(),
-            Message::CellEditCancel => self.handle_cell_edit_cancel(),
-            Message::TableKey(action) => self.handle_table_key(action),
-            Message::Scroll(v, h, vp_w, vp_h) => self.handle_scroll(*v, *h, *vp_w, *vp_h),
-            Message::ColumnResizeStart(ci) => {
+            TableMsg::CellClick(row, col) => self.handle_cell_click(*row, col.clone()),
+            TableMsg::CellEdit(row, col) => self.handle_cell_edit(*row, col.clone()),
+            TableMsg::CellEditInput(text) => self.handle_cell_edit_input(text.clone()),
+            TableMsg::CellEditSubmit => self.handle_cell_edit_submit(),
+            TableMsg::CellEditCancel => self.handle_cell_edit_cancel(),
+            TableMsg::Key(action) => self.handle_table_key(action),
+            TableMsg::Scroll(v, h, vp_w, vp_h) => {
+                self.handle_scroll(*v, *h, *vp_w, *vp_h)
+            }
+            TableMsg::ColumnResizeStart(ci) => {
                 self.handle_column_resize_start(*ci, shell.cursor_position.x)
             }
-            Message::ColumnResizeMove(x) => {
+            TableMsg::ColumnResizeMove(x) => {
                 if !self.is_column_resizing() {
                     return false;
                 }
@@ -571,8 +579,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 }
                 true
             }
-            Message::ColumnResizeEnd => self.handle_column_resize_end(),
-            Message::Nop | Message::Call(..) | Message::EditorAction(..) => false,
+            TableMsg::ColumnResizeEnd => self.handle_column_resize_end(),
         }
     }
 

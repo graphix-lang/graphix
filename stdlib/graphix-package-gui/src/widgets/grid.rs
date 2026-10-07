@@ -56,12 +56,12 @@ impl<X: GXExt> GridW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for GridW<X> {
-    fn children_mut(&mut self) -> &mut [GuiW<X>] {
-        &mut self.children
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
+        self.children.iter_mut().for_each(f)
     }
 
-    fn children(&self) -> &[GuiW<X>] {
-        &self.children
+    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
+        self.children.iter().for_each(f)
     }
 
     fn handle_update(

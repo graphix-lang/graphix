@@ -330,20 +330,6 @@ impl<X: GXExt> GuiHandler<X> {
     /// Apply what the widgets published; a message changing a widget
     /// wants a frame.
     fn apply_messages(&mut self) {
-        // CR claude for claude: [bug] Every non-Call message goes to every
-        // window's content. The data-table messages (CellClick, CellEdit,
-        // CellEditInput, CellEditSubmit, CellEditCancel, TableKey, Scroll,
-        // ColumnResizeStart; widgets/mod.rs:105-126) name no widget, so
-        // every DataTableW in the program acts on every one of them. A
-        // click, arrow key or scroll in one table also selects, moves or
-        // scrolls every other table. An edit submitted in one table calls
-        // every other table's on_edit with that table's own cell path and
-        // the typed text, which is a write to a path the user never touched
-        // (on_edit is typically sys::net::write). Fix: carry the table's
-        // identity in these messages, as EditorAction carries its ExprId,
-        // and drop messages addressed to another table. probe:
-        // design/review-2026-10-05/repro/gui-core-04.rs (editing A's row 1
-        // also yields eb="b1/price=42" and ec="c1/price=42"). (gui-core-04)
         let windows = &mut self.windows;
         apply_messages(&self.gx, self.messages.drain(..), |msg, pending| {
             for tw in windows.values_mut() {

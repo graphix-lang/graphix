@@ -204,18 +204,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 }
                 true
             }
-            Message::Nop
-            | Message::Call(..)
-            | Message::Scroll(..)
-            | Message::CellClick(..)
-            | Message::CellEdit(..)
-            | Message::CellEditInput(..)
-            | Message::CellEditSubmit
-            | Message::CellEditCancel
-            | Message::ColumnResizeStart(..)
-            | Message::ColumnResizeMove(..)
-            | Message::ColumnResizeEnd
-            | Message::TableKey(..) => false,
+            Message::Nop | Message::Call(..) | Message::Table(..) => false,
         }
     }
 }

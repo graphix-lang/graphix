@@ -4,7 +4,7 @@
 use super::{
     DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, IcedElement, MIN_COL_WIDTH, Message,
     RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL,
-    ROW_NAME_SENTINEL_KEY, ROW_NAME_SENTINEL_KEY_ARC, Renderer, VALUE_COL_KEY,
+    ROW_NAME_SENTINEL_KEY, ROW_NAME_SENTINEL_KEY_ARC, Renderer, TableMsg, VALUE_COL_KEY,
     types::{
         ColumnType, SortDirection, cell_path_matches, col_header_width, col_min_width,
         row_basename, truncate_to_width,
@@ -114,6 +114,11 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
 }
 
 impl<X: GXExt> DataTableW<X> {
+    /// A message addressed to this table.
+    fn msg(&self, m: TableMsg) -> Message {
+        Message::Table(self.id, m)
+    }
+
     /// Header sort-indicator suffix per sorted column: an arrow, plus a
     /// subscript priority digit when there is more than one sort column.
     pub(super) fn build_sort_indicators(
@@ -333,7 +338,7 @@ impl<X: GXExt> DataTableW<X> {
                             .height(iced_core::Length::Fill),
                     )
                     .interaction(iced_core::mouse::Interaction::ResizingColumn)
-                    .on_press(Message::ColumnResizeStart(ci))
+                    .on_press(self.msg(TableMsg::ColumnResizeStart(ci)))
                     .into();
                 Row::new()
                     .push(text_el)
@@ -462,7 +467,7 @@ impl<X: GXExt> DataTableW<X> {
             .on_scroll(|vp| {
                 let abs = vp.absolute_offset();
                 let bounds = vp.bounds();
-                Message::Scroll(abs.x, abs.y, bounds.width, bounds.height)
+                self.msg(TableMsg::Scroll(abs.x, abs.y, bounds.width, bounds.height))
             })
             .width(iced_core::Length::Fill)
             .height(iced_core::Length::Fill)
@@ -489,7 +494,7 @@ impl<X: GXExt> DataTableW<X> {
     /// them against `is_column_resizing`.
     fn wrap_resize_drag<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
         widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(content)
-            .on_move(|pt| Message::ColumnResizeMove(pt.x))
+            .on_move(|pt| self.msg(TableMsg::ColumnResizeMove(pt.x)))
             // CR claude for claude: [bug] A column-resize drag ends only through this
             // on_release. iced's MouseArea publishes on_release and on_move only while
             // the cursor is over its bounds, so a left release past the table's edge,
@@ -502,7 +507,7 @@ impl<X: GXExt> DataTableW<X> {
             // design/review-2026-10-05/repro/gui-datatable-09.rs (copy it to
             // stdlib/graphix-package-gui/tests/review_gui_datatable_09.rs and run it
             // with cargo test). (gui-datatable-09)
-            .on_release(Message::ColumnResizeEnd)
+            .on_release(self.msg(TableMsg::ColumnResizeEnd))
             .into()
     }
 
@@ -516,25 +521,25 @@ impl<X: GXExt> DataTableW<X> {
                     use iced_core::keyboard::Key;
                     match key {
                         Key::Named(keyboard::key::Named::ArrowUp) => {
-                            Message::TableKey(TableKeyAction::Up)
+                            self.msg(TableMsg::Key(TableKeyAction::Up))
                         }
                         Key::Named(keyboard::key::Named::ArrowDown) => {
-                            Message::TableKey(TableKeyAction::Down)
+                            self.msg(TableMsg::Key(TableKeyAction::Down))
                         }
                         Key::Named(keyboard::key::Named::ArrowLeft) => {
-                            Message::TableKey(TableKeyAction::Left)
+                            self.msg(TableMsg::Key(TableKeyAction::Left))
                         }
                         Key::Named(keyboard::key::Named::ArrowRight) => {
-                            Message::TableKey(TableKeyAction::Right)
+                            self.msg(TableMsg::Key(TableKeyAction::Right))
                         }
                         Key::Named(keyboard::key::Named::Enter) => {
-                            Message::TableKey(TableKeyAction::Enter)
+                            self.msg(TableMsg::Key(TableKeyAction::Enter))
                         }
                         Key::Named(keyboard::key::Named::Space) => {
-                            Message::TableKey(TableKeyAction::Space)
+                            self.msg(TableMsg::Key(TableKeyAction::Space))
                         }
                         Key::Named(keyboard::key::Named::Escape) => {
-                            Message::TableKey(TableKeyAction::Escape)
+                            self.msg(TableMsg::Key(TableKeyAction::Escape))
                         }
                         // CR claude for claude: [bug] Every key this mapper does not use
                         // becomes Message::Nop, and KeyboardArea captures every key it
@@ -597,7 +602,7 @@ impl<X: GXExt> DataTableW<X> {
             .into();
         widget::container(
             widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(styled)
-                .on_press(Message::CellClick(row_idx, col_for_msg)),
+                .on_press(self.msg(TableMsg::CellClick(row_idx, col_for_msg))),
         )
         .width(iced_core::Length::Shrink)
         .height(iced_core::Length::Shrink)
@@ -683,8 +688,8 @@ impl<X: GXExt> DataTableW<X> {
                         "",
                         self.edit_buffer.as_str(),
                     )
-                    .on_input(|s: String| Message::CellEditInput(s.into()))
-                    .on_submit(Message::CellEditSubmit)
+                    .on_input(|s: String| self.msg(TableMsg::CellEditInput(s.into())))
+                    .on_submit(self.msg(TableMsg::CellEditSubmit))
                     .size(13)
                     .padding(2)
                     .into()
@@ -695,7 +700,7 @@ impl<X: GXExt> DataTableW<X> {
                             .size(13)
                             .wrapping(iced_core::text::Wrapping::None),
                     )
-                    .on_press(Message::CellEdit(row_idx, col_for_msg))
+                    .on_press(self.msg(TableMsg::CellEdit(row_idx, col_for_msg)))
                     .into()
                 } else {
                     widget::text(truncate_to_width(&text, w).into_owned())

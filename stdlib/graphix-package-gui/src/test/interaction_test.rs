@@ -1,5 +1,6 @@
 use super::{InteractionHarness, expect_call, expect_call_with_args};
 use anyhow::Result;
+use graphix_rt::NoExt;
 use iced_core::{Event, Point, Size, mouse};
 use netidx::publisher::Value;
 
@@ -625,11 +626,19 @@ async fn stack_children_follow_rotation() -> Result<()> {
     let mut h = InteractionHarness::new(&code).await?;
     let _ = h.watch("test::slides").await?;
     let order = |h: &InteractionHarness| -> Vec<usize> {
-        h.inner.widget.children()[1]
-            .children()
-            .iter()
-            .map(|c| c.children().len())
-            .collect()
+        let count = |w: &crate::widgets::GuiW<NoExt>| {
+            let mut n = 0;
+            w.for_each_child(&mut |_| n += 1);
+            n
+        };
+        let (mut i, mut out) = (0, Vec::new());
+        h.inner.widget.for_each_child(&mut |c| {
+            if i == 1 {
+                c.for_each_child(&mut |slide| out.push(count(slide)));
+            }
+            i += 1;
+        });
+        out
     };
     assert_eq!(order(&h), [0, 1]);
     let msgs = h.click(WIDGET_HIT);

@@ -17,6 +17,8 @@ default = []
 krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
+serde = { workspace = true }
+serde_derive = { workspace = true }
 enumflags2 = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

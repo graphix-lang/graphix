@@ -179,35 +179,14 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         Ok(changed)
     }
 
-    // CR claude for claude: [bug] TableW forwards on_message to its headers and cells by
-    // hand but not before_view. It also keeps the default empty children_mut, so the
-    // event loop's before_view (event_loop.rs:317) never reaches a widget inside a
-    // table. TooltipW (tooltip.rs:53) lists only child, so its tip gets neither
-    // before_view nor on_message. A data_table in a table cell therefore never applies
-    // its live sort at a frame (sort_col_dirty, data_table/mod.rs:294), nor the
-    // subscription reconcile that layout requests: its rows stay in table order until
-    // some unrelated graphix update reaches it through handle_update. One child visitor
-    // used by the default on_message and before_view (headers then cells here, child
-    // then tip in tooltip) would replace the slice accessors and this hand forwarding.
-    // probe: design/review-2026-10-05/repro/gui-widgets-b-08.rs (a column-wrapped
-    // control sorts at every frame; the table cell stays unsorted until an unrelated
-    // text update; the tooltip's tip never sees a click). (gui-widgets-b-08)
-    fn on_message(
-        &mut self,
-        msg: &super::Message,
-        shell: &mut super::MessageShell,
-    ) -> bool {
-        // Two child groups do not fit one `&mut [GuiW<X>]`, so forward manually.
-        let mut changed = false;
-        for col in &mut self.columns {
-            changed |= col.header.on_message(msg, shell);
-        }
-        for row in &mut self.cells {
-            for cell in row {
-                changed |= cell.on_message(msg, shell);
-            }
-        }
-        changed
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
+        self.columns.iter_mut().for_each(|c| f(&mut c.header));
+        self.cells.iter_mut().flatten().for_each(f)
+    }
+
+    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
+        self.columns.iter().for_each(|c| f(&c.header));
+        self.cells.iter().flatten().for_each(f)
     }
 
     fn view(&self) -> IcedElement<'_> {

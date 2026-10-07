@@ -6,6 +6,7 @@ use graphix_rt::{CallableId, GXExt, GXHandle};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
 use poolshark::local::LPooled;
+use serde_derive::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
 
@@ -124,10 +125,19 @@ pub enum Message {
     Nop,
     Call(CallableId, ValArray),
     EditorAction(ExprId, iced_widget::text_editor::Action),
+    /// A data table's own input, addressed to that table alone.
+    Table(TableId, TableMsg),
+}
+
+netidx_core::atomic_id!(TableId);
+
+/// A data table's input.
+#[derive(Debug, Clone)]
+pub enum TableMsg {
     /// Virtual scroll position changed: (offset_x, offset_y, viewport_w, viewport_h)
     /// All values in logical pixels.
     Scroll(f32, f32, f32, f32),
-    /// A cell was clicked in a data table (row index, column name).
+    /// A cell was clicked (row index, column name).
     CellClick(usize, ArcStr),
     /// A cell was clicked to begin editing (row index, column name).
     CellEdit(usize, ArcStr),
@@ -140,12 +150,12 @@ pub enum Message {
     /// Column resize drag started (col_meta index).
     ColumnResizeStart(usize),
     /// Cursor moved while a column resize drag might be active
-    /// (cursor x in widget-local coordinates); only a dragging widget consumes it.
+    /// (cursor x in widget-local coordinates); only a dragging table consumes it.
     ColumnResizeMove(f32),
     /// Column resize drag ended.
     ColumnResizeEnd,
-    /// Keyboard navigation in a data table.
-    TableKey(TableKeyAction),
+    /// Keyboard navigation.
+    Key(TableKeyAction),
 }
 
 /// Keyboard actions for data table navigation.
@@ -196,42 +206,28 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// Build the iced Element tree for rendering.
     fn view(&self) -> IcedElement<'_>;
 
-    /// Child widgets that `on_message` and `before_view` forward to.
-    /// Leaf widgets return `&mut []` (the default); containers override.
-    // CR claude for claude: [bug] Children are one slice, so a widget with two child
-    // groups cannot list them all: TableW forwards on_message to its headers and cells
-    // by hand but not before_view, and TooltipW lists `child` and never `tip`. A
-    // data_table in a table cell or header therefore never runs before_view, so a live
-    // change to its sort column is not re-sorted until an unrelated widget ref update
-    // reaches handle_update (in the probe it is never sorted at all). A child visitor
-    // that every composite implements once (e.g. `for_each_child_mut`) would make the
-    // default on_message and before_view complete. The default is_column_resizing
-    // traversal has no caller; only DataTableW's override is used, from its own
-    // on_message. probe: design/review-2026-10-05/repro/gui-widgets-a.r2-11.rs
-    // (gui-widgets-a.r2-11)
-    fn children_mut(&mut self) -> &mut [GuiW<X>] {
-        &mut []
-    }
+    /// Visit each child widget, every group of them; `on_message`,
+    /// `before_view` and the other defaults forward through it. Leaves
+    /// have none (the default); containers override.
+    fn for_each_child_mut(&mut self, _f: &mut dyn FnMut(&mut GuiW<X>)) {}
 
-    fn children(&self) -> &[GuiW<X>] {
-        &[]
-    }
+    fn for_each_child(&self, _f: &mut dyn FnMut(&GuiW<X>)) {}
 
     /// Dispatch a message to the widget. Returns `true` if a redraw
     /// is needed. Follow-up messages go through `shell`. The default
     /// forwards to children.
     fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
         let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.on_message(msg, shell);
-        }
+        self.for_each_child_mut(&mut |c| changed |= c.on_message(msg, shell));
         changed
     }
 
     /// True if this widget or any descendant is tracking a
     /// column-resize drag.
     fn is_column_resizing(&self) -> bool {
-        self.children().iter().any(|c| c.is_column_resizing())
+        let mut resizing = false;
+        self.for_each_child(&mut |c| resizing |= c.is_column_resizing());
+        resizing
     }
 
     /// Return a DataTableSnapshot if this widget is a data table.
@@ -257,9 +253,7 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
     /// redraw. The default forwards to children.
     fn before_view(&mut self) -> bool {
         let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.before_view();
-        }
+        self.for_each_child_mut(&mut |c| changed |= c.before_view());
         changed
     }
 }
@@ -352,12 +346,12 @@ macro_rules! flex_widget {
         }
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
-            fn children_mut(&mut self) -> &mut [GuiW<X>] {
-                &mut self.children
+            fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
+                self.children.iter_mut().for_each(f)
             }
 
-            fn children(&self) -> &[GuiW<X>] {
-                &self.children
+            fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
+                self.children.iter().for_each(f)
             }
 
             fn handle_update(

@@ -54,12 +54,12 @@ impl<X: GXExt> ScrollableW<X> {
 }
 
 impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
-    fn children_mut(&mut self) -> &mut [GuiW<X>] {
-        std::slice::from_mut(&mut self.child)
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
+        f(&mut self.child);
     }
 
-    fn children(&self) -> &[GuiW<X>] {
-        std::slice::from_ref(&self.child)
+    fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
+        f(&self.child);
     }
 
     fn handle_update(
