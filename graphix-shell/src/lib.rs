@@ -520,20 +520,8 @@ impl<X: GXExt> Shell<X> {
                 },
                 input = input.read_line(&mut output, &mut newenv) => {
                     match input {
-                        Err(e) if script => break Err(e),
-                        // CR claude for claude: [bug] In REPL mode this arm prints any
-                        // error from read_line and goes round again. It was written for
-                        // a failed display, but reedline's errors land here too. With
-                        // no controlling terminal (ssh without -t, CI, cron, a systemd
-                        // unit), reedline's read_line fails at once on every call:
-                        // crossterm opens /dev/tty and gets ENXIO. So `graphix` with no
-                        // file spins at about 140% CPU, printing `error: No such device
-                        // or address (os error 6)` tens of thousands of times a second.
-                        // It never exits, even with stdin at EOF, and piped input is
-                        // never read. A dead reader task (`input stream ended`) loops
-                        // the same way. An input error with no display up should end
-                        // the REPL, or a non-tty stdin should be read line by line.
-                        // probe: design/review-2026-10-05/repro/c-lib-05.sh (c-lib-05)
+                        // with no display up the error is the input's own
+                        Err(e) if script || matches!(output, Output::None) => break Err(e),
                         Err(e) => {
                             eprintln!("error: {e:?}");
                             // A display that failed is still the output.

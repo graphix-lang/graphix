@@ -7,6 +7,7 @@ use reedline::{
     MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
     default_emacs_keybindings,
 };
+use std::io::IsTerminal;
 use tokio::{sync::oneshot, task};
 
 pub(super) struct InputReader {
@@ -30,9 +31,13 @@ impl InputReader {
                 ]),
             );
             let menu = IdeMenu::default().with_name("completion");
-            let mut line_editor = Reedline::create()
-                .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
-                .with_edit_mode(Box::new(Emacs::new(keybinds)));
+            // a stdin that is no terminal is read line by line
+            let mut line_editor = std::io::stdin().is_terminal().then(|| {
+                Reedline::create()
+                    .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
+                    .with_edit_mode(Box::new(Emacs::new(keybinds)))
+            });
+
             let prompt = DefaultPrompt {
                 left_prompt: DefaultPromptSegment::Basic("".into()),
                 right_prompt: DefaultPromptSegment::Empty,
@@ -42,12 +47,20 @@ impl InputReader {
                     Err(_) => break, // shutting down
                     Ok(None) => (),
                     Ok(Some(env)) => {
-                        line_editor =
-                            line_editor.with_completer(Box::new(BComplete(env)));
+                        line_editor = line_editor
+                            .map(|ed| ed.with_completer(Box::new(BComplete(env))));
                     }
                 }
-                let r = task::block_in_place(|| {
-                    line_editor.read_line(&prompt).map_err(Error::from)
+                let r = task::block_in_place(|| match &mut line_editor {
+                    Some(ed) => ed.read_line(&prompt).map_err(Error::from),
+                    None => {
+                        let mut line = String::new();
+                        match std::io::stdin().read_line(&mut line) {
+                            Ok(0) => Ok(Signal::CtrlD),
+                            Ok(_) => Ok(Signal::Success(line)),
+                            Err(e) => Err(e.into()),
+                        }
+                    }
                 });
                 let (o_tx, o_rx) = oneshot::channel();
                 c_rx = o_rx;
