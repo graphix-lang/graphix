@@ -22,20 +22,8 @@ let col = column(
             #padding: &`All(10.0),
             &text(&"Copy to clipboard")
         ),
-        // CR claude for claude: [bug] The on_press handler below pastes the previous
-        // read. read_text is async and re-delivers its last reply while a press's read
-        // is in flight, so `c ~ clipboard::read_text(c)$` writes the reply to the
-        // previous press, and the new reply fires with no `c` fire to sample it. Every
-        // paste after the first shows the clipboard as it was at the previous press
-        // (copy A, paste: A; copy B, paste: still A; paste again: B). read_text is
-        // already triggered by `c`, so write its reply: `#on_press: |c| pasted <-
-        // clipboard::read_text(c)$`. The book teaches this example
-        // (book/src/ui/gui/clipboard.md). probe:
-        // design/review-2026-10-05/repro/examples-01.gx (the handler's shape over
-        // json::read through sys::net::publish's on_write trails by one event; the fix
-        // does not). (examples-01)
         button(
-            #on_press: |c| pasted <- c ~ clipboard::read_text(c)$,
+            #on_press: |c| pasted <- clipboard::read_text(c)$,
             #padding: &`All(10.0),
             &text(&"Paste from clipboard")
         ),
