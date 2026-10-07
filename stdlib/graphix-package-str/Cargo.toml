@@ -34,6 +34,7 @@ netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
 smallvec = { workspace = true }
+poolshark = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 

@@ -436,15 +436,7 @@ fn fc_tempdir_path(args: &[Value]) -> Option<Value> {
 graphix_package_core::fast_builtin!(pub(crate) TempDirPath, TempDirPathEv, "sys_tempdir_path", fc_tempdir_path);
 
 pub(crate) fn convert_path(path: &Path) -> ArcStr {
-    thread_local! {
-        static BUF: RefCell<String> = RefCell::new(String::new());
-    }
-    BUF.with_borrow_mut(|buf| {
-        buf.clear();
-        use std::fmt::Write;
-        write!(buf, "{}", path.display()).unwrap();
-        ArcStr::from(buf.as_str())
-    })
+    ArcStr::from(&*path.to_string_lossy())
 }
 
 fn fc_join_path(args: &[Value]) -> Option<Value> {

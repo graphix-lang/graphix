@@ -169,7 +169,7 @@ val filter: fn(v: 'a, f: fn(v: 'a) -> bool throws 'e) -> 'a throws 'e;
 /// return true if e is an error
 val is_err: fn(e: Any) -> bool;
 
-/// construct an error from the specified string
+/// construct an error carrying e
 val error: fn(e: 'a) -> Error<'a>;
 
 /// return the maximum value of any argument
@@ -244,8 +244,10 @@ val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -> 'a;
 /// queued invocation, or banks a pop slot if the queue is empty.
 ///
 /// If #count is provided as a writable ref, the current queue depth is
-/// written through it whenever it changes. If null (default), depth is not
-/// reported.
+/// written through it whenever it changes, to a place (`&mut s.depth`)
+/// as to a binding. If null (default), depth is not reported. f may not
+/// have a variadic argument or a defaulted label: wrap a lambda that
+/// calls it.
 ///
 /// When f re-emits, the queue and pop_count are NOT reset. Subsequent
 /// pops process queued args with the new f, regardless of which f was

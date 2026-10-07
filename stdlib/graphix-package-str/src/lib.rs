@@ -11,6 +11,7 @@ use graphix_compiler::{
     env::Env,
     err, errf,
     expr::ExprId,
+    expr::split_escaped,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
@@ -19,6 +20,7 @@ use graphix_package_core::{
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
 use netidx_value::ValArray;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 
@@ -140,16 +142,10 @@ graphix_package_core::fast_builtin!(Replace, ReplaceEv, "str_replace", fc_replac
 fn fc_dirname(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::String(path) => match Path::dirname(path) {
-            // CR claude for claude: [bug] Path::dirname is None for "foo" and "" as well
-            // as for "/foo", so this arm answers "/" for a relative or empty path where
-            // str/mod.gxi:34 promises null ("null if s does not have a parent path"):
-            // str::dirname("foo") and str::dirname("") are "/" in both engines, and a
-            // walk up a relative path jumps to the root. Only an absolute path one
-            // level below the root has "/" as its parent. The one test
-            // (stdlib/graphix-tests/src/lib_tests/str.rs:105) covers /foo/bar/baz only.
-            // probe: design/review-2026-10-05/repro/collections-str-11.gx
-            // (collections-str-11)
-            None if path != "/" => Some(Value::String(literal!("/"))),
+            // only an absolute path one level below the root has it as parent
+            None if path.starts_with('/') && path.len() > 1 => {
+                Some(Value::String(literal!("/")))
+            }
             None => Some(Value::Null),
             Some(dn) => Some(Value::String(dn.into())),
         },
@@ -197,96 +193,58 @@ fn fc_row_col(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(RowCol, RowColEv, "str_row_col", fc_row_col);
 
-// CR claude for claude: [bug] `buf.is_empty()` stands in for "first part", so the parts
-// after a run of leading empty strings lose their separators: str::join(#sep: ",", "",
-// "a") is "a", not ",a", and str::join(#sep: ",", ["", "", "b"]) is "b" (probe:
-// design/review-2026-10-05/repro/x-builtin-effects-19.gx). The scratch buffer here, in
-// fc_concat (376) and in sys convert_path (sys/src/lib.rs:438) is a thread_local
-// RefCell<String>, the pattern the string convention replaces with LPooled<String>;
-// each thread keeps the capacity of the largest string it ever built. convert_path
-// needs no buffer at all: `ArcStr::from(&*path.to_string_lossy())`.
-// (x-builtin-effects-19)
 fn fc_join(args: &[Value]) -> Option<Value> {
-    thread_local! {
-        static BUF: RefCell<String> = RefCell::new(String::new());
+    let [sep, parts @ ..] = args else { return None };
+    if parts.is_empty() {
+        return None;
     }
-    match args {
-        [_] | [] => None,
-        [sep, parts @ ..] => {
-            let sep = match sep {
-                Value::String(c) => c.clone(),
-                sep => match sep.clone().cast_to::<ArcStr>().ok() {
-                    Some(c) => c,
-                    None => return None,
-                },
-            };
-            BUF.with_borrow_mut(|buf| {
-                macro_rules! push {
-                    ($c:expr) => {
-                        // CR claude for claude: [bug] `buf.is_empty()` is used to mean
-                        // "no part pushed yet", so a leading empty part leaves the
-                        // buffer empty and the next part goes in without its separator.
-                        // `str::join(#sep: ",", "", "b", "c")` is "b,c" instead of
-                        // ",b,c", `["", "", "x"]` joins to "x", and `str::join(#sep:
-                        // "/", str::split(#pat: "/", "/usr/bin"))` is "usr/bin". Empty
-                        // parts in the middle or at the end keep their separators, so
-                        // the separator count depends on the contents. Track whether a
-                        // part has been pushed instead of testing the buffer. Both
-                        // engines agree on the wrong value, so the fuzzer cannot catch
-                        // it. probe:
-                        // design/review-2026-10-05/repro/collections-str-03.gx
-                        // (collections-str-03)
-                        if buf.is_empty() {
-                            buf.push_str($c.as_str());
-                        } else {
-                            buf.push_str(sep.as_str());
-                            buf.push_str($c.as_str());
-                        }
-                    };
-                }
-                buf.clear();
-                for p in parts {
-                    match p {
-                        Value::String(c) => push!(c),
-                        Value::Array(a) => {
-                            for v in a.iter() {
-                                if let Value::String(c) = v {
-                                    push!(c)
-                                }
-                            }
-                        }
-                        _ => return None,
+    let sep = match sep {
+        Value::String(c) => c.clone(),
+        sep => sep.clone().cast_to::<ArcStr>().ok()?,
+    };
+    let mut buf: LPooled<String> = LPooled::take();
+    let mut first = true;
+    let mut push = |c: &str| {
+        if !first {
+            buf.push_str(&sep);
+        }
+        first = false;
+        buf.push_str(c);
+    };
+    for p in parts {
+        match p {
+            Value::String(c) => push(c),
+            Value::Array(a) => {
+                for v in a.iter() {
+                    if let Value::String(c) = v {
+                        push(c)
                     }
                 }
-                Some(Value::String(buf.as_str().into()))
-            })
+            }
+            _ => return None,
         }
     }
+    Some(Value::String(ArcStr::from(buf.as_str())))
 }
 
 graphix_package_core::fast_builtin!(StringJoin, StringJoinEv, "str_join", fc_join);
 
 fn fc_concat(args: &[Value]) -> Option<Value> {
-    thread_local! {
-        static BUF: RefCell<String> = RefCell::new(String::new());
-    }
-    BUF.with_borrow_mut(|buf| {
-        buf.clear();
-        for p in args {
-            match p {
-                Value::String(c) => buf.push_str(c.as_ref()),
-                Value::Array(a) => {
-                    for v in a.iter() {
-                        if let Value::String(c) = v {
-                            buf.push_str(c.as_ref())
-                        }
+    let mut buf: LPooled<String> = LPooled::take();
+    for p in args {
+        match p {
+            Value::String(c) => buf.push_str(c),
+            Value::Array(a) => {
+                for v in a.iter() {
+                    if let Value::String(c) = v {
+                        buf.push_str(c)
                     }
                 }
-                _ => return None,
             }
+            _ => return None,
         }
-        Some(Value::String(buf.as_str().into()))
-    })
+    }
+    Some(Value::String(ArcStr::from(buf.as_str())))
 }
 
 graphix_package_core::fast_builtin!(
@@ -307,20 +265,17 @@ fn build_escape(esc: Value) -> Result<Escape> {
         tr: SmallVec<[(ArcStr, ArcStr); 8]>,
     }
     let Fields { escape, escape_char, tr } = esc.cast_to().context("parse escape")?;
-    if escape_char.len() != 1 {
+    let Some(escape_char) = one_char(&Value::String(escape_char)) else {
         bail!("expected a single escape char")
-    }
-    let escape_char = escape_char.chars().next().unwrap();
+    };
     let to_escape = escape.chars().collect::<SmallVec<[char; 32]>>();
-    for (k, _) in &tr {
-        if k.len() != 1 {
-            bail!("escape: tr key {k} is invalid, expected 1 character");
-        }
-    }
     let tr = tr
         .into_iter()
-        .map(|(k, v)| (k.chars().next().unwrap(), v))
-        .collect::<SmallVec<[_; 8]>>();
+        .map(|(k, v)| match one_char(&Value::String(k.clone())) {
+            Some(c) => Ok((c, v)),
+            None => bail!("escape: tr key {k} is invalid, expected 1 character"),
+        })
+        .collect::<Result<SmallVec<[_; 8]>>>()?;
     let tr = tr.iter().map(|(c, s)| (*c, s.as_str())).collect::<SmallVec<[_; 8]>>();
     Escape::new(escape_char, &to_escape, &tr, Some(escape_non_printing))
 }
@@ -336,7 +291,7 @@ fn with_escape(esc: &Value, f: impl FnOnce(&Escape) -> Value) -> Value {
     ESCAPES.with(|c| {
         c.borrow_mut()
             .with(esc, || build_escape(esc.clone()), f)
-            .unwrap_or_else(|e| errf!(TAG, "escape: invalid argument {e:?}"))
+            .unwrap_or_else(|e| errf!(TAG, "escape: invalid argument {e:#}"))
     })
 }
 
@@ -376,19 +331,6 @@ macro_rules! escape_fn {
 escape_fn!(StringEscapeEv, StringEscape, "str_escape", fc_escape, escape);
 escape_fn!(StringUnescapeEv, StringUnescape, "str_unescape", fc_unescape, unescape);
 
-// CR claude for claude: [structure] split_fn! is the generic Stateless fast-builtin shell
-// (unit Ev, EvalCached with EFFECT Plain(fc) and eval = fast_eval(ctx, fc, from), the
-// CachedArgs alias, unit_image_state!) under a split-only name; the same 15 lines are
-// written out 23 more times in this file and again in escape_fn!, 11 times in array, 21
-// in list, 4 in map, and about 38 more across core (math.rs's three macros among them)
-// and the other packages. Each copy names its fc twice, in EFFECT and in eval, so a
-// copy where the two drift runs one function in the JIT and another in the node-walk
-// and still compiles, and every package keeps its unit_image_state! list in step by
-// hand. Move this macro to graphix-package-core as the one fast-builtin macro (taking a
-// visibility for core's pub(crate) shells) and use it for every unit Stateless Plain
-// builtin; the per-package unit_image_state! lists and the full-path
-// graphix_package_core::fast_eval spellings array and list use beside their own import
-// go with it. (collections-str-14)
 macro_rules! split_fn {
     ($ev:ident, $name:ident, $builtin:literal, $fc:ident) => {
         graphix_package_core::fast_builtin!($name, $ev, $builtin, $fc);
@@ -435,39 +377,34 @@ macro_rules! string_splitn {
 string_splitn!(StringSplitNEv, StringSplitN, "str_splitn", fc_splitn, splitn);
 string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", fc_rsplitn, rsplitn);
 
-// CR claude for claude: [bug] "One character" is tested as one byte (`s.len() == 1` at
-// 558 and 562, and at 594 and 598 in fc_splitn_escaped), so a single non-ASCII escape
-// or separator is refused: str::split_escaped(#esc: "§", #sep: ",", "a,b§,c") is
-// SplitEscError("split_escaped: invalid escape char") and #sep: "→" is "invalid
-// separator", though escaping::split compares chars. build_escape's tr-key test (428)
-// refuses a multibyte key the same way; its escape-char test (422) is moot, since
-// Escape::new requires an ASCII escape char. Test for exactly one char (`let mut cs =
-// s.chars(); matches!((cs.next(), cs.next()), (Some(_), None))`). fc_splitn_escaped's
-// errors also say "split_escaped:". probe:
-// design/review-2026-10-05/repro/x-builtin-effects-14.gx (x-builtin-effects-14)
-// CR claude for claude: [bug] This function, fc_splitn_escaped and parse_modpath all
-// split with escaping 0.2.3's is_sep, which never clears its escape flag on a
-// separator. So after an escaped separator, the next separator does not split, and the
-// escape char after it reads as escaped: `a\,,b` gives the one field `a\,,b` instead of
-// `a\,` and `b`, and `a\,\,b` gives `a\,\` and `b` instead of one field. Fields
-// round-tripped through str::escape, a join, split_escaped and str::unescape merge or
-// split apart (`["a/", "b"]` comes back as `["a//b"]`), and GRAPHIX_MODPATH
-// `file:/x/a\,,file:/y` parses as a single resolver. Fix is_sep upstream (`let r =
-// !*esc; *esc = false; r`), bump the crate, and pin these inputs here. probe:
-// design/review-2026-10-05/repro/collections-str-08.gx (collections-str-08)
+/// The one char a string holds.
+fn one_char(v: &Value) -> Option<char> {
+    let Value::String(s) = v else { return None };
+    let mut cs = s.chars();
+    match (cs.next(), cs.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 fn fc_split_escaped(args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("SplitEscError");
     let esc = match &args[0] {
-        Value::String(s) if s.len() == 1 => s.chars().next().unwrap(),
-        _ => return Some(err!(TAG, "split_escaped: invalid escape char")),
+        v => match one_char(v) {
+            Some(c) => c,
+            None => return Some(err!(TAG, "invalid escape char")),
+        },
     };
     let sep = match &args[1] {
-        Value::String(s) if s.len() == 1 => s.chars().next().unwrap(),
-        _ => return Some(err!(TAG, "split_escaped: invalid separator")),
+        v => match one_char(v) {
+            Some(c) => c,
+            None => return Some(err!(TAG, "invalid separator")),
+        },
     };
     match &args[2] {
         Value::String(s) => Some(Value::Array(ValArray::from_iter(
-            escaping::split(s, esc, sep).map(|s| Value::String(ArcStr::from(s))),
+            split_escaped(s, esc, sep, usize::MAX)
+                .map(|s| Value::String(ArcStr::from(s))),
         ))),
         _ => None,
     }
@@ -487,16 +424,20 @@ fn fc_splitn_escaped(args: &[Value]) -> Option<Value> {
         v => return Some(errf!(TAG, "splitn_escaped: invalid n {v}")),
     };
     let esc = match &args[1] {
-        Value::String(s) if s.len() == 1 => s.chars().next().unwrap(),
-        _ => return Some(err!(TAG, "split_escaped: invalid escape char")),
+        v => match one_char(v) {
+            Some(c) => c,
+            None => return Some(err!(TAG, "invalid escape char")),
+        },
     };
     let sep = match &args[2] {
-        Value::String(s) if s.len() == 1 => s.chars().next().unwrap(),
-        _ => return Some(err!(TAG, "split_escaped: invalid separator")),
+        v => match one_char(v) {
+            Some(c) => c,
+            None => return Some(err!(TAG, "invalid separator")),
+        },
     };
     match &args[3] {
         Value::String(s) => Some(Value::Array(ValArray::from_iter(
-            escaping::splitn(s, esc, n, sep).map(|s| Value::String(ArcStr::from(s))),
+            split_escaped(s, esc, sep, n).map(|s| Value::String(ArcStr::from(s))),
         ))),
         _ => None,
     }
@@ -639,23 +580,17 @@ fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
         [Value::String(s)] => match s.parse::<Value>() {
             Ok(Value::Error(e)) => return Some(errf!(TAG, "{e}")),
             Ok(v) => v,
-            Err(e) => return Some(errf!(TAG, "{e:?}")),
+            Err(e) => return Some(errf!(TAG, "{e:#}")),
         },
         _ => return None,
     };
+    // every failure is the declared ParseError
     Some(match cast_target(rtype) {
-        // CR claude for claude: [bug] When the cast fails, this line returns an
-        // `InvalidCast` error, but str::parse declares only `ParseError(string)`
-        // (graphix/mod.gxi:110, mod.gx:35). So text that parses as a value of another
-        // type, such as "\"abc\"" for an i64, yields an error outside its checked type.
-        // A handler checked against the declaration loses it: an exhaustive `select
-        // (e.0).error { `ParseError(s) => .. }` matches nothing, and the check refuses
-        // an `InvalidCast` arm as unreachable. Either rewrap the failure as
-        // `ParseError` here, as the parsed-error case above does, or declare
-        // `InvalidCast` the way json/toml/pack::read do. probe:
-        // design/review-2026-10-05/repro/gx-stdlib-07.gx (gx-stdlib-07)
-        Some(typ) => typ.cast_value(env, raw),
-        None => errf!("TypeError", "parse requires a concrete type annotation"),
+        Some(typ) => match typ.cast_value(env, raw) {
+            Value::Error(e) => errf!(TAG, "{e}"),
+            v => v,
+        },
+        None => errf!(TAG, "parse requires a concrete type annotation"),
     })
 }
 

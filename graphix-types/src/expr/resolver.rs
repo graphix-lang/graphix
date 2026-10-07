@@ -148,6 +148,37 @@ impl ModuleResolver for FilesResolver {
     }
 }
 
+/// `s` split at each `sep` that `esc` does not escape, into at most `n`
+/// fields, the last holding the rest; the fields keep their escapes. An
+/// escape escapes the one char after it, a separator included.
+pub fn split_escaped(
+    s: &str,
+    esc: char,
+    sep: char,
+    n: usize,
+) -> impl Iterator<Item = &str> {
+    let mut rest = Some(s);
+    let mut fields = 0;
+    std::iter::from_fn(move || {
+        let r = rest.take()?;
+        fields += 1;
+        if fields < n {
+            let mut escaped = false;
+            for (i, c) in r.char_indices() {
+                if escaped {
+                    escaped = false
+                } else if c == esc {
+                    escaped = true
+                } else if c == sep {
+                    rest = Some(&r[i + c.len_utf8()..]);
+                    return Some(&r[..i]);
+                }
+            }
+        }
+        Some(r)
+    })
+}
+
 /// Parse a GRAPHIX_MODPATH-style list (`scheme:payload,{...}`) into
 /// resolvers. `file:` is built in, other schemes look up `factories`,
 /// an entry with no registered scheme is a file path, and an empty
@@ -158,7 +189,7 @@ pub fn parse_modpath(
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
-    for l in escaping::split(s, '\\', ',') {
+    for l in split_escaped(s, '\\', ',', usize::MAX) {
         // only the separator is escaped: a Windows path keeps its `\`
         let l = l.trim().replace("\\,", ",");
         if l.is_empty() {
@@ -1076,5 +1107,23 @@ mod test {
         let e = resolve_first(main, &[lib]).await.unwrap_err();
         let msg = format!("{e:#}");
         assert!(!msg.contains("Origin {"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod split_escaped_tests {
+    use super::split_escaped;
+
+    fn split(s: &str, n: usize) -> Vec<&str> {
+        split_escaped(s, '\\', ',', n).collect()
+    }
+
+    #[test]
+    fn an_escape_escapes_one_char() {
+        assert_eq!(split(r"a\,,b", usize::MAX), [r"a\,", "b"]);
+        assert_eq!(split(r"a\,\,b", usize::MAX), [r"a\,\,b"]);
+        assert_eq!(split(r"a\\,b", usize::MAX), [r"a\\", "b"]);
+        assert_eq!(split("a,b,c", 2), ["a", "b,c"]);
+        assert_eq!(split("", usize::MAX), [""]);
     }
 }

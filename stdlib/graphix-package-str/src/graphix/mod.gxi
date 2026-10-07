@@ -49,11 +49,11 @@ val join: fn(#sep:string, @args: [string, Array<string>]) -> string;
 /// concatenate the specified strings into a single string
 val concat: fn(@args: [string, Array<string>]) -> string;
 
-/// escape all the charachters in #to_escape in s with the escape charachter #escape.
-/// The escape charachter must appear in #to_escape
+/// escape every character of #esc.escape in s with #esc.escape_char, and translate the
+/// characters #esc.tr names; the escape char must appear in #esc.escape
 val escape: fn(?#esc:Escape, s: string) -> Result<string, `StringError(string)>;
 
-/// unescape all the charachters in s escaped by the specified #escape charachter
+/// unescape every character in s escaped by #esc.escape_char, reversing #esc.tr
 val unescape: fn(?#esc:Escape, s: string) -> Result<string, `StringError(string)>;
 
 /// split the string by the specified #pat and return an array of each part

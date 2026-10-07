@@ -6,28 +6,15 @@ val is_match: fn(#pat: string, s: string) -> Result<bool, `ReError(string)>;
 /// invalid.
 val find: fn(#pat: string, s: string) -> Result<Array<string>, `ReError(string)>;
 
-// CR claude for claude: [doc-drift] This doc has the nesting backwards. captures returns
-// one element per match, each [whole match, group 1, ...] with null for a group that
-// did not take part (lib.rs:51-63); `re::captures(#pat: r"(\d)(x)?", "1 2x")` is [["1",
-// "1", null], ["2x", "2", "x"]]. Other interface docs also disagree with their code.
-// str mod.gxi:52-57 names `#to_escape` and `#escape`, but the parameter is `#esc:
-// Escape` {escape, escape_char, tr}. core mod.gxi:134 says error() takes a string, but
-// it takes any 'a. core mod.gxi:206-208 says #count defaults to null, but `&[i64,
-// null]` refuses null, and the default is `&null`, a reference the wrapper writes the
-// queue depth into; graphix-tests lib_tests/core.rs:158, 171, 199 and 288 say "None:"
-// over tests that assert FuseExpect::Jit. book/src/stdlib/{core,re,str}.md hand-copy
-// these interfaces and have drifted further (core.md documents an opt::flatten that
-// does not exist). json.md and toml.md `{{#include}}` their .gxi, which would let each
-// fix land once. (gx-stdlib-17)
-/// return an array of captures matched by #pat. The array will have an element for each
-/// capture group, which will have an element for each capture, regardless of whether it
-/// matched or not. If it did not match the corresponding element will be null. Return an
-/// error if #pat is invalid.
+/// return an array with an element per match of #pat, each an array of the whole match
+/// followed by each capture group, null for a group that did not take part: re::captures(
+/// #pat: r"(\d)(x)?", "1 2x") is [["1", "1", null], ["2x", "2", "x"]]. Return an error if
+/// #pat is invalid.
 val captures: fn(#pat: string, s: string) -> Result<Array<Array<Option<string>>>, `ReError(string)>;
 
 /// return an array of strings split by #pat. return an error if #pat is invalid.
 val split: fn(#pat: string, s: string) -> Result<Array<string>, `ReError(string)>;
 
-/// split the string by #pat at most #limit times and return an array of the parts.
-/// return an error if #pat is invalid
+/// split the string by #pat into at most #limit parts, the last holding the rest.
+/// return an error if #pat is invalid or #limit is not positive
 val splitn: fn(#pat: string, #limit: i64, s: string) -> Result<Array<string>, `ReError(string)>;
