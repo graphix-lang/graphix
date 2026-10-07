@@ -71,15 +71,13 @@ run!(match_exhaust0, MATCH_EXHAUST0, |v: Result<&Value>| match v {
 }; graphix_package_core::testing::FuseExpect::None);
 
 const MATCH_EXHAUST1: &str = r#"
-select 42 {
+#[native] select 42 {
     1 => never(),
     2 => never(),
     _ => 42
 }
 "#;
 
-// The never() arms de-fuse individually; the wildcard arm and scrutinee
-// fuse.
 run!(match_exhaust1, MATCH_EXHAUST1, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
@@ -153,15 +151,13 @@ run!(nestedmatch2, NESTEDMATCH2, |v: Result<&Value>| match v {
 const NESTEDMATCH3: &str = r#"
 {
   let x = { foo: [ 1.0, 2.0, 4.3, 55.23 ], bar: 42, baz: 84.0 };
-  select x {
+  #[native] select x {
     { foo: [x, y, ..], bar: _, baz: _ } => x + y,
     _ => never()
   }
 }
 "#;
 
-// The `_ => never()` arm is async, so this select's region de-fuses;
-// sibling regions satisfy Jit.
 run!(nestedmatch3, NESTEDMATCH3, |v: Result<&Value>| match v {
     Ok(Value::F64(3.0)) => true,
     _ => false,
@@ -321,21 +317,10 @@ run!(select_slice_empty, SELECT_SLICE_EMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-7)))
 });
 
-// A named rest binding de-fuses the select (pinned by
-// `native_select_named_rest_defuses`); sibling regions still fuse.
-// CR claude for claude: [doc-drift] The comment above names a test that does not exist,
-// and its claim is false: `#[native]` on this select holds today, and CLAUDE.md lists
-// owned binds of a slice's rest as fused. The same goes for the de-fusion claims at
-// lines 81-82 (never() arms) and 163-164 (`_ => never()` is syntax, not async), and for
-// the ASPIRE notes at 372-373 and 798-799: `#[native]` holds on the lambda-wrapped
-// slice-cover selects and on `m * 2 + 1`. At 1577-1579 the selects do interpret, but
-// both tests assert Jit, not None. FuseExpect::Jit passes on any kernel, so none of
-// these tests would catch its select de-fusing. Delete the false comments, and put
-// `#[native]` on the select wherever the point is that it fuses. (tests-lang-a-08)
 const SELECT_SLICE_NAMED_REST: &str = r#"
 {
   let a = [1, 2, 3];
-  select a {
+  #[native] select a {
     [x, rest..] => x + array::len(rest),
     _ => 0
   }
@@ -378,8 +363,6 @@ run!(select_suffix_exact_len, SELECT_SUFFIX_EXACT_LEN, |v: Result<&Value>| {
 
 // Slice-pattern length coverage: unguarded all-bind slice arms cover an
 // array scrutinee when their lengths cover every length.
-// ASPIRE: Jit on the lambda-wrapped fixtures — a composite scrutinee in
-// an instance kernel; `select_slice_cover_fused` pins the root form.
 
 // The region-root form: a wildcard-less slice-covered select fuses.
 const SELECT_SLICE_COVER_FUSED: &str = r#"
@@ -398,7 +381,7 @@ run!(select_slice_cover_fused, SELECT_SLICE_COVER_FUSED, |v: Result<&Value>| {
 
 const SELECT_SLICE_COVER_SUFFIX: &str = r#"
 {
-  let f = |xs: Array<i64>| -> i64 select xs {
+  let f = |xs: Array<i64>| -> i64 #[native] select xs {
     [] => 0,
     [init.., last] => last
   };
@@ -412,7 +395,7 @@ run!(select_slice_cover_suffix, SELECT_SLICE_COVER_SUFFIX, |v: Result<&Value>| {
 
 const SELECT_SLICE_COVER_PREFIX: &str = r#"
 {
-  let f = |xs: Array<i64>| -> i64 select xs {
+  let f = |xs: Array<i64>| -> i64 #[native] select xs {
     [x, ..] => x,
     [] => -1
   };
@@ -427,7 +410,7 @@ run!(select_slice_cover_prefix, SELECT_SLICE_COVER_PREFIX, |v: Result<&Value>| {
 // An exact-length ladder under the rest form.
 const SELECT_SLICE_COVER_LADDER: &str = r#"
 {
-  let f = |xs: Array<i64>| -> i64 select xs {
+  let f = |xs: Array<i64>| -> i64 #[native] select xs {
     [] => 0,
     [a] => a,
     [a, b, rest..] => a + b + array::len(rest)
@@ -818,8 +801,6 @@ run!(gated_string_builtin, GATED_STRING_BUILTIN, |v: Result<&Value>| matches!(
     Ok(Value::I64(8))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit — the unannotated scalar gate: the never arm's open cell
-// binds wide under the downstream arith. `let m: i64` fuses today.
 const GATED_SCALAR_UNANNOTATED: &str = r#"
 {
   let c = array::iter([1, 2, 3, 4]);
@@ -827,7 +808,7 @@ const GATED_SCALAR_UNANNOTATED: &str = r#"
     0 => never(),
     _ => c
   };
-  let r = m * 2 + 1;
+  let r = #[native] m * 2 + 1;
   select count(r) {
     4 => r,
     _ => never()
@@ -1607,7 +1588,7 @@ run!(union_arm_annotated, UNION_ARM_ANNOTATED, |v: Result<&Value>| matches!(
 
 // Shallow arm discriminators: an ambiguous union (same tag, same arity)
 // stays on the deep walk; a mixed union dispatches the same shallow.
-// Union type-test dispatch interprets, hence None.
+// Union type-test dispatch node-walks; the rest of each program fuses.
 
 run!(
     shallow_ambiguous_same_tag_union,
