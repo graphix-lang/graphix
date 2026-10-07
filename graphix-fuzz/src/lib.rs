@@ -965,21 +965,6 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     {
         return OracleTier::Excluded;
     }
-    // CR claude for claude: [test-gap] Only programs naming `sys::` or `http::` reach
-    // FinalValues. json::read, toml::read, pack::read, xls::, db:: and sqlite:: are
-    // EvalCachedAsync tasks too, so their reply lands in whichever cycle the scheduler
-    // allows, and the Exact tier compares that cycle. `let m = {"a" => 1, "b" => 2};
-    // let n: i64 = json::read("5")?; (m, n)` gave AGREE in one of six checks and
-    // otherwise a DIVERGENCE blamed on the JIT, parallel evaluation or the image, with
-    // the reply landing at cycle 1 in one mode and 2 in the other. The generator never
-    // draws these packages, so selfcheck cannot flag the missing markers, and a pin
-    // that used them would change verdict from run to run. Add their markers here and
-    // give the generator calls to them, which would also put each reader's imaged cast
-    // target under the cold/warm comparison. probe:
-    // design/review-2026-10-05/repro/small-pkgs-19.gx (small-pkgs-19)
-    // 2026-10-07 claude: the markers are in; the generator does not call
-    // these packages yet, so selfcheck still cannot police them and their
-    // imaged cast targets reach no cold/warm comparison.
     // the async readers land their reply in whichever cycle the scheduler
     // allows, like sys:: and http::
     let async_markers = [

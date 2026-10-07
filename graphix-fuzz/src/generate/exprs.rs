@@ -514,6 +514,11 @@ pub(super) fn gen_typed(
             return b;
         }
     }
+    if rng.below(24) == 0 {
+        if let Some(b) = try_format_round_trip(ctx, rng, ty, d) {
+            return b;
+        }
+    }
     match ty {
         GenType::Num(n) => {
             // checked arithmetic, consumed by `$`, a type-match select
@@ -765,6 +770,41 @@ fn try_map_builtin(
         }
         _ => None,
     }
+}
+
+/// A value of `ty` through a format and its async, type-directed reader:
+/// json for any data, toml for a struct (its documents are tables), pack
+/// for any data. The reader's target is the annotation, so the imaged cast
+/// target meets the cold/warm comparison.
+fn try_format_round_trip(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    ty: &GenType,
+    depth: usize,
+) -> Option<String> {
+    fn data(ty: &GenType) -> bool {
+        match ty {
+            GenType::Num(_) | GenType::Bool | GenType::Str => true,
+            GenType::Tuple(ts) => ts.iter().all(data),
+            GenType::Array(t) | GenType::Map(t) | GenType::Nullable(t) => data(t),
+            GenType::Struct(fs) => fs.iter().all(|(_, t)| data(t)),
+            GenType::Variant(vs) => vs.iter().all(|(_, ts)| ts.iter().all(data)),
+            GenType::List(_) | GenType::Fn { .. } => false,
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+    if !data(ty) {
+        return None;
+    }
+    let v = gen_typed(ctx, rng, ty, depth.min(1));
+    let t = ty.render();
+    let fmt = match (rng.below(3), ty) {
+        (0, GenType::Struct(_)) => "toml::read(toml::write_str",
+        (0 | 1, _) => "json::read(json::write_str",
+        _ => "pack::read(pack::write_bytes",
+    };
+    Some(format!("{{ let r: {t} = {fmt}({v})$)$; r }}"))
 }
 
 /// A `str::` builtin call producing `ty`: length, predicates with
