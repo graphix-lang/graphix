@@ -3,6 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use arcstr::ArcStr;
+use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
@@ -83,16 +84,52 @@ fn build_clap_arg(spec: &Arg) -> clap::Arg {
     arg
 }
 
-// CR claude for claude: [bug] The spec reaches clap unchecked, and clap checks a command
-// only under debug assertions. In a debug build, the runtime panics ("Error: runtime
-// did not respond", exit 1) when a spec claims -h or help (clap's own help flag), gives
-// two args the same short, writes a short as "-p", or names a subcommand help. A
-// release build accepts the same spec and takes the first match: -h becomes host,
-// --help lists -h twice, and a second -v cannot be reached. A #short longer than one
-// character is cut to its first character with no error (lines 61, 72). Check the spec
-// here and return ArgError on a conflict, or turn off clap's help/version flags when
-// the spec claims them. probe: design/review-2026-10-05/repro/small-pkgs-07.gx
-// (small-pkgs-07)
+/// What clap would refuse with a panic (debug builds) or take wrongly (a
+/// later match unreachable): a short of more than one char, a short or
+/// long claimed twice or by clap's own help/version flags, a subcommand
+/// named help.
+fn check_spec(spec: &Command) -> Result<(), CompactString> {
+    let mut shorts: LPooled<Vec<char>> = LPooled::take();
+    let mut longs: LPooled<Vec<&str>> = LPooled::take();
+    shorts.push('h');
+    longs.push("help");
+    if spec.version.is_some() {
+        shorts.push('V');
+        longs.push("version");
+    }
+    for a in spec.args.iter() {
+        if let Some(s) = &a.short {
+            let mut cs = s.chars();
+            let c = match (cs.next(), cs.next()) {
+                (Some(c), None) if c != '-' => c,
+                _ => {
+                    return Err(format_compact!(
+                        "{}: #short {s:?} is not one character",
+                        a.name
+                    ));
+                }
+            };
+            if shorts.contains(&c) {
+                return Err(format_compact!("{}: -{c} is taken", a.name));
+            }
+            shorts.push(c);
+        }
+        if !matches!(a.kind, Kind::Positional) {
+            if longs.contains(&&*a.name) {
+                return Err(format_compact!("--{} is taken", a.name));
+            }
+            longs.push(&a.name);
+        }
+    }
+    for sub in spec.subcommands.iter() {
+        if sub.name == "help" {
+            return Err(format_compact!("help is clap's own subcommand"));
+        }
+        check_spec(sub)?;
+    }
+    Ok(())
+}
+
 fn build_clap_command(spec: &Command) -> clap::Command {
     let mut cmd = clap::Command::new(spec.name.to_string());
 
@@ -199,6 +236,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
                 return self.out.set(TagValue::fired(v));
             }
         };
+        if let Err(e) = check_spec(&spec) {
+            return self.out.set(TagValue::fired(errf!("ArgError", "{e}")));
+        }
         let cmd = build_clap_command(&spec);
 
         let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
