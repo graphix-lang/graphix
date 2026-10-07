@@ -96,17 +96,6 @@ where
         init.capabilities.text_document.as_ref().and_then(|td| {
             td.completion.as_ref()?.completion_item.as_ref()?.snippet_support
         });
-    // CR claude for claude: [bug] ServerState::new (the workspace scan) and every handler
-    // in the loop below run on this thread with no panic guard. Any panic in the parser
-    // or formatter therefore ends the server with exit 101, while a check's panic only
-    // becomes a "task N panicked" diagnostic. Today `duration:-1.s` (x-panics-01) in
-    // any .gx under the workspace, opened or not, kills the server right after
-    // `initialized` and again on every restart. Saving a file that holds it kills the
-    // server in the didSave rescan (ServerState::saved). In an open buffer it kills the
-    // server on documentSymbol or workspace/symbol (symbols.rs declared) and on
-    // formatting (format_source), and a graphixfmt.json indent of 18446744073709551615
-    // kills it on formatting. probe: design/review-2026-10-05/repro/x-panics-02.py
-    // (x-panics-02)
     let mut state = ServerState::new(
         make_backend(&init)?,
         workspace_roots(&init),
@@ -125,24 +114,36 @@ where
                     return Ok(());
                 }
                 if idle {
-                    let checked = state.flush();
-                    publish(&connection, checked)?;
+                    let checked = guarded("a check", || state.flush());
+                    publish(&connection, checked.unwrap_or_default())?;
                 }
                 let response = handle_request(&state, req);
                 connection.sender.send(Message::Response(response))?;
             }
             Message::Notification(not) => {
-                let cleared = handle_notification(&mut state, not);
-                publish(&connection, cleared)?;
+                let what = not.method.clone();
+                let cleared = guarded(&what, || handle_notification(&mut state, not));
+                publish(&connection, cleared.unwrap_or_default())?;
                 if idle {
-                    let checked = state.flush();
-                    publish(&connection, checked)?;
+                    let checked = guarded("a check", || state.flush());
+                    publish(&connection, checked.unwrap_or_default())?;
                 }
             }
             Message::Response(_) => {}
         }
     }
     Ok(())
+}
+
+/// `f`, or `None` when it panics: one bad input never ends the server.
+fn guarded<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(t) => Some(t),
+        Err(_) => {
+            log::error!("{what} panicked");
+            None
+        }
+    }
 }
 
 fn publish(connection: &Connection, diags: Diagnostics) -> Result<()> {
@@ -164,12 +165,17 @@ fn respond<P: DeserializeOwned, R: Serialize>(
         Err(e) => {
             Response::new_err(req.id, ErrorCode::InvalidParams as i32, e.to_string())
         }
-        Ok(params) => match f(params) {
-            Ok(result) => Response::new_ok(req.id, result),
-            Err(e) => Response::new_err(
+        Ok(params) => match guarded(&req.method, || f(params)) {
+            Some(Ok(result)) => Response::new_ok(req.id, result),
+            Some(Err(e)) => Response::new_err(
                 req.id,
                 ErrorCode::RequestFailed as i32,
                 format!("{e:#}"),
+            ),
+            None => Response::new_err(
+                req.id,
+                ErrorCode::InternalError as i32,
+                format!("{} panicked", req.method),
             ),
         },
     }

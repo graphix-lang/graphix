@@ -29,6 +29,8 @@ pub const DEFAULT_WIDTH: usize = 90;
 
 /// The spaces one level of nesting indents by, unless configured.
 pub const DEFAULT_INDENT: usize = 4;
+/// The widest indent the printer lays out: more is a mistake.
+pub const MAX_INDENT: usize = 16;
 
 /// The name of the formatter's configuration file.
 pub const CONFIG_FILE: &str = "graphixfmt.json";
@@ -39,17 +41,7 @@ pub const CONFIG_FILE: &str = "graphixfmt.json";
 pub struct FormatConfig {
     /// the line width to fit
     pub width: usize,
-    /// the spaces one level of nesting indents by
-    // CR claude for claude: [bug] `indent` accepts any usize, from graphixfmt.json and
-    // from `graphix fmt --indent`. `PrettyBuf::push_indent` (print.rs:390) writes
-    // indent times depth spaces at the start of every nested line. An indent of 2^64-1
-    // panics with capacity overflow, 2^40 aborts on a failed allocation, and 1e9 takes
-    // a five-line file past 6 GB. The language server reads a repository's
-    // graphixfmt.json and dies the same way on a formatting request; catching panics
-    // there would not stop the abort or the memory growth. Bound the indent in its
-    // type, or refuse it when the file and the flag are read, so it is an error like a
-    // malformed file (width is harmless at any value). probe:
-    // design/review-2026-10-05/repro/x-panics-13.sh (x-panics-13)
+    /// the spaces one level of nesting indents by, at most `MAX_INDENT`
     pub indent: usize,
 }
 
@@ -63,15 +55,19 @@ impl FormatConfig {
     fn load(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format_compact!("reading {}", path.display()))?;
-        serde_json::from_str(&text)
-            .with_context(|| format_compact!("parsing {}", path.display()))
+        let cfg: Self = serde_json::from_str(&text)
+            .with_context(|| format_compact!("parsing {}", path.display()))?;
+        cfg.checked().with_context(|| format_compact!("in {}", path.display()))
     }
 
-    /// The configuration that governs a source file in `dir`: the nearest
-    /// `graphixfmt.json` in `dir` or above it (a project keeps one at its
-    /// base), else the user's, in the platform's configuration directory
-    /// under `graphix`, else the defaults. A file that is found and does
-    /// not parse is an error, never the defaults.
+    /// This configuration, if its indent is one the printer can lay out.
+    pub fn checked(self) -> Result<Self> {
+        if self.indent > MAX_INDENT {
+            bail!("an indent of {} is more than {MAX_INDENT}", self.indent)
+        }
+        Ok(self)
+    }
+
     /// The configuration that governs `file`, found from its directory
     /// as the path names it: absolute and lexically normalized, never
     /// canonical, so a link is laid out by the configuration above the
@@ -92,6 +88,11 @@ impl FormatConfig {
         Self::discover(path.parent().unwrap_or(&path))
     }
 
+    /// The configuration that governs a source file in `dir`: the nearest
+    /// `graphixfmt.json` in `dir` or above it (a project keeps one at its
+    /// base), else the user's, in the platform's configuration directory
+    /// under `graphix`, else the defaults. A file that is found and does
+    /// not parse is an error, never the defaults.
     pub fn discover(dir: &Path) -> Result<Self> {
         let dir = std::path::absolute(dir)
             .with_context(|| format_compact!("resolving {}", dir.display()))?;

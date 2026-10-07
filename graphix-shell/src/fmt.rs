@@ -24,10 +24,11 @@ impl Args {
     /// line's overrides.
     fn config(&self, file: &Path) -> Result<FormatConfig> {
         let cfg = FormatConfig::for_file(file)?;
-        Ok(FormatConfig {
+        FormatConfig {
             width: self.width.unwrap_or(cfg.width),
             indent: self.indent.unwrap_or(cfg.indent),
-        })
+        }
+        .checked()
     }
 }
 

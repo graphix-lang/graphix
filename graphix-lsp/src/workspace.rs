@@ -85,7 +85,11 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
                     let text = std::fs::read_to_string(&path)
                         .map(ArcStr::from)
                         .unwrap_or_default();
-                    let (mod_decls, symbols) = summarize(&path, kind, text.clone());
+                    // a file the summary cannot read has neither, never
+                    // the end of the scan
+                    let summary =
+                        std::panic::catch_unwind(|| summarize(&path, kind, text.clone()));
+                    let (mod_decls, symbols) = summary.unwrap_or_default();
                     WorkspaceFile {
                         path: path.clone(),
                         kind,
