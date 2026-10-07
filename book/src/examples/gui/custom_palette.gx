@@ -27,7 +27,7 @@ let col = column(
   #width: &`Fill,
   &[
     text(#size: &24.0, &"Custom Palette"),
-    button(#padding: &`All(10.0), &text(&"Primary Button")),
+    button(#on_press: |_| null, #padding: &`All(10.0), &text(&"Primary Button")),
     toggler(#label: &"Enabled", #on_toggle: |v| enabled <- v, &enabled),
     slider(#min: &0.0, #max: &0.5, #step: &0.05, #on_change: |v| br <- v, &br),
     text(&"Brightness: [br]")

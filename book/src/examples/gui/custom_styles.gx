@@ -91,7 +91,7 @@ let dark_mode = true;
           #on_toggle: |v| dark_mode <- v,
           &dark_mode
         ),
-        button(#padding: &`All(12.0), &text(&"Styled Button"))
+        button(#on_press: |_| null, #padding: &`All(12.0), &text(&"Styled Button"))
       ]
     )
   )

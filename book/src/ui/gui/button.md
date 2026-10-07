@@ -17,7 +17,7 @@ val button: fn(
 
 ## Parameters
 
-- **`#on_press`** -- Callback invoked when the button is clicked. Receives `null` as its argument. Use the sample operator `~` inside the callback to capture current state at click time: `|c| counter <- c ~ counter + 1`. If omitted, the button renders but does nothing when clicked.
+- **`#on_press`** -- Callback invoked when the button is clicked. Receives `null` as its argument. Use the sample operator `~` inside the callback to capture current state at click time: `|c| counter <- c ~ counter + 1`. If omitted, the button is disabled: it draws as `#disabled: true` does and ignores clicks.
 - **`#width`** -- Width of the button. Accepts `Length` values: `` `Fill ``, `` `Shrink ``, or `` `Fixed(f64) ``. Defaults to `` `Shrink ``.
 - **`#height`** -- Height of the button. Same `Length` values as width. Defaults to `` `Shrink ``.
 - **`#padding`** -- Interior padding around the child widget. Accepts `Padding` values: `` `All(f64) ``, `` `Axis({x: f64, y: f64}) ``, or `` `Each({top: f64, right: f64, bottom: f64, left: f64}) ``.

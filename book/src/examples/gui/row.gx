@@ -22,9 +22,9 @@ mod icon;
         #spacing: &10.0,
         #valign: &`Center,
         &[
-          button(#padding: &`All(10.0), &text(&"One")),
-          button(#padding: &`All(10.0), &text(&"Two")),
-          button(#padding: &`All(10.0), &text(&"Three"))
+          button(#on_press: |_| null, #padding: &`All(10.0), &text(&"One")),
+          button(#on_press: |_| null, #padding: &`All(10.0), &text(&"Two")),
+          button(#on_press: |_| null, #padding: &`All(10.0), &text(&"Three"))
         ]
       )
     ]
