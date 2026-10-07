@@ -64,9 +64,14 @@ pub enum StepKind {
     Abort,
     /// `println("..")`: a waitable effect whose output the oracle compares.
     Print,
+    /// `let w = wr(e); let r = acc * 2`: a call to a callee that writes
+    /// `acc`, then a step that reads it.
+    Write,
+    /// `let d = *ar + e`: a read through a reference to `acc`.
+    Deref,
 }
 
-pub const STEP_KINDS: [StepKind; 8] = [
+pub const STEP_KINDS: [StepKind; 10] = [
     StepKind::Let,
     StepKind::Call,
     StepKind::Connect,
@@ -75,6 +80,8 @@ pub const STEP_KINDS: [StepKind; 8] = [
     StepKind::Try,
     StepKind::Abort,
     StepKind::Print,
+    StepKind::Write,
+    StepKind::Deref,
 ];
 
 /// Generate one reactive wrapper (schedule header + body) with the
@@ -637,6 +644,10 @@ fn ceremony(
     let acc = ctx.fresh();
     stmts.push(format!("let {acc} = i64:0"));
     ctx.push(acc.clone(), I64);
+    let wr = ctx.fresh();
+    stmts.push(format!("let {wr} = |{x}: i64| -> i64 {{ {acc} <- {x}; {x} }}"));
+    let ar = ctx.fresh();
+    stmts.push(format!("let {ar} = &{acc}"));
     let bool_inputs: Vec<&str> = inputs
         .iter()
         .filter_map(|(n, t)| (*t == GenType::Bool).then_some(n.as_str()))
@@ -644,7 +655,12 @@ fn ceremony(
     let mut body: Vec<String> = Vec::new();
     let mut reliable = true;
     let mark = ctx.mark();
-    ctx.push(trigger.clone(), trigger_ty);
+    // `seq let tv = trigger`: the steps read the run's own trigger
+    let bound = chance(rng, 0.3).then(|| ctx.fresh());
+    if let Some(tv) = &bound {
+        ctx.push(tv.clone(), trigger_ty.clone());
+    }
+    ctx.push(trigger.clone(), trigger_ty.clone());
     ctx.no_catch = true;
     let n_steps = 1 + rng.below(4);
     for i in 0..n_steps {
@@ -716,6 +732,21 @@ fn ceremony(
                 let v = vars[rng.below(vars.len())];
                 body.push(format!("println(\"s{i} [{v}]\")"));
             }
+            StepKind::Write => {
+                let w = ctx.fresh();
+                let r = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                body.push(format!("let {w} = {wr}({e})"));
+                body.push(format!("let {r} = {acc} * i64:2"));
+                ctx.push(w, I64);
+                ctx.push(r, I64);
+            }
+            StepKind::Deref => {
+                let d = ctx.fresh();
+                let e = exprs::gen_typed(ctx, rng, &I64, 1);
+                body.push(format!("let {d} = *{ar} + {e}"));
+                ctx.push(d, I64);
+            }
         }
     }
     let tail = exprs::gen_typed(ctx, rng, &I64, 2);
@@ -768,22 +799,31 @@ fn ceremony(
         head.push_str(&format!("; flush({})", run_event(ctx, stmts, &mut body, rng)));
     }
     let done = ctx.fresh();
-    // CR claude for claude: [test-gap] This is the generator's only seq: a top-level `let
-    // vN = seq|seqq <input or burst>[; abort(..)][; flush(..)] { .. }`. It never draws
-    // `seq let pat = trigger`, a triggerless `seq { .. }`, a seq inside a lambda
-    // (per-instance machines in imaged instance bodies) or a seq inside a select arm
-    // (the reset on the arm's sleep). No step calls a function that writes a variable
-    // or reads through a reference: `h` and `bad` are pure and no `&T` is in scope
-    // here. These shapes reach the soak only through mutated fixtures: `graphix-fuzz
-    // gen 2000 11 --reactive` has 413 programs with a seq and none of these shapes.
-    // Draw `seq let`, a writing callee (`|v: i64| -> i64 { acc <- v; v }`) followed by
-    // a step that reads acc, a `*r` step, and the ceremony inside a lambda and inside a
-    // parity-keyed arm. (fuzz-gen-b-04)
-    stmts.push(format!(
-        "let {done} = {} {head} {{ {} }}",
-        if queued { "seqq" } else { "seq" },
-        body.join("; ")
-    ));
+    let kw = if queued { "seqq" } else { "seq" };
+    let clauses = &head[trigger.len()..];
+    let seq_over = |trig: &str| {
+        let bind = bound.as_ref().map(|tv| format!("let {tv} = ")).unwrap_or_default();
+        format!("{kw} {bind}{trig}{clauses} {{ {} }}", body.join("; "))
+    };
+    match rng.below(6) {
+        // a machine per instance: the ceremony in a lambda
+        0 => {
+            let cf = ctx.fresh();
+            let tp = ctx.fresh();
+            let ty = trigger_ty.render();
+            stmts.push(format!("let {cf} = |{tp}: {ty}| {}", seq_over(&tp)));
+            stmts.push(format!("let {done} = {cf}({trigger})"));
+        }
+        // a machine in a select arm, reset when the arm sleeps
+        1 if trigger_ty == I64 => {
+            reliable = false;
+            stmts.push(format!(
+                "let {done} = select ({trigger} % i64:2) {{ i64:0 => {}, _ => never() }}",
+                seq_over(&trigger)
+            ));
+        }
+        _ => stmts.push(format!("let {done} = {}", seq_over(&trigger))),
+    }
     let runs = ctx.fresh();
     let last = ctx.fresh();
     stmts.push(format!("println(\"run [{done}]\")"));
@@ -861,7 +901,7 @@ mod test {
         let cfg = GenCfg::default();
         let mut rng = Rng::new(3);
         let (mut acc, mut cc, mut ctr, mut run, mut slept) = (0, 0, 0, 0, 0);
-        const N: usize = 300;
+        const N: usize = 1000;
         for _ in 0..N {
             let (_, st) = gen_reactive_stats(&cfg, &mut rng);
             acc += (st.accumulators > 0) as usize;
