@@ -399,8 +399,9 @@ point that sentence at FnType::instantiate. (t-fntyp-12) -->
   every reachable cell, declared or not; it is the Pack wire slot
   (decode re-seeds cells; `add_cell_constraint` dedups).
 - `FnType.quantifiers: Arc<[ArcStr]>` — the names the `fn<...>` header
-  declared, in source order. Names only, excluded from identity; the
-  constraint types stay in the cells. A self-referential constraint
+  declared, in source order; the constraint types stay in the cells. The
+  names decide which cells a call freshens or holds rigid and which
+  conjuncts `constraint_view` (so Eq and Ord) sees, and the image keys them. A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and
   conjunct; each listing walk holds a per-signature reentrancy guard, so

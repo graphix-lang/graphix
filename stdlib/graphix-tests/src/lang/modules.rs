@@ -766,3 +766,16 @@ run!(
     "#;
     FuseExpect::Jit
 );
+
+// An interface's labeled arguments pair with the implementation's by
+// label, whatever order each writes them in.
+run!(
+    interface_labels_pair_by_name,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f(#a: 1, #b: "x")
+    "#,
+    "/test/m.gxi" => "val f: fn(#a: i64, #b: string) -> i64",
+    "/test/m.gx" => "let f = |#b: string, #a: i64| -> i64 a"
+);

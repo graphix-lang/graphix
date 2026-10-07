@@ -271,19 +271,9 @@ pub struct FnType {
     pub throws: Type,
     pub explicit_throws: bool,
     /// The quantifier names the `fn<...>` header declared, in source
-    /// order. Syntax only (the constraint types live in the cells), but
-    /// the declaration site is what stops a self-referential constraint
-    /// from regressing. Excluded from Eq/Ord/Hash.
-    // CR claude for claude: [doc-drift] This doc is wrong: the list is not just syntax,
-    // and it is not outside identity. constraint_view keeps only the conjuncts of the
-    // cells it names, so Eq and Ord depend on it. fresh_quantifiers, inner_quantifiers,
-    // has_open_quantifier and callsite.rs quantified_formal read it to decide which
-    // cells a call freshens or holds rigid. content_key skips it (`quantifiers: _`), so
-    // two FnTypes that share cells and lambda_ids and differ only here would get one
-    // image object and decode with the first one's list. Nothing builds such a pair
-    // with an effect today. Add the names to content_key, and say what the list decides
-    // here and in design/tvar_constraints.md ('Names only, excluded from identity').
-    // (t-fntyp-10)
+    /// order (the constraint types live in the cells). They decide which
+    /// cells a call freshens or holds rigid, and which conjuncts
+    /// `constraint_view`, and so Eq and Ord, see; the image keys them.
     pub quantifiers: Arc<[ArcStr]>,
     /// Every LambdaId this type might represent.
     pub lambda_ids: LambdaIds,
@@ -372,15 +362,12 @@ impl FnType {
     /// The canonical bytes the image keys this type by: the shape with
     /// every variable by identity, and the lambda ids cell by identity.
     pub(crate) fn content_key(&self, out: &mut Vec<u8>) {
-        let Self {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: _,
-            lambda_ids,
-        } = self;
+        let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
+            self;
+        encode_varint(quantifiers.len() as u64, out);
+        for q in quantifiers.iter() {
+            key_text(q, out);
+        }
         encode_varint(args.len() as u64, out);
         for a in args.iter() {
             match &a.kind {
@@ -531,13 +518,9 @@ impl FnType {
     }
 
     /// Read-only walk over args, vargs, rtype, throws in that order.
-    /// Cell constraints are not visited; see
-    /// [`Self::for_each_sig_constraint`].
-    // CR claude for claude: [doc-drift] The doc links [`Self::for_each_sig_constraint`],
-    // which does not exist; the walk that visits the signature cells' conjuncts is
-    // for_each_part (line 564). Point the link there: the choice between this walk and
-    // for_each_part is what decides whether a new walk sees quantifier bounds.
-    // (x-expr-walks-09)
+    /// Cell constraints are not visited; [`Self::for_each_part`] visits
+    /// the signature cells' conjuncts too, and which of the two a walk
+    /// takes decides whether it sees quantifier bounds.
     pub(crate) fn try_for_each_type<B>(
         &self,
         f: &mut impl FnMut(&Type) -> ControlFlow<B>,
@@ -1069,18 +1052,12 @@ impl FnType {
                 impl_args.len()
             );
         }
-        // CR claude for claude: [bug] This pairs the signature's arguments with the
-        // implementation's by index, so an interface `val` refuses an implementation
-        // that writes its labeled arguments in another order ("argument 0 kind
-        // mismatch"). Labels bind by name everywhere else: `align` (contains,
-        // could_match) and the trait impl check accept the same pair, and calls through
-        // it work. The trait re-declaration check in node/module.rs (the
-        // `method(b).sig_matches` agreement) inherits the same order sensitivity. Pair
-        // the arguments with `self.align(impl_fn)`, require its flag, and compare kinds
-        // per pair, or keep FnType's labeled prefix in one canonical order. probe:
-        // design/review-2026-10-05/repro/t-fntyp-08.gx (t-fntyp-08)
-        for (i, (sig_arg, impl_arg)) in sig_args.iter().zip(impl_args.iter()).enumerate()
-        {
+        // labeled arguments pair by label, whatever order each side writes
+        let (pairs, aligned) = self.align(impl_fn);
+        if !aligned {
+            bail!("the signature's and the implementation's labeled arguments differ")
+        }
+        for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
             if sig_arg.kind != impl_arg.kind {
                 bail!(
                     "argument {} kind mismatch: signature has {:?}, implementation has {:?}",
@@ -1213,31 +1190,10 @@ impl FnType {
         Ok(())
     }
 
-    // CR claude for claude: [structure] This is cow_walk written out by hand. It rebuilds
-    // every field, in a different order from the canonical args, vargs, rtype, throws,
-    // and allocates a new args slice even when nothing changes. `let mut copies =
-    // LPooled::take(); self.cow_walk(|t| t.scope_refs_int(scope, &mut
-    // copies)).unwrap_or_else(|| self.clone())` does the same; Type::scope_refs_int
-    // already reaches nested fn types this way, since cow_children calls cow_walk. A
-    // new type-position field would then need no edit here. (t-fntyp-13)
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let vargs = self.vargs.as_ref().map(|t| t.scope_refs_with(scope, &mut copies));
-        let rtype = self.rtype.scope_refs_with(scope, &mut copies);
-        let args = Arc::from_iter(self.args.iter().map(|a| FnArgType {
-            kind: a.kind.clone(),
-            typ: a.typ.scope_refs_with(scope, &mut copies),
-        }));
-        let throws = self.throws.scope_refs_with(scope, &mut copies);
-        FnType {
-            args,
-            rtype,
-            vargs,
-            throws,
-            explicit_throws: self.explicit_throws,
-            quantifiers: self.quantifiers.clone(),
-            lambda_ids: self.lambda_ids.clone(),
-        }
+        self.cow_walk(|t| t.scope_refs_int(scope, &mut copies))
+            .unwrap_or_else(|| self.clone())
     }
 }
 
