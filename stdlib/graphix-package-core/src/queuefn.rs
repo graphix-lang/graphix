@@ -3,7 +3,7 @@ use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
-    Node, Refs, Rt, Scope, TagValue, UserEvent,
+    Node, Refs, Rt, Scope, TagValue, TagView, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
@@ -20,8 +20,14 @@ use triomphe::Arc;
 
 use crate::{seam_tick, seam_value};
 
+use serde_derive::{Deserialize, Serialize};
+
+netidx_core::atomic_id!(SiteId);
+
 #[derive(Debug)]
 struct QueueEntry {
+    /// the call site that queued it
+    site: SiteId,
     /// The (BindId, Value) pairs for the args that fired in the originating
     /// cycle; on dispatch only these are written, so pred sees only the
     /// args that actually updated.
@@ -51,6 +57,25 @@ impl QueueState {
     fn depth(&self) -> i64 {
         self.queue.len() as i64
     }
+
+    /// The `#count` write the depth needs, if it changed.
+    fn count_write(&mut self) -> Option<(BindId, i64)> {
+        let bid = self.count_ref?;
+        let depth = self.depth();
+        (depth != self.last_written_depth).then(|| {
+            self.last_written_depth = depth;
+            (bid, depth)
+        })
+    }
+}
+
+fn write_count<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    w: Option<(BindId, i64)>,
+) {
+    if let Some((r, depth)) = w {
+        crate::write_through(ctx, r, Value::I64(depth));
+    }
 }
 
 type StateRef = Arc<Mutex<QueueState>>;
@@ -60,6 +85,7 @@ type StateRef = Arc<Mutex<QueueState>>;
 /// done via `state` shared with the owning `QueueFn` node.
 #[derive(Debug)]
 struct WrapperApply<R: Rt, E: UserEvent> {
+    site: SiteId,
     state: StateRef,
     /// One bind per fn arg, owned by this call site. `pred` references these
     /// to read the args at invocation time. Indexed positionally (`arg_bids[i]`
@@ -94,59 +120,35 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         if !delta.is_empty() {
             let count_write = {
                 let mut s = self.state.lock();
-                // CR claude for claude: [bug] The immediate path inserts its args
-                // straight into ctx.event.variables. A popped invocation that set_var
-                // delivered to the same binds this cycle gets overwritten. This happens
-                // when the trigger fires again in the cycle after a pop that emptied
-                // the queue: it banks a pop, and a new call at this site in that cycle
-                // replaces the released invocation. The released call never runs, or
-                // with several args it merges into the new call. Both engines lose it.
-                // probe: design/review-2026-10-05/repro/core-aux-04.gx (prints ran 1,
-                // ran 3; ran 2 never runs). (core-aux-04)
                 if s.pop_count > 0 {
                     s.pop_count -= 1;
                     drop(s);
+                    // a released call delivering to these binds this cycle runs
+                    // first, and this one the next
+                    let released =
+                        delta.iter().any(|(b, _)| ctx.event.variables.contains_key(b));
                     for (bid, v) in delta.drain(..) {
-                        ctx.rt.store_insert(bid, TagValue::fired(v.clone()));
-                        ctx.event.variables.insert(bid, TagValue::fired(v));
+                        if released {
+                            ctx.rt.set_var(bid, v);
+                        } else {
+                            ctx.rt.store_insert(bid, TagValue::fired(v.clone()));
+                            ctx.event.variables.insert(bid, TagValue::fired(v));
+                        }
                     }
                     None
                 } else {
-                    s.queue.push_back(QueueEntry { updates: delta });
-                    let depth = s.depth();
-                    if let Some(bid) = s.count_ref {
-                        if depth != s.last_written_depth {
-                            s.last_written_depth = depth;
-                            Some((bid, depth))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                    s.queue.push_back(QueueEntry { site: self.site, updates: delta });
+                    s.count_write()
                 }
             };
-            if let Some((bid, depth)) = count_write {
-                ctx.rt.set_var(bid, Value::I64(depth));
-            }
+            write_count(ctx, count_write);
         }
-        // CR claude for claude: [bug] When the wrapped call delivers a bottom, seam_tick
-        // reads it as "no tick" here and the wrapper rides its previous result STALE. A
-        // consumer that fires on another input then pairs the old result with the new
-        // input: `(qparse(s$), s)` prints (5, "x") where `parse(s$)` is bottom. This
-        // breaks R3 in design/dense_delivery.md: a consumed bottom bottoms the
-        // production, and only the three Held sites ride. opt.rs does the same in three
-        // places: - HofState::tick_unary (line 325), behind map, flat_map, is_some_and
-        // and is_none_or; - OptFilter::update (line 573); - OrElseShared::tick (line
-        // 825), where last_f survives f's bottom, so or_else answers a null input with
-        // f's value from before the bottom. The opt HOFs also ride a bottomed input
-        // instead of bottoming (dense delta 13), and core::filter (lib.rs:1717) reads
-        // its predicate the same way. Produce the bottom only where it is consumed:
-        // tick_unary must not bottom on the callback while the current input is null.
-        // probe: design/review-2026-10-05/repro/core-aux-08.gx (core-aux-08)
-        match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
+        match self.pred.update(ctx).view() {
+            TagView::Fired(v) => self.out.set(TagValue::fired(v.value_cloned())),
+            TagView::Stale(_) => self.out.ride(),
+            // the wrapped call's bottom is the wrapper's
+            TagView::FreshBottom => self.out.set_bottom(true),
+            TagView::StaleBottom => self.out.set_bottom(false),
         }
     }
 
@@ -166,17 +168,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         self.pred.refs(refs)
     }
 
-    // CR claude for claude: [bug] A deleted wrapper site leaves its QueueEntry values in
-    // the shared queue. A later #trigger pops one, set_var writes binds nobody reads
-    // (the value stays in the store), f never runs, the release is lost, and #count
-    // keeps counting the dead entry. When array::map shrinks while removed slots hold
-    // queued calls, the live calls need extra triggers, and with the feedback idiom
-    // (output drives #trigger) the queue stalls for good. Tag each entry with its site,
-    // drop this site's entries here and write the new depth through #count. This delete
-    // also never removes arg_bids from the store. probe:
-    // design/review-2026-10-05/repro/core-aux-05.gx (core-aux-05)
+    /// The site's queued calls go with it, and so do its bindings.
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.delete(ctx);
+        let count_write = {
+            let mut s = self.state.lock();
+            s.queue.retain(|e| e.site != self.site);
+            s.count_write()
+        };
+        write_count(ctx, count_write);
+        for bid in self.arg_bids.iter() {
+            ctx.rt.store_remove(bid);
+            ctx.env.unbind_variable(*bid);
+        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -276,17 +280,6 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("queuefn: fn type not resolved"))?;
         let id = LambdaId::new();
-        // CR claude for claude: [bug] The wrapper is built from f's type alone. This
-        // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
-        // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
-        // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
-        // the immediate call and on a queued one. The checker types the wrapper exactly
-        // as f, so these calls pass --check. Wrapping `|#scale: i64 = 10, x: i64|`,
-        // `qf(5)` never produces (the only trace is an ERROR "expected default value"
-        // in the log). A wrapped `max` answers `qm(1, 5)` with 1, a wrapped array::push
-        // drops the pushed values, and a wrapped str::concat never produces, all with
-        // nothing logged. probe: design/review-2026-10-05/repro/core-aux-06.gx
-        // (core-aux-06)
         let argspec: Arc<[Arg]> = ftyp
             .args
             .iter()
@@ -349,23 +342,8 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
     }
 
     fn maybe_write_count(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        let to_write = {
-            let mut s = self.state.lock();
-            if let Some(bid) = s.count_ref {
-                let depth = s.depth();
-                if depth != s.last_written_depth {
-                    s.last_written_depth = depth;
-                    Some((bid, depth))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-        if let Some((bid, depth)) = to_write {
-            ctx.rt.set_var(bid, Value::I64(depth));
-        }
+        let w = self.state.lock().count_write();
+        write_count(ctx, w);
     }
 }
 
@@ -410,29 +388,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // 2026-10-06 claude: the default is now `#count: [&mut i64, null] = null`, so the
         // `_ => None` arm runs and a queuefn without #count writes nothing. The rest
         // stands.
+        // 2026-10-07 claude: sleep writes the emptied depth, a reference that arrives or
+        // moves is told the depth, and a place reference writes through its place. The
+        // lag stands: one write per variable per cycle, so a burst still reaches the
+        // reader a step a cycle; collapsing a cycle's writes needs the runtime to
+        // replace a pending write.
         if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
-            let new_ref = match &v {
-                Value::U64(b) => {
-                    let outer = BindId::from(*b);
-                    // CR claude for claude: [bug] This resolves a reference only through
-                    // `byref_chain`, but a place reference (`&s.f`, `&a[i]`) is
-                    // registered with `Rt::set_ref_path`, so `#count: &st.depth` writes
-                    // the place's mirror cell, which no reader goes through, and
-                    // `st.depth` stays -1 while `#count: &plain` counts. `resolve_ref`
-                    // (buffer.rs:273) has the same gap: buffer::decode(b, [`U8(&st.a)])
-                    // returns DecodeError("ref does not point to a let binding").
-                    // ConnectDeref::resolve (node/mod.rs:1616) and Deref::address
-                    // (node/bind.rs:1388) check `ref_path` first; share one resolver
-                    // with them and write a place with `Rt::patch_var`. probe:
-                    // design/review-2026-10-05/repro/x-builtin-effects-11.gx
-                    // (x-builtin-effects-11)
-                    ctx.env.byref_chain.get(&outer).copied().or(Some(outer))
-                }
+            let new_ref = match v {
+                Value::U64(b) => Some(BindId::from(b)),
                 _ => None,
             };
             let mut s = self.state.lock();
-            s.count_ref = new_ref;
-            s.last_written_depth = s.depth();
+            if s.count_ref != new_ref {
+                // a reference that arrives or moves is told the depth
+                s.count_ref = new_ref;
+                s.last_written_depth = -1;
+            }
         }
         let mut new_lambda: Option<Value> = None;
         if let Some(tv) = seam_value(from[2].update(ctx)) {
@@ -494,35 +465,56 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        if let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) {
-            self.ftyp = Some(ft);
-        } else {
+        let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) else {
             bail!("queuefn: third argument must be a function")
+        };
+        // XCR claude for claude: [bug] The wrapper is built from f's type alone. This
+        // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
+        // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
+        // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
+        // the immediate call and on a queued one. The checker types the wrapper exactly
+        // as f, so these calls pass --check. Wrapping `|#scale: i64 = 10, x: i64|`,
+        // `qf(5)` never produces (the only trace is an ERROR "expected default value"
+        // in the log). A wrapped `max` answers `qm(1, 5)` with 1, a wrapped array::push
+        // drops the pushed values, and a wrapped str::concat never produces, all with
+        // nothing logged. probe: design/review-2026-10-05/repro/core-aux-06.gx
+        // (core-aux-06)
+        // 2026-10-07 claude: refused instead: typecheck1 refuses an f with a variadic
+        // argument or a defaulted label ("wrap a lambda that calls it"), since the
+        // wrapper's generated call passes every formal and no more (genn::apply builds
+        // no variadic call). The repro's qf now fails --check with that message.
+        // Supporting them would need a variadic generated call; X'd for that choice.
+        // the wrapper's call passes every formal and no more
+        if ft.vargs.is_some() || ft.args.iter().any(|a| a.has_default()) {
+            bail!(
+                "queuefn can't wrap a function with a variadic argument or a defaulted \
+                 label; wrap a lambda that calls it"
+            )
         }
+        self.ftyp = Some(ft);
         Ok(())
     }
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    // CR claude for claude: [bug] A deleted queuefn leaves behind what it built.
-    // build_lambda's ctx.wrap_lambda (line 305) puts the wrapper def, which holds a
-    // clone of the env, in ctx.lambda_defs, and nothing removes it (Lambda::delete
-    // removes its own def). fid's store entry (line 376, holding f) is never
-    // store_removed. WrapperApply::delete (line 146) never unbinds the qa{i} binds
-    // genn::bind made (line 461) and never removes their store entries (line 101), both
-    // of which genn::SynthCall::delete does. A queuefn made per collection slot,
-    // activation or dynamic call grows memory without bound, about 20 KB per instance.
-    // probe: design/review-2026-10-05/repro/core-aux-03.gx (RSS 325 MB to 2.9 GB in 18
-    // s; flat with a plain lambda in its place). (core-aux-03)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.fid, self.top_id);
+        ctx.rt.store_remove(&self.fid);
+        if let Some(def) =
+            self.lambda.as_ref().and_then(|l| l.downcast_ref::<LambdaDef<R, E>>())
+        {
+            ctx.lambda_defs.remove(&def.id);
+        }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        let mut s = self.state.lock();
-        s.queue.clear();
-        s.pop_count = 1;
-        s.last_written_depth = 0;
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        let w = {
+            let mut s = self.state.lock();
+            s.queue.clear();
+            s.pop_count = 1;
+            s.count_write()
+        };
+        write_count(ctx, w);
     }
 }
 
@@ -553,6 +545,7 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
     let fnode = genn::reference(ctx, fid, Type::Fn(ftyp.clone()), tid);
     let pred = genn::apply(fnode, scope, arg_nodes, &ftyp, tid);
     Ok(Box::new(WrapperApply {
+        site: SiteId::new(),
         state,
         arg_bids: arg_bids.into(),
         pred,

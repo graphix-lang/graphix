@@ -411,20 +411,20 @@ run!(queuefn_closure_capture, QUEUEFN_CLOSURE_CAPTURE, |v: Result<&Value>| {
 // nothing pops, so depth ramps up.
 const QUEUEFN_COUNT_REF: &str = r#"
 {
-  let depth = 0;
+  let depth = -1;
   let qf = queuefn(#count: &mut depth, #trigger: never(), |x: i64| -> i64 x * 10);
   qf(1);  // immediate (pop_count=1), no push
   qf(2);  // push, depth -> 1
   qf(3);  // push, depth -> 2
-  // depth observer sees [0 (let init), 1, 2]
-  array::group(depth, |n, _| n == 3)
+  // depth observer sees [-1 (let init), 0 (the reference told the depth), 1, 2]
+  array::group(depth, |n, _| n == 4)
 }
 "#;
 
 run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(0), Value::I64(1), Value::I64(2)] => true,
+            [Value::I64(-1), Value::I64(0), Value::I64(1), Value::I64(2)] => true,
             _ => false,
         },
         _ => false,

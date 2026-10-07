@@ -168,7 +168,9 @@ struct Decoder<'a> {
     buf: &'a Bytes,
     pos: usize,
     chain: &'a ByRefChain,
-    written: poolshark::local::LPooled<Vec<(BindId, Value)>>,
+    /// each write's reference, the binding it names (none for a place),
+    /// and the value
+    written: poolshark::local::LPooled<Vec<(BindId, Option<BindId>, Value)>>,
 }
 
 fn decode_err(msg: impl std::fmt::Display) -> Value {
@@ -193,8 +195,8 @@ impl<'a> Decoder<'a> {
         r: &Value,
     ) -> Result<Option<usize>, Value> {
         let target = self.target(r)?;
-        let v = match self.written.iter().rev().find(|(t, _)| *t == target) {
-            Some((_, v)) => Some(v.clone()),
+        let v = match self.written.iter().rev().find(|(_, t, _)| *t == Some(target)) {
+            Some((_, _, v)) => Some(v.clone()),
             None => ctx.rt.store_value(&target),
         };
         match v {
@@ -213,19 +215,31 @@ impl<'a> Decoder<'a> {
         Ok(bytes)
     }
 
-    fn put(&mut self, r: &Value, v: Value) -> Result<(), Value> {
-        let target = self.target(r)?;
-        self.written.push((target, v));
+    /// A write through `r`, to a binding or a place (`&s.f`, `&a[i]`).
+    fn put<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        r: &Value,
+        v: Value,
+    ) -> Result<(), Value> {
+        let Value::U64(id) = r else { return Err(decode_err("not a reference")) };
+        let r = BindId::from(*id);
+        let target = self.chain.get(&r).copied();
+        if target.is_none() && ctx.rt.ref_path(&r).is_none() {
+            return Err(decode_err("ref does not point to a let binding or a place"));
+        }
+        self.written.push((r, target, v));
         Ok(())
     }
 
-    fn fixed<const N: usize>(
+    fn fixed<const N: usize, R: Rt, E: UserEvent>(
         &mut self,
+        ctx: &ExecCtx<'_, R, E>,
         r: &Value,
         from: fn([u8; N]) -> Value,
     ) -> Result<(), Value> {
         let bytes: [u8; N] = self.take(N)?.try_into().expect("take returns N bytes");
-        self.put(r, from(bytes))
+        self.put(ctx, r, from(bytes))
     }
 
     fn varint(&mut self) -> Result<u64, Value> {
@@ -246,36 +260,40 @@ impl<'a> Decoder<'a> {
     ) -> Result<Option<()>, Value> {
         let arg = |i: usize| a.get(i).ok_or_else(|| decode_err("missing argument"));
         match tag {
-            "I8" => self.fixed(arg(0)?, |b: [u8; 1]| Value::I8(i8::from_le_bytes(b))),
-            "U8" => self.fixed(arg(0)?, |b: [u8; 1]| Value::U8(b[0])),
-            "I16" => self.fixed(arg(0)?, |b| Value::I16(i16::from_be_bytes(b))),
-            "I16LE" => self.fixed(arg(0)?, |b| Value::I16(i16::from_le_bytes(b))),
-            "U16" => self.fixed(arg(0)?, |b| Value::U16(u16::from_be_bytes(b))),
-            "U16LE" => self.fixed(arg(0)?, |b| Value::U16(u16::from_le_bytes(b))),
-            "I32" => self.fixed(arg(0)?, |b| Value::I32(i32::from_be_bytes(b))),
-            "I32LE" => self.fixed(arg(0)?, |b| Value::I32(i32::from_le_bytes(b))),
-            "U32" => self.fixed(arg(0)?, |b| Value::U32(u32::from_be_bytes(b))),
-            "U32LE" => self.fixed(arg(0)?, |b| Value::U32(u32::from_le_bytes(b))),
-            "I64" => self.fixed(arg(0)?, |b| Value::I64(i64::from_be_bytes(b))),
-            "I64LE" => self.fixed(arg(0)?, |b| Value::I64(i64::from_le_bytes(b))),
-            "U64" => self.fixed(arg(0)?, |b| Value::U64(u64::from_be_bytes(b))),
-            "U64LE" => self.fixed(arg(0)?, |b| Value::U64(u64::from_le_bytes(b))),
-            "F32" => self.fixed(arg(0)?, |b| Value::F32(f32::from_be_bytes(b))),
-            "F32LE" => self.fixed(arg(0)?, |b| Value::F32(f32::from_le_bytes(b))),
-            "F64" => self.fixed(arg(0)?, |b| Value::F64(f64::from_be_bytes(b))),
-            "F64LE" => self.fixed(arg(0)?, |b| Value::F64(f64::from_le_bytes(b))),
+            "I8" => {
+                self.fixed(ctx, arg(0)?, |b: [u8; 1]| Value::I8(i8::from_le_bytes(b)))
+            }
+            "U8" => self.fixed(ctx, arg(0)?, |b: [u8; 1]| Value::U8(b[0])),
+            "I16" => self.fixed(ctx, arg(0)?, |b| Value::I16(i16::from_be_bytes(b))),
+            "I16LE" => self.fixed(ctx, arg(0)?, |b| Value::I16(i16::from_le_bytes(b))),
+            "U16" => self.fixed(ctx, arg(0)?, |b| Value::U16(u16::from_be_bytes(b))),
+            "U16LE" => self.fixed(ctx, arg(0)?, |b| Value::U16(u16::from_le_bytes(b))),
+            "I32" => self.fixed(ctx, arg(0)?, |b| Value::I32(i32::from_be_bytes(b))),
+            "I32LE" => self.fixed(ctx, arg(0)?, |b| Value::I32(i32::from_le_bytes(b))),
+            "U32" => self.fixed(ctx, arg(0)?, |b| Value::U32(u32::from_be_bytes(b))),
+            "U32LE" => self.fixed(ctx, arg(0)?, |b| Value::U32(u32::from_le_bytes(b))),
+            "I64" => self.fixed(ctx, arg(0)?, |b| Value::I64(i64::from_be_bytes(b))),
+            "I64LE" => self.fixed(ctx, arg(0)?, |b| Value::I64(i64::from_le_bytes(b))),
+            "U64" => self.fixed(ctx, arg(0)?, |b| Value::U64(u64::from_be_bytes(b))),
+            "U64LE" => self.fixed(ctx, arg(0)?, |b| Value::U64(u64::from_le_bytes(b))),
+            "F32" => self.fixed(ctx, arg(0)?, |b| Value::F32(f32::from_be_bytes(b))),
+            "F32LE" => self.fixed(ctx, arg(0)?, |b| Value::F32(f32::from_le_bytes(b))),
+            "F64" => self.fixed(ctx, arg(0)?, |b| Value::F64(f64::from_be_bytes(b))),
+            "F64LE" => self.fixed(ctx, arg(0)?, |b| Value::F64(f64::from_le_bytes(b))),
             "Bytes" | "UTF8" | "Skip" => {
                 let Some(n) = self.len(ctx, arg(0)?)? else { return Ok(None) };
                 let at = self.pos;
                 self.take(n)?;
                 let bytes = self.buf.slice(at..at + n);
                 match tag {
-                    "Bytes" => self.put(arg(1)?, Value::Bytes(PBytes::new(bytes)))?,
+                    "Bytes" => {
+                        self.put(ctx, arg(1)?, Value::Bytes(PBytes::new(bytes)))?
+                    }
                     "UTF8" => {
                         let s = std::str::from_utf8(&bytes).map_err(|e| {
                             decode_err(format_args!("invalid UTF-8: {e}"))
                         })?;
-                        self.put(arg(1)?, Value::String(ArcStr::from(s)))?
+                        self.put(ctx, arg(1)?, Value::String(ArcStr::from(s)))?
                     }
                     _ => (),
                 }
@@ -283,11 +301,11 @@ impl<'a> Decoder<'a> {
             }
             "Varint" => {
                 let v = self.varint()?;
-                self.put(arg(0)?, Value::U64(v))
+                self.put(ctx, arg(0)?, Value::U64(v))
             }
             "Zigzag" => {
                 let v = self.varint()?;
-                self.put(arg(0)?, Value::I64(netidx_core::pack::i64_uzz(v)))
+                self.put(ctx, arg(0)?, Value::I64(netidx_core::pack::i64_uzz(v)))
             }
             _ => return Err(decode_err(format_args!("unknown spec {tag}"))),
         }
@@ -335,8 +353,18 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                 Err(e) => return Some(e),
             }
         }
-        for (target, v) in d.written.drain(..) {
-            ctx.rt.set_var(target, v);
+        for (r, _, v) in d.written.drain(..) {
+            // a place reference fires with its root, so a place already
+            // holding the value is left alone, or decode would feed itself
+            let unchanged = ctx.rt.ref_path(&r).is_some_and(|(root, path)| {
+                ctx.rt.store_value(root).is_some_and(|rv| {
+                    graphix_compiler::node::place::read_path(&rv, path)
+                        .is_ok_and(|c| c == v)
+                })
+            });
+            if !unchanged {
+                crate::write_through(ctx, r, v);
+            }
         }
         Some(Value::Bytes(PBytes::new(buf.slice(d.pos..))))
     }

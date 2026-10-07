@@ -516,6 +516,23 @@ pub trait ImageState: Sized {
     ) -> Result<Self, PackError>;
 }
 
+/// Write `v` through the reference `r`: a place reference (`&s.f`,
+/// `&a[i]`) patches its root at its path, any other writes the binding
+/// its reference chain names.
+pub(crate) fn write_through<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    r: BindId,
+    v: Value,
+) {
+    match ctx.rt.ref_path(&r).cloned() {
+        Some((root, path)) => ctx.rt.patch_var(root, path, v),
+        None => {
+            let target = ctx.env.byref_chain.get(&r).copied().unwrap_or(r);
+            ctx.rt.set_var(target, v)
+        }
+    }
+}
+
 /// A pure builtin whose eval is its fast fn: the unit evaluator `$ev`,
 /// its `CachedArgs` alias `$alias`, its name and its fast fn.
 #[macro_export]
