@@ -1035,22 +1035,13 @@ impl TVar {
     pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
         // First visit only. Clone the binding out, normalize unlocked,
         // write back: the lock is non-reentrant.
+        // A cell an earlier task owns keeps its binding as it stands: the
+        // normal form means the same, and writing it would be a decision.
         if cx.cells.insert(self.cell_addr())
+            && !self.earlier_task()
             && let Some(t) = self.binding()
             && let Some(n) = t.normalize_int(cx)
         {
-            // CR claude for claude: [bug] Normalizing re-binds the cell through `bind`,
-            // and `decided()` counts that as a foreign decision. So a module with an
-            // interface that only reads a parent's settled binding is refused with "the
-            // check decides a type the code around the module left open". Trigger: the
-            // parent has `let v = never(); v <- [`A, `B][0]; mod inner;` and inner.gx,
-            // which has a .gxi, has `select v { _ => x }`. v's stored binding `['_N:
-            // [`A, `B], Error<..>]` is not in normal form, so the module's select tries
-            // to rewrite it. The same module without its .gxi, the same code inline, or
-            // one `select v` in the parent before the `mod` (which normalizes the cell
-            // in task 0 first) all check and print 5, and Display, Eq and `encoded_len`
-            // reach the same write through `FnType::constraint_pairs`. probe:
-            // design/review-2026-10-05/repro/t-fntyp-06.sh (t-fntyp-06)
             self.bind(n);
         }
         self.clone()

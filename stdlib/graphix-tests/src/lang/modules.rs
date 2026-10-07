@@ -747,3 +747,22 @@ run!(
     "/test/m.gx" => "super::x <- super::y";
     FuseExpect::None
 );
+
+// A module that only reads a binding the code around it settled is not
+// deciding it, though the binding is not in normal form.
+run!(
+    module_reads_an_outer_binding,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    "/test.gx" => r#"
+        let v = never();
+        v <- [`A, `B][0];
+        mod inner;
+        let result = inner::f(5)
+    "#,
+    "/test/inner.gxi" => "val f: fn(x: i64) -> i64",
+    "/test/inner.gx" => r#"
+        use super::v;
+        let f = |x: i64| -> i64 select v { _ => x }
+    "#;
+    FuseExpect::Jit
+);
