@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use graphix_fuzz::{
     CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, OUTCOME_MANIFEST, Outcome, Regression, check,
     fusecheck_mismatches, fuzz, generate_campaign, minimize, outcome_mismatches,
-    regression_corpus_len, run_fusecheck, run_regression,
+    regression_corpus_len, render, run_fusecheck, run_regression,
 };
 use std::{
     future::Future,
@@ -147,36 +147,6 @@ async fn regress(bless: bool) -> Regression {
         println!("    {b}={}", render(&d.tested));
     }
     r
-}
-
-fn render(o: &Outcome) -> String {
-    match o {
-        Outcome::Trace(t) => {
-            let epochs: Vec<String> = t
-                .epochs
-                .iter()
-                .map(|e| {
-                    let evs: Vec<String> =
-                        e.events.iter().map(|(o, v)| format!("{o}:{v}")).collect();
-                    let evs = evs.join(" ");
-                    if e.capped {
-                        format!("[{evs} …capped]")
-                    } else {
-                        format!("[{evs}]")
-                    }
-                })
-                .collect();
-            if t.stdout.is_empty() {
-                format!("Trace({})", epochs.join("; "))
-            } else {
-                format!("Trace({}; stdout=[{}])", epochs.join("; "), t.stdout.join(" | "))
-            }
-        }
-        Outcome::CompileErr(e) => format!("CompileErr({})", e.replace('\n', " | ")),
-        Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),
-        Outcome::Timeout(c) => format!("Timeout({c:?})"),
-        Outcome::Checked => "Checked".to_string(),
-    }
 }
 
 fn first_line(s: &str) -> String {

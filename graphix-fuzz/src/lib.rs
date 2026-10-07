@@ -35,6 +35,7 @@ use graphix_package_core::testing::{
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
+use poolshark::local::LPooled;
 use std::{collections::BTreeMap, fmt, future, str::FromStr, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
@@ -124,6 +125,79 @@ pub enum Outcome {
     /// Accepted by the check alone ([`check_only`]): only the check side
     /// of a [`Pair::Check`] holds it.
     Checked,
+}
+
+/// `o` for a person: values by their Display, at most 2048 bytes (a
+/// clipped render ends in `…clipped`), so a huge value costs neither
+/// stack nor time.
+pub fn render(o: &Outcome) -> String {
+    const LIMIT: usize = 2048;
+    struct Clip(String);
+    impl fmt::Write for Clip {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            let room = LIMIT - self.0.len();
+            if s.len() <= room {
+                self.0.push_str(s);
+                return Ok(());
+            }
+            let mut i = room;
+            while !s.is_char_boundary(i) {
+                i -= 1;
+            }
+            self.0.push_str(&s[..i]);
+            Err(fmt::Error)
+        }
+    }
+    let mut c = Clip(String::new());
+    if fmt::write(&mut c, format_args!("{}", Rendered(o))).is_err() {
+        c.0.push_str(" …clipped");
+    }
+    c.0
+}
+
+struct Rendered<'a>(&'a Outcome);
+
+impl fmt::Display for Rendered<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Outcome::Trace(t) => {
+                f.write_str("Trace(")?;
+                for (i, e) in t.epochs.iter().enumerate() {
+                    f.write_str(if i == 0 { "[" } else { "; [" })?;
+                    for (j, (o, v)) in e.events.iter().enumerate() {
+                        if j > 0 {
+                            f.write_str(" ")?;
+                        }
+                        write!(f, "{o}:{v}")?;
+                    }
+                    f.write_str(if e.capped { " …capped]" } else { "]" })?;
+                }
+                for (i, l) in t.stdout.iter().enumerate() {
+                    f.write_str(if i == 0 { "; stdout=[" } else { " | " })?;
+                    f.write_str(l)?;
+                }
+                if !t.stdout.is_empty() {
+                    f.write_str("]")?;
+                }
+                f.write_str(")")
+            }
+            Outcome::CompileErr(e) => {
+                f.write_str("CompileErr(")?;
+                for (i, l) in e.split('\n').enumerate() {
+                    if i > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    f.write_str(l)?;
+                }
+                f.write_str(")")
+            }
+            Outcome::RuntimeErr(e) => {
+                write!(f, "RuntimeErr({})", e.lines().next().unwrap_or(""))
+            }
+            Outcome::Timeout(c) => write!(f, "Timeout({c:?})"),
+            Outcome::Checked => f.write_str("Checked"),
+        }
+    }
 }
 
 /// What stopped a contained run. The two agree with each other: which
@@ -774,15 +848,23 @@ async fn drive_inner(
 pub const TWIN_TAG: &str = "TwinDiverged";
 
 fn value_has_tag(v: &Value, tag: &str) -> bool {
-    match v {
-        Value::String(s) => &**s == tag,
-        Value::Array(a) => a.iter().any(|v| value_has_tag(v, tag)),
-        Value::Error(e) => value_has_tag(e, tag),
-        Value::Map(m) => {
-            m.into_iter().any(|(k, v)| value_has_tag(k, tag) || value_has_tag(v, tag))
+    let mut stack: LPooled<Vec<Value>> = LPooled::take();
+    stack.push(v.clone());
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) if &*s == tag => return true,
+            Value::Array(a) => stack.extend(a.iter().cloned()),
+            Value::Error(e) => stack.push((*e).clone()),
+            Value::Map(m) => {
+                for (k, v) in m.into_iter() {
+                    stack.push(k.clone());
+                    stack.push(v.clone());
+                }
+            }
+            _ => (),
         }
-        _ => false,
     }
+    false
 }
 
 /// Scan an outcome for a settled twin violation.
@@ -3759,45 +3841,15 @@ impl Corpus {
         let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The mutant is comment data: its newlines are escaped so a
         // multi-line mutant cannot land a bare program line mid-header.
-        // The outcome lines are clipped; the traces are reproducible
-        // from the program text below.
-        fn clip(s: String) -> String {
-            const MAX: usize = 2048;
-            if s.len() <= MAX {
-                s
-            } else {
-                let mut i = MAX;
-                while !s.is_char_boundary(i) {
-                    i -= 1;
-                }
-                let mut c = s[..i].to_string();
-                c.push_str(" …clipped");
-                c
-            }
-        }
+        // The outcome lines are clipped by render; the traces are
+        // reproducible from the program text below.
         let (la, lb) = d.labels();
-        // CR claude for claude: [risk] The outcome lines use the derived Debug of netidx
-        // `Value`, which recurses about 18 frames per nesting level (a `List` of N
-        // elements is N levels deep) and prints pool and ThinArc internals. The clip
-        // runs only after the whole string is built, and the campaigns' `println!` of
-        // the same outcomes (lines 4797, 5136) is not clipped at all. The soak runs
-        // this in the derive task on a 2 MiB tokio worker, so a divergence holding a
-        // 2000-element list (dev build) aborts the whole soak with a stack overflow
-        // before the finding is written. The same task's in-process `check` also
-        // recurses, in `value_has_tag` (line 734), and overflows at 1000 levels on an
-        // untagged final value. Format with main.rs's `render` (Value's Display is
-        // iterative) into a writer that stops at the clip limit, and make
-        // `value_has_tag` iterative. probe:
-        // design/review-2026-10-05/repro/fuzz-main-aux-07.rs (copy to
-        // graphix-fuzz/tests/review_fuzz_main_aux_07.rs, then cargo test -p
-        // graphix-fuzz --test review_fuzz_main_aux_07 -- --nocapture).
-        // (fuzz-main-aux-07)
         let body = format!(
             "// bisect: {}\n// {la}: {}\n// {lb}: {}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
-            clip(format!("{:?}", d.reference)),
-            clip(format!("{:?}", d.tested)),
+            render(&d.reference),
+            render(&d.tested),
             mutant.replace('\n', "\\n"),
             minimized,
         );
@@ -5095,7 +5147,7 @@ pub async fn run_aggregator(
                                     println!("DIVERGENCE — {}", d.bisect());
                                     println!("    minimized: {min}");
                                     let (a, b) = d.labels();
-                                    println!("    {a}={:?} {b}={:?}", d.reference, d.tested);
+                                    println!("    {a}={} {b}={}", render(&d.reference), render(&d.tested));
                                 }
                             }
                         }
@@ -5447,7 +5499,7 @@ pub async fn run_pool_multi(
                                     println!("DIVERGENCE — {}", d.bisect());
                                     println!("    minimized: {min}");
                                     let (a, b) = d.labels();
-                                    println!("    {a}={:?} {b}={:?}", d.reference, d.tested);
+                                    println!("    {a}={} {b}={}", render(&d.reference), render(&d.tested));
                                 }
                             });
                             true
