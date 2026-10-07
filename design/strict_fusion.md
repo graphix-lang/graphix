@@ -92,11 +92,11 @@ that was an accident of the code shape.
 The stdlib is converted maximally (~110 fast fns across core, array,
 map, list, str, re, hbs, sys::time, sys paths, the json/toml/pack
 writers). What remains is out by rule, not by gap: the partial-delivery
-producers, the stateful family (`count`/`sum`/`min`/`max`/`mean`/
-`product`/`uniq`/`once`/`take`/`skip`/`hold`/`window`/`group`/`and`/
-`or`), the lambda-taking HOFs, effects, and the json/toml/pack readers
-(async by design). `bench_mandelbrot_iterate` stays a builtin call on
-purpose — it is the bench's un-fused comparison point.
+producers, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/
+`hold`/`window`/`group`), the pure aggregates without a fast call
+(`sum`/`min`/`max`/`mean`/`product`/`and`/`or`, `Stateless(None)`), the
+lambda-taking HOFs, effects, and the json/toml/pack readers (async by
+design).
 
 ## The `?` delivery queue
 

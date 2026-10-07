@@ -8,7 +8,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::CachedVals;
+use graphix_package_core::{CachedVals, Invocation};
 use netidx::publisher::Typ;
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
@@ -370,19 +370,23 @@ macro_rules! db_event_accessor {
                 ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
             ) -> &TagValue {
-                if self.cached.update(ctx, from) {
-                    if let Some(bid) = self.bind_id.take() {
-                        ctx.unref_var(bid, self.top_id);
+                match self.cached.update(ctx, from) {
+                    Invocation::Bottom { fresh } => return self.out.set_bottom(fresh),
+                    Invocation::Quiet => (),
+                    Invocation::Fired => {
+                        if let Some(bid) = self.bind_id.take() {
+                            ctx.unref_var(bid, self.top_id);
+                        }
+                        let first = match self.cached.0.first() {
+                            Some(Some(v)) => v,
+                            Some(None) | None => return self.out.ride(),
+                        };
+                        let bid = extract_sub_bind_id(first);
+                        if let Some(bid) = bid {
+                            ctx.rt.ref_var(bid, self.top_id);
+                        }
+                        self.bind_id = bid;
                     }
-                    let first = match self.cached.0.first() {
-                        Some(Some(v)) => v,
-                        Some(None) | None => return self.out.ride(),
-                    };
-                    let bid = extract_sub_bind_id(first);
-                    if let Some(bid) = bid {
-                        ctx.rt.ref_var(bid, self.top_id);
-                    }
-                    self.bind_id = bid;
                 }
                 match scan_db_events(self.bind_id, ctx.event, $convert) {
                     Some(v) => self.out.set(TagValue::fired(v)),

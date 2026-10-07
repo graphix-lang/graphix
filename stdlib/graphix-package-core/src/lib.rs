@@ -334,6 +334,18 @@ pub fn seam_arg<R: Rt, E: UserEvent>(
     }
 }
 
+/// What a builtin's argument update means for its invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Invocation {
+    /// nothing fired
+    Quiet,
+    /// an argument fired and every argument holds a value
+    Fired,
+    /// an argument is bottom, so the invocation is: freshly when an
+    /// argument fired or tainted this cycle (design/dense_delivery.md R3)
+    Bottom { fresh: bool },
+}
+
 #[derive(Debug)]
 pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
@@ -448,27 +460,22 @@ impl CachedVals {
         self.0.iter().any(|v| v.is_none()) || self.any_tainted()
     }
 
-    /// Update the slots from the arg nodes; `true` iff any production
-    /// fired or tainted (a stale production refreshes its slot silently).
-    /// A tainted production marks the slot's tag but keeps the value.
+    /// Update the slots from the arg nodes (a stale production refreshes
+    /// its slot silently; a tainted one marks the slot's tag but keeps the
+    /// value) and say what that means for the invocation.
     pub fn update<R: Rt, E: UserEvent>(
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-    ) -> bool {
-        // CR claude for claude: [bug] This answers true for a FreshBottom while the slot
-        // keeps its old value. rand (graphix-package-rand/src/lib.rs:70), range
-        // (Seq::update, line 1984), WatchStream (sys/src/watch.rs:625), the db
-        // subscription accessors (db/src/subscribe.rs:320), the bench builtins and
-        // netidx-admin's ceremony.rs:834 act on it without checking any_bottom(). So a
-        // bottomed argument re-runs them from stale slots: rand draws again and range
-        // re-emits the old sequence. R3 of design/dense_delivery.md says the invocation
-        // bottoms instead, as CachedArgs does. Returning update_full's tag instead of a
-        // bool would make every caller handle the taint. probe:
-        // design/review-2026-10-05/repro/x-builtin-effects-06.gx (hi$ bottom at n=2 and
-        // n=4: rand drew 6 times and range emitted 18 values; R3 gives 4 and 12).
-        // (x-builtin-effects-06)
-        self.update_full(ctx, from).is_some_and(|t| t.triggers())
+    ) -> Invocation {
+        let triggered = self.update_full(ctx, from).is_some_and(|t| t.triggers());
+        if self.any_bottom() {
+            Invocation::Bottom { fresh: triggered }
+        } else if triggered {
+            Invocation::Fired
+        } else {
+            Invocation::Quiet
+        }
     }
 
     /// [`Self::update`] with the full production summary: `None` = no
@@ -495,7 +502,19 @@ impl CachedVals {
                 // every slot once more into an LPooled<Vec<Value>> on each eval
                 // (fast_args, line 524), because the slots are Option<Value> and a fast
                 // fn takes &[Value]. (x-alloc-10)
-                self.0[i] = Some(tv.value_cloned());
+                // 2026-10-07 claude: a slot whose value has the same words keeps
+                // its value, so a quiet cycle clones nothing here. fast_eval's
+                // second clone stands: it needs slots a fast fn can borrow.
+                let slot = &mut self.0[i];
+                tv.with_value(|v| {
+                    let same = |old: &Value| {
+                        graphix_compiler::tval::value_words(old)
+                            == graphix_compiler::tval::value_words(v)
+                    };
+                    if !slot.as_ref().is_some_and(same) {
+                        *slot = Some(v.clone());
+                    }
+                });
                 self.1[i] = tag;
             }
             prod = Some(match prod {
@@ -928,9 +947,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         self.t.attach(ctx);
-        let triggered = self.cached.update(ctx, from);
-        if triggered
-            && !self.cached.any_bottom()
+        let invocation = self.cached.update(ctx, from);
+        if invocation == Invocation::Fired
             && let Some(args) = self.t.prepare_args(&self.cached)
         {
             self.queued.push_back(args);
@@ -969,8 +987,10 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         match res {
             // a completed reply from a prior invocation wins the cycle
             Some(v) => self.out.set(TagValue::fired(v)),
-            None if self.cached.any_bottom() => self.out.set_bottom(triggered),
-            None => self.out.ride(),
+            None => match invocation {
+                Invocation::Bottom { fresh } => self.out.set_bottom(fresh),
+                Invocation::Quiet | Invocation::Fired => self.out.ride(),
+            },
         }
     }
 
@@ -2067,12 +2087,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        let triggered = self.args.update(ctx, from);
+        let invocation = self.args.update(ctx, from);
         // a bottomed argument bottoms the invocation and issues nothing
-        if self.args.any_bottom() {
-            return self.out.set_bottom(triggered);
+        if let Invocation::Bottom { fresh } = invocation {
+            return self.out.set_bottom(fresh);
         }
-        if triggered {
+        if invocation == Invocation::Fired {
             let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
                     let e = literal!("RangeError");

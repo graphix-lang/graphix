@@ -16,7 +16,7 @@ use graphix_compiler::{
     image::{self, ImageBuf},
     typ::FnType,
 };
-use graphix_package_core::{CachedVals, seam_tick, seam_value};
+use graphix_package_core::{CachedVals, Invocation, seam_tick, seam_value};
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::IntoValue;
 use netidx_value::{FromValue, ValArray, Value};
@@ -632,7 +632,11 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if self.cached.update(ctx, from) {
+        let invocation = self.cached.update(ctx, from);
+        if let Invocation::Bottom { fresh } = invocation {
+            return self.out.set_bottom(fresh);
+        }
+        if invocation == Invocation::Fired {
             self.unwatch(ctx);
             for v in self.cached.0.iter().flatten() {
                 extract_bind_ids(v, &mut self.bind_ids);

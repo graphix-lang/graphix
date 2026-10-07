@@ -34,7 +34,7 @@ default = ["all"]
 # non-optional dependency, always compiled and registered.
 all = [
     "array", "str", "map", "sys", "args", "http", "db", "sqlite", "rand", "re",
-    "bench", "json", "toml", "pack", "xls", "list", "gui", "hbs", "tui",
+    "json", "toml", "pack", "xls", "list", "gui", "hbs", "tui",
 ]
 array = ["dep:graphix-package-array"]
 str = ["dep:graphix-package-str"]
@@ -46,7 +46,6 @@ db = ["dep:graphix-package-db"]
 sqlite = ["dep:graphix-package-sqlite"]
 rand = ["dep:graphix-package-rand"]
 re = ["dep:graphix-package-re"]
-bench = ["dep:graphix-package-bench"]
 json = ["dep:graphix-package-json", "sys"]
 toml = ["dep:graphix-package-toml", "sys"]
 pack = ["dep:graphix-package-pack", "sys"]
@@ -83,7 +82,6 @@ ahash = { workspace = true }
 graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
 graphix-package = { version = "0.9.0", path = "../graphix-package" }
 graphix-package-array = { version = "0.9.0", path = "../stdlib/graphix-package-array", optional = true }
-graphix-package-bench = { version = "0.9.0", path = "../stdlib/graphix-package-bench", optional = true }
 graphix-package-core = { version = "0.9.0", path = "../stdlib/graphix-package-core" }
 graphix-package-args = { version = "0.9.0", path = "../stdlib/graphix-package-args", optional = true }
 graphix-package-db = { version = "0.9.0", path = "../stdlib/graphix-package-db", optional = true }

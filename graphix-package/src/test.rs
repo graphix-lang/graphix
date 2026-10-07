@@ -370,10 +370,10 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\")
 
 mod pure {
     use super::super::{
-        DEFAULT_PACKAGES, INTERNAL_PACKAGES, PackageEntry, Packages, Selection,
-        ShellBump, UpdatePlan, apply_selection, compute_update_plan, feature_depends_on,
-        feature_edges, installed_dependents, normalize_selection, parse_packages,
-        parse_toggles, plan_items, selection_from_indices, standalone_features,
+        DEFAULT_PACKAGES, PackageEntry, Packages, Selection, ShellBump, UpdatePlan,
+        apply_selection, compute_update_plan, feature_depends_on, feature_edges,
+        installed_dependents, normalize_selection, parse_packages, parse_toggles,
+        plan_items, selection_from_indices, standalone_features,
         stdlib_packages_in_cargo_toml, to_toml_string, version_gt,
     };
     use compact_str::{CompactString, ToCompactString};
@@ -551,8 +551,8 @@ anyhow = \"1\"\n";
                 ("local", PackageEntry::Path(PathBuf::from("/x"))),
             ]),
         };
-        // math is new; bench is internal; xls is already removed
-        let src = sset(&["core", "math", "bench", "xls"]);
+        // math is new; xls is already removed
+        let src = sset(&["core", "math", "xls"]);
         let mut latest = BTreeMap::new();
         latest.insert("widgets".to_compact_string(), "1.5.0".to_compact_string());
         let plan = compute_update_plan("0.9.0", "0.10.0", &src, &pkgs, &latest);
@@ -761,15 +761,11 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             assert!(all.contains(name), "`all` is missing stdlib package {name}");
         }
         // bench is internal but must still be registered by a default build
-        assert!(all.contains("bench"), "`all` must include bench");
         // is_stdlib_package routes by the hand-kept lists: they are the
         // shell's stdlib packages, no more and no fewer
         let shipped = stdlib_packages_in_cargo_toml(&content).unwrap();
-        let listed: BTreeSet<CompactString> = DEFAULT_PACKAGES
-            .iter()
-            .chain(INTERNAL_PACKAGES)
-            .map(|s| s.to_compact_string())
-            .collect();
+        let listed: BTreeSet<CompactString> =
+            DEFAULT_PACKAGES.iter().map(|s| s.to_compact_string()).collect();
         assert_eq!(shipped, listed);
         // core is non-optional — never a feature
         assert!(!feats.contains_key("core"), "core must not be a feature");

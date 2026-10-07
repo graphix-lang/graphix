@@ -7,7 +7,7 @@ use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use graphix_package_core::{CachedVals, seam_tick};
+use graphix_package_core::{CachedVals, Invocation, seam_tick};
 use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
@@ -78,27 +78,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
                 }
             };
         }
-        let up = self.args.update(ctx, from);
-        let res = if up {
-            match &self.args.0[..] {
-                [Some(start), Some(end), Some(_)] => gen_cases!(
-                    // CR claude for claude: [bug] This list leaves out U8, I8, U16 and
-                    // I16, which the signature's `'a: [Int, Float]` (graphix/mod.gx:1,
-                    // mod.gxi:4) admits. So `rand::rand(#start: u8:0, #end: u8:10,
-                    // #clock: 1)` typechecks and then never fires, in both engines, and
-                    // logs nothing. The bound also lacks `Singleton`, so 'a can settle
-                    // to `[i64, f64]`, and a start and end of different numeric types
-                    // match no arm and stay silent the same way. Add the four small
-                    // integer types here and bound 'a as `[Int, Float] + Singleton`;
-                    // that bound refuses the union and keeps the 0.0/1.0 defaults.
-                    // probe: design/review-2026-10-05/repro/gx-stdlib-10.gx prints only
-                    // its i64 line. (gx-stdlib-10)
-                    start, end, F32, F64, I32, I64, Z32, Z64, U32, U64, V32, V64
-                ),
-                _ => None,
+        let res = match self.args.update(ctx, from) {
+            Invocation::Bottom { fresh } => return self.out.set_bottom(fresh),
+            Invocation::Quiet => None,
+            Invocation::Fired => {
+                match &self.args.0[..] {
+                    [Some(start), Some(end), Some(_)] => gen_cases!(
+                        // CR claude for claude: [bug] This list leaves out U8, I8, U16 and
+                        // I16, which the signature's `'a: [Int, Float]` (graphix/mod.gx:1,
+                        // mod.gxi:4) admits. So `rand::rand(#start: u8:0, #end: u8:10,
+                        // #clock: 1)` typechecks and then never fires, in both engines, and
+                        // logs nothing. The bound also lacks `Singleton`, so 'a can settle
+                        // to `[i64, f64]`, and a start and end of different numeric types
+                        // match no arm and stay silent the same way. Add the four small
+                        // integer types here and bound 'a as `[Int, Float] + Singleton`;
+                        // that bound refuses the union and keeps the 0.0/1.0 defaults.
+                        // probe: design/review-2026-10-05/repro/gx-stdlib-10.gx prints only
+                        // its i64 line. (gx-stdlib-10)
+                        start, end, F32, F64, I32, I64, Z32, Z64, U32, U64, V32, V64
+                    ),
+                    _ => None,
+                }
             }
-        } else {
-            None
         };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),

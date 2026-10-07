@@ -249,11 +249,6 @@ const DEFAULT_PACKAGES: &[&str] = &[
     "sqlite", "db", "list", "args", "hbs", "re", "rand", "tui", "gui",
 ];
 
-/// Stdlib crates the shell depends on but that are not user-facing: never
-/// seeded into a fresh install, never auto-surfaced by `update`. Still
-/// installable on purpose via `graphix package add <name>`.
-const INTERNAL_PACKAGES: &[&str] = &["bench"];
-
 /// Old top-level stdlib packages merged into another package. On
 /// migration the dead name is dropped and its replacement installed
 /// (`fs`/`net`/`time` are submodules of `sys`).
@@ -262,7 +257,7 @@ const LEGACY_REMAP: &[(&str, &str)] = &[("fs", "sys"), ("net", "sys"), ("time", 
 /// True if `name` is a stdlib package (user-facing or internal). Stdlib
 /// packages track the shell version and are recorded by name only.
 fn is_stdlib_package(name: &str) -> bool {
-    DEFAULT_PACKAGES.contains(&name) || INTERNAL_PACKAGES.contains(&name)
+    DEFAULT_PACKAGES.contains(&name)
 }
 
 /// A package entry in packages.toml — either a version string or a path.
@@ -948,7 +943,6 @@ fn compute_update_plan(
             .filter(|n| {
                 !packages.stdlib_installed.contains(*n)
                     && !packages.stdlib_removed.contains(*n)
-                    && !INTERNAL_PACKAGES.contains(&n.as_str())
             })
             .cloned()
             .collect(),
