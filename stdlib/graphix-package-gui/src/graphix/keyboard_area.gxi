@@ -8,12 +8,13 @@ type KeyEvent = {
 
 type KeyboardArea = {
   child: &Widget,
-  on_key_press: &fn(e: KeyEvent) -> Any,
-  on_key_release: &fn(e: KeyEvent) -> Any
+  on_key_press: &[fn(e: KeyEvent) -> Any, null],
+  on_key_release: &[fn(e: KeyEvent) -> Any, null]
 };
 
+/// A key no callback is given for goes on to an enclosing area.
 val keyboard_area: fn(
-  ?#on_key_press: fn(e: KeyEvent) -> Any,
-  ?#on_key_release: fn(e: KeyEvent) -> Any,
+  ?#on_key_press: [fn(e: KeyEvent) -> Any, null],
+  ?#on_key_release: [fn(e: KeyEvent) -> Any, null],
   child: &Widget
 ) -> Widget

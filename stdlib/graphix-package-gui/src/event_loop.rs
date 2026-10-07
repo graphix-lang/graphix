@@ -248,11 +248,14 @@ impl<X: GXExt> GuiHandler<X> {
         }
         let theme = tw.iced_theme();
         tw.content.before_view();
+        let mut ops = Vec::new();
+        tw.content.take_ops(&mut ops);
         let state = frame(
             tw.content.view(),
             tw.surface.logical_size(),
             &mut tw.cache,
             &mut tw.surface.renderer,
+            &mut ops,
             &tw.pending_events,
             tw.cursor,
             &mut self.clipboard,
@@ -333,7 +336,7 @@ impl<X: GXExt> GuiHandler<X> {
         let windows = &mut self.windows;
         apply_messages(&self.gx, self.messages.drain(..), |msg, pending| {
             for tw in windows.values_mut() {
-                let mut shell = MessageShell::new(tw.cursor_position());
+                let mut shell = MessageShell::default();
                 if tw.content.on_message(msg, &mut shell) {
                     tw.needs_redraw = true;
                 }

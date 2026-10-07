@@ -162,7 +162,8 @@ When the source ref updates reactively (e.g. the map changes), the
 widget re-reads it and refreshes the affected cells. Sparkline
 columns additionally push each new numeric source value into the
 rolling history, so a virtual-column sparkline fed from graphix state
-accumulates points the same way a subscribed one does.
+accumulates points the same way a subscribed one does. A subscribed
+cell's history holds only its live values, never the fallback.
 
 ## Keyboard Navigation
 
@@ -170,8 +171,10 @@ The widget is focusable: clicking into it grants keyboard focus.
 Arrow keys move the selection among the data columns (the
 currently-rendered selected cell scrolls into view as needed); they
 never land on the row-name column. `Enter` fires `on_activate` for
-the selected cell's row; `Space` on an editable cell opens its editor;
-`Escape` cancels an in-progress edit.
+the selected cell's row; `Space` on an editable cell opens its editor,
+which takes the typed keys, `Enter` to commit and `Escape` to cancel.
+Other keys go on to an enclosing `keyboard_area`, so application
+shortcuts keep working while the table has focus.
 
 ## Examples
 

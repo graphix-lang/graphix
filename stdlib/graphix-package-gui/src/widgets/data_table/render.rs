@@ -2,22 +2,27 @@
 //! wrapper layers, and the sparkline canvas program.
 
 use super::{
-    DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, IcedElement, MIN_COL_WIDTH, Message,
-    RESIZE_HANDLE_WIDTH, ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL,
-    ROW_NAME_SENTINEL_KEY, ROW_NAME_SENTINEL_KEY_ARC, Renderer, TableMsg, VALUE_COL_KEY,
+    DEFAULT_MAX_COL_WIDTH, DataTableW, DisplayMode, HEADER_HEIGHT, IcedElement,
+    MIN_COL_WIDTH, Message, RESIZE_HANDLE_WIDTH, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
+    Renderer, TableMsg, VALUE_COL_KEY, VALUE_HEADER_LABEL,
     types::{
-        ColumnType, SortDirection, cell_path_matches, col_header_width, col_min_width,
-        row_basename, truncate_to_width,
+        ColumnType, SortDirection, age_sparkline, col_header_width, col_min_width,
+        is_cell_path, row_basename, truncate_to_width,
     },
 };
-use crate::theme::GraphixTheme;
+use crate::{
+    theme::GraphixTheme,
+    widgets::{TableKeyAction, iced_keyboard_area::KeyboardArea},
+};
 use ahash::AHashMap;
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_rt::GXExt;
+use iced_core::keyboard::{Key, key::Named};
 use iced_widget as widget;
-use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
+use std::time::Instant;
 
 type Col<'a> = widget::Column<'a, Message, GraphixTheme, Renderer>;
 type Row<'a> = widget::Row<'a, Message, GraphixTheme, Renderer>;
@@ -81,18 +86,9 @@ impl<Message> widget::canvas::Program<Message, GraphixTheme, Renderer>
         let v_range = max_v - min_v;
         let w = bounds.width;
         let h = bounds.height;
-        let max_points = (w as usize).max(1);
-        let step = if self.points.len() > max_points {
-            self.points.len() / max_points
-        } else {
-            1
-        };
         let path = Path::new(|builder| {
             let mut first = true;
-            for (i, &(t, v)) in self.points.iter().enumerate() {
-                if i % step != 0 && i != self.points.len() - 1 {
-                    continue;
-                }
+            for &(t, v) in self.points.iter() {
                 let x = ((t - min_t) / t_range) as f32 * w;
                 let y = h - ((v - min_v) / v_range) as f32 * h;
                 if first {
@@ -147,8 +143,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn render_with_size(&self, size: iced_core::Size) -> IcedElement<'_> {
         {
             let row_h = self.row_height();
-            let header_h = ROW_HEIGHT_ESTIMATE;
-            let body_h = (size.height - header_h).max(0.0);
+            let body_h = (size.height - HEADER_HEIGHT).max(0.0);
             let rows_in_view = ((body_h / row_h).ceil() as usize).max(1);
             let name_cols = if self.show_row_name.t.unwrap_or(true) { 1 } else { 0 };
             let cols_in_view = ((size.width / MIN_COL_WIDTH).ceil() as usize)
@@ -172,7 +167,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         let num_rows = self.row_paths.len();
         let show_row_name = self.show_row_name.t.unwrap_or(true);
-        let on_header_click = self.on_header_click.as_ref().map(|c| c.id());
+        let on_header_click = self.on_header_click.id();
         let bold = iced_core::Font {
             weight: iced_core::font::Weight::Bold,
             ..iced_core::Font::DEFAULT
@@ -186,7 +181,8 @@ impl<X: GXExt> DataTableW<X> {
                     None => LPooled::take(),
                     Some(row_path) => match self.mode {
                         DisplayMode::Table => self
-                            .displayed_columns()
+                            .columns
+                            .iter()
                             .map(|(cn, _)| {
                                 let key = (row_path.clone(), cn.clone());
                                 let id = inner.cells.get(&key).copied();
@@ -214,26 +210,23 @@ impl<X: GXExt> DataTableW<X> {
             self.build_sort_indicators();
         let mut col_meta: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         if show_row_name {
-            let w = match self.explicit_col_width(ROW_NAME_SENTINEL_KEY) {
+            let w = match self.explicit_col_width(&ROW_NAME_KEY) {
                 Some(w) => w,
                 None => {
                     let max_w = DEFAULT_MAX_COL_WIDTH;
                     let mut w = col_min_width(ROW_NAME_HEADER_LABEL, max_w);
-                    for row_idx in vis_row_start..vis_row_end {
-                        if let Some(p) = self.row_paths.get(row_idx) {
-                            let name = Path::basename(p).unwrap_or("");
-                            w = w.max(col_min_width(name, max_w));
-                        }
+                    for p in &self.row_paths[vis_row_start..vis_row_end] {
+                        w = w.max(col_min_width(row_basename(p), max_w));
                     }
                     w
                 }
             };
-            col_meta.push((ROW_NAME_SENTINEL_KEY_ARC.clone(), w));
+            col_meta.push((ROW_NAME_KEY, w));
         }
         match self.mode {
             DisplayMode::Table => {
                 for i in vis_col_start..vis_col_end {
-                    let (name, state) = match self.displayed_column_at(i) {
+                    let (name, state) = match self.columns.get_index(i) {
                         Some(p) => p,
                         None => break,
                     };
@@ -264,11 +257,11 @@ impl<X: GXExt> DataTableW<X> {
                 }
             }
             DisplayMode::Value => {
-                let w = match self.explicit_col_width("value") {
+                let w = match self.explicit_col_width(&VALUE_COL_KEY) {
                     Some(w) => w,
                     None => {
                         let max_w = DEFAULT_MAX_COL_WIDTH;
-                        let mut w = col_min_width("value", max_w);
+                        let mut w = col_min_width(VALUE_HEADER_LABEL, max_w);
                         for row in &*grid_snapshot {
                             if let Some(v) = row.first() {
                                 w = w.max(col_min_width(v, max_w));
@@ -277,7 +270,7 @@ impl<X: GXExt> DataTableW<X> {
                         w
                     }
                 };
-                col_meta.push((literal!("value"), w));
+                col_meta.push((VALUE_COL_KEY, w));
             }
         }
         // Accumulated across frames: `virtual_content_width` needs the
@@ -292,27 +285,27 @@ impl<X: GXExt> DataTableW<X> {
         for (ci, (name, w)) in col_meta.iter().enumerate() {
             let is_data_col = ci >= name_col_offset;
             let entry = self.columns.get(name);
-            let header_text: ArcStr = if is_data_col {
-                let base = entry
-                    .and_then(|c| c.spec.display_name.clone())
-                    .unwrap_or_else(|| name.clone());
-                match sort_indicators.get(name) {
-                    Some(ind) => format_compact!("{base}{ind}").as_str().into(),
-                    None => base,
-                }
-            } else {
-                literal!("name")
+            let base = match entry {
+                _ if name == &ROW_NAME_KEY => ROW_NAME_HEADER_LABEL,
+                _ if name == &VALUE_COL_KEY => VALUE_HEADER_LABEL,
+                Some(c) => c.spec.display_name.as_deref().unwrap_or(name),
+                None => name,
+            };
+            let header_text = match sort_indicators.get(name) {
+                Some(ind) => format_compact!("{base}{ind}"),
+                None => base.into(),
             };
             let is_fixed = entry
                 .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
                 .unwrap_or(false);
             // A `MouseArea`, not a `Button`: a button's padding would make
             // the header row taller than the row-name header cell.
-            let plain_text: IcedElement<'_> = widget::text(header_text.to_string())
-                .size(14)
-                .font(bold)
-                .wrapping(iced_core::text::Wrapping::None)
-                .into();
+            let plain_text: IcedElement<'_> =
+                widget::text(header_text.as_str().to_owned())
+                    .size(14)
+                    .font(bold)
+                    .wrapping(iced_core::text::Wrapping::None)
+                    .into();
             let text_el: IcedElement<'_> = if is_data_col {
                 if let Some(cid) = on_header_click {
                     widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(
@@ -351,7 +344,7 @@ impl<X: GXExt> DataTableW<X> {
             };
             let cell: IcedElement<'_> = widget::container(inner)
                 .width(*w)
-                .height(iced_core::Length::Shrink)
+                .height(HEADER_HEIGHT)
                 .padding(iced_core::Padding::from([3, 5]))
                 .style(|theme: &GraphixTheme| {
                     let p = theme.palette();
@@ -367,23 +360,6 @@ impl<X: GXExt> DataTableW<X> {
                 .into();
             header_row = header_row.push(cell);
         }
-        // CR claude for claude: [dead] Dead: this binding; `let _ = row_idx;` below
-        // (row_idx is used); render_cell's `_can_select` (its one caller passes false);
-        // handle_column_resize_start's `_cursor_x` (fed by the only read of
-        // MessageShell::cursor_position, mod.rs:525); and test_access.rs's
-        // `dt_snapshot_value_at` (no callers). compile_column_refs
-        // (subscriptions.rs:374) returns Result but discards every compile error, so a
-        // column whose on_edit fails to compile is silently read-only. Four comments
-        // contradict the code. Handle::block_on panics whenever it is called inside a
-        // runtime context, whether or not the future is ready
-        // (subscriptions.rs:272-274, 359-361). The event loop's message drain does not
-        // filter on is_column_resizing; DataTableW::on_message does
-        // (render.rs:471-473). The dispatch task reads the on_update id under the lock
-        // and calls it after unlocking (subscriptions.rs:249-255), so it can call an id
-        // that mod.rs:363-366 has just dropped. A row path listed twice gives one SubId
-        // two Grid roles (subscriptions.rs:525), so on_update fires twice per change
-        // and each sparkline point is recorded twice. (gui-datatable-20)
-        let _has_on_select = self.on_select.is_some();
         let row_h = self.row_height();
         let spark_bounds_by_col = self.compute_sparkline_bounds();
         let mut body = Col::new()
@@ -391,23 +367,13 @@ impl<X: GXExt> DataTableW<X> {
             .width(iced_core::Length::Shrink)
             .height(iced_core::Length::Shrink);
         for (vi, row_idx) in (vis_row_start..vis_row_end).enumerate() {
-            let _ = row_idx; // used below in cell rendering
             let mut row_w = Row::new().spacing(0);
             for (ci, (col_name, w)) in col_meta.iter().enumerate() {
                 let is_name_col = ci == 0 && show_row_name;
                 let cell_el: IcedElement<'_> = if is_name_col {
                     let name =
                         self.row_paths.get(row_idx).map(row_basename).unwrap_or("");
-                    // The name column's selection key is the row path.
-                    let is_sel = self
-                        .row_paths
-                        .get(row_idx)
-                        .map(|row_path| {
-                            self.selection
-                                .iter()
-                                .any(|sel| sel.as_str() == row_path.as_ref() as &str)
-                        })
-                        .unwrap_or(false);
+                    let is_sel = self.is_selected(row_idx, &ROW_NAME_KEY);
                     let inner: IcedElement<'_> =
                         widget::text(truncate_to_width(name, *w))
                             .size(13)
@@ -424,7 +390,7 @@ impl<X: GXExt> DataTableW<X> {
                         ArcStr::new()
                     };
                     let col_type = if self.mode == DisplayMode::Table {
-                        match self.displayed_column_at(data_col) {
+                        match self.columns.get_index(data_col) {
                             Some((name, _)) => self.col_type_for(name),
                             None => &ColumnType::Text,
                         }
@@ -432,9 +398,7 @@ impl<X: GXExt> DataTableW<X> {
                         &ColumnType::Text
                     };
                     let sb = spark_bounds_by_col.get(col_name).copied();
-                    self.render_cell(
-                        col_name, col_type, text, row_idx, *w, row_h, false, sb,
-                    )
+                    self.render_cell(col_name, col_type, text, row_idx, *w, row_h, sb)
                 };
                 row_w = row_w.push(cell_el);
             }
@@ -447,13 +411,11 @@ impl<X: GXExt> DataTableW<X> {
             .width(iced_core::Length::Shrink)
             .height(iced_core::Length::Fill)
             .into();
-        let row_h = self.row_height();
-        let header_h = ROW_HEIGHT_ESTIMATE;
         // iced shows a scrollbar iff content exceeds bounds, so the
         // virtual size must cover the entire content, not the visible
         // slice.
         let virtual_width = self.virtual_content_width();
-        let virtual_height = num_rows as f32 * row_h + header_h;
+        let virtual_height = num_rows as f32 * row_h + HEADER_HEIGHT;
         let virtual_content: IcedElement<'_> =
             widget::Space::new().width(virtual_width).height(virtual_height).into();
         let scroll_overlay: IcedElement<'_> =
@@ -464,6 +426,7 @@ impl<X: GXExt> DataTableW<X> {
                 vertical: widget::scrollable::Scrollbar::default(),
                 horizontal: widget::scrollable::Scrollbar::default(),
             })
+            .id(self.overlay_id.clone())
             .on_scroll(|vp| {
                 let abs = vp.absolute_offset();
                 let bounds = vp.bounds();
@@ -486,83 +449,43 @@ impl<X: GXExt> DataTableW<X> {
             .height(iced_core::Length::Fill)
             .clip(true)
             .into();
-        self.wrap_keyboard(self.wrap_resize_drag(clipped))
+        self.wrap_keyboard(clipped)
     }
 
-    /// Wrap the view in a MouseArea emitting `ColumnResizeMove` on cursor
-    /// move and `ColumnResizeEnd` on release; the message drain filters
-    /// them against `is_column_resizing`.
-    fn wrap_resize_drag<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
-        widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(content)
-            .on_move(|pt| self.msg(TableMsg::ColumnResizeMove(pt.x)))
-            // CR claude for claude: [bug] A column-resize drag ends only through this
-            // on_release. iced's MouseArea publishes on_release and on_move only while
-            // the cursor is over its bounds, so a left release past the table's edge,
-            // onto a sibling widget, or outside the window never sends ColumnResizeEnd.
-            // resize_drag stays set, and every later hover over the table with no
-            // button held resizes the column and calls its on_resize. The first move
-            // jumps by the re-entry distance, and this goes on until the next left
-            // release inside the table. The drag has to end on any left release,
-            // wherever the cursor is. probe:
-            // design/review-2026-10-05/repro/gui-datatable-09.rs (copy it to
-            // stdlib/graphix-package-gui/tests/review_gui_datatable_09.rs and run it
-            // with cargo test). (gui-datatable-09)
-            .on_release(self.msg(TableMsg::ColumnResizeEnd))
-            .into()
-    }
-
+    /// The table's keys, and the pointer a column resize follows: every
+    /// move and the release that ends it, wherever the cursor is. A press
+    /// and release in one batch start and end the drag in order. While a cell is edited the keys are the editor's, but
+    /// for Escape, which cancels the edit.
     fn wrap_keyboard<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
-        use crate::widgets::{TableKeyAction, iced_keyboard_area::KeyboardArea};
-        use iced_core::keyboard;
-
+        let editing = self.editing.is_some();
         KeyboardArea::new(content)
-            .on_key_press(|event| match event {
-                keyboard::Event::KeyPressed { key, .. } => {
-                    use iced_core::keyboard::Key;
-                    match key {
-                        Key::Named(keyboard::key::Named::ArrowUp) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Up))
-                        }
-                        Key::Named(keyboard::key::Named::ArrowDown) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Down))
-                        }
-                        Key::Named(keyboard::key::Named::ArrowLeft) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Left))
-                        }
-                        Key::Named(keyboard::key::Named::ArrowRight) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Right))
-                        }
-                        Key::Named(keyboard::key::Named::Enter) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Enter))
-                        }
-                        Key::Named(keyboard::key::Named::Space) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Space))
-                        }
-                        Key::Named(keyboard::key::Named::Escape) => {
-                            self.msg(TableMsg::Key(TableKeyAction::Escape))
-                        }
-                        // CR claude for claude: [bug] Every key this mapper does not use
-                        // becomes Message::Nop, and KeyboardArea captures every key it
-                        // maps (iced_keyboard_area.rs:139-143). So once the table has
-                        // been clicked, an enclosing keyboard_area, such as one
-                        // handling app shortcuts like Ctrl+S, hears nothing. The edit
-                        // TextInput in render_cell has no id and nothing focuses it.
-                        // After Space or the CellEdit button, typed keys fall through
-                        // to this area as Nop, and Enter becomes TableKey(Enter), which
-                        // fires on_activate (events.rs:122) instead of CellEditSubmit,
-                        // so the book's Space, type, Enter edit never commits. Capture
-                        // only the keys this mapper uses, and focus the editor when an
-                        // edit starts. probe:
-                        // design/review-2026-10-05/repro/gui-datatable-14.rs (headless:
-                        // Ctrl+D publishes [Nop]; Space then "4", "2" publish [Nop],
-                        // [Nop]; Enter sets activated="r0" and on_edit never runs).
-                        // (gui-datatable-14)
-                        _ => Message::Nop,
-                    }
-                }
-                _ => Message::Nop,
+            .keys_first()
+            .on_pointer(
+                |x| self.msg(TableMsg::ColumnResizeMove(x)),
+                self.msg(TableMsg::ColumnResizeEnd),
+            )
+            .on_key_press(move |key, _, _, _| {
+                let action = match key {
+                    Key::Named(Named::Escape) => TableKeyAction::Escape,
+                    _ if editing => return None,
+                    Key::Named(Named::ArrowUp) => TableKeyAction::Up,
+                    Key::Named(Named::ArrowDown) => TableKeyAction::Down,
+                    Key::Named(Named::ArrowLeft) => TableKeyAction::Left,
+                    Key::Named(Named::ArrowRight) => TableKeyAction::Right,
+                    Key::Named(Named::Enter) => TableKeyAction::Enter,
+                    Key::Named(Named::Space) => TableKeyAction::Space,
+                    _ => return None,
+                };
+                Some(self.msg(TableMsg::Key(action)))
             })
             .into()
+    }
+
+    /// Whether the cell at `(row_idx, col)` is selected.
+    fn is_selected(&self, row_idx: usize, col: &ArcStr) -> bool {
+        self.row_paths
+            .get(row_idx)
+            .is_some_and(|rp| self.selection.iter().any(|sel| is_cell_path(sel, rp, col)))
     }
 
     /// Wrap a cell's content in a bordered, click-to-select container.
@@ -610,13 +533,21 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// Y-axis bounds per sparkline column: the column type's `min`/`max`
-    /// where set, else the union of every row's points.
+    /// where set, else the union of every row's points in the window.
+    /// Points older than the window are dropped here, so a row no update
+    /// reaches still ages.
     fn compute_sparkline_bounds(&self) -> LPooled<AHashMap<ArcStr, SparkBounds>> {
         let mut out: LPooled<AHashMap<ArcStr, SparkBounds>> = LPooled::take();
         let mut ranges: LPooled<AHashMap<ArcStr, (f64, f64)>> = LPooled::take();
         {
-            let inner = self.cells.inner.lock();
-            for ((_row, col), history) in inner.sparklines.iter() {
+            let now = Instant::now();
+            let mut inner = self.cells.inner.lock();
+            for ((_row, col), history) in inner.sparklines.iter_mut() {
+                if let Some(ColumnType::Sparkline { history_seconds, .. }) =
+                    self.columns.get(col).map(|c| &c.spec.typ)
+                {
+                    age_sparkline(history, now, *history_seconds);
+                }
                 let entry = ranges.entry(col.clone()).or_insert((f64::MAX, f64::MIN));
                 for (_t, v) in history.iter() {
                     if *v < entry.0 {
@@ -657,7 +588,6 @@ impl<X: GXExt> DataTableW<X> {
         row_idx: usize,
         w: f32,
         row_h: f32,
-        _can_select: bool,
         spark_bounds: Option<SparkBounds>,
     ) -> IcedElement<'a> {
         let cell_path = self.row_paths.get(row_idx).map(|p| p.append(col_name));
@@ -666,15 +596,7 @@ impl<X: GXExt> DataTableW<X> {
             .get(col_name.as_str())
             .and_then(|c| c.callback.as_ref())
             .map(|c| c.id());
-        let is_selected = self
-            .row_paths
-            .get(row_idx)
-            .map(|row_path| {
-                self.selection.iter().any(|sel| {
-                    cell_path_matches(sel, row_path.as_ref() as &str, col_name)
-                })
-            })
-            .unwrap_or(false);
+        let is_selected = self.is_selected(row_idx, col_name);
         let inner: IcedElement<'a> = match col_type {
             ColumnType::Text => {
                 let is_editing = self
@@ -688,6 +610,7 @@ impl<X: GXExt> DataTableW<X> {
                         "",
                         self.edit_buffer.as_str(),
                     )
+                    .id(self.editor_id.clone())
                     .on_input(|s: String| self.msg(TableMsg::CellEditInput(s.into())))
                     .on_submit(self.msg(TableMsg::CellEditSubmit))
                     .size(13)

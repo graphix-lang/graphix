@@ -100,7 +100,10 @@ type DataTable = {
 /// is the primary sort, subsequent keys break ties. Empty list (the
 /// default) preserves the Table's row order. Sort values come from
 /// the column's source — a live subscription when source is
-/// `` `Netidx ``, or the source's stored value otherwise.
+/// `` `Netidx ``, or the source's stored value otherwise. A column the
+/// Table does not list sorts by the netidx value at
+/// `<row_path>/<column>`. Numbers sort before text, NaN below every
+/// number, text by its bytes.
 val data_table: fn(
     ?#sort_by: &Array<SortBy>,
     ?#selection: &Array<string>,

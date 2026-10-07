@@ -548,6 +548,48 @@ async fn keyboard_area_on_key_press_produces_call() -> Result<()> {
     Ok(())
 }
 
+/// An area with no press handler leaves presses to the area around it.
+#[tokio::test(flavor = "current_thread")]
+async fn keyboard_area_passes_keys_it_has_no_handler_for() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let outer = \"\";\n\
+         let inner = \"\";\n\
+         let result = keyboard_area(\
+             #on_key_press: |ev| outer <- ev.key, \
+             &keyboard_area(#on_key_release: |ev| inner <- ev.key, &text(&\"Type here\")))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let _ = h.watch("test::outer").await?;
+    let _ = h.watch("test::inner").await?;
+    h.click(WIDGET_HIT);
+    let mut msgs = h.press_key(iced_core::keyboard::key::Named::Enter);
+    msgs.extend(h.release_key(iced_core::keyboard::key::Named::Enter));
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(h.get_watched("test::outer"), Some(&Value::String("Enter".into())));
+    assert_eq!(h.get_watched("test::inner"), Some(&Value::String("Enter".into())));
+    Ok(())
+}
+
+/// Named keys are spelled as the book documents them.
+#[test]
+fn key_names() {
+    use crate::widgets::keyboard_area::key_event_to_value;
+    use iced_core::keyboard::{Key, Modifiers, key::Named};
+    for (key, name) in [
+        (Key::Named(Named::Enter), "Enter"),
+        (Key::Named(Named::ArrowUp), "ArrowUp"),
+        (Key::Named(Named::Escape), "Escape"),
+        (Key::Named(Named::Tab), "Tab"),
+        (Key::Character("a".into()), "a"),
+    ] {
+        let v = key_event_to_value(&key, Modifiers::empty(), None, false);
+        let key = v.cast_to::<std::collections::HashMap<String, Value>>().unwrap()["key"]
+            .clone();
+        assert_eq!(key, Value::String(name.into()));
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
     let code = format!(

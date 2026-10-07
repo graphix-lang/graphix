@@ -43,6 +43,7 @@ fn draw(
         Size::new(W as f32, H as f32),
         cache,
         r,
+        &mut Vec::new(),
         events,
         mouse::Cursor::Available(at),
         &mut clipboard::Null,

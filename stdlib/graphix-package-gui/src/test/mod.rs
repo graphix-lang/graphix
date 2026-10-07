@@ -36,7 +36,6 @@ const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[
 struct GuiTestHarness {
     _ctx: TestCtx,
     gx: graphix_rt::GXHandle<NoExt>,
-    #[allow(dead_code)]
     compiled: CompRes<NoExt>,
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     widget: GuiW<NoExt>,
@@ -181,7 +180,7 @@ impl GuiTestHarness {
         // the event loop's own drain
         let widget = &mut self.widget;
         crate::frame::apply_messages(&self.gx, msgs.iter().cloned(), |msg, pending| {
-            let mut shell = MessageShell::new(iced_core::Point::ORIGIN);
+            let mut shell = MessageShell::default();
             widget.on_message(msg, &mut shell);
             pending.extend(shell.out.drain(..));
         });
@@ -210,14 +209,12 @@ impl GuiTestHarness {
     /// Flush deferred per-widget state as the event loop does before a
     /// render. Call before `dt_snapshot()` after publishing to a sort
     /// column.
-    #[allow(dead_code)]
     fn before_view(&mut self) -> bool {
         self.widget.before_view()
     }
 
     /// Drain and `before_view` in a loop until `pred(self)` holds;
     /// panics when `within` elapses.
-    #[allow(dead_code)]
     async fn wait_until<F>(
         &mut self,
         mut pred: F,
@@ -427,11 +424,14 @@ impl InteractionHarness {
         for ev in events {
             crate::window::track_cursor(&mut self.cursor, ev);
         }
+        let mut ops = Vec::new();
+        self.inner.widget.take_ops(&mut ops);
         crate::frame::frame(
             self.inner.widget.view(),
             self.viewport,
             &mut self.cache,
             &mut self.renderer,
+            &mut ops,
             events,
             self.cursor,
             &mut self.clipboard,
@@ -441,14 +441,12 @@ impl InteractionHarness {
         messages
     }
 
-    #[allow(dead_code)]
     async fn drain(&mut self) -> Result<bool> {
         self.inner.drain().await
     }
 
     /// Simulate a window resize; runs one layout pass so
     /// responsive-wrapped widgets see the new size immediately.
-    #[allow(dead_code)]
     fn resize(&mut self, viewport: Size) {
         self.viewport = viewport;
         self.cache = user_interface::Cache::default();
@@ -460,16 +458,6 @@ impl InteractionHarness {
         // during layout, not in `view()`, so lay out once first.
         let _ = self.process_events(&[]);
         self.inner.view()
-    }
-
-    #[allow(dead_code)]
-    fn before_view(&mut self) -> bool {
-        self.inner.before_view()
-    }
-
-    #[allow(dead_code)]
-    fn viewport(&self) -> Size {
-        self.viewport
     }
 
     async fn watch(&mut self, name: &str) -> Result<Value> {
@@ -500,24 +488,31 @@ impl InteractionHarness {
         all
     }
 
-    // CR claude for claude: [dead] click_center, click_at, InteractionHarness::viewport
-    // (478) and InteractionHarness::before_view (473) have no callers, nor does
-    // DataTableW::dt_snapshot_value_at (widgets/data_table/test_access.rs:150), which
-    // copies data_table_snapshot's cell lookup; each is hidden by #[allow(dead_code)].
-    // The allows on `compiled` (38), GuiTestHarness::before_view (192), wait_until
-    // (199), InteractionHarness::drain (452) and resize (459) cover items that are
-    // used. Delete the five helpers and every one of these allows, so the compiler
-    // reports the next helper that goes dead. (tests-ui.r2-16)
-    #[allow(dead_code)]
-    fn click_center(&mut self) -> Vec<Message> {
-        let center = Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0);
-        self.click(center)
+    /// Deliver `events` one frame each, applying each frame's messages
+    /// before the next as the event loop does.
+    async fn live(&mut self, events: &[Event]) -> Result<()> {
+        for ev in events {
+            let msgs = self.process_events(std::slice::from_ref(ev));
+            self.dispatch_calls(&msgs).await?;
+        }
+        Ok(())
     }
 
-    #[allow(dead_code)]
-    fn click_at(&mut self, frac_x: f32, frac_y: f32) -> Vec<Message> {
-        let pos = Point::new(self.viewport.width * frac_x, self.viewport.height * frac_y);
-        self.click(pos)
+    /// A left-button drag from `from` to `to`, live.
+    async fn drag_live(&mut self, from: Point, to: Point, steps: u32) -> Result<()> {
+        let mut events = vec![
+            Event::Mouse(mouse::Event::CursorMoved { position: from }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        ];
+        for i in 1..=steps {
+            let f = i as f32 / steps as f32;
+            let position =
+                Point::new(from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f);
+            events.push(Event::Mouse(mouse::Event::CursorMoved { position }));
+        }
+        events.push(Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)));
+        self.cursor_position = to;
+        self.live(&events).await
     }
 
     fn type_text(&mut self, text: &str) -> Vec<Message> {
@@ -609,7 +604,7 @@ impl InteractionHarness {
         let mut out = Vec::new();
         for m in msgs {
             if let Message::EditorAction(_, _) = m {
-                let mut shell = MessageShell::new(Point::ORIGIN);
+                let mut shell = MessageShell::default();
                 self.inner.widget.on_message(m, &mut shell);
                 for emitted in shell.out.drain(..) {
                     if let Message::Call(cid, args) = emitted {

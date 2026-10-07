@@ -4,14 +4,15 @@
 
 use crate::{
     theme::GraphixTheme,
-    widgets::{IcedElement, Message, Renderer},
+    widgets::{IcedElement, Message, Renderer, WidgetOp},
 };
 use graphix_rt::{GXExt, GXHandle};
 use iced_core::{Event, Size, clipboard::Clipboard, mouse, renderer::Style, window};
 use iced_runtime::user_interface::{Cache, State, UserInterface};
 use std::{collections::VecDeque, time::Instant};
 
-/// Build the interface, deliver `events`, then the `RedrawRequested` that
+/// Build the interface, apply the widgets' `ops`, deliver `events`, then
+/// the `RedrawRequested` that
 /// iced widgets take the status they draw with from, then draw. What the
 /// widgets publish lands in `messages`. The state is the redraw's
 /// (its redraw request and mouse interaction), or `Outdated` when either
@@ -21,6 +22,7 @@ pub fn frame(
     viewport: Size,
     cache: &mut Cache,
     renderer: &mut Renderer,
+    ops: &mut Vec<WidgetOp>,
     events: &[Event],
     cursor: mouse::Cursor,
     clipboard: &mut dyn Clipboard,
@@ -28,6 +30,15 @@ pub fn frame(
     theme: &GraphixTheme,
 ) -> State {
     let mut ui = UserInterface::build(element, viewport, std::mem::take(cache), renderer);
+    for op in ops.drain(..) {
+        use iced_core::widget::operation::{focusable, scrollable};
+        match op {
+            WidgetOp::ScrollTo(id, offset) => {
+                ui.operate(renderer, &mut scrollable::scroll_to::<()>(id, offset))
+            }
+            WidgetOp::Focus(id) => ui.operate(renderer, &mut focusable::focus::<()>(id)),
+        }
+    }
     let (on_events, _) = ui.update(events, cursor, renderer, clipboard, messages);
     let redraw = [Event::Window(window::Event::RedrawRequested(Instant::now()))];
     let (on_redraw, _) = ui.update(&redraw, cursor, renderer, clipboard, messages);

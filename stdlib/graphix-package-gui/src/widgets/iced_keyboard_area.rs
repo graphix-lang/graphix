@@ -10,24 +10,29 @@ use iced_core::{
 
 use super::{Message, Renderer};
 
-/// A container that captures keyboard events when focused.
-///
-/// Gains focus on mouse click inside bounds, loses focus on click
-/// outside. Participates in tab-order focus traversal.
-// CR claude for claude: [doc-drift] This area takes keys only after a left click inside
-// it (update, lines 113-120), and nothing in the GUI runs a focus operation, so the doc
-// comment's "Participates in tab-order focus traversal" is false: Tab focuses nothing.
-// keyboard_area.md never mentions focus, and its example, a whole-window area reading
-// "Press any key...", ignores every key until the window is clicked. Document
-// click-to-focus (or start focused when the area is the window's only keyboard
-// consumer) and drop the tab-order sentence, or run focus_next on Tab in the event
-// loop. probe: design/review-2026-10-05/repro/gui-widgets-a-15.rs (with no click, or
-// after Tab, a key publishes nothing; after a click it publishes the Call).
-// (gui-widgets-a-15)
+/// A container that takes keyboard events while focused: a left click
+/// inside it focuses it, one outside unfocuses it. Focus operations pass
+/// it by, so focusing a text input inside it keeps it focused.
 pub(crate) struct KeyboardArea<'a> {
     content: Element<'a, Message, crate::theme::GraphixTheme, Renderer>,
-    on_key_press: Option<Box<dyn Fn(&keyboard::Event) -> Message + 'a>>,
-    on_key_release: Option<Box<dyn Fn(&keyboard::Event) -> Message + 'a>>,
+    on_key_press: Option<KeyFn<'a>>,
+    on_key_release: Option<KeyFn<'a>>,
+    on_pointer: Option<Pointer<'a>>,
+    keys_first: bool,
+}
+
+/// A key's handler: the key, its modifiers, the text it typed and whether
+/// it repeats. `None` leaves the key to whatever encloses the area.
+type KeyFn<'a> = Box<
+    dyn Fn(&keyboard::Key, keyboard::Modifiers, Option<&str>, bool) -> Option<Message>
+        + 'a,
+>;
+
+/// A drag's hooks: every left press and cursor move (x within the area)
+/// and every left release, wherever the cursor is.
+struct Pointer<'a> {
+    on_move: Box<dyn Fn(f32) -> Message + 'a>,
+    on_release: Message,
 }
 
 #[derive(Default)]
@@ -39,13 +44,20 @@ impl<'a> KeyboardArea<'a> {
     pub(crate) fn new(
         content: impl Into<Element<'a, Message, crate::theme::GraphixTheme, Renderer>>,
     ) -> Self {
-        Self { content: content.into(), on_key_press: None, on_key_release: None }
+        Self {
+            content: content.into(),
+            on_key_press: None,
+            on_key_release: None,
+            on_pointer: None,
+            keys_first: false,
+        }
     }
 
     #[must_use]
     pub(crate) fn on_key_press(
         mut self,
-        f: impl Fn(&keyboard::Event) -> Message + 'a,
+        f: impl Fn(&keyboard::Key, keyboard::Modifiers, Option<&str>, bool) -> Option<Message>
+        + 'a,
     ) -> Self {
         self.on_key_press = Some(Box::new(f));
         self
@@ -54,9 +66,49 @@ impl<'a> KeyboardArea<'a> {
     #[must_use]
     pub(crate) fn on_key_release(
         mut self,
-        f: impl Fn(&keyboard::Event) -> Message + 'a,
+        f: impl Fn(&keyboard::Key, keyboard::Modifiers, Option<&str>, bool) -> Option<Message>
+        + 'a,
     ) -> Self {
         self.on_key_release = Some(Box::new(f));
+        self
+    }
+
+    /// Offer keys to the handlers before the content, which then sees only
+    /// the keys they leave.
+    #[must_use]
+    pub(crate) fn keys_first(mut self) -> Self {
+        self.keys_first = true;
+        self
+    }
+
+    /// The message a handler makes of `event`, if it takes it.
+    fn key_message(&self, event: &Event) -> Option<Message> {
+        match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                text,
+                repeat,
+                ..
+            }) => self.on_key_press.as_ref().and_then(|f| {
+                f(key, *modifiers, text.as_ref().map(|t| t.as_str()), *repeat)
+            }),
+            Event::Keyboard(keyboard::Event::KeyReleased { key, modifiers, .. }) => {
+                self.on_key_release.as_ref().and_then(|f| f(key, *modifiers, None, false))
+            }
+            _ => None,
+        }
+    }
+
+    /// Follow a drag: the press that starts it, every cursor move and the
+    /// left release that ends it, even outside the area's bounds.
+    #[must_use]
+    pub(crate) fn on_pointer(
+        mut self,
+        on_move: impl Fn(f32) -> Message + 'a,
+        on_release: Message,
+    ) -> Self {
+        self.on_pointer = Some(Pointer { on_move: Box::new(on_move), on_release });
         self
     }
 }
@@ -98,8 +150,6 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        let state: &mut State = tree.state.downcast_mut();
-        operation.focusable(None, layout.bounds(), state);
         self.content.as_widget_mut().operate(
             &mut tree.children[0],
             layout,
@@ -119,7 +169,6 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        // Focus before children so a click a child captures still focuses this area.
         let state: &mut State = tree.state.downcast_mut();
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
             if cursor.is_over(layout.bounds()) {
@@ -127,6 +176,14 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
             } else {
                 state.is_focused = false;
             }
+        }
+        if self.keys_first
+            && state.is_focused
+            && let Some(msg) = self.key_message(event)
+        {
+            shell.publish(msg);
+            shell.capture_event();
+            return;
         }
 
         self.content.as_widget_mut().update(
@@ -140,39 +197,33 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
             viewport,
         );
 
+        if let Some(p) = &self.on_pointer {
+            match event {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    shell.publish((p.on_move)(position.x - layout.bounds().x))
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    if let Some(position) = cursor.position() {
+                        shell.publish((p.on_move)(position.x - layout.bounds().x))
+                    }
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    shell.publish(p.on_release.clone())
+                }
+                _ => (),
+            }
+        }
+
         if shell.is_event_captured() {
             return;
         }
 
-        match event {
-            // CR claude for claude: [bug] A focused area publishes and captures every
-            // press and release it has a closure for, whether anything uses the key or
-            // not, so an enclosing keyboard_area never sees it. keyboard_area.gx always
-            // installs both closures through its `|_| null` defaults. So an inner
-            // `keyboard_area(#on_key_release: f, ..)` swallows every press, and
-            // data_table's area (data_table/render.rs:511,514) captures every key it
-            // does not use as Message::Nop. App shortcuts wrapped around a table stop
-            // working once a cell is clicked. Capture only what a handler takes: have
-            // the closures return Option<Message>, make the Graphix callbacks nullable
-            // as data_table's are, and return None for the table's unused keys. probe:
-            // design/review-2026-10-05/repro/gui-widgets-a.r2-09.rs
-            // (gui-widgets-a.r2-09)
-            Event::Keyboard(kb_event) if state.is_focused => match kb_event {
-                keyboard::Event::KeyPressed { .. } => {
-                    if let Some(f) = &self.on_key_press {
-                        shell.publish(f(kb_event));
-                        shell.capture_event();
-                    }
-                }
-                keyboard::Event::KeyReleased { .. } => {
-                    if let Some(f) = &self.on_key_release {
-                        shell.publish(f(kb_event));
-                        shell.capture_event();
-                    }
-                }
-                keyboard::Event::ModifiersChanged(_) => {}
-            },
-            _ => {}
+        if !self.keys_first
+            && state.is_focused
+            && let Some(msg) = self.key_message(event)
+        {
+            shell.publish(msg);
+            shell.capture_event();
         }
     }
 
@@ -229,20 +280,6 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
             viewport,
             translation,
         )
-    }
-}
-
-impl iced_core::widget::operation::focusable::Focusable for State {
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-
-    fn focus(&mut self) {
-        self.is_focused = true;
-    }
-
-    fn unfocus(&mut self) {
-        self.is_focused = false;
     }
 }
 

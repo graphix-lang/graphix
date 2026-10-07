@@ -1,5 +1,5 @@
-//! Subscription dispatch for the data table: row/sort subscriptions,
-//! table application, and re-sorting.
+//! Subscription dispatch for the data table: cell and sort subscriptions,
+//! table application, and sorting.
 //!
 //! `SharedCells` owns every netidx subscription this widget creates.
 //! The dispatch task stores raw `Value`s keyed by `SubId`; the render
@@ -7,17 +7,16 @@
 //! what is drawn.
 
 use super::{
-    DataTableW, DisplayMode, MAX_SPARKLINE_POINTS, VALUE_COL_KEY, compile_callable_opt,
+    DataTableW, DisplayMode, VALUE_COL_KEY,
     types::{
-        ColumnState, ColumnType, SortDirection, SourceEntry, decimate_sparkline,
-        format_value, numeric_key, parse_selection, parse_table_columns, row_basename,
-        value_to_f64,
+        ColumnState, ColumnType, SortDirection, SourceEntry, cell_path, format_value,
+        numeric_key, parse_selection, parse_table_columns, push_sparkline_point,
+        row_basename, value_to_f64,
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::Result;
+
 use arcstr::ArcStr;
-use compact_str::format_compact;
 use futures::channel::mpsc;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use log::warn;
@@ -33,27 +32,37 @@ use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use smallvec::SmallVec;
 use std::{
+    cmp::Ordering as CmpOrdering,
     collections::VecDeque,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 /// One role a subscription plays. netidx dedupes subscriptions by
 /// path, so one `SubId` plays several roles when a cell is both
 /// displayed and listed in `sort_by`.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) enum SubRole {
-    /// A cell subscription. `col_name` is `VALUE_COL_KEY` for
+    /// A cell shown. `col_name` is `VALUE_COL_KEY` for
     /// `DisplayMode::Value`; `sparkline_history_secs` is set for
     /// sparkline columns.
     Grid { row_path: Path, col_name: ArcStr, sparkline_history_secs: Option<f64> },
-    /// A sort-column subscription: a marker telling the dispatch task
-    /// to set `sort_col_dirty` on every update. The sort key itself is
-    /// read through the `cells` index.
-    SortMarker,
+    /// A cell sorted by: the dispatch task sets `sort_col_dirty` on its
+    /// every update. The key itself is read through the `cells` index.
+    SortMarker { row_path: Path, col_name: ArcStr },
+}
+
+impl SubRole {
+    fn is_grid_of(&self, row: &Path, col: &str) -> bool {
+        matches!(self, SubRole::Grid { row_path, col_name, .. } if row_path == row && col_name == col)
+    }
+
+    fn is_sort_of(&self, row: &Path, col: &str) -> bool {
+        matches!(self, SubRole::SortMarker { row_path, col_name } if row_path == row && col_name == col)
+    }
 }
 
 /// All roles for a single `SubId`.
@@ -77,16 +86,6 @@ pub(super) struct SharedCellsInner {
     pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history per `(row_path, col_name)`; keyed by identity
     /// so it survives row reordering.
-    // CR claude for claude: [bug] Nothing ever removes an entry or ages one against now.
-    // The history_seconds cutoff runs only when that cell gets a new point, yet
-    // compute_sparkline_bounds (render.rs:565) unions every history ever kept. So a row
-    // that left the table, or scrolled out of the subscription window with a spike in
-    // its history, keeps every line of an auto-scaled column squashed for the widget's
-    // lifetime. Memory and the per-frame bounds walk also grow with every row ever
-    // seen. Separately, push_defaults_to_sparklines (line 645) pushes a column's
-    // numeric fallback (e.g. `Netidx({"r0" => 0.0})`) into live rows too, whenever any
-    // column's source or the table fires, so live lines dip to the fallback. probe:
-    // design/review-2026-10-05/repro/gui-datatable-10.rs (gui-datatable-10)
     pub(super) sparklines: AHashMap<(Path, ArcStr), LPooled<VecDeque<(Instant, f64)>>>,
     /// Latest `on_update` callable id, read by the dispatch task at
     /// the start of each batch.
@@ -118,14 +117,18 @@ impl SharedCellsInner {
         Some(s)
     }
 
-    /// Drop every subscription and the indexes pointing at them.
-    /// Sparkline history is kept so a re-applied table keeps it.
-    fn clear_subs(&mut self) {
-        self.dvals.clear();
-        self.values.clear();
-        self.formatted.clear();
-        self.cells.clear();
-        self.routing.clear();
+    /// Whether the cell `(row, col)` has a role `has`.
+    fn has_role(&self, row: &Path, col: &ArcStr, has: impl Fn(&SubRole) -> bool) -> bool {
+        self.cells
+            .get(&(row.clone(), col.clone()))
+            .and_then(|id| self.routing.get(id))
+            .is_some_and(|roles| roles.iter().any(has))
+    }
+
+    /// The cell's live value, if it has one.
+    pub(super) fn live_value(&self, row: &Path, col: &ArcStr) -> Option<&Value> {
+        let id = self.cells.get(&(row.clone(), col.clone()))?;
+        self.values.get(id)
     }
 }
 
@@ -154,7 +157,8 @@ impl<X: GXExt> SharedCells<X> {
 
 /// The one background task processing every subscription update for
 /// this widget. Holds the cells weakly and exits when the widget
-/// drops.
+/// drops. `on_update` is called under the lock, so once the widget
+/// swaps the callable no call reaches the one it retires.
 pub(super) fn spawn_dispatch_task<X: GXExt>(
     rt: &tokio::runtime::Handle,
     cells: &Arc<SharedCells<X>>,
@@ -163,7 +167,6 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
     let cells: Weak<SharedCells<X>> = Arc::downgrade(cells);
     rt.spawn(async move {
         use futures::StreamExt;
-        let mut callback_fires: LPooled<Vec<(ArcStr, Value)>> = LPooled::take();
         while let Some(mut batch) = rx.next().await {
             let Some(cells) = cells.upgrade() else { return };
             let now = Instant::now();
@@ -171,178 +174,141 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
             let mut sort_dirty = false;
             {
                 let mut inner = cells.inner.lock();
-                let cb_id = inner.on_update;
+                let inner = &mut *inner;
                 for (sub_id, event) in batch.drain(..) {
                     if !inner.dvals.contains_key(&sub_id) {
                         continue;
                     }
                     let v = match event {
-                        Event::Update(v) => v,
-                        Event::Unsubscribed => {
-                            inner.values.remove(&sub_id);
-                            inner.formatted.remove(&sub_id);
-                            if let Some(roles) = inner.routing.get(&sub_id).cloned() {
-                                for role in roles.iter() {
-                                    match role {
-                                        SubRole::Grid { .. } => grid_dirty = true,
-                                        SubRole::SortMarker => sort_dirty = true,
-                                    }
-                                }
-                            }
-                            continue;
-                        }
+                        Event::Update(v) => Some(v),
+                        Event::Unsubscribed => None,
                     };
-                    inner.values.insert(sub_id, v.clone());
+                    match &v {
+                        Some(v) => inner.values.insert(sub_id, v.clone()),
+                        None => inner.values.remove(&sub_id),
+                    };
                     inner.formatted.remove(&sub_id);
-                    let roles = match inner.routing.get(&sub_id) {
-                        Some(roles) => roles.clone(),
-                        None => continue,
-                    };
+                    let Some(roles) = inner.routing.get(&sub_id) else { continue };
                     for role in roles.iter() {
                         match role {
+                            SubRole::SortMarker { .. } => sort_dirty = true,
                             SubRole::Grid {
                                 row_path,
                                 col_name,
                                 sparkline_history_secs,
                             } => {
                                 grid_dirty = true;
-                                if let Some(hs) = sparkline_history_secs {
-                                    if let Some(f) = value_to_f64(&v) {
-                                        let key = (row_path.clone(), col_name.clone());
-                                        let history = inner
-                                            .sparklines
-                                            .entry(key)
-                                            .or_insert_with(LPooled::take);
-                                        history.push_back((now, f));
-                                        // CR claude for claude: [risk] parse_column_type
-                                        // (types.rs:235) accepts any finite positive
-                                        // history_seconds, but this subtraction panics
-                                        // from about 9.2e18 s (Instant underflow), and
-                                        // Duration::from_secs_f64 panics from 1.8e19 s.
-                                        // Here the panic kills the dispatch task, so
-                                        // the table stops updating. The copy of this
-                                        // push/evict/decimate block at 663-671 panics
-                                        // push_defaults_to_sparklines on the GUI
-                                        // thread. Compute the cutoff in one helper
-                                        // shared by both blocks, using now.checked_sub
-                                        // over Duration::try_from_secs_f64, and keep
-                                        // every point when either fails. Probe:
-                                        // Instant::now() -
-                                        // Duration::from_secs_f64(1e19) panics with
-                                        // 'overflow when subtracting duration from
-                                        // instant' (rustc, Linux); 9.2e18 does not.
-                                        // (gui-datatable-16)
-                                        let cutoff = now - Duration::from_secs_f64(*hs);
-                                        while history
-                                            .front()
-                                            .map(|(t, _)| *t < cutoff)
-                                            .unwrap_or(false)
-                                        {
-                                            history.pop_front();
-                                        }
-                                        if history.len() > MAX_SPARKLINE_POINTS {
-                                            decimate_sparkline(history);
-                                        }
-                                    }
+                                let Some(v) = &v else { continue };
+                                if let Some(hs) = sparkline_history_secs
+                                    && let Some(f) = value_to_f64(v)
+                                {
+                                    let key = (row_path.clone(), col_name.clone());
+                                    let h = inner
+                                        .sparklines
+                                        .entry(key)
+                                        .or_insert_with(LPooled::take);
+                                    push_sparkline_point(h, now, f, *hs);
                                 }
-                                if cb_id.is_some() {
-                                    let cell_path: ArcStr = if col_name == &VALUE_COL_KEY
-                                    {
-                                        row_path.clone().into()
-                                    } else {
-                                        format_compact!(
-                                            "{}/{}",
-                                            row_path.as_ref() as &str,
-                                            col_name.as_str()
-                                        )
-                                        .as_str()
-                                        .into()
-                                    };
-                                    callback_fires.push((cell_path, v.clone()));
+                                if let Some(cid) = inner.on_update {
+                                    let path =
+                                        Value::String(cell_path(row_path, col_name));
+                                    let _ = cells.gx.call(
+                                        cid,
+                                        ValArray::from_iter([path, v.clone()]),
+                                    );
                                 }
-                            }
-                            SubRole::SortMarker => {
-                                sort_dirty = true;
                             }
                         }
                     }
                 }
-            } // inner unlocked before firing callbacks and wake
+            }
             if grid_dirty {
                 cells.dirty.store(true, Ordering::Relaxed);
             }
             if sort_dirty {
                 cells.sort_col_dirty.store(true, Ordering::Relaxed);
             }
-            let cb_id = cells.inner.lock().on_update;
-            if let Some(cb_id) = cb_id {
-                for (cell_path, v) in callback_fires.drain(..) {
-                    let _ = cells
-                        .gx
-                        .call(cb_id, ValArray::from_iter([Value::String(cell_path), v]));
-                }
-            } else {
-                callback_fires.clear();
-            }
-            if grid_dirty || sort_dirty {
-                if let Some(w) = crate::REDRAW_WAKER.get() {
-                    w.wake();
-                }
+            if (grid_dirty || sort_dirty)
+                && let Some(w) = crate::REDRAW_WAKER.get()
+            {
+                w.wake();
             }
         }
     });
 }
 
+/// A row's sort key in one column: numbers before text, numbers in
+/// Graphix's float order (NaN below every number), text by its bytes.
+#[derive(PartialEq)]
+enum SortKey {
+    Num(f64),
+    Text(ArcStr),
+}
+
+impl SortKey {
+    fn of(s: ArcStr) -> Self {
+        match numeric_key(&s) {
+            Some(n) => SortKey::Num(n),
+            None => SortKey::Text(s),
+        }
+    }
+
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        match (self, other) {
+            (SortKey::Num(a), SortKey::Num(b)) => match (a.is_nan(), b.is_nan()) {
+                (true, true) => CmpOrdering::Equal,
+                (true, false) => CmpOrdering::Less,
+                (false, true) => CmpOrdering::Greater,
+                (false, false) => a.total_cmp(b),
+            },
+            (SortKey::Num(_), SortKey::Text(_)) => CmpOrdering::Less,
+            (SortKey::Text(_), SortKey::Num(_)) => CmpOrdering::Greater,
+            (SortKey::Text(a), SortKey::Text(b)) => a.cmp(b),
+        }
+    }
+}
+
 impl<X: GXExt> DataTableW<X> {
-    /// Parse the table ref value and rebuild `columns` in place.
+    /// Parse the table ref value and rebuild the rows and columns in
+    /// place; the subscriptions are reconciled after, by
+    /// `update_subscriptions`. The view, the selection and an edit stay
+    /// where they are while their rows and columns do.
     ///
     /// Returns the names of columns whose refs/callables still need
-    /// compiling. Callers must call `compile_pending_columns` only
-    /// when the list is non-empty: `Handle::block_on` inside a tokio
-    /// task panics on an immediately-ready future.
+    /// compiling.
     pub(super) fn apply_table_sync(&mut self) -> LPooled<Vec<ArcStr>> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
-        // CR claude for claude: [bug] Every #table update drops every subscription here,
-        // even an identical table or one with one more row. Lines 282-284 then zero
-        // first_row/first_col and clear `editing`. data_table.md promises the update is
-        // "reconciled against the current subscription set". As a result, every visible
-        // cell goes blank until netidx resubscribes, on_update fires again for every
-        // subscribed cell with its unchanged value, and sparklines get a duplicate
-        // point. The view also jumps to row 0 while the overlay scrollbar stays put,
-        // and an open edit is lost, so Enter commits nothing; the dashboard example
-        // triggers all of this on every filter keystroke. Keep the subscriptions of
-        // (row, col) cells that survive, clamp first_row/first_col, and keep `editing`
-        // while its row and column still exist. probe:
-        // design/review-2026-10-05/repro/gui-datatable-07.rs (gui-datatable-07)
-        self.cells.inner.lock().clear_subs();
-        self.row_paths.clear();
+        self.table_rows.clear();
         self.cached_col_widths.lock().clear();
         self.selection =
             self.selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
-        self.editing = None;
-        self.first_row = 0;
-        self.first_col = 0;
-        let Some(table_val) = self.table_ref.last.as_ref().filter(|v| **v != Value::Null)
-        else {
-            return pending;
-        };
         #[derive(FromValue)]
         struct Table {
             columns: Value,
             rows: Value,
         }
-        let Ok(Table { columns, rows }) = table_val.clone().cast_to::<Table>() else {
-            warn!("failed to parse table value");
-            return pending;
+        let table = self
+            .table_ref
+            .last
+            .as_ref()
+            .filter(|v| **v != Value::Null)
+            .and_then(|v| v.clone().cast_to::<Table>().ok());
+        let (columns, rows) = match table {
+            Some(Table { columns, rows }) => (columns, rows),
+            None => {
+                if self.table_ref.last.as_ref().is_some_and(|v| *v != Value::Null) {
+                    warn!("failed to parse table value");
+                }
+                (Value::Null, Value::Null)
+            }
         };
         let mut new_specs = parse_table_columns(&columns);
         let mut rows_raw: LPooled<Vec<Value>> =
             rows.cast_to::<LPooled<Vec<Value>>>().unwrap_or_default();
-        self.row_paths.extend(rows_raw.drain(..).filter_map(|v| match v {
+        self.table_rows.extend(rows_raw.drain(..).filter_map(|v| match v {
             Value::String(s) => Some(Path::from(s)),
             _ => None,
         }));
-        // Rebuild `columns` in user order, reusing compiled state by name.
         let mut existing: LPooled<AHashMap<ArcStr, ColumnState<X>>> =
             self.columns.drain(..).collect();
         for spec in new_specs.drain(..) {
@@ -379,372 +345,244 @@ impl<X: GXExt> DataTableW<X> {
                 pending.push(name.clone());
             }
         }
-        self.mode = if self.columns.is_empty() && !self.row_paths.is_empty() {
+        self.mode = if self.columns.is_empty() && !self.table_rows.is_empty() {
             DisplayMode::Value
         } else {
             DisplayMode::Table
         };
-        self.cells.sort_col_dirty.store(false, Ordering::Relaxed);
-        let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        sort_cols.extend(self.sort_by.iter().map(|s| s.column.clone()));
-        for sort_col in sort_cols.iter() {
-            self.subscribe_sort_column(sort_col);
+        self.sort_rows();
+        // an edit stays open while its cell exists
+        if let Some((row, col)) = &self.editing
+            && (!self.table_rows.contains(row) || !self.columns.contains_key(col))
+        {
+            self.editing = None;
         }
+        let first = (self.first_row, self.first_col);
+        self.first_row = self.first_row.min(self.row_paths.len().saturating_sub(1));
+        self.first_col = self.first_col.min(self.total_data_cols().saturating_sub(1));
+        if first != (self.first_row, self.first_col) {
+            self.scroll_dirty = true;
+        }
+        self.cells.sort_col_dirty.store(false, Ordering::Relaxed);
         self.cells.dirty.store(false, Ordering::Relaxed);
-        // Resorting and sparkline seeding wait until the caller has run
-        // `compile_pending_columns`: both read per-column source refs.
         pending
     }
 
-    /// Compile every column returned by `apply_table_sync`. Callers
-    /// must skip this when `pending` is empty: `Handle::block_on`
-    /// inside a tokio task panics on an immediately-ready future.
+    /// Compile every column returned by `apply_table_sync`. Callers skip it
+    /// when `pending` is empty: their `Handle::block_on` panics inside a
+    /// runtime context (a test's runtime), whatever the future.
     pub(super) async fn compile_pending_columns(
         &mut self,
         pending: LPooled<Vec<ArcStr>>,
-    ) -> Result<()> {
+    ) {
         for name in pending.iter() {
-            self.compile_column_refs(name).await?;
+            self.compile_column_refs(name).await;
         }
-        Ok(())
     }
 
-    /// Compile the column's not-yet-compiled refs and callables.
-    /// Idempotent.
-    async fn compile_column_refs(&mut self, name: &ArcStr) -> Result<()> {
-        let (
-            need_callback,
-            cb_value,
-            need_source,
-            source_bid,
-            need_width,
-            width_bid,
-            need_on_resize,
-            on_resize_bid,
-        ) = {
-            let Some(c) = self.columns.get(name) else { return Ok(()) };
-            (
-                c.callback.is_none() && c.spec.callback_value.is_some(),
-                c.spec.callback_value.clone(),
-                c.source.is_none() && c.spec.source_bid != 0,
-                c.spec.source_bid,
-                c.width_ref.is_none() && c.spec.width_bid != 0,
-                c.spec.width_bid,
-                c.on_resize_ref.is_none() && c.spec.on_resize_bid != 0,
-                c.spec.on_resize_bid,
-            )
+    /// Compile the column's refs and callables not compiled yet. A part
+    /// that fails is logged and left out: the column shows without it.
+    async fn compile_column_refs(&mut self, name: &ArcStr) {
+        let Some(c) = self.columns.get(name) else { return };
+        let spec = &c.spec;
+        let callback = spec.callback_value.clone().filter(|_| c.callback.is_none());
+        let bid = |missing: bool, bid: u64| (missing && bid != 0).then_some(bid);
+        let source = bid(c.source.is_none(), spec.source_bid);
+        let width = bid(c.width_ref.is_none(), spec.width_bid);
+        let on_resize = bid(c.on_resize_ref.is_none(), spec.on_resize_bid);
+        let gx = self.gx.clone();
+        let fail = |what: &str, e: anyhow::Error| {
+            warn!("data_table column {name}: {what}: {e:#}");
         };
-        if need_callback {
-            if let Some(v) = cb_value {
-                if let Ok(cb) = self.gx.compile_callable(v).await {
-                    if let Some(c) = self.columns.get_mut(name) {
-                        c.callback = Some(cb);
-                    }
-                }
+        if let Some(v) = callback {
+            match gx.compile_callable(v).await {
+                Ok(f) => self.columns[name].callback = Some(f),
+                Err(e) => fail("callback", e),
             }
         }
-        if need_source {
-            if let Ok(r) = self.gx.compile_ref(source_bid).await {
-                if let Some(c) = self.columns.get_mut(name) {
-                    c.source = Some(SourceEntry::new(r));
-                }
+        if let Some(bid) = source {
+            match gx.compile_ref(bid).await {
+                Ok(r) => self.columns[name].source = Some(SourceEntry::new(r)),
+                Err(e) => fail("source", e),
             }
         }
-        if need_width {
-            if let Ok(r) = self.gx.compile_ref(width_bid).await {
-                let w = r
-                    .last
-                    .as_ref()
-                    .and_then(|v| v.clone().cast_to::<f64>().ok())
-                    .map(|w| w as f32);
-                if let Some(c) = self.columns.get_mut(name) {
-                    c.ref_width = w;
+        if let Some(bid) = width {
+            match gx.compile_ref(bid).await {
+                Ok(r) => {
+                    let c = &mut self.columns[name];
+                    c.ref_width = r
+                        .last
+                        .as_ref()
+                        .and_then(|v| v.clone().cast_to::<f64>().ok())
+                        .map(|w| w as f32);
                     c.width_ref = Some(r);
                 }
+                Err(e) => fail("width", e),
             }
         }
-        if need_on_resize {
-            if let Ok(r) = self.gx.compile_ref(on_resize_bid).await {
-                let cb = compile_callable_opt(&self.gx, &r).await.ok().flatten();
-                if let Some(c) = self.columns.get_mut(name) {
-                    c.on_resize = cb;
+        if let Some(bid) = on_resize {
+            match gx.compile_ref(bid).await {
+                Ok(r) => {
+                    let mut f = None;
+                    if let Some(v) = r.last.as_ref()
+                        && let Err(e) = crate::widgets::set_callable(&gx, &mut f, v).await
+                    {
+                        fail("on_resize", e)
+                    }
+                    let c = &mut self.columns[name];
+                    c.on_resize = f;
                     c.on_resize_ref = Some(r);
                 }
+                Err(e) => fail("on_resize", e),
             }
-        }
-        Ok(())
-    }
-
-    /// Apply a `sort_by` change without tearing down grid
-    /// subscriptions. `old_cols` is the sort-column set before the
-    /// caller reassigned `self.sort_by`.
-    pub(super) fn apply_sort_by_change(&mut self, old_cols: &AHashSet<ArcStr>) {
-        let new_cols: LPooled<AHashSet<ArcStr>> =
-            self.sort_by.iter().map(|s| s.column.clone()).collect();
-        for col in new_cols.difference(old_cols) {
-            self.subscribe_sort_column(col);
-        }
-        let mut inner = self.cells.inner.lock();
-        let mut subs_to_drop: LPooled<Vec<SubId>> = LPooled::take();
-        let mut cells_to_drop: LPooled<Vec<(Path, ArcStr)>> = LPooled::take();
-        for col in old_cols.difference(&new_cols) {
-            for row_path in self.row_paths.iter() {
-                let key = (row_path.clone(), col.clone());
-                let id = match inner.cells.get(&key).copied() {
-                    Some(id) => id,
-                    None => continue,
-                };
-                if let Some(roles) = inner.routing.get_mut(&id) {
-                    roles.retain(|r| !matches!(r, SubRole::SortMarker));
-                    if roles.is_empty() {
-                        subs_to_drop.push(id);
-                        cells_to_drop.push(key);
-                    }
-                }
-            }
-        }
-        for id in subs_to_drop.iter() {
-            inner.routing.remove(id);
-            inner.dvals.remove(id);
-            inner.values.remove(id);
-            inner.formatted.remove(id);
-        }
-        for key in cells_to_drop.iter() {
-            inner.cells.remove(key);
         }
     }
 
-    /// Subscribe every absolute row to `sort_col` and register the
-    /// routing entries.
-    pub(super) fn subscribe_sort_column(&mut self, sort_col: &ArcStr) {
-        let mut inner = self.cells.inner.lock();
-        for row_path in self.row_paths.iter() {
-            if !Path::is_absolute(row_path) {
-                continue;
-            }
-            // CR claude for claude: [bug] A sort column subscribes <row>/<col> for every
-            // absolute row whatever the column's source is, and render, sort_value_for,
-            // raw_value_for and auto-fit all read that `cells` entry before the source.
-            // So a column with a string or Map source shows, sorts by and passes to
-            // on_click the netidx value at <row>/<col> as soon as it is in #sort_by,
-            // although the book says such a source subscribes to nothing. Where the
-            // path does not exist, each row keeps a durable subscription that retries,
-            // with a warning each time, for as long as the column stays in sort_by.
-            // Subscribe only Netidx-sourced columns. At first build this runs before
-            // compile_pending_columns, while is_subscribed() is still true, so the
-            // check must come after the sources are compiled. Also decide what sorting
-            // by a column the table lacks means. probe:
-            // design/review-2026-10-05/repro/gui-datatable-05.rs (copy to
-            // stdlib/graphix-package-gui/tests/; the sorted table shows
-            // a-raw/b-raw/c-raw in rows r1, r2, r0 instead of the Map labels in r0, r2,
-            // r1). (gui-datatable-05)
-            let dval = self.subscriber.subscribe(row_path.append(sort_col));
-            let id = dval.id();
-            // Routing must exist before `updates`: `BEGIN_WITH_LAST` can
-            // deliver synchronously, and unrouted updates are dropped.
-            inner
-                .routing
-                .entry(id)
-                .or_insert_with(SubRoles::new)
-                .push(SubRole::SortMarker);
-            inner.cells.insert((row_path.clone(), sort_col.clone()), id);
-            // Overwriting an owned Dval would cancel the subscription.
-            inner.dvals.entry(id).or_insert_with(|| {
-                dval.updates(UpdatesFlags::BEGIN_WITH_LAST, self.update_tx.clone());
-                dval
-            });
-        }
+    /// Whether the column's cells come from netidx: a column the table
+    /// lacks, which only `sort_by` can name, is read from netidx too.
+    fn subscribes(&self, col: &str) -> bool {
+        self.columns.get(col).is_none_or(|c| c.is_subscribed())
     }
 
-    /// Reconcile subscriptions with the visible window: drop `Grid`
-    /// roles for rows that scrolled out, and the `Dval` when no role
-    /// remains.
+    /// Reconcile the subscriptions with what the table shows and sorts
+    /// by: drop every role nothing wants (a cell outside the window, a
+    /// column gone or no longer from netidx, a sort column dropped),
+    /// then subscribe what is missing. Sparkline histories of rows and
+    /// columns gone are dropped.
     pub(super) fn update_subscriptions(&mut self) {
         let (s, e) = self.subscription_row_range();
-        let mut want: LPooled<AHashSet<Path>> = LPooled::take();
-        want.extend((s..e).filter_map(|i| self.row_paths.get(i).cloned()));
-        {
-            let mut inner = self.cells.inner.lock();
-            let mut to_strip: LPooled<Vec<SubId>> = LPooled::take();
-            let mut cell_keys_to_drop: LPooled<Vec<(Path, ArcStr)>> = LPooled::take();
-            for (id, roles) in inner.routing.iter() {
-                let has_outside_grid = roles.iter().any(|r| match r {
-                    SubRole::Grid { row_path, .. } => !want.contains(row_path),
-                    _ => false,
-                });
-                if has_outside_grid {
-                    to_strip.push(*id);
-                }
-            }
-            for id in to_strip.iter() {
-                if let Some(roles) = inner.routing.get_mut(id) {
-                    // A SubId carries at most one Grid role.
-                    let mut dropped_grid: Option<(Path, ArcStr)> = None;
-                    roles.retain(|r| match r {
-                        SubRole::Grid { row_path, col_name, .. } => {
-                            if !want.contains(row_path) {
-                                dropped_grid = Some((row_path.clone(), col_name.clone()));
-                                false
-                            } else {
-                                true
-                            }
-                        }
-                        _ => true,
-                    });
-                    if let Some(key) = dropped_grid {
-                        // A surviving Sort role still reads through the
-                        // cells entry at sort time.
-                        if roles.is_empty() {
-                            cell_keys_to_drop.push(key);
-                        }
-                    }
-                    if roles.is_empty() {
-                        inner.routing.remove(id);
-                        inner.dvals.remove(id);
-                        inner.values.remove(id);
-                        inner.formatted.remove(id);
-                    }
-                }
-            }
-            for key in cell_keys_to_drop.iter() {
-                inner.cells.remove(key);
-            }
-        }
-        let mut needs_subscribe: LPooled<Vec<Path>> = LPooled::take();
-        {
-            let inner = self.cells.inner.lock();
-            for i in s..e {
-                let Some(row_path) = self.row_paths.get(i) else { continue };
-                if !Path::is_absolute(row_path) {
-                    continue;
-                }
-                // CR claude for claude: [bug] already_subbed counts a row as
-                // grid-subscribed when `cells` has an entry for each subscribed
-                // displayed column, but subscribe_sort_column, which apply_table_sync
-                // runs first, also fills `cells`, with a SortMarker role only. When
-                // every subscribed displayed column is in sort_by, subscribe_row never
-                // runs and no Grid role exists, from compile and after every table
-                // update. on_update then never fires and a sparkline column records no
-                // history, while the cell still displays and sorts. Decide this from a
-                // Grid role on the cell's SubId instead. probe:
-                // design/review-2026-10-05/repro/gui-datatable-06.rs (copy to
-                // stdlib/graphix-package-gui/tests/review_gui_datatable_06.rs; cases b
-                // and d fail, controls a and c pass). (gui-datatable-06)
-                let already_subbed = match self.mode {
-                    DisplayMode::Table => self
-                        .displayed_columns()
-                        .filter(|(_, state)| state.is_subscribed())
-                        .all(|(c, _)| {
-                            inner.cells.contains_key(&(row_path.clone(), c.clone()))
-                        }),
-                    DisplayMode::Value => inner
-                        .cells
-                        .contains_key(&(row_path.clone(), VALUE_COL_KEY.clone())),
-                };
-                if !already_subbed {
-                    needs_subscribe.push(row_path.clone());
-                }
-            }
-        }
-        for row_path in needs_subscribe.iter() {
-            self.subscribe_row(row_path);
-        }
-    }
-
-    pub(super) fn subscribe_row(&mut self, row_path: &Path) {
-        if !Path::is_absolute(row_path) {
-            return;
-        }
-        let mut inner = self.cells.inner.lock();
-        let tx = self.update_tx.clone();
-        let subscribe_one =
-            |inner: &mut SharedCellsInner,
-             col_name: ArcStr,
-             path: Path,
-             sparkline_history_secs: Option<f64>| {
-                let dval = self.subscriber.subscribe(path);
-                let id = dval.id();
-                inner.routing.entry(id).or_insert_with(SubRoles::new).push(
-                    SubRole::Grid {
-                        row_path: row_path.clone(),
-                        col_name: col_name.clone(),
-                        sparkline_history_secs,
-                    },
-                );
-                inner.cells.insert((row_path.clone(), col_name), id);
-                inner.dvals.entry(id).or_insert_with(|| {
-                    dval.updates(UpdatesFlags::BEGIN_WITH_LAST, tx.clone());
-                    dval
-                });
-            };
+        let mut window: LPooled<AHashSet<Path>> = LPooled::take();
+        window.extend(self.row_paths[s.min(e)..e].iter().cloned());
+        let mut rows: LPooled<AHashSet<Path>> = LPooled::take();
+        rows.extend(self.table_rows.iter().cloned());
+        let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        sort_cols.extend(
+            self.sort_by.iter().map(|s| s.column.clone()).filter(|c| self.subscribes(c)),
+        );
+        let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
-                let cols: LPooled<Vec<ArcStr>> =
-                    self.displayed_columns().map(|(name, _)| name.clone()).collect();
-                for col_name in cols.iter() {
-                    let entry = self.columns.get(col_name);
-                    if !entry.map(|e| e.is_subscribed()).unwrap_or(true) {
-                        continue;
-                    }
-                    let sparkline_history_secs = match self.col_type_for(col_name) {
+                for (name, c) in self.columns.iter().filter(|(_, c)| c.is_subscribed()) {
+                    let hs = match &c.spec.typ {
                         ColumnType::Sparkline { history_seconds, .. } => {
                             Some(*history_seconds)
                         }
                         _ => None,
                     };
-                    let path = row_path.append(col_name);
-                    subscribe_one(
-                        &mut inner,
-                        col_name.clone(),
-                        path,
-                        sparkline_history_secs,
-                    );
+                    shown.insert(name.clone(), hs);
                 }
             }
             DisplayMode::Value => {
-                let path = row_path.clone();
-                subscribe_one(&mut inner, VALUE_COL_KEY.clone(), path, None);
+                shown.insert(VALUE_COL_KEY.clone(), None);
+            }
+        }
+        let mut inner = self.cells.inner.lock();
+        let inner = &mut *inner;
+        inner.routing.retain(|_, roles| {
+            roles.retain(|r| match r {
+                SubRole::Grid { row_path, col_name, .. } => {
+                    window.contains(row_path) && shown.contains_key(col_name)
+                }
+                SubRole::SortMarker { row_path, col_name } => {
+                    rows.contains(row_path) && sort_cols.contains(col_name)
+                }
+            });
+            !roles.is_empty()
+        });
+        let routing = &inner.routing;
+        inner.dvals.retain(|id, _| routing.contains_key(id));
+        inner.values.retain(|id, _| routing.contains_key(id));
+        inner.formatted.retain(|id, _| routing.contains_key(id));
+        inner.cells.retain(|_, id| routing.contains_key(id));
+        let columns = &self.columns;
+        inner.sparklines.retain(|(row, col), _| {
+            rows.contains(row)
+                && columns
+                    .get(col)
+                    .is_some_and(|c| matches!(c.spec.typ, ColumnType::Sparkline { .. }))
+        });
+        for row in self.row_paths[s.min(e)..e].iter().filter(|p| Path::is_absolute(p)) {
+            for (col, hs) in shown.iter() {
+                if !inner.has_role(row, col, |r| r.is_grid_of(row, col)) {
+                    let path =
+                        if col == &VALUE_COL_KEY { row.clone() } else { row.append(col) };
+                    let role = SubRole::Grid {
+                        row_path: row.clone(),
+                        col_name: col.clone(),
+                        sparkline_history_secs: *hs,
+                    };
+                    self.subscribe_cell(inner, row, col, path, role);
+                }
+            }
+        }
+        for row in self.table_rows.iter().filter(|p| Path::is_absolute(p)) {
+            for col in sort_cols.iter() {
+                if !inner.has_role(row, col, |r| r.is_sort_of(row, col)) {
+                    let role = SubRole::SortMarker {
+                        row_path: row.clone(),
+                        col_name: col.clone(),
+                    };
+                    self.subscribe_cell(inner, row, col, row.append(col), role);
+                }
             }
         }
     }
 
-    /// Push current default values into every sparkline column's
-    /// history.
+    /// Subscribe `path` for the cell `(row, col)` in `role`; a role the
+    /// subscription already plays (a row listed twice) is not added again.
+    fn subscribe_cell(
+        &self,
+        inner: &mut SharedCellsInner,
+        row: &Path,
+        col: &ArcStr,
+        path: Path,
+        role: SubRole,
+    ) {
+        let dval = self.subscriber.subscribe(path);
+        let id = dval.id();
+        let roles = inner.routing.entry(id).or_insert_with(SubRoles::new);
+        if !roles.contains(&role) {
+            roles.push(role);
+        }
+        inner.cells.insert((row.clone(), col.clone()), id);
+        inner.dvals.entry(id).or_insert_with(|| {
+            dval.updates(UpdatesFlags::BEGIN_WITH_LAST, self.update_tx.clone());
+            dval
+        });
+    }
+
+    /// Push each sparkline column's fallback into the history of every
+    /// cell that never subscribes: a virtual row's, or a stored source's. A
+    /// subscribed cell's history holds only its own values.
     pub(super) fn push_defaults_to_sparklines(&self) {
         if self.mode != DisplayMode::Table {
             return;
         }
         let now = Instant::now();
         let mut inner = self.cells.inner.lock();
-        for (col_name, _) in self.displayed_columns() {
-            let history_secs = match self.col_type_for(col_name) {
-                ColumnType::Sparkline { history_seconds, .. } => *history_seconds,
-                _ => continue,
+        for (col_name, c) in self.columns.iter() {
+            let ColumnType::Sparkline { history_seconds, .. } = c.spec.typ else {
+                continue;
             };
-            for row_path in self.row_paths.iter() {
-                let row_name = row_basename(row_path);
-                let f = match self.default_value_f64_for(col_name, row_name) {
-                    Some(f) => f,
-                    None => continue,
+            for row_path in self.table_rows.iter() {
+                if c.is_subscribed() && Path::is_absolute(row_path) {
+                    continue;
+                }
+                let Some(f) =
+                    self.default_value_f64_for(col_name, row_basename(row_path))
+                else {
+                    continue;
                 };
                 let key = (row_path.clone(), col_name.clone());
                 let history = inner.sparklines.entry(key).or_insert_with(LPooled::take);
-                history.push_back((now, f));
-                let cutoff = now - Duration::from_secs_f64(history_secs);
-                while history.front().map(|(t, _)| *t < cutoff).unwrap_or(false) {
-                    history.pop_front();
-                }
-                if history.len() > MAX_SPARKLINE_POINTS {
-                    decimate_sparkline(history);
-                }
+                push_sparkline_point(history, now, f, history_seconds);
             }
         }
     }
 
-    /// Sort key for `(row_idx, sort_col)`: the live subscription value,
-    /// else the column's default.
-    pub(super) fn sort_value_for(&self, row_idx: usize, sort_col: &ArcStr) -> ArcStr {
-        let row_path = &self.row_paths[row_idx];
+    /// Sort key text for `(row_path, sort_col)`: the live subscription
+    /// value, else the column's default.
+    pub(super) fn sort_value_for(&self, row_path: &Path, sort_col: &ArcStr) -> ArcStr {
         {
             let mut inner = self.cells.inner.lock();
             let id = inner.cells.get(&(row_path.clone(), sort_col.clone())).copied();
@@ -755,73 +593,36 @@ impl<X: GXExt> DataTableW<X> {
         self.default_for(sort_col, row_basename(row_path))
     }
 
-    /// Re-sort `row_paths` by the sort columns. The cell index is keyed
-    /// by `(Path, col)`, so reordering rows needs no resubscription.
-    pub(super) fn resort_by_column(&mut self) {
+    /// The rows in display order: the table's own order sorted, stably,
+    /// by the sort columns, or the table's order when there are none.
+    pub(super) fn sort_rows(&mut self) {
+        self.row_paths.clear();
         if self.sort_by.is_empty() {
+            self.row_paths.extend(self.table_rows.iter().cloned());
+            self.cells.dirty.store(true, Ordering::Relaxed);
             return;
         }
-        let n = self.row_paths.len();
         let n_keys = self.sort_by.len();
-        let mut keys: LPooled<Vec<ArcStr>> = LPooled::take();
-        keys.reserve(n * n_keys);
-        for i in 0..n {
+        let mut keys: LPooled<Vec<SortKey>> = LPooled::take();
+        for row in self.table_rows.iter() {
             for sb in self.sort_by.iter() {
-                keys.push(self.sort_value_for(i, &sb.column));
+                keys.push(SortKey::of(self.sort_value_for(row, &sb.column)));
             }
         }
-        let mut indices: LPooled<Vec<usize>> = (0..n).collect();
-        // CR claude for claude: [bug] This comparator is not a total order. A NaN cell
-        // displays as "NaN", which parses, and it then compares Equal to every number.
-        // A digit-leading string such as "5 KB" sorts lexically between numbers whose
-        // numeric order disagrees ("10" < "5 KB" < "9" < "10"). On 21 or more rows
-        // Rust's stable sort detects this and panics ("user-provided comparison
-        // function does not correctly implement a total order") inside
-        // DataTableW::compile, before_view or handle_update on the GUI main thread,
-        // which takes the program down. Build one key per row, with numbers in a total
-        // order (Graphix's rule: NaN below every number), numbers before text and text
-        // by Ord, and sort by those keys; that also stops parsing both strings on every
-        // comparison. probe: design/review-2026-10-05/repro/gui-datatable-02.rs (a
-        // 30-row calculated column with one 0.0/0.0 panics at compile).
-        // (gui-datatable-02)
-        indices.sort_by(|&a, &b| {
-            for (idx, sb) in self.sort_by.iter().enumerate() {
-                let va = keys[a * n_keys + idx].as_str();
-                let vb = keys[b * n_keys + idx].as_str();
-                // CR claude for claude: [bug] This comparator is not a total order, so
-                // sort_by on more than 20 rows panics with "user-provided comparison
-                // function does not correctly implement a total order". An f64 NaN cell
-                // displays as "NaN", parses back to NaN and compares Equal to every
-                // number. A text cell that sorts between two numbers whose text and
-                // numeric orders disagree closes a cycle ("9" < "10" by number, "10" <
-                // "10.0.1" < "9" by text). The resort runs in compile, handle_update
-                // and before_view on the GUI's main thread, so a single publisher
-                // sending 0.0 / 0.0 to a sorted column kills the program. Put NaN below
-                // every number and use f64::total_cmp (Graphix's own float order), and
-                // rank numeric keys apart from text keys instead of comparing mixed
-                // pairs as text. probe:
-                // design/review-2026-10-05/repro/tests-ui.r2-01.rs (3 of its 5 cases
-                // panic, the 2 controls pass). (tests-ui.r2-01)
-                let cmp = match (numeric_key(va), numeric_key(vb)) {
-                    (Some(na), Some(nb)) => {
-                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    _ => va.cmp(vb),
-                };
-                if cmp != std::cmp::Ordering::Equal {
+        let mut order: LPooled<Vec<usize>> = (0..self.table_rows.len()).collect();
+        order.sort_by(|&a, &b| {
+            for (k, sb) in self.sort_by.iter().enumerate() {
+                let cmp = keys[a * n_keys + k].cmp(&keys[b * n_keys + k]);
+                if cmp != CmpOrdering::Equal {
                     return match sb.direction {
                         SortDirection::Ascending => cmp,
                         SortDirection::Descending => cmp.reverse(),
                     };
                 }
             }
-            std::cmp::Ordering::Equal
+            CmpOrdering::Equal
         });
-        let mut old_paths: LPooled<Vec<Path>> = LPooled::take();
-        old_paths.extend(self.row_paths.iter().cloned());
-        for (new_i, &old_i) in indices.iter().enumerate() {
-            self.row_paths[new_i] = old_paths[old_i].clone();
-        }
+        self.row_paths.extend(order.iter().map(|&i| self.table_rows[i].clone()));
         self.cells.dirty.store(true, Ordering::Relaxed);
     }
 }

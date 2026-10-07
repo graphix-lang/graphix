@@ -2,26 +2,30 @@
 //! scroll math, and row height.
 
 use super::{
-    DataTableW, DisplayMode, MIN_COL_WIDTH, ROW_BUFFER, ROW_HEIGHT_CONTROLS,
-    ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL, ROW_NAME_SENTINEL_KEY,
-    ROW_NAME_SENTINEL_KEY_ARC, VALUE_COL_KEY,
-    types::{ColumnType, col_header_width, col_text_width, row_basename, value_to_f64},
+    DataTableW, DisplayMode, HEADER_HEIGHT, MIN_COL_WIDTH, ROW_BUFFER,
+    ROW_HEIGHT_CONTROLS, ROW_HEIGHT_ESTIMATE, ROW_NAME_HEADER_LABEL, ROW_NAME_KEY,
+    VALUE_COL_KEY, VALUE_HEADER_LABEL,
+    types::{
+        ColumnType, col_header_width, col_text_width, format_value, is_cell_path,
+        row_basename, value_to_f64,
+    },
 };
 use arcstr::ArcStr;
 use graphix_rt::GXExt;
-use netidx::{path::Path, publisher::Value};
+use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
 use poolshark::local::LPooled;
 
 impl<X: GXExt> DataTableW<X> {
+    /// The rows drawn: from `first_row`, as many as reach into the body,
+    /// the clipped last one included.
     pub(super) fn display_row_range(&self) -> (usize, usize) {
         let n = self.row_paths.len();
         if n == 0 {
             return (0, 0);
         }
-        let start = self.first_row.min(n.saturating_sub(1));
+        let start = self.first_row.min(n - 1);
         let rows_in_view = self.viewport_metrics.lock().rows_in_view;
-        let end = (start + rows_in_view).min(n);
-        (start, end)
+        (start, (start + rows_in_view).min(n))
     }
 
     pub(super) fn subscription_row_range(&self) -> (usize, usize) {
@@ -30,22 +34,57 @@ impl<X: GXExt> DataTableW<X> {
         (ds.saturating_sub(ROW_BUFFER), (de + ROW_BUFFER).min(n))
     }
 
+    /// How many rows the body shows whole, at least one.
+    pub(super) fn whole_rows_in_view(&self) -> usize {
+        let m = *self.viewport_metrics.lock();
+        if m.viewport_height <= 0.0 {
+            return m.rows_in_view;
+        }
+        (((m.viewport_height - HEADER_HEIGHT) / self.row_height()).floor() as usize)
+            .max(1)
+    }
+
+    /// The data columns drawn: from `first_col`, as many as reach into the
+    /// viewport at their widths, the clipped last one included.
     pub(super) fn display_col_range(&self) -> (usize, usize) {
         let total = self.total_data_cols();
         if total == 0 {
             return (0, 0);
         }
-        let start = self.first_col.min(total.saturating_sub(1));
-        let cols_in_view = self.viewport_metrics.lock().cols_in_view;
-        let end = (start + cols_in_view).min(total);
+        let start = self.first_col.min(total - 1);
+        let avail = self.viewport_metrics.lock().viewport_width - self.name_col_width();
+        let mut used = 0.0;
+        let mut end = start;
+        while end < total && (end == start || used < avail) {
+            used += self.data_col_width(end);
+            end += 1;
+        }
         (start, end)
     }
 
     pub(super) fn total_data_cols(&self) -> usize {
         match self.mode {
-            DisplayMode::Table => self.displayed_count(),
+            DisplayMode::Table => self.columns.len(),
             DisplayMode::Value => 1,
         }
+    }
+
+    /// Canonical width of the data column at display index `ci`.
+    fn data_col_width(&self, ci: usize) -> f32 {
+        match self.mode {
+            DisplayMode::Value => self.column_canonical_width(&VALUE_COL_KEY),
+            DisplayMode::Table => match self.columns.get_index(ci) {
+                Some((name, _)) => self.column_canonical_width(name),
+                None => MIN_COL_WIDTH,
+            },
+        }
+    }
+
+    /// Whether the data column `ci` is drawn whole in the viewport.
+    fn col_fully_visible(&self, ci: usize) -> bool {
+        let avail = self.viewport_metrics.lock().viewport_width - self.name_col_width();
+        ci >= self.first_col
+            && (self.first_col..=ci).map(|i| self.data_col_width(i)).sum::<f32>() <= avail
     }
 
     /// Pixel width of the synthesized row-name column (0 when hidden).
@@ -53,50 +92,36 @@ impl<X: GXExt> DataTableW<X> {
         if !self.show_row_name.t.unwrap_or(true) {
             return 0.0;
         }
-        self.cached_col_widths
-            .lock()
-            .get(ROW_NAME_SENTINEL_KEY)
-            .copied()
-            .unwrap_or(MIN_COL_WIDTH)
+        self.column_canonical_width(&ROW_NAME_KEY)
     }
 
-    /// Data-column index whose left boundary is nearest the virtual
-    /// scroll offset, accounting for the name column.
+    /// The data column whose left edge is nearest the scroll offset `ox`.
+    /// The row-name column is pinned, so offsets count data columns only.
     pub(super) fn col_at_offset(&self, ox: f32) -> usize {
-        let name_col_w = self.name_col_width();
-        let effective_ox = (ox - name_col_w).max(0.0);
+        let n = self.total_data_cols();
         let mut acc = 0.0;
-        for (i, (name, _)) in self.displayed_columns().enumerate() {
-            let w = self.column_canonical_width(name);
-            let next = acc + w;
-            if effective_ox < (acc + next) / 2.0 {
+        for i in 0..n {
+            let next = acc + self.data_col_width(i);
+            if ox < (acc + next) / 2.0 {
                 return i;
             }
             acc = next;
         }
-        self.displayed_count().saturating_sub(1)
+        n.saturating_sub(1)
     }
 
-    /// Inverse of `col_at_offset`: the virtual scroll offset of
-    /// `first_col = ci`.
+    /// Inverse of `col_at_offset`: the scroll offset of `first_col = ci`.
     pub(super) fn offset_at_col(&self, ci: usize) -> f32 {
-        let name_col_w = self.name_col_width();
-        name_col_w
-            + self
-                .displayed_columns()
-                .take(ci)
-                .map(|(n, _)| self.column_canonical_width(n))
-                .sum::<f32>()
+        (0..ci).map(|i| self.data_col_width(i)).sum()
     }
 
     /// String shown for a cell with no live subscription value.
     pub(super) fn default_for(&self, col_name: &str, row_name: &str) -> ArcStr {
-        let Some(c) = self.columns.get(col_name) else { return ArcStr::new() };
-        let Some(entry) = c.source.as_ref() else { return ArcStr::new() };
-        entry
-            .parsed
-            .lookup(row_name)
-            .map(super::types::value_to_display)
+        self.columns
+            .get(col_name)
+            .and_then(|c| c.source.as_ref())
+            .and_then(|e| e.parsed.lookup(row_name))
+            .map(format_value)
             .unwrap_or_default()
     }
 
@@ -120,39 +145,23 @@ impl<X: GXExt> DataTableW<X> {
         row_path: &Path,
         col_name: &ArcStr,
     ) -> Option<Value> {
-        let inner = self.cells.inner.lock();
-        let key = (row_path.clone(), col_name.clone());
-        if let Some(id) = inner.cells.get(&key).copied() {
-            if let Some(v) = inner.values.get(&id) {
-                return Some(v.clone());
-            }
+        if let Some(v) = self.cells.inner.lock().live_value(row_path, col_name) {
+            return Some(v.clone());
         }
-        drop(inner);
         self.columns
             .get(col_name.as_str())
             .and_then(|c| c.source.as_ref())
-            .and_then(|e| e.parsed.lookup(super::types::row_basename(row_path)))
+            .and_then(|e| e.parsed.lookup(row_basename(row_path)))
             .cloned()
     }
 
-    /// The column width if set by user drag or ref; `None` means
-    /// auto-size from content.
+    /// The column's set width: its width ref's, which the program owns,
+    /// else the user's (a drag, an auto-fit); `None` sizes it to content.
     pub(super) fn explicit_col_width(&self, col_name: &str) -> Option<f32> {
-        // CR claude for claude: [bug] Drags (events.rs:358) and the double-click auto-fit
-        // write user_widths, nothing ever removes an entry, and this lookup prefers
-        // that entry to the width ref. So once the user has touched a column that has a
-        // width ref and on_resize, the program no longer controls its width. With an
-        // on_resize that clamps (w <- min(x, 200.0)), a drag to 400 leaves the column
-        // at 400, and a later write to the ref (a reset) changes nothing.
-        // auto_fit_all_columns (layout.rs:297-318) also resizes on_resize columns
-        // without calling on_resize, so the program's width and the screen diverge.
-        // When a column has a width ref, take its width from the ref and route drags
-        // and auto-fit through on_resize; keep user_widths for columns without one.
-        // Confirmed by reading the code; no window was opened. (gui-datatable-17)
-        if let Some(w) = self.user_widths.lock().get(col_name) {
-            return Some(*w);
+        match self.columns.get(col_name).and_then(|c| c.ref_width) {
+            Some(w) => Some(w),
+            None => self.user_widths.lock().get(col_name).copied(),
         }
-        self.columns.get(col_name).and_then(|c| c.ref_width)
     }
 
     /// Canonical width for `col_name`: `explicit_col_width`, else the
@@ -168,19 +177,13 @@ impl<X: GXExt> DataTableW<X> {
     /// Smallest `first_col` such that the columns from it to the end
     /// (plus the name column) fit in `vp_width`.
     pub(super) fn min_first_col_for_fit(&self, vp_width: f32) -> usize {
-        let total = self.displayed_count();
-        if total == 0 {
-            return 0;
-        }
         let avail = (vp_width - self.name_col_width()).max(0.0);
         let mut acc = 0.0;
-        for k in (0..total).rev() {
-            let (name, _) = self.displayed_column_at(k).unwrap();
-            let w = self.column_canonical_width(name);
-            if acc + w > avail {
+        for k in (0..self.total_data_cols()).rev() {
+            acc += self.data_col_width(k);
+            if acc > avail {
                 return k + 1;
             }
-            acc += w;
         }
         0
     }
@@ -188,151 +191,62 @@ impl<X: GXExt> DataTableW<X> {
     /// Total virtual content width: the name column plus every data
     /// column at its canonical width.
     pub(super) fn virtual_content_width(&self) -> f32 {
-        let name_col_w = self.name_col_width();
-        let data_cols_w: f32 = match self.mode {
-            DisplayMode::Table => self
-                .displayed_columns()
-                .map(|(n, _)| self.column_canonical_width(n))
-                .sum(),
-            DisplayMode::Value => self.column_canonical_width("value"),
-        };
-        name_col_w + data_cols_w
+        self.name_col_width() + self.offset_at_col(self.total_data_cols())
     }
 
-    /// How many data columns fit from `first_col` at their cached widths.
-    pub(super) fn actual_visible_cols(&self, from_col: usize, vp_width: f32) -> usize {
-        let mut used = self.name_col_width();
-        let mut count = 0;
-        for i in from_col..self.displayed_count() {
-            let (name, _) = self.displayed_column_at(i).unwrap();
-            let w = self.column_canonical_width(name);
-            if used + w > vp_width && count > 0 {
-                break;
-            }
-            used += w;
-            count += 1;
-        }
-        count.max(1)
-    }
-
-    /// Scroll so the cell at (row_idx, col_name) is visible.
-    pub(super) fn scroll_to_cell(&mut self, row: usize, col_name: &str) {
-        let metrics = *self.viewport_metrics.lock();
-        let mut changed = false;
+    /// Scroll so the cell at (row, col) is drawn whole, and move the
+    /// overlay to match.
+    pub(super) fn scroll_to_cell(&mut self, row: usize, col_name: &ArcStr) {
+        let (first, whole) = (self.first_row, self.whole_rows_in_view());
         if row < self.first_row {
             self.first_row = row;
-            changed = true;
-        } else if row >= self.first_row + metrics.rows_in_view {
-            self.first_row = row.saturating_sub(metrics.rows_in_view.saturating_sub(1));
-            changed = true;
+        } else if row >= self.first_row + whole {
+            self.first_row = row + 1 - whole;
         }
-        if col_name != ROW_NAME_SENTINEL_KEY {
-            if let Some(ci) = self.displayed_index_of(col_name) {
-                if ci < self.first_col {
-                    self.first_col = ci;
-                    changed = true;
-                } else {
-                    let vis =
-                        self.actual_visible_cols(self.first_col, metrics.viewport_width);
-                    if ci >= self.first_col + vis {
-                        // CR claude for claude: [bug] Scrolling right counts the columns
-                        // that fit starting at ci - cols_in_view, when it should walk
-                        // back from ci over the real widths. cols_in_view (ceil(width /
-                        // MIN_COL_WIDTH) minus the name column, render.rs:149,
-                        // events.rs:233) assumes no column is narrower than 80 px, but
-                        // width refs are not clamped. Take an 80 px name column in an
-                        // 800 px viewport with widths [80 x 9, 300, 300]: Right onto
-                        // c10 sets first_col 3 and draws c10 at x 860..1160, entirely
-                        // off-screen (c9 lands at 720..1020). Ten fixed 40 px columns
-                        // never render the tenth: it lies past cols_in_view, and the
-                        // content is too narrow to scroll. Vertically, three things
-                        // combine. The header is taken as ROW_HEIGHT_ESTIMATE (22) but
-                        // lays out at 24.2 (14 px x 1.3 line height + 6 px padding;
-                        // test_access.rs:123 uses 28). first_row at max scroll is
-                        // round(oy / row_h) (events.rs:276). The ceil'd rows_in_view
-                        // counts the clipped bottom slot as visible, so 100 rows in a
-                        // 10.6-row body end with row 99 only 60% shown, and Down puts
-                        // the selection in that slot. Derive first_col and the rendered
-                        // column range from accumulated widths, and first_row from the
-                        // measured header and the rows that fit whole. Probe: a
-                        // standalone replica of actual_visible_cols, scroll_to_cell,
-                        // display_col_range and handle_scroll (no window opened).
-                        // (gui-datatable-15)
-                        self.first_col = ci.saturating_sub(
-                            self.actual_visible_cols(
-                                ci.saturating_sub(metrics.cols_in_view),
-                                metrics.viewport_width,
-                            )
-                            .saturating_sub(1),
-                        );
-                        changed = true;
-                    }
+        let first_col = self.first_col;
+        if let Some(ci) = self.columns.get_index_of(col_name.as_str()) {
+            if ci < self.first_col {
+                self.first_col = ci;
+            } else if !self.col_fully_visible(ci) {
+                let avail =
+                    self.viewport_metrics.lock().viewport_width - self.name_col_width();
+                let mut k = ci;
+                let mut used = self.data_col_width(ci);
+                while k > 0 && used + self.data_col_width(k - 1) <= avail {
+                    k -= 1;
+                    used += self.data_col_width(k);
                 }
+                self.first_col = k;
             }
         }
-        if changed {
-            // CR claude for claude: [bug] scroll_to_cell (keyboard navigation,
-            // ensure_selection_visible) moves first_row/first_col, and apply_table_sync
-            // resets them to 0 (subscriptions.rs:283). Nothing moves the overlay
-            // scrollable built at render.rs:438 (it has no Id, and the crate has no
-            // scroll_to), so its offset and scrollbar stay where the user last
-            // scrolled. The next wheel notch scrolls from that stale offset and
-            // handle_scroll (events.rs:276) takes it as the new position. After 40
-            // ArrowDowns put row 28 on top, one notch down shows row 3; after a table
-            // update resets the view to row 0 with the overlay at 600 px, one notch
-            // down shows row 30. This flag cannot help: it ignores only offsets within
-            // half a row of first_row*row_h, which a never-moved overlay does not
-            // report, and with the name column shown its x test expects
-            // offset_at_col(0) = the name column width while the overlay rests at 0.
-            // Give the overlay an Id, issue scroll_to for the new position whenever the
-            // widget moves itself, and delete the flag; probe:
-            // design/review-2026-10-05/repro/gui-datatable-08.rs (gui-datatable-08)
-            self.ignore_overlay_reassert = true;
+        if (first, first_col) != (self.first_row, self.first_col) {
+            self.scroll_dirty = true;
             self.update_subscriptions();
         }
     }
 
-    /// Ensure at least one selected cell is visible in the viewport.
+    /// Scroll to a selected cell unless one is already drawn whole.
     pub(super) fn ensure_selection_visible(&mut self) {
         if self.selection.is_empty() {
             return;
         }
-        let show_name = self.show_row_name.t.unwrap_or(true);
-        let mut selection: LPooled<Vec<ArcStr>> = LPooled::take();
-        selection.extend(self.selection.iter().cloned());
-        // A selected path is a row (the name column) or `<row>/<col>`.
+        let cols = self.navigable_columns_with_name();
+        let rows = self.first_row..self.first_row + self.whole_rows_in_view();
         let mut target: Option<(usize, ArcStr)> = None;
-        // CR claude for claude: [bug] This scrolls to the first selected path in AHashSet
-        // order even when another selected cell is already on screen. With a
-        // multi-select on_select, which the book supports, clicking a cell far from an
-        // earlier selection jumped the view back to the old cell in 8 of 12 trials.
-        // Rows are also matched with strip_prefix, and any remainder is taken as a
-        // column, so selecting row "/t/a/b" or its cell "/t/a/b/x" scrolls to an
-        // earlier row "/t/a". render.rs and handle_table_key match exactly with
-        // cell_path_matches over the displayed columns. Fix: return early when any
-        // selected cell is already in the display range, and match the same exact way
-        // the rest of the widget does. probe:
-        // design/review-2026-10-05/repro/gui-datatable-12.rs (copy it to
-        // stdlib/graphix-package-gui/tests/review_gui_datatable_12.rs and run cargo
-        // test -p graphix-package-gui --test review_gui_datatable_12).
-        // (gui-datatable-12)
-        'outer: for sel_path in selection.iter() {
-            for (ri, row_path) in self.row_paths.iter().enumerate() {
-                let row_str: &str = row_path;
-                if show_name && sel_path.as_str() == row_str {
-                    target = Some((ri, ROW_NAME_SENTINEL_KEY_ARC.clone()));
-                    break 'outer;
+        for sel in self.selection.iter() {
+            for (ri, rp) in self.row_paths.iter().enumerate() {
+                if !sel.starts_with(&**rp) {
+                    continue;
                 }
-                if let Some(rest) = sel_path.as_str().strip_prefix(row_str) {
-                    if let Some(col) = rest.strip_prefix('/') {
-                        let col_arc = self
-                            .displayed_columns()
-                            .find(|(n, _)| n.as_str() == col)
-                            .map(|(n, _)| n.clone())
-                            .unwrap_or_else(|| ArcStr::from(col));
-                        target = Some((ri, col_arc));
-                        break 'outer;
+                for c in cols.iter().filter(|c| is_cell_path(sel, rp, c)) {
+                    let col_visible = match self.columns.get_index_of(c.as_str()) {
+                        Some(ci) => self.col_fully_visible(ci),
+                        None => true,
+                    };
+                    if rows.contains(&ri) && col_visible {
+                        return;
                     }
+                    target.get_or_insert_with(|| (ri, c.clone()));
                 }
             }
         }
@@ -341,57 +255,66 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    /// Auto-fit every column to its widest content over all rows.
-    pub(super) fn auto_fit_all_columns(&mut self) {
-        let show_name = self.show_row_name.t.unwrap_or(true);
-        let mut inner = self.cells.inner.lock();
-        let mut widths = self.user_widths.lock();
-        if show_name {
-            let mut w = col_header_width(ROW_NAME_HEADER_LABEL).max(MIN_COL_WIDTH);
-            for p in &self.row_paths {
-                let name = Path::basename(p).unwrap_or("");
-                w = w.max(col_text_width(name).max(MIN_COL_WIDTH));
-            }
-            widths.insert(ROW_NAME_SENTINEL_KEY.into(), w);
-        }
+    /// Every column a selection can name, the row-name column included.
+    fn navigable_columns_with_name(&self) -> LPooled<Vec<ArcStr>> {
+        let mut cols: LPooled<Vec<ArcStr>> = LPooled::take();
+        cols.push(ROW_NAME_KEY);
         match self.mode {
-            DisplayMode::Table => {
-                let cols: LPooled<Vec<ArcStr>> =
-                    self.displayed_columns().map(|(name, _)| name.clone()).collect();
-                for col_name in cols.iter() {
-                    let entry = self.columns.get(col_name);
-                    let is_fixed = entry
-                        .map(|c| c.ref_width.is_some() && c.on_resize.is_none())
-                        .unwrap_or(false);
-                    if is_fixed {
-                        continue;
+            DisplayMode::Table => cols.extend(self.columns.keys().cloned()),
+            DisplayMode::Value => cols.push(VALUE_COL_KEY),
+        }
+        cols
+    }
+
+    /// Auto-fit every column to its widest content over all rows. A
+    /// column with a width ref is the program's: it is asked through its
+    /// `on_resize`, and one without is left alone.
+    pub(super) fn auto_fit_all_columns(&mut self) {
+        let mut fits: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
+        {
+            let mut inner = self.cells.inner.lock();
+            let mut widest = |label: &str, col: &ArcStr| {
+                let mut w = col_header_width(label).max(MIN_COL_WIDTH);
+                for rp in self.row_paths.iter() {
+                    let text = if col == &ROW_NAME_KEY {
+                        ArcStr::from(row_basename(rp))
+                    } else {
+                        let id = inner.cells.get(&(rp.clone(), col.clone())).copied();
+                        id.and_then(|id| inner.formatted_for(id))
+                            .unwrap_or_else(|| self.default_for(col, row_basename(rp)))
+                    };
+                    w = w.max(col_text_width(&text));
+                }
+                w
+            };
+            if self.show_row_name.t.unwrap_or(true) {
+                fits.push((ROW_NAME_KEY, widest(ROW_NAME_HEADER_LABEL, &ROW_NAME_KEY)));
+            }
+            match self.mode {
+                DisplayMode::Table => {
+                    for (name, c) in self.columns.iter() {
+                        let label = c.spec.display_name.as_deref().unwrap_or(name);
+                        fits.push((name.clone(), widest(label, name)));
                     }
-                    let display = entry
-                        .and_then(|c| c.spec.display_name.as_deref())
-                        .unwrap_or(col_name);
-                    let mut w = col_header_width(display).max(MIN_COL_WIDTH);
-                    for row_path in self.row_paths.iter() {
-                        let key = (row_path.clone(), col_name.clone());
-                        let id = inner.cells.get(&key).copied();
-                        let text =
-                            id.and_then(|id| inner.formatted_for(id)).unwrap_or_else(
-                                || self.default_for(col_name, row_basename(row_path)),
-                            );
-                        w = w.max(col_text_width(&text).max(MIN_COL_WIDTH));
-                    }
-                    widths.insert(col_name.clone(), w);
+                }
+                DisplayMode::Value => {
+                    fits.push((VALUE_COL_KEY, widest(VALUE_HEADER_LABEL, &VALUE_COL_KEY)))
                 }
             }
-            DisplayMode::Value => {
-                let mut w = col_header_width("value").max(MIN_COL_WIDTH);
-                for row_path in self.row_paths.iter() {
-                    let key = (row_path.clone(), VALUE_COL_KEY);
-                    let id = inner.cells.get(&key).copied();
-                    if let Some(text) = id.and_then(|id| inner.formatted_for(id)) {
-                        w = w.max(col_text_width(&text).max(MIN_COL_WIDTH));
+        }
+        let mut user_widths = self.user_widths.lock();
+        for (name, w) in fits.drain(..) {
+            match self.columns.get(&name) {
+                Some(c) if c.ref_width.is_some() => {
+                    if let Some(f) = &c.on_resize {
+                        let _ = self
+                            .gx
+                            .call(f.id(), ValArray::from_iter([Value::F64(w as f64)]));
                     }
                 }
-                widths.insert("value".into(), w);
+                _ => {
+                    user_widths.insert(name, w);
+                }
             }
         }
     }
@@ -404,7 +327,7 @@ impl<X: GXExt> DataTableW<X> {
     /// makes every row `ROW_HEIGHT_CONTROLS`. One height keeps the cell
     /// borders aligned.
     pub(super) fn row_height(&self) -> f32 {
-        let tall = self.displayed_columns().any(|(_, c)| {
+        let tall = self.columns.values().any(|c| {
             matches!(
                 c.spec.typ,
                 ColumnType::Combo { .. } | ColumnType::Spin { .. } | ColumnType::Toggle

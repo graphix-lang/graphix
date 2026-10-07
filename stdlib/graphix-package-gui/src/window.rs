@@ -255,9 +255,4 @@ impl<X: GXExt> TrackedWindow<X> {
             self.needs_redraw = true;
         }
     }
-
-    /// The pointer's last position, the origin when it never entered.
-    pub fn cursor_position(&self) -> iced_core::Point {
-        self.cursor.position().unwrap_or(iced_core::Point::ORIGIN)
-    }
 }

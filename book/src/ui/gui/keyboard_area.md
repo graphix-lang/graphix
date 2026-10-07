@@ -5,18 +5,7 @@ The `keyboard_area` widget wraps a child and captures keyboard events. Use it to
 ## Interface
 
 ```graphix
-type KeyEvent = {
-  key: string,
-  modifiers: { shift: bool, ctrl: bool, alt: bool, logo: bool },
-  text: string,
-  repeat: bool
-};
-
-val keyboard_area: fn(
-  ?#on_key_press: fn(a: KeyEvent) -> Any,
-  ?#on_key_release: fn(a: KeyEvent) -> Any,
-  a: &Widget
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/keyboard_area.gxi}}
 ```
 
 ## The KeyEvent Type
@@ -30,6 +19,11 @@ val keyboard_area: fn(
 
 - **on_key_press** — called with a `KeyEvent` when a key is pressed
 - **on_key_release** — called with a `KeyEvent` when a key is released
+
+A key with no callback for it goes on to an enclosing `keyboard_area`.
+
+An area takes keys while it has focus: a click inside it gives it focus,
+a click outside takes focus away. Until the first click it hears no keys.
 
 The positional argument is a reference to the child widget.
 

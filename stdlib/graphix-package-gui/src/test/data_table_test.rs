@@ -278,7 +278,7 @@ let result = data_table(
     let _ = h.watch("test::activated").await?;
     h.drain().await?;
 
-    h.dt_mut().handle_cell_click(0, "name".into());
+    h.dt_mut().handle_cell_click(0, crate::widgets::data_table::ROW_NAME_KEY);
     h.drain().await?;
 
     let activated = h.get_watched("test::activated");
@@ -593,43 +593,30 @@ let result = data_table(
     Ok(())
 }
 
-/// Rows that scroll into view through a resort get live subscriptions.
+/// Rows that scroll into view through a resort get live subscriptions:
+/// the sort column is subscribed for every row, the other columns only
+/// in the window, which starts as the first 80 rows of 120.
 #[tokio::test(flavor = "current_thread")]
 async fn sort_subscribes_newly_visible_rows() -> Result<()> {
-    // cpu = row index; the window is 30 rows, so a descending sort shows
-    // mostly rows outside the initial subscription set.
-    // CR claude for claude: [test-gap] This test cannot fail on the property it names.
-    // Its only column, cpu, is also the sort column, so subscribe_sort_column puts
-    // (row, cpu) into `cells` for all 40 rows; update_subscriptions then finds every
-    // row already subscribed and never calls subscribe_row, and data_table_snapshot
-    // reads each cell from that sort subscription. The first window (rows 0..30 plus
-    // ROW_BUFFER 50) covers all 40 rows anyway, so the comment above is wrong too. Add
-    // a displayed column that is not sorted (mem, published per row), use more than 80
-    // rows, and assert the mem cells of the first 30 displayed rows. (tests-ui.r2-03)
-    let n_rows: usize = 40;
+    let n_rows: usize = 120;
     let mut publishes = String::new();
     let mut rows = String::new();
     for i in 0..n_rows {
         publishes.push_str(&format!(
-            "sys::net::publish(\"/local/dt_sub_resort/r{i}/cpu\", v64:{i});\n"
+            "sys::net::publish(\"/local/dt_sub_resort/r{i}/cpu\", v64:{i});\n\
+             sys::net::publish(\"/local/dt_sub_resort/r{i}/mem\", v64:{});\n",
+            i * 10
         ));
         if i > 0 {
             rows.push_str(", ");
         }
         rows.push_str(&format!("\"/local/dt_sub_resort/r{i}\""));
     }
-    // CR claude for claude: [test-gap] This test cannot fail. cpu is both the only column
-    // and the sort column, and subscribe_sort_column (subscriptions.rs:479) subscribes
-    // every absolute row and indexes it in `cells`, so all 40 rows show values whatever
-    // update_subscriptions does with the visible window. Emptying update_subscriptions
-    // leaves it green. Publish a second, non-sort column per row (r{i}/mem) and add it
-    // to columns. After the descending sort, assert that the 30 visible rows' mem cells
-    // are non-empty. (tests-ui-05)
     let code = format!(
         r#"
 use gui::*; use gui::data_table::{{self, *}}; use sys::*;
 {publishes}
-let tbl = {{ rows: [{rows}], columns: ["cpu"] }};
+let tbl = {{ rows: [{rows}], columns: ["cpu", "mem"] }};
 let result = data_table(
     #sort_by: &[{{ column: "cpu", direction: `Descending }}],
     #table: &tbl
@@ -637,33 +624,24 @@ let result = data_table(
 "#
     );
     let mut h = dt(&code).await?;
-    let top = format!("r{}", n_rows - 1);
-    for _ in 0..20 {
+    let mem_ok = |snap: &crate::widgets::DataTableSnapshot| {
+        (0..30).all(|vi| {
+            let i: usize = snap.row_basenames[vi][1..].parse().unwrap();
+            snap.grid[vi][1].parse::<usize>().ok() == Some(i * 10)
+        })
+    };
+    for _ in 0..40 {
         h.drain().await?;
         h.before_view();
         let snap = h.dt_snapshot();
-        if snap.row_basenames.first().map(|s| s.as_str()) == Some(top.as_str())
-            && !snap
-                .grid
-                .first()
-                .and_then(|r| r.first())
-                .map(|s| s.is_empty())
-                .unwrap_or(true)
+        if snap.row_basenames.first().map(|s| s.as_str()) == Some("r119") && mem_ok(&snap)
         {
             break;
         }
     }
     let snap = h.dt_snapshot();
-    assert_eq!(snap.row_basenames[0], top, "top row after desc sort");
-    for vi in 0..30 {
-        let row = &snap.row_basenames[vi];
-        let val = &snap.grid[vi][0];
-        assert!(
-            !val.is_empty(),
-            "row {row} (visible position {vi}) has empty cpu cell after resort \
-             — subs didn't follow the new visible set"
-        );
-    }
+    assert_eq!(snap.row_basenames[0], "r119", "top row after desc sort");
+    assert!(mem_ok(&snap), "the visible rows' mem cells: {:?}", &snap.grid[..30]);
     Ok(())
 }
 
@@ -777,8 +755,9 @@ fn sparkline_decimation() {
     decimate_sparkline(&mut history);
     assert_eq!(history.len(), 50);
 
+    // each run of four keeps two; a tail shorter than four stays whole
     decimate_sparkline(&mut history);
-    assert_eq!(history.len(), 25);
+    assert_eq!(history.len(), 26);
 
     for (_, v) in &history {
         assert!(*v >= -100.0 && *v <= 100.0);
@@ -827,15 +806,10 @@ let result = data_table(
 /// A numeric edit buffer commits as an i64, not a string.
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column_parses_number() -> Result<()> {
-    // CR claude for claude: [test-gap] This test cannot tell an i64 commit from a string
-    // commit: interpolation prints the string "42" and the i64 42 the same way, so
-    // `log` reads "r0/c0=42" even if parse_or_quote always returns a string. Record the
-    // value itself, as button_column_passes_typed_raw_value does (`let got: Any =
-    // null`, `got <- value`), and assert test::got is Value::I64(42). (tests-ui.r2-04)
     let code = r#"
 use gui::*; use gui::data_table::{self, *}; use sys::*;
-let log = "";
-let edit = |#path: string, #value: Any| log <- "[path]=[value]";
+let got: Any = null;
+let edit = |#path: string, #value: Any| got <- value;
 let tbl = { rows: ["r0"], columns: [
         { name: "c0", typ: `Text({ on_edit: edit }),
             display_name: null,
@@ -847,26 +821,13 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    let _ = h.watch("test::log").await?;
+    let _ = h.watch("test::got").await?;
     h.drain().await?;
     h.dt_mut().handle_cell_edit(0, "c0".into());
     h.dt_mut().handle_cell_edit_input("42".into());
     h.dt_mut().handle_cell_edit_submit();
     h.drain().await?;
-    let log = h.get_watched("test::log");
-    // CR claude for claude: [test-gap] This assertion cannot tell a typed commit from a
-    // string. The callback interpolates `value` into `log`, and "[value]" renders
-    // String("42") and I64(42) alike (probe: `let s: Any = "42"; let n: Any = 42; "[s]"
-    // == "[n]"` is true), so the test passes even if parse_or_quote (types.rs:472)
-    // returns a string for every buffer. Record the raw value instead (`let committed:
-    // Any = null; let edit = |#path: string, #value: Any| { committed <- value; null
-    // }`), watch test::committed and assert Some(&Value::I64(42)), as
-    // button_column_passes_typed_raw_value does. (tests-ui-04)
-    assert_eq!(
-        log,
-        Some(&Value::String(arcstr::literal!("r0/c0=42"))),
-        "numeric edit should commit typed i64, got: {log:?}",
-    );
+    assert_eq!(h.get_watched("test::got"), Some(&Value::I64(42)));
     Ok(())
 }
 
@@ -1319,26 +1280,8 @@ let result = data_table(
     Ok(())
 }
 
-/// A resize drag yields `(on_resize_cb, new_width)` from
-/// `handle_mouse_move_resize`.
-// CR claude for claude: [test-gap] The comment above is wrong. Production
-// does not handle ColumnResize* in the host: event_loop.rs:406-414
-// sends them to on_message like every other message, and
-// DataTableW::on_message (data_table/mod.rs:524-539) turns a move into
-// the on_resize Call. Dropping them here means no test drives a drag
-// through that arm. Deleting its shell.publish, or inverting its
-// is_column_resizing guard, keeps every test green, and
-// on_resize_fires_on_drag calls the helpers directly and checks only `>
-// 100.0` where the answer is 180.0. Forward these messages to
-// on_message like the rest, and make on_resize_fires_on_drag a real
-// drag (drag_horizontal over the header's resize handle) asserting
-// 180.0. The render.rs:471-473 doc ("the message drain filters") and
-// the GuiWidget::is_column_resizing forwarding default
-// (widgets/mod.rs:200), which nothing calls on a container, are
-// leftovers of the same design. (tests-ui-07)
-// 2026-10-07 claude: the harness drains through the event loop's own
-// apply_messages now, so ColumnResize* reach on_message as in production. The
-// real drag asserting 180.0 is still owed here, with the stale docs.
+/// A drag of the header's resize handle calls `on_resize` with the width
+/// the drag reached.
 #[tokio::test(flavor = "current_thread")]
 async fn on_resize_fires_on_drag() -> Result<()> {
     let code = r#"
@@ -1357,47 +1300,25 @@ let result = data_table(
 #table: &tbl
 )
 "#;
-    let mut h = dt(code).await?;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(600.0, 200.0)).await?;
     let _ = h.watch("test::log").await?;
     h.drain().await?;
-    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
-    h.dt_mut().handle_column_resize_start(idx, 100.0);
-    // The first move only seeds the baseline.
-    assert!(h.dt_mut().handle_mouse_move_resize(100.0).is_none());
-    let result = h.dt_mut().handle_mouse_move_resize(180.0);
-    let (cb_id, new_w) = result.expect("on_resize callback returned");
-    h.dt_mut().handle_column_resize_end();
-    h.call_callback(cb_id, ValArray::from_iter([Value::F64(new_w)])).await?;
-    let log = h.get_watched("test::log");
-    assert!(
-        matches!(log, Some(Value::F64(f)) if *f > 100.0),
-        "on_resize should have logged the new width, got: {log:?}",
-    );
+    let _ = h.view();
+    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let handle = Point::new(b.x + b.width - 7.5, 14.0);
+    h.drag_live(handle, Point::new(handle.x + 80.0, 14.0), 4).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::log"), Some(&Value::F64(180.0)));
+    assert!(!h.inner.dt().dt_is_resizing());
     Ok(())
 }
 
-/// A Sparkline column accumulates values published over netidx. The
-/// timers are one-shot (a repeating timer keeps `drain()` spinning)
-/// and spaced past subscriber setup.
+/// A Sparkline column accumulates values published over netidx.
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_accumulates() -> Result<()> {
-    // CR claude for claude: [risk] This test races its one-shot timers against harness
-    // setup. The timers start at the program's first cycle, but the table subscribes
-    // only after GuiTestHarness::new has received the initial value and compiled the
-    // widget, and BEGIN_WITH_LAST delivers only the value current then. If setup takes
-    // more than about 450 ms under load, 1.0 is never seen and wait_until times out.
-    // Publish `let c = 0`, then after dt() set test::c to 1, 2 and 3 with
-    // compile_ref(..).set, waiting for each to land, as
-    // sort_by_subscribed_column_reorders_on_update does at :577-578. (tests-ui-16)
     let code = r#"
-use gui::*; use gui::data_table::{self, *}; use sys::*; use sys::time::{self, *};
+use gui::*; use gui::data_table::{self, *}; use sys::*;
 let c = 0;
-let t1 = time::timer(duration:300.ms, false);
-let t2 = time::timer(duration:450.ms, false);
-let t3 = time::timer(duration:600.ms, false);
-c <- t1 ~ 1;
-c <- t2 ~ 2;
-c <- t3 ~ 3;
 sys::net::publish("/local/dt17/r0/load", c);
 let tbl = { rows: ["/local/dt17/r0"], columns: [
         { name: "load", typ: `Sparkline({ history_seconds: 60.0, min: null, max: null }),
@@ -1410,23 +1331,19 @@ let result = data_table(
 )
 "#;
     let mut h = dt(code).await?;
-    h.wait_until(
-        |h| {
-            let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
-            vs.contains(&1.0) && vs.contains(&2.0) && vs.contains(&3.0)
-        },
-        std::time::Duration::from_secs(2),
-        "sparkline to receive all three timer-driven values",
-    )
-    .await?;
-    // The initial value may or may not have been seen; the three timer
-    // values must be.
-    let vs = h.dt().dt_sparkline_values("r0", "load").unwrap();
-    for expected in [1.0, 2.0, 3.0] {
-        assert!(
-            vs.contains(&expected),
-            "sparkline missing timer value {expected}, got: {vs:?}",
-        );
+    let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
+    let mut c = h.gx.compile_ref(bid).await?;
+    for v in [1, 2, 3] {
+        c.set(Value::I64(v))?;
+        h.wait_until(
+            |h| {
+                let vs = h.dt().dt_sparkline_values("r0", "load").unwrap_or_default();
+                vs.contains(&(v as f64))
+            },
+            std::time::Duration::from_secs(5),
+            "the sparkline to receive the value",
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1593,7 +1510,7 @@ let result = data_table(
     let _ = h.watch("test::sel_log").await?;
     let _ = h.watch("test::act_log").await?;
     h.drain().await?;
-    h.dt_mut().handle_cell_click(0, "name".into());
+    h.dt_mut().handle_cell_click(0, crate::widgets::data_table::ROW_NAME_KEY);
     h.drain().await?;
     assert_eq!(
         h.get_watched("test::act_log"),
@@ -1628,8 +1545,8 @@ let result = data_table(
     let _ = h.view();
     let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
     assert_eq!(h.dt().dt_user_width("c0"), None);
-    h.dt_mut().handle_column_resize_start(idx, 100.0);
-    h.dt_mut().handle_column_resize_start(idx, 100.0);
+    h.dt_mut().handle_column_resize_start(idx);
+    h.dt_mut().handle_column_resize_start(idx);
     let w = h.dt().dt_user_width("c0").expect("auto-fit writes user_widths");
     assert!(w > 80.0, "auto-fit width must exceed MIN_COL_WIDTH, got {w}");
     Ok(())
@@ -1697,12 +1614,13 @@ let result = data_table(
     w.dt_set_cached_width("a", 60.0);
     w.dt_set_cached_width("b", 200.0);
     w.dt_set_cached_width("c", 140.0);
+    // The name column is pinned, so offsets count data columns only:
+    // midpoint boundaries at 30 (a | b) and 60 + 100 = 160 (b | c).
     assert_eq!(w.col_at_offset_for_test(0.0), 0, "ox=0 → first_col=0");
-    // Midpoint boundaries: col b at 80 + 30 = 110, col c at 80 + 60 +
-    // 100 = 240.
-    assert_eq!(w.col_at_offset_for_test(100.0), 0, "ox=100 still in col a");
-    assert_eq!(w.col_at_offset_for_test(200.0), 1, "ox=200 lands on col b");
-    assert_eq!(w.col_at_offset_for_test(300.0), 2, "ox=300 lands on col c");
+    assert_eq!(w.col_at_offset_for_test(29.0), 0, "ox=29 still in col a");
+    assert_eq!(w.col_at_offset_for_test(31.0), 1, "ox=31 lands on col b");
+    assert_eq!(w.col_at_offset_for_test(159.0), 1, "ox=159 still in col b");
+    assert_eq!(w.col_at_offset_for_test(161.0), 2, "ox=161 lands on col c");
     Ok(())
 }
 /// A non-finite or non-positive sparkline `history_seconds` does not
@@ -1829,4 +1747,654 @@ let result = data_table(
         "virtual column default must persist — no late subscription override",
     );
     Ok(())
+}
+
+/// Set the program variable `name` from the test.
+async fn set_var(h: &GuiTestHarness, name: &str, v: Value) -> Result<()> {
+    let bid = testing::find_bind_id(&h.compiled.env, name)?;
+    h.gx.compile_ref(bid).await?.set(v)?;
+    Ok(())
+}
+
+/// Drain until `pred` holds of the table, or fail with `why`.
+async fn settle(
+    h: &mut GuiTestHarness,
+    why: &str,
+    mut pred: impl FnMut(&GuiTestHarness) -> bool,
+) -> Result<()> {
+    h.wait_until(|h| pred(h), std::time::Duration::from_secs(5), why).await
+}
+
+fn named_key(named: iced_core::keyboard::key::Named) -> Event {
+    use iced_core::keyboard;
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Named(named),
+        modified_key: keyboard::Key::Named(named),
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::empty(),
+        text: None,
+        repeat: false,
+    })
+}
+
+fn char_key(c: &str) -> Event {
+    use iced_core::keyboard;
+    let s: iced_core::SmolStr = c.into();
+    Event::Keyboard(keyboard::Event::KeyPressed {
+        key: keyboard::Key::Character(s.clone()),
+        modified_key: keyboard::Key::Character(s.clone()),
+        physical_key: keyboard::key::Physical::Unidentified(
+            keyboard::key::NativeCode::Unidentified,
+        ),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::empty(),
+        text: Some(s),
+        repeat: false,
+    })
+}
+
+fn left_click(at: Point) -> [Event; 3] {
+    [
+        Event::Mouse(mouse::Event::CursorMoved { position: at }),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ]
+}
+
+/// A table whose one column `k` holds the stored values `vals` per row.
+fn stored_column_table(vals: &[(&str, &str)]) -> String {
+    let rows: Vec<String> = vals.iter().map(|(r, _)| format!("\"{r}\"")).collect();
+    let map: Vec<String> =
+        vals.iter().map(|(r, v)| format!("\"{r}\" => \"{v}\"")).collect();
+    format!(
+        r#"{{ rows: [{}], columns: [
+        {{ name: "k", typ: `Text({{ on_edit: null }}), display_name: null,
+            source: &{{{}}}, on_resize: &null, width: &null }}
+    ] }}"#,
+        rows.join(", "),
+        map.join(", ")
+    )
+}
+
+/// Sorting is a total order whatever the cells hold: numbers before text,
+/// NaN below every number, text by its bytes. More than 20 rows, where a
+/// comparator that is not a total order makes the sort panic.
+#[tokio::test(flavor = "current_thread")]
+async fn sort_is_a_total_order() -> Result<()> {
+    let mut vals: Vec<(String, String)> = vec![
+        ("r0".into(), "NaN".into()),
+        ("r1".into(), "5 KB".into()),
+        ("r2".into(), "10.0.1".into()),
+    ];
+    vals.extend((3..30).map(|i| (format!("r{i}"), format!("{}", (i * 37) % 101))));
+    let pairs: Vec<(&str, &str)> =
+        vals.iter().map(|(r, v)| (r.as_str(), v.as_str())).collect();
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let tbl = {};
+let result = data_table(
+    #sort_by: &[{{ column: "k", direction: `Ascending }}],
+    #table: &tbl
+)
+"#,
+        stored_column_table(&pairs)
+    );
+    let h = dt(&code).await?;
+    let mut numbers: Vec<(f64, &str)> =
+        vals[3..].iter().map(|(r, v)| (v.parse::<f64>().unwrap(), r.as_str())).collect();
+    numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut expected = vec!["r0"];
+    expected.extend(numbers.iter().map(|(_, r)| *r));
+    expected.extend(["r2", "r1"]);
+    assert_eq!(h.dt_snapshot().row_basenames, expected);
+    Ok(())
+}
+
+/// An empty `sort_by` shows the table's own row order again.
+#[tokio::test(flavor = "current_thread")]
+async fn empty_sort_by_restores_table_order() -> Result<()> {
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let sort_by: Array<SortBy> = [{{ column: "k", direction: `Descending }}];
+let tbl = {};
+let result = data_table(#sort_by: &sort_by, #table: &tbl)
+"#,
+        stored_column_table(&[("r0", "b"), ("r1", "c"), ("r2", "a")])
+    );
+    let mut h = dt(&code).await?;
+    assert_eq!(h.dt_snapshot().row_basenames, ["r1", "r0", "r2"]);
+    set_var(&h, "test::sort_by", Value::Array(ValArray::from_iter([]))).await?;
+    settle(&mut h, "the table's order", |h| {
+        h.dt_snapshot().row_basenames == ["r0", "r1", "r2"]
+    })
+    .await
+}
+
+/// A sort column with a stored source sorts by the stored values and
+/// subscribes nothing, though netidx has values at its paths.
+#[tokio::test(flavor = "current_thread")]
+async fn stored_sort_column_subscribes_nothing() -> Result<()> {
+    let p = "/local/dt_stored_sort";
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+sys::net::publish("{p}/r0/k", "raw0");
+sys::net::publish("{p}/r1/k", "raw1");
+sys::net::publish("{p}/r2/k", "raw2");
+let tbl = {{ rows: ["{p}/r0", "{p}/r1", "{p}/r2"], columns: [
+        {{ name: "k", typ: `Text({{ on_edit: null }}), display_name: null,
+            source: &{{"r0" => "c", "r1" => "a", "r2" => "b"}},
+            on_resize: &null, width: &null }}
+    ] }};
+let result = data_table(
+    #sort_by: &[{{ column: "k", direction: `Ascending }}],
+    #table: &tbl
+)
+"#
+    );
+    let mut h = dt(&code).await?;
+    for _ in 0..10 {
+        h.drain().await?;
+        h.before_view();
+    }
+    let snap = h.dt_snapshot();
+    assert_eq!(snap.row_basenames, ["r1", "r2", "r0"]);
+    assert_eq!(snap.grid, [["a"], ["b"], ["c"]]);
+    assert_eq!(h.dt().dt_subscription_count(), 0);
+    Ok(())
+}
+
+/// A table update reconciles: the subscriptions of rows and columns that
+/// stay are kept, those gone are dropped, a new column's source and
+/// on_edit compile, and a swapped on_edit is the one called.
+#[tokio::test(flavor = "multi_thread")]
+async fn table_update_reconciles() -> Result<()> {
+    let p = "/local/dt_upd";
+    let col1 = |e: &str| {
+        format!(
+            r#"{{ name: "c1", typ: `Text({{ on_edit: {e} }}), display_name: null,
+            source: &"x", on_resize: &null, width: &null }}"#
+        )
+    };
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let got1: Any = null;
+let got2: Any = null;
+let e1 = |#path: string, #value: Any| got1 <- value;
+let e2 = |#path: string, #value: Any| got2 <- value;
+let phase = 0;
+let tbl = select phase {{
+    0 => {{ rows: ["{p}/r0", "{p}/r1", "{p}/r2"], columns: ["c0"] }},
+    1 => {{ rows: ["{p}/r0", "{p}/r1", "{p}/r2", "{p}/r3"], columns: ["c0", {c1a}] }},
+    _ => {{ rows: ["{p}/r0", "{p}/r1"], columns: ["c0", {c1b}] }}
+}};
+let result = data_table(#table: &tbl)
+"#,
+        c1a = col1("e1"),
+        c1b = col1("e2"),
+    );
+    let mut h = dt(&code).await?;
+    let _ = h.watch("test::got1").await?;
+    let _ = h.watch("test::got2").await?;
+    assert_eq!(h.dt().dt_subscription_count(), 3);
+    set_var(&h, "test::phase", Value::I64(1)).await?;
+    settle(&mut h, "the fourth row", |h| h.dt_snapshot().row_basenames.len() == 4)
+        .await?;
+    assert_eq!(h.dt().dt_subscription_count(), 4, "c1 is stored: c0 of four rows");
+    h.dt_mut().handle_cell_edit(0, "c1".into());
+    h.dt_mut().handle_cell_edit_input("v1".into());
+    h.dt_mut().handle_cell_edit_submit();
+    settle(&mut h, "e1's commit", |h| {
+        h.get_watched("test::got1") == Some(&Value::String("v1".into()))
+    })
+    .await?;
+    set_var(&h, "test::phase", Value::I64(2)).await?;
+    settle(&mut h, "two rows", |h| h.dt_snapshot().row_basenames.len() == 2).await?;
+    assert_eq!(h.dt().dt_subscription_count(), 2, "the removed rows' subscriptions drop");
+    h.dt_mut().handle_cell_edit(0, "c1".into());
+    h.dt_mut().handle_cell_edit_input("v2".into());
+    h.dt_mut().handle_cell_edit_submit();
+    settle(&mut h, "e2's commit", |h| {
+        h.get_watched("test::got2") == Some(&Value::String("v2".into()))
+    })
+    .await?;
+    assert_eq!(h.get_watched("test::got1"), Some(&Value::String("v1".into())));
+    Ok(())
+}
+
+/// A table update keeps the view where it was and an open edit open while
+/// its cell exists.
+#[tokio::test(flavor = "multi_thread")]
+async fn table_update_keeps_view_and_edit() -> Result<()> {
+    let rows =
+        |n: usize| (0..n).map(|i| format!("\"r{i}\"")).collect::<Vec<_>>().join(", ");
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let e = |#path: string, #value: Any| null;
+let col = {{ name: "c0", typ: `Text({{ on_edit: e }}), display_name: null,
+    source: &"x", on_resize: &null, width: &null }};
+let phase = 0;
+let tbl = select phase {{
+    0 => {{ rows: [{r100}], columns: [col] }},
+    _ => {{ rows: [{r101}], columns: [col] }}
+}};
+let result = data_table(#table: &tbl)
+"#,
+        r100 = rows(100),
+        r101 = rows(101),
+    );
+    let mut h = dt(&code).await?;
+    h.dt_mut().handle_scroll(0.0, 220.0, 400.0, 300.0);
+    assert_eq!(h.dt().dt_first_cell().0, 10);
+    h.dt_mut().handle_cell_edit(12, "c0".into());
+    set_var(&h, "test::phase", Value::I64(1)).await?;
+    settle(&mut h, "the new row", |h| h.dt_snapshot().row_basenames.len() == 101).await?;
+    assert_eq!(h.dt().dt_first_cell().0, 10);
+    assert_eq!(h.dt().dt_editing(), Some(("r12".into(), "c0".into())));
+    Ok(())
+}
+
+/// Keyboard navigation moves the scroll overlay with the view, so the next
+/// wheel notch scrolls on from where the keys left it.
+#[tokio::test(flavor = "current_thread")]
+async fn keyboard_scroll_moves_the_overlay() -> Result<()> {
+    use iced_core::keyboard::key::Named;
+    let rows = (0..100).map(|i| format!("\"r{i}\"")).collect::<Vec<_>>().join(", ");
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let sel: Array<string> = [];
+let tbl = {{ rows: [{rows}], columns: ["c0"] }};
+let result = data_table(
+    #selection: &sel,
+    #on_select: |#path: string| sel <- [path],
+    #table: &tbl
+)
+"#
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+    let _ = h.view();
+    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    h.live(&left_click(Point::new(b.x + 10.0, b.y + 10.0))).await?;
+    for _ in 0..40 {
+        h.live(&[named_key(Named::ArrowDown)]).await?;
+        h.drain().await?;
+    }
+    let (keyed, _) = h.inner.dt().dt_first_cell();
+    assert!(keyed > 20, "the keys scrolled the view: first row {keyed}");
+    h.live(&[Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+    })])
+    .await?;
+    let (wheeled, _) = h.inner.dt().dt_first_cell();
+    assert!(wheeled >= keyed, "a notch down from row {keyed} went to row {wheeled}");
+    Ok(())
+}
+
+/// A resize drag ends at a left release anywhere, outside the window
+/// included, and a later hover resizes nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn resize_ends_on_a_release_outside() -> Result<()> {
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use sys::*;
+let tbl = { rows: ["r0"], columns: ["c0", "c1"] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(600.0, 200.0)).await?;
+    let _ = h.view();
+    let b = h.inner.dt().dt_cell_bounds(0, "c0").expect("c0 visible");
+    let handle = Point::new(b.x + b.width - 7.5, 14.0);
+    h.drag_live(handle, Point::new(-50.0, 14.0), 4).await?;
+    assert!(!h.inner.dt().dt_is_resizing());
+    let w = h.inner.dt().dt_user_width("c0");
+    h.live(&[
+        Event::Mouse(mouse::Event::CursorMoved { position: Point::new(100.0, 100.0) }),
+        Event::Mouse(mouse::Event::CursorMoved { position: Point::new(300.0, 100.0) }),
+    ])
+    .await?;
+    assert_eq!(h.inner.dt().dt_user_width("c0"), w);
+    Ok(())
+}
+
+/// Sparkline histories follow the table: a removed row's goes, points
+/// older than the window age out at a frame, and a column's fallback
+/// feeds only a row that never subscribes.
+#[tokio::test(flavor = "multi_thread")]
+async fn sparkline_histories_follow_the_table() -> Result<()> {
+    let p = "/local/dt_spark_prune";
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+sys::net::publish("{p}/live/load", 1.0);
+let col = {{ name: "load",
+    typ: `Sparkline({{ history_seconds: 60.0, min: null, max: null }}),
+    display_name: null, source: &`Netidx("5.0"), on_resize: &null, width: &null }};
+let phase = 0;
+let tbl = select phase {{
+    0 => {{ rows: ["{p}/live", "virtual"], columns: [col] }},
+    _ => {{ rows: ["{p}/live"], columns: [col] }}
+}};
+let result = data_table(#table: &tbl)
+"#
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(400.0, 200.0)).await?;
+    settle(&mut h.inner, "the live value", |h| {
+        h.dt().dt_sparkline_values("live", "load").unwrap_or_default().contains(&1.0)
+    })
+    .await?;
+    assert_eq!(h.inner.dt().dt_sparkline_count(), 2);
+    set_var(&h.inner, "test::phase", Value::I64(1)).await?;
+    settle(&mut h.inner, "one row", |h| h.dt_snapshot().row_basenames.len() == 1).await?;
+    assert_eq!(h.inner.dt().dt_sparkline_count(), 1, "the removed row's history goes");
+    let live = h.inner.dt().dt_sparkline_values("live", "load").unwrap_or_default();
+    assert!(!live.contains(&5.0), "no fallback in a live row: {live:?}");
+    let old = std::time::Instant::now() - std::time::Duration::from_secs(120);
+    h.inner.dt().dt_age_out_after(old);
+    let _ = h.view();
+    assert_eq!(h.inner.dt().dt_sparkline_len("live", "load"), Some(0));
+    Ok(())
+}
+
+/// A column named "name" is a column like any other: a click on it
+/// selects the cell and does not activate the row.
+#[tokio::test(flavor = "current_thread")]
+async fn a_column_named_name_is_not_the_row_name() -> Result<()> {
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use sys::*;
+let sel = "";
+let act = "";
+let tbl = { rows: ["r0"], columns: ["name"] };
+let result = data_table(
+    #show_row_name: &false,
+    #on_select: |#path: string| sel <- path,
+    #on_activate: |#path: string| act <- path,
+    #table: &tbl
+)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::sel").await?;
+    let _ = h.watch("test::act").await?;
+    h.dt_mut().handle_cell_click(0, "name".into());
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::sel"), Some(&Value::String("r0/name".into())));
+    assert_eq!(h.get_watched("test::act"), Some(&Value::String("".into())));
+    Ok(())
+}
+
+/// A selection scrolls to its own row, matched exactly, and not at all
+/// when a selected cell is already on screen.
+#[tokio::test(flavor = "current_thread")]
+async fn selection_scrolls_to_its_exact_row() -> Result<()> {
+    let rows: Vec<String> = (0..60)
+        .map(|i| match i {
+            0 => "\"/l/t/a\"".into(),
+            50 => "\"/l/t/a/b\"".into(),
+            i => format!("\"/l/t/x{i}\""),
+        })
+        .collect();
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let sel: Array<string> = [];
+let tbl = {{ rows: [{}], columns: ["c0"] }};
+let result = data_table(#selection: &sel, #table: &tbl)
+"#,
+        rows.join(", ")
+    );
+    let mut h = dt(&code).await?;
+    let sel = |paths: &[&str]| {
+        Value::Array(ValArray::from_iter(
+            paths.iter().map(|p| Value::String((*p).into())),
+        ))
+    };
+    set_var(&h, "test::sel", sel(&["/l/t/a/b/c0"])).await?;
+    settle(&mut h, "the scroll to /l/t/a/b", |h| h.dt().dt_first_cell().0 == 21).await?;
+    for k in 1..9 {
+        let other = format!("/l/t/x{k}/c0");
+        set_var(&h, "test::sel", sel(&["/l/t/a/b/c0", &other])).await?;
+        for _ in 0..3 {
+            h.drain().await?;
+        }
+        let first = h.dt().dt_first_cell().0;
+        assert_eq!(first, 21, "a visible selected cell keeps the view (with {other})");
+    }
+    Ok(())
+}
+
+/// Decimation keeps a one-sample spike wherever it falls in its run.
+#[test]
+fn sparkline_decimation_keeps_spikes() {
+    use crate::widgets::data_table::decimate_sparkline;
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
+    };
+    let base = Instant::now();
+    for at in 0..8 {
+        let mut h: VecDeque<(Instant, f64)> = (0..64)
+            .map(|i| {
+                (base + Duration::from_millis(i), if i == 20 + at { 100.0 } else { 1.0 })
+            })
+            .collect();
+        decimate_sparkline(&mut h);
+        decimate_sparkline(&mut h);
+        assert!(h.iter().any(|(_, v)| *v == 100.0), "spike at {} lost", 20 + at);
+    }
+}
+
+/// Keys the table does not use go on to an enclosing keyboard area, and
+/// Space, typing and Enter edit a cell through its focused editor.
+#[tokio::test(flavor = "current_thread")]
+async fn table_keys_and_the_cell_editor() -> Result<()> {
+    use iced_core::keyboard::key::Named;
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use gui::keyboard_area::{self, *}; use sys::*;
+let key = "";
+let got: Any = null;
+let sel: Array<string> = [];
+let edit = |#path: string, #value: Any| got <- value;
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: edit }), display_name: null,
+            source: &`Netidx(null), on_resize: &null, width: &null }
+    ] };
+let result = keyboard_area(
+    #on_key_press: |e: KeyEvent| key <- e.key,
+    &data_table(
+        #selection: &sel,
+        #on_select: |#path: string| sel <- [path],
+        #table: &tbl
+    )
+)
+"#;
+    let mut h = InteractionHarness::with_viewport(code, Size::new(400.0, 200.0)).await?;
+    let _ = h.watch("test::key").await?;
+    let _ = h.watch("test::got").await?;
+    let _ = h.process_events(&[]);
+    h.live(&left_click(Point::new(150.0, 38.0))).await?;
+    h.drain().await?;
+    h.live(&[char_key("d")]).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::key"), Some(&Value::String("d".into())));
+    h.live(&[named_key(Named::Space)]).await?;
+    h.live(&[char_key("4"), char_key("2"), named_key(Named::Enter)]).await?;
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::got"), Some(&Value::I64(42)));
+    Ok(())
+}
+
+/// Scrolling right onto a wide column draws it whole, and narrow columns
+/// past `MIN_COL_WIDTH`'s guess all draw.
+#[tokio::test(flavor = "current_thread")]
+async fn columns_draw_by_their_widths() -> Result<()> {
+    let col = |n: usize, w: f64| {
+        format!(
+            r#"{{ name: "c{n}", typ: `Text({{ on_edit: null }}), display_name: null,
+            source: &"x", on_resize: &null, width: &{w:.1} }}"#
+        )
+    };
+    let wide: Vec<String> =
+        (0..11).map(|n| col(n, if n >= 9 { 300.0 } else { 80.0 })).collect();
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let sel = ["r0/c9"];
+let tbl = {{ rows: ["r0"], columns: [{}] }};
+let result = data_table(#selection: &sel, #table: &tbl)
+"#,
+        wide.join(", ")
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(800.0, 200.0)).await?;
+    let _ = h.view();
+    h.inner.dt_mut().handle_table_key(&crate::widgets::TableKeyAction::Right);
+    let _ = h.view();
+    let b = h.inner.dt().dt_cell_bounds(0, "c10").expect("c10 drawn");
+    assert!(b.x + b.width <= 800.0, "c10 at {}..{}", b.x, b.x + b.width);
+    let narrow: Vec<String> = (0..10).map(|n| col(n, 40.0)).collect();
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use sys::*;
+let tbl = {{ rows: ["r0"], columns: [{}] }};
+let result = data_table(#table: &tbl)
+"#,
+        narrow.join(", ")
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(800.0, 200.0)).await?;
+    let _ = h.view();
+    assert!(h.inner.dt().dt_cell_bounds(0, "c9").is_some(), "the tenth 40 px column");
+    Ok(())
+}
+
+/// A history window too long for `Instant` keeps every point.
+#[tokio::test(flavor = "current_thread")]
+async fn a_huge_sparkline_window_keeps_everything() -> Result<()> {
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use sys::*;
+let tbl = { rows: ["r0"], columns: [
+        { name: "load", typ: `Sparkline({ history_seconds: 1e19, min: null, max: null }),
+            display_name: null, source: &"2.0", on_resize: &null, width: &null }
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let h = dt(code).await?;
+    h.dt().dt_push_sparkline("r0", "load", std::time::Instant::now(), 3.0);
+    assert_eq!(h.dt().dt_sparkline_values("r0", "load"), Some(vec![2.0, 3.0]));
+    Ok(())
+}
+
+/// A column with a width ref takes its width from the program: a drag
+/// asks `on_resize`, and what the program writes is what shows.
+#[tokio::test(flavor = "current_thread")]
+async fn a_width_ref_wins_over_a_drag() -> Result<()> {
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use sys::*;
+let w = 100.0;
+let clamp = |x: f64| w <- select x > 150.0 { true => 150.0, false => x };
+let tbl = { rows: ["r0"], columns: [
+        { name: "c0", typ: `Text({ on_edit: null }), display_name: null,
+            source: &"x", on_resize: &clamp, width: &w }
+    ] };
+let result = data_table(#table: &tbl)
+"#;
+    let mut h = dt(code).await?;
+    let idx = h.dt().dt_meta_col_idx("c0").expect("c0 visible");
+    h.dt_mut().handle_column_resize_start(idx);
+    assert!(h.dt_mut().handle_mouse_move_resize(100.0).is_none());
+    let (cb, nw) = h.dt_mut().handle_mouse_move_resize(400.0).expect("on_resize");
+    h.dt_mut().handle_column_resize_end();
+    h.call_callback(cb, ValArray::from_iter([Value::F64(nw)])).await?;
+    settle(&mut h, "the clamped width", |h| h.dt().dt_ref_width("c0") == Some(150.0))
+        .await?;
+    assert_eq!(h.dt().dt_user_width("c0"), None);
+    set_var(&h, "test::w", Value::F64(90.0)).await?;
+    settle(&mut h, "the reset", |h| h.dt().dt_ref_width("c0") == Some(90.0)).await
+}
+
+/// Truncation ends on a character boundary at every width.
+#[test]
+fn truncation_respects_characters() {
+    use crate::widgets::data_table::truncate_to_width;
+    for text in
+        ["Zürich-Österreich", "東京都新宿区西新宿二丁目八番一号", "αβγδεζηθικλμνξοπρ"]
+    {
+        for w in 20..320 {
+            let t = truncate_to_width(text, w as f32);
+            if let Some(prefix) = t.strip_suffix("...") {
+                assert!(text.starts_with(prefix), "{text:?} at {w}: {t:?}");
+            } else {
+                assert!(t.is_empty() || t == text, "{text:?} at {w}: {t:?}");
+            }
+        }
+    }
+}
+
+/// A Value-mode cell is its row's path, for `on_select` as for
+/// `on_update`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_value_cell_selects_its_row_path() -> Result<()> {
+    let code = r#"
+use gui::*; use gui::data_table::{self, *}; use sys::*;
+let sel = "";
+let tbl = { rows: ["r0"], columns: [] };
+let result = data_table(#on_select: |#path: string| sel <- path, #table: &tbl)
+"#;
+    let mut h = dt(code).await?;
+    let _ = h.watch("test::sel").await?;
+    assert!(h.dt_snapshot().is_value_mode);
+    h.dt_mut().handle_cell_click(0, crate::widgets::data_table::VALUE_COL_KEY);
+    h.drain().await?;
+    assert_eq!(h.get_watched("test::sel"), Some(&Value::String("r0".into())));
+    Ok(())
+}
+
+/// A data table inside a table cell gets its frame's work: a live sort
+/// value re-sorts it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_data_table_in_a_table_cell_sorts_live() -> Result<()> {
+    let p = "/local/dt_in_table";
+    let code = format!(
+        r#"
+use gui::*; use gui::data_table::{{self, *}}; use gui::table::{{self, *}};
+use gui::text::{{self, *}}; use sys::*;
+let v0 = f64:30.0;
+let v1 = f64:10.0;
+sys::net::publish("{p}/r0/cpu", v0);
+sys::net::publish("{p}/r1/cpu", v1);
+let tbl = {{ rows: ["{p}/r0", "{p}/r1"], columns: ["cpu"] }};
+let dt = data_table(
+    #sort_by: &[{{ column: "cpu", direction: `Ascending }}],
+    #table: &tbl
+);
+let result = table(&[table_column(&text(&"t"))], &[[dt]])
+"#
+    );
+    let mut h = GuiTestHarness::new(&code).await?;
+    fn order(w: &crate::widgets::GuiW<NoExt>) -> Option<Vec<String>> {
+        if let Some(s) = w.data_table_snapshot() {
+            return Some(s.row_basenames);
+        }
+        let mut found = None;
+        w.for_each_child(&mut |c| {
+            if found.is_none() {
+                found = order(c)
+            }
+        });
+        found
+    }
+    let wait = |want: [&'static str; 2]| {
+        move |h: &mut GuiTestHarness| {
+            h.before_view();
+            order(&h.widget).is_some_and(|o| o == want)
+        }
+    };
+    h.wait_until(wait(["r1", "r0"]), std::time::Duration::from_secs(5), "first sort")
+        .await?;
+    set_var(&h, "test::v1", Value::F64(100.0)).await?;
+    h.wait_until(wait(["r0", "r1"]), std::time::Duration::from_secs(5), "re-sort").await
 }

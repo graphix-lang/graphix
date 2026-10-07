@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{CallableId, GXExt, GXHandle};
+use graphix_rt::{Callable, CallableId, GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
 use poolshark::local::LPooled;
@@ -36,12 +36,13 @@ use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 // flex_widget!'s spacing, padding, width and height idents are the same in both
 // expansions and can be fixed field names. (gui-widgets-a-09)
 macro_rules! compile_callable {
-    ($gx:expr, $ref:ident, $label:expr) => {
-        match $ref.last.as_ref() {
-            Some(v) => Some($gx.compile_callable(v.clone()).await.context($label)?),
-            None => None,
+    ($gx:expr, $ref:ident, $label:expr) => {{
+        let mut c = None;
+        if let Some(v) = $ref.last.as_ref() {
+            $crate::widgets::set_callable(&$gx, &mut c, v).await.context($label)?;
         }
-    };
+        c
+    }};
 }
 
 /// Recompile a callable ref inside `handle_update`.
@@ -49,8 +50,13 @@ macro_rules! update_callable {
     ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:expr) => {
         if $id == $self.$field.id {
             $self.$field.last = Some($v.clone());
-            $rt.block_on($self.gx.update_callable(&mut $self.$callable, $v.clone()))
-                .context($label)?;
+            $crate::widgets::update_callable_blocking(
+                $rt,
+                &$self.gx,
+                &mut $self.$callable,
+                $v,
+            )
+            .context($label)?;
         }
     };
 }
@@ -173,18 +179,13 @@ pub enum TableKeyAction {
     Escape,
 }
 
-/// Context passed to `GuiWidget::on_message`: per-window state
-/// (cursor position) and a queue for follow-up messages.
+/// The queue `GuiWidget::on_message` publishes follow-up messages to.
+#[derive(Default)]
 pub struct MessageShell {
-    pub cursor_position: iced_core::Point,
     pub out: LPooled<Vec<Message>>,
 }
 
 impl MessageShell {
-    pub fn new(cursor_position: iced_core::Point) -> Self {
-        Self { cursor_position, out: LPooled::take() }
-    }
-
     pub fn publish(&mut self, msg: Message) {
         self.out.push(msg);
     }
@@ -248,6 +249,12 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
         unimplemented!("as_any_mut not implemented for this widget")
     }
 
+    /// What this widget asks of its iced widgets (a scroll it made itself,
+    /// a focus), for the frame to apply before the next events.
+    fn take_ops(&mut self, out: &mut Vec<WidgetOp>) {
+        self.for_each_child_mut(&mut |c| c.take_ops(out));
+    }
+
     /// Called immediately before `view()` to flush state that arrived
     /// from background tasks. Returns `true` if the window should
     /// redraw. The default forwards to children.
@@ -259,6 +266,82 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 }
 
 pub type GuiW<X> = Box<dyn GuiWidget<X>>;
+
+/// What a widget asks of its iced widgets between frames.
+pub enum WidgetOp {
+    /// Put a scrollable at an offset.
+    ScrollTo(
+        iced_core::widget::Id,
+        iced_core::widget::operation::scrollable::AbsoluteOffset<Option<f32>>,
+    ),
+    /// Give a widget the keyboard focus.
+    Focus(iced_core::widget::Id),
+}
+
+/// Point `slot` at the callable `v` names, `None` for null; a slot already
+/// compiled for `v` keeps its call site. Returns the callable it replaced.
+pub(crate) async fn set_callable<X: GXExt>(
+    gx: &GXHandle<X>,
+    slot: &mut Option<Callable<X>>,
+    v: &Value,
+) -> Result<Option<Callable<X>>> {
+    match v {
+        Value::Null => Ok(slot.take()),
+        v if slot.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
+        v => Ok(slot.replace(gx.compile_callable(v.clone()).await?)),
+    }
+}
+
+/// `set_callable` from synchronous code outside the runtime.
+pub(crate) fn update_callable_blocking<X: GXExt>(
+    rt: &tokio::runtime::Handle,
+    gx: &GXHandle<X>,
+    slot: &mut Option<Callable<X>>,
+    v: &Value,
+) -> Result<Option<Callable<X>>> {
+    match v {
+        Value::Null => Ok(slot.take()),
+        v if slot.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
+        v => rt.block_on(set_callable(gx, slot, v)),
+    }
+}
+
+/// A callback property: its ref and what it compiled to; null is no
+/// handler.
+pub(crate) struct Handler<X: GXExt> {
+    pub(crate) r: Ref<X>,
+    pub(crate) f: Option<Callable<X>>,
+}
+
+impl<X: GXExt> Handler<X> {
+    pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
+        let mut f = None;
+        if let Some(v) = r.last.as_ref() {
+            set_callable(gx, &mut f, v).await?;
+        }
+        Ok(Self { r, f })
+    }
+
+    /// Take `v` when it is this handler's ref's. Returns the callable it
+    /// replaced, for a caller that must outlive its id's last use.
+    pub(crate) fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<Option<Callable<X>>> {
+        if id != self.r.id {
+            return Ok(None);
+        }
+        self.r.last = Some(v.clone());
+        update_callable_blocking(rt, gx, &mut self.f, v)
+    }
+
+    pub(crate) fn id(&self) -> Option<CallableId> {
+        self.f.as_ref().map(|c| c.id())
+    }
+}
 
 /// Snapshot of data table state for test assertions.
 #[cfg(test)]

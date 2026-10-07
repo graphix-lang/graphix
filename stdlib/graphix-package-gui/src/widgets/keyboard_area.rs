@@ -2,6 +2,8 @@ use super::{
     GuiW, GuiWidget, IcedElement, Message, compile, iced_keyboard_area::KeyboardArea,
 };
 use anyhow::{Context, Result};
+use arcstr::literal;
+use compact_str::format_compact;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref};
 use iced_core::keyboard;
@@ -51,45 +53,33 @@ impl<X: GXExt> KeyboardAreaW<X> {
     }
 }
 
-/// Convert an iced keyboard event to a graphix Value struct:
-/// `{key: string, modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool}, text: string, repeat: bool}`
-// CR claude for claude: [structure] KeyboardArea hands its callbacks the whole
-// keyboard::Event, so this function has to rule out ModifiersChanged with
-// unreachable!(), even though iced_keyboard_area.rs:139-149 calls it only for
-// KeyPressed and KeyReleased. Passing key, modifiers, text and repeat from those two
-// arms makes the panic impossible to reach. Named keys are spelled with
-// format!("{named:?}"), which makes iced's derived Debug output the key-name contract
-// that keyboard_area.md documents ("Enter", "ArrowUp"), and it allocates a String and
-// then an ArcStr for every key. Use format_compact!(..).as_str().into(), and pin a few
-// names in a test so a rename in iced cannot change them silently. (gui-widgets-a-14)
-fn key_event_to_value(event: &keyboard::Event) -> Value {
-    let (key, modifiers, text, repeat) = match event {
-        keyboard::Event::KeyPressed { key, modifiers, text, repeat, .. } => {
-            (key, modifiers, text.as_ref().map(|s| s.as_str()), *repeat)
-        }
-        keyboard::Event::KeyReleased { key, modifiers, .. } => {
-            (key, modifiers, None, false)
-        }
-        keyboard::Event::ModifiersChanged(_) => unreachable!(),
-    };
-    let key_str: Value = match key.as_ref() {
+/// The `KeyEvent` a key's callback is called with. A named key is spelled
+/// as iced names it (`Enter`, `ArrowUp`): keyboard_area.md documents those.
+pub(crate) fn key_event_to_value(
+    key: &keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    text: Option<&str>,
+    repeat: bool,
+) -> Value {
+    let key = match key.as_ref() {
         keyboard::Key::Character(c) => Value::String(c.into()),
-        keyboard::Key::Named(named) => Value::String(format!("{named:?}").into()),
-        keyboard::Key::Unidentified => Value::String("Unidentified".into()),
+        keyboard::Key::Named(named) => {
+            Value::String(format_compact!("{named:?}").as_str().into())
+        }
+        keyboard::Key::Unidentified => Value::String(literal!("Unidentified")),
     };
-    let mods_val: Value = [
-        (arcstr::literal!("alt"), Value::Bool(modifiers.alt())),
-        (arcstr::literal!("ctrl"), Value::Bool(modifiers.control())),
-        (arcstr::literal!("logo"), Value::Bool(modifiers.logo())),
-        (arcstr::literal!("shift"), Value::Bool(modifiers.shift())),
+    let mods: Value = [
+        (literal!("alt"), Value::Bool(modifiers.alt())),
+        (literal!("ctrl"), Value::Bool(modifiers.control())),
+        (literal!("logo"), Value::Bool(modifiers.logo())),
+        (literal!("shift"), Value::Bool(modifiers.shift())),
     ]
     .into();
-    let text_val = Value::String(text.unwrap_or("").into());
     [
-        (arcstr::literal!("key"), key_str),
-        (arcstr::literal!("modifiers"), mods_val),
-        (arcstr::literal!("repeat"), Value::Bool(repeat)),
-        (arcstr::literal!("text"), text_val),
+        (literal!("key"), key),
+        (literal!("modifiers"), mods),
+        (literal!("repeat"), Value::Bool(repeat)),
+        (literal!("text"), Value::String(text.unwrap_or("").into())),
     ]
     .into()
 }
@@ -145,14 +135,16 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
         let mut ka = KeyboardArea::new(self.child.view());
         if let Some(c) = &self.on_key_press_callable {
             let id = c.id();
-            ka = ka.on_key_press(move |event| {
-                Message::Call(id, ValArray::from_iter([key_event_to_value(event)]))
+            ka = ka.on_key_press(move |key, mods, text, repeat| {
+                let ev = key_event_to_value(key, mods, text, repeat);
+                Some(Message::Call(id, ValArray::from_iter([ev])))
             });
         }
         if let Some(c) = &self.on_key_release_callable {
             let id = c.id();
-            ka = ka.on_key_release(move |event| {
-                Message::Call(id, ValArray::from_iter([key_event_to_value(event)]))
+            ka = ka.on_key_release(move |key, mods, text, repeat| {
+                let ev = key_event_to_value(key, mods, text, repeat);
+                Some(Message::Call(id, ValArray::from_iter([ev])))
             });
         }
         ka.into()
