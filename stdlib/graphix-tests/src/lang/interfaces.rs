@@ -1125,3 +1125,36 @@ run!(
     "/test/inner.gx" => r#"
         let f = |x: 'c, y: 'c| -> 'c y
     "#; FuseExpect::None);
+
+// A union has several normal forms: an implementation that writes or
+// infers the same members in another order is the same type.
+run!(
+    typedef_union_in_another_order,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::Bool(true)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::x
+    "#,
+    "/test/m.gxi" => r#"
+        type T = [(i64, bool), (string, bool), (i64, f64)];
+        val x: T
+    "#,
+    "/test/m.gx" => r#"
+        type T = [(i64, f64), (i64, bool), (string, bool)];
+        let x: T = (1, true)
+    "#; FuseExpect::Jit);
+
+run!(
+    val_union_inferred_in_another_order,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::Bool(true)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::x
+    "#,
+    "/test/m.gxi" => r#"
+        val x: [(i64, bool), (string, bool), (i64, f64)]
+    "#,
+    "/test/m.gx" => r#"
+        let c = 1;
+        let x = select c { 0 => (1, 2.0), 1 => (1, true), _ => ("a", true) }
+    "#; FuseExpect::Jit);

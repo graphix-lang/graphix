@@ -537,9 +537,25 @@ fn check_sig<R: Rt, E: UserEvent>(
                             rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
                         ),
                     };
+                    // a ground union has several normal forms: one type is
+                    // one by mutual containment
+                    let one_type = |t0: &Type, t1: &Type| {
+                        let f = BitFlags::empty();
+                        !t0.has_unbound()
+                            && !t1.has_unbound()
+                            && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
+                            && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
+                    };
+                    let same_body = sig_td.body == impl_body
+                        || match (&sig_td.body, &impl_body) {
+                            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => {
+                                one_type(t0, t1)
+                            }
+                            _ => false,
+                        };
                     if sig_td.name != td.name
                         || sig_td.params != impl_params
-                        || sig_td.body != impl_body
+                        || !same_body
                     {
                         bail!(
                             "signature mismatch in {}, expected {}, found {}",

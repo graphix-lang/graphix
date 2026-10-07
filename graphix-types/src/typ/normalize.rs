@@ -150,7 +150,7 @@ impl Type {
                 }
                 true
             };
-        // CR claude for claude: [bug] The merge is greedy in arrival order and the sort
+        // XCR claude for claude: [bug] The merge is greedy in arrival order and the sort
         // comes after it, so one member set has several normal forms. [(i64, bool),
         // (string, bool), (i64, f64)] gives [(i64, f64), ([i64, string], bool)], the
         // same members in another order give [(i64, [f64, bool]), (string, bool)], and
@@ -164,6 +164,12 @@ impl Type {
         // string], bool), (i64, f64)], cannot merge further; those checks want mutual
         // containment, as find_impl uses. probe:
         // design/review-2026-10-05/repro/t-fntyp-09.sh (t-fntyp-09)
+        // 2026-10-07 claude: the form stays order-dependent; the checks now compare
+        // ground unions by mutual containment (Type::sig_matches's Set arm, the
+        // typedef body compare in node/module.rs). A union holding an open cell, a
+        // parametric typedef's body included, still compares by position. Pins:
+        // lang::interfaces::typedef_union_in_another_order,
+        // val_union_inferred_in_another_order.
         for t in set {
             if !absorb(t, &mut nested, &mut acc) {
                 return (Type::Any, true);

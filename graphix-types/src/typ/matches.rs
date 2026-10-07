@@ -289,6 +289,24 @@ impl Type {
                 f0.lambda_ids.link(&f1.lambda_ids);
                 Ok(())
             }
+            // one member set has several normal forms (a merge takes the
+            // members in arrival order), so ground unions match as sets
+            (Self::Set(_), Self::Set(_))
+                if !self.has_unbound() && !impl_type.has_unbound() =>
+            {
+                let f = BitFlags::empty();
+                if self.contains_with_flags(f, env, impl_type)?
+                    && impl_type.contains_with_flags(f, env, self)?
+                {
+                    Ok(())
+                } else {
+                    format_with_flags(PrintFlag::DerefTVars, || {
+                        bail!(
+                            "type mismatch: signature has {self}, implementation has {impl_type}"
+                        )
+                    })
+                }
+            }
             (Self::Set(s0), Self::Set(s1)) if s0.len() == s1.len() => {
                 for (t0, t1) in s0.iter().zip(s1.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
