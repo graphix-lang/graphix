@@ -358,6 +358,29 @@ impl GenType {
         }
     }
 
+    /// A value of this type prints the same in every engine and session:
+    /// no function and no reference (a reference prints its session id).
+    pub(super) fn printable(&self) -> bool {
+        match self {
+            GenType::Num(_) | GenType::Bool | GenType::Str | GenType::Abstract { .. } => {
+                true
+            }
+            GenType::Tuple(es) => es.iter().all(|e| e.printable()),
+            GenType::Struct(fs) => fs.iter().all(|(_, t)| t.printable()),
+            GenType::Variant(ts) => {
+                ts.iter().all(|(_, args)| args.iter().all(|t| t.printable()))
+            }
+            GenType::Array(e)
+            | GenType::List(e)
+            | GenType::Map(e)
+            | GenType::Nullable(e) => e.printable(),
+            GenType::Ref(_)
+            | GenType::Fn { .. }
+            | GenType::PolyFn { .. }
+            | GenType::Opaque => false,
+        }
+    }
+
     pub(super) fn is_scalar(&self) -> bool {
         matches!(self, GenType::Num(_) | GenType::Bool | GenType::Str)
     }

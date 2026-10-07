@@ -372,17 +372,8 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut stats = GenStats::default();
     let mut files: Vec<(String, String)> = Vec::new();
     let stmts = gen_slots(&mut ctx, rng, cfg, &mut stats, Some(&mut files));
-    // CR claude for claude: [test-gap] The oracle compares only the root's fires and
-    // stdout, and this tail type is drawn without regard to the statements, so most
-    // generated lets are never observed. A liveness scan of `graphix-fuzz gen 400 7`
-    // finds about 85% of lets unread by the tail, and about 60% of programs read no let
-    // at all. A wrong value from a kernel in an unread statement agrees, and only a
-    // crash or a hang shows: the 5th program of `gen 6 1` fuses 13 regions and traces
-    // `[0:i64:7]` in both engines. The shape gates (audit_bug_shapes_reachable,
-    // labeled_presence) count emitted shapes, so they pass on unobserved ones. Track
-    // unread value bindings in GenCtx and print each one at the end of its block
-    // (`println("[v]")`: stdout is compared at Exact tier and a bottom binding prints
-    // nothing), and have the gates count observed shapes. (fuzz-gen-a-02)
+    let mut stmts = stmts;
+    stmts.extend(observe(&ctx, 0));
     let tail_ty = types::random_type(rng, cfg.type_depth);
     let tail = patterns::maybe_select(&ctx, rng, &tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(&ctx, rng, &tail_ty, 3));
@@ -549,6 +540,25 @@ fn gen_subprogram_stmt(
     stmt
 }
 
+/// A `println` of every printable value bound since `mark` and still
+/// visible, so a wrong value in a statement the tail never reads diverges
+/// on stdout (a bottom binding prints nothing).
+fn observe(ctx: &GenCtx, mark: usize) -> Vec<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for (n, t) in ctx.vars[mark..].iter().rev() {
+        if n.contains("::") || seen.contains(&n.as_str()) {
+            continue;
+        }
+        seen.push(n);
+        if t.printable() {
+            out.push(format!("println(\"[{n}]\")"));
+        }
+    }
+    out.reverse();
+    out
+}
+
 /// A nested block with a required tail type. Zero slots degenerates to a
 /// bare typed expression (a block needs two or more elements).
 fn gen_block(
@@ -558,7 +568,9 @@ fn gen_block(
     stats: &mut GenStats,
     tail_ty: &GenType,
 ) -> String {
-    let stmts = gen_slots(ctx, rng, cfg, stats, None);
+    let mark = ctx.mark();
+    let mut stmts = gen_slots(ctx, rng, cfg, stats, None);
+    stmts.extend(observe(ctx, mark));
     let tail = patterns::maybe_select(ctx, rng, tail_ty, 3)
         .unwrap_or_else(|| exprs::gen_typed(ctx, rng, tail_ty, 3));
     if stmts.is_empty() { tail } else { format!("{{ {}; {} }}", stmts.join("; "), tail) }
