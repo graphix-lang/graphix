@@ -91,7 +91,14 @@ impl Drop for InternalGuard {
 /// [`NetState`] and the `netidx:` module loader, so whichever touches
 /// netidx first materializes the ONE universe both use.
 #[derive(Clone, Default)]
-pub struct NetHandles(Arc<OnceLock<Handles>>);
+pub struct NetHandles(Arc<Universe>);
+
+#[derive(Default)]
+struct Universe {
+    handles: OnceLock<Handles>,
+    /// held across a build, so concurrent first touches build one
+    building: Mutex<()>,
+}
 
 impl std::fmt::Debug for NetHandles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -101,7 +108,7 @@ impl std::fmt::Debug for NetHandles {
 
 impl NetHandles {
     fn get(&self) -> Option<&Handles> {
-        self.0.get()
+        self.0.handles.get()
     }
 
     pub fn subscriber(&self, cfg: NetConfig) -> Result<Subscriber> {
@@ -111,17 +118,11 @@ impl NetHandles {
 
 impl NetHandles {
     fn get_or_materialize(&self, cfg: NetConfig) -> Result<&Handles> {
-        // CR claude for claude: [risk] get_or_materialize reads the OnceLock, builds the
-        // handles outside it and sets it afterwards. Callers that first touch the
-        // network at the same time therefore each build a universe, and all but one are
-        // dropped. With GRAPHIX_PAR=force and --no-netidx, sys::net::publish mapped
-        // over 16 paths spawned 7 and 11 gx-netidx threads in 2 of 20 runs, against one
-        // in every serial run. Each thread was an InternalOnly resolver, publisher and
-        // subscriber, and all were alive at once. Probe:
-        // design/review-2026-10-05/repro/sys-net-14.gx. Values stay correct; the cost
-        // is the extra spin-ups, each holding an eval-pool worker in a blocking recv,
-        // so hold one lock across the check, the build and the set. (sys-net-14)
-        if let Some(h) = self.0.get() {
+        if let Some(h) = self.get() {
+            return Ok(h);
+        }
+        let _building = self.0.building.lock();
+        if let Some(h) = self.get() {
             return Ok(h);
         }
         let handles = match cfg {
@@ -144,10 +145,25 @@ impl NetHandles {
                                 return;
                             }
                         };
+                        // a load blocks on a runtime of its own
+                        let cfg = match cfg {
+                            NetConfig::Load { load, bind } => match load() {
+                                Ok((config, auth)) => {
+                                    NetConfig::Config { config, auth, bind }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Err(e));
+                                    return;
+                                }
+                            },
+                            cfg => cfg,
+                        };
                         rt.block_on(async move {
                             let r = async {
                                 match cfg {
-                                    NetConfig::Ready { .. } => unreachable!(),
+                                    NetConfig::Ready { .. } | NetConfig::Load { .. } => {
+                                        unreachable!()
+                                    }
                                     NetConfig::Internal => {
                                         let env = netidx::InternalOnly::new().await?;
                                         let p = env.publisher().clone();
@@ -160,16 +176,7 @@ impl NetHandles {
                                         ))
                                     }
                                     NetConfig::Config { config, auth, bind } => {
-                                        let publisher =
-                                            PublisherBuilder::new(config.clone())
-                                                .desired_auth(auth.clone())
-                                                .bind_cfg(bind)
-                                                .build()
-                                                .await?;
-                                        let subscriber = SubscriberBuilder::new(config)
-                                            .desired_auth(auth)
-                                            .build()?;
-                                        Ok((publisher, subscriber, None))
+                                        build(config, auth, bind).await
                                     }
                                 }
                             }
@@ -198,9 +205,24 @@ impl NetHandles {
                 }
             }
         };
-        let _ = self.0.set(handles);
-        Ok(self.0.get().unwrap())
+        Ok(self.0.handles.get_or_init(|| handles))
     }
+}
+
+type Built = (Publisher, Subscriber, Option<Box<dyn std::any::Any + Send>>);
+
+async fn build(
+    config: netidx::config::Config,
+    auth: netidx::publisher::DesiredAuth,
+    bind: Option<netidx::publisher::BindCfg>,
+) -> Result<Built> {
+    let publisher = PublisherBuilder::new(config.clone())
+        .desired_auth(auth.clone())
+        .bind_cfg(bind)
+        .build()
+        .await?;
+    let subscriber = SubscriberBuilder::new(config).desired_auth(auth).build()?;
+    Ok((publisher, subscriber, None))
 }
 
 #[derive(Default)]

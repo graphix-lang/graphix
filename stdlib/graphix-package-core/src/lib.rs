@@ -3115,7 +3115,7 @@ graphix_derive::defpackage! {
 /// Embedder-provided netidx configuration for `sys::net` (and any
 /// other library that wants netidx), seeded into `ctx.libstate` before
 /// package registration. Absent → `Internal`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum NetConfig {
     /// Use these pre-built handles.
     Ready {
@@ -3128,8 +3128,38 @@ pub enum NetConfig {
         auth: netidx::publisher::DesiredAuth,
         bind: Option<netidx::publisher::BindCfg>,
     },
+    /// Load a config + auth on first use, then build as `Config` does. A
+    /// load that fails fails that use; the next one loads again.
+    Load {
+        load: std::sync::Arc<
+            dyn Fn() -> anyhow::Result<(
+                    netidx::config::Config,
+                    netidx::publisher::DesiredAuth,
+                )> + Send
+                + Sync,
+        >,
+        bind: Option<netidx::publisher::BindCfg>,
+    },
     /// Process-internal netidx (resolver + pub/sub) built on demand.
     Internal,
+}
+
+impl std::fmt::Debug for NetConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready { .. } => write!(f, "Ready"),
+            Self::Config { config, auth, bind } => f
+                .debug_struct("Config")
+                .field("config", config)
+                .field("auth", auth)
+                .field("bind", bind)
+                .finish(),
+            Self::Load { bind, .. } => {
+                f.debug_struct("Load").field("bind", bind).finish()
+            }
+            Self::Internal => write!(f, "Internal"),
+        }
+    }
 }
 
 /// Optional embedder-seeded netidx tuning. `publish` bounds the publish

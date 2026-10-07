@@ -490,6 +490,17 @@ async fn write_packages(p: &Packages) -> Result<()> {
     Ok(())
 }
 
+/// The shell features a standalone build of the package with manifest
+/// `package` turns on: the stdlib packages it depends on that the shell
+/// (manifest `shell`) ships, but core, which is always compiled.
+fn standalone_features(package: &str, shell: &str) -> Result<Vec<CompactString>> {
+    let shipped = stdlib_packages_in_cargo_toml(shell)?;
+    Ok(stdlib_packages_in_cargo_toml(package)?
+        .into_iter()
+        .filter(|n| n != "core" && shipped.contains(n))
+        .collect())
+}
+
 /// Enumerate the stdlib package short-names from a Cargo.toml's
 /// `[dependencies]` — every `graphix-package-<name>` key (the trailing dash
 /// excludes the `graphix-package` crate itself; the value shape is ignored, so
@@ -1665,11 +1676,7 @@ impl GraphixPM {
             PackageEntry::Path(package_dir.clone()),
         );
         let shell_manifest = fs::read_to_string(source_dir.join("Cargo.toml")).await?;
-        let shipped = stdlib_packages_in_cargo_toml(&shell_manifest)?;
-        let features: Vec<CompactString> = stdlib_packages_in_cargo_toml(&contents)?
-            .into_iter()
-            .filter(|n| n != "core" && shipped.contains(n))
-            .collect();
+        let features = standalone_features(&contents, &shell_manifest)?;
         // an override is the caller's own tree: its manifest and lockfile are
         // put back however the build ends
         let saved = match source_override {

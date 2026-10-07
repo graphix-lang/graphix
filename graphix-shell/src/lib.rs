@@ -242,11 +242,21 @@ impl<X: GXExt> Shell<X> {
         if let Some(setup) = self.setup_context.take() {
             setup(&mut ctx);
         }
+        // argv[0] names the program: its file, or the binary a package's
+        // embedded program is; an embedder's internal source gets exactly
+        // the arguments it passes
         let mut args = vec![];
-        if let Mode::Script(source) | Mode::Check(source) = &self.mode {
-            if let Source::File(p) = source {
-                args.push(ArcStr::from(p.display().to_string().as_str()));
+        match self.packages.iter().find_map(|p| p.main_program()) {
+            Some(main) if matches!(self.mode, Mode::Repl) => {
+                self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
+                if let Some(bin) = std::env::args_os().next() {
+                    args.push(ArcStr::from(bin.to_string_lossy().as_ref()));
+                }
             }
+            _ => (),
+        }
+        if let Mode::Script(Source::File(p)) | Mode::Check(Source::File(p)) = &self.mode {
+            args.push(ArcStr::from(p.display().to_string().as_str()));
         }
         args.extend(self.program_args.drain(..));
         if !args.is_empty() {
@@ -255,11 +265,6 @@ impl<X: GXExt> Shell<X> {
         let (vfs_modules, root) =
             register_packages(&mut ctx, self.packages.iter().map(|p| &**p))
                 .context("register package modules")?;
-        if let Some(main) = self.packages.iter().find_map(|p| p.main_program()) {
-            if matches!(self.mode, Mode::Repl) {
-                self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
-            }
-        }
         let program = match &self.mode {
             Mode::Script(source) => Some(source.clone()),
             Mode::Check(_) | Mode::Repl => None,

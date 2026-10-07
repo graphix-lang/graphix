@@ -271,7 +271,8 @@ async fn build_standalone_produces_working_binary() {
     let main_gx = "\
 let v = testpkg::var;
 let ex = testpkg::example(v);
-println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
+let a = sys::args();
+println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\")
 ";
     tokio::fs::write(gx_dir.join("main.gx"), main_gx).await.unwrap();
     write_vendor_config(&pkg_dir, ws);
@@ -300,8 +301,8 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
     let bin_path = pkg_dir.join(&bin_name);
     assert!(bin_path.exists(), "standalone binary not found");
     let mut child = tokio::process::Command::new(&bin_path)
-        .arg("--no-netidx")
-        .arg("-i")
+        .arg("input.csv")
+        .arg("--verbose")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -349,20 +350,12 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
          line: {line:?}\nstderr: {:?}",
         captured_stderr
     );
-    // The standalone binary is built with only the embedded package's
-    // dependency closure, so gui is absent.
-    let gui_prog = tmp.path().join("use_gui.gx");
-    tokio::fs::write(&gui_prog, "use gui\n").await.unwrap();
-    let gui_status = tokio::process::Command::new(&bin_path)
-        .arg("--no-netidx")
-        .arg("--check")
-        .arg(&gui_prog)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .expect("run standalone --check");
-    assert!(!gui_status.success(), "standalone binary should not resolve `use gui`");
+    // every argument is the program's, after the binary's own path
+    let bin = bin_path.display();
+    assert!(
+        line.contains(&format!(r#"args=["{bin}", "input.csv", "--verbose"]"#)),
+        "the program's arguments: {line:?}"
+    );
 }
 
 mod pure {
@@ -370,8 +363,8 @@ mod pure {
         DEFAULT_PACKAGES, INTERNAL_PACKAGES, PackageEntry, Packages, Selection,
         ShellBump, UpdatePlan, apply_selection, compute_update_plan, feature_depends_on,
         feature_edges, installed_dependents, normalize_selection, parse_packages,
-        parse_toggles, plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
-        to_toml_string, version_gt,
+        parse_toggles, plan_items, selection_from_indices, standalone_features,
+        stdlib_packages_in_cargo_toml, to_toml_string, version_gt,
     };
     use compact_str::{CompactString, ToCompactString};
     use std::{
@@ -770,6 +763,20 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
         assert_eq!(shipped, listed);
         // core is non-optional — never a feature
         assert!(!feats.contains_key("core"), "core must not be a feature");
+    }
+
+    #[test]
+    fn standalone_features_are_the_packages_own() {
+        let package = r#"
+[package]
+name = "graphix-package-app"
+
+[dependencies]
+graphix-package-core = "0.9"
+graphix-package-array = "0.9"
+graphix-package-notshipped = "0.1"
+"#;
+        assert_eq!(standalone_features(package, &shell_cargo_toml()).unwrap(), ["array"]);
     }
 
     #[test]

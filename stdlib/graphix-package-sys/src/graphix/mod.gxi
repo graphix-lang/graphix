@@ -7,7 +7,9 @@ mod time;
 mod net;
 mod dirs;
 
-/// the command line arguments. argv[0] is the script file.
+/// the command line arguments. argv[0] names the program: the script
+/// file, or a standalone binary's own path. A program an embedder runs
+/// from source gets the arguments the embedder passes.
 val args: fn() -> Array<string>;
 
 /// join parts to path using the OS specific path separator

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use enumflags2::BitFlags;
 use flexi_logger::{FileSpec, Logger};
 use graphix_compiler::{
@@ -13,13 +13,12 @@ use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use log::info;
 use netidx::{
-    InternalOnly,
     config::Config,
     path::Path,
     publisher::{BindCfg, DesiredAuth, Publisher, PublisherBuilder},
     subscriber::{Subscriber, SubscriberBuilder},
 };
-use std::{path::PathBuf, str::FromStr, sync::OnceLock, time::Duration};
+use std::{path::PathBuf, str::FromStr, time::Duration};
 
 #[derive(Debug, Clone, Copy)]
 enum RawFlag {
@@ -163,27 +162,8 @@ struct Params {
     /// should also set the RUST_LOG enviornment variable. e.g. RUST_LOG=debug
     #[arg(long)]
     log_dir: Option<PathBuf>,
-    /// path to the netidx config to load, otherwise the default will
-    /// be loaded (unless --no-netidx is specified)
-    #[arg(long)]
-    config: Option<PathBuf>,
-    /// the desired netidx auth mechanism to use, otherwise use the config default
-    #[arg(long)]
-    auth: Option<DesiredAuth>,
-    /// the kerberos user principal name to use for netidx, otherwise
-    /// the default from the current user's cached tickets, only valid
-    /// if using kerberos auth
-    #[arg(long)]
-    upn: Option<String>,
-    /// the netidx nerberos service princial name, otherwise the
-    /// default from the current user's cached ticket, only valid if
-    /// using kerberos auth
-    #[arg(long)]
-    spn: Option<String>,
-    /// the netidx tls identity to use, otherwise use the configured
-    /// default, only valid if using tls auth.
-    #[arg(long)]
-    identity: Option<String>,
+    #[command(flatten)]
+    netidx: NetArgs,
     /// specify the netidx publisher bind address.
     #[arg(long)]
     bind: Option<BindCfg>,
@@ -223,18 +203,6 @@ struct Params {
     #[arg(long = "expand")]
     expand: bool,
     /// run the program in the specified file instead of starting the REPL
-    // CR claude for claude: [bug] A standalone binary (graphix package build-standalone)
-    // is this main with a package whose main_program() is Some, and lib.rs:245 runs the
-    // embedded program only in Mode::Repl, so this positional takes the app's first
-    // argument as a script: `myapp input.csv` compiles the CSV as Graphix, `myapp
-    // hello` fails with 'No such file or directory', and `myapp --verbose` is a clap
-    // error. program_args only collects what follows a file, so the embedded program
-    // can never receive a command-line argument through sys::args() or args::parse.
-    // Separately, lib.rs:229 adds argv[0] only for Source::File, so a Source::Internal
-    // program's sys::args() has no argv[0], against its doc, and args::parse takes its
-    // first real argument as the binary name; netidx-tools/src/admin/tui.gx reads
-    // sys::args()[0] as its server and depends on that shape. probe:
-    // design/review-2026-10-05/repro/shell-08.sh (shell-08)
     file: Option<ArcStr>,
     /// enable or disable compiler flags. Currently supported flags are,
     /// - unhandled, no-unhandled: warn about unhandled ? operators (default)
@@ -250,39 +218,72 @@ struct Params {
     program_args: Vec<String>,
 }
 
-impl Params {
-    async fn get_pub_sub(&self, cfg: Result<Config>) -> Result<(Publisher, Subscriber)> {
-        let res = async {
-            let cfg = cfg?;
-            let auth = match &self.auth {
-                None => cfg.default_auth(),
-                Some(a) => a.clone(),
-            };
-            let publisher = PublisherBuilder::new(cfg.clone())
-                .bind_cfg(self.bind)
-                .build()
-                .await
-                .context("creating publisher")?;
-            let subscriber = SubscriberBuilder::new(cfg)
-                .desired_auth(auth)
-                .build()
-                .context("creating subscriber")?;
-            Ok::<_, anyhow::Error>((publisher, subscriber))
-        };
-        match res.await {
-            Ok(ps) => Ok(ps),
-            Err(e) => {
-                eprintln!("netidx initialization failed {e:?}");
-                eprintln!("netidx will be process internal only");
-                eprintln!("to fix this see https://netidx.github.io/netidx-book");
-                static NETIDX: OnceLock<InternalOnly> = OnceLock::new();
-                if let Err(_) = NETIDX.set(InternalOnly::new().await?) {
-                    panic!("BUG: NETIDX static set multiple times")
-                }
-                let env = NETIDX.get().unwrap();
-                Ok((env.publisher().clone(), env.subscriber().clone()))
-            }
+/// The netidx a run uses, loaded when the program first touches it.
+#[derive(Args, Clone)]
+struct NetArgs {
+    /// path to the netidx config to load, otherwise the default will
+    /// be loaded (unless --no-netidx is specified)
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// the desired netidx auth mechanism to use, otherwise use the config default
+    #[arg(long)]
+    auth: Option<DesiredAuth>,
+    /// the kerberos user principal name to use for netidx, otherwise
+    /// the default from the current user's cached tickets, only valid
+    /// if using kerberos auth
+    #[arg(long)]
+    upn: Option<String>,
+    /// the netidx kerberos service principal name, otherwise the
+    /// default from the current user's cached ticket, only valid if
+    /// using kerberos auth
+    #[arg(long)]
+    spn: Option<String>,
+    /// the netidx tls identity to use, otherwise use the configured
+    /// default, only valid if using tls auth.
+    #[arg(long)]
+    identity: Option<String>,
+}
+
+impl NetArgs {
+    fn load(&self) -> Result<(Config, DesiredAuth)> {
+        let cfg = match &self.config {
+            None => Config::load_default_or_local_only(),
+            Some(p) => Config::load(p),
         }
+        .context("loading the netidx config")?;
+        let auth = match self.auth.clone().unwrap_or_else(|| cfg.default_auth()) {
+            DesiredAuth::Krb5 { .. } => {
+                DesiredAuth::Krb5 { upn: self.upn.clone(), spn: self.spn.clone() }
+            }
+            DesiredAuth::Tls { .. } => {
+                DesiredAuth::Tls { identity: self.identity.clone() }
+            }
+            auth @ (DesiredAuth::Anonymous | DesiredAuth::Local) => auth,
+        };
+        if !matches!(auth, DesiredAuth::Krb5 { .. })
+            && (self.upn.is_some() || self.spn.is_some())
+        {
+            bail!("--upn and --spn are only valid with kerberos auth")
+        }
+        if !matches!(auth, DesiredAuth::Tls { .. }) && self.identity.is_some() {
+            bail!("--identity is only valid with tls auth")
+        }
+        Ok((cfg, auth))
+    }
+
+    async fn pub_sub(&self, bind: Option<BindCfg>) -> Result<(Publisher, Subscriber)> {
+        let (cfg, auth) = self.load()?;
+        let publisher = PublisherBuilder::new(cfg.clone())
+            .desired_auth(auth.clone())
+            .bind_cfg(bind)
+            .build()
+            .await
+            .context("creating publisher")?;
+        let subscriber = SubscriberBuilder::new(cfg)
+            .desired_auth(auth)
+            .build()
+            .context("creating subscriber")?;
+        Ok((publisher, subscriber))
     }
 }
 
@@ -348,11 +349,7 @@ async fn handle_package(action: PackageAction) -> Result<()> {
     }
 }
 
-fn tokio_main(
-    p: Params,
-    cfg: Result<Config>,
-    run_on_main: MainThreadHandle,
-) -> Result<()> {
+fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -371,12 +368,16 @@ fn tokio_main(
                 .context("starting log")?;
         }
         info!("graphix shell starting");
-        // --no-netidx (or a config failure) leaves the network internal-on-demand.
+        // a netidx: script needs its subscriber to load; anything else
+        // loads netidx when the program first touches it
         let net_config = if p.no_netidx {
             NetConfig::Internal
-        } else {
-            let (publisher, subscriber) = p.get_pub_sub(cfg).await?;
+        } else if p.file.as_ref().is_some_and(|f| f.starts_with("netidx:")) {
+            let (publisher, subscriber) = p.netidx.pub_sub(p.bind).await?;
             NetConfig::Ready { publisher, subscriber }
+        } else {
+            let net = p.netidx.clone();
+            NetConfig::Load { load: std::sync::Arc::new(move || net.load()), bind: p.bind }
         };
         let mut shell = ShellBuilder::<NoExt>::default();
         let program_args: Vec<ArcStr> =
@@ -419,9 +420,7 @@ fn tokio_main(
                     let subscriber = match &net_config {
                         NetConfig::Ready { subscriber, .. } => subscriber.clone(),
                         _ => {
-                            bail!(
-                                "loading a netidx: script requires netidx                                  (remove --no-netidx)"
-                            )
+                            bail!("loading a netidx: script requires netidx (remove --no-netidx)")
                         }
                     };
                     shell = shell.module_resolvers(vec![
@@ -494,7 +493,20 @@ fn tokio_main(
 
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
-    let p = Params::parse();
+    let standalone = graphix_shell::stdlib_packages::<NoExt>()
+        .iter()
+        .any(|p| p.main_program().is_some());
+    let p = if standalone {
+        // a standalone binary is its program: every argument is the program's
+        let mut p = Params::parse_from(std::env::args_os().take(1));
+        p.program_args = std::env::args_os()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        p
+    } else {
+        Params::parse()
+    };
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
         Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
@@ -510,29 +522,10 @@ fn main() -> Result<()> {
         }
         None => (),
     }
-    // CR claude for claude: [bug] This loads the netidx config before any flag is read,
-    // so every run resolves it, --check and --no-netidx included. With no netidx
-    // config, Config::local_only daemonizes a machine-local resolver (a re-exec of this
-    // binary on 127.0.0.1:59200) that outlives the run, and without --no-netidx
-    // tokio_main then builds a Publisher and Subscriber up front (line 360) whether or
-    // not the program touches sys::net. design/netidx_extraction.md says a runtime that
-    // never touches sys::net has no network and that --check constructs nothing. Probe:
-    // NETIDX_LOCAL_ONLY_RESOLVER_PORT=59291 graphix --no-netidx --check
-    // design/review-2026-10-05/repro/sys-net-16.gx exits 0 and leaves a graphix process
-    // listening on 127.0.0.1:59291. Resolve the config only when NetHandles
-    // materializes, and never under --no-netidx. Two doc errors nearby:
-    // stdlib/graphix-package-core/src/testing.rs:275 says tests share one
-    // process-internal netidx (each context builds its own), and
-    // book/src/stdlib/sys/net.md omits the 'a: Concrete and 'b: Concrete bounds that
-    // net.gxi declares on subscribe and call. (sys-net-16)
-    let cfg = match &p.config {
-        None => Config::load_default_or_local_only(),
-        Some(p) => Config::load(p),
-    };
     let (handle, main_rx) = MainThreadHandle::new();
     let tokio_handle = std::thread::Builder::new()
         .name("graphix-tokio".into())
-        .spawn(move || tokio_main(p, cfg, handle))
+        .spawn(move || tokio_main(p, handle))
         .expect("failed to spawn tokio thread");
     while let Ok(f) = main_rx.recv() {
         f();
