@@ -139,6 +139,17 @@ fn program(shape: &str, d: usize) -> String {
             s.push_str(&format!("x{d}"));
             s
         }
+        // A chain of bounds as long as the program, every cell a position
+        // of one signature: the call's settle orders them all.
+        "chainbounds" => {
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
+                .chain([format!("'a{d}: Concrete")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+            format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
+        }
         "flatcast" => {
             let mut s = String::from("type A0 = [`Z];\n");
             for i in 1..=d {
@@ -166,6 +177,9 @@ fn paren_chain(d: usize) -> String {
 /// them, so each must compile at `FLAT_DEPTH`.
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
 const FLAT_DEPTH: usize = 3000;
+
+/// Cells chained by bounds in one signature (`chainbounds`).
+const CHAIN_DEPTH: usize = 10000;
 
 /// A chain of module files, each its own parse, so the parser's limit
 /// bounds none of it: module resolution recurses once per file.
@@ -321,6 +335,7 @@ fn deep_nesting_does_not_overflow() {
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
         .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH, "check")))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
+        .chain([("chainbounds", CHAIN_DEPTH, "check")])
         .collect();
     let mut codes: HashMap<(&str, usize, &str), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {

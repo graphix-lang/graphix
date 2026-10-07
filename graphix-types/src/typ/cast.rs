@@ -53,27 +53,38 @@ impl fmt::Display for CastFail {
 type Cast = std::result::Result<Option<Value>, CastFail>;
 
 /// The static source type at a cast position, with names, cells and
-/// applications looked through; `None` when unknown or a union.
+/// applications looked through; `None` when unknown. A union decides
+/// only the kind of collection its array-shaped members all are (a list
+/// and an array share `Value::Array`): the member when it is one, else
+/// that kind over `Any`; a union holding both cannot be told apart.
 fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
     let mut cur = src?.clone();
     loop {
         cur = match &cur {
-            Type::TVar(_) | Type::App(..) => cur.deref_cloned()?,
+            Type::TVar(_) => cur.deref_cloned()?,
+            Type::App(c, a) => Type::app_filled(c, a)?,
             Type::Ref(_) => cur.lookup_ref(env).ok()?,
-            // CR claude for claude: [bug] src_head returns None for every union, so
-            // whenever the source is a union the cast loses which kind of collection
-            // the value is. A list typed `[List<i64>, null]` (what `list::tail`
-            // returns) reaches the Array arm as an array, and its cons cells are cast
-            // as elements: `cast<Array<i64>>(list::tail([<1, 2, 3, 4>]))` is `[2, 3]`.
-            // The nested cell converts to i64 by netidx's first-element rule, and the
-            // tail is dropped without an error. The List arm falls back to the value's
-            // shape instead, so `[[1], []]` typed `[Array<Array<i64>>, null]` casts to
-            // `[<[1]>]`. Both engines share cast_from, so graphix-fuzz reports AGREE. A
-            // union whose array-shaped members are all List, or all Array, still
-            // decides the kind; one that holds both cannot be told apart at run time.
-            // probe: design/review-2026-10-05/repro/t-cast-setops-04.gx
-            // (t-cast-setops-04)
-            Type::Set(_) | Type::Any | Type::Bottom | Type::Hole => return None,
+            Type::Set(ms) => {
+                let heads: SmallVec<[Type; 4]> = ms
+                    .iter()
+                    .filter_map(|m| src_head(Some(m), env))
+                    .filter(|h| matches!(h, Type::Array(_) | Type::List(_)))
+                    .collect();
+                return match &heads[..] {
+                    [one] => Some(one.clone()),
+                    [first, rest @ ..] => {
+                        let list = matches!(first, Type::List(_));
+                        rest.iter().all(|h| matches!(h, Type::List(_)) == list).then(
+                            || match list {
+                                true => Type::List(Arc::new(Type::Any)),
+                                false => Type::Array(Arc::new(Type::Any)),
+                            },
+                        )
+                    }
+                    [] => None,
+                };
+            }
+            Type::Any | Type::Bottom | Type::Hole => return None,
             _ => return Some(cur),
         };
     }
@@ -252,23 +263,15 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::ByRef(..) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
-            // CR claude for claude: [bug] When an App's constructor is still an open
-            // variable, it dereferences to itself: with_deref hands back the App when
-            // app_filled is None. This arm then calls holds_ref_int on the same App
-            // forever, and ensure_sufficient keeps adding stack segments until memory
-            // runs out. TypeCast::typecheck0 (graphix-compiler/src/node/mod.rs:1838)
-            // reaches this for any cast whose source holds a constructor-trait
-            // application. `let f = |c: Collection| cast<Array<i64>>(c)` is OOM-killed
-            // under --check, under a run, and in `graphix lsp` when the buffer is
-            // opened. An open constructor is unknown in the same way an open cell is
-            // (the instance decides), so the walk must stop on an unfilled App, e.g. by
-            // deciding on its argument; src_head (line 59) has the same self-loop as an
-            // endless CPU loop, and only the holds_ref call that runs first keeps it
-            // unreachable today, so fix both together. probe:
-            // design/review-2026-10-05/repro/t-cast-setops-03.gx (t-cast-setops-03)
-            Type::TVar(_) | Type::App(..) => {
+            Type::TVar(_) => {
                 self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
             }
+            // an open constructor is unknown like an open cell: its argument
+            // decides
+            Type::App(c, a) => match Type::app_filled(c, a) {
+                Some(f) => f.holds_ref_int(env, seen),
+                None => a.holds_ref_int(env, seen),
+            },
             Type::Ref(tr) => {
                 let Ok(t) = self.lookup_ref(env) else { return false };
                 let shape =

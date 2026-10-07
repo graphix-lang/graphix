@@ -146,3 +146,33 @@ run!(list_flat_map_native, LIST_FLAT_MAP_NATIVE, |v: Result<&Value>| {
         _ => false,
     }
 }; FuseExpect::Jit);
+
+// A union whose array-shaped members are all lists says what the value
+// is, so a cast reads the list as a list (and an array as an array).
+const CAST_UNION_OF_LISTS: &str = r#"
+{
+    let opt = |x: [List<i64>, null]| cast<Array<i64>>(x);
+    let rev = |x: [Array<Array<i64>>, null]| cast<List<Array<i64>>>(x);
+    let a = opt([<1, 2, 3>]);
+    let t = cast<Array<i64>>(list::tail([<1, 2, 3, 4>]));
+    (a$, t$, list::len(rev([[1], []])$))
+}
+"#;
+
+run!(cast_union_of_lists, CAST_UNION_OF_LISTS, |v: Result<&Value>| {
+    let arr = |xs: &[i64]| Value::Array(xs.iter().map(|x| Value::I64(*x)).collect());
+    matches!(v, Ok(Value::Array(r))
+        if r[0] == arr(&[1, 2, 3]) && r[1] == arr(&[2, 3, 4]) && r[2] == Value::I64(2))
+}; FuseExpect::Jit);
+
+// A cast of a constructor-trait parameter is decided by the instance.
+const CAST_OF_A_COLLECTION_PARAM: &str = r#"
+{
+    let f = |c: Collection| cast<Array<i64>>(c);
+    f([1, 2, 3])
+}
+"#;
+
+run!(cast_of_a_collection_param, CAST_OF_A_COLLECTION_PARAM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 3)
+}; FuseExpect::Jit);

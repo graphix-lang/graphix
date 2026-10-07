@@ -252,37 +252,33 @@ impl FnType {
             out.dedup();
             edges.push(out);
         }
-        // CR claude for claude: [bug] visit recurses once per cell along a dependency
-        // chain, and it is the only recursion in this file outside
-        // crate::stack::ensure_sufficient, so the program alone sets its depth. A
-        // function that declares 30000 chained bounds ('a0: Array<'a1>, ..., with every
-        // 'ai in its signature), called once, aborts --check with a stack overflow
-        // after about 26000 frames on the 2 MiB tokio worker instead of reporting the
-        // type error. The language server runs the same check. Guard the recursion or
-        // walk with an explicit stack, and add this shape to
-        // graphix-shell/tests/deep_nesting.rs at about 10000: on that test's 512 KiB
-        // worker, 3000 passes today and 10000 aborts. probe:
-        // design/review-2026-10-05/repro/t-tvar-11.py (t-tvar-11)
-        fn visit(
-            i: usize,
-            edges: &[SmallVec<[usize; 4]>],
-            seen: &mut [bool],
-            order: &mut LPooled<Vec<usize>>,
-        ) {
-            if seen[i] {
-                return;
-            }
-            seen[i] = true;
-            for &j in edges[i].iter() {
-                visit(j, edges, seen, order);
-            }
-            order.push(i);
-        }
+        // a post-order over the dependency edges, on a stack of its own:
+        // the program sets how long a chain of bounds is
         let mut seen: LPooled<Vec<bool>> = LPooled::take();
         seen.resize(nodes.len(), false);
         let mut order: LPooled<Vec<usize>> = LPooled::take();
-        for i in 0..nodes.len() {
-            visit(i, &edges, &mut seen, &mut order);
+        let mut stack: LPooled<Vec<(usize, usize)>> = LPooled::take();
+        for root in 0..nodes.len() {
+            if seen[root] {
+                continue;
+            }
+            seen[root] = true;
+            stack.push((root, 0));
+            while let Some(&(i, k)) = stack.last() {
+                match edges[i].get(k) {
+                    Some(&j) => {
+                        stack.last_mut().expect("nonempty").1 += 1;
+                        if !seen[j] {
+                            seen[j] = true;
+                            stack.push((j, 0));
+                        }
+                    }
+                    None => {
+                        order.push(i);
+                        stack.pop();
+                    }
+                }
+            }
         }
         // an enclosing definition's signature is settled by each call,
         // what it reaches as it stands now; a quantifier of a function
