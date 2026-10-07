@@ -494,6 +494,32 @@ pub struct ResolvedRef {
 }
 
 impl ResolvedRef {
+    /// Whether parameter `i` stands once in the body, under nothing but
+    /// unions, tuples, structs, variants and errors: then the union of
+    /// two applications differing only there is exactly the application
+    /// at the union of the two.
+    pub(crate) fn param_is_linear(&self, i: usize) -> bool {
+        fn go(t: &Type, name: &ArcStr, under: bool, n: &mut usize) {
+            match t {
+                Type::TVar(tv) if &tv.name == name => *n += if under { 2 } else { 1 },
+                Type::Set(_)
+                | Type::Tuple(_)
+                | Type::Struct(_)
+                | Type::Variant(..)
+                | Type::Error(_) => {
+                    ensure_sufficient(|| t.for_each_child(&mut |c| go(c, name, under, n)))
+                }
+                t => {
+                    ensure_sufficient(|| t.for_each_child(&mut |c| go(c, name, true, n)))
+                }
+            }
+        }
+        let Some((formal, _)) = self.params.get(i) else { return false };
+        let mut n = 0;
+        go(&self.typ, &formal.name, false, &mut n);
+        n == 1
+    }
+
     pub(crate) fn new(
         canonical_scope: ModPath,
         pos: SourcePosition,

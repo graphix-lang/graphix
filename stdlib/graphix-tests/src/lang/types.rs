@@ -2287,3 +2287,34 @@ const BARE_VARIANT_AFTER_ARRAY: &str = r#"
 run!(bare_variant_after_array, BARE_VARIANT_AFTER_ARRAY, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(1), Value::I64(3)])
 }; FuseExpect::None);
+
+/// Two applications of a recursive definition do not merge: L<i64> and
+/// L<string> do not cover a mixed list.
+const RECURSIVE_APPLICATIONS_DO_NOT_MERGE: &str = r#"
+{
+    type L<'a> = [`Nil, `Cons('a, L<'a>)];
+    type Ints = L<i64>;
+    type Strs = L<string>;
+    let x: L<[i64, string]> = `Cons(1, `Cons("x", `Nil));
+    select x { Ints as _ => 1, Strs as _ => 2 }
+}
+"#;
+
+run!(recursive_applications_do_not_merge, RECURSIVE_APPLICATIONS_DO_NOT_MERGE, |v: Result<&Value>| {
+    refused("missing match cases")(v)
+}; FuseExpect::None);
+
+/// A parameter under a collection does not merge either.
+const COLLECTION_APPLICATIONS_DO_NOT_MERGE: &str = r#"
+{
+    type A<'a> = Array<'a>;
+    type Ints = A<i64>;
+    type Strs = A<string>;
+    let x: A<[i64, string]> = [1, "x"];
+    select x { Ints as _ => 1, Strs as _ => 2 }
+}
+"#;
+
+run!(collection_applications_do_not_merge, COLLECTION_APPLICATIONS_DO_NOT_MERGE, |v: Result<&Value>| {
+    refused("missing match cases")(v)
+}; FuseExpect::None);

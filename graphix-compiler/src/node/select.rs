@@ -328,7 +328,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 itypes.push(&pat.type_predicate);
             }
         }
-        let itype = Type::union(env, &itypes)?;
+        let itype = Type::union_exact(env, &itypes)?;
         drop(itypes);
         if wildcard {
             // Narrow an under-constrained scrutinee against the informative
@@ -383,7 +383,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 }
             }
         }
-        let mtype = Type::union(env, &mtypes.iter().collect::<LPooled<Vec<_>>>())?;
+        let mtype = Type::union_exact(env, &mtypes.iter().collect::<LPooled<Vec<_>>>())?;
         mtype.check_contains(env, scrut).map_err(|e| {
             format_with_flags(PrintFlag::DerefTVars, || {
                 let gap = match open {

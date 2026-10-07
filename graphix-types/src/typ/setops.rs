@@ -138,15 +138,26 @@ fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
 }
 
+/// How a union treats two applications of one definition that differ
+/// in a parameter the body does not hold linearly.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Merge {
+    Exact,
+    Supertype,
+}
+
 impl Type {
     /// Same-named refs `self` (`t0`) and `t` (`t1`): identical params are
     /// one member; one differing param merges param-wise when the merge
-    /// holds both (a probe, so only a covariant param merges); more than
-    /// one would invent pairs, so they stay two members.
+    /// holds both (a probe, so only a covariant param merges) and, for an
+    /// exact union, the param stands once in the body outside any
+    /// collection, so the merge holds no mixed value; more than one would
+    /// invent pairs, so they stay two members.
     fn union_ref_params(
         &self,
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        merge: Merge,
         t0: &TypeRef,
         t1: &TypeRef,
         t: &Self,
@@ -162,24 +173,16 @@ impl Type {
             (Some(d), None) => d,
             (Some(_), Some(_)) => return Ok(pair(self, t)),
         };
+        if merge == Merge::Exact
+            && !t0.resolve_in(env).is_some_and(|d| d.param_is_linear(i))
+        {
+            return Ok(pair(self, t));
+        }
         let mut params: LPooled<Vec<Type>> = t0.params.iter().cloned().collect();
-        params[i] = p0.union_int(env, hist, p1)?;
+        params[i] = p0.union_int(env, hist, merge, p1)?;
         let merged =
             Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
         let probe = BitFlags::empty();
-        // CR claude for claude: [bug] Holding both inputs does not make the merge exact.
-        // A parameter that recurses, sits under a collection or occurs twice in the
-        // body merges to more than the two inputs: L<i64> ∪ L<string> becomes L<[i64,
-        // string]> for `type L<'a> = [`Nil, `Cons('a, L<'a>)]`, and A<i64> ∪ A<string>
-        // becomes A<[i64, string]> for `type A<'a> = Array<'a>`, both admitting mixed
-        // values. Select coverage unions arm predicates with this
-        // (graphix-compiler/src/node/select.rs:292, 338). So with `type Ints = L<i64>;
-        // type Strs = L<string>`, `select x { Ints as _ => .., Strs as _ => .. }` over
-        // x: L<[i64, string]> is accepted as exhaustive and matches nothing for a mixed
-        // list, in every engine. The same arms written inline are refused only because
-        // their refs carry two block scopes and expand. Merge only a parameter that
-        // occurs once outside any collection or recursion, else keep the two members.
-        // probe: design/review-2026-10-05/repro/t-cast-setops-14.gx (t-cast-setops-14)
         if merged.contains_with_flags(probe, env, self)?
             && merged.contains_with_flags(probe, env, t)?
         {
@@ -193,15 +196,17 @@ impl Type {
         &self,
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        merge: Merge,
         t: &Self,
     ) -> Result<Self> {
-        ensure_sufficient(|| self.union_inner(env, hist, t))
+        ensure_sufficient(|| self.union_inner(env, hist, merge, t))
     }
 
     fn union_inner(
         &self,
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        merge: Merge,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -211,7 +216,7 @@ impl Type {
                     && t0.cells_agree(t1)
                     && t0.params.len() == t1.params.len() =>
             {
-                self.union_ref_params(env, hist, t0, t1, t)
+                self.union_ref_params(env, hist, merge, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
@@ -225,9 +230,9 @@ impl Type {
                 let e = tr.lookup_ref(env)?;
                 hist.insert(key, tr.clone());
                 let r = if matches!(self, Type::Ref(_)) {
-                    e.union_int(env, hist, t)
+                    e.union_int(env, hist, merge, t)
                 } else {
-                    t.union_int(env, hist, &e)
+                    t.union_int(env, hist, merge, &e)
                 };
                 hist.remove(&key);
                 r
@@ -290,7 +295,7 @@ impl Type {
                 Ok(Type::Primitive(*p))
             }
             (Type::Error(e0), Type::Error(e1)) => {
-                Ok(Type::Error(Arc::new(e0.union_int(env, hist, e1)?)))
+                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, e1)?)))
             }
             (Type::Set(s0), Type::Set(s1)) => Ok(Type::Set(Arc::from_iter(
                 s0.iter().cloned().chain(s1.iter().cloned()),
@@ -312,7 +317,7 @@ impl Type {
                     let mut typs = t0
                         .iter()
                         .zip(t1.iter())
-                        .map(|(t0, t1)| t0.union_int(env, hist, t1))
+                        .map(|(t0, t1)| t0.union_int(env, hist, merge, t1))
                         .collect::<Result<LPooled<Vec<_>>>>()?;
                     Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
@@ -325,11 +330,11 @@ impl Type {
             // A bound cell unions as its binding; an unbound cell
             // stays its own member.
             (Type::TVar(tv), t1) => match tv.binding() {
-                Some(b) => b.union_int(env, hist, t1),
+                Some(b) => b.union_int(env, hist, merge, t1),
                 None => Ok(pair(self, t1)),
             },
             (t0, Type::TVar(tv)) => match tv.binding() {
-                Some(b) => t0.union_int(env, hist, &b),
+                Some(b) => t0.union_int(env, hist, merge, &b),
                 None => Ok(pair(t0, t)),
             },
             // Everything left of one variant is kept once if identical,
@@ -344,7 +349,21 @@ impl Type {
         }
     }
 
+    /// The union of `ts`, which may widen an application's parameter
+    /// that recurses or sits under a collection (`L<i64> ∪ L<string>` is
+    /// `L<[i64, string]>`, which holds mixed lists): a type for the values
+    /// of `ts`.
     pub fn union(env: &Env, ts: &[&Type]) -> Result<Self> {
+        Self::union_with(env, Merge::Supertype, ts)
+    }
+
+    /// The union of `ts`, admitting nothing none of them admits: what
+    /// a set of patterns covers.
+    pub fn union_exact(env: &Env, ts: &[&Type]) -> Result<Self> {
+        Self::union_with(env, Merge::Exact, ts)
+    }
+
+    fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
         let mut iter = ts.iter().copied();
         let Some(first) = iter.next() else {
             return Ok(Type::Primitive(BitFlags::empty()));
@@ -352,7 +371,7 @@ impl Type {
         let mut hist = RefHist::new();
         let mut acc = first.clone();
         for t in iter {
-            acc = acc.union_int(env, &mut hist, t)?;
+            acc = acc.union_int(env, &mut hist, merge, t)?;
         }
         Ok(acc.normalize())
     }
