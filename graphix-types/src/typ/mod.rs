@@ -2,7 +2,7 @@ use crate::{
     PRINT_FLAGS, PrintFlag, SourcePosition,
     dbgenv::{graphix_dbg_bind, gxdbg_typeref},
     env::Env,
-    expr::{ModPath, Origin, WrittenAt},
+    expr::{ModPath, Origin, Source, WrittenAt},
     format_with_flags,
     image::{self, KeyedNode},
     stack::ensure_sufficient,
@@ -496,13 +496,6 @@ impl ResolvedRef {
         Arc::as_ptr(&self.params) as *const () as usize
     }
 
-    /// Same definition? Cells filled from one `TypeDef` share its
-    /// content Arcs, so this is usually a pointer comparison.
-    pub(crate) fn same_def(&self, other: &Self) -> bool {
-        (Arc::ptr_eq(&self.params, &other.params) || self.params == other.params)
-            && self.typ == other.typ
-    }
-
     #[doc(hidden)]
     pub fn canonical_scope(&self) -> &ModPath {
         &self.canonical_scope
@@ -674,25 +667,16 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    /// Do two same-named refs mean the same definition? True unless
-    /// both cells are filled with different definitions, in which case
-    /// the name-equality fast paths must fall through to expansion.
-    // CR claude for claude: [bug] lambda.rs:1808 moves a def's thrown types into its
-    // scope and keeps their cells. After that, two refs with one scope and name can
-    // mean different definitions, and this test cannot tell them apart. An empty or
-    // dead cell agrees with anything, and same_def compares definitions with Type::eq,
-    // under which any two open variables are equal, so ('a, 'b) and ('b, 'a) count as
-    // one definition. A function declared to throw its block's P<i64, string> =
-    // (string, i64) may call one that throws another block's P<i64, string> = (i64,
-    // string). --check passes, and the JIT then reads the i64 as a string and aborts
-    // (misaligned pointer 0x1). Agree only on a proven same definition (pointer
-    // identity, or the empty side's name resolving to the other's def) and send
-    // everything else to the expansion arm, which is always sound. probe:
-    // design/review-2026-10-05/repro/t-typ-mod-06.gx (t-typ-mod-06)
+    /// Do two refs of one scope and name mean one definition, as far as
+    /// their cells prove? Filled cells by the definition's identity, two
+    /// empty ones alike; one of each may differ (a def's thrown types keep
+    /// their cells when they move into its scope), and a disagreement
+    /// only sends the pair to the expansion arm.
     pub(crate) fn cells_agree(&self, other: &Self) -> bool {
         match (self.resolved(), other.resolved()) {
-            (Some(a), Some(b)) => a.same_def(&b),
-            _ => true,
+            (Some(a), Some(b)) => a.def_key() == b.def_key(),
+            (None, None) => true,
+            _ => false,
         }
     }
 
@@ -714,23 +698,16 @@ impl TypeRef {
                 Some(crate::env::TypeName::Def(def)) => Some(def),
                 Some(crate::env::TypeName::Trait(_)) | None => None,
             })
-            // CR claude for claude: [bug] This turns every structural error from
-            // resolve_visible (an ambiguous glob, `super` past the root, a missing module
-            // in a path) into a log::warn and None. The callers then report
-            // UnresolvableRef, so `let x: T = 1` under two globs that both provide T says
-            // "undefined type T in ". The same mistake on a value names the cause: "`v` is
-            // ambiguous: both `a` and `b` provide it". The shell installs a logger only
-            // under --log-dir, so the warning is invisible by default, which contradicts
-            // the comment below and design/module_system.md "Diagnostics". Return the error
-            // (Result<Option<_>>) and carry it into lookup_ref_with and check_pending_names
-            // instead of logging it. probe: design/review-2026-10-05/repro/x-errors-08.sh
-            // (x-errors-08)
-            .map_err(|e| {
-                // Logged so an ambiguous glob does not read as "undefined type".
-                log::warn!("resolving type `{}` in `{}`: {e:#}", self.name, self.scope)
-            })
             .ok()
             .flatten()
+    }
+
+    /// Why the name does not resolve, when that is a mistake in the path
+    /// (an ambiguous glob, `super` past the root, a missing module) and
+    /// not an absent name: the error a report names in place of
+    /// [`UnresolvableRef`].
+    pub fn resolve_error(&self, env: &Env) -> Option<anyhow::Error> {
+        env.resolve_type_name(&self.scope, &self.name).err()
     }
 
     /// Resolve this ref's name in `env` and fill the cell if empty;
@@ -1572,16 +1549,51 @@ impl Drop for Type {
     }
 }
 
-/// A classifiable resolution failure from [`Type::lookup_ref`].
+/// A classifiable resolution failure from [`Type::lookup_ref`]: the
+/// name, and where it is written.
 #[derive(Debug)]
 pub struct UnresolvableRef {
     pub name: ModPath,
     pub scope: ModPath,
+    pub pos: Option<SourcePosition>,
+    pub ori: Option<Arc<Origin>>,
 }
 
+impl UnresolvableRef {
+    pub fn of(tr: &TypeRef) -> Self {
+        Self {
+            name: tr.name.clone(),
+            scope: tr.scope.clone(),
+            pos: tr.pos,
+            ori: tr.ori.clone(),
+        }
+    }
+
+    /// The error a report names: a mistake in the path when there is
+    /// one, else this.
+    pub fn error(tr: &TypeRef, env: &Env) -> anyhow::Error {
+        tr.resolve_error(env).unwrap_or_else(|| anyhow::Error::new(Self::of(tr)))
+    }
+}
+
+/// `undefined type T[ in m][ at <pos>[ in <source>]]`: the scope only when
+/// it is a module a program names (a block's or function's is minted).
 impl std::fmt::Display for UnresolvableRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "undefined type {} in {}", self.name, self.scope)
+        write!(f, "undefined type {}", self.name)?;
+        let minted =
+            netidx_core::path::Path::parts(&self.scope.0).any(|p| p.starts_with('#'));
+        if !minted && &*self.scope.0 != "/" {
+            write!(f, " in {}", self.scope)?;
+        }
+        if let Some(pos) = self.pos {
+            write!(f, " at {pos}")?;
+            match self.ori.as_ref().map(|o| &o.source) {
+                None | Some(Source::Internal(_) | Source::Unspecified) => (),
+                Some(source) => write!(f, " in {source}")?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2180,23 +2192,7 @@ impl Type {
                             }
                         }
                     }
-                    // CR claude for claude: [readability] UnresolvableRef keeps only name
-                    // and scope, dropping the written pos and ori destructured above.
-                    // Its Display prints the raw lookup scope: "undefined type Foo in "
-                    // at top level, "in #sel4611686018427393579" in a select arm, "in
-                    // #fn…::#do…" in a lambda body. The error is then sited wherever
-                    // the type is first expanded: `type T = {a: i64, b: NoSuch}; let f
-                    // = |x: T| x.a; f({a: 1, b: 2})` is reported at line 3, `f({ a: 1,
-                    // b: 2 })`, and an undefined type in a select pattern is reported
-                    // at the arm's body (graphix-compiler/src/node/select.rs:230,
-                    // `.at(body)`). Carry pos and ori in UnresolvableRef
-                    // (check_pending_names, graphix-compiler/src/lib.rs:2005, builds
-                    // one too), print that position, and print the scope only when it
-                    // is a user module path. (x-errors-12)
-                    anyhow::Error::new(UnresolvableRef {
-                        name: name.clone(),
-                        scope: scope.clone(),
-                    })
+                    UnresolvableRef::error(tr, env)
                 })?;
                 let ResolvedRef {
                     canonical_scope,

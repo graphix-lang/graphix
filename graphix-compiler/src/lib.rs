@@ -2254,11 +2254,7 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
         match p {
             Pending::Name(tr, spec) => {
                 if !tr.names_something(&ctx.env) {
-                    let e = anyhow::Error::new(typ::UnresolvableRef {
-                        name: tr.name,
-                        scope: tr.scope,
-                    });
-                    return Err(e.at(&spec));
+                    return Err(typ::UnresolvableRef::error(&tr, &ctx.env).at(&spec));
                 }
             }
             Pending::Contractive(scope, name, spec) => {

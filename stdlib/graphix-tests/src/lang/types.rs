@@ -2030,3 +2030,50 @@ run!(nested_alias_applications, NESTED_ALIAS_APPLICATIONS, |v: Result<&Value>| m
     v,
     Ok(Value::I64(42))
 ));
+
+/// Two blocks' typedefs of one name are two types, thrown types moved
+/// into a function's scope included.
+const SAME_NAME_OTHER_DEFINITION: &str = r#"
+{
+    let f = {
+        type P<'a, 'b> = ('a, 'b);
+        |x: i64| -> i64 throws Error<ErrChain<P<i64, string>>> select x {
+            0 => error((1, "one"))?,
+            n => n
+        }
+    };
+    let g = {
+        type P<'a, 'b> = ('b, 'a);
+        |x: i64| -> i64 throws Error<ErrChain<P<i64, string>>> f(x)
+    };
+    g(1)
+}
+"#;
+
+run!(same_name_other_definition, SAME_NAME_OTHER_DEFINITION, refused("does not contain"); FuseExpect::None);
+
+/// An undefined type is reported where it is written.
+const UNDEFINED_TYPE_SITED: &str = r#"{
+    type T = {a: i64, b: NoSuch};
+    let f = |x: T| x.a;
+    f({a: 1, b: 2})
+}"#;
+
+run!(undefined_type_sited, UNDEFINED_TYPE_SITED, refused("undefined type NoSuch at line: 2"); FuseExpect::None);
+
+/// A type name two globs provide is ambiguous, as a value's is.
+run!(
+    ambiguous_glob_type,
+    refused("`T` is ambiguous: both"),
+    "/test.gx" => r#"
+        mod a;
+        mod b;
+        use a::*;
+        use b::*;
+        let x: T = 1;
+        let result = x
+    "#,
+    "/test/a.gx" => "type T = i64",
+    "/test/b.gx" => "type T = string";
+    FuseExpect::None
+);
