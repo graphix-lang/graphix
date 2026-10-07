@@ -275,6 +275,16 @@ let a = sys::args();
 println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex] args=[a]\")
 ";
     tokio::fs::write(gx_dir.join("main.gx"), main_gx).await.unwrap();
+    // the program reads its arguments through sys
+    let manifest = pkg_dir.join("Cargo.toml");
+    let deps = std::fs::read_to_string(&manifest).unwrap().replace(
+        "graphix-package-core = ",
+        &format!(
+            "graphix-package-sys = \"{}\"\ngraphix-package-core = ",
+            crate_version(&ws.join("stdlib/graphix-package-sys/Cargo.toml"))
+        ),
+    );
+    std::fs::write(&manifest, deps).unwrap();
     write_vendor_config(&pkg_dir, ws);
     // Copy vendored graphix-shell source (already has resolved deps)
     let vendored = std::fs::read_dir(ws.join("vendor"))
