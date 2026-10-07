@@ -567,7 +567,9 @@ impl RootFile {
         let buffer = |p: &PathBuf| overrides.and_then(|o| o.lock().get(p).cloned());
         let file = match overrides {
             Some(_) => file.clone(),
-            None => tokio::fs::canonicalize(file).await?,
+            None => tokio::fs::canonicalize(file)
+                .await
+                .with_context(|| format!("{}", file.display()))?,
         };
         let text = match buffer(&file) {
             Some(text) => text,

@@ -435,30 +435,9 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<()> {
                 #[cfg(not(feature = "sys"))]
                 Some(_) => bail!("netidx: sources require the sys feature"),
                 None => {
-                    // CR claude for claude: [readability] canonicalize()? has no context,
-                    // so `graphix nosuchfile.gx` (and --check) prints only 'Error: No
-                    // such file or directory (os error 2)'; name the path with
-                    // `.with_context(..)`. The netidx: error at line 405 carries 34
-                    // spaces from a lost line continuation. Stale text elsewhere:
-                    // lib.rs:352 logs 'runtime exited' when the program failed to
-                    // compile, and graphix-rt/src/gx.rs:357 calls a failed program
-                    // entry 'the registration image'. lsp_backend.rs:61 credits
-                    // lsp_mode with turning fusion off, but CheckOnly does that
-                    // (gx.rs:837-841). design/program_image.md:3-4 calls the built
-                    // program image a proposal, line 58 leaves registration/ out of the
-                    // store path, and line 262 says fusion-on programs are not imaged.
-                    // graphix-shell/src/AGENTS.md is a hand-written note from the
-                    // initial commit sitting beside the generated root AGENTS.md.
-                    // (shell-18)
-                    // CR claude for claude: [readability] canonicalize's io error carries
-                    // no path, so `graphix nosuch.gx` and `graphix --check nosuch.gx`
-                    // print only "Error: No such file or directory (os error 2)".
-                    // `graphix somedir` with no main.gx inside prints the same thing,
-                    // from RootFile::load's bare `tokio::fs::canonicalize(file).await?`
-                    // (graphix-types/src/expr/resolver.rs:531), and never mentions
-                    // main.gx. `graphix fmt` and module resolution already name the
-                    // path; add it as context at both canonicalize calls. (x-errors-20)
-                    let path = PathBuf::from(&**f).canonicalize()?;
+                    let path = PathBuf::from(&**f)
+                        .canonicalize()
+                        .with_context(|| format!("{f}"))?;
                     let path = if path.is_dir() { path.join("main.gx") } else { path };
                     match path.parent() {
                         Some(p) if p.as_os_str().is_empty() => (),
