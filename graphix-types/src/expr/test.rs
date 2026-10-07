@@ -542,7 +542,17 @@ fn pattern() -> impl Strategy<Value = Pattern> {
     )
 }
 
+/// A declaration scrutinee is parenthesized: an impl or a module would
+/// read the arms' `{` as its body.
 fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
+    let arg = match &arg.kind {
+        ExprKind::Use { .. }
+        | ExprKind::TypeDef(_)
+        | ExprKind::Module { .. }
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_) => paren(arg),
+        _ => arg,
+    };
     let arms = arms.into_iter().map(|(guard, mut pat, expr)| {
         pat.guard = guard;
         (pat, expr)
@@ -1288,8 +1298,7 @@ fn paren(child: Expr) -> Expr {
 
 /// Children that need parens regardless of position: a statement form
 /// (`let`, a declaration, `catch`, a connect) or a lambda under any
-/// operator, `Qop` under a prefix unary (`*x?` is `(*x)?`). `None` defers
-/// to binary-operator precedence.
+/// operator. `None` defers to binary-operator precedence.
 fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
     match child {
         ExprKind::Connect { .. }
@@ -1302,18 +1311,6 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
         | ExprKind::Impl(_)
         | ExprKind::Catch(_)
         | ExprKind::TryWith(_) => Some(true),
-        // CR claude for claude: [test-gap] A prefix operator's operand is an arith_term
-        // that takes the postfix operators (parser/arithexp.rs:26), so `*x?` is
-        // `*(x?)`, not `(*x)?` as the doc comment on loose_needs_parens says. Over `x:
-        // [i64, Error<`E>]`, `let y: i64 = -x$` checks and `(-x)$` is refused. This arm
-        // adds parens the printer does not need. So does the Neg(Constant) case in
-        // add_parens (1324), whose premise is false: the printer writes a negated
-        // constant as `- 5` (print.rs:2288), which reads back as a Neg. Both wrap in
-        // ExplicitParens shapes the printer prints bare, so the proptests never
-        // round-trip `*x?` or `- 5`. Delete both rules and the wrong sentence; OrNever,
-        // which has the same precedence, is already generated bare and round-trips.
-        // (tests-types-07)
-        ExprKind::Qop(_) => Some(parent_prec == UNARY_PREC),
         _ => None,
     }
 }
@@ -1347,24 +1344,18 @@ fn add_parens(mut e: Expr) -> Expr {
     }
     let kind = match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
         ExprKind::Not { expr } => ExprKind::Not {
-            expr: Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(expr), 255)),
+            expr: Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(expr), UNARY_PREC)),
         },
-        ExprKind::Deref(e) => {
-            ExprKind::Deref(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
-        }
-        ExprKind::ByRef(m, e) => {
-            ExprKind::ByRef(m, Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), 255)))
-        }
+        ExprKind::Deref(e) => ExprKind::Deref(Arc::new(maybe_paren_lhs(
+            Arc::unwrap_or_clone(e),
+            UNARY_PREC,
+        ))),
+        ExprKind::ByRef(m, e) => ExprKind::ByRef(
+            m,
+            Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), UNARY_PREC)),
+        ),
         ExprKind::Neg(e) => {
-            let inner = Arc::unwrap_or_clone(e);
-            match &inner.kind {
-                // `-5` re-parses as a constant, so a constant operand must be
-                // parenthesized to stay a Neg.
-                ExprKind::Constant(_) => ExprKind::Neg(Arc::new(
-                    ExprKind::ExplicitParens(Arc::new(inner)).to_expr_nopos(),
-                )),
-                _ => ExprKind::Neg(Arc::new(maybe_paren_lhs(inner, 255))),
-            }
+            ExprKind::Neg(Arc::new(maybe_paren_lhs(Arc::unwrap_or_clone(e), UNARY_PREC)))
         }
         other => other,
     };

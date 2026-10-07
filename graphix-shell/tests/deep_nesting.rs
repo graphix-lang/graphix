@@ -1,13 +1,22 @@
 //! Adversarially nested programs must not overflow the stack: the
-//! guarded walks run on heap segments and the parser refuses anything
-//! past `parser::max_nesting()`, so a deep program is a compile error.
+//! guarded walks run on heap segments and the parser refuses an AST
+//! deeper than `parser::max_nesting()`, so a deep program is a compile
+//! error. What the parser admits is checked, run with fusion on and off,
+//! and formatted.
 //!
 //! Each case runs in a child process on a small worker stack (an
 //! overflow aborts, so it cannot be caught in-process). The child
 //! invocation passes `--include-ignored`; without it the child would
 //! skip the test and exit 0, which reads as success.
 
-use graphix_compiler::expr::{FilesResolver, Source};
+use graphix_compiler::{
+    BitFlags, CFlag,
+    expr::{
+        FilesResolver, Source,
+        format::{FormatConfig, SourceKind, format_source},
+    },
+};
+use graphix_package::MainThreadHandle;
 use graphix_rt::NoExt;
 use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{
@@ -21,8 +30,16 @@ const STACK: usize = 512 * 1024;
 /// Exit code the child uses for "the nesting limit refused this".
 const REFUSED: i32 = 3;
 
-/// Past `parser::max_nesting()`: every shape must come back REFUSED.
+/// Exit code the child uses for any other parse error.
+const UNPARSED: i32 = 4;
+
+/// Past `parser::max_nesting()`: every shape that nests in its source
+/// must come back REFUSED.
 const REJECTED: usize = 100_000;
+
+/// Shapes whose source does not nest at `REJECTED`, which the parser
+/// cannot refuse.
+const FLAT_AT_REJECTED: &[&str] = &["uniontyp", "seqarm"];
 
 /// Deepest nesting the limit admits for every shape; derived from the
 /// limit so the deep path stays exercised if the limit moves.
@@ -32,20 +49,17 @@ fn accepted() -> usize {
 
 const SHAPE_VAR: &str = "GRAPHIX_DEEP_SHAPE";
 const DEPTH_VAR: &str = "GRAPHIX_DEEP_DEPTH";
+const MODE_VAR: &str = "GRAPHIX_DEEP_MODE";
+
+/// What a child does with the program: check it, run it (fusion on or
+/// off), or format it.
+const MODES: [&str; 4] = ["check", "run", "nofusion", "fmt"];
+
+/// The longest operator or postfix run a paren-chain shape writes.
+const RUN: usize = 999;
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
-// CR claude for claude: [bug] No shape here puts a postfix or operator run inside parens.
-// So the pin cannot see that the parser caps each run (arithexp.rs:195, :270) and the
-// paren depth separately, but never the depth of the AST: 100 paren levels around runs
-// of 999 `$` parse into an AST about 100k deep. That program's type error then aborts
-// `graphix --check` with a stack overflow. At::at (expr/context.rs:97) adds one context
-// layer per AST level and, at each one, downcasts through the whole chain, recursively
-// inside anyhow; probe: design/review-2026-10-05/repro/t-parser-a-02.gx. The `field`
-// shape split into 101 levels of 999 `.a` aborts the same way, so the header's claim
-// that the parser refuses anything past max_nesting() is false, and this pin only
-// drives the error path to accepted() = 125. Add that split shape and assert it comes
-// back REFUSED at REJECTED. (t-parser-a-02)
 fn program(shape: &str, d: usize) -> String {
     match shape {
         "parens" => format!("let x = {}1{}", "(1 + ".repeat(d), ")".repeat(d)),
@@ -91,22 +105,18 @@ fn program(shape: &str, d: usize) -> String {
             format!("let x = {s}")
         }
         "qop" => format!("let a = [1];\nlet x = a[0]{}", "$".repeat(d)),
+        // Runs inside parens: each fold is under the limit, the AST they
+        // build together is `d` deep.
+        "parenchain" => format!("let x = {}", paren_chain(d)),
+        "lambdachain" => format!("let f = |a| {};\nlet x = f(1)", paren_chain(d)),
         "neg" => format!("let x = {}1", "-".repeat(d)),
         "not" => format!("let x = {}true", "!".repeat(d)),
-        // CR claude for claude: [test-gap] `mod m{i} { .. }` is an inline module, which
-        // the parser has never had (a parse error at the first `{`), and run_child
-        // counts any error but the nesting refusal as success (lines 181-185), so this
-        // shape passes at both depths without building an AST. No shape nests an
-        // unresolved `mod`, so resolve_modules_int's recursion and holds_unresolved go
-        // unexercised. Make it nested blocks around `mod x; x::k` with an x.gx written
-        // beside deep.gx, and fail the child on a parse error at accepted() depth,
-        // which line 229 says must not happen. (t-format-resolver-13)
         "modnest" => {
-            let mut s = String::from("let x = 1");
-            for i in 0..d {
-                s = format!("mod m{i} {{ {s} }}");
+            let mut s = String::from("{ mod x; x::k }");
+            for _ in 0..d {
+                s = format!("{{ let a = 1; {s} }}");
             }
-            s
+            format!("let v = {s}")
         }
         "seqarm" => {
             let body = std::iter::repeat("1").take(d).collect::<Vec<_>>().join("; ");
@@ -141,6 +151,17 @@ fn program(shape: &str, d: usize) -> String {
     }
 }
 
+/// `d` levels of `+ 1` runs, `RUN` to a paren level.
+fn paren_chain(d: usize) -> String {
+    let levels = d.div_ceil(RUN).max(1);
+    let run = d.min(RUN);
+    let mut s = String::from("1");
+    for _ in 0..levels {
+        s = format!("({s}{})", " + 1".repeat(run));
+    }
+    s
+}
+
 /// Shapes with no source nesting at all: the parser cannot refuse
 /// them, so each must compile at `FLAT_DEPTH`.
 const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
@@ -170,6 +191,8 @@ const SHAPES: &[&str] = &[
     "tuplepat",
     "select",
     "qop",
+    "parenchain",
+    "lambdachain",
     "neg",
     "not",
     "modnest",
@@ -178,9 +201,9 @@ const SHAPES: &[&str] = &[
     "seqabort",
 ];
 
-/// The child half: compile one shape on a small-stack runtime.
-/// Returning at all is the assertion.
-fn run_child(shape: &str, depth: usize) {
+/// The child half: check, run or format one shape on a small-stack
+/// runtime. Returning at all is the assertion.
+fn run_child(shape: &str, depth: usize, mode: &str) {
     let dir = env::temp_dir().join(format!("gx-deep-{shape}-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("tmpdir");
     let file = dir.join("deep.gx");
@@ -196,7 +219,40 @@ fn run_child(shape: &str, depth: usize) {
                 fs::create_dir_all(&at).expect("mkdir");
             }
         }
+        "modnest" => {
+            fs::write(&file, program(shape, depth)).expect("write");
+            fs::write(dir.join("x.gx"), "let k = 1").expect("write");
+        }
         _ => fs::write(&file, program(shape, depth)).expect("write"),
+    }
+    let text = fs::read_to_string(&file).expect("read");
+    let refused = |e: &str| {
+        if e.contains("nesting too deep") {
+            std::process::exit(REFUSED)
+        }
+        if e.contains("arse error") {
+            std::process::exit(UNPARSED)
+        }
+    };
+    if mode == "fmt" {
+        let r = std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(move || {
+                format_source(SourceKind::Program, &text, &FormatConfig::default())
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:#}"))
+            })
+            .expect("spawn")
+            .join()
+            .expect("join");
+        let _ = fs::remove_dir_all(&dir);
+        if let Err(e) = r {
+            refused(&e)
+        }
+        return;
+    }
+    if mode != "check" {
+        fs::write(&file, format!("{text};\nsys::exit(0)")).expect("write");
     }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -205,33 +261,29 @@ fn run_child(shape: &str, depth: usize) {
         .build()
         .expect("runtime");
     let r = rt.block_on(async {
-        ShellBuilder::<NoExt>::default()
+        let shell = ShellBuilder::<NoExt>::default()
             .cache(CacheMode::Off)
             .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
-            // CR claude for claude: [test-gap] Every shape runs through Mode::Check. That
-            // is the check alone (CFlag::CheckOnly: no instance typing, elaboration,
-            // fusion, image, cycle or formatter), at max_nesting()/8 = 125 levels. No
-            // shape nests an operator or postfix chain inside parens, which is how a
-            // program reaches about max_nesting²/3 AST levels inside the limit. So
-            // crashes on the other paths pass the pin. A lambda whose body is 100
-            // nested 1000-term `+` chains passes --check, but calling it aborts in
-            // Add::typecheck0_instance (`graphix --no-cache --no-fusion`). `graphix
-            // fmt` aborts on the file design/review-2026-10-05/repro/x-stack-05.py
-            // writes. Add a
-            // chains-in-parens shape at the top level and inside a called lambda, run
-            // each shape as a script with fusion on and off, and format it.
-            // (x-stack-07)
-            .mode(Mode::Check(Source::File(file.clone())))
+            .disable_flags(match mode {
+                "nofusion" => CFlag::FusionDisabled.into(),
+                _ => BitFlags::empty(),
+            })
+            .mode(match mode {
+                "check" => Mode::Check(Source::File(file.clone())),
+                _ => Mode::Script(Source::File(file.clone())),
+            })
             .build()
-            .expect("building shell")
-            .check()
-            .await
+            .expect("building shell");
+        match mode {
+            "check" => shell.check().await,
+            _ => shell.run(MainThreadHandle::new().0).await.map(|_| ()),
+        }
     });
     let _ = fs::remove_dir_all(&dir);
     // Any other error means the AST was built, walked and torn down.
-    // Only the limit refusing means the deep path never ran.
-    if r.is_err_and(|e| format!("{e:#}").contains("nesting too deep")) {
-        std::process::exit(REFUSED)
+    // Only a parse error means the deep path never ran.
+    if let Err(e) = r {
+        refused(&format!("{e:#}"))
     }
 }
 
@@ -240,12 +292,13 @@ fn run_child(shape: &str, depth: usize) {
 fn deep_nesting_does_not_overflow() {
     if let Ok(shape) = env::var(SHAPE_VAR) {
         let depth = env::var(DEPTH_VAR).expect("depth").parse().expect("depth");
-        return run_child(&shape, depth);
+        let mode = env::var(MODE_VAR).expect("mode");
+        return run_child(&shape, depth, &mode);
     }
     let exe = env::current_exe().expect("current exe");
     // Batched: each child pays a full stdlib compile.
     const CONCURRENCY: usize = 8;
-    let spawn = |shape: &str, depth: usize| {
+    let spawn = |shape: &str, depth: usize, mode: &str| {
         Command::new(&exe)
             .args([
                 "deep_nesting_does_not_overflow",
@@ -255,58 +308,43 @@ fn deep_nesting_does_not_overflow() {
             ])
             .env(SHAPE_VAR, shape)
             .env(DEPTH_VAR, depth.to_string())
+            .env(MODE_VAR, mode)
+            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn child")
     };
-    let cases: Vec<(&str, usize)> = SHAPES
+    let cases: Vec<(&str, usize, &str)> = SHAPES
         .iter()
-        .flat_map(|s| [(*s, accepted()), (*s, REJECTED)])
-        .chain([("parens", REJECTED)])
-        .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH)))
-        .chain([("modchain", MODCHAIN_DEPTH)])
+        .flat_map(|s| MODES.map(|m| (*s, accepted(), m)))
+        .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
+        .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH, "check")))
+        .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .collect();
-    let mut codes: HashMap<(&str, usize), Option<i32>> = HashMap::new();
+    let mut codes: HashMap<(&str, usize, &str), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {
-        let running: Vec<_> = batch.iter().map(|(s, d)| (*s, *d, spawn(s, *d))).collect();
-        for (s, d, mut child) in running {
-            codes.insert((s, d), child.wait().expect("wait child").code());
+        let running: Vec<_> =
+            batch.iter().map(|&(s, d, m)| ((s, d, m), spawn(s, d, m))).collect();
+        for (case, mut child) in running {
+            codes.insert(case, child.wait().expect("wait child").code());
         }
     }
-    let run = |shape: &str, depth: usize| codes[&(shape, depth)];
     let mut failed: Vec<String> = vec![];
-    for shape in SHAPES {
-        // The parser must admit it, else the walks under test never run.
-        match run(shape, accepted()) {
-            Some(0) => (),
-            Some(REFUSED) => failed.push(format!(
-                "{shape}@{}: refused by the nesting limit, so the deep path \
-                 was never exercised",
-                accepted()
-            )),
-            other => failed.push(format!("{shape}@{}: {other:?}", accepted())),
+    for (&(shape, depth, mode), code) in &codes {
+        let want = match depth {
+            REJECTED if FLAT_AT_REJECTED.contains(&shape) => continue,
+            REJECTED => Some(REFUSED),
+            _ => Some(0),
+        };
+        if *code != want {
+            failed.push(format!("{shape}@{depth} {mode}: {code:?}, not {want:?}"))
         }
-        // Whether the limit refuses is shape-dependent (`uniontyp` at
-        // 100k is a flat union); only assert the child came back.
-        if run(shape, REJECTED).is_none() {
+    }
+    for shape in FLAT_AT_REJECTED {
+        if codes[&(*shape, REJECTED, "check")].is_none() {
             failed.push(format!("{shape}@{REJECTED}: killed by a signal"))
         }
-    }
-    for shape in FLAT_SHAPES {
-        if run(shape, FLAT_DEPTH) != Some(0) {
-            failed.push(format!("{shape}@{FLAT_DEPTH}: {:?}", run(shape, FLAT_DEPTH)))
-        }
-    }
-    if run("modchain", MODCHAIN_DEPTH) != Some(0) {
-        failed.push(format!(
-            "modchain@{MODCHAIN_DEPTH}: {:?}",
-            run("modchain", MODCHAIN_DEPTH)
-        ))
-    }
-    // The limit must fire on a shape that genuinely nests.
-    if run("parens", REJECTED) != Some(REFUSED) {
-        failed.push(format!("parens@{REJECTED}: the nesting limit did not fire"))
     }
     assert!(
         failed.is_empty(),

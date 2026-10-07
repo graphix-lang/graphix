@@ -29,7 +29,7 @@ parser! {
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow((
-            leading_comments(),
+            leading_comments(true),
             doc_comment().skip(spaces()),
             position(),
             choice((

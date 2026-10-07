@@ -2,8 +2,8 @@ use crate::{
     expr::{
         Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt,
         parser::{
-            csep, expr, fldname,
-            grow::{grow, refuse},
+            csep, expr, fldname, fname_noting,
+            grow::{grow, refusal, refuse},
             ident, interpolated, is_reserved_binding, name, not_prefix, raw_string,
             sep_by_tok, sep_by1_tok, spaces, spaces1, spstring, sptoken, typ,
         },
@@ -12,12 +12,10 @@ use crate::{
 };
 use arcstr::ArcStr;
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice,
-    error::StreamError,
-    many, optional,
+    ParseError, Parser, RangeStream, attempt, between, choice, many, optional,
     parser::char::string,
     position,
-    stream::{Range, StreamErrorFor, position::SourcePosition},
+    stream::{Range, position::SourcePosition},
     token, value,
 };
 use netidx_value::{
@@ -189,30 +187,22 @@ where
     }
     let field = choice((
         string("..").map(|_| Field::Rest),
-        (position(), fldname().skip(spaces()), optional(token(':').with(structure_pattern_or())))
+        (
+            position(),
+            fldname().skip(spaces()),
+            optional(token(':').with(structure_pattern_or())),
+        )
             .and_then(|(pos, name, pat)| {
                 let at = WrittenAt(pos);
                 match pat {
                     Some(pat) => Ok(Field::Named(name, pat, at)),
-                    None if is_reserved_binding(&name) => {
-                        // CR claude for claude: [bug] This refusal notes no reason, so
-                        // wherever another branch gets further its message is lost. In
-                        // a select arm, `select s { {type, x} => x }` reports only "the
-                        // parser could not continue past this point", while `let {type,
-                        // x} = s` shows "a reserved word field needs the explicit
-                        // `name: pattern` form". Only pattern positions reach
-                        // struct_pattern, so this is never a routine probe (unlike the
-                        // `name: value` refusal in struct_fields): return
-                        // grow::refusal::<I>(pos, ..) here, which notes the reason at
-                        // the field. probe:
-                        // design/review-2026-10-05/repro/t-parser-b-14.gx
-                        // (t-parser-b-14)
-                        Err(StreamErrorFor::<I>::message_static_message(
-                            "a reserved word field needs the explicit `name: pattern` form",
-                        ))
-                    }
+                    None if is_reserved_binding(&name) => Err(refusal::<I>(
+                        pos,
+                        "a reserved word field needs the explicit `name: pattern` form",
+                    )),
                     None => {
-                        let bind = StructurePattern::Bind(Name::written(name.clone(), pos));
+                        let bind =
+                            StructurePattern::Bind(Name::written(name.clone(), pos));
                         Ok(Field::Named(name, bind, at))
                     }
                 }
@@ -277,9 +267,12 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((string_pattern(), attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC))))
+    (
+        position(),
+        choice((string_pattern(), attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)))),
+    )
         .skip(not_prefix())
-        .map(StructurePattern::Literal)
+        .and_then(|(pos, v)| super::finite::<I>(pos, v).map(StructurePattern::Literal))
 }
 
 fn all_pattern<I>() -> impl Parser<I, Output = Name>
@@ -288,7 +281,11 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    name().skip(sptoken('@')).skip(spaces())
+    // a probe at every pattern: a reserved word here is a literal's
+    (position(), fname_noting(false))
+        .map(|(pos, n)| Name::written(n, pos))
+        .skip(sptoken('@'))
+        .skip(spaces())
 }
 
 parser! {

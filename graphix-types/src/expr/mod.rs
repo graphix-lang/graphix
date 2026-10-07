@@ -1326,13 +1326,13 @@ impl Drop for Expr {
 
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.kind)
+        crate::stack::ensure_sufficient(|| write!(f, "{:?}", self.kind))
     }
 }
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        print::write_leading(f, &self.dec)?;
+        print::write_leading_flat(f, &self.dec)?;
         // Printing descends the whole tree, including arbitrary user
         // subexpressions on error paths.
         crate::stack::ensure_sufficient(|| write!(f, "{}", print::Bare(self)))
@@ -1352,26 +1352,13 @@ impl PrettyDisplay for Expr {
 
 impl PartialOrd for Expr {
     fn partial_cmp(&self, rhs: &Expr) -> Option<Ordering> {
-        self.kind.partial_cmp(&rhs.kind)
+        crate::stack::ensure_sufficient(|| self.kind.partial_cmp(&rhs.kind))
     }
 }
 
-// CR claude for claude: [bug] Expr's PartialEq, PartialOrd and Debug recurse through the
-// derived ExprKind impls with no ensure_sufficient (Display, fold and Drop have one),
-// so each call goes as deep as the AST. format_source compares the reparse with the
-// original using `!=` (format.rs:328). The two parses share no Arcs, so triomphe's
-// pointer shortcut never applies. As a result `graphix fmt`, and the LSP's formatting
-// request through the same format_source, abort with a stack overflow on a file that
-// --check accepts: 300 parenthesized 1000-term `+` chains, about 300k AST levels,
-// inside the nesting limit. Probe: `python3 design/review-2026-10-05/repro/x-stack-05.py`
-// writes x-stack-05.gx; `graphix fmt --width 100000000 --stdout x-stack-05.gx` exits
-// 134 in ExprKind::eq. On the same
-// path, fmt_flat (print.rs:482) walks decorated() and flat-prints the whole subtree at
-// every level, so layout is quadratic in depth: 5, 10 and 20 nested chains take 5, 18
-// and 73 s on the debug build. (x-stack-05)
 impl PartialEq for Expr {
     fn eq(&self, rhs: &Expr) -> bool {
-        self.kind.eq(&rhs.kind)
+        crate::stack::ensure_sufficient(|| self.kind.eq(&rhs.kind))
     }
 }
 

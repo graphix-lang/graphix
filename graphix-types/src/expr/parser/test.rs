@@ -2072,6 +2072,9 @@ fn list_is_a_reserved_type_name() {
     assert!(parse_one("type List = { cursor: i64 }").is_err());
     assert!(parse_one("type Array<'a> = i64").is_err());
     assert!(parse_one("type Map<'k> = i64").is_err());
+    for name in ["Error", "Abstract", "Concrete", "Function", "Singleton", "OneNumber"] {
+        assert!(parse_one(&format!("type {name} = i64")).is_err(), "{name}");
+    }
     parse_typexpr("List<i64>").unwrap();
     // A reserved word is a legal variant tag in expression, type and
     // pattern position alike.

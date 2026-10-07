@@ -1003,10 +1003,11 @@ program-driven recursion — parser knots (`GrowStack`), `compile`,
 `Display`, `fold`/`for_each_child`, type walks (`Eq`/`Ord`/`Hash`
 included), pattern walks, seq lowering, and the `Node`/`TVar`/`Expr`/
 `Type` destructors (explicit teardown inside the guard) — and
-`parser::DEFAULT_MAX_NESTING` (counted in parser knots; iterative loops
-that fold into nested ASTs are capped at the fold). Type depth is not
-bounded by the limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of
-typedefs, builds a type as deep as the program is long.
+`parser::DEFAULT_MAX_NESTING`, which bounds AST depth: it counts parser
+knots and the levels each iterative fold (an operator or postfix run)
+adds under them (`grow::fold_fits`). Type depth is not bounded by the
+limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of typedefs,
+builds a type as deep as the program is long.
 Refusals set a thread-local (`note_refused`) because combine merges
 messages. Pins: `graphix-compiler/tests/deep_drop.rs`,
 `graphix-shell/tests/deep_nesting.rs` (add a case for a new recursive

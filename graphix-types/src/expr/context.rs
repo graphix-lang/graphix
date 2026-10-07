@@ -8,13 +8,18 @@ use triomphe::Arc;
 
 /// An expression an error passed through on its way out. Built only by
 /// [`At::at`], which also records the [`ErrorSite`].
-pub struct ErrorContext(Expr);
+pub struct ErrorContext(Expr, usize);
 
 impl ErrorContext {
     pub fn expr(&self) -> &Expr {
         &self.0
     }
 }
+
+/// The most frames [`At::at`] records above an error's site: the chain
+/// is torn down and searched recursively, and an AST is as deep as its
+/// program is long.
+const MAX_FRAMES: usize = 128;
 
 impl fmt::Debug for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -95,20 +100,22 @@ pub trait At {
 }
 
 impl At for anyhow::Error {
-    // CR claude for claude: [readability] This adds a frame even when the error's latest
-    // frame is the same expression, which happens often. The walkers wrap a child's
-    // error with the child's spec (`wrap!(n, pass(n, ctx))`, `wrap!(self.n,
-    // child(..))`), and Connect, the arithmetic ops and lambdas also wrap their own
-    // errors. `let x = 1; x <- "s"` prints `at: line: 2, column: 1 ... in: x <- "s"`
-    // twice, and `let b = "x" + a` prints its `"x" + a` frame twice. Return self
-    // unchanged when the outermost ErrorContext (or, if there is none, the ErrorSite)
-    // holds an expression with spec's id. (c-node-mod-08)
+    /// A frame for the expression the latest frame already names adds
+    /// nothing; the latest frame is found first, the site only under
+    /// none.
     fn at(self, spec: &Expr) -> Self {
-        let cx = ErrorContext(spec.clone());
-        match self.downcast_ref::<ErrorSite>() {
-            Some(_) => self.context(cx),
-            None => self.context(ErrorSite(cx)),
-        }
+        let frames = match self.downcast_ref::<ErrorContext>() {
+            Some(ErrorContext(e, n)) if e.id == spec.id || *n >= MAX_FRAMES => {
+                return self;
+            }
+            Some(ErrorContext(_, n)) => n + 1,
+            None => match self.downcast_ref::<ErrorSite>() {
+                Some(site) if site.expr().id == spec.id => return self,
+                Some(_) => 1,
+                None => return self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
+            },
+        };
+        self.context(ErrorContext(spec.clone(), frames))
     }
 }
 

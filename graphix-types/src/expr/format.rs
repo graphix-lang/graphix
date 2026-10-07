@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn blank_lines_stand_around_items_that_span_lines() {
-        let src = "use a::b; let x = 1; // why\nlet y = 2; let z = 3; let f = |a| { let b = a; b }; f(x)";
+        let src = "use a::b; let x = 1;\n// why\nlet y = 2; let z = 3; let f = |a| { let b = a; b }; f(x)";
         let want = "use a::b;\nlet x = 1;\n\n// why\nlet y = 2;\n\nlet z = 3;\nlet f = |a| { let b = a; b };\nf(x)\n";
         formats_to(SourceKind::Program, src, want);
         formats_to(
@@ -901,7 +901,7 @@ mod tests {
         );
         formats_to(
             Program,
-            "trait T { // a plain comment\nval show: fn(self) -> string }",
+            "trait T {\n// a plain comment\nval show: fn(self) -> string }",
             "trait T {\n    // a plain comment\n    val show: fn(self) -> string\n}\n",
         );
         stable(

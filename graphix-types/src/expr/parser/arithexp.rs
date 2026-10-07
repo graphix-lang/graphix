@@ -4,7 +4,7 @@ use crate::expr::{
         any, apply_args, array, array_index_suffix,
         arrayexp::Index,
         brace, cast, construct, csep, expr, fldname,
-        grow::{grow, max_nesting, note_refused},
+        grow::{fold_fits, grow},
         interpolated, list_lit, literal, never_expr, raw_string, reference, select,
         sep_by1_tok, seq, spaces, sptoken, variant,
     },
@@ -215,34 +215,22 @@ parser! {
                 )
                     .and_then(|(pos, (base, paren), end, mut ops, chain_end)| {
                         let base = base.ending(end);
-                        // The iterative postfix loop escapes `grow`'s depth
-                        // counter, but the fold builds an N-deep AST.
-                        // CR claude for claude: [bug] This cap counts only this run of
-                        // postfix ops. A parenthesized base followed by any op other
-                        // than ?/$ loses its parens in the fold below, so it joins the
-                        // run. `(t.0 x501).0 x500` therefore parses and typechecks. But
-                        // `graphix fmt` prints it as one 1001-op run, and its own
-                        // reparse refuses that ("formatter bug: ... expression nesting
-                        // too deep"), so a valid file cannot be formatted. Operator
-                        // chains are not affected, since their parens survive as
-                        // ExplicitParens. Either count the base's own bare postfix
-                        // chain against the limit here, or have the printer break runs
-                        // longer than the limit. probe:
-                        // design/review-2026-10-05/repro/t-parser-a-01.gx (--check
-                        // exits 0, fmt exits 1). (t-parser-a-01)
-                        if ops.len() > max_nesting() {
-                            note_refused(chain_end);
+                        // `?`/`$` print their operand bare, so a
+                        // parenthesized one keeps its parens
+                        let keeps_parens = matches!(
+                            (&paren, ops.first()),
+                            (Some(Parenthesized), None | Some((Post::Qop | Post::OrNever, _)))
+                        );
+                        if !fold_fits(ops.len(), chain_end) {
                             return Err(<StreamErrorFor<I>>::message_static_message(
                                 "expression nesting too deep",
                             ));
                         }
-                        // `?`/`$` print their operand bare, so a
-                        // parenthesized one keeps its parens
-                        let base = match (paren, ops.first()) {
-                            (Some(Parenthesized), None | Some((Post::Qop | Post::OrNever, _))) => {
+                        let base = match keeps_parens {
+                            true => {
                                 ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos).ending(end)
                             }
-                            _ => base,
+                            false => base,
                         };
                         Ok(ops
                             .drain(..)
@@ -304,9 +292,7 @@ parser! {
             many((attempt(spaces().with(binop())), arith_term(*key))),
             position(),
         ).and_then(|(e, exprs, end): (Expr, LPooled<Vec<(BinOp, Expr)>>, _)| {
-            // The iterative operator chain builds one AST level per operator.
-            if exprs.len() > max_nesting() {
-                note_refused(end);
+            if !fold_fits(exprs.len(), end) {
                 return Err(<StreamErrorFor<I>>::message_static_message(
                     "expression nesting too deep",
                 ));

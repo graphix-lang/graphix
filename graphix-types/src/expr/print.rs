@@ -339,7 +339,7 @@ fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
 
 /// `write_leading` in a flat form, which is mid-line: decorations stand
 /// on lines of their own, so they start a fresh one.
-fn write_leading_flat(
+pub(crate) fn write_leading_flat(
     f: &mut impl fmt::Write,
     dec: &Option<Arc<Decorations>>,
 ) -> fmt::Result {
@@ -526,17 +526,39 @@ pub trait PrettyDisplay: fmt::Display {
         if self.decorated() {
             return Ok(false);
         }
+        /// Stops the write once it is wider than the room left on the line.
+        struct Room<'a> {
+            buf: &'a mut PrettyBuf,
+            room: usize,
+            over: bool,
+        }
+        impl fmt::Write for Room<'_> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                let at = self.buf.mark();
+                self.buf.write_str(s)?;
+                let n = self.buf.width_since(at);
+                if n > self.room {
+                    self.over = true;
+                    return Err(fmt::Error);
+                }
+                self.room -= n;
+                Ok(())
+            }
+        }
         let start = buf.mark();
-        let col = buf.col();
-        writeln!(buf, "{}", self)?;
         // Best-effort: a multi-line string overcounts and a long token can
         // exceed any limit. The newline counts as the column kept for the
         // `;` or `,` that follows.
-        let fits = col + buf.width_since(start) <= buf.limit;
-        if !fits {
-            buf.rollback(start);
+        let room = buf.limit.saturating_sub(buf.col());
+        let mut w = Room { buf, room, over: false };
+        match writeln!(w, "{}", self) {
+            Ok(()) => Ok(true),
+            Err(_) if w.over => {
+                w.buf.rollback(start);
+                Ok(false)
+            }
+            Err(e) => Err(e),
         }
-        Ok(fits)
     }
 
     /// Format on a single line when it fits, else via `fmt_pretty_inner`.
@@ -1988,14 +2010,10 @@ fn pretty_use_names(
     }
 }
 
-/// Whether `s` prints as itself between raw-string delimiters.
+/// Whether the canonical form may write `s` raw: a `\r` there would not
+/// survive an editor's line endings.
 fn raw_writable(s: &str) -> bool {
-    !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
-}
-
-/// Whether `s` prints between template delimiters, as itself or escaped.
-fn template_writable(s: &str) -> bool {
-    !s.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r' | '\0'))
+    !s.contains('\r')
 }
 
 /// The hashes a raw string needs so that no `"#..` inside `s` closes it.
@@ -2109,38 +2127,16 @@ fn write_str_constant(
     s: &str,
     form: StrForm,
 ) -> fmt::Result {
+    // the parser reads any character back verbatim in either form
     let form = match form {
         form if print_as_written() => form,
-        _ if s.contains('\n') => StrForm::Raw,
+        _ if s.contains('\n') && raw_writable(s) => StrForm::Raw,
         _ => StrForm::Quoted,
     };
     match form {
-        // CR claude for claude: [bug] As written, a raw string that holds \r prints
-        // quoted, because raw_writable rejects \r. Every multi-line raw string in a
-        // CRLF file holds one, so format_source refuses the file with "changed a
-        // string's delimiters". The parser reads any character back verbatim, so this
-        // path can always write raw; raw_writable only matters for the canonical
-        // choice. The same CRLF file also keeps \r in comment and doc text, because the
-        // parser's line_text stops only at \n. fmt then writes \r\n on comment lines
-        // and \n everywhere else, and it refuses a two-line /// doc in a .gxi because
-        // Doc prints through str::lines, which drops every \r but the last. CRLF is
-        // what Windows editors write, and the shipped editor configs format on save;
-        // probe: design/review-2026-10-05/repro/t-print-04.sh (t-print-04)
-        StrForm::Raw if raw_writable(s) => write_raw(f, s),
-        // CR claude for claude: [bug] The `!s.is_empty()` guard sends an empty template
-        // to the quoted form. The parser reads `""""""` (and a template holding only
-        // the newline after its opener) as an empty template, so the formatter's
-        // delimiter guard refuses the file: `let i = """"""; i` passes `--check`, and
-        // `graphix fmt` fails with "the formatted text changed a string's delimiters".
-        // write_template of an empty text writes `""""""`, which reads back as the same
-        // empty template, so the guard can go. Probe:
-        // design/review-2026-10-05/repro/t-print-09.gx. (t-print-09)
-        StrForm::Template if template_writable(s) && !s.is_empty() => {
-            write_template(f, std::iter::once(StrPart::Text(s)))
-        }
-        StrForm::Quoted | StrForm::Raw | StrForm::Template => {
-            v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
-        }
+        StrForm::Raw => write_raw(f, s),
+        StrForm::Template => write_template(f, std::iter::once(StrPart::Text(s))),
+        StrForm::Quoted => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
     }
 }
 
@@ -2155,7 +2151,7 @@ fn write_interpolation(
     let template = match form {
         form if print_as_written() => form == StrForm::Template,
         _ => texts().any(|s| s.contains('\n')),
-    } && texts().all(template_writable);
+    };
     if template {
         return write_template(f, parts);
     }

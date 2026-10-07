@@ -7,6 +7,7 @@ use combine::{
     unexpected_any,
 };
 use compact_str::CompactString;
+use poolshark::local::LPooled;
 use std::{
     cell::{Cell, RefCell},
     sync::atomic::{AtomicUsize, Ordering},
@@ -23,24 +24,20 @@ pub fn max_nesting() -> usize {
     MAX_NESTING.load(Ordering::Relaxed)
 }
 
-/// Raise or lower [`max_nesting`]. Process-global. The limit also bounds
-/// the unguarded recursions downstream (derived `Drop` glue on a deep
-/// `Type`); raising it past what they survive trades an error for an abort.
-// CR claude for claude: [doc-drift] The doc above says the limit bounds the unguarded
-// recursions downstream and gives derived Drop glue on a deep Type as the example.
-// Type's Drop is guarded now (typ/mod.rs:1309). The limit does not bound AST depth
-// either: each operator or postfix fold is capped separately and folds nest inside
-// parens, so about max_nesting²/3 levels (300k at the default) parse and pass --check.
-// CLAUDE.md's Stack discipline section implies the same wrong bound: it says folds are
-// "capped at the fold" and contrasts that with "Type depth is not bounded by the
-// limit". Both should say the limit bounds parser knots and each fold's length, not AST
-// depth, so every AST walk needs its own guard. (x-stack-12)
+/// Raise or lower [`max_nesting`]. Process-global. The limit bounds the
+/// depth of the AST, counted in parser knots and fold levels; types are
+/// not bounded by it, so every walk keeps its own stack guard. Raising it
+/// past what an unguarded walk survives trades an error for an abort.
 pub fn set_max_nesting(depth: usize) {
     MAX_NESTING.store(depth, Ordering::Relaxed)
 }
 
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// How deep what the knot in progress built so far goes, in knots and
+    /// fold levels: the AST depth under it, bounded with [`DEPTH`] by
+    /// [`fold_fits`].
+    static BELOW: Cell<usize> = const { Cell::new(0) };
     /// The furthest point a nesting refusal happened at. combine merges a
     /// committed error into the surrounding alternatives' expectations, so
     /// the refusal's own message is lost; [`parsing`] reads this instead.
@@ -70,6 +67,9 @@ thread_local! {
     /// knot records its input position here, on success too, since combine
     /// reports a failure at whichever alternative failed last.
     static FURTHEST: Cell<Option<SourcePosition>> = const { Cell::new(None) };
+    /// The furthest point a knot parsed to. A failure's position is past
+    /// the token it rejected, so only a success got past a refusal.
+    static FURTHEST_OK: Cell<Option<SourcePosition>> = const { Cell::new(None) };
 }
 
 #[derive(Clone)]
@@ -166,22 +166,16 @@ impl std::fmt::Display for ParseFailure {
 }
 
 /// The source line at `pos` with a caret under its column, the line
-/// windowed around the caret when it is long.
-// CR claude for claude: [readability] A file ends with a newline, so a parse that fails
-// at end of input is at line N+1, column 1, which `text.lines().nth(..)` does not have,
-// and the report shows no source line or caret: `let x = 1;\nlet y = (x + 2\n` gives
-// only "Parse error at line: 3, column: 1 / Unexpected end of input". Show the last
-// non-empty line with the caret after its end. Misplaced comments are never named
-// either: one on a block's last line gives "Unexpected `}`" over about 60 alternatives,
-// `a // x` parses as division and fails at the second slash, and one after a file's
-// last statement gives "Unexpected end of input" with no snippet. comment_line
-// (mod.rs:232) already notes a reason for `///`; the same kind of note could state
-// where a comment is allowed. (x-errors-19)
+/// windowed around the caret when it is long. Past the last line (the
+/// end of input) the caret follows the last line that holds anything.
 fn snippet(text: &str, pos: SourcePosition) -> String {
-    let Some(line) = text.lines().nth((pos.line.max(1) - 1) as usize) else {
-        return String::new();
+    let (line, col) = match text.lines().nth((pos.line.max(1) - 1) as usize) {
+        Some(line) => (line, (pos.column.max(1) - 1) as usize),
+        None => match text.lines().rev().find(|l| !l.trim().is_empty()) {
+            Some(line) => (line, line.chars().count()),
+            None => return String::new(),
+        },
     };
-    let col = (pos.column.max(1) - 1) as usize;
     let chars: Vec<char> = line.chars().collect();
     const WIDTH: usize = 100;
     let start = if col > WIDTH { col - WIDTH / 2 } else { 0 };
@@ -198,17 +192,69 @@ fn snippet(text: &str, pos: SourcePosition) -> String {
 
 /// The nesting depth of the parse in progress, restored when it ends
 /// however it ends.
-struct DepthScope(usize);
+struct DepthScope(usize, usize);
+
+thread_local! {
+    /// Under [`parsing`], the column of each line's first non-space
+    /// character, by line.
+    static FIRST_COLUMNS: RefCell<Option<LPooled<Vec<i32>>>> = const { RefCell::new(None) };
+}
+
+struct FirstColumnsScope(Option<LPooled<Vec<i32>>>);
+
+impl FirstColumnsScope {
+    fn enter(text: &str) -> Self {
+        let mut cols: LPooled<Vec<i32>> = LPooled::take();
+        cols.extend(text.split('\n').map(|line| {
+            let blank = line.chars().take_while(|c| c.is_whitespace()).count();
+            blank as i32 + 1
+        }));
+        Self(FIRST_COLUMNS.with_borrow_mut(|c| c.replace(cols)))
+    }
+}
+
+impl Drop for FirstColumnsScope {
+    fn drop(&mut self) {
+        FIRST_COLUMNS.with_borrow_mut(|c| *c = self.0.take())
+    }
+}
+
+/// Whether nothing precedes `pos` on its line; true outside [`parsing`].
+pub(super) fn starts_line(pos: SourcePosition) -> bool {
+    FIRST_COLUMNS.with_borrow(|c| match c {
+        None => true,
+        Some(cols) => usize::try_from(pos.line - 1)
+            .ok()
+            .and_then(|l| cols.get(l))
+            .is_none_or(|first| *first == pos.column),
+    })
+}
 
 impl DepthScope {
     fn enter() -> Self {
-        Self(DEPTH.with(|d| d.replace(0)))
+        Self(DEPTH.with(|d| d.replace(0)), BELOW.with(|b| b.replace(0)))
     }
 }
 
 impl Drop for DepthScope {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set(self.0))
+        DEPTH.with(|d| d.set(self.0));
+        BELOW.with(|b| b.set(self.1))
+    }
+}
+
+/// Count a fold `n` levels deep over what the knot in progress parsed,
+/// which an iterative loop builds out of `grow`'s sight, against
+/// [`max_nesting`] with the knots above it; past the limit the refusal is
+/// noted at `pos` and the fold is refused.
+pub(super) fn fold_fits(n: usize, pos: SourcePosition) -> bool {
+    let below = BELOW.with(|b| b.get()) + n;
+    if DEPTH.with(|d| d.get()) + below > max_nesting() {
+        note_refused(pos);
+        false
+    } else {
+        BELOW.with(|b| b.set(below));
+        true
     }
 }
 
@@ -220,26 +266,19 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
     f: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, ParseFailure> {
     let _depth = DepthScope::enter();
+    let _first_columns = FirstColumnsScope::enter(text);
     REFUSED.with(|r| r.set(None));
     REASON.with(|r| *r.borrow_mut() = None);
     ERROR_POS.with(|p| p.set(None));
     FURTHEST.with(|p| p.set(None));
+    FURTHEST_OK.with(|p| p.set(None));
     f().map_err(|e| {
         let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
         let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
-        // a refusal is the failure only when no branch got past it
-        // CR claude for claude: [bug] A nesting refusal is reported only when no branch
-        // got past it. On a nested call (`f(f(f(..`) some branch peeks a column past
-        // the knot GrowStack refused, so from 333 levels on the user gets 'the parser
-        // could not continue past this point' with no word of the limit, while parens,
-        // variants and tuples name it at 100,000 levels.
-        // graphix-shell/tests/deep_nesting.rs cannot see this: it requires REFUSED only
-        // of parens (lines 250-253). Its REJECTED doc (line 24, 'every shape must come
-        // back REFUSED') also contradicts lines 239-243, which accept any exit. probe:
-        // design/review-2026-10-05/repro/tests-shell-compiler-08.gx
-        // (tests-shell-compiler-08)
-        let refused = REFUSED.with(|r| r.get()).filter(|r| key(*r) >= key(furthest));
-        if refused.is_some() {
+        // a refusal is the failure only when no branch parsed past it
+        let passed = FURTHEST_OK.with(|p| p.get());
+        let refused = REFUSED.with(|r| r.get());
+        if refused.is_some_and(|r| passed.is_none_or(|p| key(r) >= key(p))) {
             return ParseFailure {
                 pos: err_pos,
                 msg: format!(
@@ -272,6 +311,7 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
                 r.pos.line, r.pos.column, r.reason
             ));
         }
+
         ParseFailure { pos, msg }
     })
 }
@@ -317,7 +357,16 @@ where
             ))
         } else {
             let Self(p) = self;
-            ensure_sufficient(|| p.parse_mode(mode, input, state))
+            let above = BELOW.with(|b| b.replace(0));
+            let r = ensure_sufficient(|| p.parse_mode(mode, input, state));
+            BELOW.with(|b| {
+                let below = match &r {
+                    ParseResult::CommitOk(_) | ParseResult::PeekOk(_) => b.get() + 1,
+                    ParseResult::CommitErr(_) | ParseResult::PeekErr(_) => 0,
+                };
+                b.set(above.max(below))
+            });
+            r
         };
         DEPTH.with(|d| d.set(d.get() - 1));
         // A token matcher advances past the token it rejects before
@@ -325,7 +374,12 @@ where
         // position is the exact one; on success the input's is.
         match &r {
             ParseResult::CommitOk(_) | ParseResult::PeekOk(_) => {
-                note_furthest(input.position())
+                note_furthest(input.position());
+                FURTHEST_OK.with(|f| {
+                    if f.get().is_none_or(|p| key(p) < key(input.position())) {
+                        f.set(Some(input.position()))
+                    }
+                })
             }
             ParseResult::CommitErr(e) => note_furthest(e.position()),
             ParseResult::PeekErr(e) => note_furthest(e.error.position()),
