@@ -124,7 +124,8 @@ still conservatively contribute to the needed set, matching the previous
 rule rather than introducing more dead-code elimination.
 
 `bench/startup.py` generates blocks with 64, 128, 256, and 512 bindings,
-requires their calls to fuse, and measures whole-process check latency.
+requires their calls to fuse (`#[native]`, verified by `--expand`), and
+measures whole-process compile latency (`--expand --no-cache`).
 Other compiler phases and code generation still contribute to these
 times; the linearity claim is specifically about reference collection
 within a single block emission.

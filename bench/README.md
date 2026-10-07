@@ -56,15 +56,16 @@ Sub-second `cast<f64>(datetime)` precision depends on the fix to the
 
 ## Running
 
-Compile/check startup has a separate comparison harness:
+Compile startup has a separate comparison harness:
 
 ```bash
 python3 bench/startup.py /path/to/baseline/graphix /path/to/candidate/graphix
 ```
 
 Use binaries built with the same profile. The harness alternates the two
-binaries, reports medians, and requires the generated computations to
-fuse through `#[native]`. For the admin application and phase profiling,
+binaries, reports medians, and times `--expand --no-cache`: the whole
+compile (parse, check, elaboration, fusion), which refuses a generated
+`#[native]` call that does not fuse. For the admin application and phase profiling,
 see [`design/jit_startup.md`](../design/jit_startup.md).
 
 ```

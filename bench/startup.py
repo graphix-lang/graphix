@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare compile/check latency using two Graphix binaries of the same profile."""
+"""Compare compile latency (parse, check, elaboration, fusion) of two Graphix binaries of the same profile."""
 
 import argparse
 import pathlib
@@ -12,16 +12,9 @@ import time
 def measure(binary, source):
     start = time.perf_counter_ns()
     subprocess.run(
-        # CR claude for claude: [test-gap] `--check` runs the check alone (no elaboration,
-        # no fusion, `#[native]` never verified), so this harness times parse and
-        # typecheck only and the generated `#[native] f(0)` asserts nothing: a fusion or
-        # elaboration startup regression shows no change. design/jit_startup.md:126 and
-        # bench/README.md:60-62 still say it requires the calls to fuse. Time `--expand`
-        # instead, which builds, fuses and checks `#[native]`, and correct those two
-        # descriptions. Probe: `let f = |x: i64| { let a0 = x + 1; println("[a0]"); a0
-        # }; #[native] f(0)` exits 0 under `--check` and fails under `--expand` with
-        # 'did not fully fuse'. (ide-tooling.r2-06)
-        [binary, "--no-netidx", "--no-init", "--check", str(source)],
+        # --expand builds, fuses and verifies #[native]; --no-cache so a warm
+        # image cannot skip the compile being timed
+        [binary, "--no-netidx", "--no-init", "--no-cache", "--expand", str(source)],
         check=True,
         capture_output=True,
         text=True,
