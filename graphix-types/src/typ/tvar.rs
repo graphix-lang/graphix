@@ -80,35 +80,47 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
     }
 }
 
-/// Where a cell belongs: the depth of the definition that owns it and
-/// which definition that is (`None` at the top level), or
-/// [`Level::GENERIC`], a scheme's variable no definition owns
-/// (`design/tvar_constraints.md`, Generalization).
+/// Where a cell belongs (`design/tvar_constraints.md`,
+/// Generalization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
-// CR claude for claude: [structure] Level has three shapes (top `{0, None}`, a definition
-// `{d >= 1, Some(id)}`, generic `{u32::MAX, None}`) but admits any pair: generic is a
-// depth sentinel that `claim` relies on to sort deepest, and `Pack::decode` accepts
-// `{3, None}` or `{u32::MAX, Some(id)}`. The doc comment above says in prose what `enum
-// Level { Top, Def { depth, owner }, Generic }` would say in the type, with one depth
-// method for `claim` and `generalize`. LambdaDef keeps only the depth (lambda.rs:489),
-// and two sites rebuild the Level from it by hand (lambda.rs:1588, 1846); it could keep
-// the Level. (x-invalid-states-08)
-pub struct Level {
-    #[doc(hidden)]
-    pub depth: u32,
-    #[doc(hidden)]
-    pub owner: Option<LambdaId>,
+pub enum Level {
+    /// The top level: shared by every use.
+    Top,
+    /// Owned by the definition `owner`, at its nesting depth (1 and up).
+    Def { depth: u32, owner: LambdaId },
+    /// A scheme's variable no definition owns; deepest of all.
+    Generic,
 }
 
 impl Level {
     #[doc(hidden)]
-    pub const GENERIC: Self = Self { depth: u32::MAX, owner: None };
+    pub const GENERIC: Self = Self::Generic;
     #[doc(hidden)]
-    pub const TOP: Self = Self { depth: 0, owner: None };
+    pub const TOP: Self = Self::Top;
+
+    /// The nesting depth, deepest for [`Self::Generic`]: a cell claimed
+    /// for a shallower level moves up.
+    #[doc(hidden)]
+    pub fn depth(&self) -> u32 {
+        match self {
+            Self::Top => 0,
+            Self::Def { depth, .. } => *depth,
+            Self::Generic => u32::MAX,
+        }
+    }
+
+    /// The definition that owns the cell.
+    #[doc(hidden)]
+    pub fn owner(&self) -> Option<LambdaId> {
+        match self {
+            Self::Def { owner, .. } => Some(*owner),
+            Self::Top | Self::Generic => None,
+        }
+    }
 
     fn is_generic(&self) -> bool {
-        self.depth == u32::MAX
+        matches!(self, Self::Generic)
     }
 
     /// The level of the definition `id` compiled now: one below the
@@ -117,31 +129,53 @@ impl Level {
     pub fn definition(id: LambdaId) -> Self {
         let depth = match current_level() {
             l if l.is_generic() => 1,
-            l => l.depth + 1,
+            l => l.depth() + 1,
         };
-        Self { depth, owner: Some(id) }
+        Self::Def { depth, owner: id }
     }
 
     /// Does a call copy a cell at this level? A generic cell, and one a
     /// definition owns whose gate is not open: the definition's scheme.
     /// A top-level cell, and an open gate's, is shared.
     pub(super) fn copied_by(&self, open: &IntSet<LambdaId>) -> bool {
-        self.is_generic() || self.owner.is_some_and(|id| !open.contains(&id))
+        match self {
+            Self::Generic => true,
+            Self::Def { owner, .. } => !open.contains(owner),
+            Self::Top => false,
+        }
     }
 }
 
 impl Pack for Level {
     fn encoded_len(&self) -> usize {
-        self.depth.encoded_len() + self.owner.encoded_len()
+        1 + match self {
+            Self::Def { depth, owner } => depth.encoded_len() + owner.encoded_len(),
+            Self::Top | Self::Generic => 0,
+        }
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        self.depth.encode(buf)?;
-        self.owner.encode(buf)
+        match self {
+            Self::Top => Ok(buf.put_u8(0)),
+            Self::Def { depth, owner } => {
+                buf.put_u8(1);
+                depth.encode(buf)?;
+                owner.encode(buf)
+            }
+            Self::Generic => Ok(buf.put_u8(2)),
+        }
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        Ok(Self { depth: u32::decode(buf)?, owner: Pack::decode(buf)? })
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(Self::Top),
+            1 => Ok(Self::Def { depth: u32::decode(buf)?, owner: Pack::decode(buf)? }),
+            2 => Ok(Self::Generic),
+            _ => Err(PackError::UnknownTag),
+        }
     }
 }
 
@@ -666,7 +700,7 @@ impl TVar {
         let lowered = {
             let cell = self.cell();
             let mut c = cell.write();
-            (c.level.depth > level.depth).then(|| {
+            (c.level.depth() > level.depth()).then(|| {
                 written(&c);
                 c.level = level;
                 (c.binding.clone(), c.constraints.clone())

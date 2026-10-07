@@ -116,7 +116,7 @@ impl DefTable {
             if !exempt.contains(addr)
                 && !tv.is_bound()
                 && !tv.requires_concrete()
-                && tv.level().owner == Some(owner)
+                && tv.level().owner() == Some(owner)
             {
                 tv.settle_or_bottom(env)?;
             }
@@ -513,9 +513,9 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// instance re-compiles, which is what [`crate::FnArgIdentity`] keys on.
     pub source: ExprId,
     pub origin: DefOrigin,
-    /// The definition's depth: the cells it owns (`tvar::Level`) are
-    /// its signature's and its body's.
-    pub level: u32,
+    /// The definition's level: the cells it owns are its signature's
+    /// and its body's.
+    pub level: Level,
 }
 
 /// Where a definition came from: a lambda expression, whose `init` is
@@ -1628,7 +1628,7 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: spec.clone() },
-            level: level.depth,
+            level,
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {
@@ -1672,7 +1672,7 @@ struct DefGate<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> DefGate<R, E> {
     fn open(ctx: &mut CompileCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
-        let at = AtLevel::enter(Level { depth: def.level, owner: Some(def.id) });
+        let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
         ctx.env.by_id.insert(
@@ -1699,7 +1699,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         ctx.pending_settles.push(Vec::new());
         Self {
             def: def.id,
-            depth: def.level,
+            depth: def.level.depth(),
             _at: at,
             sig: def.typ.clone(),
             faux_id,
@@ -1955,7 +1955,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             Some(_) => None,
         };
         let Some(tables) = tables else { return self.typecheck0(ctx) };
-        let level = Level { depth: def.level, owner: Some(def.id) };
+        let level = def.level;
         let row = {
             let _at = AtLevel::enter(level);
             types.typ(self.spec.id)
@@ -1965,7 +1965,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let _at = AtLevel::enter(level);
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
-        def.typ.generalize(def.level);
+        def.typ.generalize(def.level.depth());
         def.table.set(tables);
         Ok(())
     }

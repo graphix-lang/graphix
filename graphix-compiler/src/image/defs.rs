@@ -105,7 +105,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let stateless = bool::decode(buf)?;
     let recursion = Pack::decode(buf)?;
     let source = Pack::decode(buf)?;
-    let level = u32::decode(buf)?;
+    let level = Pack::decode(buf)?;
     let body = body_decode(buf)?;
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;

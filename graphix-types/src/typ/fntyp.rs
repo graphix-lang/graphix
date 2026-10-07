@@ -853,7 +853,7 @@ impl FnType {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
         for tv in cells.values() {
-            if tv.level().depth >= depth {
+            if tv.level().depth() >= depth {
                 tv.generalize()
             }
         }
