@@ -2204,7 +2204,7 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
     // progress-based deadline: a healthy child flushes a line per
     // subject, and a typemorph subject is its base and every probe
     let per_subject = match order.kind {
-        SourceKind::Typemorph => 1 + 6 * TM_CAP as u32,
+        SourceKind::Typemorph => tm_checks(TM_CAP),
         _ => 4,
     };
     let stall = timeout * per_subject + Duration::from_secs(90);
@@ -2801,10 +2801,62 @@ fn tm_error_head(e: &str) -> String {
 /// Candidates per transform kind a subject's typemorph probes draw.
 pub const TM_CAP: usize = 3;
 
-/// Run one subject's metamorphic probes against a single warmed
-/// runtime (`GXHandle::check_with_resolvers` never executes and
-/// restores the env per call). Probes run only when the base accepts:
-/// accept→reject is the finding.
+/// The most checks one typemorph subject runs: its base, every
+/// transform kind's probes, the typed base, and every must-reject
+/// family's (retype takes two per site).
+pub fn tm_checks(cap: usize) -> u32 {
+    (2 + (typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len() + 1) * cap) as u32
+}
+
+/// One check of a subject's full text.
+enum TmCheck {
+    /// The text is not a subject.
+    Unparsed(String),
+    /// The check outlived its budget; the runtime is still busy with it.
+    Hung,
+    /// The check's answer, and the subject body's first column.
+    Done(anyhow::Result<graphix_rt::CheckResult>, usize),
+}
+
+/// Check `full` on `ctx`, recording its types when `types`.
+async fn tm_check(
+    ctx: &TestCtx,
+    full: &str,
+    types: bool,
+    per_check: Duration,
+) -> TmCheck {
+    let subj = match Subject::parse(full, "test") {
+        Ok(s) => s,
+        Err(e) => return TmCheck::Unparsed(e),
+    };
+    let resolver = VfsResolver::new(subj.table.clone());
+    let text =
+        graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+    let resolvers = vec![resolver.into()];
+    let r = match types {
+        true => {
+            tokio::time::timeout(
+                per_check,
+                ctx.rt.check_with_types(text, resolvers, None),
+            )
+            .await
+        }
+        false => {
+            let fut = ctx.rt.check_with_resolvers(text, resolvers, None);
+            tokio::time::timeout(per_check, fut).await
+        }
+    };
+    match r {
+        Ok(r) => TmCheck::Done(r, subj.body_col),
+        Err(_) => TmCheck::Hung,
+    }
+}
+
+/// Run one subject's metamorphic probes, then its must-reject probes,
+/// on one warmed runtime (`GXHandle::check_with_resolvers` never
+/// executes and restores the env per call; a check never fuses). Probes
+/// run only when the base accepts: accept→reject is the finding. A hung
+/// check leaves the runtime busy, so nothing after it is measured.
 pub async fn typemorph_subject(
     code: &str,
     per_check: Duration,
@@ -2823,71 +2875,6 @@ pub async fn typemorph_subject(
     };
     let (tx, _rx) = mpsc::channel(64);
     let sink = graphix_package_core::PrintSink::default();
-    let ctx =
-        init_with_flags_and_setup(tx, REGISTER, vec![], Mode::Jit.flags(), move |ctx| {
-            ctx.libstate.set(sink);
-        })
-        .await
-        .map_err(|e| format!("runtime init failed: {e:?}"))?;
-    async fn check_accept(ctx: &TestCtx, full: &str, per_check: Duration) -> TmVerdict {
-        let subj = match Subject::parse(full, "test") {
-            Ok(s) => s,
-            Err(e) => return TmVerdict::Reject(tm_error_head(&e)),
-        };
-        let resolver = VfsResolver::new(subj.table.clone());
-        let text = subj.compile_text();
-        let fut = ctx.rt.check_with_resolvers(
-            graphix_compiler::expr::Source::Internal(ArcStr::from(text)),
-            vec![resolver.into()],
-            None,
-        );
-        match tokio::time::timeout(per_check, fut).await {
-            Err(_) => TmVerdict::Hung,
-            Ok(Ok(_)) => TmVerdict::Accept,
-            Ok(Err(e)) => TmVerdict::Reject(tm_error_head(&format!("{e:?}"))),
-        }
-    }
-    let base = check_accept(&ctx, &compose(body), per_check).await;
-    let mut results = Vec::new();
-    if base == TmVerdict::Accept {
-        for p in &probes {
-            let verdict = check_accept(&ctx, &compose(&p.body), per_check).await;
-            results.push(Probed { id: p.id(), mutant: p.body.clone(), verdict });
-        }
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    let rejects = match base {
-        TmVerdict::Accept => must_reject(body, &compose, per_check, cap).await?,
-        _ => Vec::new(),
-    };
-    Ok(TmReport { base, probes: results, noparse, rejects })
-}
-
-/// The must-reject half of a subject (`mustreject`): the base checked
-/// again, with its types, on a runtime with fusion off (a fused region
-/// hides its nodes' types), and each mutant its families build checked
-/// there. A mutant accepted is a `LEAK`; one refused away from the
-/// mutation and its rigid consumer is `MISPLACED`.
-async fn must_reject(
-    body: &str,
-    compose: &impl Fn(&str) -> String,
-    per_check: Duration,
-    cap: usize,
-) -> Result<Vec<Probed<Option<String>>>, String> {
-    use graphix_compiler::expr::ErrorSite;
-    let (tx, _rx) = mpsc::channel(64);
-    let sink = graphix_package_core::PrintSink::default();
-    // CR claude for claude: [structure] The doc comment's reason for this runtime is
-    // false: every check goes through GXRt::check_inner, which adds CFlag::CheckOnly
-    // (graphix-rt/src/gx.rs:837-840), and check_and_fuse_inner returns before fusion
-    // under it (graphix-compiler/src/lib.rs:1958), so typemorph_subject's runtime never
-    // fuses and its expr_types would be just as complete. Each subject pays a second
-    // cold registration compile (~23 ms root init in the debug build) and shutdown for
-    // it. What this runtime does buy is isolation from a typemorph probe that timed
-    // out, which the shared runtime would still be finishing while the must-reject
-    // checks queue behind it. Either run the must-reject checks on typemorph_subject's
-    // runtime before its shutdown, with one check closure for both, or keep this
-    // runtime and give that reason instead. (fuzz-mutate-12)
     let ctx = init_with_flags_and_setup(
         tx,
         REGISTER,
@@ -2899,69 +2886,74 @@ async fn must_reject(
     )
     .await
     .map_err(|e| format!("runtime init failed: {e:?}"))?;
-    let check = |full: String, types: bool| {
-        let ctx = &ctx;
-        async move {
-            let subj = Subject::parse(&full, "test").ok()?;
-            let resolver = VfsResolver::new(subj.table.clone());
-            let text = graphix_compiler::expr::Source::Internal(ArcStr::from(
-                subj.compile_text(),
-            ));
-            let resolvers = vec![resolver.into()];
-            let r = match types {
-                true => {
-                    tokio::time::timeout(
-                        per_check,
-                        ctx.rt.check_with_types(text, resolvers, None),
-                    )
-                    .await
-                }
-                false => {
-                    let fut = ctx.rt.check_with_resolvers(text, resolvers, None);
-                    tokio::time::timeout(per_check, fut).await
-                }
-            };
-            r.ok().map(|r| (r, subj.body_col))
-        }
+    let accept = |c: TmCheck| match c {
+        TmCheck::Unparsed(e) => TmVerdict::Reject(tm_error_head(&e)),
+        TmCheck::Hung => TmVerdict::Hung,
+        TmCheck::Done(Ok(_), _) => TmVerdict::Accept,
+        TmCheck::Done(Err(e), _) => TmVerdict::Reject(tm_error_head(&format!("{e:?}"))),
     };
-    let mut out = Vec::new();
-    if let Some((Ok(checked), body_col)) = check(compose(body), true).await {
-        let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
-        for p in mustreject::probes(body, &types, cap) {
-            let verdict = match check(compose(&p.body), false).await {
-                None => continue,
-                // CR claude for claude: [test-gap] Every LEAK gets this one head, so its
-                // typeflip class is `TYPEFLIP:<family>: LEAK: accepted`
-                // (typeflip_class, line 3698), and record_typeflip files one LEAK per
-                // family per campaign: every later LEAK of that family, a real
-                // unsoundness included, is dropped without a word. A false LEAK from a
-                // skip-list hole (an or-arm `` `A | _ `` under variant-widen is one)
-                // then hides the family's real LEAKs until the next deploy, while
-                // MISPLACED heads carry the normalized error and split normally. Make
-                // the head say what leaked, e.g. the consumer's node kind and the
-                // value's and literal's types (`LEAK: Add over [i64, string]`).
-                // (fuzz-mutate-04)
-                Some((Ok(_), _)) => Some("LEAK: accepted".to_string()),
-                Some((Err(e), body_col)) => {
-                    let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
-                    let right = site.is_some_and(|x| {
-                        mustreject::in_module(&x.ori, "test")
-                            && p.right_site(mustreject::to_body(x.pos, body_col))
-                    });
-                    match right {
-                        true => None,
-                        false => Some(format!(
-                            "MISPLACED: {}",
-                            tm_error_head(&format!("{e:?}"))
-                        )),
-                    }
-                }
-            };
-            out.push(Probed { id: p.id(), mutant: p.body, verdict });
+    let base = accept(tm_check(&ctx, &compose(body), false, per_check).await);
+    let mut results = Vec::new();
+    let mut rejects = Vec::new();
+    if base == TmVerdict::Accept {
+        for p in &probes {
+            let verdict =
+                accept(tm_check(&ctx, &compose(&p.body), false, per_check).await);
+            let hung = verdict == TmVerdict::Hung;
+            results.push(Probed { id: p.id(), mutant: p.body.clone(), verdict });
+            if hung {
+                break;
+            }
+        }
+        if results.iter().all(|r| r.verdict != TmVerdict::Hung) {
+            rejects = must_reject(&ctx, body, &compose, per_check, cap).await;
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    Ok(out)
+    Ok(TmReport { base, probes: results, noparse, rejects })
+}
+
+/// The must-reject half of a subject (`mustreject`): the base checked
+/// again with its types, and each mutant its families build. A mutant
+/// accepted is a `LEAK`; one refused away from the mutation and its rigid
+/// consumer is `MISPLACED`.
+async fn must_reject(
+    ctx: &TestCtx,
+    body: &str,
+    compose: &impl Fn(&str) -> String,
+    per_check: Duration,
+    cap: usize,
+) -> Vec<Probed<Option<String>>> {
+    use graphix_compiler::expr::ErrorSite;
+    let mut out = Vec::new();
+    let TmCheck::Done(Ok(checked), body_col) =
+        tm_check(ctx, &compose(body), true, per_check).await
+    else {
+        return out;
+    };
+    let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
+    for p in mustreject::probes(body, &types, cap) {
+        let verdict = match tm_check(ctx, &compose(&p.body), false, per_check).await {
+            TmCheck::Unparsed(_) => continue,
+            TmCheck::Hung => break,
+            TmCheck::Done(Ok(_), _) => Some(format!("LEAK: accepted at {}", p.reached)),
+            TmCheck::Done(Err(e), body_col) => {
+                let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
+                let right = site.is_some_and(|x| {
+                    mustreject::in_module(&x.ori, "test")
+                        && p.right_site(mustreject::to_body(x.pos, body_col))
+                });
+                match right {
+                    true => None,
+                    false => {
+                        Some(format!("MISPLACED: {}", tm_error_head(&format!("{e:?}"))))
+                    }
+                }
+            }
+        };
+        out.push(Probed { id: p.id(), mutant: p.body, verdict });
+    }
+    out
 }
 
 /// Spawn the `typemorph-one` child on one subject and return its
@@ -2973,6 +2965,7 @@ pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, 
     let out_path = sandbox.path().join("tm-verdicts");
     cmd.arg("typemorph-one")
         .arg(&out_path)
+        .arg(per_check.as_millis().to_string())
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -2984,18 +2977,8 @@ pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, 
         let mut stdin = child.stdin.take().ok_or("no stdin")?;
         stdin.write_all(prog.as_bytes()).await.map_err(|e| format!("stdin: {e}"))?;
     }
-    // base + 6 kinds × the per-kind cap, one warmed init, plus slack
-    // CR claude for claude: [risk] This deadline, and the batch stall window at line 2282
-    // (`1 + 6 * TM_CAP` checks), still count six transform kinds and no must-reject
-    // checks; a subject now runs up to 65 checks (base + 9 kinds x 3, then a typed base
-    // and up to 36 mutants) and two runtime inits. In the soak the confirm path passes
-    // the 3 s campaign timeout here (deadline 135 s) while the typemorph-one child
-    // checks with its own 10 s timeout() (main.rs:714), so fourteen slow checks kill
-    // it. A killed child is recorded as the `harness: child deadline` class in place of
-    // the subject's real flips, and a stalled batch loses its remaining subjects.
-    // Derive both budgets from the real probe counts and give the child the parent's
-    // per-check timeout. (fuzz-mutate-14)
-    let deadline = per_check * 25 + Duration::from_secs(60);
+    // every check the subject may run, one warmed init, plus slack
+    let deadline = per_check * tm_checks(TM_CAP) + Duration::from_secs(60);
     match tokio::time::timeout(deadline, child.wait()).await {
         Err(_) => return Err("child deadline".into()),
         Ok(Err(e)) => return Err(format!("wait: {e}")),

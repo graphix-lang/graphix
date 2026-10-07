@@ -79,7 +79,10 @@ reference to a binding that is not generalized holds the binding's own
 cells, so the two uses meet in one instance. A CALL instantiates its
 callee whatever the binding (`CallSite::typecheck0`), so calls are not
 sites: `f(1); f(1.5)` over the wrapped `f` is accepted, rightly. Right
-site: the definition or either use's statement.
+site: the definition, or the statement of any value use up to the
+second of the two: every value use shares the wrapped binding's cells,
+so the checker refuses at whichever conflicts first, a use the map
+gives no primitive first parameter included.
 
 **2. Rigid variables.** Site: a lambda with declared variables (`'a`,
 `'b`) whose parameters `x: 'a`, `y: 'b` are in scope in the body.

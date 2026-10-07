@@ -668,10 +668,15 @@ async fn main() -> Result<()> {
                 .get(2)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("typemorph-one <outfile>"))?;
+            // the parent's per-check budget
+            let per_check = args
+                .get(3)
+                .and_then(|ms| ms.parse().ok())
+                .map_or_else(timeout, Duration::from_millis);
             let code = read_stdin()?;
             let text = match graphix_fuzz::typemorph_subject(
                 code.trim(),
-                timeout(),
+                per_check,
                 graphix_fuzz::TM_CAP,
             )
             .await

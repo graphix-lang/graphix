@@ -17,7 +17,7 @@ use graphix_compiler::{
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
     },
     ide::ExprTypeSite,
-    typ::{FnType, Mutability, Type},
+    typ::{FnArgType, FnType, Mutability, Type},
 };
 use netidx_value::Typ;
 use triomphe::Arc;
@@ -38,6 +38,24 @@ pub enum Family {
     RefWrite,
     RefWiden,
     SameForm,
+}
+
+impl Family {
+    pub const ALL: [Family; 13] = [
+        Family::MonoReuse,
+        Family::RigidVar,
+        Family::SharedVar,
+        Family::LabelUnknown,
+        Family::LabelMissing,
+        Family::LabelDefault,
+        Family::WidenConsumer,
+        Family::VariantWiden,
+        Family::Retype,
+        Family::FunctionBound,
+        Family::RefWrite,
+        Family::RefWiden,
+        Family::SameForm,
+    ];
 }
 
 impl std::fmt::Display for Family {
@@ -70,6 +88,9 @@ pub struct RejectProbe {
     pub site: usize,
     pub body: String,
     pub expect: Vec<Span>,
+    /// The expected sites' shapes ([`shape`]): what an accepted mutant
+    /// slipped past, so one family's leaks split by what they reached.
+    pub reached: String,
 }
 
 impl RejectProbe {
@@ -172,8 +193,28 @@ fn finish(
     let body = cand.to_string();
     let back = mutate::parse(&body).filter(|b| b == cand)?;
     let pre = mutate::preorder(&back);
-    let expect = expect(&back, &pre).into_iter().flatten().collect();
-    Some(RejectProbe { family, site, body, expect })
+    let expect: Vec<Span> = expect(&back, &pre).into_iter().flatten().collect();
+    let mut shapes: Vec<&str> = expect
+        .iter()
+        .filter_map(|sp| pre.iter().find(|e| span(e) == Some(*sp)).map(shape))
+        .collect();
+    shapes.dedup();
+    let reached = shapes.join(", ");
+    Some(RejectProbe { family, site, body, expect, reached })
+}
+
+/// An expected site by its kind: the operator, or what it is.
+fn shape(e: &Expr) -> &'static str {
+    match &e.kind {
+        k if let Some((op, ..)) = BinOp::of(k) => op.token(),
+        ExprKind::Apply(_) => "call",
+        ExprKind::StructRef { .. } => "field read",
+        ExprKind::Select(_) => "select",
+        ExprKind::Bind(_) => "let",
+        ExprKind::Connect { .. } => "write",
+        ExprKind::Lambda(_) => "lambda",
+        _ => "expression",
+    }
 }
 
 /// Statement `i` of a block.
@@ -185,13 +226,6 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
-// CR claude for claude: [test-gap] Every family takes the first `cap` qualifying sites in
-// preorder or statement order, so a long subject's probes cluster at its start and its
-// later consumers are never mutated; subjects are deterministic, so a re-run probes the
-// same sites. On the 22nd program of `graphix-fuzz gen 40 23` (over 540 nodes)
-// widen-consumer took #47, #52 and #57 and shared-var #538, #541 and #546, three
-// neighbouring sites each. typemorph's `sample()` exists for this clustering; collect
-// each family's candidates and take `sample(&sites, cap)`. (fuzz-mutate-18)
 pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     let Some(root) = mutate::parse(body) else { return Vec::new() };
     let pre = mutate::preorder(&root);
@@ -216,10 +250,11 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
 /// one runtime form, so no arm may tell them apart. Right site: the select.
 fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) {
     let mut taken = 0usize;
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
+        let e = &pre[i];
         let ExprKind::Select(se) = &e.kind else { continue };
         let tests_string = se.arms.iter().any(|(p, _)| {
             matches!(&p.type_predicate, Some(Type::Primitive(t)) if t.contains(Typ::String))
@@ -402,6 +437,77 @@ fn arg_indices(i: usize, sizes: &[usize], n: usize) -> Vec<usize> {
     out
 }
 
+/// A block's statements, each with its index and its preorder index.
+fn statements<'a>(root: &'a Expr, sizes: &[usize]) -> Vec<(usize, usize, &'a Expr)> {
+    let ExprKind::Block { exprs } = &root.kind else { return Vec::new() };
+    let mut at = 1;
+    exprs
+        .iter()
+        .enumerate()
+        .map(|(si, e)| {
+            let s = (si, at, e);
+            at += sizes[at];
+            s
+        })
+        .collect()
+}
+
+/// The uses of `f` its binding at statement `si` reaches in the
+/// statements after it, up to a rebinding: the calls, and the references
+/// (a call's callee among them) with the statement each is in, by
+/// preorder index.
+fn reached_uses(
+    stmts: &[(usize, usize, &Expr)],
+    si: usize,
+    f: &str,
+) -> (Vec<usize>, Vec<(usize, usize)>) {
+    let (mut calls, mut refs) = (Vec::new(), Vec::new());
+    for &(k, at, later) in stmts.iter().skip(si + 1) {
+        let mut idx = at;
+        let mut here = Vec::new();
+        uses_reached(later, f, true, &mut idx, &mut calls, &mut here);
+        refs.extend(here.into_iter().map(|r| (r, k)));
+        if typemorph::binds_after(later, f) {
+            break;
+        }
+    }
+    (calls, refs)
+}
+
+/// Each argument of `ap` with its preorder index (`i` is the call's)
+/// and the parameter of `ft` it meets.
+fn paired<'a, 'b>(
+    ft: &'a FnType,
+    ap: &'b ApplyExpr,
+    i: usize,
+    sizes: &[usize],
+) -> Vec<(usize, &'b Expr, Option<&'a FnArgType>)> {
+    let mut positional = ft.args.iter().filter(|a| a.is_positional());
+    ap.args
+        .iter()
+        .zip(arg_indices(i, sizes, ap.args.len()))
+        .map(|((label, arg), at)| {
+            let param = match label {
+                Some(l) => ft.args.iter().find(|a| a.label() == Some(l)),
+                None => positional.next(),
+            };
+            (at, arg, param)
+        })
+        .collect()
+}
+
+/// `0..n` in an order that spreads its first picks over the range (the
+/// bit-reversal permutation): a family takes its first `cap` sites, and
+/// in preorder they cluster at a long subject's start.
+fn spread(n: usize) -> impl Iterator<Item = usize> {
+    let bits = usize::BITS - n.saturating_sub(1).leading_zeros();
+    (0..(1usize << bits))
+        .map(
+            move |k| if bits == 0 { k } else { k.reverse_bits() >> (usize::BITS - bits) },
+        )
+        .filter(move |k| *k < n)
+}
+
 /// A call's callee type, when the map shows a function.
 fn callee_type(
     types: &TypeMap,
@@ -452,25 +558,11 @@ fn rigid_probe(l: &LambdaExpr) -> Option<Expr> {
 /// def's declared variables are rigid in its body, so `'a` cannot become
 /// the literal's type. Right site: the definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
-    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    // CR claude for claude: [structure] This statement walk (`offset = 1; at = offset;
-    // offset += sizes[at]`) is written out again in labels_default, retype,
-    // widen_through_let and mono_reuse (typemorph builds the same list as `offsets`).
-    // The reached-uses loop (uses_reached over later statements, stopping at
-    // binds_after) is copied in labels_default, retype, widen_through_let and
-    // mono_reuse; the positional-iterator plus label-lookup pairing of arguments to
-    // parameters in function_bound, labels_default and widen_consumer; and
-    // widen_consumer (line 671) writes callee_type out inline. Each copy is a place
-    // where a skip-list fix must be repeated, so a fix to reached-use handling can land
-    // in one family and not the others. Factor statement offsets, reached uses and
-    // argument-parameter pairing into one helper each, and call callee_type in
-    // widen_consumer. (fuzz-mutate-15)
-    let mut offset = 1usize;
+    let stmts = statements(root, &sizes);
     let mut taken = 0usize;
-    for (si, stmt) in stmts.iter().enumerate() {
-        let at = offset;
-        offset += sizes[at];
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
         if taken >= cap {
             break;
         }
@@ -518,10 +610,11 @@ fn shared_var(
 ) {
     let sizes = mutate::sizes(root);
     let mut taken = 0usize;
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
+        let e = &pre[i];
         let ExprKind::Apply(ap) = &e.kind else { continue };
         if ap.args.iter().any(|(l, _)| l.is_some()) {
             continue;
@@ -569,28 +662,17 @@ fn function_bound(
     };
     let sizes = mutate::sizes(root);
     let mut taken = 0usize;
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
+        let e = &pre[i];
         let ExprKind::Apply(ap) = &e.kind else { continue };
         let Some(ft) = callee_type(types, ap) else { continue };
-        let at = arg_indices(i, &sizes, ap.args.len());
-        let mut positional = ft.args.iter().filter(|a| a.label().is_none());
-        let mut found = None;
-        for (j, (label, arg)) in ap.args.iter().enumerate() {
-            let param = match label {
-                Some(l) => ft.args.iter().find(|a| a.label() == Some(l)),
-                None => positional.next(),
-            };
-            if found.is_none()
-                && !binds_outward(arg)
-                && param.is_some_and(|p| bounded(&p.typ))
-            {
-                found = Some(at[j]);
-            }
-        }
-        let Some(at) = found else { continue };
+        let found = paired(&ft, ap, i, &sizes).into_iter().find(|(_, arg, param)| {
+            !binds_outward(arg) && param.is_some_and(|p| bounded(&p.typ))
+        });
+        let Some((at, _, _)) = found else { continue };
         let lit = ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
         let cand = mutate::replace(root, at, &lit);
         out.extend(finish(Family::FunctionBound, i, &cand, |_, pre| {
@@ -616,7 +698,8 @@ fn labels(
 ) {
     let sizes = mutate::sizes(root);
     let (mut unknown, mut dropped) = (0usize, 0usize);
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
+        let e = &pre[i];
         let ExprKind::Apply(ap) = &e.kind else { continue };
         let Some(ft) = callee_type(types, ap) else { continue };
         if !ft.args.iter().any(|a| a.label().is_some()) {
@@ -663,12 +746,10 @@ fn labels_default(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
-    let mut offset = 1usize;
+    let stmts = statements(root, sizes);
     let mut taken = 0usize;
-    for (si, stmt) in stmts.iter().enumerate() {
-        let at = offset;
-        offset += sizes[at];
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
         if taken >= cap {
             break;
         }
@@ -678,26 +759,15 @@ fn labels_default(
         else {
             continue;
         };
-        let (mut calls, mut refs) = (Vec::new(), Vec::new());
-        let mut idx = offset;
-        for later in &stmts[si + 1..] {
-            uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, f) {
-                break;
-            }
-        }
+        let (_, refs) = reached_uses(&stmts, si, f);
         // a value use of `f` as an argument, and the parameter it meets
         let expected = pre.iter().enumerate().find_map(|(i, n)| {
             let ExprKind::Apply(ap) = &n.kind else { return None };
             let ft = callee_type(types, ap)?;
-            let idxs = arg_indices(i, sizes, ap.args.len());
-            let mut positional = ft.args.iter().filter(|a| a.is_positional());
-            ap.args.iter().zip(idxs).find_map(|((label, _), ix)| {
-                let param = match label {
-                    Some(lb) => ft.args.iter().find(|a| a.label() == Some(lb)),
-                    None => positional.next(),
-                }?;
-                refs.contains(&ix).then(|| param.typ.clone())
+            paired(&ft, ap, i, sizes).into_iter().find_map(|(ix, _, param)| {
+                refs.iter()
+                    .any(|(r, _)| *r == ix)
+                    .then(|| param.map(|p| p.typ.clone()))?
             })
         });
         let Some(expected) = expected else { continue };
@@ -723,9 +793,9 @@ fn labels_default(
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &lambda);
         let mut sites = vec![si];
-        sites.extend(stmts.iter().enumerate().skip(si + 1).filter(|(_, st)| {
+        sites.extend(stmts.iter().skip(si + 1).filter(|(_, _, st)| {
             st.fold(false, &mut |m, n| m || matches!(&n.kind, ExprKind::Ref { name } if name.to_string() == **f))
-        }).map(|(k, _)| k));
+        }).map(|(k, _, _)| *k));
         out.extend(finish(Family::LabelDefault, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
@@ -765,10 +835,11 @@ fn widen_consumer(
         })
         .collect();
     let mut taken = 0usize;
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
+        let e = &pre[i];
         // the consumer's own type, where it is wider than the value's (a
         // parameter): the widening literal must lie outside it
         let target: Option<(usize, &Expr, Option<Type>)> = match &e.kind {
@@ -799,31 +870,13 @@ fn widen_consumer(
             }
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is a concrete primitive
-                let ft = types.of(&ap.function).first().and_then(|t| {
-                    t.with_deref(|d| match d {
-                        Some(Type::Fn(ft)) => Some(ft.clone()),
-                        _ => None,
-                    })
-                });
-                let Some(ft) = ft else { continue };
-                let mut idx = i + 1 + sizes[i + 1];
-                let mut found = None;
-                let mut positional = ft.args.iter().filter(|a| a.label().is_none());
-                for (label, arg) in ap.args.iter() {
-                    let param = match label {
-                        Some(l) => ft.args.iter().find(|a| a.label() == Some(l)),
-                        None => positional.next(),
-                    };
-                    if found.is_none()
-                        && let Some(p) = param
-                        && concrete(&p.typ)
-                        && p.typ.with_deref(|d| matches!(d, Some(Type::Primitive(_))))
-                    {
-                        found = Some((idx, arg, Some(p.typ.clone())));
-                    }
-                    idx += sizes[idx];
-                }
-                found
+                let Some(ft) = callee_type(types, ap) else { continue };
+                paired(&ft, ap, i, &sizes).into_iter().find_map(|(at, arg, param)| {
+                    let p = param?;
+                    (concrete(&p.typ)
+                        && p.typ.with_deref(|d| matches!(d, Some(Type::Primitive(_)))))
+                    .then(|| (at, arg, Some(p.typ.clone())))
+                })
             }
             _ => None,
         };
@@ -856,13 +909,12 @@ fn retype(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
+    let ExprKind::Block { exprs: block } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    let mut offset = 1usize;
+    let stmts = statements(root, &sizes);
     let mut taken = 0usize;
-    for (si, stmt) in stmts.iter().enumerate() {
-        let at = offset;
-        offset += sizes[at];
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
         if taken >= cap {
             break;
         }
@@ -887,7 +939,7 @@ fn retype(
             deref: false,
         }
         .to_expr_nopos();
-        let mut with_writer: Vec<Expr> = stmts.to_vec();
+        let mut with_writer: Vec<Expr> = block.to_vec();
         with_writer.insert(si + 1, write);
         let cand = ExprKind::Block { exprs: Arc::from_iter(with_writer) }.to_expr_nopos();
         out.extend(finish(Family::Retype, at, &cand, |back, _| {
@@ -895,14 +947,7 @@ fn retype(
         }));
         taken += 1;
         // the initializer retyped, where a reached use is pinned by a literal
-        let (mut calls, mut refs) = (Vec::new(), Vec::new());
-        let mut idx = offset;
-        for later in &stmts[si + 1..] {
-            uses_reached(later, v, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, v) {
-                break;
-            }
-        }
+        let (_, refs) = reached_uses(&stmts, si, v);
         let pinned = pre.iter().enumerate().find_map(|(j, n)| {
             let (op, lhs, rhs) = BinOp::of(&n.kind)?;
             let is_v = |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == **v);
@@ -912,11 +957,11 @@ fn retype(
                 (false, true) if lit(lhs) => j + 1 + sizes[j + 1],
                 _ => return None,
             };
-            (arith_or_compare(op) && refs.contains(&use_at)).then_some(j)
+            (arith_or_compare(op) && refs.iter().any(|(r, _)| *r == use_at)).then_some(j)
         });
         if let Some(j) = pinned {
             let cand = mutate::replace(root, at + 1, &u);
-            let sites = affected_stmts(stmts, si, v);
+            let sites = affected_stmts(block, si, v);
             out.extend(finish(Family::Retype, j, &cand, |back, _| {
                 sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
             }));
@@ -938,20 +983,8 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
         });
         if mentions {
             sites.push(k);
-            // CR claude for claude: [bug] Only a `let` whose pattern is a bare name adds
-            // its name to `affected`. A destructuring let built from `v` (`let (p, q) =
-            // (w, 2)`) therefore leaves `p` and `q` untracked. A later `p + 1` is where
-            // `v`'s new type is refused first, which the family's rule says is right,
-            // but that statement is not among the sites. So widen_through_let and
-            // retype's pinned probe file a correct refusal as a MISPLACED typeflip.
-            // Push every name the pattern binds (`lb.pattern.with_names`), not only a
-            // `Bind`. probe: design/review-2026-10-05/repro/fuzz-mutate-06.gx
-            // (`graphix-fuzz typemorph` reports widen-consumer#1 and retype#12
-            // MISPLACED; with `let p = (w, 2).0` both are REJECT ok). (fuzz-mutate-06)
-            if let ExprKind::Bind(lb) = &later.kind
-                && let StructurePattern::Bind(w) = &lb.pattern
-            {
-                affected.push(w.name.as_str());
+            if let ExprKind::Bind(lb) = &later.kind {
+                lb.pattern.with_names(&mut |n| affected.push(n.as_str()));
             }
         }
         if typemorph::binds_after(later, v) {
@@ -975,13 +1008,12 @@ fn widen_through_let(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
+    let ExprKind::Block { exprs: block } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    let mut offset = 1usize;
+    let stmts = statements(root, &sizes);
     let mut taken = 0usize;
-    for (si, stmt) in stmts.iter().enumerate() {
-        let at = offset;
-        offset += sizes[at];
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
         if taken >= cap {
             break;
         }
@@ -997,14 +1029,8 @@ fn widen_through_let(
             continue;
         }
         let Some(u) = disjoint_literal(t) else { continue };
-        let (mut calls, mut refs) = (Vec::new(), Vec::new());
-        let mut idx = offset;
-        for later in &stmts[si + 1..] {
-            uses_reached(later, w, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, w) {
-                break;
-            }
-        }
+        let (_, refs) = reached_uses(&stmts, si, w);
+        let refs: Vec<usize> = refs.into_iter().map(|(r, _)| r).collect();
         let struct_t = t.with_deref(|d| matches!(d, Some(Type::Struct(_))));
         let consumed = pre.iter().enumerate().any(|(j, n)| match &n.kind {
             k if let Some((op, lhs, rhs)) = BinOp::of(k)
@@ -1027,7 +1053,7 @@ fn widen_through_let(
             continue;
         }
         let cand = mutate::replace(root, at + 1, &widen(&b.value, u));
-        let sites = affected_stmts(stmts, si, w);
+        let sites = affected_stmts(block, si, w);
         out.extend(finish(Family::WidenConsumer, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
@@ -1048,13 +1074,11 @@ fn mono_reuse(
     cap: usize,
     out: &mut Vec<RejectProbe>,
 ) {
-    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    let mut offset = 1usize;
+    let stmts = statements(root, &sizes);
     let mut taken = 0usize;
-    for (si, stmt) in stmts.iter().enumerate() {
-        let at = offset;
-        offset += sizes[at];
+    for k in spread(stmts.len()) {
+        let (si, at, stmt) = stmts[k];
         if taken >= cap {
             break;
         }
@@ -1064,23 +1088,11 @@ fn mono_reuse(
         else {
             continue;
         };
-        let (mut calls, mut refs) = (Vec::new(), Vec::new());
-        let mut stmt_of: Vec<usize> = Vec::new();
-        let mut idx = offset;
-        for (j, later) in stmts.iter().enumerate().skip(si + 1) {
-            let before = refs.len();
-            uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
-            stmt_of.extend(std::iter::repeat_n(j, refs.len() - before));
-            if typemorph::binds_after(later, f) {
-                break;
-            }
-        }
+        let (calls, refs) = reached_uses(&stmts, si, f);
         // a callee's reference sits right after its call in preorder
         let values: Vec<(usize, usize)> = refs
-            .iter()
-            .zip(stmt_of.iter())
-            .filter(|(r, _)| !calls.iter().any(|c| c + 1 == **r))
-            .map(|(r, j)| (*r, *j))
+            .into_iter()
+            .filter(|(r, _)| !calls.iter().any(|c| c + 1 == *r))
             .collect();
         let firsts: Vec<(Typ, usize)> = values
             .iter()
@@ -1088,7 +1100,7 @@ fn mono_reuse(
                 Some((types.of(&pre[*r]).first().and_then(first_param)?, *j))
             })
             .collect();
-        let Some(((_, ja), (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
+        let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
             firsts[n + 1..].iter().find(|b| b.0 != a.0).map(|b| (a, b))
         }) else {
             continue;
@@ -1107,21 +1119,14 @@ fn mono_reuse(
         }
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &wrapped);
-        let (ja, jb) = (*ja, *jb);
-        // CR claude for claude: [bug] The right sites are only the definition, ja and jb.
-        // But every value use of the wrapped `f` shares its cells, so the checker
-        // refuses at the first use that conflicts with an earlier one. `firsts` drops
-        // some uses between ja and jb: one whose first parameter is not a single
-        // primitive (`array::map([[1]], f)`, `array::map([1, null], f)`), or one inside
-        // a lambda body, which record_expr_types never types. Such a use is refused
-        // first, and that correct refusal is filed as a MISPLACED typeflip. Expect the
-        // statement of every value use in `values` up to and including jb (`stmt_of`
-        // already has them), and fix the family 1 right-site sentence in
-        // design/must_reject.md to match. probe:
-        // design/review-2026-10-05/repro/fuzz-mutate-05.gx (`graphix-fuzz typemorph
-        // <file>`). (fuzz-mutate-05)
+        let jb = *jb;
+        // every value use shares the wrapped binding's cells, so the
+        // checker refuses at whichever reached use conflicts first
+        let mut sites = vec![si];
+        sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
+        sites.dedup();
         let probe = finish(Family::MonoReuse, at, &cand, |back, _| {
-            [si, ja, jb].into_iter().map(|j| nth_stmt(back, j).and_then(span)).collect()
+            sites.iter().map(|j| nth_stmt(back, *j).and_then(span)).collect()
         });
         out.extend(probe);
         taken += 1;
@@ -1159,25 +1164,21 @@ fn variant_widen(
     out: &mut Vec<RejectProbe>,
 ) {
     let mut taken = 0usize;
-    for (i, e) in pre.iter().enumerate() {
+    for i in spread(pre.len()) {
         if taken >= cap {
             break;
         }
+        let e = &pre[i];
         let ExprKind::Select(SelectExpr { arg, arms }) = &e.kind else { continue };
-        // CR claude for claude: [bug] covers_all checks only for a top-level bind or `_`
-        // (or a type test), so an or-arm with a `_` alternative (`` `A | _ ``) is not
-        // seen as a catch-all: the widened scrutinee is still covered, the mutant is
-        // rightly accepted, and it is filed as a LEAK, which also takes variant-widen's
-        // only LEAK class. Count an arm whose `Or` alternatives include `Ignore` as
-        // covering (more generally, any pattern the fresh tag matches). No generator or
-        // corpus seed writes a `_` alternative today, so it is latent. probe:
-        // design/review-2026-10-05/repro/fuzz-mutate-11.gx (fuzz-mutate-11)
+        fn catches_any(p: &StructurePattern) -> bool {
+            match p {
+                StructurePattern::Bind(_) | StructurePattern::Ignore => true,
+                StructurePattern::Or(alts) => alts.iter().any(catches_any),
+                _ => false,
+            }
+        }
         let covers_all = arms.iter().any(|(p, _)| {
-            p.type_predicate.is_some()
-                || matches!(
-                    p.structure_predicate,
-                    StructurePattern::Bind(_) | StructurePattern::Ignore
-                )
+            p.type_predicate.is_some() || catches_any(&p.structure_predicate)
         });
         if covers_all {
             continue;

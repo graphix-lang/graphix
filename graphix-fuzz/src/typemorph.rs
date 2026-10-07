@@ -37,6 +37,20 @@ pub enum TmKind {
     DefaultElide,
 }
 
+impl TmKind {
+    pub const ALL: [TmKind; 9] = [
+        TmKind::ParensWrap,
+        TmKind::BlockWrap,
+        TmKind::LetExtract,
+        TmKind::LetInline,
+        TmKind::StmtPermute,
+        TmKind::AliasSwap,
+        TmKind::LabelPermute,
+        TmKind::DefaultMaterialize,
+        TmKind::DefaultElide,
+    ];
+}
+
 impl std::fmt::Display for TmKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
