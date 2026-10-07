@@ -13,9 +13,7 @@ use graphix_compiler::{
     node::genn,
     typ::{FnType, Type},
 };
-use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, seam_tick, seam_value, sort_values,
-};
+use graphix_package_core::{seam_tick, seam_value, sort_values};
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
 use netidx_core::pack::{Pack, PackError};
@@ -24,15 +22,49 @@ use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::{collections::VecDeque, fmt::Debug};
 
-fn fc_concat(args: &[Value]) -> Option<Value> {
-    let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
-    for v in args {
+/// An iterator that knows its length, so a result fills its array in
+/// place.
+struct Counted<I> {
+    it: I,
+    left: usize,
+}
+
+impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        let v = self.it.next()?;
+        self.left -= 1;
+        Some(v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
+
+/// The array of `len` values `it` yields.
+fn array_of(len: usize, it: impl Iterator<Item = Value>) -> Value {
+    Value::Array(ValArray::from_iter_exact(Counted { it, left: len }))
+}
+
+/// `vs` with every array spread into its elements, and how many that is.
+fn spread(vs: &[Value]) -> (usize, impl Iterator<Item = Value> + '_) {
+    fn elems(v: &Value) -> &[Value] {
         match v {
-            Value::Array(a) => buf.extend(a.iter().cloned()),
-            v => buf.push(v.clone()),
+            Value::Array(a) => &a[..],
+            v => std::slice::from_ref(v),
         }
     }
-    Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+    let len = vs.iter().map(|v| elems(v).len()).sum();
+    (len, vs.iter().flat_map(move |v| elems(v).iter().cloned()))
+}
+
+fn fc_concat(args: &[Value]) -> Option<Value> {
+    let (len, it) = spread(args);
+    Some(array_of(len, it))
 }
 
 graphix_package_core::fast_builtin!(Concat, ConcatEv, "array_concat", fc_concat);
@@ -40,20 +72,7 @@ graphix_package_core::fast_builtin!(Concat, ConcatEv, "array_concat", fc_concat)
 fn fc_push_back(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Array(a), tl @ ..] => {
-            // CR claude for claude: [perf] fc_push_back, like fc_push_front, fc_concat,
-            // fc_flatten and fc_dedup, copies its result through an unpooled
-            // SmallVec<[Value; 32]> and then again into ValArray::from_iter_exact. Past
-            // 32 elements, each call mallocs and frees a buffer the size of the result
-            // (160 KB for a 10k array) and moves every Value twice. These are
-            // FastCalls, so a kernel that calls them pays this too. The length is known
-            // up front (a.len() + tl.len(); flatten can sum its parts), so the array
-            // can be filled in place from a counted chain, as the private `Counted` in
-            // fusion/emit_helpers.rs:1737 does; dedup can collect into an LPooled<Vec>.
-            // (x-alloc-09)
-            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
-            buf.extend(a.iter().cloned());
-            buf.extend(tl.iter().cloned());
-            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+            Some(array_of(a.len() + tl.len(), a.iter().chain(tl).cloned()))
         }
         _ => None,
     }
@@ -69,10 +88,7 @@ graphix_package_core::fast_builtin!(
 fn fc_push_front(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Array(a), tl @ ..] => {
-            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
-            buf.extend(tl.iter().cloned());
-            buf.extend(a.iter().cloned());
-            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+            Some(array_of(a.len() + tl.len(), tl.iter().chain(a.iter()).cloned()))
         }
         _ => None,
     }
@@ -85,77 +101,27 @@ graphix_package_core::fast_builtin!(
     fc_push_front
 );
 
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct WindowEv(SmallVec<[Value; 32]>);
-
-graphix_package_core::pack_image_state!(WindowEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
-    // CR claude for claude: [bug] array::window is a pure function of its arguments (the
-    // SmallVec is scratch that every eval drains or clears), but it is declared
-    // Effect::Sync, which effects.rs reserves for cross-invocation state or a result
-    // that depends on which arguments arrived. At a wake CachedArgs re-runs eval only
-    // for a Stateless builtin (graphix-package-core/src/lib.rs:785) and otherwise
-    // retags the old result. So a re-selected arm whose input fire was consumed by a
-    // sibling arm shows the window from before the sleep: [0, 42] where array::push
-    // over the same arguments shows [20, 42], in both engines alike. With no FastCall,
-    // every kernel that reaches window de-fuses. Declare it
-    // Stateless(Some(FastCall::Plain(..))) with a fast fn that does what eval does, and
-    // drop it from the stateful list in design/recursive_activations.md. probe:
-    // design/review-2026-10-05/repro/x-builtin-effects-07.gx (graphix-fuzz run; check
-    // says AGREE). (x-builtin-effects-07)
-    const EFFECT: Effect = Effect::Sync;
-    const NAME: &str = "array_window";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        // window requires ALL its args before producing anything.
-        match &from.0[..] {
-            [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
-                if tl.iter().all(|v| v.is_some()) =>
-            {
-                // CR claude for claude: [bug] A negative #n casts to a huge usize, so
-                // total <= window always holds and the window keeps every element ever
-                // pushed. array::window(#n: -1, ..) is therefore an unbounded buffer,
-                // though mod.gxi promises an array no larger than #n. Convert with
-                // usize::try_from and treat a negative size as 0 (or log and bottom).
-                // probe: design/review-2026-10-05/repro/x-engine-collections-09.gx
-                // (x-engine-collections-09)
-                let window = *window as usize;
-                let total = a.len() + tl.len();
-                let tl_vals = tl.iter().map(|v| v.clone().unwrap());
-                if total <= window {
-                    self.0.extend(a.iter().cloned());
-                    self.0.extend(tl_vals);
-                } else if a.len() >= (total - window) {
-                    self.0.extend(a[(total - window)..].iter().cloned());
-                    self.0.extend(tl_vals);
-                } else {
-                    self.0.extend(tl_vals.skip(tl.len() - window));
-                }
-                let a = ValArray::from_iter_exact(self.0.drain(..));
-                Some(Value::Array(a))
-            }
-            _ => {
-                self.0.clear();
-                None
-            }
+/// The last `#n` of the array's elements and the pushed values; a
+/// negative size keeps none.
+fn fc_window(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::I64(n), Value::Array(a), tl @ ..] => {
+            let n = usize::try_from(*n).unwrap_or(0);
+            let total = a.len() + tl.len();
+            let skip = total.saturating_sub(n);
+            Some(array_of(total - skip, a.iter().chain(tl).skip(skip).cloned()))
         }
+        _ => None,
     }
 }
 
-type Window = CachedArgs<WindowEv>;
+graphix_package_core::fast_builtin!(Window, WindowEv, "array_window", fc_window);
 
 fn fc_flatten(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
-            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
-            for v in a.iter() {
-                match v {
-                    Value::Array(a) => buf.extend(a.iter().cloned()),
-                    v => buf.push(v.clone()),
-                }
-            }
-            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+            let (len, it) = spread(a);
+            Some(array_of(len, it))
         }
         _ => None,
     }
@@ -189,14 +155,13 @@ fn fc_dedup(args: &[Value]) -> Option<Value> {
             // design/review-2026-10-05/repro/x-engine-collections-06.gx
             // (x-engine-collections-06)
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
-            let mut buf: SmallVec<[Value; 32]> = SmallVec::new();
+            let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {
-                if !seen.contains(v) {
-                    seen.insert(v.clone());
-                    buf.push(v.clone());
+                if seen.insert(v.clone()) {
+                    kept.push(v.clone());
                 }
             }
-            Some(Value::Array(ValArray::from_iter_exact(buf.drain(..))))
+            Some(Value::Array(ValArray::from_iter_exact(kept.drain(..))))
         }
         _ => None,
     }
@@ -396,6 +361,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             // with th null for a while) does rely on this wait and recovers today, so
             // the fix has to tell a raise apart from a pending gate. probe:
             // design/review-2026-10-05/repro/collections-str-04.gx (collections-str-04)
+            // 2026-10-07 claude: open. A fresh bottom answer is either a raise (the group
+            // should move on) or a gate still closed (it should wait), and the answer's tag
+            // cannot tell them apart; the seq machine's abort is the model for the first.
             match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {
@@ -433,21 +401,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
-    // CR claude for claude: [bug] delete never unbinds the `n` and `x` bindings that init
-    // made with genn::bind, so each deleted Group leaves two Binds in the global
-    // env.by_id for the rest of the session, and both keep its fresh `#fn` scope path
-    // alive. Collection-slot churn or a dynamic rebind over array::group therefore
-    // grows memory without bound, about 530 bytes per deleted Group. Core filter, opt
-    // and sys::net::publish unbind at delete and stay flat. Add
-    // `ctx.env.unbind_variable(self.nid)` and `ctx.env.unbind_variable(self.xid)` here.
-    // queuefn's WrapperApply::delete (stdlib/graphix-package-core/src/queuefn.rs:146)
-    // has the same omission: no unbind_variable and no store_remove for its arg_bids.
-    // probe: design/review-2026-10-05/repro/collections-str-05.gx (VmRSS +26 MB per
-    // 1000 ticks; the same program with core filter stays flat). (collections-str-05)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.nid);
         ctx.rt.store_remove(&self.pid);
         ctx.rt.store_remove(&self.xid);
+        ctx.env.unbind_variable(self.nid);
+        ctx.env.unbind_variable(self.xid);
         self.pred.delete(ctx);
     }
 
@@ -632,28 +591,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 }
 
-fn fc_iota(args: &[Value]) -> Option<Value> {
-    match args {
-        [Value::I64(n)] => {
-            if *n > graphix_compiler::node::MAX_ARRAY_INIT_LEN {
-                log::error!(
-                    "array::init: size {n} exceeds the {} element \
-                     limit — producing no value",
-                    graphix_compiler::node::MAX_ARRAY_INIT_LEN
-                );
-                return None;
-            }
-            let n = (*n).max(0) as usize;
-            Some(Value::Array(ValArray::from_iter_exact(
-                (0..n).map(|i| Value::I64(i as i64)),
-            )))
-        }
-        _ => None,
-    }
-}
-
-graphix_package_core::fast_builtin!(Iota, IotaEv, "array_iota", fc_iota);
-
 fn fc_rotate(args: &[Value]) -> Option<Value> {
     match args {
         [Value::I64(n), Value::Array(a)] => {
@@ -681,7 +618,6 @@ graphix_derive::defpackage! {
         Unzip,
         Flatten,
         Group as Group<GXRt<X>, X::UserEvent>,
-        Iota,
         Iter,
         IterQ,
         PushBack,

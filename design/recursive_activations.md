@@ -81,9 +81,10 @@ body's calls; the gate is `LambdaFacts::is_pure` = Sync ∧ stateless):
 
 Stateless means cross-invocation STATE only — effects do not
 distinguish one activation from many, so `dbg`, `log`, `error`, `now`,
-`exit`, `hbs::render` and the like are stateless; `count`, `sum`,
-`min`, `mean`, `uniq`, `once`, `take`, `skip`, `hold`,
-`array::window`, the rand family and the http clients are not.
+`exit`, `hbs::render` and the like are stateless, as are the pure
+aggregates (`sum`, `min`, `mean`, `array::window`); `count`, `uniq`,
+`once`, `take`, `skip`, `hold`, the rand family and the http clients
+are not.
 `#[tail_recursive]` asserts the gate and the loop (`GXLambda::tail_loop`
 for every instance, which also needs positional formals the loop can
 rebind): a stateful or async body, or a labeled or variadic formal,

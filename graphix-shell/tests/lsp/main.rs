@@ -496,8 +496,12 @@ fn stdlib_packages_check() {
     let stdlib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../stdlib");
     let mut checked = 0;
     for entry in std::fs::read_dir(stdlib).unwrap() {
-        let name = entry.unwrap().file_name().into_string().unwrap();
-        if !name.starts_with("graphix-package-") {
+        let entry = entry.unwrap();
+        let name = entry.file_name().into_string().unwrap();
+        // a package is a crate; a directory a sync tool left behind is not
+        if !name.starts_with("graphix-package-")
+            || !entry.path().join("Cargo.toml").exists()
+        {
             continue;
         }
         let mut c = Client::start_in_repo(&format!("stdlib/{name}"));
@@ -507,7 +511,7 @@ fn stdlib_packages_check() {
         assert!(!c.symbols("src/graphix/mod.gx").is_empty(), "{name}: no symbols");
         checked += 1;
     }
-    assert!(checked >= 20, "{checked}");
+    assert!(checked >= 19, "{checked}");
 }
 
 #[test]
