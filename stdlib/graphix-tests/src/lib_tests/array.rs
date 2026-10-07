@@ -407,6 +407,7 @@ run!(array_fold0, ARRAY_FOLD0, |v: Result<&Value>| {
 const ARRAY_FILTER_MAY_BOTTOM: &str = r#"
 {
   let a = [1, 2, 3, 4, 5, 6, 7, 8];
+  #[native]
   array::filter(a, |x| 10 / x > 2)
 }
 "#;
@@ -424,6 +425,7 @@ run!(array_filter_may_bottom, ARRAY_FILTER_MAY_BOTTOM, |v: Result<&Value>| {
 const ARRAY_FOLD_MAY_BOTTOM: &str = r#"
 {
   let a = [2, 5, 10];
+  #[native]
   array::fold(a, 1000, |acc, x| acc / x)
 }
 "#;
@@ -519,6 +521,7 @@ run!(array_find_may_bottom, ARRAY_FIND_MAY_BOTTOM, |v: Result<&Value>| {
 const ARRAY_FLAT_MAP_MAY_BOTTOM: &str = r#"
 {
   let a = [1, 2, 5];
+  #[native]
   array::flat_map(a, |x| [10 / x])
 }
 "#;
@@ -710,6 +713,7 @@ run!(array_window2, ARRAY_WINDOW2, |v: Result<&Value>| {
 const ARRAY_LEN: &str = r#"
 {
   use array::*;
+  #[native]
   len(concat([1, 2, 3], [4, 5], [6]))
 }
 "#;
