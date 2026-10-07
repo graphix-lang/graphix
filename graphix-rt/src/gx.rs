@@ -125,7 +125,7 @@ impl TraceState {
         self.waiter = Some(res);
         match self.capped_at {
             Some(at) => self.resolve(at),
-            None if self.capped() => self.resolve(cycle),
+            None if self.capped() => self.resolve(cycle.saturating_sub(1)),
             None => (),
         }
     }
@@ -1286,7 +1286,7 @@ impl<X: GXExt> GX<X> {
                         let _ = tx.send(());
                     }
                     if let Some(tr) = self.trace.as_mut() {
-                        tr.resolve(self.ctx.rt.cycle);
+                        tr.resolve(self.ctx.rt.cycle.saturating_sub(1));
                     }
                     idle_passes = 0;
                 }

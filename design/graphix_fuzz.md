@@ -158,15 +158,38 @@ reports `budget_aborted()` is `Timeout(StackBudget)` (the driver maps
 it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
-Timeout==Timeout is AGREE whatever stopped each side; read a bench
-timeout as an unexplained failure, not a pass. An asymmetric hang is a
-top-tier finding: fusion adding or removing nontermination — with one
-exception the kinds make legible: an interp `StackBudget` beside a JIT
-value is CONTAINED, unrefuted and not recorded, without the slow retry.
+Timeout==Timeout is AGREE whatever stopped each side; a Timeout beside
+anything else never agrees, a bottom or a print-only trace included.
+Read a bench timeout as an unexplained failure, not a pass. An
+asymmetric hang is a top-tier finding: fusion adding or removing
+nontermination — with one exception the kinds make legible: a
+node-walk `StackBudget` beside a JIT trace is CONTAINED, unrefuted and
+not recorded, without the slow retry.
 The node-walk's frame per recursion level is kilobytes (`update_call`
 alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
 pin that must run in both engines picks a depth both finish.
+
+**One list of comparisons** (`comparisons`): each is a `Pair` naming
+its reference and tested runs, held at one `Strength` (`Strength::of`:
+`Exact`, `Final` where a dispatch route's cycle offsets enter or the
+tier is `FinalValues`, `Kind` for an `Excluded` program). In order: the
+engines; a callable's dispatch engines and route pair; each engine's
+sessions; the forked runs. The runs are made as the list reaches them,
+a group at a time, and shared. A batch child's first pass agrees only
+when every comparison agrees at once and no run timed out or failed;
+anything else is a suspect. The individual check takes each comparison
+through one confirm ladder: the node-walk's stack budget beside a JIT
+trace is containment; a one-sided Timeout reruns that side at the slow
+budget (a session's cold and warm together) and the comparison goes on
+with the rerun's outcome; a reference that burned seconds of CPU and
+still timed out is honest slowness; a reference that disagrees with its
+own rerun is nondeterminism; anything left is a divergence. A drop ends
+the check `unsure`.
+
+**Captured output** is compared at `Exact` strength, each line keyed by
+its epoch and its cycle's offset from the epoch's anchor and sorted only
+within a cycle, where emission order is an evaluation-order artifact.
 
 **Minimal canonicalization**, because every canonicalization hides a
 bug: NaN is one sentinel (both engines legitimately produce NaN);
@@ -203,11 +226,9 @@ image machinery), `cold` (compiled and written to a program image) and
 `warm` (restored from the image the cold run wrote). The pairs `nocache`/`cold` and
 `cold`/`warm` compare at the program's tier; a cold run that compiled
 but wrote no image makes the warm outcome the write's failure, so a
-codec gap is a finding (`Pair::Cold`/`Pair::Warm`). A disagreement
-reruns the three and records only if the same-kind rerun agrees with
-itself; when exactly one side of the pair timed out the rerun takes the
-slow budget, since a Timeout beside a trace measures the box's load
-before it measures the image. Every session restores one registration image built once per
+codec gap is a finding (`Pair::Cold`/`Pair::Warm`). An `Excluded`
+program runs its sessions too, compared in kind only: a builtin's image
+state is fuzzed even where values are not comparable. Every session restores one registration image built once per
 process. The injected inputs live in their own `inputs` module so a
 program compiled as one block still publishes them by name
 (`input_scope`), with a callable's driver declarations beside them and
@@ -218,7 +239,8 @@ pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
 Nth batched subject; the individual path always runs them.
 
 **Forked runs** (`Pair::Par`): each engine runs again with every fork
-point forked (`ParMode::Force`) and is compared with its serial run.
+point forked (`ParMode::Force`) and is compared with the serial
+node-walk.
 `GRAPHIX_FUZZ_FORK=0` disables them. `GRAPHIX_FUZZ_PAR` is a different
 knob, the number of checks in flight (default 8 per core; `soak.sh` sets
 it to the memory-sized worker count).
@@ -355,9 +377,10 @@ text artifact on two routes: **in-language** (dispatch epochs as
 epoch, with gap compiles first — the embedder timeline has cycles
 between building a handler and the first event). `check` runs the 2×2
 matrix: engine pairs per route (the dispatch pair at finals strength),
-then the route pair. `Divergence` carries which pair
-(`Pair::{Engine, EngineDispatch, Route, Twin}`). Callable programs never
-batch and never enter the mutation ring.
+then the route pair. `Divergence` carries which pair (`Pair`: the
+comparisons `Engine`, `EngineDispatch`, `Route`, `Cold`, `Warm` and
+`Par`, and the findings `Twin`, `Check` and `Rejected`). Callable
+programs batch like any other and never enter the mutation ring.
 
 **Twins (the symmetric-bug oracle).** The route matrix could not catch
 the bug that motivated it: a `&`-param write dropped in a sleeping arm

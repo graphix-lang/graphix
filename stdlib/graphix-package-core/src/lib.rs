@@ -151,19 +151,28 @@ impl PrintSink {
         std::mem::take(&mut b.text)
     }
 
-    /// Take the text written in cycles up to and including `cycle`;
-    /// later writes stay in the sink.
-    pub fn take_through(&self, cycle: u64) -> String {
+    /// Take the text written in cycles up to and including `cycle`, each
+    /// cycle's apart; later writes stay in the sink.
+    pub fn take_through(&self, cycle: u64) -> Vec<(u64, String)> {
         let mut b = self.0.lock();
         let keep = b.marks.iter().position(|(c, _)| *c > cycle).unwrap_or(b.marks.len());
         let at = keep.checked_sub(1).map_or(0, |i| b.marks[i].1);
         let rest = b.text.split_off(at);
         let taken = std::mem::replace(&mut b.text, rest);
-        b.marks.drain(..keep);
+        let mut start = 0;
+        let cycles = b
+            .marks
+            .drain(..keep)
+            .map(|(c, end)| {
+                let text = taken[start..end].to_string();
+                start = end;
+                (c, text)
+            })
+            .collect();
         for (_, end) in b.marks.iter_mut() {
             *end -= at;
         }
-        taken
+        cycles
     }
 }
 

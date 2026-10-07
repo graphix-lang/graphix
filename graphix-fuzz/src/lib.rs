@@ -68,6 +68,10 @@ impl Mode {
         }
     }
 
+    pub fn node_walk(self) -> bool {
+        matches!(self, Mode::Interp | Mode::Par)
+    }
+
     // CR claude for claude: [test-gap] Mode::par runs the parallel pairs at Force and the
     // serial ones at Off, so no oracle ever runs Auto, the default mode. Auto's own
     // fork shapes are compared against nothing: a ProbeSite running its first k items
@@ -174,7 +178,7 @@ impl fmt::Display for Rendered<'_> {
                 }
                 for (i, l) in t.stdout.iter().enumerate() {
                     f.write_str(if i == 0 { "; stdout=[" } else { " | " })?;
-                    f.write_str(l)?;
+                    write!(f, "{l}")?;
                 }
                 if !t.stdout.is_empty() {
                     f.write_str("]")?;
@@ -278,48 +282,23 @@ impl Outcome {
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout(_), Timeout(_)) => true,
-            // CR claude for claude: [bug] A Timeout beside a trace with no events agrees
-            // here in both directions. So a JIT, forked or warm run that never finishes
-            // is AGREE when the node-walk's result is bottom or the program only prints
-            // (has_events ignores stdout). check_verdict returns before its JIT-side
-            // slow retry, check_par and session_divergence skip the pair, and in
-            // regress the verdict is `unsure`, which outcome_mismatches accepts against
-            // any row. The reason given in has_events' doc, a delivered bottom from a
-            // runaway guard, no longer exists (design/recursive_activations.md section
-            // 4), and design/graphix_fuzz.md section 3 allows only one exception: an
-            // interp StackBudget beside a JIT result. Keep the agreement for an
-            // interp-side StackBudget, send every other one-sided Timeout through the
-            // slow retry whatever the other side's events (the interp-side retry is
-            // gated on jit.has_events too), and count stdout lines as events. probe:
-            // design/review-2026-10-05/repro/fuzz-main-aux-05.sh: with only the JIT
-            // stalled, a bottom program is AGREE after 11s, and the same program
-            // returning a value is DIVERGENCE with jit: Timeout(Deadline).
-            // (fuzz-main-aux-05)
-            (Timeout(_), Trace(_)) | (Trace(_), Timeout(_)) => {
-                !self.has_events() && !other.has_events()
-            }
             _ => false,
         }
     }
 
-    /// A trace with at least one event; a Timeout beside such a trace is
-    /// a value divergence, beside an eventless one only the accepted
-    /// liveness difference in the backends' runaway handling.
+    /// A trace that shows anything: an event or a printed line.
     pub fn has_events(&self) -> bool {
-        matches!(self, Outcome::Trace(t) if t.epochs.iter().any(|e| !e.events.is_empty()))
+        matches!(self, Outcome::Trace(t)
+            if !t.stdout.is_empty() || t.epochs.iter().any(|e| !e.events.is_empty()))
     }
 
-    /// [`Self::agrees_with`] at a chosen [`OracleTier`]: Exact compares
-    /// whole traces; FinalValues compares per-epoch settled values
-    /// ([`trace::Trace::agrees_final`]); non-Trace pairs follow the exact
-    /// rules at every tier.
-    pub fn agrees_with_at(&self, other: &Outcome, tier: OracleTier) -> bool {
-        match tier {
-            OracleTier::Exact | OracleTier::Excluded => self.agrees_with(other),
-            OracleTier::FinalValues => match (self, other) {
-                (Outcome::Trace(a), Outcome::Trace(b)) => a.agrees_final(b),
-                _ => self.agrees_with(other),
-            },
+    /// [`Self::agrees_with`] at a [`Strength`].
+    pub fn agrees_at(&self, other: &Outcome, s: Strength) -> bool {
+        use Outcome::*;
+        match (s, self, other) {
+            (Strength::Final, Trace(a), Trace(b)) => a.agrees_final(b),
+            (Strength::Kind, Trace(_) | Timeout(_), Trace(_) | Timeout(_)) => true,
+            _ => self.agrees_with(other),
         }
     }
 
@@ -504,9 +483,9 @@ enum CompileOutcome {
 
 /// Compile-only core behind [`compile_program`] and [`run_fusecheck`]:
 /// compile the full drive text under a fresh ctx and return the
-/// program's own compile-time [`FusionStats`] delta. The timeout exists
-/// because the first update cycle runs inside `compile`. A stats value
-/// is never synthesized from a failure.
+/// program's own compile-time [`FusionStats`] delta. The timeout covers
+/// the construction, where the program compiles, and the first cycle's
+/// result. A stats value is never synthesized from a failure.
 async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> CompileOutcome {
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
@@ -519,7 +498,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
     let registration = registration_image_source().await;
     let program =
         graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
-    let ctx = match init_session_with_setup(
+    let init = init_session_with_setup(
         tx,
         REGISTER,
         vec![resolver],
@@ -532,11 +511,13 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
             ctx.libstate.set(sink);
             ctx.control.set_par_mode(mode.par());
         },
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => return CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
+    );
+    let ctx = match tokio::time::timeout(timeout, init).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            return CompileOutcome::Failed(format!("runtime init failed: {e:?}"));
+        }
+        Err(_) => return CompileOutcome::Failed("compile timed out".to_string()),
     };
     let run = async {
         // Debug format is the anyhow chain; gen-check buckets on the
@@ -817,24 +798,24 @@ async fn drive_inner(
     }
     let mut trace = trace::Trace::from_segments(&segs, eid);
     // Exact tier only. The runtime runs on past a capped trace, so the
-    // capture stops at the last segment's cycle; sorted because
-    // within-cycle emission order is an evaluation-order artifact.
+    // capture stops at the last segment's cycle.
     if tier == OracleTier::Exact {
-        let end = segs.last().map_or(0, |s| s.end_cycle);
-        let mut lines: Vec<String> =
-            sink.take_through(end).lines().map(|l| l.to_string()).collect();
-        // CR claude for claude: [test-gap] The Exact-tier stdout is every line printed
-        // through the last segment, sorted as one multiset. A print that lands in
-        // another cycle or another epoch with the same text therefore still agrees,
-        // while the stated reason (within-cycle emission order) only justifies sorting
-        // inside one cycle. A JIT that delays a println or a seq step's print by a
-        // cycle, or moves it to the next epoch, goes unseen whenever the watched value
-        // does not depend on it. The sink already marks where each cycle's output ends:
-        // take_through each segment's end_cycle into its Epoch, keyed by cycle, and
-        // sort only within a cycle. probe:
-        // design/review-2026-10-05/repro/fuzz-lib-a-05.sh gives the same
-        // Trace([0:i64:0]; [0:i64:20]; [0:i64:10]; stdout=[b0 | b1 | b2]) for three
-        // programs whose prints differ by epoch or by one cycle. (fuzz-lib-a-05)
+        let mut lines = Vec::new();
+        for (epoch, seg) in segs.iter().enumerate() {
+            let cycles = sink.take_through(seg.end_cycle);
+            let Some(base) =
+                trace::Epoch::anchor(seg).or(cycles.first().map(|(c, _)| *c))
+            else {
+                continue;
+            };
+            for (cycle, text) in cycles {
+                lines.extend(text.lines().map(|l| trace::Printed {
+                    epoch: epoch as u32,
+                    offset: cycle as i64 - base as i64,
+                    line: l.to_string(),
+                }));
+            }
+        }
         lines.sort_unstable();
         trace.stdout = lines;
     }
@@ -890,6 +871,39 @@ pub enum OracleTier {
     /// Value-nondeterministic (rand, wall time, tempdir paths): no value
     /// comparison is sound. The shapes still run for crash coverage.
     Excluded,
+}
+
+/// How strongly a comparison holds two outcomes to each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strength {
+    /// Whole traces: every epoch's offsets and values, and the output.
+    Exact,
+    /// Each epoch's settled value.
+    Final,
+    /// Only what does not depend on values: both ran (a trace or a
+    /// timeout), or both refused alike.
+    Kind,
+}
+
+impl Strength {
+    /// The program's tier on its own route; settled values where the
+    /// dispatch route's cycle offsets enter, which are not contractual;
+    /// the outcome's kind for a program whose values are not comparable.
+    pub fn of(pair: Pair, tier: OracleTier) -> Self {
+        let dispatch = matches!(
+            pair,
+            Pair::EngineDispatch
+                | Pair::Route
+                | Pair::Cold(_, Route::Dispatch)
+                | Pair::Warm(_, Route::Dispatch)
+        );
+        match tier {
+            OracleTier::Excluded => Strength::Kind,
+            OracleTier::FinalValues => Strength::Final,
+            OracleTier::Exact if dispatch => Strength::Final,
+            OracleTier::Exact => Strength::Exact,
+        }
+    }
 }
 
 /// Classify a program. Markers are matched on code lines only. The
@@ -1001,30 +1015,6 @@ impl Session {
             Session::Cold => "cold",
             Session::Warm => "warm",
         }
-    }
-}
-
-/// One mode's three session runs of a subject.
-#[derive(Debug)]
-pub struct Sessions {
-    pub nocache: Outcome,
-    pub cold: Outcome,
-    pub warm: Outcome,
-}
-
-impl Sessions {
-    fn get(&self, s: Session) -> &Outcome {
-        match s {
-            Session::NoCache => &self.nocache,
-            Session::Cold => &self.cold,
-            Session::Warm => &self.warm,
-        }
-    }
-
-    /// Whether the three agree pairwise at `strength`.
-    pub fn agree(&self, strength: OracleTier) -> bool {
-        self.nocache.agrees_with_at(&self.cold, strength)
-            && self.cold.agrees_with_at(&self.warm, strength)
     }
 }
 
@@ -1142,19 +1132,10 @@ async fn run_subject(
         }
         SessionImage::None => (registration_image_source().await, program, None, None),
     };
-    // CR claude for claude: [risk] The per-run `timeout` is armed only in drive_inner,
-    // after this await, but the program compiles (or a warm image restores) inside this
-    // call, in GX::new. compile_with_stats (418) has the same gap, and its doc's claim
-    // that the first update cycle runs inside `compile` no longer describes the code. A
-    // compile that never ends therefore never becomes Outcome::Timeout: check, run,
-    // regress, fusecheck, minimize and gen-check hang with no output. In the soak it
-    // shows up only as a "HANG (outer deadline)" crash, which run_aggregator drops for
-    // any program mentioning rand::, sys:: or http::. Nothing can interrupt the compile
-    // from here, because the handle does not exist until construction returns. probe:
-    // design/review-2026-10-05/repro/fuzz-lib-a-06.sh (an 8000-let block in a debug
-    // build: every JIT program init takes 13-21s against the 10s budget, and every run
-    // still returns a Trace, never a Timeout). (fuzz-lib-a-06)
-    let ctx = match init_session_with_setup(
+    // The program compiles (or restores) at construction, under the run's
+    // budget; a construction it abandons finishes on its own task and
+    // exits, its handle gone.
+    let init = init_session_with_setup(
         tx,
         REGISTER,
         vec![resolver],
@@ -1167,15 +1148,15 @@ async fn run_subject(
             ctx.libstate.set(seeded);
             ctx.control.set_par_mode(mode.par());
         },
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
+    );
+    let ctx = match tokio::time::timeout(timeout, init).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
             return SubjectRun::failed(Outcome::RuntimeErr(format!(
                 "runtime init failed: {e:?}"
             )));
         }
+        Err(_) => return SubjectRun::failed(Outcome::Timeout(Containment::Deadline)),
     };
     let outcome = drive(&ctx, &mut rx, &subj, route, timeout, &sink).await;
     // A wedged runtime never answers another request: abort first, then
@@ -1213,18 +1194,17 @@ async fn run_session(
     (run.outcome, run.image)
 }
 
-/// Run `code` under `mode` three ways: no cache, cold (writing the
-/// program image) and warm (restored from it). A program that does not
-/// compile has nothing to restore, so its warm outcome is its cold one;
-/// a cold run that compiled but wrote no image makes the warm outcome
-/// the write's failure, which the cold/warm pair reports.
-pub async fn run_sessions(
+/// `code` under `mode` cold (writing the program image) and warm
+/// (restored from it). A program that does not compile has nothing to
+/// restore, so its warm outcome is its cold one; a cold run that compiled
+/// but wrote no image makes the warm outcome the write's failure, which
+/// the cold/warm pair reports.
+pub async fn cold_warm(
     code: &str,
     mode: Mode,
     route: Route,
     timeout: Duration,
-) -> Sessions {
-    let (nocache, _) = run_session(code, mode, route, SessionImage::None, timeout).await;
+) -> (Outcome, Outcome) {
     let (cold, image) =
         run_session(code, mode, route, SessionImage::Write, timeout).await;
     let warm = match (&cold, image) {
@@ -1234,17 +1214,7 @@ pub async fn run_sessions(
         }
         (_, Err(e)) => Outcome::RuntimeErr(e),
     };
-    Sessions { nocache, cold, warm }
-}
-
-/// The strength two sessions of one engine compare at: the program's
-/// tier in language; settled values on the dispatch route, whose cycle
-/// offsets are not contractual.
-fn session_strength(tier: OracleTier, route: Route) -> OracleTier {
-    match route {
-        Route::InLanguage => tier,
-        Route::Dispatch => OracleTier::FinalValues,
-    }
+    (cold, warm)
 }
 
 /// The routes a subject's sessions run on.
@@ -1254,84 +1224,6 @@ fn session_routes(code: &str) -> &'static [Route] {
     } else {
         &[Route::InLanguage]
     }
-}
-
-/// The session pair that diverges under `mode`, if one does and the
-/// program is deterministic: a disagreement reruns the three, and a run
-/// that disagrees with its own kind is nondeterminism, not a finding.
-async fn session_divergence(
-    code: &str,
-    mode: Mode,
-    route: Route,
-    first: &Sessions,
-    tier: OracleTier,
-    timeout: Duration,
-) -> Option<Divergence> {
-    let strength = session_strength(tier, route);
-    let pairs = [
-        (Pair::Cold(mode, route), Session::NoCache, Session::Cold),
-        (Pair::Warm(mode, route), Session::Cold, Session::Warm),
-    ];
-    for (pair, a, b) in pairs {
-        if first.get(a).agrees_with_at(first.get(b), strength) {
-            continue;
-        }
-        // A Timeout beside a trace measures the budget under load, not
-        // the image: confirm at the slow budget.
-        let one_sided = matches!(first.get(a), Outcome::Timeout(_))
-            != matches!(first.get(b), Outcome::Timeout(_));
-        let budget = if one_sided { slow_budget(timeout) } else { timeout };
-        let again = run_sessions(code, mode, route, budget).await;
-        if !again.get(a).agrees_with_at(first.get(a), strength) {
-            return None;
-        }
-        if !again.get(a).agrees_with_at(again.get(b), strength) {
-            return Some(Divergence {
-                code: code.to_string(),
-                reference: again.get(a).clone(),
-                tested: again.get(b).clone(),
-                tier,
-                pair,
-            });
-        }
-    }
-    None
-}
-
-/// Run both modes' sessions on every route and report the first
-/// diverging pair.
-async fn check_sessions(
-    code: &str,
-    tier: OracleTier,
-    timeout: Duration,
-) -> Option<Divergence> {
-    // CR claude for claude: [test-gap] Excluded subjects never run the sessions. This
-    // return skips them, and so do check_verdict (1469), check_callable (1649) and
-    // run_batch's `comparable` gate (1897). So no campaign writes or restores an image
-    // of a program that uses sys::time, sys::net, process spawn, rand or throttle: 120
-    // of the 1174 harvested seeds and every mutant of them. Those builtins carry image
-    // state (Timer and AfterIdle encode their last arguments and expression id), and
-    // the shell warm-starts every script. No pin restores one either (lang/image.rs
-    // covers core builtins); only a manual `graphix-fuzz run` does. Run cold and warm
-    // for an Excluded subject too, and record only what does not depend on values: a
-    // compiled cold run that wrote no image, a crash, or a warm CompileErr/RuntimeErr
-    // beside a cold trace. (fuzz-lib-a-08)
-    if !sessions_enabled() || tier == OracleTier::Excluded {
-        return None;
-    }
-    for &route in session_routes(code) {
-        let (si, sj) = tokio::join!(
-            run_sessions(code, Mode::Interp, route, timeout),
-            run_sessions(code, Mode::Jit, route, timeout),
-        );
-        for (mode, s) in [(Mode::Interp, &si), (Mode::Jit, &sj)] {
-            if let Some(d) = session_divergence(code, mode, route, s, tier, timeout).await
-            {
-                return Some(d);
-            }
-        }
-    }
-    None
 }
 
 /// The scope of the subject's `inputs` module: under the program's own
@@ -1443,62 +1335,62 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
 impl Divergence {
     /// A one-line classification.
     pub fn bisect(&self) -> &'static str {
-        match (&self.reference, &self.tested) {
-            // Survived the 8x interp retry: either the JIT fabricated a
-            // value or the node-walk is >8x slower on a heavy terminating
-            // program. Verify by hand.
-            (Outcome::Timeout(_), Outcome::Trace(t))
-                if t.epochs.iter().any(|e| !e.events.is_empty()) =>
-            {
-                "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
-                 verify the node-walk terminates and agrees before reading this as a JIT bug)"
-            }
-            _ => match (self.pair, self.tier) {
-                (Pair::Twin, _) => {
-                    "twin invariant violated (equivalent write routes diverged \
+        // Survived the slow retry: either the JIT fabricated a value or the
+        // node-walk is >8x slower on a heavy terminating program. Verify by
+        // hand.
+        let engines = matches!(self.pair, Pair::Engine | Pair::EngineDispatch);
+        if engines
+            && matches!(self.reference, Outcome::Timeout(_))
+            && self.tested.has_events()
+        {
+            return "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
+                    verify the node-walk terminates and agrees before reading this as a JIT bug)";
+        }
+        match (self.pair, self.tier) {
+            (Pair::Twin, _) => {
+                "twin invariant violated (equivalent write routes diverged \
                      in-program — a single-run finding, no cross-run comparison)"
-                }
-                (Pair::Rejected, _) => {
-                    "corpus pin rejected by both engines without `// expect: reject` \
+            }
+            (Pair::Rejected, _) => {
+                "corpus pin rejected by both engines without `// expect: reject` \
                      (it no longer compiles or runs, so it pins nothing)"
-                }
-                (Pair::Check, _) => {
-                    "the check accepted what the build refused (elaboration refused \
+            }
+            (Pair::Check, _) => {
+                "the check accepted what the build refused (elaboration refused \
                      a program the definition and call-site checks passed: a \
                      type-system bug)"
-                }
-                (Pair::Par(Mode::Par), _) => {
-                    "parallel evaluation bug (forked node-walk != serial node-walk)"
-                }
-                (Pair::Par(_), _) => {
-                    "parallel evaluation bug (forked fused/JIT != serial node-walk)"
-                }
-                (Pair::Route, _) => {
-                    "route bug (in-language call != embedder-callable dispatch, interp)"
-                }
-                (Pair::EngineDispatch, OracleTier::FinalValues) => {
-                    "fusion/JIT bug on the dispatch route (final values, interp != jit)"
-                }
-                (Pair::EngineDispatch, _) => {
-                    "fusion/JIT bug on the dispatch route (interp != jit)"
-                }
-                (Pair::Engine, OracleTier::FinalValues) => {
-                    "fusion/JIT bug (final values, interp != jit)"
-                }
-                (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
-                (Pair::Cold(Mode::Interp | Mode::Par, _), _) => {
-                    "image bug: writing the program image changed the program (interp)"
-                }
-                (Pair::Cold(Mode::Jit | Mode::JitPar, _), _) => {
-                    "image bug: writing the program image changed the program (jit)"
-                }
-                (Pair::Warm(Mode::Interp | Mode::Par, _), _) => {
-                    "image bug: the restored program differs from the cold one (interp)"
-                }
-                (Pair::Warm(Mode::Jit | Mode::JitPar, _), _) => {
-                    "image bug: the restored program differs from the cold one (jit)"
-                }
-            },
+            }
+            (Pair::Par(Mode::Par), _) => {
+                "parallel evaluation bug (forked node-walk != serial node-walk)"
+            }
+            (Pair::Par(_), _) => {
+                "parallel evaluation bug (forked fused/JIT != serial node-walk)"
+            }
+            (Pair::Route, _) => {
+                "route bug (in-language call != embedder-callable dispatch, interp)"
+            }
+            (Pair::EngineDispatch, OracleTier::FinalValues) => {
+                "fusion/JIT bug on the dispatch route (final values, interp != jit)"
+            }
+            (Pair::EngineDispatch, _) => {
+                "fusion/JIT bug on the dispatch route (interp != jit)"
+            }
+            (Pair::Engine, OracleTier::FinalValues) => {
+                "fusion/JIT bug (final values, interp != jit)"
+            }
+            (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
+            (Pair::Cold(Mode::Interp | Mode::Par, _), _) => {
+                "image bug: writing the program image changed the program (interp)"
+            }
+            (Pair::Cold(Mode::Jit | Mode::JitPar, _), _) => {
+                "image bug: writing the program image changed the program (jit)"
+            }
+            (Pair::Warm(Mode::Interp | Mode::Par, _), _) => {
+                "image bug: the restored program differs from the cold one (interp)"
+            }
+            (Pair::Warm(Mode::Jit | Mode::JitPar, _), _) => {
+                "image bug: the restored program differs from the cold one (jit)"
+            }
         }
     }
 
@@ -1601,182 +1493,349 @@ impl FromStr for Verdict {
     }
 }
 
-/// [`check`] with the [`Verdict`] of an agreement.
+/// [`check`] with the [`Verdict`] of an agreement: every comparison the
+/// subject owes, judged through the confirm ladder, stopping at the first
+/// divergence or the first drop.
 pub async fn check_verdict(
     code: &str,
     timeout: Duration,
 ) -> (Option<Divergence>, Verdict) {
     let tier = oracle_tier(code);
-    if callable::has_header(code) {
-        return check_callable(code, tier, timeout).await;
-    }
-    // each mode has its own runtime, so run them concurrently
-    let (interp, jit) = tokio::join!(
-        run_program(code, Mode::Interp, timeout),
-        run_program(code, Mode::Jit, timeout),
-    );
-    // a compile verdict owes nothing to values, so an excluded program
-    // is checked too
-    if let (Outcome::CompileErr(_), Outcome::CompileErr(_)) = (&interp, &jit)
-        && check_only(code, timeout).await.is_ok()
-    {
-        let d = Divergence {
-            code: code.to_string(),
-            reference: Outcome::Checked,
-            tested: jit,
-            tier,
-            pair: Pair::Check,
-        };
+    let pairs = comparisons(code, tier, sessions_enabled());
+    let mut o = Oracle::new(code, tier, timeout);
+    o.make(&[Pair::Engine]).await;
+    if let Some(d) = o.check_pair().await {
         return (Some(d), Verdict::Unsure);
     }
-    if tier == OracleTier::Excluded {
-        return (None, Verdict::Excluded);
-    }
-    // A twin violation is a single-run finding, checked before agreement:
-    // a bug breaking both engines identically agrees on the wrong answer.
-    // Confirmed by one rerun.
-    for (o, mode) in [(&interp, Mode::Interp), (&jit, Mode::Jit)] {
-        if twin_violation(o) {
-            let again = run_program(code, mode, timeout).await;
-            if twin_violation(&again) {
-                let d = Divergence {
-                    code: code.to_string(),
-                    reference: o.clone(),
-                    tested: o.clone(),
-                    tier,
-                    pair: Pair::Twin,
-                };
+    for &pair in &pairs {
+        o.make_group(&pairs, pair).await;
+        if let Some(d) = o.twin().await {
+            return (Some(d), Verdict::Unsure);
+        }
+        match o.settle(pair).await {
+            Settled::Agree => (),
+            Settled::Drop => return (None, Verdict::Unsure),
+            Settled::Diverge(reference, tested) => {
+                let d =
+                    Divergence { code: code.to_string(), reference, tested, tier, pair };
                 return (Some(d), Verdict::Unsure);
             }
         }
     }
-    if interp.agrees_with_at(&jit, tier) {
-        if let Some(d) = check_sessions(code, tier, timeout).await {
-            return (Some(d), Verdict::Unsure);
-        }
-        if let Some(d) = check_par(code, &interp, tier, timeout).await {
-            return (Some(d), Verdict::Unsure);
-        }
-        return (None, Verdict::of(&interp, &jit));
+    if let Some(d) = o.twin().await {
+        return (Some(d), Verdict::Unsure);
     }
-    // Reference-side Timeout with a value-bearing jit trace is as likely
-    // an honestly slow node-walk as a wrongly terminating JIT; a
-    // still-Timeout keeps the finding unless the interp provably made
-    // progress. (An empty jit trace against a Timeout already agreed above.)
-    // The interp's stack budget is containment, not slowness: the
-    // node-walk's frame per recursion level is kilobytes where a native
-    // kernel's is words, so a depth only the kernel reaches is no
-    // finding; the kernel's value stands unrefuted, as after a slow retry.
-    if matches!(&interp, Outcome::Timeout(Containment::StackBudget)) && jit.has_events() {
-        eprintln!(
-            "CONTAINED — interp exceeded the stack budget; jit's value stands \
-             unrefuted, not recorded"
-        );
-        eprintln!("    program: {}", code.replace('\n', "\\n"));
-        return (None, Verdict::Unsure);
-    }
-    if matches!(&interp, Outcome::Timeout(_)) && jit.has_events() {
-        let retry = retry_one_sided_timeout(code, Mode::Interp, timeout).await;
-        if retry.outcome.agrees_with_at(&jit, tier) {
-            return (None, Verdict::of(&retry.outcome, &jit));
-        }
-        if matches!(&retry.outcome, Outcome::Timeout(_)) && interp_made_progress(&retry) {
-            eprintln!(
-                "SLOW — interp burned {:.1}s CPU over a {:.0}s budget without \
-                 finishing; jit's value stands unrefuted; honest slowness, \
-                 not recorded",
-                retry.cpu_burned.as_secs_f64(),
-                retry.budget.as_secs_f64()
-            );
-            eprintln!("    program: {}", code.replace('\n', "\\n"));
-            return (None, Verdict::Unsure);
-        }
-    }
-    // The symmetric direction is as likely a starved jit child (both
-    // modes run concurrently under load) as a native hang. A wedged
-    // kernel still times out at the bigger budget and keeps the finding.
-    if matches!(&jit, Outcome::Timeout(_)) && interp.has_events() {
-        let retry = retry_one_sided_timeout(code, Mode::Jit, timeout).await;
-        if interp.agrees_with_at(&retry.outcome, tier) {
-            return (None, Verdict::of(&interp, &retry.outcome));
-        }
-    }
-    // Rule out nondeterminism: re-run interp at the same tier; if it
-    // disagrees with itself, the program is nondeterministic there.
-    // CR claude for claude: [bug] After a slow-budget retry, this self-check and the
-    // Divergence below still use the first, timed-out outcome, and the jit branch above
-    // records its stale Timeout the same way. So a JIT divergence whose node-walk needs
-    // 1x-8x the budget is recorded as interp=Timeout under the 'interp exceeded 8x
-    // budget' label, although the retry returned a trace, and it is dropped as
-    // nondeterminism when interp2 finishes. session_divergence (line 1137) compares a
-    // timed-out side's rerun with its stale Timeout, so a real image divergence is
-    // dropped whenever that side finishes on the rerun. check_par (line 1581) never
-    // retries a timed-out serial side, so a forked run that merely beats the budget is
-    // recorded as a Pair::Par divergence. probe:
-    // design/review-2026-10-05/repro/fuzz-lib-a-04.sh (fuzz-lib-a-04)
-    let interp2 = run_program(code, Mode::Interp, timeout).await;
-    if !interp.agrees_with_at(&interp2, tier) {
-        return (None, Verdict::Unsure);
-    }
-    (
-        Some(Divergence {
-            code: code.to_string(),
-            reference: interp,
-            tested: jit,
-            tier,
-            pair: Pair::Engine,
-        }),
-        Verdict::Unsure,
-    )
+    (None, o.verdict())
 }
 
-/// The forked node-walk and the forked JIT against the serial
-/// node-walk, whose outcome is `interp` (and which the serial JIT
-/// agreed with). A one-sided timeout retries the forked side at the
-/// slow budget; a serial run that disagrees with itself is
-/// nondeterminism.
-async fn check_par(
-    code: &str,
-    interp: &Outcome,
-    tier: OracleTier,
-    timeout: Duration,
-) -> Option<Divergence> {
-    if !par_enabled() {
-        return None;
+/// One run the oracle makes of a subject: an engine on a route, in a
+/// session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Run {
+    mode: Mode,
+    route: Route,
+    session: Session,
+}
+
+impl Run {
+    const fn plain(mode: Mode, route: Route) -> Self {
+        Run { mode, route, session: Session::NoCache }
     }
-    let (par, jit_par) = tokio::join!(
-        run_program(code, Mode::Par, timeout),
-        run_program(code, Mode::JitPar, timeout),
-    );
-    for (mode, mut forked) in [(Mode::Par, par), (Mode::JitPar, jit_par)] {
-        if interp.agrees_with_at(&forked, tier) {
-            continue;
+}
+
+impl Pair {
+    /// The reference and tested runs of a comparison; `None` for the
+    /// findings that are not one.
+    fn runs(self) -> Option<(Run, Run)> {
+        let (i, j) = (Route::InLanguage, Route::Dispatch);
+        let session = |mode, route, session| Run { mode, route, session };
+        Some(match self {
+            Pair::Engine => (Run::plain(Mode::Interp, i), Run::plain(Mode::Jit, i)),
+            Pair::EngineDispatch => {
+                (Run::plain(Mode::Interp, j), Run::plain(Mode::Jit, j))
+            }
+            Pair::Route => (Run::plain(Mode::Interp, i), Run::plain(Mode::Interp, j)),
+            Pair::Par(m) => (Run::plain(Mode::Interp, i), Run::plain(m, i)),
+            Pair::Cold(m, r) => (Run::plain(m, r), session(m, r, Session::Cold)),
+            Pair::Warm(m, r) => {
+                (session(m, r, Session::Cold), session(m, r, Session::Warm))
+            }
+            Pair::Twin | Pair::Rejected | Pair::Check => return None,
+        })
+    }
+
+    /// Comparisons whose runs are made together.
+    fn group(self) -> u8 {
+        match self {
+            Pair::Cold(_, Route::InLanguage) | Pair::Warm(_, Route::InLanguage) => 1,
+            Pair::Cold(_, Route::Dispatch) | Pair::Warm(_, Route::Dispatch) => 2,
+            Pair::Par(_) => 3,
+            _ => 0,
         }
-        if matches!(&forked, Outcome::Timeout(_)) && interp.has_events() {
-            forked = retry_one_sided_timeout(code, mode, timeout).await.outcome;
-            if interp.agrees_with_at(&forked, tier) {
-                continue;
+    }
+}
+
+/// Every comparison a subject owes, in the order they are judged: the
+/// engines, then (a callable) the dispatch route's engines and the route
+/// pair, then each engine's image sessions, then the forked runs. A
+/// program whose values are not comparable owes only its sessions, at
+/// kind strength.
+fn comparisons(code: &str, tier: OracleTier, sessions: bool) -> Vec<Pair> {
+    let values = tier != OracleTier::Excluded;
+    let mut out = Vec::new();
+    if values {
+        out.push(Pair::Engine);
+        if callable::has_header(code) {
+            out.extend([Pair::EngineDispatch, Pair::Route]);
+        }
+    }
+    if sessions {
+        for &route in session_routes(code) {
+            for mode in [Mode::Interp, Mode::Jit] {
+                out.extend([Pair::Cold(mode, route), Pair::Warm(mode, route)]);
             }
         }
-        let interp2 = run_program(code, Mode::Interp, timeout).await;
-        if !interp.agrees_with_at(&interp2, tier) {
-            return None;
-        }
-        return Some(Divergence {
-            code: code.to_string(),
-            reference: interp.clone(),
-            tested: forked,
-            tier,
-            pair: Pair::Par(mode),
-        });
     }
-    None
+    if values && par_enabled() {
+        out.extend([Pair::Par(Mode::Par), Pair::Par(Mode::JitPar)]);
+    }
+    out
 }
 
-struct SlowRetry {
-    outcome: Outcome,
-    budget: Duration,
-    cpu_burned: Duration,
+/// A run of `code`, or a session's cold and warm runs, which are one
+/// job since the warm one restores what the cold one wrote.
+#[derive(Clone, Copy)]
+enum Job {
+    Plain(Run),
+    Sessions(Mode, Route),
+}
+
+async fn do_job(code: &str, job: Job, timeout: Duration) -> Vec<(Run, Outcome)> {
+    match job {
+        Job::Plain(r) => {
+            vec![(r, run_program_routed(code, r.mode, r.route, timeout).await)]
+        }
+        Job::Sessions(mode, route) => {
+            let (cold, warm) = cold_warm(code, mode, route, timeout).await;
+            let run = |session| Run { mode, route, session };
+            vec![(run(Session::Cold), cold), (run(Session::Warm), warm)]
+        }
+    }
+}
+
+/// `run` again at `budget`.
+async fn run_one(code: &str, run: Run, budget: Duration) -> Outcome {
+    match run.session {
+        Session::NoCache => run_program_routed(code, run.mode, run.route, budget).await,
+        Session::Cold => cold_warm(code, run.mode, run.route, budget).await.0,
+        Session::Warm => cold_warm(code, run.mode, run.route, budget).await.1,
+    }
+}
+
+/// How one comparison came out.
+enum Settled {
+    Agree,
+    /// The ladder found nothing stable to say: containment, slowness or
+    /// nondeterminism.
+    Drop,
+    Diverge(Outcome, Outcome),
+}
+
+/// A subject's runs, made as its comparisons ask for them.
+struct Oracle<'a> {
+    code: &'a str,
+    tier: OracleTier,
+    timeout: Duration,
+    runs: Vec<(Run, Outcome)>,
+    /// Runs before this index have been scanned for a twin violation.
+    scanned: usize,
+    /// A confirm step decided a comparison, so the agreement says nothing
+    /// stable about the program.
+    confirmed: bool,
+}
+
+impl<'a> Oracle<'a> {
+    fn new(code: &'a str, tier: OracleTier, timeout: Duration) -> Self {
+        Oracle { code, tier, timeout, runs: Vec::new(), scanned: 0, confirmed: false }
+    }
+
+    fn get(&self, run: Run) -> &Outcome {
+        &self.runs.iter().find(|(r, _)| *r == run).expect("a made run").1
+    }
+
+    /// Make `run` again at `budget`, and with a session run its sibling,
+    /// since the warm run restores what the cold one wrote.
+    async fn remake(&mut self, run: Run, budget: Duration) {
+        let job = match run.session {
+            Session::NoCache => Job::Plain(run),
+            Session::Cold | Session::Warm => Job::Sessions(run.mode, run.route),
+        };
+        for (r, o) in do_job(self.code, job, budget).await {
+            if let Some((_, x)) = self.runs.iter_mut().find(|(x, _)| *x == r) {
+                *x = o;
+            }
+        }
+    }
+
+    /// Make every run of `pairs` not made yet, concurrently.
+    async fn make(&mut self, pairs: &[Pair]) {
+        let mut jobs: Vec<Job> = Vec::new();
+        for (a, b) in pairs.iter().filter_map(|p| p.runs()) {
+            for r in [a, b] {
+                if self.runs.iter().any(|(x, _)| *x == r) {
+                    continue;
+                }
+                let job = match r.session {
+                    Session::NoCache => Job::Plain(r),
+                    Session::Cold | Session::Warm => Job::Sessions(r.mode, r.route),
+                };
+                let same = |j: &Job| match (j, &job) {
+                    (Job::Plain(x), Job::Plain(y)) => x == y,
+                    (Job::Sessions(m, r), Job::Sessions(n, q)) => m == n && r == q,
+                    _ => false,
+                };
+                if !jobs.iter().any(same) {
+                    jobs.push(job);
+                }
+            }
+        }
+        let code = self.code;
+        let timeout = self.timeout;
+        let done =
+            futures::future::join_all(jobs.into_iter().map(|j| do_job(code, j, timeout)))
+                .await;
+        self.runs.extend(done.into_iter().flatten());
+    }
+
+    /// Make the runs of every comparison in `pair`'s group.
+    async fn make_group(&mut self, pairs: &[Pair], pair: Pair) {
+        let group: Vec<Pair> =
+            pairs.iter().copied().filter(|p| p.group() == pair.group()).collect();
+        self.make(&group).await;
+    }
+
+    /// Both engines refused the program, but the check alone accepts it:
+    /// elaboration refused what the check passed. A compile verdict owes
+    /// nothing to values, so an excluded program is checked too.
+    async fn check_pair(&self) -> Option<Divergence> {
+        let (a, b) = Pair::Engine.runs()?;
+        let (Outcome::CompileErr(_), jit @ Outcome::CompileErr(_)) =
+            (self.get(a), self.get(b))
+        else {
+            return None;
+        };
+        check_only(self.code, self.timeout).await.ok()?;
+        Some(Divergence {
+            code: self.code.to_string(),
+            reference: Outcome::Checked,
+            tested: jit.clone(),
+            tier: self.tier,
+            pair: Pair::Check,
+        })
+    }
+
+    /// A twin violation is a single-run finding: a bug breaking every run
+    /// identically agrees on the wrong answer. Confirmed by one rerun.
+    async fn twin(&mut self) -> Option<Divergence> {
+        if self.tier == OracleTier::Excluded {
+            return None;
+        }
+        while self.scanned < self.runs.len() {
+            let (run, o) = self.runs[self.scanned].clone();
+            self.scanned += 1;
+            if twin_violation(&o)
+                && twin_violation(&run_one(self.code, run, self.timeout).await)
+            {
+                return Some(Divergence {
+                    code: self.code.to_string(),
+                    reference: o.clone(),
+                    tested: o,
+                    tier: self.tier,
+                    pair: Pair::Twin,
+                });
+            }
+        }
+        None
+    }
+
+    /// One comparison through the confirm ladder.
+    async fn settle(&mut self, pair: Pair) -> Settled {
+        let (ra, rb) = pair.runs().expect("a comparison");
+        let s = Strength::of(pair, self.tier);
+        let (mut a, mut b) = (self.get(ra).clone(), self.get(rb).clone());
+        if a.agrees_at(&b, s) {
+            return Settled::Agree;
+        }
+        self.confirmed = true;
+        // The node-walk's frame per recursion level is kilobytes where a
+        // kernel's is words, so a depth only the kernel reaches is
+        // containment: the kernel's value stands unrefuted.
+        if ra.mode.node_walk()
+            && !rb.mode.node_walk()
+            && matches!(a, Outcome::Timeout(Containment::StackBudget))
+            && matches!(b, Outcome::Trace(_))
+        {
+            eprintln!(
+                "CONTAINED — the node-walk exceeded the stack budget; the kernel's \
+                 value stands unrefuted, not recorded"
+            );
+            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+            return Settled::Drop;
+        }
+        // A Timeout beside anything else measures the budget under load:
+        // that side again at the slow budget.
+        let one_sided =
+            matches!(a, Outcome::Timeout(_)) != matches!(b, Outcome::Timeout(_));
+        let budget = if one_sided { slow_budget(self.timeout) } else { self.timeout };
+        if one_sided {
+            let run = if matches!(a, Outcome::Timeout(_)) { ra } else { rb };
+            let cpu = self_cpu();
+            self.remake(run, budget).await;
+            let burned = self_cpu().saturating_sub(cpu);
+            (a, b) = (self.get(ra).clone(), self.get(rb).clone());
+            if a.agrees_at(&b, s) {
+                return Settled::Agree;
+            }
+            // A wedge sits at ~0% CPU; seconds of burn are an honestly slow
+            // reference, which refutes nothing
+            if run == ra
+                && matches!(a, Outcome::Timeout(_))
+                && burned >= Duration::from_secs(5)
+            {
+                eprintln!(
+                    "SLOW — the reference burned {:.1}s CPU over a {:.0}s budget \
+                     without finishing; not recorded",
+                    burned.as_secs_f64(),
+                    budget.as_secs_f64()
+                );
+                eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+                return Settled::Drop;
+            }
+        }
+        // a reference that disagrees with itself is nondeterminism
+        let again = run_one(self.code, ra, budget).await;
+        if !again.agrees_at(&a, s) {
+            return Settled::Drop;
+        }
+        Settled::Diverge(a, b)
+    }
+
+    /// How an agreement concluded: the engines' kind, unless the ladder
+    /// decided something or the program is excluded. A contained callable
+    /// is unsure: its runs are four, the budget's race decides it.
+    fn verdict(&self) -> Verdict {
+        if self.tier == OracleTier::Excluded {
+            return Verdict::Excluded;
+        }
+        if self.confirmed {
+            return Verdict::Unsure;
+        }
+        let Some((a, b)) = Pair::Engine.runs() else { unreachable!() };
+        match Verdict::of(self.get(a), self.get(b)) {
+            Verdict::Contained if callable::has_header(self.code) => Verdict::Unsure,
+            v => v,
+        }
+    }
 }
 
 /// The budget that tells a starved child from a hang: 8x, with an
@@ -1786,223 +1845,14 @@ fn slow_budget(timeout: Duration) -> Duration {
     (timeout * 8).max(Duration::from_secs(60))
 }
 
-/// Re-run the timed-out side at [`slow_budget`]. The CPU delta is
-/// process-wide, so a concurrent pool can only over-count, which errs
-/// toward dropping.
-async fn retry_one_sided_timeout(code: &str, mode: Mode, timeout: Duration) -> SlowRetry {
-    let budget = slow_budget(timeout);
-    let cpu_before = self_cpu();
-    let outcome = run_program(code, mode, budget).await;
-    let cpu_burned = self_cpu().saturating_sub(cpu_before);
-    SlowRetry { outcome, budget, cpu_burned }
-}
-
-/// A wedge sits at ~0% CPU; honest slowness burns whatever the scheduler
-/// gives it, so seconds of burn over the retry is proof of progress.
-fn interp_made_progress(retry: &SlowRetry) -> bool {
-    retry.cpu_burned >= Duration::from_secs(5)
-}
-
-/// The callable-v1 check matrix: four runs (two engines x two routes),
-/// three comparisons — each route's engine pair at the program's tier,
-/// then the route pair (node-walk engine) at final-values strength.
-/// Records the first divergence in that order; a timeout-involved
-/// disagreement retries once at 4x and drops if unresolved. The verdict
-/// is the first runs' when all four agreed without a retry; a contained
-/// callable is unsure, the retries inside deciding it.
-async fn check_callable(
-    code: &str,
-    tier: OracleTier,
-    timeout: Duration,
-) -> (Option<Divergence>, Verdict) {
-    let (ia, ja, ib, jb) = tokio::join!(
-        run_program_routed(code, Mode::Interp, Route::InLanguage, timeout),
-        run_program_routed(code, Mode::Jit, Route::InLanguage, timeout),
-        run_program_routed(code, Mode::Interp, Route::Dispatch, timeout),
-        run_program_routed(code, Mode::Jit, Route::Dispatch, timeout),
-    );
-    if tier == OracleTier::Excluded {
-        return (None, Verdict::Excluded);
-    }
-    // twin violations first: single-run findings
-    for (o, mode, route) in [
-        (&ia, Mode::Interp, Route::InLanguage),
-        (&ja, Mode::Jit, Route::InLanguage),
-        (&ib, Mode::Interp, Route::Dispatch),
-        (&jb, Mode::Jit, Route::Dispatch),
-    ] {
-        if twin_violation(o) {
-            let again = run_program_routed(code, mode, route, timeout).await;
-            if twin_violation(&again) {
-                let d = Divergence {
-                    code: code.to_string(),
-                    reference: o.clone(),
-                    tested: o.clone(),
-                    tier,
-                    pair: Pair::Twin,
-                };
-                return (Some(d), Verdict::Unsure);
-            }
-        }
-    }
-    async fn settle<F: Fn(&Outcome, &Outcome) -> bool>(
-        code: &str,
-        m1: Mode,
-        r1: Route,
-        m2: Mode,
-        r2: Route,
-        a: Outcome,
-        b: Outcome,
-        agrees: F,
-        timeout: Duration,
-    ) -> Option<(Outcome, Outcome)> {
-        if agrees(&a, &b) {
-            return None;
-        }
-        if matches!(a, Outcome::Timeout(_)) || matches!(b, Outcome::Timeout(_)) {
-            let big = (timeout * 4).max(Duration::from_secs(60));
-            let a2 = run_program_routed(code, m1, r1, big).await;
-            let b2 = run_program_routed(code, m2, r2, big).await;
-            if agrees(&a2, &b2) {
-                return None;
-            }
-            // CR claude for claude: [bug] For all three callable pairs, a
-            // timeout-involved disagreement still open at 4x is dropped here. None of
-            // check_verdict's ladder applies: an interp StackBudget beside a JIT value
-            // is not marked CONTAINED, there is no one-sided slow retry or CPU-progress
-            // test, and a JIT that still times out is not recorded. On the dispatch
-            // route (EngineDispatch, Route) the drop is final, so a hang there is never
-            // recorded. On the in-language route, check_callable then calls check_par
-            // with the first-run `ia` (line 1810), but check_par expects a serial
-            // node-walk that the serial JIT agreed with. So the disagreement is
-            // recorded as Pair::Par(JitPar): a stack-budget containment becomes a
-            // divergence, and so does a slow node-walk that settle's own 4x rerun found
-            // agreeing. Sharing check_verdict's confirm ladder, and calling check_par
-            // only after the in-language engine pair agreed, fixes both. probe:
-            // GRAPHIX_STACK_BUDGET=64M graphix-fuzz check
-            // design/review-2026-10-05/repro/fuzz-lib-a-07.gx prints the drop, then
-            // DIVERGENCE interp Timeout(StackBudget) vs jit/par; the same body without
-            // the callable header is CONTAINED, AGREE. (fuzz-lib-a-07)
-            if matches!(a2, Outcome::Timeout(_)) || matches!(b2, Outcome::Timeout(_)) {
-                eprintln!(
-                    "callable check: timeout-involved disagreement at 4x — dropped"
-                );
-                return None;
-            }
-            let a3 = run_program_routed(code, m1, r1, big).await;
-            if !agrees(&a2, &a3) {
-                return None;
-            }
-            let b3 = run_program_routed(code, m2, r2, big).await;
-            if !agrees(&b2, &b3) {
-                return None;
-            }
-            return Some((a2, b2));
-        }
-        // Nondeterminism guard: each side must agree with itself.
-        let a2 = run_program_routed(code, m1, r1, timeout).await;
-        if !agrees(&a, &a2) {
-            return None;
-        }
-        let b2 = run_program_routed(code, m2, r2, timeout).await;
-        if !agrees(&b, &b2) {
-            return None;
-        }
-        Some((a, b))
-    }
-    fn route_agrees(a: &Outcome, b: &Outcome) -> bool {
-        match (a, b) {
-            (Outcome::Trace(x), Outcome::Trace(y)) => x.agrees_final(y),
-            _ => a.agrees_with(b),
-        }
-    }
-    let tier_cmp = |a: &Outcome, b: &Outcome| a.agrees_with_at(b, tier);
-    // The dispatch route's cycle offsets are not comparable at Exact
-    // strength (the gap compiles and dispatch take an engine-dependent
-    // number of cycles), so only settled values are contractual.
-    let finals_cmp =
-        |a: &Outcome, b: &Outcome| a.agrees_with_at(b, OracleTier::FinalValues);
-    let verdict =
-        match tier_cmp(&ia, &ja) && finals_cmp(&ib, &jb) && route_agrees(&ia, &ib) {
-            true => match Verdict::of(&ia, &ja) {
-                Verdict::Contained => Verdict::Unsure,
-                v => v,
-            },
-            false => Verdict::Unsure,
-        };
-    if let Some((a, b)) = settle(
-        code,
-        Mode::Interp,
-        Route::InLanguage,
-        Mode::Jit,
-        Route::InLanguage,
-        ia.clone(),
-        ja,
-        tier_cmp,
-        timeout,
-    )
-    .await
-    {
-        let d = Divergence {
-            code: code.to_string(),
-            reference: a,
-            tested: b,
-            tier,
-            pair: Pair::Engine,
-        };
-        return (Some(d), Verdict::Unsure);
-    }
-    if let Some((a, b)) = settle(
-        code,
-        Mode::Interp,
-        Route::Dispatch,
-        Mode::Jit,
-        Route::Dispatch,
-        ib.clone(),
-        jb,
-        finals_cmp,
-        timeout,
-    )
-    .await
-    {
-        let d = Divergence {
-            code: code.to_string(),
-            reference: a,
-            tested: b,
-            tier,
-            pair: Pair::EngineDispatch,
-        };
-        return (Some(d), Verdict::Unsure);
-    }
-    if let Some((a, b)) = settle(
-        code,
-        Mode::Interp,
-        Route::InLanguage,
-        Mode::Interp,
-        Route::Dispatch,
-        ia.clone(),
-        ib,
-        route_agrees,
-        timeout,
-    )
-    .await
-    {
-        let d = Divergence {
-            code: code.to_string(),
-            reference: a,
-            tested: b,
-            tier,
-            pair: Pair::Route,
-        };
-        return (Some(d), Verdict::Unsure);
-    }
-    if let Some(d) = check_sessions(code, tier, timeout).await {
-        return (Some(d), Verdict::Unsure);
-    }
-    if let Some(d) = check_par(code, &ia, tier, timeout).await {
-        return (Some(d), Verdict::Unsure);
-    }
-    (None, verdict)
+/// The longest a healthy `check-one` takes: its first runs (the engine
+/// group, two cold-then-warm sessions per route, the forked pair, the
+/// check, a twin's rerun) and one comparison's ladder (a slow retry and
+/// the reference again at the slow budget), each run with its shutdown
+/// grace.
+fn check_deadline(timeout: Duration) -> Duration {
+    let grace = Duration::from_secs(5);
+    (timeout + grace) * 12 + (slow_budget(timeout) + grace) * 2 + Duration::from_secs(60)
 }
 
 /// Per-subject verdict from a batch child. Only agreement is trusted
@@ -2019,132 +1869,58 @@ pub enum BatchVerdict {
     Other,
 }
 
-/// The `check-batch` child body: run `progs` sequentially, each on
-/// fresh runtimes that restore the registration image built once per
-/// child, so the stdlib compiles at most once per process. `report` is
-/// called after each subject.
-// CR claude for claude: [structure] This is one of five hand-written copies of the
-// comparison matrix, beside check_verdict, check_par, session_divergence and
-// check_callable. Its finals and route_agrees closures at 1881-1887 repeat
-// check_callable's verbatim. The copies have drifted: this one runs neither JitPar nor
-// check_only, check_callable has no check_only, and the four timeout ladders differ.
-// check_verdict throws away its slow retry's outcome, session_divergence judges the
-// slow rerun against the first run, check_par retries only the forked side, and
-// check_callable drops at 4x. batch_verdict_matches_individual feeds only agreeing
-// programs, so it cannot see a comparison that one path skips. One list of comparisons
-// (pair, the two runs, the strength) that both run_batch and check evaluate, with one
-// confirm ladder, would put any new pair on every path. Design section 6 is out of date
-// here too: callable programs do batch, and its Pair list ends at Twin. (fuzz-lib-a-11)
 pub async fn run_batch(
     progs: &[String],
     timeout: Duration,
     mut report: impl FnMut(usize, BatchVerdict),
 ) {
     for (i, code) in progs.iter().enumerate() {
-        let tier = match Subject::parse(code, "test") {
-            Ok(s) => s.tier,
-            Err(_) => {
-                report(i, BatchVerdict::Other);
-                continue;
-            }
-        };
-        let callable = callable::has_header(code);
-        // the subject's own tier drives both runs
-        let (interp, jit) = tokio::join!(
-            run_program_routed(code, Mode::Interp, Route::InLanguage, timeout),
-            run_program_routed(code, Mode::Jit, Route::InLanguage, timeout),
-        );
-        // A callable subject owes the route matrix.
-        let routed = if callable {
-            Some(tokio::join!(
-                run_program_routed(code, Mode::Interp, Route::Dispatch, timeout),
-                run_program_routed(code, Mode::Jit, Route::Dispatch, timeout),
-            ))
-        } else {
-            None
-        };
-        let suspect =
-            |o: &Outcome| matches!(o, Outcome::Timeout(_) | Outcome::RuntimeErr(_));
-        let routed_ref = routed.as_ref();
-        let poisoned = suspect(&interp)
-            || suspect(&jit)
-            || routed_ref.is_some_and(|(a, b)| suspect(a) || suspect(b));
-        // Excluded tier: no value comparison is sound, so neither the twin
-        // scan nor the route pair runs. A twin violation goes back through
-        // the individual path, which confirms it with a rerun.
-        let comparable = tier != OracleTier::Excluded;
-        let twin = comparable
-            && (twin_violation(&interp)
-                || twin_violation(&jit)
-                || routed_ref
-                    .is_some_and(|(a, b)| twin_violation(a) || twin_violation(b)));
-        // dispatch-route cycle offsets are not comparable at Exact
-        // strength; only settled values are contractual
-        let routes_agree = !comparable
-            || routed_ref.is_none_or(|(ib, jb)| {
-                let finals = |a: &Outcome, b: &Outcome| {
-                    a.agrees_with_at(b, OracleTier::FinalValues)
-                };
-                let route_agrees = |a: &Outcome, b: &Outcome| match (a, b) {
-                    (Outcome::Trace(x), Outcome::Trace(y)) => x.agrees_final(y),
-                    _ => a.agrees_with(b),
-                };
-                finals(ib, jb) && route_agrees(&interp, ib)
-            });
-        let agreed = !poisoned
-            && !twin
-            && routes_agree
-            && (!comparable || interp.agrees_with_at(&jit, tier));
-        // A session disagreement goes back through the individual path,
-        // which confirms it with a rerun.
-        let mut sessions_agree = true;
-        if agreed && comparable && sessions_sampled(i) {
-            for &route in session_routes(code) {
-                let (si, sj) = tokio::join!(
-                    run_sessions(code, Mode::Interp, route, timeout),
-                    run_sessions(code, Mode::Jit, route, timeout),
-                );
-                let strength = session_strength(tier, route);
-                if !(si.agree(strength) && sj.agree(strength)) {
-                    sessions_agree = false;
-                    break;
-                }
-            }
-        }
-        // A forked run that disagrees goes back through the individual
-        // path too.
-        // CR claude for claude: [test-gap] The batch path accepts agreements that
-        // check_verdict would still examine. It runs only Mode::Par here, never
-        // Mode::JitPar. A subject that both builds refuse with one diagnostic counts as
-        // agreed without the check_only run that decides Pair::Check. Every soak
-        // subject goes through run_batch and only Other reaches check_isolated, so
-        // forked kernel-loop chunks and the elaboration axis get fuzzed only on the few
-        // subjects already flagged for something else. Run JitPar beside Par, and run
-        // check_only on a both-reject pair (or report those as Other), ideally from one
-        // list of comparisons shared with check_verdict.
-        // batch_verdict_matches_individual feeds only agreeing programs, so it cannot
-        // see this. probe: GRAPHIX_DBG_PAR=1 graphix-fuzz check on a program with a
-        // fused array::map prints `PAR kernel loop` lines; check-batch on the same
-        // program prints none and reports R. (fuzz-main-aux-02)
-        let par_agrees = !(agreed && comparable && par_enabled()) || {
-            let par =
-                run_program_routed(code, Mode::Par, Route::InLanguage, timeout).await;
-            !suspect(&par) && interp.agrees_with_at(&par, tier)
-        };
-        let agreed = agreed && sessions_agree && par_agrees;
-        let verdict = if agreed {
-            // `ran` is the parent's ring-admission bar and mirrors the
-            // individual path: a callable or Excluded subject is never admitted
-            let ran = comparable
-                && !callable
-                && matches!(&interp, Outcome::Trace(_))
-                && matches!(&jit, Outcome::Trace(_));
-            BatchVerdict::Agree { ran }
-        } else {
-            BatchVerdict::Other
+        let verdict = match Subject::parse(code, "test") {
+            Ok(s) => first_pass(code, s.tier, sessions_sampled(i), timeout).await,
+            Err(_) => BatchVerdict::Other,
         };
         report(i, verdict);
     }
+}
+
+/// [`check_verdict`] without its ladder: an agreement only when every
+/// comparison agrees at once and no run timed out or failed; anything
+/// else goes back through the individual path, which confirms it.
+async fn first_pass(
+    code: &str,
+    tier: OracleTier,
+    sessions: bool,
+    timeout: Duration,
+) -> BatchVerdict {
+    let pairs = comparisons(code, tier, sessions);
+    let mut o = Oracle::new(code, tier, timeout);
+    o.make(&[Pair::Engine]).await;
+    if o.check_pair().await.is_some() {
+        return BatchVerdict::Other;
+    }
+    let suspect = |o: &Outcome| {
+        matches!(o, Outcome::Timeout(_) | Outcome::RuntimeErr(_))
+            || (tier != OracleTier::Excluded && twin_violation(o))
+    };
+    for &pair in &pairs {
+        o.make_group(&pairs, pair).await;
+        let (a, b) = pair.runs().expect("a comparison");
+        if o.runs.iter().any(|(_, x)| suspect(x))
+            || !o.get(a).agrees_at(o.get(b), Strength::of(pair, tier))
+        {
+            return BatchVerdict::Other;
+        }
+    }
+    if o.runs.iter().any(|(_, x)| suspect(x)) {
+        return BatchVerdict::Other;
+    }
+    let (a, b) = Pair::Engine.runs().expect("a comparison");
+    // the ring-admission bar, as the individual path's
+    let ran = tier != OracleTier::Excluded
+        && !callable::has_header(code)
+        && matches!(o.get(a), Outcome::Trace(_))
+        && matches!(o.get(b), Outcome::Trace(_));
+    BatchVerdict::Agree { ran }
 }
 
 /// Batch size for the campaign pool's batch children./// Batch size for the campaign pool's batch children. 1 disables
@@ -2525,27 +2301,12 @@ fn order_result(order: &WorkOrder, text: &str, exited_zero: bool) -> OrderResult
 /// Coarse "same bug" key: the bisection class, the outcome kinds and
 /// the trace-difference class (final-strength for final-tier and route
 /// divergences). The minimizer requires a reduction to keep the bucket.
-// CR claude for claude: [bug] The key has no pair in it. bisect's first arm (1287) labels
-// every (Timeout, Trace-with-events) divergence 'asymmetric timeout (interp exceeded 8x
-// budget; JIT produced a value ...)' before it looks at the pair. So a Par, Cold or
-// Warm divergence of that shape prints the engine label (on the console and in the
-// finding's `// bisect:` line) and gets the Engine pair's key. The minimizer can then
-// accept a reduction that turns a parallel or image divergence into an engine one,
-// which design section 5 says the key must prevent. The trace class is also the exact
-// one for EngineDispatch and dispatch-route Cold/Warm, which compare at final strength,
-// so a pacing change that the comparison ignores still changes the key. Put the pair in
-// the key, match on the pair first in bisect, and derive the strength from one function
-// of (pair, tier) that the comparisons also use. probe: GRAPHIX_STACK_BUDGET=64M
-// graphix-fuzz check design/review-2026-10-05/repro/fuzz-lib-a-07.gx prints the 8x
-// label for a Pair::Par(JitPar) finding (interp: Timeout(StackBudget), jit/par: Trace)
-// after 18 s, with no 8x retry run. (fuzz-lib-a-09)
 fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     let td = match (&d.reference, &d.tested) {
-        (Outcome::Trace(a), Outcome::Trace(b)) => match (d.pair, d.tier) {
-            (Pair::Route, _) | (_, OracleTier::FinalValues) => {
-                a.first_final_difference(b)
-            }
-            _ => a.first_difference(b),
+        (Outcome::Trace(a), Outcome::Trace(b)) => match Strength::of(d.pair, d.tier) {
+            Strength::Exact => a.first_difference(b),
+            Strength::Final => a.first_final_difference(b),
+            Strength::Kind => None,
         },
         _ => None,
     };
@@ -4218,31 +3979,28 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
         .into_iter()
         .flat_map(|m| routes.iter().map(move |r| (m, r)))
     {
-        // dispatch-route cycle offsets are not comparable at Exact
-        // strength even against themselves; only settled values are
-        let route_tier = match route {
-            Route::Dispatch if tier == OracleTier::Exact => OracleTier::FinalValues,
-            _ => tier,
+        // the strength an engine pair on this route compares at
+        let pair = match route {
+            Route::InLanguage => Pair::Engine,
+            Route::Dispatch => Pair::EngineDispatch,
         };
+        let strength = Strength::of(pair, tier);
         let (a, b) = tokio::join!(
             run_program_routed(prog, mode, route, timeout),
             run_program_routed(prog, mode, route, timeout),
         );
-        // CR claude for claude: [risk] Any disagreement in the concurrent pair is retried
-        // by a sequential pair and dropped if that pair agrees. So a flake must show up
-        // twice, and one that needs the two runs to overlap (state shared between
-        // contexts in one process) can never show up in the sequential retry. Two
-        // differing traces with no Timeout or RuntimeErr on either side already prove
-        // nondeterminism; only those outcomes need the 4x confirm. Separately, main.rs
-        // maps interp-dispatch and jit-dispatch to mask 3, so a dispatch-route flake is
-        // reported as both an interp and a jit flake. (fuzz-main-aux-11)
-        if !a.agrees_with_at(&b, route_tier) {
-            // A Timeout is not a value: comparing it against one measures
-            // the budget, not determinism. Confirm at 4x.
+        if a.agrees_at(&b, strength) {
+            continue;
+        }
+        // Two runs that finished and differ prove nondeterminism. A Timeout
+        // or a RuntimeErr may be the budget under load: confirm at 4x.
+        let budget_bound =
+            |o: &Outcome| matches!(o, Outcome::Timeout(_) | Outcome::RuntimeErr(_));
+        if budget_bound(&a) || budget_bound(&b) {
             let big = timeout * 4;
             let a2 = run_program_routed(prog, mode, route, big).await;
             let b2 = run_program_routed(prog, mode, route, big).await;
-            if a2.agrees_with_at(&b2, route_tier) {
+            if a2.agrees_at(&b2, strength) {
                 continue;
             }
             if matches!(a2, Outcome::Timeout(_)) || matches!(b2, Outcome::Timeout(_)) {
@@ -4250,15 +4008,15 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
                 bad.push("inconclusive");
                 continue;
             }
-            bad.push(match (mode, route) {
-                (Mode::Interp, Route::InLanguage) => "interp",
-                (Mode::Jit, Route::InLanguage) => "jit",
-                (Mode::Interp, Route::Dispatch) => "interp-dispatch",
-                (Mode::Jit, Route::Dispatch) => "jit-dispatch",
-                (Mode::Par, _) => "par",
-                (Mode::JitPar, _) => "jit-par",
-            });
         }
+        bad.push(match (mode, route) {
+            (Mode::Interp, Route::InLanguage) => "interp",
+            (Mode::Jit, Route::InLanguage) => "jit",
+            (Mode::Interp, Route::Dispatch) => "interp-dispatch",
+            (Mode::Jit, Route::Dispatch) => "jit-dispatch",
+            (Mode::Par, _) => "par",
+            (Mode::JitPar, _) => "jit-par",
+        });
     }
     bad
 }
@@ -4269,12 +4027,14 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
     use tokio::io::AsyncWriteExt;
     let mut cmd = child_command();
-    let _sandbox = sandbox_cwd(&mut cmd);
+    let sandbox = sandbox_cwd(&mut cmd);
+    let verdict = sandbox.path().join("verdict");
     cmd.arg("selfcheck-one")
+        .arg(&verdict)
         .env("TOKIO_WORKER_THREADS", "2")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
@@ -4282,22 +4042,29 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
     }
     // up to 8 in-child runs, each bounded by the per-run timeout
     let deadline = timeout * 10 + Duration::from_secs(30);
-    let out = match tokio::time::timeout(deadline, child.wait_with_output()).await {
-        Ok(Ok(out)) => out,
-        // a dead or wedged child is nondeterminism by definition
-        Ok(Err(_)) | Err(_) => return vec!["crash"],
-    };
-    // verdict in the exit code: 0 = clean, 40+mask flags the flaky modes
-    match out.status.code() {
-        Some(0) => Vec::new(),
-        Some(41) => vec!["interp"],
-        Some(42) => vec!["jit"],
-        Some(43) => vec!["interp", "jit"],
-        // timed out at 4x on the confirm pair: the budget decided
-        Some(50) => vec!["inconclusive"],
-        _ => vec!["crash"],
+    let _ = tokio::time::timeout(deadline, child.wait()).await;
+    // a dead or wedged child left no verdict: nondeterminism by definition
+    match std::fs::read_to_string(&verdict) {
+        Ok(v) => v
+            .lines()
+            .map(|l| {
+                SELFCHECK_MODES.iter().find(|m| **m == l).copied().unwrap_or("crash")
+            })
+            .collect(),
+        Err(_) => vec!["crash"],
     }
 }
+
+/// What a selfcheck child reports, one per line of its verdict file.
+pub const SELFCHECK_MODES: [&str; 7] = [
+    "interp",
+    "jit",
+    "interp-dispatch",
+    "jit-dispatch",
+    "par",
+    "jit-par",
+    "inconclusive",
+];
 
 /// Normalize a CLIF dump for structural comparison across processes:
 /// drop log lines, blind pointer-magnitude constants (ASLR), and
@@ -4497,23 +4264,9 @@ async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration)
         // a write error means the child died instantly; wait captures it
         let _ = stdin.write_all(prog.as_bytes()).await;
     }
-    // The child runs interp+jit with its own per-mode `timeout`; the
-    // outer deadline only catches a wedged child and must cover the
-    // child's whole legitimate worst case: the concurrent first runs,
-    // `check()`'s 60s-floored escalation retry and the nondeterminism re-run.
-    // CR claude for claude: [bug] This 102 s bound (at the 3 s campaign budget) does not
-    // cover what check-one legitimately runs. check_callable's settle reruns the
-    // node-walk at the 60 s slow budget once per route, one after the other.
-    // check_sessions adds three sequential runs per route, and on a one-sided timeout
-    // runs run_sessions again at the slow budget. check_par adds a 60 s retry per
-    // forked mode, and each program compile runs before drive's deadline starts. A slow
-    // but healthy child is killed here and recorded as CRASH "HANG (outer deadline)",
-    // or as containment when its own 8 GB RLIMIT_AS fires first. probe:
-    // design/review-2026-10-05/repro/fuzz-lib-b-04.sh (check-one agrees after 148 s on
-    // a debug build, 171 s on release with FIB=23). (fuzz-lib-b-04)
-    let deadline = timeout * 4
-        + (timeout * 8).max(Duration::from_secs(60))
-        + Duration::from_secs(30);
+    // every run in the child has its own deadline; this one catches a
+    // wedged child
+    let deadline = check_deadline(timeout);
     let res = match tokio::time::timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(out)) => match std::fs::read_to_string(&verdict) {
             Ok(v) => match v.split_once('\n') {

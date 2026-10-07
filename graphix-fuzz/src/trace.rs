@@ -16,6 +16,7 @@ use graphix_compiler::{
 };
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
+use std::fmt;
 
 /// Default trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
 /// total recorded events per trace, and active cycles per segment. A
@@ -141,16 +142,20 @@ pub fn same(a: &Value, b: &Value) -> bool {
 }
 
 impl Epoch {
+    /// The cycle a segment's offsets count from: its first event's.
+    pub fn anchor(seg: &TraceSegment) -> Option<u64> {
+        match seg.events.first()? {
+            TraceEvent::Compiled { cycle, .. } | TraceEvent::Updated { cycle, .. } => {
+                Some(*cycle)
+            }
+        }
+    }
+
     /// Project a runtime segment onto the watched expr: anchor at the
     /// segment's first event, keep `Updated(eid)` values (fn values
     /// normalized to their source — see [`normalize`]).
     pub fn from_segment(seg: &TraceSegment, eid: ExprId) -> Self {
-        let anchor = match seg.events.first() {
-            None => 0,
-            Some(
-                TraceEvent::Compiled { cycle, .. } | TraceEvent::Updated { cycle, .. },
-            ) => *cycle,
-        };
+        let anchor = Self::anchor(seg).unwrap_or(0);
         let events = seg
             .events
             .iter()
@@ -165,13 +170,30 @@ impl Epoch {
     }
 }
 
+/// A captured print-family line: its epoch, its cycle's offset from the
+/// epoch's anchor (the first event, or in an epoch without one its
+/// first printing cycle) and the text.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Printed {
+    pub epoch: u32,
+    pub offset: i64,
+    pub line: String,
+}
+
+impl fmt::Display for Printed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}+{}:{}", self.epoch, self.offset, self.line)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub epochs: Vec<Epoch>,
-    /// Sorted multiset of the run's captured print-family output lines.
-    /// Filled by the harness after the run, Exact tier only. Sorted
-    /// because within-cycle emission order is not shared by the backends.
-    pub stdout: Vec<String>,
+    /// The run's captured print-family output, Exact tier only, sorted:
+    /// within one cycle the emission order is an evaluation-order
+    /// artifact the backends do not share, so a cycle's lines are a
+    /// multiset.
+    pub stdout: Vec<Printed>,
 }
 
 impl Trace {

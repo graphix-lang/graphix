@@ -5,9 +5,9 @@
 
 use anyhow::{Result, bail};
 use graphix_fuzz::{
-    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, OUTCOME_MANIFEST, Outcome, Regression, check,
-    fusecheck_mismatches, fuzz, generate_campaign, minimize, outcome_mismatches,
-    regression_corpus_len, render, run_fusecheck, run_regression,
+    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, OUTCOME_MANIFEST, Outcome, Regression,
+    Verdict, check, fusecheck_mismatches, fuzz, generate_campaign, minimize,
+    outcome_mismatches, regression_corpus_len, render, run_fusecheck, run_regression,
 };
 use std::{
     future::Future,
@@ -811,28 +811,19 @@ async fn main() -> Result<()> {
             )?;
             std::process::exit(0);
         }
-        // isolated selfcheck worker: 0 = clean, 40+mask (bit 1 interp
-        // flaky, bit 2 jit flaky), 50 = inconclusive
+        // isolated selfcheck worker: the flaky modes, one per line, in the
+        // file named by argv[2]
         Some("selfcheck-one") => {
+            let path = args.get(2).cloned().ok_or_else(|| {
+                anyhow::anyhow!("selfcheck-one requires a verdict path")
+            })?;
             let code = read_stdin()?;
-            let mut mask = 0;
-            let mut inconclusive = false;
-            for mode in graphix_fuzz::selfcheck_one(code.trim(), timeout()).await {
-                match mode {
-                    "interp" => mask |= 1,
-                    "jit" => mask |= 2,
-                    // timed out on the confirm pair: the budget decided
-                    "inconclusive" => inconclusive = true,
-                    _ => mask |= 3,
-                }
-            }
-            std::process::exit(if mask != 0 {
-                40 + mask
-            } else if inconclusive {
-                50
-            } else {
-                0
-            });
+            let modes = graphix_fuzz::selfcheck_one(code.trim(), timeout()).await;
+            std::fs::write(
+                path,
+                modes.iter().map(|m| format!("{m}\n")).collect::<String>(),
+            )?;
+            std::process::exit(0);
         }
         // isolated minimizer: program on stdin, reduced program written
         // to the file named by argv[2]
@@ -1006,34 +997,26 @@ async fn main() -> Result<()> {
                         .into_iter()
                         .flat_map(|m| routes.iter().map(move |r| (m, r)))
                     {
-                        let s = graphix_fuzz::run_sessions(code, mode, route, timeout())
-                            .await;
-                        for (name, o) in [
-                            ("nocache", &s.nocache),
-                            ("cold", &s.cold),
-                            ("warm", &s.warm),
-                        ] {
+                        let (cold, warm) =
+                            graphix_fuzz::cold_warm(code, mode, route, timeout()).await;
+                        for (name, o) in [("cold", &cold), ("warm", &warm)] {
                             println!("{mode:?}/{route:?}/{name}: {}", render(o));
                         }
                     }
                 }
-                // CR claude for claude: [bug] `check` prints AGREE for every None, but
-                // check_verdict also returns None without comparing values in two
-                // cases. One is an Excluded-tier program: anything naming rand::,
-                // sys::time, sys::net or the rest of oracle_tier's list, so every probe
-                // gated by `sys::exit(sys::time::after_idle(..))`. The other is a
-                // node-walk that disagrees with its own rerun. The message then says
-                // 'interp and jit, no cache, cold and warm produce the same result'
-                // about engines that produced different values. probe:
-                // design/review-2026-10-05/repro/x-typecheck-patterns-15.gx (check
-                // prints AGREE; run shows eight different values). Print
-                // check_verdict's Verdict (EXCLUDED, UNSURE) and keep AGREE for Ran,
-                // Contained and Rejected. (x-typecheck-patterns-15)
-                "check" => match check(code, timeout()).await {
-                    None => println!(
-                        "AGREE — interp and jit, no cache, cold and warm produce the same result"
+                "check" => match graphix_fuzz::check_verdict(code, timeout()).await {
+                    (None, Verdict::Excluded) => println!(
+                        "EXCLUDED — the oracle compares no values of this program; its \
+                         sessions agree in kind"
                     ),
-                    Some(d) => {
+                    (None, Verdict::Unsure) => println!(
+                        "UNSURE — no divergence, but a retry, slowness, containment or \
+                         nondeterminism decided it (see above)"
+                    ),
+                    (None, v) => {
+                        println!("AGREE ({v}) — every comparison the program owes holds")
+                    }
+                    (Some(d), _) => {
                         let (la, lb) = d.labels();
                         println!("DIVERGENCE — {}", d.bisect());
                         println!("  {la}: {}", render(&d.reference));

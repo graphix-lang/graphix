@@ -567,7 +567,7 @@ pub enum TraceEvent {
 #[derive(Debug)]
 pub struct TraceSegment {
     pub events: GPooled<Vec<TraceEvent>>,
-    /// The runtime cycle at which this segment closed; relative use only.
+    /// The last runtime cycle the segment covers; relative use only.
     pub end_cycle: u64,
     /// The trace hit its worked-cycle budget and is permanently quiet.
     pub capped_cycles: bool,
