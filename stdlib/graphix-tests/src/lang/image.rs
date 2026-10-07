@@ -349,33 +349,46 @@ async fn cold_and_warm(
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
 }
 
-/// `image` with its first instance's offset `at`: the trailer rewritten,
-/// the header's offset of what follows it moved by the change in length.
-fn with_first_instance_at(image: &Bytes, at: u64) -> Bytes {
+/// The header's (heap, instance table, id counts) offsets and where they
+/// sit in `image`.
+fn image_offsets(image: &Bytes) -> (usize, u64, usize, usize) {
     use bytes::Buf;
-    use netidx_core::pack::{decode_varint, encode_varint};
     let mut b = &image[5..];
     String::decode(&mut b).expect("the isa");
     let header = image.len() - b.len();
-    let (heap_at, table_at, counts_at) =
-        (b.get_u64(), b.get_u64() as usize, b.get_u64() as usize);
-    assert!((heap_at as usize) < table_at);
-    let mut table = &image[table_at..counts_at];
-    let n = decode_varint(&mut table).unwrap();
-    assert!(n > 0, "the program image holds an instance in its heap");
-    let id = decode_varint(&mut table).unwrap();
-    decode_varint(&mut table).unwrap();
-    let mut rewritten = Vec::new();
-    encode_varint(n, &mut rewritten);
-    encode_varint(id, &mut rewritten);
-    encode_varint(at, &mut rewritten);
-    rewritten.extend_from_slice(table);
+    (header, b.get_u64(), b.get_u64() as usize, b.get_u64() as usize)
+}
+
+/// `image` with its instance table replaced by `rewrite` of it, the
+/// header's offset of what follows moved by the change in length.
+fn with_table(image: &Bytes, rewrite: impl FnOnce(&[u8]) -> Vec<u8>) -> Bytes {
+    let (header, _, table_at, counts_at) = image_offsets(image);
+    let rewritten = rewrite(&image[table_at..counts_at]);
     let mut out = image[..table_at].to_vec();
     out.extend_from_slice(&rewritten);
     let counts = table_at + rewritten.len();
     out.extend_from_slice(&image[counts_at..]);
     out[header + 16..header + 24].copy_from_slice(&(counts as u64).to_be_bytes());
     Bytes::from(out)
+}
+
+/// `image` with its first instance's offset `at`.
+fn with_first_instance_at(image: &Bytes, at: u64) -> Bytes {
+    use netidx_core::pack::{decode_varint, encode_varint};
+    let (_, heap_at, table_at, _) = image_offsets(image);
+    assert!((heap_at as usize) < table_at);
+    with_table(image, |mut table| {
+        let n = decode_varint(&mut table).unwrap();
+        assert!(n > 0, "the program image holds an instance in its heap");
+        let id = decode_varint(&mut table).unwrap();
+        decode_varint(&mut table).unwrap();
+        let mut rewritten = Vec::new();
+        encode_varint(n, &mut rewritten);
+        encode_varint(id, &mut rewritten);
+        encode_varint(at, &mut rewritten);
+        rewritten.extend_from_slice(table);
+        rewritten
+    })
 }
 
 /// A runtime restored from an image holding a program runs it to the
@@ -616,7 +629,6 @@ async fn program_package_root_is_the_script() -> Result<()> {
 /// runtime compiles cold as if there were no image.
 #[tokio::test]
 async fn a_bad_registration_image_runs_cold() -> Result<()> {
-    use bytes::{Buf, BufMut, BytesMut};
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
@@ -624,30 +636,21 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
             .await?;
     let image = image_rx.await??;
     cold.shutdown().await;
-    // the trailer's first count, the instance table's length, made huge
-    let table_at = {
-        let mut b = &image[5..];
-        String::decode(&mut b)?;
-        b.advance(8);
-        b.get_u64() as usize
-    };
-    // CR claude for claude: [test-gap] The splice grows the image by 8 bytes but leaves
-    // the header's counts_at, so the decoder reads the 20 id-count varints 8 bytes
-    // early. It refuses at registration.rs:336 (19 bytes left over) before it reaches
-    // the instance table. The `n.min(table.len() / 2)` guard at registration.rs:353,
-    // which this case exists for, never runs, and removing it would still pass. Move
-    // counts_at by the growth as with_first_instance_at (line 354) does, sharing that
-    // header rewrite instead of parsing the header again at 618-623. Assert
-    // `!warm.rt.env_stats().await?.restored` for both bad images, since a working
-    // array::len does not show the image was refused. (tests-lang-c-05)
-    let mut huge = BytesMut::from(&image[..table_at]);
-    netidx_core::pack::encode_varint(1 << 62, &mut huge);
-    huge.put_slice(&image[table_at + 1..]);
-    for bad in [image.slice(..image.len() / 2), huge.freeze()] {
+    // the instance table's count made huge: the decoder must bound it
+    // by the bytes the table holds
+    let huge = with_table(&image, |mut table| {
+        netidx_core::pack::decode_varint(&mut table).unwrap();
+        let mut rewritten = Vec::new();
+        netidx_core::pack::encode_varint(1 << 62, &mut rewritten);
+        rewritten.extend_from_slice(table);
+        rewritten
+    });
+    for bad in [image.slice(..image.len() / 2), huge] {
         let (tx, mut rx) = mpsc::channel(10);
         let warm =
             init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(bad))
                 .await?;
+        assert!(!warm.rt.env_stats().await?.restored, "a bad image was restored");
         let v = eval_on(&warm, &mut rx, "{ let xs = [1, 2, 3]; array::len(xs) }").await?;
         assert_eq!(v, Value::I64(3));
         warm.shutdown().await;
