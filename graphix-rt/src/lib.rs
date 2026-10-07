@@ -28,7 +28,6 @@ use log::error;
 use netidx_core::atomic_id;
 use netidx_value::FromValue;
 use netidx_value::{ValArray, Value};
-use nohash::IntSet;
 use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
@@ -56,15 +55,16 @@ pub use rt::GXRt;
 ///
 /// As such to extend the event loop you must implement two things. A function
 /// to poll your own external event sources, and a function to take the events
-/// you got from those sources and represent them to the dataflow graph. You
-/// represent them either by setting generic variables (bindid -> value map), or
-/// by setting some custom structures that you define as part of your UserEvent
-/// implementation.
+/// you got from those sources and represent them to the dataflow graph, in the
+/// custom structures you define as part of your UserEvent implementation.
+/// `do_cycle` runs after the cycle's variables were delivered, so it fills the
+/// user event only; a payload that fits a `Value` goes through a variable the
+/// runtime delivers (`Rt::watch_var`, `Rt::spawn_var`), which stores it and
+/// wakes its readers.
 ///
 /// Your Graphix builtins can access both your custom structure, to register new
 /// event sources, etc, and your custom user event structure, to receive events
-/// who's types do not fit nicely as `Value`. If your event payload does fit
-/// nicely as a `Value`, then just use a variable.
+/// whose types do not fit nicely as `Value`.
 pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
     type UserEvent: UserEvent + Send + Sync + 'static;
 
@@ -85,9 +85,6 @@ pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
 
     /// Return true if there are events ready to deliver
     fn is_ready(&self) -> bool;
-
-    /// Clear the state
-    fn clear(&mut self);
 
     /// Create and return an empty custom event structure
     fn empty_event(&mut self) -> Self::UserEvent;
@@ -110,8 +107,6 @@ impl GXExt for NoExt {
     fn is_ready(&self) -> bool {
         false
     }
-
-    fn clear(&mut self) {}
 
     fn empty_event(&mut self) -> Self::UserEvent {
         NoUserEvent
@@ -152,7 +147,6 @@ pub struct Ref<X: GXExt> {
     // the most recent value of the variable
     pub last: Option<Value>,
     pub bid: BindId,
-    pub target_bid: Option<BindId>,
     pub typ: Type,
     rt: GXHandle<X>,
 }
@@ -180,23 +174,8 @@ impl<X: GXExt> Ref<X> {
     /// This will cause all nodes dependent on *id to update. This is the same
     /// as the `*r <-` operator in Graphix. This does the same thing as
     /// `GXHandle::set` using the target id.
-    // CR claude for claude: [bug] set_deref is not dead: the tui size refs call it
-    // (block.rs:343, layout.rs:260, overlay.rs:127, scrollbar.rs:354, tabs.rs:203). Its
-    // only target is the byref_chain entry compile_ref found (gx.rs:976), so for a
-    // place reference it writes nothing and returns Ok(()). As a result, `block(#size:
-    // &st.size, ..)` never receives a size, while `#size: &sz` does (probe:
-    // design/review-2026-10-05/repro/rt-16.gx). Resolve the target in the runtime at
-    // delivery, as ConnectDeref::resolve does (graphix-compiler/src/node/mod.rs:1616):
-    // ref_path first, then byref_chain. Nearby code really is dead: TRef::set_deref has
-    // no caller; Rt::clear, GXRt::clear (rt.rs:127) and GXExt::clear have none; the
-    // pending tasks put into the two JoinSets (rt.rs:71-74) duplicate join_or_wait's
-    // None-to-pending; and `let scope` in compile_root and compile (gx.rs:671, 702) is
-    // unused. (rt-16)
     pub fn set_deref<T: Into<Value>>(&mut self, v: T) -> Result<()> {
-        if let Some(id) = self.target_bid {
-            self.rt.set(id, v)?
-        }
-        Ok(())
+        self.rt.set_deref(self.bid, v)
     }
 
     /// Process an update
@@ -253,16 +232,6 @@ impl<X: GXExt, T: Into<Value> + FromValue + Clone> TRef<X, T> {
     pub fn set(&mut self, t: T) -> Result<()> {
         self.t = Some(t.clone());
         self.r.set(t)
-    }
-
-    /// set the value pointed to by tref `*r <-`
-    ///
-    /// This will cause all nodes dependent on *id to update. This is the same
-    /// as the `*r <-` operator in Graphix. This does the same thing as
-    /// `GXHandle::set` using the target id.
-    pub fn set_deref(&mut self, t: T) -> Result<()> {
-        self.t = Some(t.clone());
-        self.r.set_deref(t.into())
     }
 }
 
@@ -330,105 +299,6 @@ impl<X: GXExt> Callable<X> {
     }
 }
 
-enum DeferredCall {
-    Call(ValArray, oneshot::Sender<Result<()>>),
-    CallUnchecked(ValArray, oneshot::Sender<Result<()>>),
-}
-
-pub struct NamedCallable<X: GXExt> {
-    fname: Ref<X>,
-    current: Option<Callable<X>>,
-    ids: IntSet<ExprId>,
-    deferred: Vec<DeferredCall>,
-    h: GXHandle<X>,
-}
-
-impl<X: GXExt> NamedCallable<X> {
-    /// Update the named callable function
-    ///
-    /// This method does two things,
-    /// - Handle late binding. When the name ref updates to an actual function
-    ///   compile the real call site
-    /// - Return Ok(Some(v)) when the called function returns
-    pub async fn update<'a>(
-        &mut self,
-        id: ExprId,
-        v: &'a Value,
-    ) -> Result<Option<&'a Value>> {
-        match self.fname.update(id, v) {
-            Some(v) if self.current.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
-            Some(v) => {
-                let callable = self.h.compile_callable(v.clone()).await?;
-                self.ids.insert(callable.expr);
-                for dc in self.deferred.drain(..) {
-                    match dc {
-                        DeferredCall::Call(args, reply) => {
-                            let _ = reply.send(callable.call(args).await);
-                        }
-                        DeferredCall::CallUnchecked(args, reply) => {
-                            let _ = reply.send(callable.call_unchecked(args).await);
-                        }
-                    }
-                }
-                self.current = Some(callable);
-                Ok(None)
-            }
-            None if self.ids.contains(&id) => Ok(Some(v)),
-            None => Ok(None),
-        }
-    }
-
-    /// Call the lambda with args
-    ///
-    /// Argument types and arity will be checked and an error will be returned
-    /// if they are wrong. If you call the function more than once before it
-    /// returns there is no guarantee that the returns will arrive in the order
-    /// of the calls. There is no guarantee that a function must return. In
-    /// order to handle late binding you must keep calling `update` while
-    /// waiting for this method.
-    ///
-    /// While a late bound function is unresolved calls will queue internally in
-    /// the NamedCallsite and will happen when the function is resolved.
-    // CR claude for claude: [bug] Before the name resolves, call parks a oneshot in
-    // self.deferred and awaits it while its future still borrows &mut self. Only
-    // update(&mut self) completes that oneshot, so the documented 'keep calling update
-    // while waiting' cannot be written, and an early call never returns.
-    // call_unchecked's resolved branch (line 403) also runs the checked c.call. Nothing
-    // in the workspace or ../netidx uses NamedCallable or compile_callable_by_name, so
-    // delete both. (rt-12)
-    pub async fn call(&mut self, args: ValArray) -> Result<()> {
-        match &self.current {
-            Some(c) => c.call(args).await,
-            None => {
-                let (tx, rx) = oneshot::channel();
-                self.deferred.push(DeferredCall::Call(args, tx));
-                rx.await?
-            }
-        }
-    }
-
-    /// call the function with the specified args
-    ///
-    /// Argument types and arity will NOT be checked by this method. If you call
-    /// the function more than once before it returns there is no guarantee that
-    /// the returns will arrive in the order of the calls. There is no guarantee
-    /// that a function must return. In order to handle late binding you must
-    /// keep calling `update` while waiting for this method.
-    ///
-    /// While a late bound function is unresolved calls will queue internally in
-    /// the NamedCallsite and will happen when the function is resolved.
-    pub async fn call_unchecked(&mut self, args: ValArray) -> Result<()> {
-        match &self.current {
-            Some(c) => c.call(args).await,
-            None => {
-                let (tx, rx) = oneshot::channel();
-                self.deferred.push(DeferredCall::CallUnchecked(args, tx));
-                rx.await?
-            }
-        }
-    }
-}
-
 enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
@@ -475,6 +345,10 @@ enum ToGX<X: GXExt> {
     },
     Set {
         id: BindId,
+        v: Value,
+    },
+    SetDeref {
+        cell: BindId,
         v: Value,
     },
     /// Set several variables atomically, all delivered in the same cycle.
@@ -846,14 +720,6 @@ impl<X: GXExt> GXHandle<X> {
         match root {
             None => Ok(None),
             Some(Err(e)) => Err(anyhow!("{e}")),
-            // CR claude for claude: [risk] Every call mints another owning CompExp for
-            // the one program root (ToGX::Program clones the stored ProgramRoot), and
-            // dropping any of them sends Delete and stops the program for everyone. The
-            // image tests already drop one at once
-            // (stdlib/graphix-tests/src/lang/image.rs:297, 560, 691), which deletes the
-            // warm program after its first cycle; they pass only because its values all
-            // arrive in that cycle. Hand the root out once: take the ProgramRoot in the
-            // runtime and answer None or an error afterwards. (rt-14)
             Some(Ok(r)) => Ok(Some(CompRes {
                 exprs: smallvec![CompExp {
                     id: r.id,
@@ -905,8 +771,9 @@ impl<X: GXExt> GXHandle<X> {
     /// Segments are taken with [`trace_wait_idle`](Self::trace_wait_idle).
     /// Restarting discards recorded events and cancels a pending waiter.
     ///
-    /// `max_events` bounds the total events recorded; `max_cycles` bounds
-    /// the worked cycles per segment, so a wait resolves even for a
+    /// `max_events` bounds the events recorded per segment, compile anchors
+    /// included; `max_cycles` bounds the worked cycles per segment, so a
+    /// wait resolves even for a
     /// program that never quiesces. Once either budget is exhausted the
     /// trace is permanently quiet (the segment reports `capped_*`).
     pub fn trace_start(&self, max_events: usize, max_cycles: u64) -> Result<()> {
@@ -952,36 +819,6 @@ impl<X: GXExt> GXHandle<X> {
         Ok(())
     }
 
-    /// Compile a callable interface to a late bound function by name
-    ///
-    /// This allows you to call a function by name. Because of late binding it
-    /// has some additional complexity (though less than implementing it
-    /// yourself). You must call `update` on `NamedCallable` when you recieve
-    /// updates from the runtime in order to drive late binding. `update` will
-    /// also return `Some` when one of your function calls returns.
-    pub async fn compile_callable_by_name(
-        &self,
-        env: &Env,
-        scope: &Scope,
-        name: &ModPath,
-    ) -> Result<NamedCallable<X>> {
-        let r = self.compile_ref_by_name(env, scope, name).await?;
-        match &r.typ {
-            Type::Fn(_) => (),
-            t => bail!(
-                "{name} in scope {} has type {t}. expected a function",
-                scope.lexical
-            ),
-        }
-        Ok(NamedCallable {
-            fname: r,
-            current: None,
-            ids: IntSet::default(),
-            deferred: vec![],
-            h: self.clone(),
-        })
-    }
-
     /// Compile a ref to a bind id
     ///
     /// This will NOT return an error if the id isn't in the environment.
@@ -1015,6 +852,14 @@ impl<X: GXExt> GXHandle<X> {
     pub fn set<T: Into<Value>>(&self, id: BindId, v: T) -> Result<()> {
         let v = v.into();
         self.0.tx.send(ToGX::Set { id, v }).map_err(|_| anyhow!("runtime is dead"))
+    }
+
+    /// Write `v` through the reference `cell` (`*r <- v`): a place patches
+    /// its root, a chained reference sets its binding, a chainless one sets
+    /// the cell.
+    pub fn set_deref<T: Into<Value>>(&self, cell: BindId, v: T) -> Result<()> {
+        let v = v.into();
+        self.0.tx.send(ToGX::SetDeref { cell, v }).map_err(|_| anyhow!("runtime is dead"))
     }
 
     /// Set several variables atomically: every update is delivered to

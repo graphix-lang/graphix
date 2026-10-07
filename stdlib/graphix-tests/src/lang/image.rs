@@ -294,7 +294,8 @@ async fn program_image_restores_kernels() -> Result<()> {
         None,
     )
     .await?;
-    warm.rt.program().await?.expect("the program restored");
+    // the root's owner; dropping it deletes the program
+    let _program = warm.rt.program().await?.expect("the program restored");
     let warm_values = first_values(&mut warm_rx).await;
     assert_eq!(cold_values, warm_values);
     #[cfg(debug_assertions)]
@@ -580,7 +581,8 @@ async fn program_image_restores_builtins() -> Result<()> {
         None,
     )
     .await?;
-    warm.rt.program().await?.expect("the program restored");
+    // the root's owner; dropping it deletes the program
+    let _program = warm.rt.program().await?.expect("the program restored");
     let warm_values = first_values(&mut warm_rx).await;
     assert_eq!(cold_values, warm_values);
     cold.shutdown().await;
@@ -710,7 +712,8 @@ async fn a_restored_module_hears_its_interface() -> Result<()> {
         |_| {},
     )
     .await?;
-    warm.rt.program().await?.expect("the program restored");
+    // the root's owner; dropping it deletes the program
+    let _program = warm.rt.program().await?.expect("the program restored");
     assert_eq!(cold_values, first_values(&mut warm_rx).await);
     warm.shutdown().await;
     Ok(())

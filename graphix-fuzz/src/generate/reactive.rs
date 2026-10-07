@@ -54,7 +54,7 @@ pub enum StepKind {
     /// `acc <- e`: a generated connect to an outer accumulator.
     Connect,
     /// `{ let y = e; acc <- e }`: statements issued together.
-    Do,
+    Block,
     /// `until cond`: a wait on a bool level.
     Until,
     /// `let t = try { bad(e)? } with(e) { e }`: the error branch taken
@@ -75,7 +75,7 @@ pub const STEP_KINDS: [StepKind; 10] = [
     StepKind::Let,
     StepKind::Call,
     StepKind::Connect,
-    StepKind::Do,
+    StepKind::Block,
     StepKind::Until,
     StepKind::Try,
     StepKind::Abort,
@@ -683,7 +683,7 @@ fn ceremony(
                 let e = exprs::gen_typed(ctx, rng, &I64, 2);
                 body.push(format!("{acc} <- {e}"));
             }
-            StepKind::Do => {
+            StepKind::Block => {
                 let y = ctx.fresh();
                 let m = ctx.mark();
                 let e0 = exprs::gen_typed(ctx, rng, &I64, 1);

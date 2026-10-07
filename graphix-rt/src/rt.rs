@@ -7,10 +7,13 @@ use graphix_compiler::{
     node::place::{Path, VarUpdate},
 };
 use netidx_value::Value;
-use nohash::IntMap;
+use nohash::{IntMap, IntSet};
 use poolshark::global::GPooled;
-use std::{collections::VecDeque, fmt::Debug, future, time::Duration};
-use tokio::{task::JoinSet, time};
+use std::{collections::VecDeque, fmt::Debug, time::Duration};
+use tokio::{
+    task::{AbortHandle, JoinSet},
+    time,
+};
 use triomphe::Arc;
 
 /// `GRAPHIX_DBG_VARS=1` prints every runtime variable event:
@@ -23,12 +26,111 @@ fn dbg_vars() -> bool {
     *ON
 }
 
+/// How a waiting write came.
+#[derive(Debug, Clone)]
+pub(super) enum Via {
+    /// The program's or the embedder's write.
+    Write,
+    /// A task's or a watch's reply, dropped when nothing references its
+    /// variable any more.
+    Reply,
+    /// A member of a set that lands in one cycle (`set_many`, a
+    /// callable's arguments): the set's variables.
+    Set(Arc<[BindId]>),
+}
+
+/// Writes waiting for a cycle. A variable takes one delivery a cycle, so
+/// each variable's writes wait in a FIFO of their own and land in order,
+/// and a cycle costs the variables waiting, not the writes. A set's
+/// writes land in the one cycle where each is first in its variable's
+/// FIFO.
+#[derive(Debug)]
+pub(super) struct Waiting<T> {
+    by_id: IntMap<BindId, VecDeque<(T, Via)>>,
+    /// The variables with writes waiting, in the order they began to.
+    ids: VecDeque<BindId>,
+    taken: IntSet<BindId>,
+}
+
+impl<T> Default for Waiting<T> {
+    fn default() -> Self {
+        Self { by_id: IntMap::default(), ids: VecDeque::new(), taken: IntSet::default() }
+    }
+}
+
+impl<T> Waiting<T> {
+    pub(super) fn push(&mut self, id: BindId, t: T, via: Via) {
+        let q = self.by_id.entry(id).or_default();
+        if q.is_empty() {
+            self.ids.push_back(id);
+        }
+        q.push_back((t, via));
+    }
+
+    pub(super) fn has(&self, id: &BindId) -> bool {
+        self.by_id.contains_key(id)
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    fn pop(&mut self, id: &BindId) -> (T, Via) {
+        let q = self.by_id.get_mut(id).expect("a waiting variable");
+        let r = q.pop_front().expect("a waiting write");
+        if q.is_empty() {
+            self.by_id.remove(id);
+        }
+        r
+    }
+
+    /// This cycle's deliveries into `out`: each waiting variable's first
+    /// write, a set's only when it is first for every member.
+    pub(super) fn take(&mut self, out: &mut Vec<(BindId, T, Via)>) {
+        for _ in 0..self.ids.len() {
+            let id = self.ids.pop_front().expect("a waiting variable");
+            let Some((_, via)) = self.by_id.get(&id).and_then(|q| q.front()) else {
+                continue;
+            };
+            if !self.taken.contains(&id) {
+                match via {
+                    Via::Set(members) => {
+                        let members = members.clone();
+                        let first = |m: &BindId| {
+                            !self.taken.contains(m)
+                                && self.by_id.get(m).and_then(|q| q.front()).is_some_and(
+                                    |(_, v)| matches!(v, Via::Set(s) if Arc::ptr_eq(s, &members)),
+                                )
+                        };
+                        if members.iter().all(first) {
+                            for m in members.iter() {
+                                let (t, via) = self.pop(m);
+                                self.taken.insert(*m);
+                                out.push((*m, t, via));
+                            }
+                        }
+                    }
+                    Via::Write | Via::Reply => {
+                        let (t, via) = self.pop(&id);
+                        self.taken.insert(id);
+                        out.push((id, t, via));
+                    }
+                }
+            }
+            if self.by_id.contains_key(&id) {
+                self.ids.push_back(id);
+            }
+        }
+        self.taken.clear();
+    }
+}
+
 #[derive(Debug)]
 pub struct GXRt<X: GXExt> {
     /// The (production, cycle-stamp) of every bound variable's last
     /// delivery; the cross-cycle read is [`Rt::store`].
     pub(super) store: IntMap<BindId, (TagValue, u64)>,
-    /// Bumped once at the top of each `do_cycle`; also the trace
+    /// Bumped after each cycle's nodes ran; also the trace
     /// recorder's cycle number.
     pub(super) cycle: u64,
     // CR claude for claude: [perf] Every referenced variable gets an inner hash table of
@@ -40,17 +142,20 @@ pub struct GXRt<X: GXExt> {
     // whenever a collection's slots come and go. A `SmallVec<[(ExprId, u32); 1]>` per
     // variable, searched linearly, keeps the common case inline. (x-alloc-05)
     pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
-    pub(super) var_updates: VecDeque<(BindId, VarUpdate)>,
+    pub(super) var_updates: Waiting<VarUpdate>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).
     pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
-    pub(super) custom_updates: VecDeque<(BindId, Box<dyn CustomBuiltinType>)>,
+    pub(super) custom_updates: Waiting<Box<dyn CustomBuiltinType>>,
     pub(super) tasks: JoinSet<(BindId, Value)>,
+    /// The timers not fired yet, so a released one can be stopped.
+    pub(super) timers: IntMap<BindId, AbortHandle>,
     pub(super) custom_tasks: JoinSet<(BindId, Box<dyn CustomBuiltinType>)>,
     pub(super) watches:
         SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>>,
     pub(super) var_watches: SelectAll<mpsc::Receiver<GPooled<Vec<(BindId, Value)>>>>,
-    keepalive_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
-    keepalive_var_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
+    // held so the watch streams never end
+    _keepalive_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
+    _keepalive_var_watch_tx: mpsc::Sender<GPooled<Vec<(BindId, Value)>>>,
     pub(super) updated: IntMap<ExprId, bool>,
     pub ext: X,
 }
@@ -76,10 +181,8 @@ impl<X: GXExt> GXRt<X> {
     /// A runtime with no network; packages deliver external events
     /// through `watch`/`watch_var`/`spawn_var`.
     pub fn new() -> Self {
-        let mut tasks = JoinSet::new();
-        tasks.spawn(async { future::pending().await });
-        let mut custom_tasks = JoinSet::new();
-        custom_tasks.spawn(async { future::pending().await });
+        let tasks = JoinSet::new();
+        let custom_tasks = JoinSet::new();
         let (keepalive_watch_tx, dummy_rx) = mpsc::channel(1);
         let mut watches = SelectAll::new();
         watches.push(dummy_rx);
@@ -90,17 +193,18 @@ impl<X: GXExt> GXRt<X> {
             store: IntMap::default(),
             cycle: 0,
             by_ref: IntMap::default(),
-            var_updates: VecDeque::new(),
+            var_updates: Waiting::default(),
             ref_paths: IntMap::default(),
-            custom_updates: VecDeque::new(),
+            custom_updates: Waiting::default(),
             updated: IntMap::default(),
             ext: X::default(),
             tasks,
+            timers: IntMap::default(),
             custom_tasks,
             watches,
             var_watches,
-            keepalive_watch_tx,
-            keepalive_var_watch_tx,
+            _keepalive_watch_tx: keepalive_watch_tx,
+            _keepalive_var_watch_tx: keepalive_var_watch_tx,
         }
     }
 }
@@ -132,50 +236,18 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.cycle
     }
 
-    fn clear(&mut self) {
-        let Self {
-            store,
-            cycle,
-            by_ref,
-            var_updates,
-            ref_paths,
-            custom_updates,
-            tasks,
-            custom_tasks,
-            watches,
-            var_watches,
-            keepalive_watch_tx,
-            keepalive_var_watch_tx,
-            updated,
-            ext,
-        } = self;
-        ext.clear();
-        updated.clear();
-        store.clear();
-        *cycle = 0;
-        by_ref.clear();
-        var_updates.clear();
-        ref_paths.clear();
-        custom_updates.clear();
-        *tasks = JoinSet::new();
-        tasks.spawn(async { future::pending().await });
-        *custom_tasks = JoinSet::new();
-        custom_tasks.spawn(async { future::pending().await });
-        *watches = SelectAll::new();
-        let (tx, rx) = mpsc::channel(1);
-        *keepalive_watch_tx = tx;
-        watches.push(rx);
-        *var_watches = SelectAll::new();
-        let (tx, rx) = mpsc::channel(1);
-        *keepalive_var_watch_tx = tx;
-        var_watches.push(rx);
-    }
-
     fn set_timer(&mut self, id: BindId, timeout: Duration) {
-        self.tasks.spawn(
+        let h = self.tasks.spawn(
             time::sleep(timeout)
                 .map(move |()| (id, Value::DateTime(Arc::new(Utc::now())))),
         );
+        self.timers.insert(id, h);
+    }
+
+    fn cancel_timer(&mut self, id: BindId) {
+        if let Some(h) = self.timers.remove(&id) {
+            h.abort();
+        }
     }
 
     fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
@@ -206,14 +278,14 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("SET_VAR {id:?} = {value}");
         }
-        self.var_updates.push_back((id, VarUpdate::Set(value)));
+        self.var_updates.push(id, VarUpdate::Set(value), Via::Write);
     }
 
     fn patch_var(&mut self, id: BindId, path: Path, value: Value) {
         if dbg_vars() {
             eprintln!("PATCH_VAR {id:?} {path:?} = {value}");
         }
-        self.var_updates.push_back((id, VarUpdate::Patch(path, value)));
+        self.var_updates.push(id, VarUpdate::Patch(path, value), Via::Write);
     }
 
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {

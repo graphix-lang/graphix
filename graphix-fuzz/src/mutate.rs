@@ -447,7 +447,7 @@ pub fn parse(s: &str) -> Option<Expr> {
 
 /// Parse a top-level item SEQUENCE — a `.gx` module section, which is
 /// a run of statements rather than the single expression `parse` takes.
-/// Returned as a `Do` so one set of reduction machinery serves both;
+/// Returned as a block so one set of reduction machinery serves both;
 /// render it back with [`render_items`], not `to_string`.
 pub fn parse_items(s: &str) -> Option<Expr> {
     let items = parser::parse(Origin::unspecified(s)).ok()?;
@@ -455,7 +455,7 @@ pub fn parse_items(s: &str) -> Option<Expr> {
     Some(Expr::new(ExprKind::Block { exprs: items }, pos))
 }
 
-/// Render a [`parse_items`] `Do` back to module-section text: the items
+/// Render a [`parse_items`] block back to module-section text: the items
 /// bare and semicolon-separated, NOT wrapped in the block braces
 /// `to_string` would emit.
 pub fn render_items(e: &Expr) -> String {

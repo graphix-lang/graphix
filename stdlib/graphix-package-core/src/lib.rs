@@ -1073,7 +1073,9 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        // the reply id is this call's alone, and so is what was stored for it
         ctx.unref_var(self.id, self.top_id);
+        ctx.rt.store_remove(&self.id);
         self.queued.clear();
         self.cached.clear();
     }

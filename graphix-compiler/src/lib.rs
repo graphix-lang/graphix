@@ -937,8 +937,6 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 }
 
 pub trait Rt: Debug + Any + Send + Sync {
-    fn clear(&mut self);
-
     /// Called whenever a bound variable (or lambda) is referenced;
     /// `ref_by` is the toplevel expression containing the reference,
     /// which must be updated when the variable changes.
@@ -993,6 +991,9 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// Deliver a variable event for `id` carrying the current time after
     /// `timeout`.
     fn set_timer(&mut self, id: BindId, timeout: Duration);
+
+    /// Stop the timer `set_timer` started for `id`, if it has not fired.
+    fn cancel_timer(&mut self, id: BindId);
 
     /// Spawn a task whose output is delivered as a custom event for the
     /// returned `BindId`.

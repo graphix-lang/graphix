@@ -49,6 +49,7 @@ enum RtOp {
     PatchVar(BindId, Path, Value),
     NotifySet(BindId),
     SetTimer(BindId, Duration),
+    CancelTimer(BindId),
     Spawn(BoxFuture<(BindId, Box<dyn CustomBuiltinType>)>),
     SpawnVar(BoxFuture<(BindId, Value)>),
     Watch(mpsc::Receiver<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>),
@@ -158,6 +159,10 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     pub fn set_timer(&mut self, id: BindId, timeout: Duration) {
         logged!(self, set_timer(id, timeout), RtOp::SetTimer(id, timeout))
+    }
+
+    pub fn cancel_timer(&mut self, id: BindId) {
+        logged!(self, cancel_timer(id), RtOp::CancelTimer(id))
     }
 
     pub fn spawn<F>(&mut self, f: F)
@@ -311,6 +316,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::PatchVar(id, p, v) => r.patch_var(id, p, v),
                         RtOp::NotifySet(id) => r.notify_set(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),
+                        RtOp::CancelTimer(id) => r.cancel_timer(id),
                         RtOp::Spawn(f) => r.spawn(f),
                         RtOp::SpawnVar(f) => r.spawn_var(f),
                         RtOp::Watch(s) => r.watch(s),

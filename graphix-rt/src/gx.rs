@@ -28,7 +28,7 @@ use poolshark::{
     local::LPooled,
 };
 use smallvec::{SmallVec, smallvec};
-use std::{collections::hash_map::Entry, future, mem, result, time::Duration};
+use std::{future, mem, result, time::Duration};
 use tokio::{
     select,
     sync::{
@@ -42,11 +42,14 @@ use triomphe::Arc;
 
 use crate::{
     Callable, CallableId, CompExp, CompRes, GXConfig, GXEvent, GXExt, GXHandle, GXRt,
-    Ref, ToGX, TraceEvent, TraceSegment,
+    Ref, ToGX, TraceEvent, TraceSegment, rt::Via,
 };
 
 static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
     std::sync::LazyLock::new(|| Pool::new(4, 8192));
+
+static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
+    std::sync::LazyLock::new(|| Pool::new(64, 64));
 
 /// Runtime-side trace recording (see [`GXHandle::trace_start`]).
 /// What gets recorded is a function of the traced program's own event
@@ -99,7 +102,8 @@ impl TraceState {
         }
     }
 
-    /// Compile anchors count against neither budget.
+    /// A compile anchor trips neither cap, though it takes a place among
+    /// the segment's events.
     fn record_compiled(&mut self, cycle: u64, id: ExprId) {
         if !self.capped() {
             self.events.push(TraceEvent::Compiled { cycle, id });
@@ -150,37 +154,24 @@ fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
 
 fn is_output_kind(kind: &ExprKind) -> bool {
     match kind {
-        // CR claude for claude: [bug] Trait and Impl are missing from the non-output
-        // kinds, so a REPL `trait`/`impl` line compiles as output. The shell prints `-:
-        // _`, moves the CompExp into its output and waits for Ctrl-C, swallowing
-        // whatever is typed. The Ctrl-C that ends the wait drops the CompExp, which
-        // deletes the declaration, and a following `impl Shw for i64 {..}` fails with
-        // 'no trait `Shw` in scope'. A trait or impl on its own line therefore cannot
-        // be declared at the REPL (probe: design/review-2026-10-05/repro/rt-09.py). Add
-        // ExprKind::Trait(_) and ExprKind::Impl(_) to the false arm. (rt-09)
         ExprKind::Bind { .. }
         | ExprKind::Lambda { .. }
         | ExprKind::Use { .. }
         | ExprKind::Connect { .. }
         | ExprKind::Module { .. }
         | ExprKind::Catch { .. }
-        | ExprKind::TypeDef { .. } => false,
+        | ExprKind::TypeDef { .. }
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_) => false,
         _ => true,
     }
 }
 
 /// Wrap a file's top-level Exprs in one synthetic `ExprKind::Block` so the
-/// compiler produces one Node and fusion sees the whole file at once.
-/// `Do` rather than `Module` because the last expression's value must
+/// compiler produces one Node and fusion sees the whole file at once. A
+/// block rather than a module, because the last expression's value must
 /// propagate out as the runtime output.
-// CR claude for claude: [doc-drift] ExprKind::Do no longer exists: this builds an
-// ExprKind::Block, but its name and the doc above (`Do` rather than `Module`) still say
-// Do. Rename it wrap_file_in_block and say Block in the doc. The same dead term is in
-// graphix-fuzz/src/typemorph.rs:601, graphix-fuzz/src/mutate.rs:459 and 467, and
-// stdlib/graphix-tests/src/lib_tests/module_stmt.rs:12, and StepKind::Do
-// (graphix-fuzz/src/generate/reactive.rs:59) generates a `{ .. }` block.
-// (x-expr-walks-08)
-fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
+fn wrap_file_in_block(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
     Expr {
         id: ExprId::new(),
         ori,
@@ -436,6 +427,7 @@ impl<X: GXExt> GX<X> {
     async fn do_cycle(
         &mut self,
         tasks: &mut Vec<(BindId, Value)>,
+        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
         custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
         to_rt: &mut UnboundedReceiver<ToGX<X>>,
         input: &mut Vec<ToGX<X>>,
@@ -446,124 +438,34 @@ impl<X: GXExt> GX<X> {
             "compiled references left unreplayed"
         );
         self.ctx.view().apply_deferred();
-        macro_rules! push_custom {
-            ($id:expr, $v:expr) => {
-                match self.ctx.event.custom.lock().entry($id) {
-                    Entry::Vacant(e) => {
-                        e.insert($v);
-                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
-                            for id in exps.keys() {
-                                self.ctx.rt.updated.entry(*id).or_insert(false);
-                            }
-                        }
-                    }
-                    Entry::Occupied(_) => {
-                        self.ctx.rt.custom_updates.push_back(($id, $v));
-                    }
-                }
-            };
+        // A variable takes one delivery a cycle: what waited lands first,
+        // each variable's oldest write, then this cycle's input, which waits
+        // behind anything its variable has waiting or was given.
+        let mut due: LPooled<Vec<(BindId, VarUpdate, Via)>> = LPooled::take();
+        self.ctx.rt.var_updates.take(&mut due);
+        for (id, u, via) in due.drain(..) {
+            self.deliver(id, u, via);
         }
-        // The store advances only at delivery (the Vacant arm); a repeat
-        // set in one cycle is re-queued, not delivered. A patch resolves
-        // against the store at delivery, so patches to one root land in
-        // order on each other's result.
-        macro_rules! push_var_event {
-            ($id:expr, $u:expr) => {
-                if self.ctx.event.variables.contains_key(&$id) {
-                    self.ctx.rt.var_updates.push_back(($id, $u));
-                } else {
-                    let v = match $u {
-                        VarUpdate::Set(v) => Some(v),
-                        VarUpdate::Patch(path, v) => match self.ctx.rt.store_value(&$id) {
-                            Some(cur) => {
-                                match coretraits::with_hooks(&mut self.ctx.view(), || {
-                                    place::write_path(&cur, &path, v)
-                                }) {
-                                    Ok(nv) => Some(nv),
-                                    Err(err) => {
-                                        error!("write through a reference into {:?}: {err}", $id);
-                                        None
-                                    }
-                                }
-                            }
-                            None => {
-                                error!("write through a reference into {:?}: no value to update", $id);
-                                None
-                            }
-                        },
-                    };
-                    if let Some(v) = v {
-                        // CR claude for claude: [bug] Every task and watch delivery is
-                        // stored here even when no node references its id any more, and
-                        // nothing removes it later. CachedArgsAsync::sleep/delete
-                        // (graphix-package-core/src/lib.rs:930-943) remint or unref the
-                        // reply id without store_remove, and a timer task that
-                        // Timer::sleep released still completes and lands here; GXRt
-                        // keeps no task handle and Rt has no cancel, so that task also
-                        // runs its full duration. A passed seq step sleeps, so every
-                        // seq run with an async step leaks the step's result and every
-                        // wake of an arm holding an async call leaks one; after_idle
-                        // and timer also re-arm without releasing the previous id
-                        // (graphix-package-sys/src/time.rs:111, 306), which leaves its
-                        // by_ref entry behind too. Effects still complete when their
-                        // arm sleeps, so fix the store side: drop a task or watch
-                        // delivery whose id has no by_ref entry, store_remove the old
-                        // id on sleep/delete, and abort a released timer's task. probe:
-                        // design/review-2026-10-05/repro/rt-01.sh (a seq reading a 100
-                        // KB file every 10 ms grows ~100 KB per run; the same read
-                        // outside a seq stays flat). (rt-01)
-                        // 2026-10-06 claude: it also keeps a #[kill_on_drop] child alive after
-                        // the expression holding it is deleted (the stored spawn reply owns the
-                        // Proc); pin: design/review-2026-10-05/repro/tests-lib-b2-15.rs.
-                        self.ctx.rt.store_insert(
-                            $id,
-                            graphix_compiler::TagValue::fired(v.clone()),
-                        );
-                        // an ordinary runtime delivery is a FIRED event
-                        self.ctx.event.variables.insert($id, graphix_compiler::TagValue::fired(v));
-                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
-                            for id in exps.keys() {
-                                self.ctx.rt.updated.entry(*id).or_insert(false);
-                            }
-                        }
-                    }
-                }
-            };
-        }
-        // CR claude for claude: [perf] Each cycle this loop pops every queued write and
-        // pushes back each one whose variable was already delivered this cycle, so N
-        // writes queued to one variable cost O(N) per cycle for N cycles. range and
-        // array::iter queue all their elements at once, so their delivery is O(N^2): in
-        // a debug build range(0, 40000) takes 15.4 s, about 4x per doubling, against
-        // 0.38 s for 40000 cycles of a self-loop counter, and every cycle of the
-        // program pays the scan until the queue drains. A FIFO per variable (BindId to
-        // VecDeque, plus the ids with pending writes) makes a cycle cost the number of
-        // distinct pending variables and keeps the per-variable order patches rely on;
-        // the custom_updates loop at line 477 has the same shape. probe:
-        // design/review-2026-10-05/repro/core-lib-04.gx (core-lib-04)
-        for _ in 0..self.ctx.rt.var_updates.len() {
-            let (id, v) = self.ctx.rt.var_updates.pop_front().unwrap();
-            push_var_event!(id, v)
-        }
-        // CR claude for claude: [bug] Task entries are delivered one at a time, and an
-        // entry whose variable already has a delivery this cycle is re-queued on its
-        // own. A set_many entry that meets another write to its variable (a program
-        // write queued from the last cycle, or a set in the same input batch) therefore
-        // lands a cycle after the rest of its set. That breaks set_many's contract
-        // (lib.rs:982-984, every update in the same cycle), which the fuzzer's
-        // schedules rely on (graphix-fuzz/src/lib.rs:597-599). For example, set(sx, 5)
-        // then set_many([(sx, 1), (sy, 2)]) gives (sx, sy) = [5, 2] then [1, 2] (probe:
-        // design/review-2026-10-05/repro/rt-15.rs). Deliver a SetMany as a unit: if any
-        // entry collides, re-queue the whole set. (rt-15)
         for (id, v) in tasks.drain(..) {
-            push_var_event!(id, VarUpdate::Set(v))
+            self.ctx.rt.timers.remove(&id);
+            self.write(id, VarUpdate::Set(v), Via::Reply);
         }
-        for _ in 0..self.ctx.rt.custom_updates.len() {
-            let (id, u) = self.ctx.rt.custom_updates.pop_front().unwrap();
-            push_custom!(id, u)
+        for set in sets.drain(..) {
+            self.write_set(set);
+        }
+        let mut due: Vec<(BindId, Box<dyn CustomBuiltinType>, Via)> = Vec::new();
+        self.ctx.rt.custom_updates.take(&mut due);
+        for (id, u, via) in due {
+            self.deliver_custom(id, u, via);
         }
         for (id, u) in custom_tasks.drain(..) {
-            push_custom!(id, u)
+            if self.ctx.event.custom.lock().contains_key(&id)
+                || self.ctx.rt.custom_updates.has(&id)
+            {
+                self.ctx.rt.custom_updates.push(id, u, Via::Reply);
+            } else {
+                self.deliver_custom(id, u, Via::Reply);
+            }
         }
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.ctx.event) {
             error!("could not marshall user events {e:?}")
@@ -592,6 +494,9 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
+        // before the send loop, which may compile roots for the next cycle
+        self.ctx.event.clear();
+        self.ctx.rt.updated.clear();
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }
@@ -599,6 +504,8 @@ impl<X: GXExt> GX<X> {
         loop {
             match self.sub.send_timeout(batch, Duration::from_millis(100)).await {
                 Ok(()) => break,
+                // a subscriber gone after an abort is the abort
+                Err(SendTimeoutError::Closed(_)) if self.ctx.control.aborted() => break,
                 Err(SendTimeoutError::Closed(_)) => {
                     error!("could not send batch");
                     break;
@@ -609,27 +516,125 @@ impl<X: GXExt> GX<X> {
                     while let Ok(m) = to_rt.try_recv() {
                         input.push(m);
                     }
-                    self.process_input_batch(tasks, input, &mut batch).await;
+                    self.process_input_batch(sets, input, &mut batch).await;
                 }
             }
         }
-        // CR claude for claude: [bug] While the subscriber is full, the send loop above
-        // handles input every 100 ms. A Compile or Load handled there puts its roots
-        // into `updated` with init = true, and these two clears then erase them. The
-        // reply reports success, but the new roots never get their init update:
-        // constants never fire and lets never publish. Clearing `event` and `updated`
-        // right after `update_nodes`, before the loop, leaves whatever the loop
-        // compiled scheduled for the next cycle. probe:
-        // design/review-2026-10-05/repro/rt-05.rs (copy it to
-        // graphix-rt/tests/review_rt_05.rs; with a full one-slot channel, `40 + 2` and
-        // `let k = 7` never deliver). (rt-05)
-        self.ctx.event.clear();
-        self.ctx.rt.updated.clear();
+    }
+
+    /// A write through the reference `cell`: a place patches its root, a
+    /// chained reference sets its binding, a chainless one sets the cell.
+    fn set_deref(
+        &mut self,
+        cell: BindId,
+        v: Value,
+        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
+    ) {
+        match self.ctx.rt.ref_path(&cell).cloned() {
+            Some((root, path)) => self.ctx.rt.patch_var(root, path, v),
+            None => {
+                let id = self.ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell);
+                let mut one = SETS.take();
+                one.push((id, v));
+                sets.push(one)
+            }
+        }
+    }
+
+    /// Readers of `id` update this cycle.
+    fn wake_readers(&mut self, id: &BindId) {
+        if let Some(exps) = self.ctx.rt.by_ref.get(id) {
+            for e in exps.keys() {
+                self.ctx.rt.updated.entry(*e).or_insert(false);
+            }
+        }
+    }
+
+    /// Deliver `u` to `id` this cycle: into the store, which advances only
+    /// here (a patch resolves against it now, so patches to one root land
+    /// in order on each other's result), and the event as FIRED. A reply
+    /// nothing references any more goes nowhere.
+    fn deliver(&mut self, id: BindId, u: VarUpdate, via: Via) {
+        if matches!(via, Via::Reply) && !self.ctx.rt.by_ref.contains_key(&id) {
+            return;
+        }
+        let v = match u {
+            VarUpdate::Set(v) => v,
+            VarUpdate::Patch(path, v) => {
+                let Some(cur) = self.ctx.rt.store_value(&id) else {
+                    error!("write through a reference into {id:?}: no value to update");
+                    return;
+                };
+                let written = coretraits::with_hooks(&mut self.ctx.view(), || {
+                    place::write_path(&cur, &path, v)
+                });
+                match written {
+                    Ok(nv) => nv,
+                    Err(err) => {
+                        error!("write through a reference into {id:?}: {err}");
+                        return;
+                    }
+                }
+            }
+        };
+        self.ctx.rt.store_insert(id, graphix_compiler::TagValue::fired(v.clone()));
+        self.ctx.event.variables.insert(id, graphix_compiler::TagValue::fired(v));
+        self.wake_readers(&id);
+    }
+
+    /// `id`'s delivery this cycle, or its wait behind what `id` has waiting
+    /// or was given.
+    fn busy(&self, id: &BindId) -> bool {
+        self.ctx.event.variables.contains_key(id) || self.ctx.rt.var_updates.has(id)
+    }
+
+    fn write(&mut self, id: BindId, u: VarUpdate, via: Via) {
+        if self.busy(&id) {
+            self.ctx.rt.var_updates.push(id, u, via);
+        } else {
+            self.deliver(id, u, via);
+        }
+    }
+
+    /// Writes that land in one cycle: now, or together in the first cycle
+    /// where each is first for its variable. A set naming a variable twice
+    /// cannot, and lands write by write.
+    fn write_set(&mut self, mut set: GPooled<Vec<(BindId, Value)>>) {
+        let distinct = set
+            .iter()
+            .enumerate()
+            .all(|(i, (a, _))| set[..i].iter().all(|(b, _)| a != b));
+        if !distinct || set.len() == 1 {
+            for (id, v) in set.drain(..) {
+                self.write(id, VarUpdate::Set(v), Via::Write);
+            }
+        } else if set.iter().any(|(id, _)| self.busy(id)) {
+            let members: Arc<[BindId]> = Arc::from_iter(set.iter().map(|(id, _)| *id));
+            for (id, v) in set.drain(..) {
+                self.ctx.rt.var_updates.push(
+                    id,
+                    VarUpdate::Set(v),
+                    Via::Set(members.clone()),
+                );
+            }
+        } else {
+            for (id, v) in set.drain(..) {
+                self.deliver(id, VarUpdate::Set(v), Via::Write);
+            }
+        }
+    }
+
+    fn deliver_custom(&mut self, id: BindId, u: Box<dyn CustomBuiltinType>, via: Via) {
+        if matches!(via, Via::Reply) && !self.ctx.rt.by_ref.contains_key(&id) {
+            return;
+        }
+        self.ctx.event.custom.lock().insert(id, u);
+        self.wake_readers(&id);
     }
 
     async fn process_input_batch(
         &mut self,
-        tasks: &mut Vec<(BindId, Value)>,
+        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
         input: &mut Vec<ToGX<X>>,
         batch: &mut GPooled<Vec<GXEvent>>,
     ) {
@@ -666,16 +671,16 @@ impl<X: GXExt> GX<X> {
                 ToGX::CompileRef { id, rt, res } => {
                     let _ = res.send(self.compile_ref(rt, id));
                 }
-                ToGX::Set { id, v } => tasks.push((id, v)),
-                ToGX::SetMany { mut sets } => {
-                    // One message ⇒ one input batch ⇒ one cycle (GXHandle::set_many).
-                    for (id, v) in sets.drain(..) {
-                        tasks.push((id, v))
-                    }
+                ToGX::Set { id, v } => {
+                    let mut one = SETS.take();
+                    one.push((id, v));
+                    sets.push(one)
                 }
+                // one message, one set, one cycle (GXHandle::set_many)
+                ToGX::SetMany { sets: set } => sets.push(set),
                 ToGX::DeleteCallable { id } => self.delete_callable(id),
                 ToGX::Call { id, args } => {
-                    if let Err(e) = self.call_callable(id, args, tasks) {
+                    if let Err(e) = self.call_callable(id, args, sets) {
                         error!("calling callable {id:?} failed with {e:?}")
                     }
                 }
@@ -693,9 +698,22 @@ impl<X: GXExt> GX<X> {
                         .map(graphix_compiler::node_shape::describe_node);
                     let _ = res.send(desc);
                 }
+                // the root's owner deletes the program: it is handed out once
                 ToGX::Program { res } => {
-                    let _ = res.send((self.program.clone(), self.ctx.env.clone()));
+                    let root = match self.program.take() {
+                        Some(Ok(root)) => {
+                            self.program =
+                                Some(Err("the program was handed out already".into()));
+                            Some(Ok(root))
+                        }
+                        other => {
+                            self.program = other.clone();
+                            other
+                        }
+                    };
+                    let _ = res.send((root, self.ctx.env.clone()));
                 }
+                ToGX::SetDeref { cell, v } => self.set_deref(cell, v, sets),
                 ToGX::EnvStats { res } => {
                     let by_id_len = self.ctx.env.by_id.len();
                     let ref_var_keys = self.ctx.rt.by_ref.len();
@@ -756,13 +774,12 @@ impl<X: GXExt> GX<X> {
 
     fn cycle_ready(&self) -> bool {
         !self.ctx.rt.updated.is_empty()
-            || self.ctx.rt.var_updates.len() > 0
-            || self.ctx.rt.custom_updates.len() > 0
+            || !self.ctx.rt.var_updates.is_empty()
+            || !self.ctx.rt.custom_updates.is_empty()
             || self.ctx.rt.ext.is_ready()
     }
 
     async fn compile_root(&mut self, flags: BitFlags<CFlag>, text: ArcStr) -> Result<()> {
-        let scope = Scope::root();
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = expr::parser::parse(ori.clone())
             .with_context(|| format!("parsing the root module {ori}"))?;
@@ -788,7 +805,6 @@ impl<X: GXExt> GX<X> {
             self.ctx.rt.updated.insert(e.id, true);
             self.nodes.insert(e.id, n);
         }
-        let _ = &scope;
         Ok(())
     }
 
@@ -907,23 +923,6 @@ impl<X: GXExt> GX<X> {
         expr_types: bool,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         let env = self.ctx.env.clone();
-        // CR claude for claude: [doc-drift] A check runs CheckOnly, which never fuses, so
-        // the comment above is stale and reset_jit_for_check here only clears
-        // fusion.stats. Line 804 logs a 'parse time' measured from an Instant created
-        // on the line before. Other runtime docs are stale too: rt.rs:31 says the cycle
-        // is bumped at the top of do_cycle, but gx.rs:514 bumps it after the nodes ran.
-        // trace_start's doc (lib.rs:870) calls max_events a total, but record() counts
-        // the current segment, which resolve() replaces, and the Compiled anchors that
-        // 'count against neither budget' (gx.rs:102) fill that same vector.
-        // wrap_file_in_do and its comment (gx.rs:164-168) name ExprKind::Do, which is
-        // now Block, and Control::interrupt's doc (graphix-types/src/stack.rs:331) says
-        // the bit is cleared at the end of the cycle, while gx.rs:495 clears it at the
-        // start of the next. GXExt's doc (lib.rs:57-67) offers setting variables from
-        // do_cycle, but ext.do_cycle runs after delivery (gx.rs:484), so a write to
-        // event.variables reaches neither the store nor rt.updated, and no reader is
-        // scheduled. (rt-18)
-        // 2026-10-06 claude: the JIT reset and the comment above it are gone
-        // (tests-lib-b2-16).
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }
@@ -933,7 +932,6 @@ impl<X: GXExt> GX<X> {
         };
         let go = async {
             let st = Instant::now();
-            info!("parse time: {:?}", st.elapsed());
             // A package root is the body of `mod <package>`, recompiled
             // over the copy registered at startup.
             let (ori, exprs, modules_at) = match (&initial_scope, source) {
@@ -961,7 +959,7 @@ impl<X: GXExt> GX<X> {
                     e.resolve_modules_in_scope(&modules_at, &resolvers_for_call)
                 }))
                 .await?;
-            info!("resolve time: {:?}", st.elapsed());
+            info!("parse and resolve time: {:?}", st.elapsed());
             self.prune_static_resolution();
             // the check alone: definitions and call sites, no elaboration;
             // `--expand` prints each instance's step boundaries, so it builds
@@ -985,7 +983,7 @@ impl<X: GXExt> GX<X> {
                 // A script checks as it runs: its file is one block.
                 None => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
-                    let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
+                    let spec = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
                     // CR claude for claude: [bug] The check compiles a script with its
                     // names at `/` (compile_script at Scope::root()). load_program, the
                     // run, compiles the same file as a Block that compile() scopes at
@@ -1051,7 +1049,7 @@ impl<X: GXExt> GX<X> {
         info!("resolve time: {:?}", st.elapsed());
         let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
         let wrapped =
-            wrap_file_in_do(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
+            wrap_file_in_block(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
@@ -1091,45 +1089,21 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let eid = ExprId::new();
-        let argn = lb.typ.args.iter().zip(args.iter());
+        // the call's own instance: typing the argument references with the
+        // definition's cells would merge this site's copy into them
+        let ftype = lb.typ.instantiate(&nohash::IntSet::default());
+        let argn = ftype.args.iter().zip(args.iter());
         let argn = argn
             .map(|(arg, id)| {
-                // CR claude for claude: [bug] The argument references are typed with the
-                // definition's own cells (arg.typ from lb.typ), while genn::apply
-                // checks the call against an instantiated copy. This site's check
-                // therefore merges the copy into the definition's cells, and its settle
-                // binds them. After one compile_callable, every later-compiled call of
-                // the definition is refused. For `g = |x| x` (also when first passed as
-                // `&fn(x: i64) -> i64`, like a widget handler), `g(2)` and `g("t")`
-                // fail with '_ does not contain i64'. For `h = 'a: Number |x: 'a| -> 'a
-                // x`, `h(2) + 2` fails with 'Number + i64'. All of these compiled
-                // before the callable (probe: design/review-2026-10-05/repro/rt-10.rs).
-                // Running instances are unaffected, but REPL lines and embedder
-                // compiles after a GUI/TUI handler is built are not. Instantiate the
-                // signature once and type both the argument references and the apply
-                // from that instance. (rt-10)
                 genn::reference(&mut self.ctx.view(), *id, arg.typ.clone(), eid)
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
-        let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
+        let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
         self.ctx.view().begin_runtime_node(eid);
         graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)?;
-        // CR claude for claude: [bug] The callable's init runs here, between cycles. The
-        // cycle counter was already advanced at the end of the last do_cycle (line
-        // 514), so every let the body publishes is stamped with the next cycle, and its
-        // notify_set leaves this root in rt.updated. That next cycle updates the root
-        // again and read_var takes the stamps as deliveries, so init-time work driven
-        // by a body let runs twice: a handler's `let k = 10; a <- k ~ a + 1` adds 2
-        // where `a <- 10 ~ a + 1` adds 1, in both engines. The update also runs outside
-        // InterruptScope, so a fused kernel here cannot see an interrupt and the stack
-        // budget cannot abort a runaway init. Schedule the init the way compile and
-        // load do (`self.ctx.rt.updated.insert(eid, true)`) instead of updating here.
-        // probe: design/review-2026-10-05/repro/rt-03.gx (`graphix-fuzz run`: every
-        // Dispatch line ends at [i64:3, i64:2], expected [i64:2, i64:2]). (rt-03)
-        self.ctx.event.init = true;
-        n.update(&mut self.ctx.view());
-        self.ctx.event.clear();
+        // its init runs in the next cycle, as a compiled root's does
+        self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();
         self.callables.insert(cid, CallableInt { expr: eid, args });
         self.nodes.insert(eid, n);
@@ -1156,45 +1130,31 @@ impl<X: GXExt> GX<X> {
         let n = genn::reference(&mut self.ctx.view(), id, typ.clone(), eid);
         self.ctx.view().apply_deferred();
         self.nodes.insert(eid, n);
-        let target_bid = self.ctx.env.byref_chain.get(&id).copied();
-        Ok(Ref {
-            id: eid,
-            bid: id,
-            typ,
-            target_bid,
-            last: self.ctx.rt.store_value(&id),
-            rt,
-        })
+        Ok(Ref { id: eid, bid: id, typ, last: self.ctx.rt.store_value(&id), rt })
     }
 
     fn call_callable(
         &mut self,
         id: CallableId,
         args: ValArray,
-        tasks: &mut Vec<(BindId, Value)>,
+        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
     ) -> Result<()> {
         let c =
             self.callables.get(&id).ok_or_else(|| anyhow!("unknown callable {id:?}"))?;
         if args.len() != c.args.len() {
             bail!("expected {} arguments", c.args.len());
         }
-        let a = c.args.iter().zip(args.iter()).map(|(id, v)| (*id, v.clone()));
-        tasks.extend(a);
+        let mut set = SETS.take();
+        set.extend(c.args.iter().zip(args.iter()).map(|(id, v)| (*id, v.clone())));
+        sets.push(set);
         Ok(())
     }
 
     fn delete_callable(&mut self, id: CallableId) {
         if let Some(c) = self.callables.remove(&id) {
-            // CR claude for claude: [bug] Call delivers each argument through
-            // push_var_event, which stores it under the callable's argument id, and
-            // nothing removes those entries when the callable goes. Twenty rounds of
-            // compile_callable + call + drop raise store_len by 20; the same rounds
-            // without the call raise it by 0 (probe:
-            // design/review-2026-10-05/repro/rt-11.rs). Every GUI/TUI callable that was
-            // called and then rebuilt or dropped keeps its last arguments for the rest
-            // of the run. Call store_remove on each of c.args here, as
-            // SynthCall::delete (graphix-compiler/src/node/genn.rs:164) does for its
-            // argument ids. (rt-11)
+            for a in c.args.iter() {
+                self.ctx.rt.store_remove(a);
+            }
             if let Some(mut n) = self.nodes.shift_remove(&c.expr) {
                 n.delete(&mut self.ctx.view())
             }
@@ -1206,6 +1166,7 @@ impl<X: GXExt> GX<X> {
         mut to_rt: tmpsc::UnboundedReceiver<ToGX<X>>,
     ) -> Result<()> {
         let mut tasks: Vec<(BindId, Value)> = vec![];
+        let mut sets: Vec<GPooled<Vec<(BindId, Value)>>> = vec![];
         let mut custom_tasks: Vec<(BindId, Box<dyn CustomBuiltinType>)> = vec![];
         let mut input = vec![];
         // Consecutive apparently-idle passes; reset by any ready work.
@@ -1266,16 +1227,6 @@ impl<X: GXExt> GX<X> {
                 let waiter = self.result_watch.is_some()
                     || self.trace.is_some()
                     || !self.idle_waiters.is_empty();
-                // CR claude for claude: [risk] idle_passes returns to 0 only when a pass
-                // finds work ready at the top of the loop. Suppose a pass arms the
-                // grace, but a task completion or a message wakes the select first. The
-                // cycle that handles it can spawn the next task, and the very next idle
-                // pass resolves every waiter with no grace at all. wait_idle,
-                // wait_result_or_idle and trace_wait_idle can then resolve between the
-                // links of a chain of fast async operations (a read whose completion
-                // issues another read), contrary to 'confirmed on a second pass'. Reset
-                // idle_passes whenever the select woke for anything but the grace
-                // timer. (rt-13)
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
@@ -1293,8 +1244,10 @@ impl<X: GXExt> GX<X> {
             } else {
                 idle_passes = 0;
             }
+            let mut woke = true;
             select! {
                 _ = idle_grace(idle_passes > 0 && !ready) => {
+                    woke = false;
                     peek!(watches, tasks, var_watches, custom_tasks, input)
                 },
                 up = join_or_wait(&mut self.ctx.rt.tasks) => {
@@ -1341,23 +1294,27 @@ impl<X: GXExt> GX<X> {
                     peek!(watches, tasks, var_watches, custom_tasks, input);
                 },
             }
-            // CR claude for claude: [bug] The loop checks control.aborted() only at its
-            // top. An abort that lands while select! waits or a cycle runs still runs
-            // process_input_batch and do_cycle, and the send to a receiver the embedder
-            // already dropped logs "could not send batch" at ERROR (line 519);
-            // Control::abort promises the loop returns before the next cycle.
-            // graphix-fuzz shuts its registration-image runtime down right after taking
-            // the image, so every `graphix-fuzz check` logs 1-5 spurious ERRORs.
-            // TestCtx::shutdown only drops the handle without waiting, so the five
-            // `tokio::time::timeout(.., ctx.shutdown())` calls in
-            // graphix-fuzz/src/lib.rs can never time out. Re-check aborted() here and
-            // before the send, and treat a closed subscriber after an abort as normal.
-            // probe: design/review-2026-10-05/repro/x-errors-13.gx (x-errors-13)
+            // the grace confirms idleness only across two quiet passes in a row
+            if woke {
+                idle_passes = 0;
+            }
+            // an abort that landed while waiting ends the loop before the
+            // next cycle
+            if self.ctx.control.aborted() {
+                return Ok(());
+            }
             let mut batch = self.batch_pool.take();
-            self.process_input_batch(&mut tasks, &mut input, &mut batch).await;
+            self.process_input_batch(&mut sets, &mut input, &mut batch).await;
             let st = Instant::now();
-            self.do_cycle(&mut tasks, &mut custom_tasks, &mut to_rt, &mut input, batch)
-                .await;
+            self.do_cycle(
+                &mut tasks,
+                &mut sets,
+                &mut custom_tasks,
+                &mut to_rt,
+                &mut input,
+                batch,
+            )
+            .await;
             if first_cycle {
                 first_cycle = false;
                 info!("first cycle time: {:?}", st.elapsed());

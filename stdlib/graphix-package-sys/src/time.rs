@@ -18,9 +18,10 @@ use netidx::{publisher::FromValue, subscriber::Value};
 use netidx_core::pack::{Pack, PackError};
 use std::{ops::SubAssign, time::Duration};
 
-/// Drop a timer's private fire id: its reference and the value the
-/// runtime stored for it, which no one else can read.
+/// Drop a timer's private fire id: its timer, its reference and the value
+/// the runtime stored for it, which no one else can read.
 fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, eid: ExprId) {
+    ctx.rt.cancel_timer(id);
     ctx.unref_var(id, eid);
     ctx.rt.store_remove(&id);
 }
@@ -106,18 +107,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         if let Some(secs) = &self.timeout_v
             && (timeout_up || val_up)
         {
-            // CR claude for claude: [bug] Both arms drop an armed `self.id` without
-            // `release`. Its `by_ref` entry stays for good, and when its timer fires
-            // the runtime stores the dead id and updates this statement (for a script,
-            // the whole program) for nothing. That is about 200 bytes and one stray
-            // update per re-arm, and a debounce re-arms on every input. Timer does the
-            // same in `schedule!` from the `(Some(s), Some(r), _)` arm and in
-            // `error!()`. Releasing first is not the whole fix: `push_var_event`
-            // (graphix-rt/src/gx.rs:455) stores every timer fire, so a released id
-            // whose timer fires later stays in the store, as it already does after
-            // `sleep`/`delete` of an armed timer (about 70 bytes each). probe:
-            // design/review-2026-10-05/repro/x-node-contract-05.py (800k re-arms: 226
-            // MB peak against 62 MB). (x-node-contract-05)
+            if let Some(old) = self.id.take() {
+                release(ctx, old, self.eid);
+            }
             match secs.clone().cast_to::<Duration>() {
                 Ok(dur) => {
                     let id = BindId::new();
@@ -315,7 +307,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
     ) -> &TagValue {
         macro_rules! error {
             () => {{
-                self.id = None;
+                if let Some(old) = self.id.take() {
+                    release(ctx, old, self.eid);
+                }
                 self.timeout = None;
                 self.repeat = Repeat::No;
                 return self.out.set(TagValue::fired(err!(
@@ -326,6 +320,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
         macro_rules! schedule {
             ($dur:expr) => {{
+                if let Some(old) = self.id.take() {
+                    release(ctx, old, self.eid);
+                }
                 let id = BindId::new();
                 self.id = Some(id);
                 ctx.rt.ref_var(id, self.eid);

@@ -652,7 +652,7 @@ fn permutable(a: &Expr, b: &Expr, open: &HashSet<String>) -> bool {
 
 /// Does this subtree introduce names the enclosing statement list can
 /// read? A declaration does, and a dynamic module wherever it stands; an
-/// interior `Do` or `Lambda` contains its own.
+/// interior block or lambda contains its own.
 fn leaks_binds(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::TypeDef(_)

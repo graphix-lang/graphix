@@ -355,8 +355,11 @@ impl Control {
     // thread of a cycle to the one Control. DEFAULT_BUDGET's doc (line 22) links
     // crate::Control, which graphix-types does not have; the type is
     // crate::stack::Control. (t-misc-09)
-    /// Request that in-flight loops abort this cycle; cleared at the
-    /// end of the cycle.
+    // 2026-10-07 claude: interrupt's doc now says when the bit clears; the
+    // dropped idle interrupt, the per-thread budget doc and the
+    // crate::Control link remain.
+    /// Request that in-flight loops abort this cycle; cleared when the
+    /// next cycle starts, so one sent while the runtime is idle is dropped.
     pub fn interrupt(&self) {
         self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
     }

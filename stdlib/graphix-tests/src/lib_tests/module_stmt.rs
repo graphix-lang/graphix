@@ -9,7 +9,7 @@ use netidx_value::Value;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Mount a module exporting a constant, compile a root Do that declares
+/// Mount a module exporting a constant, compile a root block that declares
 /// the module and reads the constant: in every mode the first value is
 /// the constant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
