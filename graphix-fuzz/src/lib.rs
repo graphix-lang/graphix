@@ -5722,9 +5722,12 @@ mod tests {
                 run_program_with_stats(&code, Mode::Jit, t),
             );
             fused += stats.fused;
+            // at the strength the oracle compares this program at: an
+            // async reply lands in whichever cycle the scheduler allows
+            let strength = Strength::of(Pair::Engine, oracle_tier(&code));
             // assert only when interp agrees with itself, mirroring the
             // oracle's double-run guard
-            if !interp.agrees_with(&direct) {
+            if !interp.agrees_at(&direct, strength) {
                 // a Timeout on either side is the budget talking under
                 // suite load: re-check at 4x before believing it
                 if matches!(interp, Outcome::Timeout(_))
@@ -5735,7 +5738,7 @@ mod tests {
                         run_program(&code, Mode::Interp, big),
                         run_program(&code, Mode::Jit, big),
                     );
-                    if i2.agrees_with(&j2)
+                    if i2.agrees_at(&j2, strength)
                         || matches!(i2, Outcome::Timeout(_))
                         || matches!(j2, Outcome::Timeout(_))
                     {
@@ -5744,7 +5747,7 @@ mod tests {
                     }
                 }
                 let interp2 = run_program(&code, Mode::Interp, t).await;
-                if !interp.agrees_with(&interp2) {
+                if !interp.agrees_at(&interp2, strength) {
                     continue; // nondeterministic — not a backend bug
                 }
                 panic!(
