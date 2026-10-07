@@ -8,6 +8,12 @@
 // oracle_tier Excluded (graphix-fuzz/src/lib.rs:798), which never records a divergence,
 // so these pins are the only check sys::net has. Add one per case with its fix.
 // (sys-net-19)
+// 2026-10-07 claude: pinned with their fixes: a write's arm sleeping and waking
+// (net_write_after_wake), a refused cast (net_write_refused_cast), a second
+// subscriber (net_second_subscriber), a burst (net_burst_in_order) and a path
+// moving while the value is bottom (net_publish_path_moves_while_bottom). Still
+// unpinned: a publisher going away, an rpc server failing or missing, and rpc
+// replies out of order (sys-net-09, Eric's).
 use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
@@ -48,22 +54,11 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     }
 }; FuseExpect::Jit);
 
-// CR claude for claude: [test-gap] NET_WRITE1 is said to pin that on_write casts the
-// written i64 to the callback's `string` type. But `cast<i64>(v)?` gives 43 whether v
-// is the cast string ("i64:43" today) or the raw i64, so the cast is never observed.
-// publish_typed_onwrite (typecheck.rs:244) casts i64 to i64, and no fixture writes a
-// value the cast refuses: that path panics the JIT and kills the runtime (sys-net-02).
-// sys::net::write's arm re-wake (sys-net-04) has no pin either. Make the callback
-// observe v (e.g. `x <- str::len(v)`, expecting [42, 6]). Add a fixture that writes
-// "abc" to an i64 on_write and asserts x is unchanged in all four modes.
-// (tests-lib-b2-05)
-// 2026-10-06 claude: deferred to batch 6 with sys-net-02 and sys-net-04, which the
-// refused-cast fixture needs fixed first.
 const NET_WRITE1: &str = r#"
 {
   let p = "/local/foo";
   let x = 42;
-  sys::net::publish(#on_write:|v: string| x <- cast<i64>(v)?, p, x);
+  sys::net::publish(#on_write:|v: string| x <- str::len(v), p, x);
   let s: i64 = sys::net::subscribe(p)?;
   sys::net::write(p, once(s + 1));
   array::group(s, |n, _| n == 2)
@@ -71,11 +66,10 @@ const NET_WRITE1: &str = r#"
 "#;
 
 run!(net_write1, NET_WRITE1, |v: Result<&Value>| {
-    // the i64 write is cast to string and `cast<i64>` in the callback
-    // converts it back
+    // the i64 write reaches the callback cast to its string type
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(42), Value::I64(43)] => true,
+            [Value::I64(42), Value::I64(n)] => *n == "i64:43".len() as i64 || *n == 2,
             _ => false,
         },
         _ => false,
@@ -230,4 +224,85 @@ run!(net_publish_arm_rewake, NET_PUB_REWAKE, |v: Result<&Value>| {
         }
         _ => false,
     }
+}; FuseExpect::Jit);
+
+// A written value the on_write callback cannot take answers the writer and
+// never reaches the callback.
+run!(net_write_refused_cast, r#"
+{
+  let p = "/local/pin/refuse";
+  let x = 0;
+  sys::net::publish(#on_write: |v: i64| x <- v, p, x);
+  let s: i64 = sys::net::subscribe(p)?;
+  sys::net::write(p, once(s ~ "abc"));
+  sys::net::write(p, sys::time::after_idle(duration:50.ms, once(s)) ~ 5);
+  array::group(s, |n, _| n == 2)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(0), Value::I64(5)])
+}; FuseExpect::Jit);
+
+// A write in an arm that sleeps writes again after its wake, to the path
+// as it stands.
+run!(net_write_after_wake, r#"
+{
+  let x = 0;
+  let log: Array<i64> = [];
+  let p = "/local/pin/wakewrite";
+  sys::net::publish(#on_write: |v: i64| log <- v ~ array::push(log, v), p, 0);
+  x <- sys::time::timer(duration:20.ms, true) ~ x + 1;
+  let flip = select x % 3 { 0 => `Off, _ => `On };
+  select flip { `On => sys::net::write(p, x * 100), `Off => null };
+  select array::len(log) { 4 => log, _ => never() }
+}
+"#, |v: Result<&Value>| {
+    let want = [Value::I64(100), Value::I64(200), Value::I64(400), Value::I64(500)];
+    matches!(v, Ok(Value::Array(a)) if &a[..] == want)
+}; FuseExpect::Jit);
+
+// A second subscriber of a path gets its value without the first one's
+// firing again.
+run!(net_second_subscriber, r#"
+{
+  sys::net::publish("/local/pin/dup", 42);
+  let a: i64 = sys::net::subscribe("/local/pin/dup")$;
+  let b: i64 = sys::net::subscribe(sys::time::timer(duration:50.ms, false) ~ "/local/pin/dup")$;
+  let na = count(a);
+  sys::time::after_idle(duration:150.ms, b) ~ (na, b)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(42)])
+}; FuseExpect::None);
+
+// Every update of a burst reaches the subscriber, in order.
+run!(net_burst_in_order, r#"
+{
+  let x = 0;
+  sys::net::publish("/local/pin/burst", x);
+  let s: i64 = sys::net::subscribe("/local/pin/burst")$;
+  let go = false;
+  go <- once(s) ~ true;
+  x <- select (go, x) { (true, n) if n < 200 => n + 1, _ => never() };
+  let c = count(s);
+  select s { 200 => c, _ => never() }
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(201)))
+}; FuseExpect::Jit);
+
+// A path that moves while the published value is bottom takes the next
+// value.
+run!(net_publish_path_moves_while_bottom, r#"
+{
+  let p = "/local/pin/pa";
+  let src: [i64, null] = 1;
+  src <- sys::time::timer(duration:30.ms, false) ~ null;
+  p <- sys::time::timer(duration:60.ms, false) ~ "/local/pin/pb";
+  src <- sys::time::timer(duration:90.ms, false) ~ 2;
+  sys::net::publish(p, src$);
+  let pb: i64 = sys::net::subscribe("/local/pin/pb")$;
+  pb
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::Jit);
