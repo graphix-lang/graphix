@@ -238,20 +238,6 @@ pub enum GenType {
         params: Vec<GenType>,
         ret: Box<GenType>,
     },
-    /// An explicitly-polymorphic numeric lambda, callable with all args
-    /// at any one numeric type; the result type follows the argument type.
-    // CR claude for claude: [structure] PolyFn and Opaque are vocabulary entries, never
-    // value types: nothing renders one, generates one, or nests one in a composite. So
-    // render (line 281), literal (line 517) and gen_typed (exprs.rs:684) carry
-    // unreachable arms for them, and contains_nullable, infers_exact, try_accessor and
-    // map_abstract carry dead ones. A producer that hands a vocabulary entry's type to
-    // gen_typed panics at run time instead of failing to compile. Have GenCtx.vars hold
-    // an entry enum (`Val(GenType)`, `Poly { arity }`, `Opaque`) and drop both variants
-    // from GenType. Fn stays, since fn types are rendered for params and interfaces.
-    // (fuzz-gen-a-10)
-    PolyFn {
-        arity: usize,
-    },
     /// A reference `&T` with a scalar inner type. Never produced by
     /// `random_type`; introduced by dedicated statements, ref-typed
     /// params, and `&literal` leaves.
@@ -262,10 +248,6 @@ pub enum GenType {
     Abstract {
         module: String,
     },
-    /// A name bound to something outside the typed vocabulary (a rec
-    /// lambda, a bare wide-tvar lambda). The entry masks any binding the
-    /// name shadowed. Matches nothing.
-    Opaque,
 }
 
 /// The dominant trio, named for template code.
@@ -323,9 +305,6 @@ impl GenType {
                     .collect();
                 format!("fn({}) -> {}", parts.join(", "), ret.render())
             }
-            GenType::PolyFn { .. } | GenType::Opaque => {
-                unreachable!("poly/opaque bindings are never annotated")
-            }
         }
     }
 
@@ -352,9 +331,7 @@ impl GenType {
             | GenType::Bool
             | GenType::Str
             | GenType::Fn { .. }
-            | GenType::PolyFn { .. }
-            | GenType::Abstract { .. }
-            | GenType::Opaque => false,
+            | GenType::Abstract { .. } => false,
         }
     }
 
@@ -374,10 +351,7 @@ impl GenType {
             | GenType::List(e)
             | GenType::Map(e)
             | GenType::Nullable(e) => e.printable(),
-            GenType::Ref(_)
-            | GenType::Fn { .. }
-            | GenType::PolyFn { .. }
-            | GenType::Opaque => false,
+            GenType::Ref(_) | GenType::Fn { .. } => false,
         }
     }
 
@@ -396,9 +370,7 @@ impl GenType {
             GenType::Variant(_)
             | GenType::Nullable(_)
             | GenType::Ref(_)
-            | GenType::Fn { .. }
-            | GenType::PolyFn { .. }
-            | GenType::Opaque => false,
+            | GenType::Fn { .. } => false,
             GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| t.infers_exact()),
             GenType::Array(e) | GenType::List(e) | GenType::Map(e) => e.infers_exact(),
@@ -592,8 +564,6 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
         GenType::Abstract { module } => {
             format!("{module}::mk({})", literal(rng, &GenType::Num(NumTy::I64)))
         }
-        GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
-            unreachable!("fn/opaque types have no literal form")
-        }
+        GenType::Fn { .. } => unreachable!("fn types have no literal form"),
     }
 }

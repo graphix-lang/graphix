@@ -48,11 +48,7 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
             params.iter_mut().for_each(|t| map_abstract(t, f));
             map_abstract(ret, f)
         }
-        GenType::Num(_)
-        | GenType::Bool
-        | GenType::Str
-        | GenType::PolyFn { .. }
-        | GenType::Opaque => (),
+        GenType::Num(_) | GenType::Bool | GenType::Str => (),
     }
 }
 
@@ -88,11 +84,13 @@ pub(super) fn gen_module(
             if sibling_qualified(n) {
                 *n = format!("{prefix}::{n}");
             }
-            map_abstract(t, &|module| {
-                if !module.contains("::") {
-                    *module = format!("{prefix}::{module}");
-                }
-            });
+            if let super::Entry::Val(t) = t {
+                map_abstract(t, &|module| {
+                    if !module.contains("::") {
+                        *module = format!("{prefix}::{module}");
+                    }
+                });
+            }
         }
         stats.use_vocab = true;
     } else if idx > 0 {
@@ -164,7 +162,7 @@ pub(super) fn gen_module(
     // into f0's body
     let cross = if idx > 0 && chance(rng, 0.6) {
         let cands: Vec<(String, Vec<GenType>, GenType)> = inner
-            .visible_entries()
+            .visible_values()
             .into_iter()
             .filter(|(n, _)| n.contains("::"))
             .filter_map(|(n, t)| match t {

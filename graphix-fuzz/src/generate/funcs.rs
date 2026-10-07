@@ -100,8 +100,8 @@ pub(super) fn gen_typed_lambda(
     let labels: Vec<Label> = labeled.into_iter().map(|(l, _)| l).collect();
     let name = ctx.name_for_bind(rng, cfg);
     if matches!(
-        ctx.visible_type(&name),
-        Some(GenType::Fn { .. } | GenType::PolyFn { .. })
+        ctx.visible_entry(&name),
+        Some(super::Entry::Val(GenType::Fn { .. }) | super::Entry::Poly { .. })
     ) {
         stats.lambda_rebind = true;
     }
@@ -157,7 +157,7 @@ pub(super) fn gen_labeled_hof(
     stats: &mut GenStats,
 ) -> Vec<String> {
     let labeled: Vec<(String, Vec<Label>, Vec<GenType>, GenType)> = ctx
-        .visible_entries()
+        .visible_values()
         .into_iter()
         .filter_map(|(n, t)| match t {
             GenType::Fn { labels, params, ret } if !labels.is_empty() => {
@@ -192,7 +192,7 @@ pub(super) fn gen_labeled_hof(
         w = ctx.fresh();
     }
     let mark = ctx.mark();
-    ctx.push(h.clone(), GenType::Opaque);
+    ctx.push_entry(h.clone(), super::Entry::Opaque);
     let call = exprs::call_args(ctx, rng, &view, &params, 1);
     ctx.truncate(mark);
     let r = ctx.fresh();
@@ -201,7 +201,7 @@ pub(super) fn gen_labeled_hof(
         format!("let {r} = {w}({f})"),
     ];
     // w masks whatever it shadowed and is never called by the generator
-    ctx.push(w, GenType::Opaque);
+    ctx.push_entry(w, super::Entry::Opaque);
     ctx.push(r, ret);
     stmts
 }
@@ -222,15 +222,15 @@ pub(super) fn gen_poly_lambda(
     let body = poly_body(rng, &names);
     let name = ctx.name_for_bind(rng, cfg);
     if matches!(
-        ctx.visible_type(&name),
-        Some(GenType::Fn { .. } | GenType::PolyFn { .. })
+        ctx.visible_entry(&name),
+        Some(super::Entry::Val(GenType::Fn { .. }) | super::Entry::Poly { .. })
     ) {
         stats.lambda_rebind = true;
     }
     let sig: Vec<_> = names.iter().map(|n| format!("{n}: 'a")).collect();
     let mut stmts =
         vec![format!("let {name} = 'a: Number |{}| -> 'a {body}", sig.join(", "))];
-    ctx.push(name.clone(), GenType::PolyFn { arity });
+    ctx.push_entry(name.clone(), super::Entry::Poly { arity });
     if chance(rng, cfg.p_mono_pair) {
         stats.mono_pair = true;
         let (ta, tb) = distinct_numeric_pair(rng);
@@ -262,7 +262,7 @@ pub(super) fn gen_bare_lambda(
     let body = poly_body(rng, &names);
     let f = ctx.name_for_bind(rng, cfg);
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];
-    ctx.push(f.clone(), GenType::PolyFn { arity });
+    ctx.push_entry(f.clone(), super::Entry::Poly { arity });
     let (ta, tb) = distinct_numeric_pair(rng);
     // the two sites: calls, or (one param) the lambda passed as a value,
     // which instantiates per use only because the binding is generalized
@@ -377,7 +377,7 @@ pub(super) fn gen_error_arm_lambda(
     let f = ctx.name_for_bind(rng, cfg);
     // mask any shadowed binding; the union return keeps f out of the
     // callable vocabulary
-    ctx.push(f.clone(), GenType::Opaque);
+    ctx.push_entry(f.clone(), super::Entry::Opaque);
     let n = ctx.fresh();
     let ret = types::scalar_type(rng);
     let mark = ctx.mark();
@@ -461,7 +461,7 @@ pub(super) fn gen_ref_stmts(
 /// nothing).
 fn places_of(ctx: &GenCtx, ty: &GenType) -> Vec<String> {
     let mut out = Vec::new();
-    for (name, t) in ctx.visible_entries() {
+    for (name, t) in ctx.visible_values() {
         if name.contains("::") {
             continue;
         }
@@ -503,7 +503,7 @@ pub(super) fn gen_rec_lambda(
     // Inside its own body `f` is the rec lambda: mask any shadowed
     // binding before generating the base expression, or the base could
     // reference `f` at the dead outer type.
-    ctx.push(f.clone(), GenType::Opaque);
+    ctx.push_entry(f.clone(), super::Entry::Opaque);
     let n = ctx.fresh();
     let m = ctx.fresh();
     let shape = rng.below(4);

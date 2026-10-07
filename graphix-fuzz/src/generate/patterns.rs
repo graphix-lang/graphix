@@ -210,7 +210,7 @@ pub(super) fn maybe_select(
     let d = depth - 1;
     // scrutinee: prefer a var whose type has pattern structure
     let structured: Vec<(&str, &GenType)> = ctx
-        .visible_entries()
+        .visible_values()
         .into_iter()
         .filter(|(_, t)| match t {
             GenType::Tuple(_)

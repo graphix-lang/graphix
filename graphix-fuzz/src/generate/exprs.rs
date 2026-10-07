@@ -83,7 +83,7 @@ fn try_accessor(
 ) -> Option<String> {
     let mut cands: Vec<String> = Vec::new();
     let reffed = GenType::Ref(Box::new(ty.clone()));
-    for (name, t) in ctx.visible_entries() {
+    for (name, t) in ctx.visible_values() {
         match t {
             GenType::Ref(inner) => {
                 if **inner == *ty {
@@ -185,9 +185,7 @@ fn try_accessor(
             | GenType::Str
             | GenType::Variant(_)
             | GenType::Fn { .. }
-            | GenType::PolyFn { .. }
-            | GenType::Abstract { .. }
-            | GenType::Opaque => {}
+            | GenType::Abstract { .. } => {}
         }
     }
     // numeric casts: mostly lossless widening, the rest arbitrary
@@ -694,7 +692,7 @@ pub(super) fn gen_typed(
                 format!("{module}::mk({})", gen_typed(ctx, rng, &I64, d.min(1)))
             }
         }
-        GenType::Fn { .. } | GenType::PolyFn { .. } | GenType::Opaque => {
+        GenType::Fn { .. } => {
             unreachable!("gen_typed is never asked for a fn/opaque type")
         }
     }

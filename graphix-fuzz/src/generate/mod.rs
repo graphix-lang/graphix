@@ -194,12 +194,25 @@ pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
     (rng.below(1000) as f64) < p * 1000.0
 }
 
+/// What a name in scope is bound to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Entry {
+    /// A value of the typed vocabulary.
+    Val(GenType),
+    /// An explicitly-polymorphic numeric lambda, callable with all args
+    /// at any one numeric type; the result type follows the argument type.
+    Poly { arity: usize },
+    /// A name bound outside the typed vocabulary (a rec lambda in its own
+    /// body, a wrapper): it masks what it shadows and matches nothing.
+    Opaque,
+}
+
 #[derive(Clone)]
 pub(crate) struct GenCtx {
     /// In-scope bindings in declaration order. Lookups scan in reverse
     /// and take the first hit per name, so a name rebound at a different
     /// type never produces a reference at the dead earlier type.
-    vars: Vec<(String, GenType)>,
+    vars: Vec<(String, Entry)>,
     /// Every name ever used for a binding, visible or not: the pool
     /// targeted collisions draw from.
     collision_pool: Vec<String>,
@@ -263,11 +276,15 @@ impl GenCtx {
     }
 
     fn push(&mut self, name: String, ty: GenType) {
+        self.push_entry(name, Entry::Val(ty))
+    }
+
+    fn push_entry(&mut self, name: String, entry: Entry) {
         // path-qualified module callables are reference-only vocabulary
         if !name.contains("::") && !self.collision_pool.contains(&name) {
             self.collision_pool.push(name.clone());
         }
-        self.vars.push((name, ty));
+        self.vars.push((name, entry));
     }
 
     /// Distinct visible names, innermost first: shadow candidates, so
@@ -282,9 +299,9 @@ impl GenCtx {
         out
     }
 
-    /// The type `name` currently resolves to, if bound.
-    fn visible_type(&self, name: &str) -> Option<&GenType> {
-        self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, t)| t)
+    /// What `name` currently resolves to, if bound.
+    fn visible_entry(&self, name: &str) -> Option<&Entry> {
+        self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, e)| e)
     }
 
     fn in_collision_pool(&self, name: &str) -> bool {
@@ -305,24 +322,35 @@ impl GenCtx {
     /// The visible bindings, innermost first: the last binding of a plain
     /// name wins; a path-qualified name is never shadowed, so each of its
     /// entries (one per type a generic callable is registered at) stays.
-    fn visible_entries(&self) -> Vec<(&str, &GenType)> {
+    fn visible_entries(&self) -> Vec<(&str, &Entry)> {
         let mut seen: Vec<&str> = Vec::new();
         let mut out = Vec::new();
-        for (n, t) in self.vars.iter().rev() {
+        for (n, e) in self.vars.iter().rev() {
             if !n.contains("::") {
                 if seen.contains(&n.as_str()) {
                     continue;
                 }
                 seen.push(n.as_str());
             }
-            out.push((n.as_str(), t));
+            out.push((n.as_str(), e));
         }
         out
     }
 
+    /// The visible values, innermost first (see [`Self::visible_entries`]).
+    fn visible_values(&self) -> Vec<(&str, &GenType)> {
+        self.visible_entries()
+            .into_iter()
+            .filter_map(|(n, e)| match e {
+                Entry::Val(t) => Some((n, t)),
+                Entry::Poly { .. } | Entry::Opaque => None,
+            })
+            .collect()
+    }
+
     /// Visible bindings of type `ty`.
     fn vars_of(&self, ty: &GenType) -> Vec<&str> {
-        self.visible_entries()
+        self.visible_values()
             .into_iter()
             .filter_map(|(n, t)| (t == ty).then_some(n))
             .collect()
@@ -334,7 +362,7 @@ impl GenCtx {
         &self,
         ty: &GenType,
     ) -> Vec<(&str, Vec<types::Label>, Vec<GenType>)> {
-        self.visible_entries()
+        self.visible_values()
             .into_iter()
             .filter_map(|(n, t)| match t {
                 GenType::Fn { labels, params, ret } if **ret == *ty => {
@@ -349,8 +377,8 @@ impl GenCtx {
     fn poly_fns(&self) -> Vec<(&str, usize)> {
         self.visible_entries()
             .into_iter()
-            .filter_map(|(n, t)| match t {
-                GenType::PolyFn { arity } => Some((n, *arity)),
+            .filter_map(|(n, e)| match e {
+                Entry::Poly { arity } => Some((n, *arity)),
                 _ => None,
             })
             .collect()
@@ -546,12 +574,14 @@ fn gen_subprogram_stmt(
 fn observe(ctx: &GenCtx, mark: usize) -> Vec<String> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
-    for (n, t) in ctx.vars[mark..].iter().rev() {
+    for (n, e) in ctx.vars[mark..].iter().rev() {
         if n.contains("::") || seen.contains(&n.as_str()) {
             continue;
         }
         seen.push(n);
-        if t.printable() {
+        if let Entry::Val(t) = e
+            && t.printable()
+        {
             out.push(format!("println(\"[{n}]\")"));
         }
     }

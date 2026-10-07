@@ -206,4 +206,3 @@ pub fn gen_twin_program(rng: &mut Rng) -> String {
         render_callable_form(&shape)
     }
 }
-
