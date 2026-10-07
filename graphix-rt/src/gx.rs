@@ -822,8 +822,10 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
+    /// Compile and install each statement of `text`. The statements
+    /// before one that fails are installed, as they would be entered one
+    /// at a time, and the failure is returned.
     async fn compile(&mut self, rt: GXHandle<X>, text: ArcStr) -> Result<CompRes<X>> {
-        let scope = Scope::root();
         let ori = Origin { parent: None, source: Source::Unspecified, text };
         let exprs = expr::parser::parse(ori.clone())?;
         let exprs =
@@ -832,28 +834,24 @@ impl<X: GXExt> GX<X> {
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
+        let mut failed = None;
         for e in exprs.iter() {
-            // CR claude for claude: [bug] When a later statement fails, this `?` returns
-            // after the earlier statements of the same input passed their checks. Their
-            // names stay in the env, their lambdas in lambda_defs and bind_to_lambda,
-            // their refs in by_ref and a top-level catch in self.scope, while `nodes`
-            // drops them without `delete`. In the REPL, after `let x = 41; let y =
-            // nosuch`, `x + 1` has type i64 and never produces a value. After `let f =
-            // |a| a + 1; let z = nosuch`, `f(1)` prints 2 but `f` has no value. After
-            // `catch(e) println(e); let w = nosuch`, every later `error(`E)?` is lost,
-            // and the unhandled warning is not printed either. On error, delete the
-            // compiled nodes and restore the env, the other registries and self.scope,
-            // or install the statements that succeeded; probe:
-            // design/review-2026-10-05/repro/c-lib-04.py (c-lib-04)
-            let (n, advanced) = graphix_compiler::compile_stmt(
+            let stmt = graphix_compiler::compile_stmt(
                 &mut self.ctx.view(),
                 self.flags,
                 &self.scope,
                 e.clone(),
-            )
-            .with_context(|| ori.clone())?;
-            self.scope = advanced;
-            nodes.push(n);
+            );
+            match stmt.with_context(|| ori.clone()) {
+                Ok((n, advanced)) => {
+                    self.scope = advanced;
+                    nodes.push(n);
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
         }
         let comp_exprs = exprs
             .iter()
@@ -866,8 +864,10 @@ impl<X: GXExt> GX<X> {
                 CompExp { id: e.id, output, typ, rt: rt.clone() }
             })
             .collect::<SmallVec<[_; 1]>>();
-        let _ = &scope;
-        Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() }),
+        }
     }
 
     async fn load_exprs(
