@@ -2,7 +2,6 @@ use ::bytes::{BufMut, Bytes, BytesMut};
 use arcstr::ArcStr;
 use graphix_compiler::{BindId, ExecCtx, FastCall, Rt, UserEvent, effects::Effect, errf};
 use netidx_value::{PBytes, ValArray, Value};
-use nohash::IntMap;
 
 use crate::{ByRefChain, CachedArgs, CachedVals, EvalCached, fast_eval, fast_get};
 
@@ -184,68 +183,48 @@ fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     }
 }
 
-// CR claude for claude: [bug] encode_spec reads every payload with get_as_unchecked,
-// trusting the SAFETY claim that the checker guarantees each tag's payload type, and
-// that claim does not hold today. Two programs that pass --check put an i64 under
-// `Bytes: one writes through a reference widened to &Any, the other uses a nested
-// pattern that matches a same-shaped member of a union. The `Bytes arm then
-// dereferences the integer as a PBytes, and the process dies with SIGSEGV in both
-// engines. Every other builtin matches the Value shape and returns None on a mismatch.
-// Doing the same here, per tag, turns any checker hole into a bottom instead of
-// undefined behaviour. probe: design/review-2026-10-05/repro/x-unsafe-03.gx
-// (x-unsafe-03)
-// 2026-10-06 claude: the reference route (a write through `&Any`) is now refused: a write
-// needs `&mut`, which is invariant. The nested-pattern route still reaches this, so the
-// per-tag match is still wanted.
+/// Write one spec element; a payload of another shape than its tag
+/// declares (a checker hole) is no value, never undefined behaviour.
 fn encode_spec(buf: &mut BytesMut, v: &Value) -> Option<()> {
     let (tag, args) = variant_tag(v)?;
-    let a = &args[0];
-    // SAFETY: the type checker guarantees each variant tag carries
-    // the declared payload type.
-    unsafe {
-        match &**tag {
-            "I8" => buf.put_i8(*a.get_as_unchecked::<i8>()),
-            "U8" => buf.put_u8(*a.get_as_unchecked::<u8>()),
-            "I16" => buf.put_i16(*a.get_as_unchecked::<i16>()),
-            "I16LE" => buf.put_i16_le(*a.get_as_unchecked::<i16>()),
-            "U16" => buf.put_u16(*a.get_as_unchecked::<u16>()),
-            "U16LE" => buf.put_u16_le(*a.get_as_unchecked::<u16>()),
-            "I32" => buf.put_i32(*a.get_as_unchecked::<i32>()),
-            "I32LE" => buf.put_i32_le(*a.get_as_unchecked::<i32>()),
-            "U32" => buf.put_u32(*a.get_as_unchecked::<u32>()),
-            "U32LE" => buf.put_u32_le(*a.get_as_unchecked::<u32>()),
-            "I64" => buf.put_i64(*a.get_as_unchecked::<i64>()),
-            "I64LE" => buf.put_i64_le(*a.get_as_unchecked::<i64>()),
-            "U64" => buf.put_u64(*a.get_as_unchecked::<u64>()),
-            "U64LE" => buf.put_u64_le(*a.get_as_unchecked::<u64>()),
-            "F32" => buf.put_f32(*a.get_as_unchecked::<f32>()),
-            "F32LE" => buf.put_f32_le(*a.get_as_unchecked::<f32>()),
-            "F64" => buf.put_f64(*a.get_as_unchecked::<f64>()),
-            "F64LE" => buf.put_f64_le(*a.get_as_unchecked::<f64>()),
-            "Bytes" => buf.put_slice(a.get_as_unchecked::<PBytes>()),
-            "Pad" => {
-                // `put_bytes` panics on capacity overflow, so an
-                // absurd pad logs and bottoms instead.
-                const MAX_PAD: u64 = 64 * 1024 * 1024;
-                let n = *a.get_as_unchecked::<u64>();
-                if n > MAX_PAD {
-                    log::error!(
-                        "buffer::encode: Pad({n}) exceeds the {MAX_PAD} \
-                         byte limit — producing no value"
-                    );
-                    return None;
-                }
-                buf.put_bytes(0, n as usize)
+    match (&**tag, args.first()?) {
+        ("I8", Value::I8(x)) => buf.put_i8(*x),
+        ("U8", Value::U8(x)) => buf.put_u8(*x),
+        ("I16", Value::I16(x)) => buf.put_i16(*x),
+        ("I16LE", Value::I16(x)) => buf.put_i16_le(*x),
+        ("U16", Value::U16(x)) => buf.put_u16(*x),
+        ("U16LE", Value::U16(x)) => buf.put_u16_le(*x),
+        ("I32", Value::I32(x)) => buf.put_i32(*x),
+        ("I32LE", Value::I32(x)) => buf.put_i32_le(*x),
+        ("U32", Value::U32(x)) => buf.put_u32(*x),
+        ("U32LE", Value::U32(x)) => buf.put_u32_le(*x),
+        ("I64", Value::I64(x)) => buf.put_i64(*x),
+        ("I64LE", Value::I64(x)) => buf.put_i64_le(*x),
+        ("U64", Value::U64(x)) => buf.put_u64(*x),
+        ("U64LE", Value::U64(x)) => buf.put_u64_le(*x),
+        ("F32", Value::F32(x)) => buf.put_f32(*x),
+        ("F32LE", Value::F32(x)) => buf.put_f32_le(*x),
+        ("F64", Value::F64(x)) => buf.put_f64(*x),
+        ("F64LE", Value::F64(x)) => buf.put_f64_le(*x),
+        ("Bytes", Value::Bytes(b)) => buf.put_slice(b),
+        ("Pad", Value::U64(n)) => {
+            // `put_bytes` panics on capacity overflow, so an absurd pad
+            // logs and bottoms instead.
+            const MAX_PAD: u64 = 64 * 1024 * 1024;
+            if *n > MAX_PAD {
+                log::error!(
+                    "buffer::encode: Pad({n}) exceeds the {MAX_PAD} byte limit — \
+                     producing no value"
+                );
+                return None;
             }
-            "Varint" => {
-                netidx_core::pack::encode_varint(*a.get_as_unchecked::<u64>(), buf);
-            }
-            "Zigzag" => {
-                let val = *a.get_as_unchecked::<i64>();
-                netidx_core::pack::encode_varint(netidx_core::pack::i64_zz(val), buf);
-            }
-            _ => return None,
+            buf.put_bytes(0, *n as usize)
         }
+        ("Varint", Value::U64(n)) => netidx_core::pack::encode_varint(*n, buf),
+        ("Zigzag", Value::I64(n)) => {
+            netidx_core::pack::encode_varint(netidx_core::pack::i64_zz(*n), buf)
+        }
+        _ => return None,
     }
     Some(())
 }
@@ -274,57 +253,137 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
 
 pub(crate) type BufferEncode = CachedArgs<EncodeEv>;
 
-fn get_bind_id(v: &Value) -> BindId {
-    // SAFETY: the type checker guarantees refs are represented as U64.
-    BindId::from(*unsafe { v.get_as_unchecked::<u64>() })
+/// One decode pass: a cursor over the buffer and the writes it makes,
+/// held until the whole spec decodes.
+struct Decoder<'a> {
+    buf: &'a Bytes,
+    pos: usize,
+    chain: &'a ByRefChain,
+    written: poolshark::local::LPooled<Vec<(BindId, Value)>>,
 }
 
-fn decode_err(msg: &str) -> Value {
+fn decode_err(msg: impl std::fmt::Display) -> Value {
     errf!("DecodeError", "{msg}")
 }
 
-fn resolve_ref(byref_chain: &ByRefChain, ref_id: BindId) -> Result<BindId, Value> {
-    byref_chain
-        .get(&ref_id)
-        .copied()
-        .ok_or_else(|| decode_err("ref does not point to a let binding"))
-}
+impl<'a> Decoder<'a> {
+    /// The binding a spec's reference names.
+    fn target(&self, r: &Value) -> Result<BindId, Value> {
+        let Value::U64(id) = r else { return Err(decode_err("not a reference")) };
+        self.chain
+            .get(&BindId::from(*id))
+            .copied()
+            .ok_or_else(|| decode_err("ref does not point to a let binding"))
+    }
 
-/// Resolve a ref BindId through the byref chain to the target's current
-/// u64: this pass's own `written` record first, else the store. `Err` if
-/// the ref isn't in the chain, `Ok(None)` if the value hasn't arrived.
-fn resolve_u64<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<'_, R, E>,
-    written: &IntMap<BindId, Value>,
-    byref_chain: &ByRefChain,
-    ref_id: BindId,
-) -> Result<Option<u64>, Value> {
-    let target = resolve_ref(byref_chain, ref_id)?;
-    Ok(written.get(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }).or_else(
-        || ctx.rt.store_value(&target).map(|v| *unsafe { v.get_as_unchecked::<u64>() }),
-    ))
-}
-
-macro_rules! decode_fixed {
-    ($ctx:expr, $buf:expr, $pos:expr, $args:expr,
-     $byref_chain:expr, $written:expr, $sz:expr, $ty:ty, $from_bytes:ident,
-     $variant:ident) => {{
-        if $buf.len() - $pos < $sz {
-            return Some(decode_err("not enough bytes"));
-        }
-        // SAFETY: buf.len() - pos >= $sz was checked above, and $sz is
-        // the byte width of $ty.
-        let val =
-            <$ty>::$from_bytes(unsafe { *($buf[$pos..].as_ptr() as *const [u8; $sz]) });
-        let ref_id = get_bind_id(&$args[0]);
-        let target = match resolve_ref(&$byref_chain, ref_id) {
-            Ok(t) => t,
-            Err(e) => return Some(e),
+    /// The length a reference holds: this pass's write first, else the
+    /// store; `None` when it has not arrived.
+    fn len<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &ExecCtx<'_, R, E>,
+        r: &Value,
+    ) -> Result<Option<usize>, Value> {
+        let target = self.target(r)?;
+        let v = match self.written.iter().rev().find(|(t, _)| *t == target) {
+            Some((_, v)) => Some(v.clone()),
+            None => ctx.rt.store_value(&target),
         };
-        $written.insert(target, Value::$variant(val));
-        $ctx.rt.set_var(target, Value::$variant(val));
-        $pos += $sz;
-    }};
+        match v {
+            None => Ok(None),
+            Some(Value::U64(n)) => Ok(Some(n as usize)),
+            Some(v) => Err(decode_err(format_args!("a length of {v}"))),
+        }
+    }
+
+    /// The next `n` bytes, the cursor past them.
+    fn take(&mut self, n: usize) -> Result<&'a [u8], Value> {
+        let buf: &'a Bytes = self.buf;
+        let bytes = buf.get(self.pos..self.pos.saturating_add(n));
+        let bytes = bytes.ok_or_else(|| decode_err("not enough bytes"))?;
+        self.pos += n;
+        Ok(bytes)
+    }
+
+    fn put(&mut self, r: &Value, v: Value) -> Result<(), Value> {
+        let target = self.target(r)?;
+        self.written.push((target, v));
+        Ok(())
+    }
+
+    fn fixed<const N: usize>(
+        &mut self,
+        r: &Value,
+        from: fn([u8; N]) -> Value,
+    ) -> Result<(), Value> {
+        let bytes: [u8; N] = self.take(N)?.try_into().expect("take returns N bytes");
+        self.put(r, from(bytes))
+    }
+
+    fn varint(&mut self) -> Result<u64, Value> {
+        let mut cursor = &self.buf[self.pos..];
+        let v = netidx_core::pack::decode_varint(&mut cursor)
+            .map_err(|e| decode_err(format_args!("varint: {e}")))?;
+        self.pos = self.buf.len() - cursor.len();
+        Ok(v)
+    }
+
+    /// Decode one spec element: `Ok(None)` when a length it needs has
+    /// not arrived.
+    fn element<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        tag: &str,
+        a: &[Value],
+    ) -> Result<Option<()>, Value> {
+        let arg = |i: usize| a.get(i).ok_or_else(|| decode_err("missing argument"));
+        match tag {
+            "I8" => self.fixed(arg(0)?, |b: [u8; 1]| Value::I8(i8::from_le_bytes(b))),
+            "U8" => self.fixed(arg(0)?, |b: [u8; 1]| Value::U8(b[0])),
+            "I16" => self.fixed(arg(0)?, |b| Value::I16(i16::from_be_bytes(b))),
+            "I16LE" => self.fixed(arg(0)?, |b| Value::I16(i16::from_le_bytes(b))),
+            "U16" => self.fixed(arg(0)?, |b| Value::U16(u16::from_be_bytes(b))),
+            "U16LE" => self.fixed(arg(0)?, |b| Value::U16(u16::from_le_bytes(b))),
+            "I32" => self.fixed(arg(0)?, |b| Value::I32(i32::from_be_bytes(b))),
+            "I32LE" => self.fixed(arg(0)?, |b| Value::I32(i32::from_le_bytes(b))),
+            "U32" => self.fixed(arg(0)?, |b| Value::U32(u32::from_be_bytes(b))),
+            "U32LE" => self.fixed(arg(0)?, |b| Value::U32(u32::from_le_bytes(b))),
+            "I64" => self.fixed(arg(0)?, |b| Value::I64(i64::from_be_bytes(b))),
+            "I64LE" => self.fixed(arg(0)?, |b| Value::I64(i64::from_le_bytes(b))),
+            "U64" => self.fixed(arg(0)?, |b| Value::U64(u64::from_be_bytes(b))),
+            "U64LE" => self.fixed(arg(0)?, |b| Value::U64(u64::from_le_bytes(b))),
+            "F32" => self.fixed(arg(0)?, |b| Value::F32(f32::from_be_bytes(b))),
+            "F32LE" => self.fixed(arg(0)?, |b| Value::F32(f32::from_le_bytes(b))),
+            "F64" => self.fixed(arg(0)?, |b| Value::F64(f64::from_be_bytes(b))),
+            "F64LE" => self.fixed(arg(0)?, |b| Value::F64(f64::from_le_bytes(b))),
+            "Bytes" | "UTF8" | "Skip" => {
+                let Some(n) = self.len(ctx, arg(0)?)? else { return Ok(None) };
+                let at = self.pos;
+                self.take(n)?;
+                let bytes = self.buf.slice(at..at + n);
+                match tag {
+                    "Bytes" => self.put(arg(1)?, Value::Bytes(PBytes::new(bytes)))?,
+                    "UTF8" => {
+                        let s = std::str::from_utf8(&bytes).map_err(|e| {
+                            decode_err(format_args!("invalid UTF-8: {e}"))
+                        })?;
+                        self.put(arg(1)?, Value::String(ArcStr::from(s)))?
+                    }
+                    _ => (),
+                }
+                Ok(())
+            }
+            "Varint" => {
+                let v = self.varint()?;
+                self.put(arg(0)?, Value::U64(v))
+            }
+            "Zigzag" => {
+                let v = self.varint()?;
+                self.put(arg(0)?, Value::I64(netidx_core::pack::i64_uzz(v)))
+            }
+            _ => return Err(decode_err(format_args!("unknown spec {tag}"))),
+        }
+        .map(Some)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -344,346 +403,33 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
     // (one-liner in the probe header). The writes belong to a fired invocation only;
     // probe: design/review-2026-10-05/repro/x-builtin-effects-02.gx
     // (x-builtin-effects-02)
+    // 2026-10-07 claude: the decode now commits its writes only when the whole spec
+    // decodes (no rewrite of earlier fields while a later length is absent, the busy
+    // loop), and reads payloads and references by shape. Writing on a fired
+    // invocation only is the open part: Sync leaves a stale remainder at a wake and
+    // Stateless re-writes at a re-entry; it needs the effect class the dbg/print pair
+    // (x-builtin-effects-05, core-lib-09) does.
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_buffer_decode";
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let buf = from.get::<Bytes>(0)?;
-        let spec = match from.0.get(1)?.as_ref()? {
-            Value::Array(a) => a,
-            _ => return None,
-        };
-        let byref_chain = ctx.env.byref_chain.clone();
-        // The store only advances at delivery, so later fields in this
-        // pass read length vars earlier fields wrote from `written`.
-        let mut written: poolshark::local::LPooled<IntMap<BindId, Value>> =
-            poolshark::local::LPooled::take();
-        let mut pos = 0usize;
-
+        let Value::Array(spec) = from.0.get(1)?.as_ref()? else { return None };
+        let chain = ctx.env.byref_chain.clone();
+        let mut d =
+            Decoder { buf: &buf, pos: 0, chain: &chain, written: Default::default() };
         for elem in spec.iter() {
             let (tag, args) = variant_tag(elem)?;
-            match &**tag {
-                // CR claude for claude: [structure] The 18 decode_fixed! arms repeat the
-                // same six context arguments: 216 lines where one line per tag would
-                // do. Define the macro inside eval after the locals, or call a fn
-                // fixed<const N: usize>(.., from: fn([u8; N]) -> Value) that takes the
-                // bytes with try_into instead of the unsafe pointer cast. The target
-                // write (resolve_ref, written.insert, set_var) is repeated in the macro
-                // and in Bytes, UTF8, Varint and Zigzag. Bytes, UTF8 and Skip also
-                // repeat the same length lookup and bounds check, and Varint and Zigzag
-                // the same cursor arithmetic. decode_err(&format!(..)) builds a String
-                // only to format it again; errf!("DecodeError", ..) formats once.
-                // (core-aux-15)
-                "I8" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    1,
-                    i8,
-                    from_le_bytes,
-                    I8
-                ),
-                "U8" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    1,
-                    u8,
-                    from_le_bytes,
-                    U8
-                ),
-                "I16" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    2,
-                    i16,
-                    from_be_bytes,
-                    I16
-                ),
-                "I16LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    2,
-                    i16,
-                    from_le_bytes,
-                    I16
-                ),
-                "U16" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    2,
-                    u16,
-                    from_be_bytes,
-                    U16
-                ),
-                "U16LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    2,
-                    u16,
-                    from_le_bytes,
-                    U16
-                ),
-                "I32" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    i32,
-                    from_be_bytes,
-                    I32
-                ),
-                "I32LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    i32,
-                    from_le_bytes,
-                    I32
-                ),
-                "U32" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    u32,
-                    from_be_bytes,
-                    U32
-                ),
-                "U32LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    u32,
-                    from_le_bytes,
-                    U32
-                ),
-                "I64" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    i64,
-                    from_be_bytes,
-                    I64
-                ),
-                "I64LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    i64,
-                    from_le_bytes,
-                    I64
-                ),
-                "U64" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    u64,
-                    from_be_bytes,
-                    U64
-                ),
-                "U64LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    u64,
-                    from_le_bytes,
-                    U64
-                ),
-                "F32" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    f32,
-                    from_be_bytes,
-                    F32
-                ),
-                "F32LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    4,
-                    f32,
-                    from_le_bytes,
-                    F32
-                ),
-                "F64" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    f64,
-                    from_be_bytes,
-                    F64
-                ),
-                "F64LE" => decode_fixed!(
-                    ctx,
-                    buf,
-                    pos,
-                    args,
-                    byref_chain,
-                    written,
-                    8,
-                    f64,
-                    from_le_bytes,
-                    F64
-                ),
-                "Bytes" => {
-                    let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
-                        Ok(Some(n)) => n as usize,
-                        Ok(None) => return None,
-                        Err(e) => return Some(e),
-                    };
-                    if buf.len() - pos < n {
-                        return Some(decode_err("not enough bytes"));
-                    }
-                    let dest_ref_id = get_bind_id(&args[1]);
-                    let target = match resolve_ref(&byref_chain, dest_ref_id) {
-                        Ok(t) => t,
-                        Err(e) => return Some(e),
-                    };
-                    let v = Value::Bytes(PBytes::new(buf.slice(pos..pos + n)));
-                    written.insert(target, v.clone());
-                    ctx.rt.set_var(target, v);
-                    pos += n;
-                }
-                "UTF8" => {
-                    let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
-                        Ok(Some(n)) => n as usize,
-                        Ok(None) => return None,
-                        Err(e) => return Some(e),
-                    };
-                    if buf.len() - pos < n {
-                        return Some(decode_err("not enough bytes"));
-                    }
-                    let s = match std::str::from_utf8(&buf[pos..pos + n]) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            return Some(decode_err(&format!("invalid UTF-8: {e}")));
-                        }
-                    };
-                    let dest_ref_id = get_bind_id(&args[1]);
-                    let target = match resolve_ref(&byref_chain, dest_ref_id) {
-                        Ok(t) => t,
-                        Err(e) => return Some(e),
-                    };
-                    let v = Value::String(ArcStr::from(s));
-                    written.insert(target, v.clone());
-                    ctx.rt.set_var(target, v);
-                    pos += n;
-                }
-                "Skip" => {
-                    let len_ref_id = get_bind_id(&args[0]);
-                    let n = match resolve_u64(ctx, &written, &byref_chain, len_ref_id) {
-                        Ok(Some(n)) => n as usize,
-                        Ok(None) => return None,
-                        Err(e) => return Some(e),
-                    };
-                    if buf.len() - pos < n {
-                        return Some(decode_err("not enough bytes"));
-                    }
-                    pos += n;
-                }
-                "Varint" => {
-                    let mut cursor = &buf[pos..];
-                    let val = match netidx_core::pack::decode_varint(&mut cursor) {
-                        Ok(v) => v,
-                        Err(e) => return Some(decode_err(&format!("varint: {e}"))),
-                    };
-                    pos += buf.len() - pos - cursor.len();
-                    let ref_id = get_bind_id(&args[0]);
-                    let target = match resolve_ref(&byref_chain, ref_id) {
-                        Ok(t) => t,
-                        Err(e) => return Some(e),
-                    };
-                    written.insert(target, Value::U64(val));
-                    ctx.rt.set_var(target, Value::U64(val));
-                }
-                "Zigzag" => {
-                    let mut cursor = &buf[pos..];
-                    let raw = match netidx_core::pack::decode_varint(&mut cursor) {
-                        Ok(v) => v,
-                        Err(e) => return Some(decode_err(&format!("zigzag: {e}"))),
-                    };
-                    pos += buf.len() - pos - cursor.len();
-                    let ref_id = get_bind_id(&args[0]);
-                    let target = match resolve_ref(&byref_chain, ref_id) {
-                        Ok(t) => t,
-                        Err(e) => return Some(e),
-                    };
-                    written.insert(target, Value::I64(netidx_core::pack::i64_uzz(raw)));
-                    ctx.rt.set_var(target, Value::I64(netidx_core::pack::i64_uzz(raw)));
-                }
-                _ => return None,
+            match d.element(ctx, tag, args) {
+                Ok(Some(())) => (),
+                Ok(None) => return None,
+                Err(e) => return Some(e),
             }
         }
-
-        let rest = buf.slice(pos..);
-        Some(Value::Bytes(PBytes::new(rest)))
+        for (target, v) in d.written.drain(..) {
+            ctx.rt.set_var(target, v);
+        }
+        Some(Value::Bytes(PBytes::new(buf.slice(d.pos..))))
     }
 }
 
