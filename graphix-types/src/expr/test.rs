@@ -13,7 +13,6 @@ use poolshark::local::LPooled;
 use prop::option;
 use proptest::{collection, prelude::*, sample};
 use rust_decimal::Decimal;
-use smallvec::SmallVec;
 use std::{iter, time::Duration};
 
 const SLEN: usize = 16;
@@ -26,8 +25,10 @@ fn datetime() -> impl Strategy<Value = DateTime<Utc>> {
         .prop_map(|(s, ns)| Utc.timestamp_opt(s, ns).unwrap())
 }
 
+/// A duration a literal can denote: a literal goes through an f64 of
+/// seconds, which resolves a nanosecond below 2^23 seconds.
 fn duration() -> impl Strategy<Value = Duration> {
-    (any::<u64>(), 0..1_000_000_000u32).prop_map(|(s, ns)| Duration::new(s, ns))
+    (0..1u64 << 23, 0..1_000_000_000u32).prop_map(|(s, ns)| Duration::new(s, ns))
 }
 
 fn pbytes() -> impl Strategy<Value = PBytes> {
@@ -40,6 +41,31 @@ fn arcstr() -> impl Strategy<Value = ArcStr> {
         1 => "[ab \\n\\r\\t\\x00\\x07\\x1b\"\\[\\]\\\\#]{0,12}",
     ]
     .prop_map(ArcStr::from)
+}
+
+/// `"..[e].."` or `"""..\[e].."""`: text runs as the parser leaves them
+/// (merged, never empty) around one or more splices.
+fn interpolation(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
+    let text = || prop_oneof![Just(ArcStr::from("")), arcstr()];
+    (collection::vec((text(), inner), 1..4), text(), any::<bool>()).prop_map(
+        |(parts, last, template)| {
+            let text = |s: ArcStr| ExprKind::Constant(Value::String(s)).to_expr_nopos();
+            let mut args: Vec<Expr> = Vec::new();
+            for (t, e) in parts {
+                if !t.is_empty() {
+                    args.push(text(t))
+                }
+                args.push(e)
+            }
+            if !last.is_empty() {
+                args.push(text(last))
+            }
+            let mut e =
+                ExprKind::StringInterpolate { args: Arc::from(args) }.to_expr_nopos();
+            e.str_form = if template { StrForm::Template } else { StrForm::Quoted };
+            e
+        },
+    )
 }
 
 /// A doc's text: lines, and none ends in a `\r`, which ends a line.
@@ -368,6 +394,19 @@ fn typ() -> impl Strategy<Value = Typ> {
     ]
 }
 
+/// A type variable's bound: a type, or one of the bound names.
+fn bound(inner: impl Strategy<Value = Type>) -> impl Strategy<Value = Type> {
+    prop_oneof![
+        6 => inner,
+        1 => Just(Type::Concrete),
+        1 => Just(Type::Function),
+        1 => Just(Type::Singleton),
+        1 => Just(Type::OneNumber),
+        1 => Just(Type::Discernible),
+        1 => Just(Type::Ordered),
+    ]
+}
+
 fn typexp() -> impl Strategy<Value = Type> {
     let leaf = prop_oneof![
         Just(Type::Bottom),
@@ -401,6 +440,11 @@ fn typexp() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::List(Arc::new(t))),
+            inner.clone().prop_map(|t| Type::Error(Arc::new(t))),
+            (inner.clone(), inner.clone())
+                .prop_map(|(k, v)| Type::Map { key: Arc::new(k), value: Arc::new(v) }),
+            (tvar(), inner.clone())
+                .prop_map(|(c, t)| Type::App(Arc::new(Type::TVar(c)), Arc::new(t))),
             (mutability(), inner.clone()).prop_map(|(m, t)| Type::ByRef(m, Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
@@ -423,7 +467,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                 ),
                 option::of(inner.clone()),
                 inner.clone(),
-                collection::vec((random_fname(), inner.clone()), (0, 4)),
+                collection::vec((random_fname(), bound(inner.clone())), (0, 4)),
                 option::of(inner.clone())
             )
                 .prop_map(|(mut args, vargs, rtype, constraints, throws)| {
@@ -578,17 +622,22 @@ fn pattern() -> impl Strategy<Value = Pattern> {
     )
 }
 
-/// A declaration scrutinee is parenthesized: an impl or a module would
-/// read the arms' `{` as its body.
+/// A scrutinee that ends in a declaration is parenthesized: an impl or a
+/// module would read the arms' `{` as its body.
 fn build_pattern(arg: Expr, arms: Vec<(Option<Expr>, Pattern, Expr)>) -> Expr {
-    let arg = match &arg.kind {
-        ExprKind::Use { .. }
-        | ExprKind::TypeDef(_)
-        | ExprKind::Module { .. }
-        | ExprKind::Trait(_)
-        | ExprKind::Impl(_) => paren(arg),
-        _ => arg,
-    };
+    fn ends_in_declaration(e: &Expr) -> bool {
+        use ExprKind::*;
+        match &e.kind {
+            Use { .. } | TypeDef(_) | Module { .. } | Trait(_) | Impl(_) => true,
+            Lambda(l) => match &l.body {
+                LambdaBody::Expr(b) => ends_in_declaration(b),
+                LambdaBody::Builtin(_) => false,
+            },
+            Neg(e) | Not { expr: e } | Deref(e) | ByRef(_, e) => ends_in_declaration(e),
+            k => BinOp::of(k).is_some_and(|(_, _, rhs)| ends_in_declaration(rhs)),
+        }
+    }
+    let arg = if ends_in_declaration(&arg) { paren(arg) } else { arg };
     let arms = arms.into_iter().map(|(guard, mut pat, expr)| {
         pat.guard = guard;
         (pat, expr)
@@ -724,9 +773,19 @@ macro_rules! trait_decl {
 macro_rules! impl_decl {
     ($inner:expr) => {
         (
-            collection::vec((tvar(), collection::vec(typexp(), 0..3)), 0..3),
+            collection::vec((tvar(), collection::vec(bound(typexp()), 0..3)), 0..3),
             typath(),
-            typexp(),
+            prop_oneof![
+                3 => typexp(),
+                1 => Just(Type::Array(Arc::new(Type::Hole))),
+                1 => typath().prop_map(|name| {
+                    Type::Ref(TypeRef::synthetic(
+                        ModPath::root(),
+                        name,
+                        Arc::from_iter([Type::Hole]),
+                    ))
+                }),
+            ],
             collection::vec(
                 (random_fname(), option::of(typexp()), $inner, decorations()),
                 0..3,
@@ -808,6 +867,10 @@ macro_rules! qop {
             | ExprKind::Any { .. }
             | ExprKind::Apply { .. }
             | ExprKind::ArrayRef { .. }
+            | ExprKind::ArraySlice { .. }
+            | ExprKind::MapRef { .. }
+            | ExprKind::Qop(_)
+            | ExprKind::OrNever(_)
             | ExprKind::TupleRef { .. }
             | ExprKind::StructRef { .. } => {
                 if qop {
@@ -959,7 +1022,7 @@ macro_rules! lambda {
             ),
             option::of(option::of(typexp())),
             option::of(typexp()),
-            collection::vec((random_fname(), typexp()), (0, 4)),
+            collection::vec((random_fname(), bound(typexp())), (0, 4)),
             option::of(typexp()),
             option::of(random_fname()),
             $inner,
@@ -1239,20 +1302,13 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
     ]
 }
 
-// CR claude for claude: [test-gap] check_trait and check_module_sig (1672) never compare
-// `comments`, and Comments' PartialEq is always true. Yet trait_decl! and
-// module_sigitem() generate comments and both printers write them. A printer that
-// dropped the `//` lines above a trait method or a dynamic module's interface item
-// would still pass expr_round_trip and expr_pp_round_trip; the only pin is one
-// format.rs example, comments_above_interface_items_and_trait_methods_stay. Compare
-// `m0.comments.lines() == m1.comments.lines()` here and `s0.comments.lines() ==
-// s1.comments.lines()` for every item kind in check_module_sig. (tests-types-06)
 fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
     (t0.name == t1.name)
         && (t0.methods.len() == t1.methods.len())
         && t0.methods.iter().zip(t1.methods.iter()).all(|(m0, m1)| {
             (m0.name == m1.name)
                 && (m0.doc == m1.doc)
+                && (m0.comments.lines() == m1.comments.lines())
                 && (m0.self_index == m1.self_index)
                 && (check_type(&Type::Fn(m0.typ.clone()), &Type::Fn(m1.typ.clone())))
                 && match (&m0.default, &m1.default) {
@@ -1336,7 +1392,7 @@ fn paren(child: Expr) -> Expr {
 /// Children that need parens regardless of position: a statement form
 /// (`let`, a declaration, `catch`, a connect) or a lambda under any
 /// operator. `None` defers to binary-operator precedence.
-fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
+fn loose_needs_parens(child: &ExprKind) -> Option<bool> {
     match child {
         ExprKind::Connect { .. }
         | ExprKind::Bind(_)
@@ -1354,7 +1410,7 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
 
 /// Parenthesize a left child of lower precedence than the parent.
 fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
-    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+    let needs = loose_needs_parens(&child.kind).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p < parent_prec)
     });
     if needs { paren(child) } else { child }
@@ -1363,7 +1419,7 @@ fn maybe_paren_lhs(child: Expr, parent_prec: u8) -> Expr {
 /// Parenthesize a right child of lower or equal precedence than the parent;
 /// all operators are left-associative.
 fn maybe_paren_rhs(child: Expr, parent_prec: u8) -> Expr {
-    let needs = loose_needs_parens(&child.kind, parent_prec).unwrap_or_else(|| {
+    let needs = loose_needs_parens(&child.kind).unwrap_or_else(|| {
         binop_precedence(&child.kind).is_some_and(|p| p <= parent_prec)
     });
     if needs { paren(child) } else { child }
@@ -1449,17 +1505,6 @@ fn expr() -> impl Strategy<Value = Expr> {
     decorated(undecorated_expr())
 }
 
-// CR claude for claude: [test-gap] The round-trip generators never draw several forms the
-// printer must reproduce. No generator builds StringInterpolate (every `"..[x].."`), so
-// the proptests never reach write_interpolation. typexp() (327) has no `Error<T>`,
-// `Map<K, V>` or applied constructor (`'c<i64>`), and nothing draws `'_` in an impl
-// header or a Concrete/Function/Singleton/OneNumber bound in a constraint. seq_item!
-// (828) never decorates a seq or try/with statement, though the parser keeps those
-// decorations (parser/test.rs:2336). qop! (743) never wraps MapRef, ArraySlice, Qop or
-// OrNever, so `m{k}?` and `x?$` never appear. A printer regression in any of these
-// passes every proptest and shows only when `graphix fmt` meets a real file or someone
-// runs the corpus harness. Add strategies for each, in the positions where the parser
-// accepts them. (tests-types-05)
 fn undecorated_expr() -> impl Strategy<Value = Expr> {
     let leaf = prop_oneof![
         constant(),
@@ -1487,6 +1532,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             typecast!(inner.clone()),
             never!(inner.clone()),
             do_block!(inner.clone()),
+            interpolation(inner.clone()),
             (
                 any::<bool>(),
                 option::of(prop_oneof![
@@ -1503,7 +1549,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 ]),
                 option::of(inner.clone()),
                 option::of(inner.clone()),
-                collection::vec(seq_item!(inner.clone()), 1..5),
+                collection::vec(decorated(seq_item!(inner.clone())), 1..5),
             )
                 .prop_map(|(queued, trigger, abort, flush, body)| {
                     ExprKind::Seq {
@@ -1573,42 +1619,9 @@ fn check_type_opt(t0: &Option<Type>, t1: &Option<Type>) -> bool {
 
 fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> bool {
     match (pat0, pat1) {
-        // CR claude for claude: [dead] This arm and its mirror (Literal(Array) against
-        // Slice) cannot match. value() never builds an array, and the pattern parser
-        // tries slice_pattern, which commits on `[`, before literal_pattern
-        // (patternexp.rs:279-286), so neither side ever holds an array literal. The 23
-        // lines suggest an equivalence the parser never produces; delete them. In
-        // parser/test.rs, pattern0 (943) only dbg!s its parse and cannot see a
-        // mis-parse of `i64 as a if a < 10`, so assert the expected Pattern or delete
-        // it. Also drop the leftover eprintln! in `array` (1013). (tests-types-09)
-        (
-            StructurePattern::Literal(Value::Array(a)),
-            StructurePattern::Slice { list: false, all: None, binds },
-        )
-        | (
-            StructurePattern::Slice { list: false, all: None, binds },
-            StructurePattern::Literal(Value::Array(a)),
-        ) => {
-            binds.iter().all(|n| match n {
-                StructurePattern::Literal(_) => true,
-                _ => false,
-            }) && {
-                let binds = binds
-                    .iter()
-                    .filter_map(|n| match n {
-                        StructurePattern::Literal(l) => Some(l),
-                        _ => None,
-                    })
-                    .collect::<SmallVec<[&Value; 16]>>();
-                binds.len() == a.len()
-                    && binds.iter().zip(a.iter()).all(|(v0, v1)| *v0 == v1)
-            }
-        }
         (StructurePattern::Bind(n0), StructurePattern::Bind(n1)) => n0 == n1,
         (StructurePattern::Ignore, StructurePattern::Ignore) => true,
-        (StructurePattern::Literal(v0), StructurePattern::Literal(v1)) => {
-            v0.approx_eq(v1)
-        }
+        (StructurePattern::Literal(v0), StructurePattern::Literal(v1)) => v0 == v1,
         (
             StructurePattern::Slice { list: l0, all: a0, binds: p0 },
             StructurePattern::Slice { list: l1, all: a1, binds: p1 },
@@ -1752,6 +1765,10 @@ fn check_typedef(td0: &TypeDefExpr, td1: &TypeDefExpr) -> bool {
 
 fn check_module_sig(s0: &[SigItem], s1: &[SigItem]) -> bool {
     s0.len() == s1.len()
+        && s0
+            .iter()
+            .zip(s1.iter())
+            .all(|(s0, s1)| s0.comments.lines() == s1.comments.lines())
         && s0.iter().zip(s1.iter()).all(|(s0, s1)| match (s0, s1) {
             (
                 SigItem {
@@ -1823,21 +1840,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
-        // CR claude for claude: [test-gap] `check` compares constants (and pattern
-        // literals at 1529) with netidx `approx_eq`. It treats U32/V32, I32/Z32,
-        // U64/V64 and I64/Z64 as equal, compares any other numeric pair as f64 (`i16:5`
-        // equals `5`), treats floats within an absolute f64::EPSILON as equal (`1e-300`
-        // equals `0.0`) and compares durations by `as_secs_f64`. So expr_round_trip and
-        // expr_pp_round_trip cannot see a printer that changes a literal's numeric type
-        // (`v32:5` printed as `u32:5`) or loses a small float's digits; only fmt's
-        // exact reparse guard or the manual corpus harness would. Compare with `==`
-        // here and at 1529; netidx's approx_eq then has no user. The tolerance is
-        // load-bearing only for `duration()`, whose `Duration::new(any u64, ns)` values
-        // no literal can denote because a duration literal goes through f64: draw
-        // seconds below 2^23, where an f64 still resolves a nanosecond, or whole
-        // seconds. Add pairs such as (`v32:1`, `u32:1`), (`i16:1`, `1`) and (`1e-300`,
-        // `0.0`) to check_sees_a_lost_element. (tests-types-03)
-        (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0.approx_eq(v1),
+        (ExprKind::Constant(v0), ExprKind::Constant(v1)) => v0 == v1,
         (ExprKind::Array { args: a0 }, ExprKind::Array { args: a1 })
         | (ExprKind::List { args: a0 }, ExprKind::List { args: a1 })
         | (ExprKind::Tuple { args: a0 }, ExprKind::Tuple { args: a1 }) => {
@@ -2265,14 +2268,6 @@ proptest! {
     /// `map_children` rebuilds from exactly the children `for_each_child`
     /// visits, in the same order, at every node.
     #[test]
-    // CR claude for claude: [test-gap] `expr()` draws only parseable syntax, so this test
-    // never sees Rethrow, SeqGuard, SeqAbort, SeqMachine, SeqCapture, a Catch with the
-    // Machine or Try role, or a resolved Module. Seq lowering and module resolution
-    // build those kinds, and seq lowering rewrites its output through `map_children`
-    // (seq.rs:1462). Their arms agree today (mod.rs:819-915 vs 1426-1600), but a child
-    // added to one walk and not the other would still pass. Add a case that hand-builds
-    // one of each with distinct children and compares the same id lists.
-    // (t-expr-core-10)
     fn children_agree(s in expr()) {
         let mut disagree = None;
         s.fold((), &mut |(), e| {
@@ -2666,12 +2661,129 @@ fn an_interface_module_has_the_interface_origin() {
 }
 
 /// The comparator fails on a dropped or added element.
+/// The kinds only the compiler builds (seq lowering, module resolution):
+/// `map_children` rebuilds from the children `for_each_child` visits.
+#[test]
+fn compiler_kinds_children_agree() {
+    use ExprKind::*;
+    let leaf = |n: &str| Ref { name: ModPath::from([n]) }.to_expr_nopos();
+    let arc = |n: &str| Arc::new(leaf(n));
+    let catch = |role| {
+        Catch(Arc::new(CatchExpr {
+            bind: literal!("e").into(),
+            constraint: None,
+            handler: arc("h"),
+            role,
+        }))
+    };
+    let kinds = [
+        (Rethrow(arc("a")), 1),
+        (SeqGuard(arc("a")), 1),
+        (SeqAbort(arc("a")), 1),
+        (
+            SeqMachine(Arc::new(SeqMachineExpr {
+                id: 0,
+                pc: arc("pc"),
+                scopes: Arc::from_iter([0]),
+                steps: Arc::from_iter([
+                    SeqStep {
+                        label: literal!("S0"),
+                        scope: 0,
+                        until: false,
+                        value: literal!("v"),
+                        items: Arc::from_iter([leaf("a"), leaf("b")]),
+                        next: Some(1),
+                    },
+                    SeqStep {
+                        label: literal!("S1"),
+                        scope: 0,
+                        until: true,
+                        value: literal!("w"),
+                        items: Arc::from_iter([leaf("c")]),
+                        next: None,
+                    },
+                ]),
+            })),
+            4,
+        ),
+        (
+            SeqCapture(Arc::new(SeqCaptureExpr {
+                machine: 0,
+                snapshot: arc("s"),
+                live: arc("l"),
+            })),
+            2,
+        ),
+        (
+            catch(CatchRole::Machine {
+                action: arc("act"),
+                manual: Some(arc("m")),
+                pc: literal!("pc"),
+            }),
+            3,
+        ),
+        (catch(CatchRole::Try { action: arc("act"), capture: literal!("c") }), 2),
+        (
+            Module {
+                name: literal!("m").into(),
+                value: ModuleKind::Resolved {
+                    exprs: Arc::from_iter([leaf("a"), leaf("b")]),
+                    sig: None,
+                    from_interface: false,
+                },
+            },
+            2,
+        ),
+    ];
+    for (kind, n) in kinds {
+        let e = kind.to_expr_nopos();
+        let mut visited: Vec<ExprId> = vec![];
+        e.for_each_child(&mut |c| visited.push(c.id));
+        let mut mapped: Vec<ExprId> = vec![];
+        e.map_children(&mut |c| {
+            mapped.push(c.id);
+            c.clone()
+        });
+        assert_eq!(visited.len(), n, "{e:?}");
+        assert_eq!(visited, mapped, "{e:?}");
+    }
+}
+
+/// An image shares an expression only with a clone of the same tree: a
+/// clone that differs in a decoration, its own or a child's, is another.
+#[test]
+fn a_decorated_clone_is_another_tree() {
+    let e = parse_one("f(x)").unwrap();
+    let dec = Some(Arc::new(Decorations {
+        comments: Arc::from_iter([]),
+        attrs: Arc::from_iter([Attr {
+            name: literal!("serial"),
+            args: Arc::from_iter([]),
+        }]),
+    }));
+    assert!(e.same_tree(&e.clone()));
+    let mut own = e.clone();
+    own.dec = dec.clone();
+    assert!(!e.same_tree(&own));
+    let mut child = e.map_children(&mut |c| {
+        let mut c = c.clone();
+        c.dec = dec.clone();
+        c
+    });
+    (child.id, child.pos, child.ori) = (e.id, e.pos, e.ori.clone());
+    assert_eq!(child, e);
+    assert!(!e.same_tree(&child));
+}
+
 #[test]
 fn check_sees_a_lost_element() {
     for (a, b) in [
         ("|x, y| x", "|x| x"),
         ("\"a[x]b[y]\"", "\"a[x]\""),
         ("'a: Number, 'b: Int |x: 'a, y: 'b| x", "'a: Number |x: 'a, y: 'b| x"),
+        ("v32:1", "u32:1"),
+        ("i16:1", "1"),
+        ("1e-300", "0.0"),
     ] {
         let (a, b) = (parse_one(a).unwrap(), parse_one(b).unwrap());
         assert!(!check(&a, &b), "{a} vs {b}");

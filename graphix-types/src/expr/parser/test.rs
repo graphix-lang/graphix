@@ -958,7 +958,12 @@ select foo(b) {
 #[test]
 fn pattern0() {
     let s = r#"i64 as a if a < 10"#;
-    dbg!(super::pattern().easy_parse(position::Stream::new(s)).unwrap());
+    let (p, _) = super::pattern().easy_parse(position::Stream::new(s)).unwrap();
+    assert_eq!(p.type_predicate, Some(Type::Primitive(Typ::I64.into())));
+    assert!(
+        matches!(&p.structure_predicate, StructurePattern::Bind(n) if &*n.name == "a")
+    );
+    assert_eq!(p.guard.map(|g| g.to_string()).as_deref(), Some("a < 10"));
 }
 
 #[test]
@@ -1026,7 +1031,6 @@ fn array() {
     .to_expr_nopos();
     let s = r#"[["foo", 42], ["bar", 42]]"#;
     let exp1 = parse_one(s).unwrap();
-    eprintln!("{exp1}");
     assert_eq!(exp, exp1);
 }
 
@@ -2072,7 +2076,16 @@ fn list_is_a_reserved_type_name() {
     assert!(parse_one("type List = { cursor: i64 }").is_err());
     assert!(parse_one("type Array<'a> = i64").is_err());
     assert!(parse_one("type Map<'k> = i64").is_err());
-    for name in ["Error", "Abstract", "Concrete", "Function", "Singleton", "OneNumber"] {
+    for name in [
+        "Error",
+        "Abstract",
+        "Concrete",
+        "Function",
+        "Singleton",
+        "OneNumber",
+        "Discernible",
+        "Ordered",
+    ] {
         assert!(parse_one(&format!("type {name} = i64")).is_err(), "{name}");
     }
     parse_typexpr("List<i64>").unwrap();

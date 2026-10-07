@@ -299,6 +299,7 @@ impl UseItem {
         Arc::from_iter(names.drain(..))
     }
 
+    #[cfg(test)]
     pub fn plain(path: ModPath) -> Self {
         Self { path, rename: None, at: WrittenPath::default() }
     }
@@ -306,13 +307,6 @@ impl UseItem {
     /// The final segment is the glob marker.
     pub fn is_glob(&self) -> bool {
         Path::basename(&self.path.0) == Some("*")
-    }
-
-    /// The leading `self`/`super`/`package` keyword, if any.
-    pub fn leading_keyword(&self) -> Option<&str> {
-        Path::parts(&self.path.0)
-            .next()
-            .filter(|s| matches!(*s, "self" | "super" | "package"))
     }
 }
 
@@ -1019,23 +1013,6 @@ impl fmt::Display for Source {
 }
 
 impl Source {
-    // CR claude for claude: [dead] `has_filename`, `is_file` (line 979) and
-    // `UseItem::leading_keyword` (line 293) have no callers in this workspace or in
-    // ../netidx; delete them. `UseItem::plain` (line 283) is used only by a parser test
-    // (parser/test.rs:983) and belongs under #[cfg(test)]. (t-expr-core-06)
-    pub fn has_filename(&self, name: &str) -> bool {
-        match self {
-            Self::File(buf) => match buf.file_name() {
-                None => false,
-                Some(os) => match os.to_str() {
-                    None => false,
-                    Some(s) => s == name,
-                },
-            },
-            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
-        }
-    }
-
     pub fn is_file(&self) -> bool {
         match self {
             Self::File(_) => true,
@@ -1373,27 +1350,27 @@ impl Expr {
     }
 
     /// Whether `other` is a clone of this expression: the same id,
-    /// origin and position over equal syntax (shared children compare
-    /// by pointer).
-    // CR claude for claude: [bug] same_tree compares `kind ==`, and Expr equality looks
-    // at kind only at every level (not by pointer, as the doc says). So it ignores
-    // `dec` and every child's id and dec, but the codec writes `dec`, and expr_key
-    // makes a decorated clone a ref to an undecorated twin with the same id.
-    // fork_on_body (node/compiler.rs:101) makes exactly such a clone when it moves
-    // #[serial]/#[parallel] from a `let` onto the lambda body. When the `let` is inside
-    // another function, that function's def is encoded first, and the inner def's body
-    // decodes without the attribute. After a warm start every instance bound at run
-    // time then has no ForkControl: #[serial] stops ordering effects, #[parallel] stops
-    // forcing forks, and collection slots no longer mirror their imaged prototype's
-    // fusion walk, so they node-walk (a 200000-element init/fold that runs cold in 0.5
-    // s exceeds 6 GB warm). Compare `dec` and walk the children with same_tree (ptr::eq
-    // first), or key an expression by its encoded bytes; probe:
-    // design/review-2026-10-05/repro/t-image-01.sh (t-image-01)
+    /// origin and position over equal syntax, and every node under it the
+    /// same id with the same decorations, which equality does not see.
     pub(crate) fn same_tree(&self, other: &Expr) -> bool {
+        fn same_marks(a: &Expr, b: &Expr) -> bool {
+            std::ptr::eq(a, b)
+                || (a.id == b.id
+                    && a.dec == b.dec
+                    && crate::stack::ensure_sufficient(|| {
+                        let mut ac: SmallVec<[&Expr; 8]> = SmallVec::new();
+                        let mut bc: SmallVec<[&Expr; 8]> = SmallVec::new();
+                        a.for_each_child(&mut |c| ac.push(c));
+                        b.for_each_child(&mut |c| bc.push(c));
+                        ac.len() == bc.len()
+                            && ac.iter().zip(bc.iter()).all(|(a, b)| same_marks(a, b))
+                    }))
+        }
         self.id == other.id
             && self.pos == other.pos
             && Arc::ptr_eq(&self.ori, &other.ori)
             && self.kind == other.kind
+            && same_marks(self, other)
     }
 }
 
