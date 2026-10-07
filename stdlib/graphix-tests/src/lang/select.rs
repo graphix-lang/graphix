@@ -2903,3 +2903,24 @@ async fn a_guard_or_scrutinee_error_is_placed_there() -> Result<()> {
     }
     Ok(())
 }
+
+/// Every combination of two unions covers the product of the unions.
+const PRODUCT_OF_UNIONS_COVERED: &str = r#"
+{
+    type LN = [`L, `N];
+    let f = |a: LN, b: LN| select (a, b) {
+        (`L, `L) => 1,
+        (`L, `N) => 2,
+        (`N, `L) => 3,
+        (`N, `N) => 4
+    };
+    let g = |p: [(`L, `L), (`L, `N), (`N, `L), (`N, `N)]| select p { (`N, `L) => 30, _ => 0 };
+    let ab: (LN, LN) = (`N, `L);
+    f(`N, `L) + g(ab)
+}
+"#;
+
+run!(product_of_unions_covered, PRODUCT_OF_UNIONS_COVERED, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(33))
+));

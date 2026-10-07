@@ -1185,7 +1185,7 @@ impl Env {
     /// Do two impl heads name a common type? Each side's head
     /// variables are instantiated fresh, so the probe binds nothing
     /// that outlives it.
-    fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
+    pub(crate) fn heads_overlap(&self, a: &Type, b: &Type) -> Result<bool> {
         let a = a.reset_tvars();
         let b = b.reset_tvars();
         Ok(a.contains(self, &b)? || b.contains(self, &a)?)

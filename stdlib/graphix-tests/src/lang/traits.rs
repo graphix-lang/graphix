@@ -102,7 +102,7 @@ run!(
 // Calling with a type that has no implementation is a compile error.
 run!(
     trait_no_impl_refused,
-    refused("within Show does not contain string"),
+    refused("string does not implement Show"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -155,7 +155,7 @@ run!(
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,
-    refused("within Show does not contain [i64, string]"),
+    refused("string does not implement Show"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -277,7 +277,9 @@ run!(
 run!(
     trait_undeclared_impl_hidden_from_siblings,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("compiling module")
-        && format!("{e:#}").contains("::test::b")),
+        && format!("{e:#}").contains("::test::b")
+        && format!("{e:#}").contains("i64 does not implement Show here")
+        && format!("{e:#}").contains("is not in its interface")),
     "/test.gx" => r#"
         mod t;
         mod a;
@@ -1490,3 +1492,13 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
     FuseExpect::Jit
 );
+
+/// A missing impl is named as one.
+const TRAIT_MISSING_IMPL_NAMED: &str = r#"
+{
+    trait Show { val show: fn(self) -> string };
+    Show::show(2)
+}
+"#;
+
+run!(trait_missing_impl_named, TRAIT_MISSING_IMPL_NAMED, refused("i64 does not implement Show"); FuseExpect::None);

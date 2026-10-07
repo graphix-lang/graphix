@@ -524,6 +524,9 @@ impl Type {
     // the module context also shows the script's synthetic block scope ("compiling
     // module #do4611686018427394750::b", node/module.rs:771), where --check prints
     // "compiling module b". (x-typecheck-patterns-14)
+    // 2026-10-07 claude: trait_refusal names the member without an impl and a hidden
+    // impl's module (pinned in lang::traits). The run-mode module name ("#do..::b")
+    // still differs from --check's; that is c-analysis-branch-11's naming.
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -537,7 +540,61 @@ impl Type {
         if let Some(e) = self.discernible_refusal(env, t) {
             return e;
         }
+        if let Some(e) = self.trait_refusal(env, t) {
+            return e;
+        }
         anyhow::Error::new(TypeMismatch { expected: self.clone(), actual: t.clone() })
+    }
+
+    /// An open cell bounded by a trait refuses a type with a member that
+    /// has no impl of it: name the member, and an impl a sibling module
+    /// holds but leaves out of its interface.
+    fn trait_refusal(&self, env: &Env, t: &Self) -> Option<anyhow::Error> {
+        let Self::TVar(tv) = self else { return None };
+        if tv.binding().is_some() {
+            return None;
+        }
+        let mut hist = ContainsHist::new();
+        for c in tv.cell_constraints().iter() {
+            let Self::Ref(r) = c else { continue };
+            let Some(tid) = env.trait_of_ref(r) else { continue };
+            let Some(def) = env.trait_def(tid) else { continue };
+            let mut found: SmallVec<[Type; 8]> = SmallVec::new();
+            crate::expr::union_members(env, t, &mut found).ok()?;
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            for m in found.drain(..) {
+                match m {
+                    Self::Primitive(p) => {
+                        members.extend(p.iter().map(|b| Self::Primitive(b.into())))
+                    }
+                    m => members.push(m),
+                }
+            }
+            let seen = env.impls_of(tid).unwrap_or_default();
+            for m in members.iter() {
+                if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
+                    continue;
+                }
+                let name = &def.name;
+                let hidden = env.impls.get(&tid).and_then(|l| {
+                    l.iter()
+                        .find(|im| {
+                            !seen.iter().any(|s| Arc::ptr_eq(s, im))
+                                && env.heads_overlap(&im.target, m).unwrap_or(false)
+                        })
+                        .cloned()
+                });
+                return Some(match hidden {
+                    None => anyhow::anyhow!("{m} does not implement {name}"),
+                    Some(im) => anyhow::anyhow!(
+                        "{m} does not implement {name} here: the impl in module {} is \
+                         not in its interface (declare `impl {name} for {m};` there)",
+                        im.scope
+                    ),
+                });
+            }
+        }
+        None
     }
 
     /// Why `self ⊇ t` fails when `self` holds an open `Discernible` or
@@ -1092,6 +1149,11 @@ impl Type {
                     // (x-engine-collections-03). probe:
                     // design/review-2026-10-05/repro/x-engine-collections-02.gx
                     // (x-engine-collections-02)
+                    // 2026-10-07 claude: flat_map is parametric now (x-engine-collections-03), so no
+                    // instance meets this union and the probe runs ([[1], [2]]). The greedy commit
+                    // stands for a union a program writes with a bare variable beside a constructor of
+                    // it; fixing it needs the commit to try the bare member before the constructor
+                    // when the constructor's binding cannot place the rest.
                     for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                         if c.contains_int(probe, env, hist, m)? {
                             if !c.contains_int(flags, env, hist, m)? {
@@ -1516,22 +1578,15 @@ impl Type {
                 }
             }
             if !full {
-                // CR claude for claude: [bug] Distribution allows only one position to
-                // differ, so a set listing every combination of two unions, [(`L, `L),
-                // (`L, `N), (`N, `L), (`N, `N)], is held not to contain ([`L, `N], [`L,
-                // `N]). Select::check_coverage runs this check before the literal pool,
-                // so a select that lists every combination is refused with "missing
-                // match cases". check_dead_arms trusts the pool and refuses a `_` added
-                // after those arms as unreachable, so the exhaustive form cannot be
-                // written at all; tuples, multi-payload variants, structs and payload
-                // binds all hit this. The same gap refuses passing such a tuple to a
-                // parameter typed as the four-member union. Distributing recursively
-                // (split on one position, then require each group to cover the
-                // remaining positions) would close it. probe:
-                // design/review-2026-10-05/repro/x-engine-seq-errors-08.gx
-                // (x-engine-seq-errors-08)
+                // a second position differs: split position by position,
+                // a verdict only where nothing could bind
                 if distributing.is_some() {
-                    return Ok(false);
+                    if !cands.iter().all(|c| c.iter().all(|t| !t.has_unbound())) {
+                        return Ok(false);
+                    }
+                    let cands: LPooled<Vec<&[Type]>> =
+                        cands.iter().map(|c| &c[..]).collect();
+                    return Self::covers_by_parts(env, hist, &cands, &targs);
                 }
                 distributing = Some(j);
             }
@@ -1563,6 +1618,48 @@ impl Type {
             (Some(j), Some(pool)) => pool.contains_int(flags, env, hist, &targs[j]),
             _ => Ok(true),
         }
+    }
+
+    /// Do the candidates' argument lists cover `targs` together? The first
+    /// position splits into its members, and each member's candidates
+    /// must cover the positions after it. A probe.
+    fn covers_by_parts(
+        env: &Env,
+        hist: &mut ContainsHist,
+        cands: &[&[Type]],
+        targs: &[Type],
+    ) -> Result<bool> {
+        ensure_sufficient(|| {
+            let Some((first, rest)) = targs.split_first() else {
+                return Ok(!cands.is_empty());
+            };
+            let mut found: SmallVec<[Type; 8]> = SmallVec::new();
+            crate::expr::union_members(env, first, &mut found)?;
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            for m in found.drain(..) {
+                match m {
+                    Type::Primitive(p) => {
+                        members.extend(p.iter().map(|b| Type::Primitive(b.into())))
+                    }
+                    m => members.push(m),
+                }
+            }
+            if members.is_empty() {
+                members.push(first.clone())
+            }
+            for m in members.iter() {
+                let mut sub: SmallVec<[&[Type]; 8]> = SmallVec::new();
+                for c in cands.iter() {
+                    if c[0].contains_int(BitFlags::empty(), env, hist, m)? {
+                        sub.push(&c[1..])
+                    }
+                }
+                if !Self::covers_by_parts(env, hist, &sub, rest)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })
     }
 
     /// A constructor application (`self<'a>`, `'c<'b>`) against another
