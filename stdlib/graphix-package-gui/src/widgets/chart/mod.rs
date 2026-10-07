@@ -11,6 +11,7 @@ use crate::{
     widgets::{ChartId, GuiW, GuiWidget, IcedElement},
 };
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget::canvas as iced_canvas;
@@ -32,10 +33,10 @@ pub(crate) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
     datasets_ref: Ref<X>,
     datasets: LPooled<Vec<DatasetEntry<X>>>,
-    title: TRef<X, Option<String>>,
-    x_label: TRef<X, Option<String>>,
-    y_label: TRef<X, Option<String>>,
-    z_label: TRef<X, Option<String>>,
+    title: TRef<X, Option<ArcStr>>,
+    x_label: TRef<X, Option<ArcStr>>,
+    y_label: TRef<X, Option<ArcStr>>,
+    z_label: TRef<X, Option<ArcStr>>,
     x_range: TRef<X, OptXAxisRange>,
     y_range: TRef<X, OptAxisRange>,
     z_range: TRef<X, OptAxisRange>,

@@ -1,8 +1,8 @@
-use super::{GuiW, GuiWidget, IcedElement, compile_children};
+use super::{Children, GuiW, GuiWidget, IcedElement};
 use crate::types::{GridColumnsV, GridSizingV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
@@ -14,8 +14,7 @@ pub(crate) struct GridW<X: GXExt> {
     columns: TRef<X, GridColumnsV>,
     width: TRef<X, Option<f64>>,
     height: TRef<X, GridSizingV>,
-    children_ref: Ref<X>,
-    children: Vec<GuiW<X>>,
+    children: Children<X>,
 }
 
 impl<X: GXExt> GridW<X> {
@@ -37,31 +36,26 @@ impl<X: GXExt> GridW<X> {
             gx.compile_ref(spacing),
             gx.compile_ref(width),
         }?;
-        let compiled_children = match children_ref.last.as_ref() {
-            None => vec![],
-            Some(v) => {
-                compile_children(gx.clone(), v.clone()).await.context("grid children")?
-            }
-        };
+        let children =
+            Children::compile(&gx, children_ref).await.context("grid children")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             spacing: TRef::new(spacing).context("grid tref spacing")?,
             columns: TRef::new(columns).context("grid tref columns")?,
             width: TRef::new(width).context("grid tref width")?,
             height: TRef::new(height).context("grid tref height")?,
-            children_ref,
-            children: compiled_children,
+            children,
         }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for GridW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        self.children.iter_mut().for_each(f)
+        self.children.ws.iter_mut().for_each(f)
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        self.children.iter().for_each(f)
+        self.children.ws.iter().for_each(f)
     }
 
     fn handle_update(
@@ -75,16 +69,7 @@ impl<X: GXExt> GuiWidget<X> for GridW<X> {
         changed |= self.columns.update(id, v).context("grid update columns")?.is_some();
         changed |= self.width.update(id, v).context("grid update width")?.is_some();
         changed |= self.height.update(id, v).context("grid update height")?.is_some();
-        if id == self.children_ref.id {
-            self.children_ref.last = Some(v.clone());
-            self.children = rt
-                .block_on(compile_children(self.gx.clone(), v.clone()))
-                .context("grid children recompile")?;
-            changed = true;
-        }
-        for child in &mut self.children {
-            changed |= child.handle_update(rt, id, v)?;
-        }
+        changed |= self.children.update(rt, &self.gx, id, v).context("grid children")?;
         Ok(changed)
     }
 
@@ -105,7 +90,7 @@ impl<X: GXExt> GuiWidget<X> for GridW<X> {
         if let Some(h) = self.height.t.as_ref() {
             g = g.height(h.0);
         }
-        for child in &self.children {
+        for child in &self.children.ws {
             g = g.push(child.view());
         }
         g.into()

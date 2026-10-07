@@ -1,6 +1,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
@@ -12,7 +13,7 @@ pub(crate) struct RadioW<X: GXExt> {
     gx: GXHandle<X>,
     disabled: TRef<X, bool>,
     value: Ref<X>,
-    label: TRef<X, String>,
+    label: TRef<X, ArcStr>,
     selected: Ref<X>,
     on_select: Ref<X>,
     on_select_callable: Option<Callable<X>>,

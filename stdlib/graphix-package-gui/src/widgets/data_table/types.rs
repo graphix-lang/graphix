@@ -2,13 +2,12 @@
 
 use super::{
     CELL_H_PADDING, MAX_SPARKLINE_POINTS, MIN_COL_WIDTH, RESIZE_HANDLE_WIDTH,
-    ROW_NAME_KEY, Renderer, VALUE_COL_KEY,
+    ROW_NAME_KEY, VALUE_COL_KEY,
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use graphix_rt::{Callable, GXExt, Ref};
-use iced_core::text::Paragraph as _;
 use log::warn;
 use netidx::{path::Path, publisher::Value};
 use netidx_derive::FromValue;
@@ -19,23 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
-
-/// Measure the actual rendered width of text at the given font size.
-pub(super) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
-    let para = Paragraph::with_text(iced_core::Text {
-        content: text.into(),
-        bounds: iced_core::Size::new(f32::INFINITY, f32::INFINITY),
-        size: iced_core::Pixels(size),
-        line_height: iced_core::text::LineHeight::default(),
-        font,
-        align_x: iced_core::alignment::Horizontal::Left.into(),
-        align_y: iced_core::alignment::Vertical::Top,
-        shaping: iced_core::text::Shaping::Advanced,
-        wrapping: iced_core::text::Wrapping::None,
-    });
-    para.min_bounds().width
-}
+pub(super) use crate::widgets::measure_text;
 
 /// Compute the column width needed for a cell's text content.
 pub(super) fn col_text_width(name: &str) -> f32 {

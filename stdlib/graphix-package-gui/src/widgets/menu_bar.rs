@@ -1,129 +1,158 @@
 use super::{
-    GuiW, IcedElement,
+    GuiW, Handler, IcedElement,
     menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar},
+    reconcile,
 };
 use crate::types::{LengthV, ShortcutV};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::Length;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
-use smallvec::SmallVec;
 use tokio::try_join;
 
 pub(crate) enum MenuItemKind<X: GXExt> {
     Action {
-        label: TRef<X, String>,
+        label: TRef<X, ArcStr>,
         shortcut: TRef<X, Option<ShortcutV>>,
-        on_click: Ref<X>,
-        on_click_callable: Option<Callable<X>>,
+        on_click: Handler<X>,
         disabled: TRef<X, bool>,
     },
     Divider,
 }
 
+impl<X: GXExt> MenuItemKind<X> {
+    async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        enum Repr {
+            Divider,
+            Action { disabled: u64, label: u64, on_click: u64, shortcut: u64 },
+        }
+        match v.cast_to::<Repr>().context("menu item")? {
+            Repr::Divider => Ok(Self::Divider),
+            Repr::Action { disabled, label, on_click, shortcut } => {
+                let (disabled, label, on_click, shortcut) = try_join! {
+                    gx.compile_ref(disabled),
+                    gx.compile_ref(label),
+                    gx.compile_ref(on_click),
+                    gx.compile_ref(shortcut),
+                }?;
+                Ok(Self::Action {
+                    label: TRef::new(label).context("menu action tref label")?,
+                    shortcut: TRef::new(shortcut).context("menu action tref shortcut")?,
+                    on_click: Handler::compile(gx, on_click)
+                        .await
+                        .context("menu action on_click")?,
+                    disabled: TRef::new(disabled).context("menu action tref disabled")?,
+                })
+            }
+        }
+    }
+
+    fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let Self::Action { label, shortcut, on_click, disabled } = self else {
+            return Ok(false);
+        };
+        on_click.update(rt, gx, id, v).context("menu item on_click")?;
+        Ok(label.update(id, v).context("menu item label")?.is_some()
+            | shortcut.update(id, v).context("menu item shortcut")?.is_some()
+            | disabled.update(id, v).context("menu item disabled")?.is_some())
+    }
+
+    fn desc(&self) -> MenuItemDesc<'_> {
+        match self {
+            Self::Action { label, shortcut, on_click, disabled } => {
+                MenuItemDesc::Action {
+                    label: label.t.as_deref().unwrap_or(""),
+                    shortcut: shortcut.t.as_ref().and_then(|s| s.as_ref()),
+                    callable_id: on_click.id(),
+                    disabled: disabled.t.unwrap_or(false),
+                }
+            }
+            Self::Divider => MenuItemDesc::Divider,
+        }
+    }
+}
+
+/// A menu's items property: its ref, and each item beside the value it
+/// compiled from, so a new list keeps the items it still holds.
+pub(crate) struct MenuItems<X: GXExt> {
+    r: Ref<X>,
+    items: Vec<(Value, MenuItemKind<X>)>,
+}
+
+impl<X: GXExt> MenuItems<X> {
+    pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
+        let items = match r.last.as_ref() {
+            None => vec![],
+            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
+        };
+        let items = reconcile([], items, |i| MenuItemKind::compile(gx, i)).await?;
+        Ok(Self { r, items })
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        if id == self.r.id && self.r.last.as_ref() != Some(v) {
+            self.r.last = Some(v.clone());
+            let items = v.clone().cast_to::<Vec<Value>>()?;
+            let old = self.items.drain(..);
+            self.items =
+                rt.block_on(reconcile(old, items, |i| MenuItemKind::compile(gx, i)))?;
+            changed = true;
+        }
+        for (_, item) in &mut self.items {
+            changed |= item.update(rt, gx, id, v)?;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn descs(&self) -> Vec<MenuItemDesc<'_>> {
+        self.items.iter().map(|(_, i)| i.desc()).collect()
+    }
+}
+
 struct CompiledMenuGroup<X: GXExt> {
-    label: TRef<X, String>,
-    items_ref: Ref<X>,
-    items: Vec<MenuItemKind<X>>,
+    label: TRef<X, ArcStr>,
+    items: MenuItems<X>,
+}
+
+impl<X: GXExt> CompiledMenuGroup<X> {
+    async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        struct Fields {
+            items: u64,
+            label: u64,
+        }
+        let Fields { items, label } = v.cast_to().context("menu group flds")?;
+        let (items, label) = try_join! { gx.compile_ref(items), gx.compile_ref(label) }?;
+        Ok(Self {
+            label: TRef::new(label).context("menu group tref label")?,
+            items: MenuItems::compile(gx, items).await.context("menu group items")?,
+        })
+    }
 }
 
 pub(crate) struct MenuBarW<X: GXExt> {
     gx: GXHandle<X>,
     menus_ref: Ref<X>,
-    menus: Vec<CompiledMenuGroup<X>>,
+    /// Each menu beside the value it compiled from.
+    menus: Vec<(Value, CompiledMenuGroup<X>)>,
     width: TRef<X, LengthV>,
-}
-
-pub(crate) async fn compile_menu_item<X: GXExt>(
-    gx: &GXHandle<X>,
-    v: Value,
-) -> Result<MenuItemKind<X>> {
-    #[derive(FromValue)]
-    enum Repr {
-        Divider,
-        Action { disabled: u64, label: u64, on_click: u64, shortcut: u64 },
-    }
-    match v.cast_to::<Repr>().context("menu item")? {
-        Repr::Divider => Ok(MenuItemKind::Divider),
-        Repr::Action {
-            disabled: disabled_id,
-            label: label_id,
-            on_click: on_click_id,
-            shortcut: shortcut_id,
-        } => {
-            let (disabled, label, on_click, shortcut) = try_join! {
-                gx.compile_ref(disabled_id),
-                gx.compile_ref(label_id),
-                gx.compile_ref(on_click_id),
-                gx.compile_ref(shortcut_id),
-            }?;
-            let on_click_callable = match on_click.last.as_ref() {
-                Some(v) => Some(
-                    gx.compile_callable(v.clone())
-                        .await
-                        .context("menu action on_click")?,
-                ),
-                None => None,
-            };
-            Ok(MenuItemKind::Action {
-                label: TRef::new(label).context("menu action tref label")?,
-                shortcut: TRef::new(shortcut).context("menu action tref shortcut")?,
-                on_click,
-                on_click_callable,
-                disabled: TRef::new(disabled).context("menu action tref disabled")?,
-            })
-        }
-    }
-}
-
-pub(crate) async fn compile_menu_items<X: GXExt>(
-    gx: &GXHandle<X>,
-    v: Value,
-) -> Result<Vec<MenuItemKind<X>>> {
-    let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
-    let mut result = Vec::with_capacity(items.len());
-    for item in items {
-        result.push(compile_menu_item(gx, item).await?);
-    }
-    Ok(result)
-}
-
-async fn compile_menu_group<X: GXExt>(
-    gx: &GXHandle<X>,
-    v: Value,
-) -> Result<CompiledMenuGroup<X>> {
-    #[derive(FromValue)]
-    struct Fields {
-        items: u64,
-        label: u64,
-    }
-    let Fields { items: items_id, label: label_id } =
-        v.cast_to().context("menu group flds")?;
-    let (items_ref, label) =
-        try_join! { gx.compile_ref(items_id), gx.compile_ref(label_id), }?;
-    let items = match items_ref.last.as_ref() {
-        Some(v) => compile_menu_items(gx, v.clone()).await.context("menu group items")?,
-        None => vec![],
-    };
-    Ok(CompiledMenuGroup {
-        label: TRef::new(label).context("menu group tref label")?,
-        items_ref,
-        items,
-    })
-}
-
-async fn compile_menus<X: GXExt>(
-    gx: &GXHandle<X>,
-    v: Value,
-) -> Result<Vec<CompiledMenuGroup<X>>> {
-    let groups = v.cast_to::<SmallVec<[Value; 8]>>()?;
-    let mut result = Vec::with_capacity(groups.len());
-    for group in groups {
-        result.push(compile_menu_group(gx, group).await?);
-    }
-    Ok(result)
 }
 
 impl<X: GXExt> MenuBarW<X> {
@@ -133,44 +162,22 @@ impl<X: GXExt> MenuBarW<X> {
             menus: u64,
             width: u64,
         }
-        let Fields { menus: menus_id, width: width_id } =
-            source.cast_to().context("menu_bar flds")?;
+        let Fields { menus, width } = source.cast_to().context("menu_bar flds")?;
         let (menus_ref, width) =
-            try_join! { gx.compile_ref(menus_id), gx.compile_ref(width_id), }?;
+            try_join! { gx.compile_ref(menus), gx.compile_ref(width) }?;
         let menus = match menus_ref.last.as_ref() {
-            Some(v) => compile_menus(&gx, v.clone()).await.context("menu_bar menus")?,
             None => vec![],
+            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
         };
+        let menus = reconcile([], menus, |g| CompiledMenuGroup::compile(&gx, g))
+            .await
+            .context("menu_bar menus")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             menus_ref,
             menus,
             width: TRef::new(width).context("menu_bar tref width")?,
         }))
-    }
-}
-
-/// Convert a compiled `MenuItemKind` into the descriptor needed by the iced widget.
-// CR claude for claude: [perf] Both menu views call this on every frame, and a frame
-// follows every window event, mouse moves included. Each call copies the label into a
-// new String and clones the ShortcutV with its display String, and MenuBarW::view
-// copies each group label too (line 235). Descriptors that borrow from the widget (`&'a
-// str`, `&'a ShortcutV`) would allocate only their Vecs. text_editor.rs:170-174 copies
-// the whole document three times per keystroke: `text()`, the clone kept in
-// last_set_text, and the ArcStr conversion. The `TRef<X, String>` labels and contents
-// across the package copy the ArcStr payload on every update, where `TRef<X, ArcStr>`
-// would not. (gui-widgets-b-15)
-pub(crate) fn menu_item_desc<X: GXExt>(item: &MenuItemKind<X>) -> MenuItemDesc {
-    match item {
-        MenuItemKind::Action { label, shortcut, on_click_callable, disabled, .. } => {
-            MenuItemDesc::Action {
-                label: label.t.as_deref().unwrap_or("").to_string(),
-                shortcut: shortcut.t.as_ref().and_then(|o| o.clone()),
-                callable_id: on_click_callable.as_ref().map(|c| c.id()),
-                disabled: disabled.t.unwrap_or(false),
-            }
-        }
-        MenuItemKind::Divider => MenuItemDesc::Divider,
     }
 }
 
@@ -183,78 +190,32 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
     ) -> Result<bool> {
         let mut changed = false;
         changed |= self.width.update(id, v).context("menu_bar update width")?.is_some();
-        if id == self.menus_ref.id {
+        if id == self.menus_ref.id && self.menus_ref.last.as_ref() != Some(v) {
             self.menus_ref.last = Some(v.clone());
+            let menus = v.clone().cast_to::<Vec<Value>>()?;
+            let (gx, old) = (&self.gx, self.menus.drain(..));
             self.menus = rt
-                .block_on(compile_menus(&self.gx, v.clone()))
-                .context("menu_bar menus recompile")?;
+                .block_on(reconcile(old, menus, |g| CompiledMenuGroup::compile(gx, g)))
+                .context("menu_bar menus")?;
             changed = true;
         }
-        for group in &mut self.menus {
-            changed |=
-                group.label.update(id, v).context("menu group update label")?.is_some();
-            if id == group.items_ref.id {
-                group.items_ref.last = Some(v.clone());
-                group.items = rt
-                    .block_on(compile_menu_items(&self.gx, v.clone()))
-                    .context("menu group items recompile")?;
-                changed = true;
-            }
-            // CR claude for claude: [structure] This per-item update (the label, shortcut
-            // and disabled TRefs and the on_click recompile) is a copy of
-            // context_menu.rs:83-114, and the items_ref recompile just above it is a
-            // copy of context_menu.rs:76-82. A method on MenuItemKind, and one for a
-            // list of items, would serve both widgets. In menu_bar_widget.rs the
-            // enabled-shortcut search is written twice (MenuOverlay::update 247-269,
-            // OwnedMenuBar::update 485-508), and MenuOverlay::open is an `Option<&mut
-            // bool>` that both constructors fill with Some, so it can be `&'a mut
-            // bool`. (gui-widgets-b-13)
-            for item in &mut group.items {
-                match item {
-                    MenuItemKind::Action {
-                        label,
-                        shortcut,
-                        on_click,
-                        on_click_callable,
-                        disabled,
-                    } => {
-                        changed |= label
-                            .update(id, v)
-                            .context("menu item update label")?
-                            .is_some();
-                        changed |= shortcut
-                            .update(id, v)
-                            .context("menu item update shortcut")?
-                            .is_some();
-                        changed |= disabled
-                            .update(id, v)
-                            .context("menu item update disabled")?
-                            .is_some();
-                        if id == on_click.id {
-                            on_click.last = Some(v.clone());
-                            rt.block_on(
-                                self.gx.update_callable(on_click_callable, v.clone()),
-                            )
-                            .context("menu item on_click recompile")?;
-                        }
-                    }
-                    MenuItemKind::Divider => {}
-                }
-            }
+        for (_, group) in &mut self.menus {
+            changed |= group.label.update(id, v).context("menu group label")?.is_some();
+            changed |= group.items.update(rt, &self.gx, id, v)?;
         }
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let descs: Vec<MenuGroupDesc> = self
+        let descs = self
             .menus
             .iter()
-            .map(|group| MenuGroupDesc {
-                label: group.label.t.as_deref().unwrap_or("").to_string(),
-                items: group.items.iter().map(menu_item_desc).collect(),
+            .map(|(_, g)| MenuGroupDesc {
+                label: g.label.t.as_deref().unwrap_or(""),
+                items: g.items.descs(),
             })
             .collect();
-        let width = self.width.t.as_ref().map(|w| w.0).unwrap_or(Length::Shrink);
+        let width = self.width.t.as_ref().map_or(Length::Shrink, |w| w.0);
         OwnedMenuBar { descs, width }.into()
     }
 }

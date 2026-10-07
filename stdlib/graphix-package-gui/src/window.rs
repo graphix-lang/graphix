@@ -1,9 +1,10 @@
 use crate::{
     render::WindowSurface,
     types::{ImageSourceV, SizeV, ThemeV},
-    widgets::{EmptyW, GuiW, compile},
+    widgets::Child,
 };
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
@@ -18,13 +19,12 @@ use winit::window::{Window, WindowAttributes, WindowId};
 /// Resolved window state — all refs compiled but no OS window yet.
 pub struct ResolvedWindow<X: GXExt> {
     pub gx: GXHandle<X>,
-    pub title: TRef<X, String>,
+    pub title: TRef<X, ArcStr>,
     pub size: TRef<X, SizeV>,
     pub theme: TRef<X, ThemeV>,
     pub icon: TRef<X, ImageSourceV>,
     pub decoded_icon: Option<winit::window::Icon>,
-    pub content_ref: Ref<X>,
-    pub content: GuiW<X>,
+    pub content: Child<X>,
 }
 
 impl<X: GXExt> ResolvedWindow<X> {
@@ -47,10 +47,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             gx.compile_ref(theme),
             gx.compile_ref(title),
         }?;
-        let compiled_content: GuiW<X> = match content_ref.last.as_ref() {
-            None => Box::new(EmptyW),
-            Some(v) => compile(gx.clone(), v.clone()).await.context("window content")?,
-        };
+        let content = Child::compile(&gx, content_ref).await.context("window content")?;
         let icon = TRef::new(icon).context("window tref icon")?;
         let decoded_icon =
             icon.t.as_ref().and_then(|s: &ImageSourceV| match s.decode_icon() {
@@ -67,8 +64,7 @@ impl<X: GXExt> ResolvedWindow<X> {
             theme: TRef::new(theme).context("window tref theme")?,
             icon,
             decoded_icon,
-            content_ref,
-            content: compiled_content,
+            content,
         })
     }
 
@@ -104,7 +100,6 @@ impl<X: GXExt> ResolvedWindow<X> {
             theme: self.theme,
             icon: self.icon,
             decoded_icon: self.decoded_icon,
-            content_ref: self.content_ref,
             content: self.content,
             surface,
             cache: Cache::default(),
@@ -140,13 +135,12 @@ pub struct TrackedWindow<X: GXExt> {
     pub window_ref: Ref<X>,
     pub gx: GXHandle<X>,
     pub window: Arc<Window>,
-    pub title: TRef<X, String>,
+    pub title: TRef<X, ArcStr>,
     pub size: TRef<X, SizeV>,
     pub theme: TRef<X, ThemeV>,
     pub icon: TRef<X, ImageSourceV>,
     pub decoded_icon: Option<winit::window::Icon>,
-    pub content_ref: Ref<X>,
-    pub content: GuiW<X>,
+    pub content: Child<X>,
     pub surface: WindowSurface,
     /// The interface's state between frames.
     pub cache: Cache,
@@ -171,7 +165,7 @@ impl<X: GXExt> TrackedWindow<X> {
         id: ExprId,
         v: &Value,
     ) -> Result<()> {
-        if id == self.window_ref.id {
+        if id == self.window_ref.id && self.window_ref.last.as_ref() != Some(v) {
             self.window_ref.last = Some(v.clone());
             let resolved = rt
                 .block_on(ResolvedWindow::compile(self.gx.clone(), v.clone()))
@@ -181,7 +175,6 @@ impl<X: GXExt> TrackedWindow<X> {
             self.theme = resolved.theme;
             self.icon = resolved.icon;
             self.decoded_icon = resolved.decoded_icon;
-            self.content_ref = resolved.content_ref;
             self.content = resolved.content;
             if let Some(t) = self.title.t.as_ref() {
                 self.window.set_title(t);
@@ -225,14 +218,7 @@ impl<X: GXExt> TrackedWindow<X> {
             self.window.set_window_icon(self.decoded_icon.clone());
             changed = true;
         }
-        if id == self.content_ref.id {
-            self.content_ref.last = Some(v.clone());
-            self.content = rt
-                .block_on(compile(self.gx.clone(), v.clone()))
-                .context("window content recompile")?;
-            changed = true;
-        }
-        changed |= self.content.handle_update(rt, id, v)?;
+        changed |= self.content.update(rt, &self.gx, id, v).context("window content")?;
         self.needs_redraw |= changed;
         Ok(())
     }

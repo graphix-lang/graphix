@@ -1,4 +1,4 @@
-use super::{GuiW, GuiWidget, IcedElement, Message, compile};
+use super::{Child, GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
@@ -16,8 +16,7 @@ pub(crate) struct ButtonW<X: GXExt> {
     padding: TRef<X, PaddingV>,
     on_press: Ref<X>,
     on_press_callable: Option<Callable<X>>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
+    child: Child<X>,
 }
 
 impl<X: GXExt> ButtonW<X> {
@@ -41,7 +40,7 @@ impl<X: GXExt> ButtonW<X> {
             gx.compile_ref(padding),
             gx.compile_ref(width),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "button child");
+        let child = Child::compile(&gx, child_ref).await.context("button child")?;
         let callable = compile_callable!(gx, on_press, "button on_press");
         Ok(Box::new(Self {
             gx: gx.clone(),
@@ -51,19 +50,18 @@ impl<X: GXExt> ButtonW<X> {
             padding: TRef::new(padding).context("button tref padding")?,
             on_press,
             on_press_callable: callable,
-            child_ref,
-            child: compiled_child,
+            child,
         }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -87,21 +85,13 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
             on_press_callable,
             "button on_press recompile"
         );
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "button child recompile"
-        );
+        changed |=
+            self.child.update(rt, &self.gx, id, v).context("button child recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let mut btn = widget::Button::new(self.child.view());
+        let mut btn = widget::Button::new(self.child.w.view());
         if !self.disabled.t.unwrap_or(false) {
             if let Some(callable) = &self.on_press_callable {
                 btn = btn.on_press(Message::Call(

@@ -1,6 +1,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{LengthV, PaddingV, StringVec};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
@@ -15,7 +16,7 @@ pub(crate) struct PickListW<X: GXExt> {
     selected: TRef<X, Option<String>>,
     on_select: Ref<X>,
     on_select_callable: Option<Callable<X>>,
-    placeholder: TRef<X, String>,
+    placeholder: TRef<X, ArcStr>,
     width: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
 }

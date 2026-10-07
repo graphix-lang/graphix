@@ -1,8 +1,8 @@
-use super::{GuiW, GuiWidget, IcedElement, compile_children};
+use super::{Children, GuiW, GuiWidget, IcedElement};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
@@ -10,8 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct StackW<X: GXExt> {
     gx: GXHandle<X>,
-    children_ref: Ref<X>,
-    children: Vec<GuiW<X>>,
+    children: Children<X>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
 }
@@ -31,16 +30,11 @@ impl<X: GXExt> StackW<X> {
             gx.compile_ref(height),
             gx.compile_ref(width),
         }?;
-        let compiled_children = match children_ref.last.as_ref() {
-            None => vec![],
-            Some(v) => {
-                compile_children(gx.clone(), v.clone()).await.context("stack children")?
-            }
-        };
+        let children =
+            Children::compile(&gx, children_ref).await.context("stack children")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
-            children_ref,
-            children: compiled_children,
+            children,
             width: TRef::new(width).context("stack tref width")?,
             height: TRef::new(height).context("stack tref height")?,
         }))
@@ -49,11 +43,11 @@ impl<X: GXExt> StackW<X> {
 
 impl<X: GXExt> GuiWidget<X> for StackW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        self.children.iter_mut().for_each(f)
+        self.children.ws.iter_mut().for_each(f)
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        self.children.iter().for_each(f)
+        self.children.ws.iter().for_each(f)
     }
 
     fn handle_update(
@@ -65,16 +59,7 @@ impl<X: GXExt> GuiWidget<X> for StackW<X> {
         let mut changed = false;
         changed |= self.width.update(id, v).context("stack update width")?.is_some();
         changed |= self.height.update(id, v).context("stack update height")?.is_some();
-        if id == self.children_ref.id {
-            self.children_ref.last = Some(v.clone());
-            self.children = rt
-                .block_on(compile_children(self.gx.clone(), v.clone()))
-                .context("stack children recompile")?;
-            changed = true;
-        }
-        for child in &mut self.children {
-            changed |= child.handle_update(rt, id, v)?;
-        }
+        changed |= self.children.update(rt, &self.gx, id, v).context("stack children")?;
         Ok(changed)
     }
 
@@ -86,7 +71,7 @@ impl<X: GXExt> GuiWidget<X> for StackW<X> {
         if let Some(h) = self.height.t.as_ref() {
             s = s.height(h.0);
         }
-        for child in &self.children {
+        for child in &self.children.ws {
             s = s.push(child.view());
         }
         s.into()

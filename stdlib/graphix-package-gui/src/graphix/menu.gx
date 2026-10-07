@@ -3,14 +3,7 @@ type Shortcut = Abstract<{alt: bool, ctrl: bool, key: string, logo: bool, shift:
 
 let shortcut = |#ctrl = false, #shift = false, #alt = false, #logo = false, key: string|
     -> [Shortcut, Error<`InvalidKey(string)>]
-    // CR claude for claude: [bug] str::len counts bytes (str mod.gxi:98), so this
-    // "exactly one character" check refuses every non-ASCII key: shortcut(#ctrl: true,
-    // "é"), "ß" and "€" return InvalidKey "shortcut key must be exactly one character,
-    // got: é", while ShortcutV::from_value (types.rs:494) takes any key string. Menus
-    // cannot bind keys that only non-US layouts have. Count characters, not bytes; str
-    // has no char-count builtin, and line_edit needs the same one. probe:
-    // design/review-2026-10-05/repro/gx-ui.r2-11.gx (gx-ui.r2-11)
-    select str::len(key) {
+    select str::char_len(key) {
         1 => Shortcut({alt, ctrl, key, logo, shift}),
         _ => error(`InvalidKey("shortcut key must be exactly one character, got: [key]"))
     };

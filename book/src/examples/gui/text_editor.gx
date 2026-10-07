@@ -16,7 +16,7 @@ let col = column(
             #height: &300.0,
             &content
         ),
-        text(&"Length: [str::len(content)] characters")
+        text(&"Length: [str::char_len(content)] characters")
     ]
 );
 

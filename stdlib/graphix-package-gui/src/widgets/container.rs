@@ -1,8 +1,8 @@
-use super::{GuiW, GuiWidget, IcedElement, compile};
+use super::{Child, GuiW, GuiWidget, IcedElement};
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
@@ -15,8 +15,7 @@ pub(crate) struct ContainerW<X: GXExt> {
     height: TRef<X, LengthV>,
     halign: TRef<X, HAlignV>,
     valign: TRef<X, VAlignV>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
+    child: Child<X>,
 }
 
 impl<X: GXExt> ContainerW<X> {
@@ -40,7 +39,7 @@ impl<X: GXExt> ContainerW<X> {
             gx.compile_ref(valign),
             gx.compile_ref(width),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "container child");
+        let child = Child::compile(&gx, child_ref).await.context("container child")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             padding: TRef::new(padding).context("container tref padding")?,
@@ -48,19 +47,18 @@ impl<X: GXExt> ContainerW<X> {
             height: TRef::new(height).context("container tref height")?,
             halign: TRef::new(halign).context("container tref halign")?,
             valign: TRef::new(valign).context("container tref valign")?,
-            child_ref,
-            child: compiled_child,
+            child,
         }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -79,21 +77,15 @@ impl<X: GXExt> GuiWidget<X> for ContainerW<X> {
             self.halign.update(id, v).context("container update halign")?.is_some();
         changed |=
             self.valign.update(id, v).context("container update valign")?.is_some();
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "container child recompile"
-        );
+        changed |= self
+            .child
+            .update(rt, &self.gx, id, v)
+            .context("container child recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let mut c = widget::Container::new(self.child.view());
+        let mut c = widget::Container::new(self.child.w.view());
         if let Some(p) = self.padding.t.as_ref() {
             c = c.padding(p.0);
         }

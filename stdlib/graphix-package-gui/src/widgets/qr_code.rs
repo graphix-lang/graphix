@@ -1,5 +1,6 @@
 use super::{GuiW, IcedElement};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
@@ -9,7 +10,7 @@ use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct QrCodeW<X: GXExt> {
-    data: TRef<X, String>,
+    data: TRef<X, ArcStr>,
     cell_size: TRef<X, Option<f64>>,
     qr_data: Option<widget::qr_code::Data>,
 }

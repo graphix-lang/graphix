@@ -1,6 +1,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{FontV, LengthV, PaddingV};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
@@ -11,8 +12,8 @@ use tokio::try_join;
 pub(crate) struct TextInputW<X: GXExt> {
     gx: GXHandle<X>,
     disabled: TRef<X, bool>,
-    value: TRef<X, String>,
-    placeholder: TRef<X, String>,
+    value: TRef<X, ArcStr>,
+    placeholder: TRef<X, ArcStr>,
     on_input: Ref<X>,
     on_input_callable: Option<Callable<X>>,
     on_submit: Ref<X>,

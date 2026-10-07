@@ -1,4 +1,4 @@
-use super::{GuiW, GuiWidget, IcedElement, compile, compile_children};
+use super::{Child, GuiW, GuiWidget, IcedElement, compile_children, reconcile};
 use crate::types::{HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
@@ -6,12 +6,10 @@ use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
-use smallvec::SmallVec;
 use tokio::try_join;
 
 struct CompiledColumn<X: GXExt> {
-    header_ref: Ref<X>,
-    header: GuiW<X>,
+    header: Child<X>,
     width: TRef<X, LengthV>,
     halign: TRef<X, HAlignV>,
     valign: TRef<X, VAlignV>,
@@ -20,19 +18,20 @@ struct CompiledColumn<X: GXExt> {
 pub(crate) struct TableW<X: GXExt> {
     gx: GXHandle<X>,
     columns_ref: Ref<X>,
-    columns: Vec<CompiledColumn<X>>,
+    /// Each column beside the value it compiled from.
+    columns: Vec<(Value, CompiledColumn<X>)>,
     rows_ref: Ref<X>,
-    cells: Vec<Vec<GuiW<X>>>,
+    /// Each row's cells beside the value they compiled from.
+    cells: Vec<(Value, Vec<GuiW<X>>)>,
     width: TRef<X, LengthV>,
     padding: TRef<X, Option<f64>>,
     separator: TRef<X, Option<f64>>,
 }
 
-async fn compile_columns<X: GXExt>(
+async fn compile_column<X: GXExt>(
     gx: &GXHandle<X>,
-    v: Value,
-) -> Result<Vec<CompiledColumn<X>>> {
-    let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
+    item: Value,
+) -> Result<CompiledColumn<X>> {
     #[derive(FromValue)]
     struct Fields {
         halign: u64,
@@ -40,53 +39,20 @@ async fn compile_columns<X: GXExt>(
         valign: u64,
         width: u64,
     }
-    let mut cols = Vec::with_capacity(items.len());
-    for item in items {
-        let Fields {
-            halign: halign_id,
-            header: header_id,
-            valign: valign_id,
-            width: width_id,
-        } = item.cast_to().context("table column flds")?;
-        let (halign, header_ref, valign, width) = try_join! {
-            gx.compile_ref(halign_id),
-            gx.compile_ref(header_id),
-            gx.compile_ref(valign_id),
-            gx.compile_ref(width_id),
-        }?;
-        let header = match header_ref.last.as_ref() {
-            None => Box::new(super::EmptyW) as GuiW<X>,
-            Some(v) => {
-                compile(gx.clone(), v.clone()).await.context("table column header")?
-            }
-        };
-        cols.push(CompiledColumn {
-            header_ref,
-            header,
-            width: TRef::new(width).context("table column tref width")?,
-            halign: TRef::new(halign).context("table column tref halign")?,
-            valign: TRef::new(valign).context("table column tref valign")?,
-        });
-    }
-    Ok(cols)
-}
-
-async fn compile_rows<X: GXExt>(gx: &GXHandle<X>, v: Value) -> Result<Vec<Vec<GuiW<X>>>> {
-    let rows = v.cast_to::<SmallVec<[Value; 8]>>()?;
-    let mut result = Vec::with_capacity(rows.len());
-    // CR claude for claude: [perf] Rows are compiled one after another, and so are
-    // columns (line 44), menu groups and menu items (menu_bar.rs:123 and 87). Each
-    // element's compile_ref and compile_callable requests wait for the previous
-    // element's, one pass of the runtime loop apiece, all inside `rt.block_on` on the
-    // GUI thread. A 500-row table update costs at least 500 sequential round trips and
-    // a 5x10 menu about 105, each waiting out any cycle in progress, and input and
-    // drawing stop meanwhile. `futures::future::try_join_all`, which compile_children
-    // already uses, would send each level's requests together. (gui-widgets-b-14)
-    for row in rows {
-        let cells = compile_children(gx.clone(), row).await.context("table row")?;
-        result.push(cells);
-    }
-    Ok(result)
+    let Fields { halign, header, valign, width } =
+        item.cast_to().context("table column flds")?;
+    let (halign, header, valign, width) = try_join! {
+        gx.compile_ref(halign),
+        gx.compile_ref(header),
+        gx.compile_ref(valign),
+        gx.compile_ref(width),
+    }?;
+    Ok(CompiledColumn {
+        header: Child::compile(gx, header).await.context("table column header")?,
+        width: TRef::new(width).context("table column tref width")?,
+        halign: TRef::new(halign).context("table column tref halign")?,
+        valign: TRef::new(valign).context("table column tref valign")?,
+    })
 }
 
 impl<X: GXExt> TableW<X> {
@@ -108,20 +74,22 @@ impl<X: GXExt> TableW<X> {
             gx.compile_ref(separator),
             gx.compile_ref(width),
         }?;
-        let compiled_columns = match columns_ref.last.as_ref() {
-            None => vec![],
-            Some(v) => compile_columns(&gx, v.clone()).await.context("table columns")?,
+        let items = |r: &Ref<X>| match r.last.as_ref() {
+            None => Ok(vec![]),
+            Some(v) => v.clone().cast_to::<Vec<Value>>(),
         };
-        let compiled_rows = match rows_ref.last.as_ref() {
-            None => vec![],
-            Some(v) => compile_rows(&gx, v.clone()).await.context("table rows")?,
-        };
+        let columns = reconcile([], items(&columns_ref)?, |c| compile_column(&gx, c))
+            .await
+            .context("table columns")?;
+        let cells = reconcile([], items(&rows_ref)?, |r| compile_children(gx.clone(), r))
+            .await
+            .context("table rows")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             columns_ref,
-            columns: compiled_columns,
+            columns,
             rows_ref,
-            cells: compiled_rows,
+            cells,
             width: TRef::new(width).context("table tref width")?,
             padding: TRef::new(padding).context("table tref padding")?,
             separator: TRef::new(separator).context("table tref separator")?,
@@ -141,22 +109,18 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         changed |= self.padding.update(id, v).context("table update padding")?.is_some();
         changed |=
             self.separator.update(id, v).context("table update separator")?.is_some();
-        if id == self.columns_ref.id {
+        if id == self.columns_ref.id && self.columns_ref.last.as_ref() != Some(v) {
             self.columns_ref.last = Some(v.clone());
+            let items = v.clone().cast_to::<Vec<Value>>()?;
+            let (gx, old) = (&self.gx, self.columns.drain(..));
             self.columns = rt
-                .block_on(compile_columns(&self.gx, v.clone()))
-                .context("table columns recompile")?;
+                .block_on(reconcile(old, items, |c| compile_column(gx, c)))
+                .context("table columns")?;
             changed = true;
         }
-        for col in &mut self.columns {
-            if id == col.header_ref.id {
-                col.header_ref.last = Some(v.clone());
-                col.header = rt
-                    .block_on(compile(self.gx.clone(), v.clone()))
-                    .context("table column header recompile")?;
-                changed = true;
-            }
-            changed |= col.header.handle_update(rt, id, v)?;
+        for (_, col) in &mut self.columns {
+            changed |=
+                col.header.update(rt, &self.gx, id, v).context("table column header")?;
             changed |=
                 col.width.update(id, v).context("table col update width")?.is_some();
             changed |=
@@ -164,14 +128,16 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
             changed |=
                 col.valign.update(id, v).context("table col update valign")?.is_some();
         }
-        if id == self.rows_ref.id {
+        if id == self.rows_ref.id && self.rows_ref.last.as_ref() != Some(v) {
             self.rows_ref.last = Some(v.clone());
+            let items = v.clone().cast_to::<Vec<Value>>()?;
+            let (gx, old) = (&self.gx, self.cells.drain(..));
             self.cells = rt
-                .block_on(compile_rows(&self.gx, v.clone()))
-                .context("table rows recompile")?;
+                .block_on(reconcile(old, items, |r| compile_children(gx.clone(), r)))
+                .context("table rows")?;
             changed = true;
         }
-        for row in &mut self.cells {
+        for (_, row) in &mut self.cells {
             for cell in row {
                 changed |= cell.handle_update(rt, id, v)?;
             }
@@ -180,13 +146,13 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
     }
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        self.columns.iter_mut().for_each(|c| f(&mut c.header));
-        self.cells.iter_mut().flatten().for_each(f)
+        self.columns.iter_mut().for_each(|(_, c)| f(&mut c.header.w));
+        self.cells.iter_mut().flat_map(|(_, r)| r.iter_mut()).for_each(f)
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        self.columns.iter().for_each(|c| f(&c.header));
-        self.cells.iter().flatten().for_each(f)
+        self.columns.iter().for_each(|(_, c)| f(&c.header.w));
+        self.cells.iter().flat_map(|(_, r)| r.iter()).for_each(f)
     }
 
     fn view(&self) -> IcedElement<'_> {
@@ -196,13 +162,12 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         }
         let num_rows = self.cells.len();
         let cells = &self.cells;
-        let cols = self.columns.iter().enumerate().map(|(c, col)| {
-            let header = col.header.view();
+        let cols = self.columns.iter().enumerate().map(|(c, (_, col))| {
+            let header = col.header.w.view();
             let mut tc = widget::table::column(header, move |row: usize| {
-                if row < cells.len() && c < cells[row].len() {
-                    cells[row][c].view()
-                } else {
-                    iced_widget::Space::new().into()
+                match cells.get(row).and_then(|(_, r)| r.get(c)) {
+                    Some(cell) => cell.view(),
+                    None => iced_widget::Space::new().into(),
                 }
             });
             if let Some(w) = col.width.t.as_ref() {

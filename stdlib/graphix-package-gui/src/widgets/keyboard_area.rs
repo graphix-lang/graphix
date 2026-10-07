@@ -1,5 +1,5 @@
 use super::{
-    GuiW, GuiWidget, IcedElement, Message, compile, iced_keyboard_area::KeyboardArea,
+    Child, GuiW, GuiWidget, IcedElement, Message, iced_keyboard_area::KeyboardArea,
 };
 use anyhow::{Context, Result};
 use arcstr::literal;
@@ -13,8 +13,7 @@ use tokio::try_join;
 
 pub(crate) struct KeyboardAreaW<X: GXExt> {
     gx: GXHandle<X>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
+    child: Child<X>,
     on_key_press: Ref<X>,
     on_key_press_callable: Option<Callable<X>>,
     on_key_release: Ref<X>,
@@ -36,15 +35,15 @@ impl<X: GXExt> KeyboardAreaW<X> {
             gx.compile_ref(on_key_press),
             gx.compile_ref(on_key_release),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "keyboard_area child");
+        let child =
+            Child::compile(&gx, child_ref).await.context("keyboard_area child")?;
         let on_key_press_callable =
             compile_callable!(gx, on_key_press, "keyboard_area on_key_press");
         let on_key_release_callable =
             compile_callable!(gx, on_key_release, "keyboard_area on_key_release");
         Ok(Box::new(Self {
             gx: gx.clone(),
-            child_ref,
-            child: compiled_child,
+            child,
             on_key_press,
             on_key_press_callable,
             on_key_release,
@@ -86,11 +85,11 @@ pub(crate) fn key_event_to_value(
 
 impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -100,16 +99,10 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "keyboard_area child recompile"
-        );
+        changed |= self
+            .child
+            .update(rt, &self.gx, id, v)
+            .context("keyboard_area child recompile")?;
         update_callable!(
             self,
             rt,
@@ -132,7 +125,7 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let mut ka = KeyboardArea::new(self.child.view());
+        let mut ka = KeyboardArea::new(self.child.w.view());
         if let Some(c) = &self.on_key_press_callable {
             let id = c.id();
             ka = ka.on_key_press(move |key, mods, text, repeat| {

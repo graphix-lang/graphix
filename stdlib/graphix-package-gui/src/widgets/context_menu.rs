@@ -1,21 +1,18 @@
 use super::{
-    GuiW, GuiWidget, IcedElement, compile,
-    context_menu_widget::OwnedContextMenu,
-    menu_bar::{MenuItemKind, compile_menu_items, menu_item_desc},
+    Child, GuiW, GuiWidget, IcedElement, context_menu_widget::OwnedContextMenu,
+    menu_bar::MenuItems,
 };
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref};
+use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct ContextMenuW<X: GXExt> {
     gx: GXHandle<X>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
-    items_ref: Ref<X>,
-    items: Vec<MenuItemKind<X>>,
+    child: Child<X>,
+    items: MenuItems<X>,
 }
 
 impl<X: GXExt> ContextMenuW<X> {
@@ -30,30 +27,20 @@ impl<X: GXExt> ContextMenuW<X> {
             gx.compile_ref(child),
             gx.compile_ref(items),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "context_menu child");
-        let compiled_items = match items_ref.last.as_ref() {
-            Some(v) => {
-                compile_menu_items(&gx, v.clone()).await.context("context_menu items")?
-            }
-            None => vec![],
-        };
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            child_ref,
-            child: compiled_child,
-            items_ref,
-            items: compiled_items,
-        }))
+        let child = Child::compile(&gx, child_ref).await.context("context_menu child")?;
+        let items =
+            MenuItems::compile(&gx, items_ref).await.context("context_menu items")?;
+        Ok(Box::new(Self { gx: gx.clone(), child, items }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -63,66 +50,16 @@ impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "context_menu child recompile"
-        );
-        if id == self.items_ref.id {
-            self.items_ref.last = Some(v.clone());
-            self.items = rt
-                .block_on(compile_menu_items(&self.gx, v.clone()))
-                .context("context_menu items recompile")?;
-            changed = true;
-        }
-        // CR claude for claude: [structure] This per-item loop (label, shortcut and
-        // disabled updates, plus the on_click recompile) is menu_bar.rs:194-225 with
-        // only the context strings changed, and the items_ref recompile above it
-        // repeats menu_bar.rs:187-193. Move it into a MenuItemKind::handle_update in
-        // menu_bar.rs and call that from both widgets, so a fix to item handling cannot
-        // reach only one of them. (gui-widgets-a-10)
-        for item in &mut self.items {
-            match item {
-                MenuItemKind::Action {
-                    label,
-                    shortcut,
-                    on_click,
-                    on_click_callable,
-                    disabled,
-                } => {
-                    changed |= label
-                        .update(id, v)
-                        .context("context_menu item update label")?
-                        .is_some();
-                    changed |= shortcut
-                        .update(id, v)
-                        .context("context_menu item update shortcut")?
-                        .is_some();
-                    changed |= disabled
-                        .update(id, v)
-                        .context("context_menu item update disabled")?
-                        .is_some();
-                    if id == on_click.id {
-                        on_click.last = Some(v.clone());
-                        rt.block_on(
-                            self.gx.update_callable(on_click_callable, v.clone()),
-                        )
-                        .context("context_menu item on_click recompile")?;
-                    }
-                }
-                MenuItemKind::Divider => {}
-            }
-        }
+        changed |= self
+            .child
+            .update(rt, &self.gx, id, v)
+            .context("context_menu child recompile")?;
+        changed |=
+            self.items.update(rt, &self.gx, id, v).context("context_menu items")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let items = self.items.iter().map(menu_item_desc).collect();
-        OwnedContextMenu::new(self.child.view(), items).into()
+        OwnedContextMenu::new(self.child.w.view(), self.items.descs()).into()
     }
 }

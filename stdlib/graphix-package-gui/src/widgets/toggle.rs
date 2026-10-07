@@ -1,6 +1,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
@@ -16,7 +17,7 @@ macro_rules! toggle_widget {
             gx: GXHandle<X>,
             disabled: TRef<X, bool>,
             $state: TRef<X, bool>,
-            label: TRef<X, String>,
+            label: TRef<X, ArcStr>,
             on_toggle: Ref<X>,
             on_toggle_callable: Option<Callable<X>>,
             width: TRef<X, LengthV>,

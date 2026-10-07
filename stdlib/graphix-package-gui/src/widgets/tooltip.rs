@@ -1,8 +1,8 @@
-use super::{GuiW, GuiWidget, IcedElement, compile};
+use super::{Child, GuiW, GuiWidget, IcedElement};
 use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
@@ -10,10 +10,8 @@ use tokio::try_join;
 
 pub(crate) struct TooltipW<X: GXExt> {
     gx: GXHandle<X>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
-    tip_ref: Ref<X>,
-    tip: GuiW<X>,
+    child: Child<X>,
+    tip: Child<X>,
     position: TRef<X, TooltipPositionV>,
     gap: TRef<X, Option<f64>>,
 }
@@ -35,14 +33,12 @@ impl<X: GXExt> TooltipW<X> {
             gx.compile_ref(position),
             gx.compile_ref(tip),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "tooltip child");
-        let compiled_tip = compile_child!(gx, tip_ref, "tooltip tip");
+        let child = Child::compile(&gx, child_ref).await.context("tooltip child")?;
+        let tip = Child::compile(&gx, tip_ref).await.context("tooltip tip")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
-            child_ref,
-            child: compiled_child,
-            tip_ref,
-            tip: compiled_tip,
+            child,
+            tip,
             position: TRef::new(position).context("tooltip tref position")?,
             gap: TRef::new(gap).context("tooltip tref gap")?,
         }))
@@ -51,13 +47,13 @@ impl<X: GXExt> TooltipW<X> {
 
 impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
-        f(&mut self.tip);
+        f(&mut self.child.w);
+        f(&mut self.tip.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
-        f(&self.tip);
+        f(&self.child.w);
+        f(&self.tip.w);
     }
 
     fn handle_update(
@@ -70,17 +66,10 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
         changed |=
             self.position.update(id, v).context("tooltip update position")?.is_some();
         changed |= self.gap.update(id, v).context("tooltip update gap")?.is_some();
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "tooltip child recompile"
-        );
-        update_child!(self, rt, id, v, changed, tip_ref, tip, "tooltip tip recompile");
+        changed |=
+            self.child.update(rt, &self.gx, id, v).context("tooltip child recompile")?;
+        changed |=
+            self.tip.update(rt, &self.gx, id, v).context("tooltip tip recompile")?;
         Ok(changed)
     }
 
@@ -91,7 +80,7 @@ impl<X: GXExt> GuiWidget<X> for TooltipW<X> {
             .as_ref()
             .map(|p| p.0)
             .unwrap_or(widget::tooltip::Position::Bottom);
-        let mut tt = widget::Tooltip::new(self.child.view(), self.tip.view(), pos);
+        let mut tt = widget::Tooltip::new(self.child.w.view(), self.tip.w.view(), pos);
         if let Some(Some(g)) = self.gap.t {
             tt = tt.gap(g as f32);
         }

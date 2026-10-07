@@ -1,6 +1,7 @@
 use super::{GuiW, IcedElement};
 use crate::types::{ColorV, FontV, HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
@@ -9,7 +10,7 @@ use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct TextW<X: GXExt> {
-    content: TRef<X, String>,
+    content: TRef<X, ArcStr>,
     size: TRef<X, Option<f64>>,
     color: TRef<X, Option<ColorV>>,
     font: TRef<X, Option<FontV>>,

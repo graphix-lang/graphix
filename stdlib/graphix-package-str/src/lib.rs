@@ -550,6 +550,15 @@ fn str_len(args: &[Value]) -> Option<Value> {
     }
 }
 
+graphix_package_core::fast_builtin!(CharLen, CharLenEv, "str_char_len", str_char_len);
+
+fn str_char_len(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::String(s)] => Some(Value::I64(s.chars().count() as i64)),
+        _ => None,
+    }
+}
+
 fn fc_sub(args: &[Value]) -> Option<Value> {
     match args {
         [Value::I64(start), Value::I64(len), Value::String(s)]
@@ -671,6 +680,7 @@ graphix_derive::defpackage! {
         StringToUpper,
         Sprintf,
         Len,
+        CharLen,
         Sub,
         Parse,
     ],

@@ -1,4 +1,4 @@
-use super::{GuiW, GuiWidget, IcedElement, Message, compile};
+use super::{Child, GuiW, GuiWidget, IcedElement, Message};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref};
@@ -13,8 +13,7 @@ fn mouse_button_value(button: &str) -> Value {
 
 pub(crate) struct MouseAreaW<X: GXExt> {
     gx: GXHandle<X>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
+    child: Child<X>,
     on_press: Ref<X>,
     on_press_callable: Option<Callable<X>>,
     on_release: Ref<X>,
@@ -48,7 +47,7 @@ impl<X: GXExt> MouseAreaW<X> {
             gx.compile_ref(on_press),
             gx.compile_ref(on_release),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "mouse_area child");
+        let child = Child::compile(&gx, child_ref).await.context("mouse_area child")?;
         let on_press_callable = compile_callable!(gx, on_press, "mouse_area on_press");
         let on_release_callable =
             compile_callable!(gx, on_release, "mouse_area on_release");
@@ -57,8 +56,7 @@ impl<X: GXExt> MouseAreaW<X> {
         let on_move_callable = compile_callable!(gx, on_move, "mouse_area on_move");
         Ok(Box::new(Self {
             gx: gx.clone(),
-            child_ref,
-            child: compiled_child,
+            child,
             on_press,
             on_press_callable,
             on_release,
@@ -75,11 +73,11 @@ impl<X: GXExt> MouseAreaW<X> {
 
 impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -89,16 +87,10 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "mouse_area child recompile"
-        );
+        changed |= self
+            .child
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area child recompile")?;
         update_callable!(
             self,
             rt,
@@ -158,7 +150,7 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
     // with a null default and install only the handlers given. probe:
     // design/review-2026-10-05/repro/gui-widgets-b-09.rs (gui-widgets-b-09)
     fn view(&self) -> IcedElement<'_> {
-        let mut ma = widget::MouseArea::new(self.child.view());
+        let mut ma = widget::MouseArea::new(self.child.w.view());
         if let Some(c) = &self.on_press_callable {
             let id = c.id();
             ma = ma.on_press(Message::Call(

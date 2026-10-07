@@ -1,6 +1,7 @@
 use super::{GuiW, GuiWidget, IcedElement, Message, MessageShell};
 use crate::types::{FontV, PaddingV};
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget::{self as widget, text_editor};
@@ -18,7 +19,7 @@ pub(crate) struct TextEditorW<X: GXExt> {
     on_edit_callable: Option<Callable<X>>,
     /// Last text pushed via callback; its echo must not rebuild `Content`.
     last_set_text: Option<String>,
-    placeholder: TRef<X, String>,
+    placeholder: TRef<X, ArcStr>,
     width: TRef<X, Option<f64>>,
     height: TRef<X, Option<f64>>,
     padding: TRef<X, PaddingV>,

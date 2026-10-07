@@ -3,26 +3,47 @@ use iced_core::{
     Vector, Widget, alignment, keyboard, layout, mouse, overlay, renderer, touch, widget,
 };
 
-use super::{Message, Renderer};
+use super::{Message, Renderer, measure_text};
 use crate::{theme::GraphixTheme, types::ShortcutV};
 use graphix_rt::CallableId;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 
-/// Description of a menu item for the custom menu bar widget.
-pub(crate) enum MenuItemDesc {
+/// A menu item as the menu widgets draw it, borrowed from its widget.
+pub(crate) enum MenuItemDesc<'a> {
     Action {
-        label: String,
-        shortcut: Option<ShortcutV>,
+        label: &'a str,
+        shortcut: Option<&'a ShortcutV>,
         callable_id: Option<CallableId>,
         disabled: bool,
     },
     Divider,
 }
 
-/// Description of a menu group (top-level menu label + items).
-pub(crate) struct MenuGroupDesc {
-    pub label: String,
-    pub items: Vec<MenuItemDesc>,
+/// A top-level menu: its label and items.
+pub(crate) struct MenuGroupDesc<'a> {
+    pub label: &'a str,
+    pub items: Vec<MenuItemDesc<'a>>,
+}
+
+/// The enabled action whose shortcut `key` and `modifiers` press.
+pub(crate) fn shortcut_action<'a>(
+    items: impl IntoIterator<Item = &'a MenuItemDesc<'a>>,
+    key: &keyboard::Key,
+    modifiers: keyboard::Modifiers,
+) -> Option<CallableId> {
+    items.into_iter().find_map(|item| match item {
+        MenuItemDesc::Action {
+            shortcut: Some(sc),
+            callable_id: Some(id),
+            disabled: false,
+            ..
+        } if *key == sc.key && modifiers == sc.modifiers => Some(*id),
+        _ => None,
+    })
+}
+
+fn call(id: CallableId) -> Message {
+    Message::Call(id, ValArray::from_iter([Value::Null]))
 }
 
 #[derive(Default)]
@@ -33,43 +54,31 @@ pub(crate) struct State {
     pub menu_visible: bool,
 }
 
-/// Overlay that renders the dropdown menu below a menu bar label.
-/// When `open` is `Some` it is set to `false` on item click.
-pub(crate) struct MenuOverlay<'a> {
-    pub menu: &'a MenuGroupDesc,
+/// A dropdown menu at `position` in window coordinates, kept inside the
+/// window; `open` is set to `false` when an item is chosen.
+pub(crate) struct MenuOverlay<'a, 'b> {
+    pub items: &'b [MenuItemDesc<'a>],
     pub position: Point,
-    pub open: Option<&'a mut bool>,
+    pub open: &'b mut bool,
 }
 
 const ITEM_PADDING: Padding = Padding { top: 6.0, right: 20.0, bottom: 6.0, left: 20.0 };
 const DIVIDER_HEIGHT: f32 = 9.0;
 const MIN_ITEM_WIDTH: f32 = 180.0;
 
-// CR claude for claude: [bug] MenuOverlay has no mouse_interaction, so iced gives the
-// layer under an open menu the real cursor, and update captures a press only on an
-// enabled action. A click on a disabled item or a divider therefore reaches whatever
-// lies under the menu. Over a button in a context menu, the button's on_press runs,
-// because OwnedContextMenu updates its child before closing. Under a menu-bar dropdown
-// a checkbox toggles, and the wheel over an open context menu scrolls the scrollable
-// beneath it. Return a non-None interaction while the cursor is inside layout.bounds()
-// (iced's own menu overlay returns Pointer) and capture every press inside them. probe:
-// design/review-2026-10-05/repro/gui-widgets-a-06.rs (copy into
-// stdlib/graphix-package-gui/tests/ and run cargo test -p graphix-package-gui --test
-// review_gui_widgets_a_06). (gui-widgets-a-06)
-impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
-    fn layout(&mut self, renderer: &Renderer, _bounds: Size) -> layout::Node {
+impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_, '_> {
+    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         let text_size = <Renderer as iced_core::text::Renderer>::default_size(renderer).0;
+        let measure = |s: &str| measure_text(s, text_size, iced_core::Font::DEFAULT);
         let mut max_width: f32 = MIN_ITEM_WIDTH;
         let mut total_height: f32 = 0.0;
-        let mut child_sizes = Vec::with_capacity(self.menu.items.len());
-        for item in &self.menu.items {
+        let mut child_sizes = Vec::with_capacity(self.items.len());
+        for item in self.items {
             match item {
                 MenuItemDesc::Action { label, shortcut, .. } => {
-                    let display_len = match shortcut {
-                        Some(sc) => label.len() + 3 + sc.display.len(),
-                        None => label.len(),
-                    };
-                    let item_w = text_size * display_len as f32 * 0.6
+                    let gap = text_size * 1.5;
+                    let item_w = measure(label)
+                        + shortcut.map_or(0.0, |sc| gap + measure(&sc.display))
                         + ITEM_PADDING.left
                         + ITEM_PADDING.right;
                     let item_h = text_size + ITEM_PADDING.top + ITEM_PADDING.bottom;
@@ -93,8 +102,27 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                 node
             })
             .collect();
-        layout::Node::with_children(Size::new(max_width, total_height), nodes)
-            .move_to(self.position)
+        // inside the window: shifted left at the right edge, above the
+        // point at the bottom when it fits there
+        let (p, size) = (self.position, Size::new(max_width, total_height));
+        let x = p.x.min(bounds.width - size.width).max(0.0);
+        let y = match p.y + size.height > bounds.height && p.y >= size.height {
+            true => p.y - size.height,
+            false => p.y.min(bounds.height - size.height).max(0.0),
+        };
+        layout::Node::with_children(size, nodes).move_to(Point::new(x, y))
+    }
+
+    fn mouse_interaction(
+        &self,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _renderer: &Renderer,
+    ) -> mouse::Interaction {
+        match cursor.is_over(layout.bounds()) {
+            true => mouse::Interaction::Pointer,
+            false => mouse::Interaction::None,
+        }
     }
 
     fn draw(
@@ -132,7 +160,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
             palette.background,
         );
         let text_size = <Renderer as iced_core::text::Renderer>::default_size(renderer);
-        for (item, child_layout) in self.menu.items.iter().zip(layout.children()) {
+        for (item, child_layout) in self.items.iter().zip(layout.children()) {
             let item_bounds = child_layout.bounds();
             match item {
                 MenuItemDesc::Action { label, shortcut, disabled, .. } => {
@@ -171,7 +199,7 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
                     <Renderer as iced_core::text::Renderer>::fill_text(
                         renderer,
                         iced_core::Text {
-                            content: label.as_str().into(),
+                            content: (*label).into(),
                             bounds: text_bounds,
                             size: text_size,
                             line_height: iced_core::text::LineHeight::default(),
@@ -256,51 +284,43 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
     ) {
         match event {
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                for item in &self.menu.items {
-                    if let MenuItemDesc::Action {
-                        shortcut: Some(sc),
-                        callable_id: Some(id),
-                        disabled: false,
-                        ..
-                    } = item
-                    {
-                        if *key == sc.key && *modifiers == sc.modifiers {
-                            if let Some(open) = self.open.as_deref_mut() {
-                                *open = false;
-                            }
-                            shell.publish(Message::Call(
-                                *id,
-                                ValArray::from_iter([Value::Null]),
-                            ));
-                            shell.capture_event();
-                            return;
-                        }
-                    }
+                if let Some(id) = shortcut_action(self.items, key, *modifiers) {
+                    *self.open = false;
+                    shell.publish(call(id));
+                    shell.capture_event();
                 }
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
-                for (item, child_layout) in self.menu.items.iter().zip(layout.children())
-                {
-                    if cursor.is_over(child_layout.bounds()) {
-                        if let MenuItemDesc::Action {
-                            callable_id: Some(id),
-                            disabled: false,
-                            ..
-                        } = item
-                        {
-                            if let Some(open) = self.open.as_deref_mut() {
-                                *open = false;
-                            }
-                            shell.publish(Message::Call(
-                                *id,
-                                ValArray::from_iter([Value::Null]),
-                            ));
-                            shell.capture_event();
-                            return;
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+            | Event::Touch(touch::Event::FingerPressed { .. })
+                if cursor.is_over(layout.bounds()) =>
+            {
+                let chosen =
+                    self.items.iter().zip(layout.children()).find_map(|(item, l)| {
+                        match item {
+                            MenuItemDesc::Action {
+                                callable_id: Some(id),
+                                disabled: false,
+                                ..
+                            } if cursor.is_over(l.bounds()) => Some(*id),
+                            _ => None,
                         }
-                    }
+                    });
+                if let Some(id) = chosen
+                    && matches!(
+                        event,
+                        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                            | Event::Touch(_)
+                    )
+                {
+                    *self.open = false;
+                    shell.publish(call(id));
                 }
+                shell.capture_event();
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { .. })
+                if cursor.is_over(layout.bounds()) =>
+            {
+                shell.capture_event()
             }
             _ => {}
         }
@@ -308,12 +328,12 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_> {
 }
 
 /// The owning widget that renders the menu bar and manages the overlay.
-pub(crate) struct OwnedMenuBar {
-    pub descs: Vec<MenuGroupDesc>,
+pub(crate) struct OwnedMenuBar<'a> {
+    pub descs: Vec<MenuGroupDesc<'a>>,
     pub width: Length,
 }
 
-impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
+impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<State>()
     }
@@ -332,15 +352,13 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.width(self.width);
-        let max = limits.max();
         let text_size = <Renderer as iced_core::text::Renderer>::default_size(renderer).0;
         let padding = Padding::new(8.0);
         let mut total_width: f32 = 0.0;
         let mut max_height: f32 = 0.0;
         let mut children = Vec::with_capacity(self.descs.len());
         for menu in &self.descs {
-            let label_w = text_size * menu.label.len() as f32 * 0.6;
+            let label_w = measure_text(menu.label, text_size, iced_core::Font::DEFAULT);
             let padded_w = label_w + padding.left + padding.right;
             let padded_h = text_size + padding.top + padding.bottom;
             children.push(
@@ -355,19 +373,12 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             *child = layout::Node::new(Size::new(s.width, max_height))
                 .move_to(child.bounds().position());
         }
-        // CR claude for claude: [bug] Only `Length::Fill` is honored here:
-        // `menu::bar(#width: &`Fixed(600.0), menus)` or a FillPortion lays out a bar as
-        // wide as its labels while `size()` reports the requested length. The label
-        // widths above (line 332) and the item widths in MenuOverlay::layout (line 61)
-        // are guessed as `text_size * len() * 0.6` over UTF-8 bytes. A CJK label
-        // therefore gets 1.8 em per glyph, and a label of wide glyphs can overflow its
-        // unwrapped, clipped box. MenuOverlay::layout also ignores the bounds it is
-        // given, so a context menu opened near the right or bottom edge of the window
-        // is cut off. `limits.resolve(self.width, Length::Shrink, ..)`, measuring with
-        // the renderer's paragraph, and clamping the overlay position into its bounds
-        // would fix these. (gui-widgets-b-12)
-        let bar_width = if self.width == Length::Fill { max.width } else { total_width };
-        layout::Node::with_children(Size::new(bar_width, max_height), children)
+        let size = limits.resolve(
+            self.width,
+            Length::Shrink,
+            Size::new(total_width, max_height),
+        );
+        layout::Node::with_children(size, children)
     }
 
     fn draw(
@@ -426,7 +437,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             <Renderer as iced_core::text::Renderer>::fill_text(
                 renderer,
                 iced_core::Text {
-                    content: menu.label.as_str().into(),
+                    content: menu.label.into(),
                     bounds: Size::new(bounds.width, bounds.height),
                     size: text_size,
                     line_height: iced_core::text::LineHeight::default(),
@@ -505,27 +516,12 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
                 }
             }
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                for menu in &self.descs {
-                    for item in &menu.items {
-                        if let MenuItemDesc::Action {
-                            shortcut: Some(sc),
-                            callable_id: Some(id),
-                            disabled: false,
-                            ..
-                        } = item
-                        {
-                            if *key == sc.key && *modifiers == sc.modifiers {
-                                state.open_menu = None;
-                                state.menu_visible = false;
-                                shell.publish(Message::Call(
-                                    *id,
-                                    ValArray::from_iter([Value::Null]),
-                                ));
-                                shell.capture_event();
-                                return;
-                            }
-                        }
-                    }
+                let items = self.descs.iter().flat_map(|m| m.items.iter());
+                if let Some(id) = shortcut_action(items, key, *modifiers) {
+                    state.open_menu = None;
+                    state.menu_visible = false;
+                    shell.publish(call(id));
+                    shell.capture_event();
                 }
             }
             _ => {}
@@ -538,25 +534,23 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
         layout: Layout<'b>,
         _renderer: &Renderer,
         _viewport: &Rectangle,
-        _translation: Vector,
+        translation: Vector,
     ) -> Option<overlay::Element<'b, Message, GraphixTheme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
         let idx = state.open_menu?;
-        if idx >= self.descs.len() {
-            return None;
-        }
-        let label_bounds = layout.children().nth(idx)?.bounds();
-        let position = Point::new(label_bounds.x, label_bounds.y + label_bounds.height);
+        let menu = self.descs.get(idx)?;
+        let label = layout.children().nth(idx)?.bounds();
+        let position = Point::new(label.x, label.y + label.height) + translation;
         Some(overlay::Element::new(Box::new(MenuOverlay {
-            menu: &self.descs[idx],
+            items: &menu.items,
             position,
-            open: Some(&mut state.menu_visible),
+            open: &mut state.menu_visible,
         })))
     }
 }
 
-impl From<OwnedMenuBar> for Element<'_, Message, GraphixTheme, Renderer> {
-    fn from(w: OwnedMenuBar) -> Self {
+impl<'a> From<OwnedMenuBar<'a>> for Element<'a, Message, GraphixTheme, Renderer> {
+    fn from(w: OwnedMenuBar<'a>) -> Self {
         Self::new(w)
     }
 }

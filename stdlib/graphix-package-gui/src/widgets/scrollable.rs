@@ -1,4 +1,4 @@
-use super::{GuiW, GuiWidget, IcedElement, Message, compile};
+use super::{Child, GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
@@ -10,8 +10,7 @@ use tokio::try_join;
 
 pub(crate) struct ScrollableW<X: GXExt> {
     gx: GXHandle<X>,
-    child_ref: Ref<X>,
-    child: GuiW<X>,
+    child: Child<X>,
     direction: TRef<X, ScrollDirectionV>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
@@ -38,12 +37,11 @@ impl<X: GXExt> ScrollableW<X> {
             gx.compile_ref(on_scroll),
             gx.compile_ref(width),
         }?;
-        let compiled_child = compile_child!(gx, child_ref, "scrollable child");
+        let child = Child::compile(&gx, child_ref).await.context("scrollable child")?;
         let on_scroll_callable = compile_callable!(gx, on_scroll, "scrollable on_scroll");
         Ok(Box::new(Self {
             gx: gx.clone(),
-            child_ref,
-            child: compiled_child,
+            child,
             direction: TRef::new(direction).context("scrollable tref direction")?,
             width: TRef::new(width).context("scrollable tref width")?,
             height: TRef::new(height).context("scrollable tref height")?,
@@ -55,11 +53,11 @@ impl<X: GXExt> ScrollableW<X> {
 
 impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-        f(&mut self.child);
+        f(&mut self.child.w);
     }
 
     fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-        f(&self.child);
+        f(&self.child.w);
     }
 
     fn handle_update(
@@ -77,16 +75,10 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
         changed |= self.width.update(id, v).context("scrollable update width")?.is_some();
         changed |=
             self.height.update(id, v).context("scrollable update height")?.is_some();
-        update_child!(
-            self,
-            rt,
-            id,
-            v,
-            changed,
-            child_ref,
-            child,
-            "scrollable child recompile"
-        );
+        changed |= self
+            .child
+            .update(rt, &self.gx, id, v)
+            .context("scrollable child recompile")?;
         update_callable!(
             self,
             rt,
@@ -100,7 +92,7 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        let mut sc = widget::Scrollable::new(self.child.view());
+        let mut sc = widget::Scrollable::new(self.child.w.view());
         if let Some(dir) = self.direction.t.as_ref() {
             sc = sc.direction(dir.0);
         }

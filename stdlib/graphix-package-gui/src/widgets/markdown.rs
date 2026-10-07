@@ -1,6 +1,7 @@
 use super::{GuiW, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
@@ -14,7 +15,7 @@ use tokio::try_join;
 
 pub(crate) struct MarkdownW<X: GXExt> {
     gx: GXHandle<X>,
-    content: TRef<X, String>,
+    content: TRef<X, ArcStr>,
     on_link: Ref<X>,
     on_link_callable: Option<Callable<X>>,
     spacing: TRef<X, Option<f64>>,

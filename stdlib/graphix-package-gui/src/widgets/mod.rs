@@ -61,30 +61,6 @@ macro_rules! update_callable {
     };
 }
 
-/// Compile a child widget ref during widget construction.
-macro_rules! compile_child {
-    ($gx:expr, $ref:ident, $label:expr) => {
-        match $ref.last.as_ref() {
-            None => Box::new(super::EmptyW) as GuiW<X>,
-            Some(v) => compile($gx.clone(), v.clone()).await.context($label)?,
-        }
-    };
-}
-
-/// Recompile a child widget ref inside `handle_update`.
-/// Sets `$changed = true` when the child is recompiled or updated.
-macro_rules! update_child {
-    ($self:ident, $rt:ident, $id:ident, $v:ident, $changed:ident, $ref:ident, $child:ident, $label:expr) => {
-        if $id == $self.$ref.id {
-            $self.$ref.last = Some($v.clone());
-            $self.$child =
-                $rt.block_on(compile($self.gx.clone(), $v.clone())).context($label)?;
-            $changed = true;
-        }
-        $changed |= $self.$child.handle_update($rt, $id, $v)?;
-    };
-}
-
 pub mod button;
 pub mod canvas;
 pub mod chart;
@@ -307,6 +283,158 @@ pub(crate) fn update_callable_blocking<X: GXExt>(
     }
 }
 
+/// A child widget property: its ref and the widget its value compiled
+/// to.
+pub struct Child<X: GXExt> {
+    pub(crate) r: Ref<X>,
+    pub(crate) w: GuiW<X>,
+}
+
+impl<X: GXExt> Child<X> {
+    pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
+        let w = match r.last.as_ref() {
+            None => Box::new(EmptyW) as GuiW<X>,
+            Some(v) => compile(gx.clone(), v.clone()).await?,
+        };
+        Ok(Self { r, w })
+    }
+
+    /// Take an update for the ref, recompiling only a changed value, or for
+    /// a descendant. Returns whether the window should redraw.
+    pub(crate) fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        if id == self.r.id && self.r.last.as_ref() != Some(v) {
+            self.r.last = Some(v.clone());
+            self.w = rt.block_on(compile(gx.clone(), v.clone()))?;
+            changed = true;
+        }
+        Ok(self.w.handle_update(rt, id, v)? || changed)
+    }
+}
+
+/// A list of child widgets: its ref, and each widget beside the value it
+/// compiled from, so a new list keeps the children it still holds.
+pub struct Children<X: GXExt> {
+    pub(crate) r: Ref<X>,
+    pub(crate) ws: Vec<GuiW<X>>,
+    vals: Vec<Value>,
+}
+
+impl<X: GXExt> Children<X> {
+    pub(crate) async fn compile(gx: &GXHandle<X>, r: Ref<X>) -> Result<Self> {
+        let vals = match r.last.as_ref() {
+            None => vec![],
+            Some(v) => v.clone().cast_to::<Vec<Value>>()?,
+        };
+        let futs = vals.iter().map(|v| compile(gx.clone(), v.clone()));
+        let ws = futures::future::try_join_all(futs).await?;
+        Ok(Self { r, ws, vals })
+    }
+
+    /// Take an update for the ref or for a descendant. A new list keeps
+    /// every child whose value it still holds, wherever it moved, and
+    /// compiles only the values it did not. Returns whether the window
+    /// should redraw.
+    pub(crate) fn update(
+        &mut self,
+        rt: &tokio::runtime::Handle,
+        gx: &GXHandle<X>,
+        id: ExprId,
+        v: &Value,
+    ) -> Result<bool> {
+        let mut changed = false;
+        if id == self.r.id && self.r.last.as_ref() != Some(v) {
+            self.r.last = Some(v.clone());
+            let vals = v.clone().cast_to::<Vec<Value>>()?;
+            let mut kept = keep_equal(self.vals.drain(..).zip(self.ws.drain(..)), &vals);
+            let fresh = vals
+                .iter()
+                .zip(kept.iter())
+                .filter(|(_, w)| w.is_none())
+                .map(|(val, _)| compile(gx.clone(), val.clone()))
+                .collect::<Vec<_>>();
+            let mut fresh = match fresh.is_empty() {
+                true => vec![].into_iter(),
+                false => rt.block_on(futures::future::try_join_all(fresh))?.into_iter(),
+            };
+            self.ws.extend(kept.drain(..).filter_map(|w| w.or_else(|| fresh.next())));
+            self.vals = vals;
+            changed = true;
+        }
+        for w in &mut self.ws {
+            changed |= w.handle_update(rt, id, v)?;
+        }
+        Ok(changed)
+    }
+}
+
+/// Pair each of the `new` values with an old item made from an equal
+/// value, the one at the same index first, else any; `None` where no old
+/// item is left.
+pub(crate) fn keep_equal<T>(
+    old: impl IntoIterator<Item = (Value, T)>,
+    new: &[Value],
+) -> Vec<Option<T>> {
+    let mut old: Vec<Option<(Value, T)>> = old.into_iter().map(Some).collect();
+    new.iter()
+        .enumerate()
+        .map(|(i, val)| {
+            let same = |o: &Option<(Value, T)>| o.as_ref().is_some_and(|(v, _)| v == val);
+            let at = match old.get(i) {
+                Some(o) if same(o) => Some(i),
+                _ => old.iter().position(same),
+            };
+            at.and_then(|j| old[j].take()).map(|(_, t)| t)
+        })
+        .collect()
+}
+
+/// Compile `items` into those of `old` made from equal values, and the
+/// rest all at once.
+pub(crate) async fn reconcile<T, F: Future<Output = Result<T>>>(
+    old: impl IntoIterator<Item = (Value, T)>,
+    items: Vec<Value>,
+    compile: impl Fn(Value) -> F,
+) -> Result<Vec<(Value, T)>> {
+    let kept = keep_equal(old, &items);
+    let fresh = items
+        .iter()
+        .zip(kept.iter())
+        .filter(|(_, t)| t.is_none())
+        .map(|(v, _)| compile(v.clone()));
+    let mut fresh = futures::future::try_join_all(fresh).await?.into_iter();
+    Ok(items
+        .into_iter()
+        .zip(kept)
+        .filter_map(|(v, t)| Some((v, t.or_else(|| fresh.next())?)))
+        .collect())
+}
+
+/// The width `text` lays out to at `size` in `font`, unwrapped.
+pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 {
+    use iced_core::text::Paragraph as _;
+    type Paragraph = <Renderer as iced_core::text::Renderer>::Paragraph;
+    Paragraph::with_text(iced_core::Text {
+        content: text,
+        bounds: iced_core::Size::new(f32::INFINITY, f32::INFINITY),
+        size: iced_core::Pixels(size),
+        line_height: iced_core::text::LineHeight::default(),
+        font,
+        align_x: iced_core::alignment::Horizontal::Left.into(),
+        align_y: iced_core::alignment::Vertical::Top,
+        shaping: iced_core::text::Shaping::Advanced,
+        wrapping: iced_core::text::Wrapping::None,
+    })
+    .min_bounds()
+    .width
+}
+
 /// A callback property: its ref and what it compiled to; null is no
 /// handler.
 pub(crate) struct Handler<X: GXExt> {
@@ -378,19 +506,16 @@ impl<X: GXExt> GuiWidget<X> for EmptyW {
 
 /// Generate a flex layout widget (Row or Column).
 macro_rules! flex_widget {
-    ($name:ident, $label:literal,
-     $spacing:ident, $padding:ident, $width:ident, $height:ident,
-     $align_ty:ty, $align:ident, $Widget:ident, $align_set:ident,
+    ($name:ident, $label:literal, $align_ty:ty, $align:ident, $Widget:ident, $align_set:ident,
      [$($f:ident),+]) => {
         pub(crate) struct $name<X: GXExt> {
             gx: GXHandle<X>,
-            $spacing: graphix_rt::TRef<X, f64>,
-            $padding: graphix_rt::TRef<X, PaddingV>,
-            $width: graphix_rt::TRef<X, LengthV>,
-            $height: graphix_rt::TRef<X, LengthV>,
+            spacing: graphix_rt::TRef<X, f64>,
+            padding: graphix_rt::TRef<X, PaddingV>,
+            width: graphix_rt::TRef<X, LengthV>,
+            height: graphix_rt::TRef<X, LengthV>,
             $align: graphix_rt::TRef<X, $align_ty>,
-            children_ref: graphix_rt::Ref<X>,
-            children: Vec<GuiW<X>>,
+            children: Children<X>,
         }
 
         impl<X: GXExt> $name<X> {
@@ -400,42 +525,40 @@ macro_rules! flex_widget {
                     children: u64,
                     $($f: u64),+
                 }
-                let Fields { children, $($f),+ } =
-                    source.cast_to().context(concat!($label, " flds"))?;
-                let (children_ref, $($f),+) = tokio::try_join!(
-                    gx.compile_ref(children),
-                    $(gx.compile_ref($f)),+
+                let fields: Fields = source.cast_to().context(concat!($label, " flds"))?;
+                let (children, spacing, padding, width, height, align) = tokio::try_join!(
+                    gx.compile_ref(fields.children),
+                    gx.compile_ref(fields.spacing),
+                    gx.compile_ref(fields.padding),
+                    gx.compile_ref(fields.width),
+                    gx.compile_ref(fields.height),
+                    gx.compile_ref(fields.$align),
                 )?;
-                let compiled_children = match children_ref.last.as_ref() {
-                    None => vec![],
-                    Some(v) => compile_children(gx.clone(), v.clone()).await
-                        .context(concat!($label, " children"))?,
-                };
                 Ok(Box::new(Self {
-                    gx: gx.clone(),
-                    $spacing: graphix_rt::TRef::new($spacing)
+                    children: Children::compile(&gx, children).await
+                        .context(concat!($label, " children"))?,
+                    gx,
+                    spacing: graphix_rt::TRef::new(spacing)
                         .context(concat!($label, " tref spacing"))?,
-                    $padding: graphix_rt::TRef::new($padding)
+                    padding: graphix_rt::TRef::new(padding)
                         .context(concat!($label, " tref padding"))?,
-                    $width: graphix_rt::TRef::new($width)
+                    width: graphix_rt::TRef::new(width)
                         .context(concat!($label, " tref width"))?,
-                    $height: graphix_rt::TRef::new($height)
+                    height: graphix_rt::TRef::new(height)
                         .context(concat!($label, " tref height"))?,
-                    $align: graphix_rt::TRef::new($align)
+                    $align: graphix_rt::TRef::new(align)
                         .context(concat!($label, " tref ", stringify!($align)))?,
-                    children_ref,
-                    children: compiled_children,
                 }))
             }
         }
 
         impl<X: GXExt> GuiWidget<X> for $name<X> {
             fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut GuiW<X>)) {
-                self.children.iter_mut().for_each(f)
+                self.children.ws.iter_mut().for_each(f)
             }
 
             fn for_each_child(&self, f: &mut dyn FnMut(&GuiW<X>)) {
-                self.children.iter().for_each(f)
+                self.children.ws.iter().for_each(f)
             }
 
             fn handle_update(
@@ -445,74 +568,39 @@ macro_rules! flex_widget {
                 v: &Value,
             ) -> Result<bool> {
                 let mut changed = false;
-                changed |= self.$spacing.update(id, v)
+                changed |= self.spacing.update(id, v)
                     .context(concat!($label, " update spacing"))?.is_some();
-                changed |= self.$padding.update(id, v)
+                changed |= self.padding.update(id, v)
                     .context(concat!($label, " update padding"))?.is_some();
-                changed |= self.$width.update(id, v)
+                changed |= self.width.update(id, v)
                     .context(concat!($label, " update width"))?.is_some();
-                changed |= self.$height.update(id, v)
+                changed |= self.height.update(id, v)
                     .context(concat!($label, " update height"))?.is_some();
                 changed |= self.$align.update(id, v)
                     .context(concat!($label, " update ", stringify!($align)))?.is_some();
-                // CR claude for claude: [bug] This recompiles every child whenever the
-                // children ref fires, even when the delivered array equals the one
-                // already compiled. A place reference re-fires its value on every write
-                // to its root (graphix-compiler/src/node/bind.rs:977), so
-                // `column(&[text_editor(#on_edit: .., &doc.text), ..])` rebuilds the
-                // editor on each write to `doc`. The new Content puts the cursor at (0,
-                // 0), so typing "abc" leaves "cba". update_child! (:49), stack, grid,
-                // table, menu_bar, context_menu and window.rs:147/201 rebuild the same
-                // way (a `window(#title: &doc.title, ..)` rebuilds the whole window).
-                // Skip the recompile when the ref's `last` equals the delivered value.
-                // probe: design/review-2026-10-05/repro/gui-widgets-b-01.rs (copy it
-                // under stdlib/graphix-package-gui/tests/ and run cargo test -p
-                // graphix-package-gui --test review_gui_widgets_b_01).
-                // (gui-widgets-b-01)
-                // CR claude for claude: [bug] This recompiles every child whenever the
-                // children ref fires, even when the new array equals
-                // `children_ref.last` or only a sibling changed. `select page` re-emits
-                // the identical array when Home is clicked on Home, and appending one
-                // row to N rows rebuilds all N. The rebuild throws away state held in
-                // the widget structs (a text_editor's cursor and selection restart at
-                // 0). It also gives every handler in the subtree a fresh call site,
-                // which `update_callable` exists to prevent. `update_child!` (line 49),
-                // grid.rs, stack.rs and window.rs's window_ref and content_ref arms
-                // have the same shape. probe:
-                // design/review-2026-10-05/repro/gui-widgets-a-04.rs (typing Y after
-                // the re-fire gives "Yabchello", expected "abcYhello"; 0 of 20 old
-                // editors survive an append). (gui-widgets-a-04)
-                if id == self.children_ref.id {
-                    self.children_ref.last = Some(v.clone());
-                    self.children = rt.block_on(
-                        compile_children(self.gx.clone(), v.clone())
-                    ).context(concat!($label, " children recompile"))?;
-                    changed = true;
-                }
-                for child in &mut self.children {
-                    changed |= child.handle_update(rt, id, v)?;
-                }
+                changed |= self.children.update(rt, &self.gx, id, v)
+                    .context(concat!($label, " children"))?;
                 Ok(changed)
             }
 
             fn view(&self) -> IcedElement<'_> {
                 let mut w = iced_widget::$Widget::new();
-                if let Some(sp) = self.$spacing.t {
+                if let Some(sp) = self.spacing.t {
                     w = w.spacing(sp as f32);
                 }
-                if let Some(p) = self.$padding.t.as_ref() {
+                if let Some(p) = self.padding.t.as_ref() {
                     w = w.padding(p.0);
                 }
-                if let Some(wi) = self.$width.t.as_ref() {
+                if let Some(wi) = self.width.t.as_ref() {
                     w = w.width(wi.0);
                 }
-                if let Some(h) = self.$height.t.as_ref() {
+                if let Some(h) = self.height.t.as_ref() {
                     w = w.height(h.0);
                 }
                 if let Some(a) = self.$align.t.as_ref() {
                     w = w.$align_set(a.0);
                 }
-                for child in &self.children {
+                for child in &self.children.ws {
                     w = w.push(child.view());
                 }
                 w.into()
@@ -524,10 +612,6 @@ macro_rules! flex_widget {
 flex_widget!(
     RowW,
     "row",
-    spacing,
-    padding,
-    width,
-    height,
     VAlignV,
     valign,
     Row,
@@ -538,10 +622,6 @@ flex_widget!(
 flex_widget!(
     ColumnW,
     "column",
-    spacing,
-    padding,
-    width,
-    height,
     HAlignV,
     halign,
     Column,

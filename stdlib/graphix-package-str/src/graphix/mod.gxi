@@ -98,6 +98,10 @@ val sprintf: fn(fmt: string, @args: Any) -> Result<string, `FormatError(string)>
 /// return the length of the string in bytes
 val len: fn(s: string) -> i64;
 
+/// return the number of unicode characters in the string, e.g.
+/// str::char_len("💖é") is 2 where str::len is 6
+val char_len: fn(s: string) -> i64;
+
 /// extract a substring of s starting at #start with lenth #len.
 /// both #start and #len are unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
