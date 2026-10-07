@@ -730,3 +730,20 @@ run!(dynamic_module_after_a_failure, DYNAMIC_MODULE_AFTER_A_FAILURE, |v: Result<
     Ok(Value::I64(42)) => true,
     _ => false,
 });
+
+// A module's check that would unify two cells the code around it left
+// open is refused, as a write to one is.
+run!(
+    module_check_unifies_outer_cells_refused,
+    graphix_package_core::testing::refused("the check decides a type the code around the module left open"),
+    "/test.gx" => r#"
+        let x = [];
+        let y = [];
+        mod m;
+        y <- ["s"];
+        let result = array::map(x, |v| v + 1)
+    "#,
+    "/test/m.gxi" => "",
+    "/test/m.gx" => "super::x <- super::y";
+    FuseExpect::None
+);

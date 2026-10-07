@@ -844,21 +844,14 @@ impl TVar {
         let (s_cell, o_cell) = (self.cell(), other.cell());
         let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
         match earlier {
-            // CR claude for claude: [bug] In a module check, two open cells created
-            // outside the module land here when the check must unify them, e.g.
-            // `super::x <- super::y` or `super::x == super::y` over two unannotated
-            // outer lets. This arm returns without calling decided_of, so nothing is
-            // recorded, OwnWrites never sees it, the module is not refused, and
-            // contains answers true as though the cells were one. The program then runs
-            // with a type the check never established. In the probe, --check passes (it
-            // is refused without m.gxi), the JIT panics at fusion/kernel.rs:243 on a
-            // String in an i64 slot, and the node-walk logs an arith error. Record the
-            // decision here when the two cells differ (a same-cell alias is a no-op and
-            // must stay unrecorded), so the module is refused as the CLAUDE.md module
-            // rule says; the cycle_refused/bottom_fed OR below also skips an earlier
-            // cell without recording it. probe:
-            // design/review-2026-10-05/repro/t-tvar-05.sh (t-tvar-05)
-            (true, true) => return,
+            // two cells earlier tasks made stay apart; the unification this
+            // check needed of them is a decision it may not make
+            (true, true) => {
+                if !Arc::ptr_eq(&s_cell, &o_cell) {
+                    written_of(s_cell.read().task, "cell");
+                }
+                return;
+            }
             (true, false) if how == Merge::Name => {
                 let frozen = other.read().frozen;
                 return match frozen {
@@ -949,6 +942,8 @@ impl TVar {
             if !earlier_task(&oc) {
                 oc.cycle_refused |= refused;
                 oc.bottom_fed |= bottom_fed;
+            } else if (refused && !oc.cycle_refused) || (bottom_fed && !oc.bottom_fed) {
+                written_of(oc.task, "cell");
             }
         }
         // Forward-link the abandoned cell: other TVars may share it and
