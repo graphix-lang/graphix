@@ -1174,7 +1174,36 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.val = false
+        self.val = false;
+        self.out = TagValue::phantom();
+    }
+}
+
+// XCR claude for claude: [bug] sleep() clears the configured #n together with the
+// running count, and update reloads n only from a FIRED #n (line 1147). A level #n
+// (a let, a parameter, a callee's argument) is therefore lost for good once the arm
+// sleeps: take passes nothing ever again, and Skip (1215, 1234) passes everything.
+// A literal #n restarts only because a constant re-fires at the wake. The
+// fired-only seed also leaves take dead from birth when a sibling arm consumed #n's
+// fire before this arm's first selection. Keep the last #n read through seam_value
+// across sleep and have sleep() reset only the remaining count; Throttle::sleep
+// zeroes its #rate the same way. probe:
+// design/review-2026-10-05/repro/x-engine-firing-05.gx (x-engine-firing-05)
+// 2026-10-07 claude: seed_count takes a fired #n as a restart and a standing one
+// when no count runs, so sleep() forgets only the count; Throttle keeps its rate
+// across sleep and takes a standing rate it has not seen. The repro's level and
+// literal #n now agree in every epoch, under x-engine-firing-07's rule (a restarted
+// skip shows nothing until it passes): ... [] [] [7, 7, 8, 8]. No pin checks the
+// values (fuzz pins check engine agreement); wants a soak.
+/// Set the count `#n` gives take and skip: a fired `#n` restarts it, and
+/// a standing one seeds a count not running (after a sleep, or at a birth
+/// whose fire a sibling consumed), so a level `#n` survives a sleep.
+fn seed_count(n: &TagValue, left: &mut Option<usize>) {
+    if let Some(tv) = seam_value(n)
+        && (tv.is_fired() || left.is_none())
+        && let Ok(n) = tv.value_cloned().cast_to::<usize>()
+    {
+        *left = Some(n)
     }
 }
 
@@ -1220,13 +1249,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // Seed the countdown on a tick only: a stale ride of #n must
-        // not clobber the running count.
-        if let Some(n) = seam_tick(from[0].update(ctx))
-            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
-        {
-            self.n = Some(n)
-        }
+        seed_count(from[0].update(ctx), &mut self.n);
         let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
             None => None,
             Some(n) if *n > 0 => {
@@ -1241,18 +1264,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         }
     }
 
-    // CR claude for claude: [bug] sleep() clears the configured #n together with the
-    // running count, and update reloads n only from a FIRED #n (line 1147). A level #n
-    // (a let, a parameter, a callee's argument) is therefore lost for good once the arm
-    // sleeps: take passes nothing ever again, and Skip (1215, 1234) passes everything.
-    // A literal #n restarts only because a constant re-fires at the wake. The
-    // fired-only seed also leaves take dead from birth when a sibling arm consumed #n's
-    // fire before this arm's first selection. Keep the last #n read through seam_value
-    // across sleep and have sleep() reset only the remaining count; Throttle::sleep
-    // zeroes its #rate the same way. probe:
-    // design/review-2026-10-05/repro/x-engine-firing-05.gx (x-engine-firing-05)
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.n = None
+        self.n = None;
+        self.out = TagValue::phantom();
     }
 }
 
@@ -1298,13 +1312,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // Seed the countdown on a tick only: a stale ride of #n must
-        // not clobber the running count.
-        if let Some(n) = seam_tick(from[0].update(ctx))
-            .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
-        {
-            self.n = Some(n)
-        }
+        seed_count(from[0].update(ctx), &mut self.n);
         let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
             None => Some(tv.value_cloned()),
             Some(n) if *n > 0 => {
@@ -1320,7 +1328,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.n = None
+        self.n = None;
+        self.out = TagValue::phantom();
     }
 }
 
@@ -2020,6 +2029,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
     fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {
         self.triggered = 0;
         self.current = None;
+        self.out = TagValue::phantom();
     }
 }
 
@@ -2223,13 +2233,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // A fired duration retunes the wait; any value-bearing delivery
         // of the throttled arg lands in `last_v`, but only a fired one
         // is an event to throttle.
-        let new_wait = match seam_value(from[0].update(ctx)) {
-            Some(tv) if tv.is_fired() => tv.with_value(|v| match v {
-                Value::Duration(d) => Some(**d),
-                _ => None,
-            }),
-            _ => None,
-        };
+        // a standing rate this throttle has not taken (a sibling consumed
+        // its fire) is taken as a fired one is
+        let new_wait = seam_value(from[0].update(ctx))
+            .and_then(|tv| {
+                tv.with_value(|v| match v {
+                    Value::Duration(d) => Some(**d),
+                    _ => None,
+                })
+            })
+            .filter(|d| *d != self.wait);
         let mut up1 = false;
         if let Some(tv) = seam_value(from[1].update(ctx)) {
             up1 = tv.is_fired();
@@ -2273,7 +2286,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.last = None;
-        self.wait = Duration::ZERO;
         self.last_v = None;
         self.out = TagValue::phantom();
     }
@@ -2329,7 +2341,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
+        // XCR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
         // re-selected arm's input does not fire at the wake, the arm emits the previous
         // activation's count, and the next fire counts 1, so the arm shows 2 and then
         // 1. Once, Take, Skip, Uniq and Hold do the same in their sleep: a woken
@@ -2341,7 +2353,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         // restart builtin's sleep (check the seq lowering's once, uniq and hold first),
         // or rule the surfacing intended in CLAUDE.md. probe:
         // design/review-2026-10-05/repro/x-engine-firing-07.gx (x-engine-firing-07)
-        self.count = 0
+        // 2026-10-07 claude: count, once, take, skip, uniq and hold set `out` to the
+        // phantom in sleep(), so a woken arm shows what a fresh one would (the repro:
+        // 1 at the first fire after the wake, never the old 2). The seq lowering's
+        // once, uniq and hold sit inside a machine that resets on its arm's sleep.
+        // No pin checks the values; a semantics change: wants review and a soak.
+        self.count = 0;
+        self.out = TagValue::phantom();
     }
 }
 
@@ -2449,7 +2467,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        self.0 = None
+        self.0 = None;
+        self.1 = TagValue::phantom();
     }
 }
 

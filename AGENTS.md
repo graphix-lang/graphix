@@ -665,7 +665,8 @@ node graph IS the IR — there is no parallel typed IR
   its next update takes — no ExecCtx globals (parallel compile and a
   parallel evaluator stay possible). The restart builtins
   (`once`/`take`/`skip`/`uniq`/`hold`/`count`) and a seq machine's `pc`
-  clear in their own `sleep()`. A labeled DEFAULT is born with the binding and delivers
+  clear in their own `sleep()`, a restart builtin's output included: a
+  woken one is a fresh one; configuration (`#n`, `#rate`) survives. A labeled DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Async builtins clear their
   output on sleep (`design/async_sleep_outputs.md`). A pure non-recursive
   arm skips `sleep` and is not updated while untaken.
