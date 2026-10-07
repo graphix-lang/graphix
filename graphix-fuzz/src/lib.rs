@@ -3282,68 +3282,53 @@ pub async fn typemorph_scan(
     programs: Vec<(String, String)>,
     per_check: Duration,
 ) -> Vec<(String, String)> {
-    use tokio::task::JoinSet;
-    let par = (parallelism() / 2).max(1);
-    let mut set: JoinSet<(usize, Result<String, String>)> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one =
-        |set: &mut JoinSet<(usize, Result<String, String>)>, i: usize, prog: String| {
-            set.spawn(async move { (i, typemorph_child(&prog, per_check).await) });
-        };
-    while next < programs.len() && set.len() < par {
-        spawn_one(&mut set, next, programs[next].1.clone());
-        next += 1;
-    }
     let mut out = Vec::new();
     let mut noparse_total = 0usize;
-    while let Some(res) = set.join_next().await {
-        if let Ok((i, r)) = res {
-            match r {
-                Err(e) => out.push((programs[i].0.clone(), format!("harness: {e}"))),
-                Ok(rep) => {
-                    noparse_total += rep
-                        .lines()
-                        .find_map(|l| l.strip_prefix("NOPARSE "))
-                        .and_then(|n| n.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    let flips = tm_flips(&rep);
-                    if !flips.is_empty() {
-                        match typemorph_child(&programs[i].1, per_check).await {
-                            Err(e) => out.push((
-                                programs[i].0.clone(),
-                                format!("harness (confirm): {e}"),
-                            )),
-                            Ok(rep2) => {
-                                let again: std::collections::HashSet<String> =
-                                    tm_flips(&rep2).into_iter().map(|f| f.id).collect();
-                                for Flip { id, head, mutant } in flips {
-                                    if again.contains(&id) {
-                                        let mutant =
-                                            escape_line(&mutant.unwrap_or_default());
-                                        out.push((
-                                            programs[i].0.clone(),
-                                            format!("{id}: {head}\n    mutant: {mutant}"),
-                                        ));
-                                    } else {
-                                        out.push((
-                                            programs[i].0.clone(),
-                                            format!(
-                                                "{id}: UNCONFIRMED (fresh-process flap)"
-                                            ),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
+    let job = |i: usize| {
+        let prog = programs[i].1.clone();
+        async move {
+            let r = typemorph_child(&prog, per_check).await;
+            let confirm = match &r {
+                Ok(rep) if !tm_flips(rep).is_empty() => {
+                    Some(typemorph_child(&prog, per_check).await)
                 }
+                _ => None,
+            };
+            (r, confirm)
+        }
+    };
+    windowed(programs.len(), (parallelism() / 2).max(1), job, |i, res| {
+        let name = &programs[i].0;
+        let (rep, confirm) = match res {
+            Err(e) => return out.push((name.clone(), format!("harness: {e}"))),
+            Ok((Err(e), _)) => return out.push((name.clone(), format!("harness: {e}"))),
+            Ok((Ok(rep), confirm)) => (rep, confirm),
+        };
+        noparse_total += rep
+            .lines()
+            .find_map(|l| l.strip_prefix("NOPARSE "))
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0);
+        let rep2 = match confirm {
+            None => return,
+            Some(Err(e)) => {
+                return out.push((name.clone(), format!("harness (confirm): {e}")));
             }
+            Some(Ok(rep2)) => rep2,
+        };
+        let again: std::collections::HashSet<String> =
+            tm_flips(&rep2).into_iter().map(|f| f.id).collect();
+        for Flip { id, head, mutant } in tm_flips(&rep) {
+            let line = if again.contains(&id) {
+                let mutant = escape_line(&mutant.unwrap_or_default());
+                format!("{id}: {head}\n    mutant: {mutant}")
+            } else {
+                format!("{id}: UNCONFIRMED (fresh-process flap)")
+            };
+            out.push((name.clone(), line));
         }
-        if next < programs.len() {
-            spawn_one(&mut set, next, programs[next].1.clone());
-            next += 1;
-        }
-    }
+    })
+    .await;
     if noparse_total > 0 {
         eprintln!("typemorph: {noparse_total} candidates failed print->parse round trip");
     }
@@ -3364,57 +3349,34 @@ pub struct Regression {
 /// where a still-quiet pin passes on its own character. `bless` retries
 /// every one of them, so the verdicts it records are the unloaded ones.
 pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
-    use tokio::task::JoinSet;
-    let par = regress_parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    let recorded = recorded_verdicts(OUTCOME_MANIFEST);
-    let mut set: JoinSet<(usize, Option<Divergence>, Verdict)> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
-        let prog = entries[i].1.to_string();
-        set.spawn(async move {
-            let (d, v) = check_verdict(&prog, timeout).await;
-            (i, d, v)
-        });
-    };
-    while next < entries.len() && set.len() < par {
-        spawn_one(&mut set, next);
-        next += 1;
-    }
+    let recorded = manifest_rows::<Verdict>(OUTCOME_MANIFEST);
     let mut regressions = Vec::new();
     let mut verdicts: Vec<Option<Verdict>> = vec![None; entries.len()];
     let mut suspect: Vec<usize> = Vec::new();
-    while let Some(res) = set.join_next().await {
-        if let Ok((i, d, v)) = res {
-            let trusted = match v {
-                Verdict::Ran | Verdict::Excluded => true,
-                Verdict::Contained | Verdict::Rejected => {
-                    !bless && recorded.get(entries[i].0) == Some(&v)
-                }
-                Verdict::Unsure => false,
-            };
-            match d {
-                // CR claude for claude: [bug] A pin that regresses gets no verdict here
-                // (nor at the 4x retry below), so outcome_mismatches also lists its
-                // manifest row as 'stale manifest row: X — bless to drop' and
-                // print_regression counts the pin twice. regress --bless writes the
-                // manifest before it looks at regressions (main.rs 452-466), so
-                // blessing with an unfixed regression drops that pin's row and the pin
-                // comes back 'unrecorded' once fixed; fusecheck --bless refuses in the
-                // like case. Keep regressed names out of the stale scan (or record a
-                // marker verdict), refuse to bless while regressions exist, and give
-                // outcome_mismatches a test like fusecheck_mismatches has.
-                // (fuzz-lib-b-12)
-                Some(d) => regressions.push((entries[i].0.to_string(), d)),
-                None if trusted => verdicts[i] = Some(v),
-                None => suspect.push(i),
+    let job = |i: usize| async move { check_verdict(entries[i].1, timeout).await };
+    windowed(entries.len(), regress_parallelism(), job, |i, res| {
+        let (d, v) = match res {
+            Ok(r) => r,
+            Err(e) => {
+                return regressions
+                    .push((entries[i].0.to_string(), panicked(entries[i].1, e)));
             }
+        };
+        let trusted = match v {
+            Verdict::Ran | Verdict::Excluded => true,
+            Verdict::Contained | Verdict::Rejected => {
+                !bless && recorded.get(entries[i].0) == Some(&v)
+            }
+            Verdict::Unsure => false,
+        };
+        match d {
+            Some(d) => regressions.push((entries[i].0.to_string(), d)),
+            None if trusted => verdicts[i] = Some(v),
+            None => suspect.push(i),
         }
-        if next < entries.len() {
-            spawn_one(&mut set, next);
-            next += 1;
-        }
-    }
+    })
+    .await;
     if !suspect.is_empty() {
         eprintln!(
             "regress: retrying {} untrusted agreement(s) sequentially at full budget",
@@ -3443,12 +3405,26 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     Regression { regressions, verdicts }
 }
 
+/// A check that panicked, as the regression it is: both sides carry the
+/// panic.
+fn panicked(prog: &str, e: String) -> Divergence {
+    let o = Outcome::RuntimeErr(format!("check panicked: {e}"));
+    Divergence {
+        code: prog.to_string(),
+        reference: o.clone(),
+        tested: o,
+        tier: oracle_tier(prog),
+        pair: Pair::Engine,
+    }
+}
+
 /// The checked-in outcome manifest: one `verdict<TAB>name` line per
 /// corpus program, written by `regress --bless` (then rebuild to embed).
 pub static OUTCOME_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/outcome.manifest"));
 
-fn recorded_verdicts(manifest: &str) -> BTreeMap<&str, Verdict> {
+/// The rows of a `value<TAB>name` manifest.
+fn manifest_rows<V: FromStr>(manifest: &str) -> BTreeMap<&str, V> {
     manifest
         .lines()
         .filter_map(|l| l.split_once('\t'))
@@ -3456,22 +3432,55 @@ fn recorded_verdicts(manifest: &str) -> BTreeMap<&str, Verdict> {
         .collect()
 }
 
-/// The live verdicts against the manifest. An `unsure` on either side
-/// compares equal: it records nothing about the program.
-pub fn outcome_mismatches(manifest: &str, verdicts: &[(String, Verdict)]) -> Vec<String> {
-    let mut recorded = recorded_verdicts(manifest);
+/// What one run measured for a pin.
+pub enum Measured<'a, V> {
+    Value(&'a V),
+    /// The measurement failed, with this reason.
+    Unreadable(&'a str),
+    /// Reported elsewhere (a regression): no line here, and its row is
+    /// not stale.
+    Elsewhere,
+}
+
+/// `live` against a `value<TAB>name` manifest, one line per
+/// disagreement: in live order, then the rows whose pin is gone.
+/// `changed` words a recorded value the live one disagrees with.
+fn manifest_diff<'a, V: FromStr + fmt::Display + 'a>(
+    manifest: &str,
+    live: impl IntoIterator<Item = (&'a str, Measured<'a, V>)>,
+    changed: impl Fn(&str, &V, &V) -> Option<String>,
+) -> Vec<String> {
+    let mut recorded = manifest_rows::<V>(manifest);
     let mut out = Vec::new();
-    for (n, v) in verdicts {
-        match recorded.remove(n.as_str()) {
-            Some(r) if r == *v || r == Verdict::Unsure || *v == Verdict::Unsure => (),
-            Some(r) => out.push(format!("changed outcome: {n}: {r} -> {v}")),
-            None => out.push(format!("unrecorded: {n} ({v}) — bless to record")),
+    for (n, m) in live {
+        let rec = recorded.remove(n);
+        match (m, rec) {
+            (Measured::Elsewhere, _) => (),
+            (Measured::Unreadable(e), _) => {
+                let last = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e);
+                out.push(format!("unreadable: {n}: {last}"));
+            }
+            (Measured::Value(v), Some(r)) => out.extend(changed(n, &r, v)),
+            (Measured::Value(v), None) => {
+                out.push(format!("unrecorded: {n} ({v}) — bless to record"))
+            }
         }
     }
     for (n, r) in recorded {
         out.push(format!("stale manifest row: {n} ({r}) — bless to drop"));
     }
     out
+}
+
+/// The live verdicts against the manifest. An `unsure` on either side
+/// compares equal: it records nothing about the program.
+pub fn outcome_mismatches(manifest: &str, r: &Regression) -> Vec<String> {
+    let live = r.verdicts.iter().map(|(n, v)| (n.as_str(), Measured::Value(v)));
+    let regressed = r.regressions.iter().map(|(n, _)| (n.as_str(), Measured::Elsewhere));
+    manifest_diff(manifest, live.chain(regressed), |n, r: &Verdict, v| {
+        (r != v && *r != Verdict::Unsure && *v != Verdict::Unsure)
+            .then(|| format!("changed outcome: {n}: {r} -> {v}"))
+    })
 }
 
 /// The marker a corpus pin carries when both engines are meant to
@@ -3545,56 +3554,21 @@ impl FromStr for FuseCount {
 pub async fn run_fusecheck(
     timeout: Duration,
 ) -> Vec<(String, Result<FuseCount, String>)> {
-    use tokio::task::JoinSet;
-    let par = parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    // CR claude for claude: [structure] This spawn_one, fill, join_next, refill window is
-    // written seven times: typemorph_scan, run_regression, here, selfcheck, detcheck,
-    // and main.rs gen-check and reactive-check. The copies have drifted: typemorph_scan
-    // awaits its confirm child inside the loop, so the window drains during every
-    // confirmation, and a JoinError is reported here and in gen-check but dropped by
-    // the other five. One helper over (count, par, spawn, on_result) would serve all
-    // seven. recorded_verdicts/outcome_mismatches (line 3244) and fusecheck_mismatches
-    // (line 3386) parse the same value<TAB>name rows and print the same 'unrecorded …
-    // bless to record' and 'stale manifest row … bless to drop' lines; one diff generic
-    // over the value type would leave each manifest only its comparison.
-    // (fuzz-lib-b-14)
-    let mut set: JoinSet<(usize, Result<FuseCount, String>)> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
-        let prog = entries[i].1.to_string();
-        set.spawn(async move {
-            let r = match compile_with_stats(&prog, Mode::Jit, timeout).await {
-                CompileOutcome::Compiled(s) | CompileOutcome::Rejected(_, s) => {
-                    Ok(FuseCount::Fused(s.fused as u64))
-                }
-                CompileOutcome::BudgetAborted => Ok(FuseCount::BudgetAbort),
-                CompileOutcome::Failed(e) => Err(e),
-            };
-            (i, r)
-        });
+    let mut counts: Vec<Result<FuseCount, String>> =
+        vec![Err("never measured".to_string()); entries.len()];
+    let job = |i: usize| async move {
+        match compile_with_stats(entries[i].1, Mode::Jit, timeout).await {
+            CompileOutcome::Compiled(s) | CompileOutcome::Rejected(_, s) => {
+                Ok(FuseCount::Fused(s.fused as u64))
+            }
+            CompileOutcome::BudgetAborted => Ok(FuseCount::BudgetAbort),
+            CompileOutcome::Failed(e) => Err(e),
+        }
     };
-    while next < entries.len() && set.len() < par {
-        spawn_one(&mut set, next);
-        next += 1;
-    }
-    let mut counts: Vec<Option<Result<FuseCount, String>>> = vec![None; entries.len()];
-    while let Some(res) = set.join_next().await {
-        if let Ok((i, c)) = res {
-            counts[i] = Some(c);
-        }
-        if next < entries.len() {
-            spawn_one(&mut set, next);
-            next += 1;
-        }
-    }
-    entries
-        .iter()
-        .zip(counts)
-        .map(|((name, _), c)| {
-            (name.to_string(), c.unwrap_or_else(|| Err("worker panicked".to_string())))
-        })
-        .collect()
+    windowed(entries.len(), parallelism(), job, |i, r| counts[i] = r.and_then(|r| r))
+        .await;
+    entries.iter().zip(counts).map(|((name, _), c)| (name.to_string(), c)).collect()
 }
 
 /// Every way the live counts disagree with the `manifest`, one line
@@ -3605,38 +3579,20 @@ pub fn fusecheck_mismatches(
     manifest: &str,
     counts: &[(String, Result<FuseCount, String>)],
 ) -> Vec<String> {
-    let mut recorded: BTreeMap<&str, FuseCount> = BTreeMap::new();
-    for l in manifest.lines() {
-        if let Some((c, n)) = l.split_once('\t') {
-            if let Ok(c) = c.parse() {
-                recorded.insert(n, c);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    for (n, c) in counts {
-        let rec = recorded.remove(n.as_str());
-        let c = match c {
-            Ok(c) => c,
-            Err(e) => {
-                let last = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e);
-                out.push(format!("unreadable: {n}: {last}"));
-                continue;
-            }
+    let live = counts.iter().map(|(n, c)| {
+        let m = match c {
+            Ok(c) => Measured::Value(c),
+            Err(e) => Measured::Unreadable(e.as_str()),
         };
-        match rec {
-            Some(r) if r == *c => {}
-            Some(FuseCount::Fused(r)) if matches!(c, FuseCount::Fused(c) if *c < r) => {
-                out.push(format!("LOST fusion: {n}: {r} -> {c}"))
-            }
-            Some(r) => out.push(format!("changed fusion: {n}: {r} -> {c}")),
-            None => out.push(format!("unrecorded: {n} ({c}) — bless to record")),
+        (n.as_str(), m)
+    });
+    manifest_diff(manifest, live, |n, r: &FuseCount, c| match (r, c) {
+        _ if r == c => None,
+        (FuseCount::Fused(r), FuseCount::Fused(c)) if c < r => {
+            Some(format!("LOST fusion: {n}: {r} -> {c}"))
         }
-    }
-    for (n, r) in recorded {
-        out.push(format!("stale manifest row: {n} ({r}) — bless to drop"));
-    }
-    out
+        _ => Some(format!("changed fusion: {n}: {r} -> {c}")),
+    })
 }
 
 /// The oracle-soundness gate: same program, same mode, twice → identical
@@ -3648,7 +3604,6 @@ pub async fn selfcheck(
     seed: u64,
     timeout: Duration,
 ) -> Vec<(String, &'static str)> {
-    use tokio::task::JoinSet;
     // Subjects are everything with a sound comparison at some tier;
     // tier-Excluded programs are non-subjects. The 100% bar also
     // polices the tier list: a missing marker shows up as a flake.
@@ -3668,36 +3623,27 @@ pub async fn selfcheck(
             progs.push(generate::reactive::gen_reactive_program(&mut rng));
         }
     }
-    let par = parallelism();
-    let mut set: JoinSet<Vec<(String, &'static str)>> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one = |set: &mut JoinSet<Vec<(String, &'static str)>>, prog: String| {
-        set.spawn(async move {
-            selfcheck_isolated(&prog, timeout)
-                .await
-                .into_iter()
-                .map(|mode| (prog.clone(), mode))
-                .collect()
-        });
-    };
-    while next < progs.len() && set.len() < par {
-        spawn_one(&mut set, progs[next].clone());
-        next += 1;
-    }
     let mut flaky = Vec::new();
     let mut done = 0usize;
     let mut inconclusive = 0usize;
-    while let Some(res) = set.join_next().await {
-        if let Ok(mut bad) = res {
-            // budget-limited subjects are counted, never failed on
-            let n = bad.len();
-            bad.retain(|(_, mode)| *mode != "inconclusive");
-            inconclusive += n - bad.len();
-            // streamed as they land: a killed run must not take the list
-            for (prog, mode) in &bad {
-                eprintln!("FLAKY under {mode}: {}", prog.replace('\n', "\\n"));
+    let job = |i: usize| {
+        let prog = progs[i].clone();
+        async move { selfcheck_isolated(&prog, timeout).await }
+    };
+    windowed(progs.len(), parallelism(), job, |i, res| {
+        let modes = res.unwrap_or_else(|e| {
+            eprintln!("selfcheck worker panicked: {e}");
+            vec!["panicked"]
+        });
+        // budget-limited subjects are counted, never failed on
+        for mode in modes {
+            if mode == "inconclusive" {
+                inconclusive += 1;
+            } else {
+                // streamed as they land: a killed run must not take the list
+                eprintln!("FLAKY under {mode}: {}", progs[i].replace('\n', "\\n"));
+                flaky.push((progs[i].clone(), mode));
             }
-            flaky.append(&mut bad);
         }
         done += 1;
         if done % 200 == 0 {
@@ -3707,11 +3653,8 @@ pub async fn selfcheck(
                 flaky.len()
             );
         }
-        if next < progs.len() {
-            spawn_one(&mut set, progs[next].clone());
-            next += 1;
-        }
-    }
+    })
+    .await;
     if inconclusive > 0 {
         eprintln!(
             "selfcheck: {inconclusive}/{} subject(s) inconclusive — timed out at 4x \
@@ -4058,6 +4001,35 @@ pub fn fuzz_source(seed: u64, weight: f64, tasks: usize) -> Source<'static> {
             }
             true
         })),
+    }
+}
+
+/// Run `job(i)` for every `i` in `0..count`, at most `par` at a time,
+/// and hand each result to `on_result` as it lands. A job that panicked
+/// arrives as `Err` with the panic.
+pub async fn windowed<T, Fut>(
+    count: usize,
+    par: usize,
+    mut job: impl FnMut(usize) -> Fut,
+    mut on_result: impl FnMut(usize, Result<T, String>),
+) where
+    T: Send + 'static,
+    Fut: future::Future<Output = T> + Send + 'static,
+{
+    let mut set = tokio::task::JoinSet::new();
+    let mut index: AHashMap<tokio::task::Id, usize> = AHashMap::new();
+    let mut next = 0usize;
+    loop {
+        while next < count && set.len() < par.max(1) {
+            index.insert(set.spawn(job(next)).id(), next);
+            next += 1;
+        }
+        let (id, r) = match set.join_next_with_id().await {
+            None => break,
+            Some(Ok((id, v))) => (id, Ok(v)),
+            Some(Err(e)) => (e.id(), Err(e.to_string())),
+        };
+        on_result(index.remove(&id).expect("a spawned job's id"), r);
     }
 }
 
@@ -4585,31 +4557,17 @@ pub async fn detcheck(
     programs: Vec<(String, String)>,
     timeout: Duration,
 ) -> Vec<(String, String)> {
-    use tokio::task::JoinSet;
-    let par = (parallelism() / 2).max(1);
-    let mut set: JoinSet<(String, Option<String>)> = JoinSet::new();
-    let mut next = 0usize;
-    let spawn_one = |set: &mut JoinSet<_>, i: usize| {
-        let (name, prog) = programs[i].clone();
-        set.spawn(async move {
-            let r = detcheck_one_pair(&prog, timeout).await;
-            (name, r)
-        });
-    };
-    while next < programs.len() && set.len() < par {
-        spawn_one(&mut set, next);
-        next += 1;
-    }
     let mut flaps = Vec::new();
-    while let Some(res) = set.join_next().await {
-        if let Ok((name, Some(detail))) = res {
-            flaps.push((name, detail));
-        }
-        if next < programs.len() {
-            spawn_one(&mut set, next);
-            next += 1;
-        }
-    }
+    let job = |i: usize| {
+        let prog = programs[i].1.clone();
+        async move { detcheck_one_pair(&prog, timeout).await }
+    };
+    windowed(programs.len(), (parallelism() / 2).max(1), job, |i, r| match r {
+        Ok(None) => (),
+        Ok(Some(detail)) => flaps.push((programs[i].0.clone(), detail)),
+        Err(e) => flaps.push((programs[i].0.clone(), format!("panicked: {e}"))),
+    })
+    .await;
     flaps
 }
 
@@ -6961,5 +6919,30 @@ mod fusecheck_test {
         for c in [FuseCount::Fused(7), FuseCount::BudgetAbort] {
             assert_eq!(c.to_string().parse(), Ok(c));
         }
+    }
+
+    #[test]
+    fn outcome_mismatches_skip_regressed_pins() {
+        let manifest = "trace\tholds\ncontained\tchanged\nunsure\tvouched\ntrace\tregressed\ntrace\tgone\n";
+        let regressed = panicked("regressed", "stub".to_string());
+        let r = Regression {
+            regressions: vec![("regressed".to_string(), regressed)],
+            verdicts: [
+                ("holds", Verdict::Ran),
+                ("changed", Verdict::Ran),
+                ("vouched", Verdict::Rejected),
+                ("new", Verdict::Excluded),
+            ]
+            .map(|(n, v)| (n.to_string(), v))
+            .into(),
+        };
+        assert_eq!(
+            outcome_mismatches(manifest, &r),
+            [
+                "changed outcome: changed: contained -> trace",
+                "unrecorded: new (excluded) — bless to record",
+                "stale manifest row: gone (trace) — bless to drop",
+            ]
+        );
     }
 }

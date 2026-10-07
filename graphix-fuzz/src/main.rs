@@ -125,7 +125,7 @@ async fn print_fusecheck() -> usize {
 /// against the outcome manifest. Returns regressions plus mismatches.
 async fn print_regression() -> usize {
     let r = regress(false).await;
-    let bad = outcome_mismatches(OUTCOME_MANIFEST, &r.verdicts);
+    let bad = outcome_mismatches(OUTCOME_MANIFEST, &r);
     for l in &bad {
         println!("  {l}");
     }
@@ -181,6 +181,29 @@ fn render(o: &Outcome) -> String {
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
+}
+
+/// A reject's bucket: its innermost cause (the last non-blank line), cut
+/// to 120 bytes at a char boundary.
+fn reject_key(err: &str) -> String {
+    let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let mut end = last.len().min(120);
+    while !last.is_char_boundary(end) {
+        end -= 1;
+    }
+    last[..end].to_string()
+}
+
+/// Where a campaign records findings: `GRAPHIX_FUZZ_CORPUS`, else outside
+/// the synced repo. Concurrent campaigns must not share one (colliding
+/// finding indices).
+fn corpus_dir() -> std::path::PathBuf {
+    match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
+        Some(p) => p.into(),
+        None => std::env::home_dir()
+            .map(|h| h.join("tmp/target/fuzz/crashes"))
+            .unwrap_or_else(|| "fuzz/crashes".into()),
+    }
 }
 
 /// Per-feature compile rates for gen-check/reactive-check, bucketed by
@@ -377,83 +400,48 @@ async fn main() -> Result<()> {
             };
             let par =
                 std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
-            let mut set: tokio::task::JoinSet<(usize, Option<String>)> =
-                tokio::task::JoinSet::new();
-            let mut next = 0usize;
             let mut compiled = 0usize;
-            // bucket by the innermost anyhow cause (the last line), with
-            // one example program per bucket
+            // bucket by the innermost cause, with one example program per
+            // bucket
             let mut rejects: std::collections::BTreeMap<String, (usize, String)> =
                 std::collections::BTreeMap::new();
-            let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
-                set.spawn(async move {
-                    (
-                        i,
-                        graphix_fuzz::compile_program(&p, graphix_fuzz::Mode::Interp)
-                            .await,
-                    )
-                });
-            };
-            while next < progs.len() && set.len() < par {
-                spawn(&mut set, next, progs[next].clone());
-                next += 1;
-            }
             // `GRAPHIX_FUZZ_DUMP_REJECTS=<dir>`: write each rejected
             // program with its full error to `<dir>/reject_<i>.gx`
             let dump_dir = std::env::var_os("GRAPHIX_FUZZ_DUMP_REJECTS");
             let mut ok = vec![false; progs.len()];
-            while let Some(res) = set.join_next().await {
-                match res {
-                    Ok((i, None)) => {
-                        compiled += 1;
-                        ok[i] = true;
-                    }
-                    Ok((i, Some(err))) => {
-                        if let Some(dir) = &dump_dir {
-                            let p = std::path::Path::new(dir)
-                                .join(format!("reject_{i:06}.gx"));
-                            let body = format!(
-                                "{}\n// gen-check reject:\n// {}\n",
-                                progs[i],
-                                err.replace('\n', "\n// ")
-                            );
-                            let _ = std::fs::write(p, body);
-                        }
-                        // CR claude for claude: [structure] This reject-bucket key (last
-                        // non-blank line, trimmed, truncate(120)) is copied in
-                        // reactive-check, and the default corpus directory is computed
-                        // twice (generate/fuzz and soak). String::truncate panics when
-                        // byte 120 falls inside a multibyte char, and compile errors
-                        // can carry one (a recursive type variable prints `…`). Under
-                        // gen-check's abort hook that kills the run before the report.
-                        // One reject_key helper that cuts at a char boundary and one
-                        // corpus_dir helper remove the copies. The `worker panicked`
-                        // bucket below is unreachable under that abort hook.
-                        // (fuzz-main-aux-17)
-                        let mut key = err
-                            .lines()
-                            .rev()
-                            .find(|l| !l.trim().is_empty())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        key.truncate(120);
-                        let entry =
-                            rejects.entry(key).or_insert_with(|| (0, progs[i].clone()));
-                        entry.0 += 1;
-                    }
-                    Err(_) => {
-                        rejects
-                            .entry("worker panicked".into())
-                            .or_insert_with(|| (0, String::new()))
-                            .0 += 1;
-                    }
+            let job = |i: usize| {
+                let p = progs[i].clone();
+                async move { graphix_fuzz::compile_program(&p, Mode::Interp).await }
+            };
+            graphix_fuzz::windowed(n, par, job, |i, res| match res {
+                Ok(None) => {
+                    compiled += 1;
+                    ok[i] = true;
                 }
-                if next < progs.len() {
-                    spawn(&mut set, next, progs[next].clone());
-                    next += 1;
+                Ok(Some(err)) => {
+                    if let Some(dir) = &dump_dir {
+                        let p =
+                            std::path::Path::new(dir).join(format!("reject_{i:06}.gx"));
+                        let body = format!(
+                            "{}\n// gen-check reject:\n// {}\n",
+                            progs[i],
+                            err.replace('\n', "\n// ")
+                        );
+                        let _ = std::fs::write(p, body);
+                    }
+                    rejects
+                        .entry(reject_key(&err))
+                        .or_insert_with(|| (0, progs[i].clone()))
+                        .0 += 1;
                 }
-            }
+                Err(e) => {
+                    rejects
+                        .entry(format!("worker panicked: {}", reject_key(&e)))
+                        .or_insert_with(|| (0, progs[i].clone()))
+                        .0 += 1;
+                }
+            })
+            .await;
             println!(
                 "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
                 compiled as f64 * 100.0 / n as f64
@@ -474,15 +462,15 @@ async fn main() -> Result<()> {
             // records every pin's verdict, each untrusted one retried
             // alone (rebuild afterward: the compare reads the embedded copy)
             let r = regress(true).await;
-            // CR claude for claude: [bug] These rows come from r.verdicts, which has no
-            // entry for a pin that regressed. The file is written before r.regressions
-            // is checked, so blessing while any pin regresses deletes that pin's row,
-            // and every later regress reports it as unrecorded. fusecheck --bless
-            // refuses to write when a count is unreadable; this should likewise refuse
-            // while r.regressions is non-empty. The plain regress path has the same
-            // hole: outcome_mismatches lists a regressed pin's row as a stale row to
-            // 'bless to drop', counting it twice and advising the wrong fix.
-            // (fuzz-main-aux-14)
+            if !r.regressions.is_empty() {
+                eprintln!(
+                    "regress --bless: {} pin(s) regress; fix them before blessing, or \
+                     their rows would be dropped",
+                    r.regressions.len()
+                );
+                drop(cwd_guard);
+                std::process::exit(1);
+            }
             let out: String =
                 r.verdicts.iter().map(|(n, v)| format!("{v}\t{n}\n")).collect();
             let path = orig_cwd.join("graphix-fuzz/outcome.manifest");
@@ -490,10 +478,6 @@ async fn main() -> Result<()> {
                 panic!("writing {} (run from the repo root): {e}", path.display())
             });
             println!("regress: blessed {} verdicts — rebuild to embed", r.verdicts.len());
-            if !r.regressions.is_empty() {
-                drop(cwd_guard);
-                std::process::exit(1);
-            }
         }
         Some("regress") => {
             let n = print_regression().await + print_fusecheck().await;
@@ -623,70 +607,52 @@ async fn main() -> Result<()> {
             };
             let par =
                 std::thread::available_parallelism().map(|n| n.get() * 2).unwrap_or(8);
-            let mut set: tokio::task::JoinSet<(usize, Outcome)> =
-                tokio::task::JoinSet::new();
-            let mut next = 0usize;
-            let spawn = |set: &mut tokio::task::JoinSet<_>, i: usize, p: String| {
-                set.spawn(async move {
-                    (i, graphix_fuzz::run_program(&p, Mode::Interp, timeout()).await)
-                });
-            };
-            while next < progs.len() && set.len() < par {
-                spawn(&mut set, next, progs[next].clone());
-                next += 1;
-            }
             let (mut compiled, mut quiesced, mut advanced, mut wedged) = (0, 0, 0, 0);
             let mut ok = vec![false; progs.len()];
             let mut rejects: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
-            while let Some(res) = set.join_next().await {
-                if let Ok((i, out)) = res {
-                    if !matches!(out, Outcome::CompileErr(_) | Outcome::RuntimeErr(_)) {
-                        ok[i] = true;
+            let job = |i: usize| {
+                let p = progs[i].clone();
+                async move { graphix_fuzz::run_program(&p, Mode::Interp, timeout()).await }
+            };
+            graphix_fuzz::windowed(n, par, job, |i, res| {
+                let out = match res {
+                    Ok(out) => out,
+                    Err(e) => Outcome::RuntimeErr(format!("worker panicked: {e}")),
+                };
+                if !matches!(out, Outcome::CompileErr(_) | Outcome::RuntimeErr(_)) {
+                    ok[i] = true;
+                }
+                match out {
+                    Outcome::CompileErr(e) => {
+                        *rejects.entry(reject_key(&e)).or_default() += 1
                     }
-                    match out {
-                        Outcome::CompileErr(e) => {
-                            let mut key = e
-                                .lines()
-                                .rev()
-                                .find(|l| !l.trim().is_empty())
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            key.truncate(120);
-                            *rejects.entry(key).or_default() += 1;
+                    Outcome::RuntimeErr(e) => {
+                        *rejects
+                            .entry(reject_key(&format!("RUNTIME: {}", first_line(&e))))
+                            .or_default() += 1
+                    }
+                    Outcome::Timeout(_) => {
+                        compiled += 1;
+                        wedged += 1;
+                    }
+                    Outcome::Checked => unreachable!("a run never answers Checked"),
+                    Outcome::Trace(t) => {
+                        compiled += 1;
+                        if !t.epochs.iter().any(|e| e.capped) {
+                            quiesced += 1;
                         }
-                        Outcome::RuntimeErr(e) => {
-                            let mut key = format!("RUNTIME: {}", first_line(&e));
-                            key.truncate(120);
-                            *rejects.entry(key).or_default() += 1;
-                        }
-                        Outcome::Timeout(_) => {
-                            compiled += 1;
-                            wedged += 1;
-                        }
-                        Outcome::Checked => unreachable!("a run never answers Checked"),
-                        Outcome::Trace(t) => {
-                            compiled += 1;
-                            if !t.epochs.iter().any(|e| e.capped) {
-                                quiesced += 1;
-                            }
-                            // advanced iff any epoch past the compile
-                            // burst produced events
-                            let has_inj = t.epochs.len() > 1;
-                            if !has_inj
-                                || t.epochs[1..].iter().any(|e| !e.events.is_empty())
-                            {
-                                advanced += 1;
-                            }
+                        // advanced iff any epoch past the compile
+                        // burst produced events
+                        let has_inj = t.epochs.len() > 1;
+                        if !has_inj || t.epochs[1..].iter().any(|e| !e.events.is_empty())
+                        {
+                            advanced += 1;
                         }
                     }
                 }
-                if next < progs.len() {
-                    spawn(&mut set, next, progs[next].clone());
-                    next += 1;
-                }
-            }
+            })
+            .await;
             let pct = |x: usize| x as f64 * 100.0 / n as f64;
             println!(
                 "reactive-check: seed={seed}: {compiled}/{n} compiled ({:.1}%), \
@@ -936,15 +902,7 @@ async fn main() -> Result<()> {
             // front so a finding is never re-reported
             let iters = parse_iters(args.get(2), if cmd == "fuzz" { 50 } else { 100 });
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
-            // `GRAPHIX_FUZZ_CORPUS` overrides the corpus dir. Concurrent
-            // campaigns must not share one (colliding finding indices),
-            // and the default lives outside the synced repo.
-            let out = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
-                Some(p) => std::path::PathBuf::from(p),
-                None => std::env::home_dir()
-                    .map(|h| h.join("tmp/target/fuzz/crashes"))
-                    .unwrap_or_else(|| "fuzz/crashes".into()),
-            };
+            let out = corpus_dir();
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",
@@ -986,12 +944,7 @@ async fn main() -> Result<()> {
             let seed: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             let mix = args.get(4).map(String::as_str).unwrap_or(DEFAULT_MIX).to_string();
             let w = parse_mix(&mix)?;
-            let out = match std::env::var_os("GRAPHIX_FUZZ_CORPUS") {
-                Some(p) => std::path::PathBuf::from(p),
-                None => std::env::home_dir()
-                    .map(|h| h.join("tmp/target/fuzz/crashes"))
-                    .unwrap_or_else(|| "fuzz/crashes".into()),
-            };
+            let out = corpus_dir();
             let corpus = Arc::new(Corpus::load(&out));
             println!(
                 "corpus: {} existing divergences loaded from {}/",
