@@ -350,9 +350,26 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         if counts_bytes.has_remaining() {
             return Err(PackError::InvalidFormat);
         }
-        let shared = ImageDecoder::new(counts)?.share();
+        // the instance table's ids relocate inside the session; its
+        // offsets, after it, are plain varints the decoder is made with
+        let mut table = &image[table_at..counts_at];
+        let n_instances = decode_varint(&mut table)? as usize;
+        let instances_at = table;
+        for _ in 0..n_instances {
+            decode_varint(&mut table)?;
+            decode_varint(&mut table)?;
+        }
+        let n = decode_varint(&mut table)? as usize;
+        // every offset is one varint at least
+        let mut offsets = Vec::with_capacity(n.min(table.len()));
+        for _ in 0..n {
+            offsets.push(decode_varint(&mut table)?);
+        }
+        if table.has_remaining() {
+            return Err(PackError::InvalidFormat);
+        }
+        let shared = ImageDecoder::new(counts, image.clone(), offsets)?.share();
         let mut dec = shared.lock();
-        dec.set_image(image.clone());
         dec.ext::<Restored>().fastcalls = self
             .registry
             .builtins
@@ -361,11 +378,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
             .collect();
         let (scope, program) =
             DecodeImage::with(&mut dec, || -> Result<_, PackError> {
-                let mut table = &image[table_at..counts_at];
-                // every entry is two varints at least, every offset one
-                let n = decode_varint(&mut table)? as usize;
-                let mut instances = AHashMap::with_capacity(n.min(table.len() / 2));
-                for _ in 0..n {
+                let mut table = instances_at;
+                // every entry is two varints at least
+                let mut instances =
+                    AHashMap::with_capacity(n_instances.min(table.len() / 2));
+                for _ in 0..n_instances {
                     let id = LambdaInstanceId::decode(&mut table)?;
                     let at = decode_varint(&mut table)?;
                     if !(heap_at as u64..table_at as u64).contains(&at) {
@@ -373,18 +390,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
                     }
                     instances.insert(id, at);
                 }
-                let n = decode_varint(&mut table)? as usize;
-                let mut offsets = Vec::with_capacity(n.min(table.len()));
-                for _ in 0..n {
-                    offsets.push(decode_varint(&mut table)?);
-                }
-                if table.has_remaining() {
-                    return Err(PackError::InvalidFormat);
-                }
-                image::decoding(|d| {
-                    d.ext::<Restored>().instances = instances;
-                    d.set_offsets(offsets);
-                });
+                image::decoding(|d| d.ext::<Restored>().instances = instances);
                 let p = profile::phase(Phase::ImageEnv);
                 let env: Env = Pack::decode(&mut bytes)?;
                 self.env = Env { ide: std::mem::take(&mut self.env.ide), ..env };

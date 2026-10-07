@@ -49,9 +49,7 @@ async fn environment_round_trips() -> Result<()> {
     assert!(counts.bind.len() > 100 && counts.tvar.len() > 100, "{counts:?}");
     let offsets = enc.finish(&mut buf);
     let image: Bytes = buf.freeze();
-    let mut dec = ImageDecoder::new(counts)?;
-    dec.set_image(image.clone());
-    dec.set_offsets(offsets);
+    let mut dec = ImageDecoder::new(counts, image.clone(), offsets)?;
     let restored = DecodeImage::with(&mut dec, || {
         let mut b = &image[..bound];
         let env = Env::decode(&mut b)?;

@@ -408,9 +408,16 @@ impl ImageDecoder {
         self.objects.get(ord as usize)?.as_ref().and_then(T::of).cloned()
     }
 
-    /// Reserves a block of each id domain for the image's ids; refuses
-    /// a span no block can hold.
-    pub fn new(counts: IdCounts) -> Result<Self, PackError> {
+    /// A decoder of `image`, whose definitions start at `offsets`, by
+    /// ordinal: both are fixed for the session, which is what makes
+    /// [`decode_at`]'s slice of the image sound. Reserves a block of
+    /// each id domain for the image's ids; refuses a span no block can
+    /// hold.
+    pub fn new(
+        counts: IdCounts,
+        image: Bytes,
+        offsets: Vec<u64>,
+    ) -> Result<Self, PackError> {
         let reserve =
             |r: Option<IdRelocation>| r.ok_or(PackError::InvalidFormat).map(Some);
         let relocations = PerDomain {
@@ -421,9 +428,9 @@ impl ImageDecoder {
             tvar: reserve(TVarId::reserve(counts.tvar))?,
         };
         Ok(ImageDecoder {
-            image: Bytes::new(),
-            offsets: Vec::new(),
-            objects: Vec::new(),
+            image,
+            objects: offsets.iter().map(|_| None).collect(),
+            offsets,
             built: 0,
             active: AHashMap::new(),
             defining: Vec::new(),
@@ -448,28 +455,8 @@ impl ImageDecoder {
 
     /// The image every offset in the session refers into. Set before
     /// anything decodes; the session keeps it for what decodes later.
-    // CR claude for claude: [risk] decode_at's unsafe slice (line 1022) is sound only
-    // while nothing replaces `image` during a session, but `set_image` is a safe pub fn
-    // reachable mid-session through the pub `image::decoding(|d| ..)`; a codec that
-    // calls it there frees the bytes decode_at is reading when the decoder held the
-    // last clone (UB from safe code), and `set_offsets` there empties every built slot.
-    // Take the image and the offsets in `ImageDecoder::new` and drop both setters: the
-    // offsets, like the instance ids before them in the trailer, are plain varints that
-    // can be read before the session instead of inside it as registration.rs:372 does.
-    // Then no decoder exists half set up and nothing can move the bytes under
-    // decode_at. (t-image-07)
-    pub fn set_image(&mut self, image: Bytes) {
-        self.image = image;
-    }
-
     pub fn image(&self) -> &Bytes {
         &self.image
-    }
-
-    /// The definitions' offsets, and a store slot for each.
-    pub fn set_offsets(&mut self, offsets: Vec<u64>) {
-        self.objects = offsets.iter().map(|_| None).collect();
-        self.offsets = offsets;
     }
 
     /// The decoder's extension, made at its first use. A decoder holds
@@ -1509,10 +1496,8 @@ impl Packed {
     }
 
     pub(crate) fn decoder(&self, enc: &ImageEncoder) -> ImageDecoder {
-        let mut dec = ImageDecoder::new(enc.counts()).expect("a reservable span");
-        dec.set_image(self.image.clone());
-        dec.set_offsets(self.offsets.clone());
-        dec
+        ImageDecoder::new(enc.counts(), self.image.clone(), self.offsets.clone())
+            .expect("a reservable span")
     }
 }
 
@@ -1717,7 +1702,7 @@ mod tests {
             // relocated id never spells one the image's text holds
             assert!(x.inner().max(y.inner()) < crate::ids::MINT_BASE);
             // a second decoder of the same image gets its own block
-            let dec2 = ImageDecoder::new(enc.counts()).unwrap();
+            let dec2 = ImageDecoder::new(enc.counts(), Bytes::new(), Vec::new()).unwrap();
             assert!(expr_start(&dec2) >= start + spans.len());
         });
     }
@@ -1736,7 +1721,8 @@ mod tests {
             let len = enc.counts().expr.len();
             assert!(len < 1 << 20, "round {round}: the image spans {len} ids");
             let mut dec = packed.decoder(&enc);
-            let _concurrent = ImageDecoder::new(enc.counts()).expect("a reservable span");
+            let _concurrent = ImageDecoder::new(enc.counts(), Bytes::new(), Vec::new())
+                .expect("a reservable span");
             carried = DecodeImage::with(&mut dec, || {
                 ExprId::decode(&mut packed.body()).unwrap()
             });
@@ -1768,7 +1754,12 @@ mod tests {
             ..IdSpans::default()
         };
         assert!(
-            ImageDecoder::new(IdCounts { bind: huge, ..IdCounts::default() }).is_err()
+            ImageDecoder::new(
+                IdCounts { bind: huge, ..IdCounts::default() },
+                Bytes::new(),
+                Vec::new()
+            )
+            .is_err()
         );
     }
 
@@ -1794,9 +1785,8 @@ mod tests {
     fn a_self_referencing_definition_is_refused() {
         // ordinal 0 is defined at offset 0 as a reference to ordinal 0
         let image = Bytes::from_static(&[REF, 0]);
-        let mut dec = ImageDecoder::new(IdCounts::default()).unwrap();
-        dec.set_image(image.clone());
-        dec.set_offsets(vec![0]);
+        let mut dec =
+            ImageDecoder::new(IdCounts::default(), image.clone(), vec![0]).unwrap();
         DecodeImage::with(&mut dec, || {
             assert!(Expr::decode(&mut &image[..]).is_err());
         });
