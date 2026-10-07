@@ -225,8 +225,8 @@ impl<H: IsoPoolable> RefHist<H> {
 }
 
 /// The identity of an abstract type: the low 64 bits of
-/// [`abstract_uuid`] of its canonical path. Its `Pack` impl lives in
-/// [`crate::expr::serialize`].
+/// [`abstract_uuid`] of its canonical path. Its `Pack` impl is
+/// `uuid_id_codec!`'s.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -291,10 +291,6 @@ impl AbstractId {
         AbstractId(i)
     }
 }
-
-/// Type alias chains are followed this deep; a deeper chain is a cyclic
-/// typedef.
-pub const MAX_ALIAS_DEPTH: usize = 64;
 
 /// The identity of a trait: the low 64 bits of a v5 UUID of its
 /// canonical path, so an interface's declaration and the

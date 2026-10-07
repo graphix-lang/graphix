@@ -202,8 +202,8 @@ bench mode, realtime: the image grows from 7.5 to 8.4 MB (fusion on:
 65.4 to 62.8), its run-time binds substituting instead of checking.
 Decoding every table at the restore instead cost 4 to 7 ms.
 
-Expressions and function types are objects too, keyed by address
-(`image::object_len/encode/decode`): a node's spec and a definition's
+Expressions and function types are objects too, keyed by content
+(`Type::content_key`, `image::expr_key`): a node's spec and a definition's
 body are value clones of subtrees of one tree, and a binding's type
 shares its definition's `FnType`, so each is written once and
 referenced afterwards. The session cannot pin them, so everything a
@@ -547,8 +547,8 @@ and then sorted them so maps keyed by IDs kept their order, which cost
 a second measure pass over the whole image so every ID was measured at
 its final width: 40% of the write.)
 
-`atomic_id!` (`../netidx/netidx-core/src/utils.rs:173`) needs a
-reserve-block API; `from_inner` does not reserve. Every persisted
+The compiler's ids are `image_id!` (`graphix-types/src/ids.rs`),
+`atomic_id!` plus the reserve-block API decode uses. Every persisted
 domain is accounted for (`BindId`, `LambdaId`, `LambdaInstanceId`,
 `ExprId`, `TVarId`,
 `AbstractId`, `TraitId`, `TypeRef` cells, nominal registries on the

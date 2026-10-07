@@ -62,6 +62,8 @@ graphix-compiler/src/abstract_value.rs; the file is graphix-types/src/abstract_v
 The comment above `match &type_predicate` at
 graphix-compiler/src/node/pattern.rs:1196-1198 repeats the stale claim and should go.
 (t-cast-setops-16) -->
+<!-- 2026-10-07 claude: the runtime-shape paragraph is fixed (t-expr-core-09); point 4
+and the pattern.rs comment still stand. -->
 4. Parameters flow through: `type Box<'a> = Abstract<'a>`, constructor
    `fn<'a>(x: 'a) -> Box<'a>`. The runtime tag does not carry `'a`
    (erased, as in Rust), so `Box<i64> as b` also matches a
@@ -104,11 +106,13 @@ without the type holds it opaquely, which `Value::Abstract` supports).
 The parse-time process counter it replaced made two parses of one
 interface two types.
 
-Runtime shape: `GxAbstract { id, name, payload }`
-(`graphix-compiler/src/abstract_value.rs`), registered once with
-netidx-value; eq/ord/hash/Pack/Debug derive from `(id, payload)`
-unless a core-trait impl rides the value. `Type::Abstract` carries only
-the id, so `Display` consults a process-global `AbstractId → name`
+Runtime shape: `GxAbstract { id, name, params, payload }`
+(`graphix-types/src/abstract_value.rs`), registered once with
+netidx-value; `params` are the type arguments it was built at. Eq and
+ord follow `(id, payload)` unless a core-trait impl rides the value;
+hash is the id alone (a user `Eq` no payload hash could agree with);
+Pack writes every field. `Type::Abstract` carries the id and the
+params, so `Display` consults a process-global `AbstractId → name`
 registry filled at `AbstractId::of` — diagnostics print `Box`, not the
 word "abstract".
 

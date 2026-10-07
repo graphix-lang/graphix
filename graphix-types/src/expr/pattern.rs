@@ -1,9 +1,5 @@
 use super::{Expr, ModPath, Name, WrittenAt, parser, print::Literal};
-use crate::{
-    env::Env,
-    print_as_written,
-    typ::{MAX_ALIAS_DEPTH, Type},
-};
+use crate::{env::Env, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;
@@ -428,45 +424,22 @@ fn slice_type(list: bool, elem: Type) -> Type {
 }
 
 /// The concrete members of `t`: bound tvars dereferenced, aliases
-/// expanded, unions flattened. An unbound tvar contributes none, and so
-/// does an alias chain deeper than [`MAX_ALIAS_DEPTH`] (a cyclic typedef).
+/// expanded, unions flattened. An unbound tvar contributes none. An alias
+/// chain ends: a typedef recursing through unions and aliases alone is
+/// refused at its definition.
 #[doc(hidden)]
 pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
-    fn walk(
-        env: &Env,
-        t: &Type,
-        depth: usize,
-        out: &mut SmallVec<[Type; 8]>,
-    ) -> Result<()> {
-        // CR claude for claude: [bug] Past MAX_ALIAS_DEPTH this returns Ok with the
-        // members found so far, and select's coverage takes the partial list for the
-        // whole scrutinee: heads() (select.rs:623) hands it to the literal pool as a
-        // closed domain. Each level of `type W<'a> = [`L, 'a]` costs two hops. So with
-        // `v` a 33-level W<..<`Z>..>, the arms (`L, true), (`Z, true), (`L, false) over
-        // `(v, b)` check as exhaustive, and f(`Z, false) never produces. The complete
-        // four-arm select, and a six-arm one over a 62-typedef alias chain to [`L, `Z],
-        // are refused with "unreachable arm". The "cyclic typedef" this guards against
-        // cannot occur, because Env::deftype refuses a typedef that recurses through
-        // unions and aliases alone: drop the cap and guard the recursion with
-        // ensure_sufficient like the other type walks, or make reaching it an error,
-        // never a truncation. probe: design/review-2026-10-05/repro/t-parser-b-10.gx
-        // (t-parser-b-10)
-        if depth > MAX_ALIAS_DEPTH {
-            return Ok(());
-        }
-        match t.deref_cloned() {
-            None => Ok(()),
-            Some(t) => match &t {
-                Type::Set(ts) => ts.iter().try_for_each(|t| walk(env, t, depth + 1, out)),
-                Type::Ref(_) => walk(env, &t.lookup_ref(env)?, depth + 1, out),
-                _ => {
-                    out.push(t);
-                    Ok(())
-                }
-            },
-        }
-    }
-    walk(env, t, 0, out)
+    crate::stack::ensure_sufficient(|| match t.deref_cloned() {
+        None => Ok(()),
+        Some(t) => match &t {
+            Type::Set(ts) => ts.iter().try_for_each(|t| union_members(env, t, out)),
+            Type::Ref(_) => union_members(env, &t.lookup_ref(env)?, out),
+            _ => {
+                out.push(t);
+                Ok(())
+            }
+        },
+    })
 }
 
 impl fmt::Display for StructurePattern {

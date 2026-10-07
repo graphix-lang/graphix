@@ -68,6 +68,21 @@ select 42 {
 
 run!(match_exhaust0, MATCH_EXHAUST0, refused("missing match cases"); FuseExpect::None);
 
+/// Coverage expands an alias chain however deep it goes.
+const DEEP_ALIAS_COVERAGE: &str = r#"
+{
+    type W<'a> = [`L, 'a];
+    let f = |v: W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<`Z>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>, b: bool| select (v, b) {
+        (`L, true) => 1,
+        (`Z, true) => 3,
+        (`L, false) => 2
+    };
+    f(`Z, false)
+}
+"#;
+
+run!(deep_alias_coverage, DEEP_ALIAS_COVERAGE, refused("missing match cases"); FuseExpect::None);
+
 const MATCH_EXHAUST1: &str = r#"
 #[native] select 42 {
     1 => never(),

@@ -120,22 +120,12 @@ macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
-            let mut depth = 0usize;
             loop {
                 #[allow(unreachable_patterns)]
                 match &typ {
                     $($pat => break $body),+,
+                    // an alias chain ends: Env::deftype refuses a cycle
                     Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
-                        depth += 1;
-                        if depth > $crate::typ::MAX_ALIAS_DEPTH {
-                            $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
-                                anyhow::bail!(
-                                    "cyclic type alias while dereferencing {rt} \
-                                     (expected {})",
-                                    $name
-                                )
-                            })?
-                        }
                         typ = Some(rt.lookup_ref(&$ctx.env)?);
                     }
                     // a Set built while a member still held unbound TVars

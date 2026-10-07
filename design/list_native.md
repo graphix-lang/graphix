@@ -14,7 +14,7 @@ both special-cased it, so the tag bought nothing.
 
 ## Representation
 
-The rep is PRIVATE to `node/list.rs` (`nil`/`cons`/`split`/
+The rep is PRIVATE to `graphix-types/src/list.rs` (`nil`/`cons`/`split`/
 `is_nil`), the single seam that knows the layout:
 
 - **cons** = `Value::Array([head, tail])` — two slots, 32 bytes.
