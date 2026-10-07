@@ -5,14 +5,12 @@
 //! inputs enter the [`GenCtx`] vocabulary first, so the sync surface
 //! can reference (and shadow) them.
 
-use netidx::publisher::Value;
-
 use super::{
     GenCfg, GenCtx, GenType, chance, exprs, types,
     types::{F64, I64, Label, NumTy},
 };
 use crate::mutate::Rng;
-use crate::schedule::Schedule;
+use crate::schedule::{Lit, Schedule};
 
 /// Which reactive shapes one generated program contains.
 #[derive(Debug, Default, Clone, Copy)]
@@ -213,23 +211,15 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     // mild; edges are mutation's job. Budgets scale with the schedule.
     let n_epochs = 1 + super::geo_slots(rng, 3, 11);
     stats.epochs = n_epochs;
-    let mut epochs: Vec<Vec<(String, Value)>> = Vec::with_capacity(n_epochs);
+    let mut epochs: Vec<Vec<(String, Lit)>> = Vec::with_capacity(n_epochs);
     for _ in 0..n_epochs {
+        // one anchor input per epoch, any of them; each other at 70%
+        let anchor = rng.below(inputs.len());
         let mut ep = Vec::new();
-        for (name, ty) in &inputs {
-            // CR claude for claude: [test-gap] in0 is always pushed because `ep` is still
-            // empty when it is drawn, so every epoch injects in0 and in1 never fires
-            // without it. mutate_schedule never changes an epoch's set of inputs, so
-            // mutants cannot make an in1-only epoch either: `gen 2000 11 --reactive`
-            // has 0 of 3239 epochs in its two-input programs. So `abort(in1)` or
-            // `flush(in1)` on a ceremony driven by in0, and anything triggered or
-            // accumulated on in1, never runs while in0 holds still. Pick a random
-            // anchor input per epoch and include each other input at 70%.
-            // (fuzz-gen-b-08)
-            if !ep.is_empty() && !chance(rng, 0.7) {
-                continue;
+        for (i, (name, ty)) in inputs.iter().enumerate() {
+            if i == anchor || chance(rng, 0.7) {
+                ep.push((name.clone(), injection_value(rng, ty)));
             }
-            ep.push((name.clone(), injection_value(rng, ty)));
         }
         epochs.push(ep);
     }
@@ -249,15 +239,15 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     (sched.render(&body), stats)
 }
 
-fn injection_value(rng: &mut Rng, ty: &GenType) -> Value {
+fn injection_value(rng: &mut Rng, ty: &GenType) -> Lit {
     match ty {
         GenType::Num(NumTy::I64) => {
-            Value::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)])
+            Lit::I64([-3, -1, 0, 1, 2, 3, 5, 7, 12, 100][rng.below(10)])
         }
         GenType::Num(NumTy::F64) => {
-            Value::F64([-2.25, -1.0, 0.0, 0.5, 1.5, 3.0, 10.25][rng.below(7)])
+            Lit::F64([-2.25, -1.0, 0.0, 0.5, 1.5, 3.0, 10.25][rng.below(7)])
         }
-        GenType::Bool => Value::Bool(rng.below(2) == 0),
+        GenType::Bool => Lit::Bool(rng.below(2) == 0),
         other => unreachable!("no injection literal for {other:?}"),
     }
 }

@@ -20,22 +20,132 @@ use crate::trace;
 
 pub const HEADER_PREFIX: &str = "// schedule-v1:";
 
+/// An injectable literal: the scalar kinds a schedule or a dispatch
+/// carries. Its header form round-trips exactly, `NaN`/`inf` included.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Lit {
+    I64(i64),
+    F64(f64),
+    Bool(bool),
+}
+
+impl Lit {
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Lit::I64(_) => "i64",
+            Lit::F64(_) => "f64",
+            Lit::Bool(_) => "bool",
+        }
+    }
+
+    /// The graphix source the driver declares an input of this kind with.
+    pub fn default_src(self) -> &'static str {
+        match self {
+            Lit::I64(_) => "i64:0",
+            Lit::F64(_) => "f64:0.0",
+            Lit::Bool(_) => "false",
+        }
+    }
+
+    /// The value the runtime injects.
+    pub fn value(self) -> Value {
+        match self {
+            Lit::I64(n) => Value::I64(n),
+            Lit::F64(f) => Value::F64(f),
+            Lit::Bool(b) => Value::Bool(b),
+        }
+    }
+
+    pub fn same_kind(self, other: Lit) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+
+    pub fn render(self) -> String {
+        format!(
+            "{}:{}",
+            self.type_name(),
+            match self {
+                Lit::I64(n) => n.to_string(),
+                Lit::F64(f) => f.to_string(),
+                Lit::Bool(b) => b.to_string(),
+            }
+        )
+    }
+
+    pub fn parse(lit: &str) -> Result<Lit, String> {
+        let (t, l) = lit.split_once(':').ok_or_else(|| format!("bad literal `{lit}`"))?;
+        match t {
+            "i64" => l.parse().map(Lit::I64).map_err(|e| format!("bad i64 `{l}`: {e}")),
+            "f64" => l.parse().map(Lit::F64).map_err(|e| format!("bad f64 `{l}`: {e}")),
+            "bool" => {
+                l.parse().map(Lit::Bool).map_err(|e| format!("bad bool `{l}`: {e}"))
+            }
+            _ => Err(format!("unsupported schedule type `{t}`")),
+        }
+    }
+}
+
+/// A driver input's declaration: its default, and a `<-` that keeps the
+/// binding unstable so fusion binds a kernel input.
+pub(crate) fn decl(name: &str, kind: Lit) -> String {
+    let (t, d) = (kind.type_name(), kind.default_src());
+    format!("let {name}: {t} = {d};\n{name} <- never({d});\n")
+}
+
+/// One `; name=lit ..` section per epoch.
+pub(crate) fn render_epochs(out: &mut String, epochs: &[Vec<(String, Lit)>]) {
+    for ep in epochs {
+        out.push(';');
+        for (name, v) in ep {
+            out.push(' ');
+            out.push_str(name);
+            out.push('=');
+            out.push_str(&v.render());
+        }
+    }
+}
+
+/// One `name=lit ..` epoch section.
+pub(crate) fn parse_epoch(sec: &str) -> Result<Vec<(String, Lit)>, String> {
+    let mut ep = Vec::new();
+    for kv in sec.split_whitespace() {
+        let (name, lit) =
+            kv.split_once('=').ok_or_else(|| format!("bad injection `{kv}`"))?;
+        ep.push((name.to_string(), Lit::parse(lit)?));
+    }
+    if ep.is_empty() {
+        return Err("empty epoch section".into());
+    }
+    Ok(ep)
+}
+
+/// Find the line starting with `prefix` in `text`'s leading comment block:
+/// the header line and the text without it, every other line kept.
+pub(crate) fn split_header<'a>(text: &'a str, prefix: &str) -> Option<(&'a str, String)> {
+    let mut cursor = text;
+    loop {
+        let t = cursor.trim_start_matches(['\n', ' ']);
+        if !t.starts_with("//") {
+            return None;
+        }
+        let (line, rest) = t.split_once('\n').unwrap_or((t, ""));
+        if t.starts_with(prefix) {
+            let before = &text[..text.len() - t.len()];
+            return Some((line, format!("{before}{rest}")));
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        cursor = rest;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Schedule {
     /// One entry per injection epoch (after the compile burst): the
     /// simultaneous `(input name, value)` set delivered before that
     /// epoch's quiescence wait.
-    // CR claude for claude: [structure] Schedule and CallSpec hold injections as netidx
-    // Values, although only i64, f64 and bool are legal. So other kinds are
-    // representable and are answered by panics (render_value, canonical,
-    // Schedule::decls, CallSpec::decls), and value_kind encodes the kind as magic u8s.
-    // The decl text and the per-epoch header loop are copied verbatim between Schedule
-    // and CallSpec, and the leading-comment header scan is written three times
-    // (has_header, CallSpec::parse, Schedule::parse). An `enum Lit { I64(i64),
-    // F64(f64), Bool(bool) }` with its type name, default literal, render and parse
-    // would remove value_kind, canonical and the panics, and one decl helper plus one
-    // section renderer would serve both specs. (fuzz-main-aux-16)
-    pub epochs: Vec<Vec<(String, Value)>>,
+    pub epochs: Vec<Vec<(String, Lit)>>,
     /// Per-segment active-cycle budget (see `GXHandle::trace_start`).
     pub max_cycles: u64,
     /// Total trace event budget.
@@ -60,35 +170,22 @@ impl Schedule {
     }
 
     /// The unique injected input names in first-appearance order, each
-    /// with the graphix type name of its (consistent) literal kind and
-    /// the type-canonical default the driver declares it with.
-    pub fn inputs(&self) -> Vec<(String, &'static str, Value)> {
-        let mut out: Vec<(String, &'static str, Value)> = Vec::new();
+    /// with the kind of its (consistent) literals.
+    pub fn inputs(&self) -> Vec<(String, Lit)> {
+        let mut out: Vec<(String, Lit)> = Vec::new();
         for ep in &self.epochs {
             for (name, v) in ep {
-                if !out.iter().any(|(n, _, _)| n == name) {
-                    let (t, d) = canonical(v);
-                    out.push((name.clone(), t, d));
+                if !out.iter().any(|(n, _)| n == name) {
+                    out.push((name.clone(), *v));
                 }
             }
         }
         out
     }
 
-    /// The driver-side top-level input declarations. The defaults are
-    /// graphix source, unlike the header's `render_value` forms.
+    /// The driver-side top-level input declarations.
     pub fn decls(&self) -> String {
-        let mut s = String::new();
-        for (name, t, d) in self.inputs() {
-            let lit = match d {
-                Value::I64(_) => "i64:0",
-                Value::F64(_) => "f64:0.0",
-                Value::Bool(_) => "false",
-                other => panic!("unsupported schedule value kind {other:?}"),
-            };
-            s.push_str(&format!("let {name}: {t} = {lit};\n{name} <- never({lit});\n"));
-        }
-        s
+        self.inputs().into_iter().map(|(name, kind)| decl(&name, kind)).collect()
     }
 
     /// The one-line header, or `None` when the schedule is empty with
@@ -99,15 +196,7 @@ impl Schedule {
         }
         let mut s =
             format!("{HEADER_PREFIX} cap={} events={}", self.max_cycles, self.max_events);
-        for ep in &self.epochs {
-            s.push(';');
-            for (name, v) in ep.iter() {
-                s.push(' ');
-                s.push_str(name);
-                s.push('=');
-                s.push_str(&render_value(v));
-            }
-        }
+        render_epochs(&mut s, &self.epochs);
         Some(s)
     }
 
@@ -119,46 +208,16 @@ impl Schedule {
         }
     }
 
-    /// Split a wrapper into its schedule and body. No header → the
-    /// empty schedule and the whole text. The header may sit below other
-    /// leading `//` lines; the body returned starts after it. A malformed
+    /// Split a wrapper into its schedule and the text without the
+    /// header line. No header → the empty schedule and the whole text.
+    /// The header may sit anywhere in the leading `//` block, whose other
+    /// lines (a `callable-v1` header among them) are kept. A malformed
     /// header is an error, never silently a comment.
-    pub fn parse(text: &str) -> Result<(Schedule, &str), String> {
-        let mut cursor = text;
-        // CR claude for claude: [bug] This loop skips leading `//` lines to reach the
-        // schedule header, and the parse returns only the text after that header, so a
-        // `// callable-v1:` line above it is dropped. CallSpec::render writes exactly
-        // that order, and so do mutate_wrapper, minimize's reattach and typemorph's
-        // compose. Subject::parse runs this parse first, so the subject loses its
-        // CallSpec while callable::has_header still selects the Dispatch route: no
-        // dispatch runs and every pair agrees. The minimizer rewrites a schedule-first
-        // program into this order, then deletes the handler's module because its
-        // candidates no longer need it. Keep the skipped lines in the returned body as
-        // CallSpec::parse keeps `pre`, or give the three scans one shared header
-        // splitter. probe: design/review-2026-10-05/repro/fuzz-main-aux-08.gx
-        // (graphix-fuzz check: AGREE; with its two header lines swapped: DIVERGENCE).
-        // (fuzz-main-aux-08)
-        let (line, rest) = loop {
-            let t = cursor.trim_start_matches(['\n', ' ']);
-            if t.starts_with(HEADER_PREFIX) {
-                break match t.split_once('\n') {
-                    Some((l, r)) => (l, r),
-                    None => (t, ""),
-                };
-            }
-            if t.starts_with("//") {
-                match t.split_once('\n') {
-                    Some((_, r)) => {
-                        cursor = r;
-                        continue;
-                    }
-                    None => return Ok((Schedule::default(), text)),
-                }
-            }
-            return Ok((Schedule::default(), text));
+    pub fn parse(text: &str) -> Result<(Schedule, String), String> {
+        let Some((line, body)) = split_header(text, HEADER_PREFIX) else {
+            return Ok((Schedule::default(), text.to_string()));
         };
-        let spec = &line[HEADER_PREFIX.len()..];
-        let mut sections = spec.split(';');
+        let mut sections = line[HEADER_PREFIX.len()..].split(';');
         let caps = sections.next().ok_or("empty header")?;
         let mut max_cycles = None;
         let mut max_events = None;
@@ -177,92 +236,26 @@ impl Schedule {
             }
         }
         let mut epochs = Vec::new();
-        let mut types: Vec<(String, u8)> = Vec::new();
+        let mut kinds: Vec<(String, Lit)> = Vec::new();
         for sec in sections {
-            let mut ep = Vec::new();
-            for kv in sec.split_whitespace() {
-                let (name, lit) =
-                    kv.split_once('=').ok_or_else(|| format!("bad injection `{kv}`"))?;
-                let v = parse_value(lit)?;
-                let kind = value_kind(&v);
-                match types.iter().find(|(n, _)| n == name) {
-                    None => types.push((name.to_string(), kind)),
-                    Some((_, k)) if *k == kind => (),
+            let ep = parse_epoch(sec)?;
+            for (name, v) in &ep {
+                match kinds.iter().find(|(n, _)| n == name) {
+                    None => kinds.push((name.clone(), *v)),
+                    Some((_, k)) if k.same_kind(*v) => (),
                     Some(_) => {
                         return Err(format!("input `{name}` changes type across epochs"));
                     }
                 }
-                ep.push((name.to_string(), v));
-            }
-            if ep.is_empty() {
-                return Err("empty epoch section".into());
             }
             epochs.push(ep);
         }
-        Ok((
-            Schedule {
-                epochs,
-                max_cycles: max_cycles.unwrap_or(trace::MAX_CYCLES),
-                max_events: max_events.unwrap_or(trace::MAX_EVENTS),
-            },
-            // CR claude for claude: [bug] This returns only the text after the schedule
-            // header, so every `//` line the scan skipped above it is dropped, a `//
-            // callable-v1:` header included (CallSpec::parse keeps its `pre`, this does
-            // not). CallSpec::render documents the callable line first and either order
-            // as fine, and minimize's `reattach` (lib.rs:2458), mutate_wrapper
-            // (mutate.rs:345) and typemorph_subject (lib.rs:2876) all emit callable
-            // first. Subject::parse then finds no CallSpec, so nothing is dispatched on
-            // either route, while `has_header` still sends the program through
-            // check_callable, which agrees vacuously. A pin with both headers in that
-            // order is silently vacuous, and minimizing one written schedule-first
-            // returns a program that no longer diverges. Keep the skipped lines in the
-            // returned body (or render the schedule first everywhere and fix the docs),
-            // and test both orders through Subject::parse. probe:
-            // design/review-2026-10-05/repro/fuzz-lib-b-06.sh (check reports DIVERGENCE
-            // with the schedule line first and AGREE with the two lines swapped;
-            // minimize with budget 1 prints "no divergence to minimize").
-            // (fuzz-lib-b-06)
-            rest,
-        ))
-    }
-}
-
-/// The injectable scalar set: i64, f64, bool. Rendering round-trips
-/// exactly, `NaN`/`inf` included.
-pub(crate) fn render_value(v: &Value) -> String {
-    match v {
-        Value::I64(n) => format!("i64:{n}"),
-        Value::F64(f) => format!("f64:{f}"),
-        Value::Bool(b) => format!("bool:{b}"),
-        other => panic!("unsupported schedule value kind {other:?}"),
-    }
-}
-
-pub(crate) fn parse_value(lit: &str) -> Result<Value, String> {
-    let (t, l) = lit.split_once(':').ok_or_else(|| format!("bad literal `{lit}`"))?;
-    match t {
-        "i64" => l.parse().map(Value::I64).map_err(|e| format!("bad i64 `{l}`: {e}")),
-        "f64" => l.parse().map(Value::F64).map_err(|e| format!("bad f64 `{l}`: {e}")),
-        "bool" => l.parse().map(Value::Bool).map_err(|e| format!("bad bool `{l}`: {e}")),
-        _ => Err(format!("unsupported schedule type `{t}`")),
-    }
-}
-
-pub(crate) fn value_kind(v: &Value) -> u8 {
-    match v {
-        Value::I64(_) => 0,
-        Value::F64(_) => 1,
-        Value::Bool(_) => 2,
-        _ => u8::MAX,
-    }
-}
-
-pub(crate) fn canonical(v: &Value) -> (&'static str, Value) {
-    match v {
-        Value::I64(_) => ("i64", Value::I64(0)),
-        Value::F64(_) => ("f64", Value::F64(0.0)),
-        Value::Bool(_) => ("bool", Value::Bool(false)),
-        other => panic!("unsupported schedule value kind {other:?}"),
+        let sched = Schedule {
+            epochs,
+            max_cycles: max_cycles.unwrap_or(trace::MAX_CYCLES),
+            max_events: max_events.unwrap_or(trace::MAX_EVENTS),
+        };
+        Ok((sched, body))
     }
 }
 
@@ -274,12 +267,9 @@ mod tests {
     fn round_trip() {
         let s = Schedule {
             epochs: vec![
-                vec![("in0".into(), Value::I64(3)), ("in1".into(), Value::F64(1.5))],
-                vec![("in0".into(), Value::I64(-4))],
-                vec![
-                    ("in1".into(), Value::F64(f64::NAN)),
-                    ("in2".into(), Value::Bool(true)),
-                ],
+                vec![("in0".into(), Lit::I64(3)), ("in1".into(), Lit::F64(1.5))],
+                vec![("in0".into(), Lit::I64(-4))],
+                vec![("in1".into(), Lit::F64(f64::NAN)), ("in2".into(), Lit::Bool(true))],
             ],
             max_cycles: 32,
             max_events: 256,
@@ -292,7 +282,24 @@ mod tests {
         assert_eq!(s2.max_events, 256);
         assert_eq!(s2.epochs.len(), 3);
         // NaN != NaN under IEEE; compare rendered forms instead.
-        assert_eq!(s.render(body), s2.render(body2));
+        assert_eq!(s.render(body), s2.render(&body2));
+    }
+
+    #[test]
+    fn other_header_lines_survive_either_order() {
+        let callable = "// callable-v1: handler=m0::h; cx0=i64:2";
+        let schedule = "// schedule-v1: cap=64 events=512; in0=i64:1";
+        for text in [
+            format!("{callable}\n{schedule}\n{{ m0::observe }}"),
+            format!("{schedule}\n{callable}\n{{ m0::observe }}"),
+        ] {
+            let (s, body) = Schedule::parse(&text).expect("parse");
+            assert_eq!(s.epochs.len(), 1);
+            assert!(body.contains(callable), "the callable line is kept: {body}");
+            let (c, body) = crate::callable::CallSpec::parse(&body).expect("parse");
+            assert!(c.is_some(), "{text}");
+            assert_eq!(body.trim(), "{ m0::observe }");
+        }
     }
 
     #[test]
@@ -301,7 +308,7 @@ mod tests {
         let (s, body) = Schedule::parse(text).expect("parse");
         assert!(s.is_empty());
         assert_eq!(body, text);
-        assert_eq!(s.render(body), text);
+        assert_eq!(s.render(&body), text);
         // Leading ordinary comments are NOT headers.
         let with_comment = "// minimized:\n{ i64:1 }";
         let (s, body) = Schedule::parse(with_comment).expect("parse");

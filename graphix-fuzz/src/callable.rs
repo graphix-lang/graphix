@@ -21,30 +21,13 @@
 //! `file-v1` module so `compile_ref_by_name` reaches it from root.
 //! Routes are compared on per-epoch final values, not cycle pacing.
 
-use netidx::publisher::Value;
-
-use crate::schedule::{canonical, parse_value, render_value, value_kind};
+use crate::schedule::{Lit, decl, parse_epoch, render_epochs, split_header};
 
 pub const HEADER_PREFIX: &str = "// callable-v1:";
 
-/// Detect a header without a full parse; the same leading-comment-block
-/// scan as [`CallSpec::parse`].
+/// Whether `text`'s leading comment block holds a `callable-v1` header.
 pub fn has_header(text: &str) -> bool {
-    let mut cursor = text;
-    loop {
-        let t = cursor.trim_start_matches(['\n', ' ']);
-        if t.starts_with(HEADER_PREFIX) {
-            return true;
-        }
-        if t.starts_with("//") {
-            match t.split_once('\n') {
-                Some((_, r)) => cursor = r,
-                None => return false,
-            }
-        } else {
-            return false;
-        }
-    }
+    split_header(text, HEADER_PREFIX).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,68 +37,41 @@ pub struct CallSpec {
     pub handler: String,
     /// One entry per dispatch epoch: the handler's positional
     /// arguments in order, as `(driver-decl name, value)`.
-    pub epochs: Vec<Vec<(String, Value)>>,
+    pub epochs: Vec<Vec<(String, Lit)>>,
 }
 
 impl CallSpec {
-    /// The argument declarations in positional order: name, graphix type
-    /// name, canonical default (from the first epoch; parse enforces that
-    /// every epoch carries the same names).
-    pub fn args(&self) -> Vec<(String, &'static str, Value)> {
-        match self.epochs.first() {
-            None => Vec::new(),
-            Some(ep) => ep
-                .iter()
-                .map(|(name, v)| {
-                    let (t, d) = canonical(v);
-                    (name.clone(), t, d)
-                })
-                .collect(),
-        }
+    /// The argument declarations in positional order, each with its kind
+    /// (from the first epoch; parse enforces that every epoch carries the
+    /// same names and kinds).
+    pub fn args(&self) -> Vec<(String, Lit)> {
+        self.epochs.first().map(|ep| ep.clone()).unwrap_or_default()
     }
 
     /// The driver-side argument declarations plus the in-language driver
     /// call. Placed after the file-module `mod` declarations.
     pub fn decls(&self) -> String {
         let mut s = String::new();
-        let mut params = String::new();
-        for (name, t, d) in self.args() {
-            let lit = match d {
-                Value::I64(_) => "i64:0",
-                Value::F64(_) => "f64:0.0",
-                Value::Bool(_) => "false",
-                other => panic!("unsupported callable value kind {other:?}"),
-            };
-            s.push_str(&format!("let {name}: {t} = {lit};\n{name} <- never({lit});\n"));
-            if !params.is_empty() {
-                params.push_str(", ");
-            }
+        let mut params = Vec::new();
+        for (name, kind) in self.args() {
+            s.push_str(&decl(&name, kind));
             // `skip(1, …)` absorbs the decl's default so the in-language
             // callsite dispatches only on injections; in the dispatch route
             // it never fires and the callable's instances are the handler's first.
-            params.push_str(&format!("skip(#n: 1, {name})"));
+            params.push(format!("skip(#n: 1, {name})"));
         }
-        s.push_str(&format!("let cdrv = {}({params});\n", self.handler));
+        s.push_str(&format!("let cdrv = {}({});\n", self.handler, params.join(", ")));
         s
     }
 
     /// The one-line header.
     pub fn header(&self) -> String {
         let mut s = format!("{HEADER_PREFIX} handler={}", self.handler);
-        for ep in &self.epochs {
-            s.push(';');
-            for (name, v) in ep.iter() {
-                s.push(' ');
-                s.push_str(name);
-                s.push('=');
-                s.push_str(&render_value(v));
-            }
-        }
+        render_epochs(&mut s, &self.epochs);
         s
     }
 
-    /// Header + body. The callable line goes first so both header scans
-    /// find theirs in the leading comment block.
+    /// Header + body; either header order parses.
     pub fn render(&self, body: &str) -> String {
         format!("{}\n{body}", self.header())
     }
@@ -124,29 +80,10 @@ impl CallSpec {
     /// whole text. The two headers may appear in either order. A malformed
     /// header is an error, never silently a comment.
     pub fn parse(text: &str) -> Result<(Option<CallSpec>, String), String> {
-        let mut cursor = text;
-        let (pre, line, rest) = loop {
-            let t = cursor.trim_start_matches(['\n', ' ']);
-            if t.starts_with(HEADER_PREFIX) {
-                let pre_len = text.len() - t.len();
-                break match t.split_once('\n') {
-                    Some((l, r)) => (&text[..pre_len], l, r),
-                    None => (&text[..pre_len], t, ""),
-                };
-            }
-            if t.starts_with("//") {
-                match t.split_once('\n') {
-                    Some((_, r)) => {
-                        cursor = r;
-                        continue;
-                    }
-                    None => return Ok((None, text.to_string())),
-                }
-            }
+        let Some((line, body)) = split_header(text, HEADER_PREFIX) else {
             return Ok((None, text.to_string()));
         };
-        let spec = &line[HEADER_PREFIX.len()..];
-        let mut sections = spec.split(';');
+        let mut sections = line[HEADER_PREFIX.len()..].split(';');
         let head = sections.next().ok_or("empty callable header")?;
         let mut handler = None;
         for kv in head.split_whitespace() {
@@ -166,35 +103,23 @@ impl CallSpec {
             }
         }
         let handler = handler.ok_or("callable header missing handler=")?;
-        let mut epochs = Vec::new();
-        let mut names: Option<Vec<(String, u8)>> = None;
+        let mut epochs: Vec<Vec<(String, Lit)>> = Vec::new();
         for sec in sections {
-            let mut ep = Vec::new();
-            for kv in sec.split_whitespace() {
-                let (name, lit) = kv
-                    .split_once('=')
-                    .ok_or_else(|| format!("bad dispatch arg `{kv}`"))?;
-                let v = parse_value(lit)?;
-                ep.push((name.to_string(), v));
-            }
-            if ep.is_empty() {
-                return Err("empty dispatch epoch".into());
-            }
-            let sig: Vec<(String, u8)> =
-                ep.iter().map(|(n, v)| (n.clone(), value_kind(v))).collect();
-            match &names {
-                None => names = Some(sig),
-                Some(first) if *first == sig => (),
-                Some(_) => {
-                    return Err("dispatch epochs disagree on argument names/types".into());
-                }
+            let ep = parse_epoch(sec)?;
+            if let Some(first) = epochs.first()
+                && (first.len() != ep.len()
+                    || first
+                        .iter()
+                        .zip(&ep)
+                        .any(|((n0, v0), (n, v))| n0 != n || !v0.same_kind(*v)))
+            {
+                return Err("dispatch epochs disagree on argument names/types".into());
             }
             epochs.push(ep);
         }
         if epochs.is_empty() {
             return Err("callable header has no dispatch epochs".into());
         }
-        let body = format!("{pre}{rest}");
         Ok((Some(CallSpec { handler, epochs }), body))
     }
 }
@@ -208,8 +133,8 @@ mod tests {
         let c = CallSpec {
             handler: "m0::handler".into(),
             epochs: vec![
-                vec![("cx0".into(), Value::I64(7)), ("cx1".into(), Value::Bool(true))],
-                vec![("cx0".into(), Value::I64(-9)), ("cx1".into(), Value::Bool(false))],
+                vec![("cx0".into(), Lit::I64(7)), ("cx1".into(), Lit::Bool(true))],
+                vec![("cx0".into(), Lit::I64(-9)), ("cx1".into(), Lit::Bool(false))],
             ],
         };
         let body = "{ m0::observe }\n// file-v1: m0.gx\nlet observe = 0";

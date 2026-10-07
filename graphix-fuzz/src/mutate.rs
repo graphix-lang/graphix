@@ -344,7 +344,7 @@ pub fn mutate_wrapper(
     max_muts: usize,
 ) -> Option<String> {
     let (mut sched, body) = crate::schedule::Schedule::parse(seed).ok()?;
-    let (cspec, body_owned) = crate::callable::CallSpec::parse(body).ok()?;
+    let (cspec, body_owned) = crate::callable::CallSpec::parse(&body).ok()?;
     let (body, files) = crate::files::split(&body_owned).ok()?;
     let sched_op = !sched.epochs.is_empty() && rng.below(100) < 40;
     let body_only_keep = sched_op && rng.below(100) < 50;
@@ -366,16 +366,16 @@ pub fn mutate_wrapper(
 /// One schedule op. Epoch structure stays valid by construction; caps
 /// are left alone (shrinking them is the minimizer's business).
 fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
-    use netidx::publisher::Value;
+    use crate::schedule::Lit;
     let n = s.epochs.len();
     match rng.below(5) {
         0 => {
             let i = rng.below(n);
             let m = s.epochs[i].len();
             let v = &mut s.epochs[i][rng.below(m)].1;
-            *v = match &*v {
-                Value::I64(_) => Value::I64([0, 1, -1, i64::MAX, i64::MIN][rng.below(5)]),
-                Value::F64(_) => Value::F64(
+            *v = match *v {
+                Lit::I64(_) => Lit::I64([0, 1, -1, i64::MAX, i64::MIN][rng.below(5)]),
+                Lit::F64(_) => Lit::F64(
                     [
                         0.0,
                         -0.0,
@@ -386,21 +386,21 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
                         f64::MIN_POSITIVE,
                     ][rng.below(7)],
                 ),
-                Value::Bool(b) => Value::Bool(!*b),
-                other => other.clone(),
+                Lit::Bool(b) => Lit::Bool(!b),
             };
         }
+        // remove an epoch, unless it is the last to carry some input
         1 => {
-            // CR claude for claude: [bug] Removing an epoch can drop the only epoch that
-            // carries an input, or the sole epoch of a one-epoch schedule (about a
-            // quarter of generated ones). The driver declares inputs from the epochs
-            // (Schedule::inputs), so the mutant reads an undeclared input and fails to
-            // compile the same way in every mode, which wastes the run. The doc above
-            // says epoch structure stays valid by construction, and reactive.rs:227-234
-            // re-adds a missing input for exactly this reason. Skip the removal when
-            // the epoch is the last one carrying some input. probe:
-            // design/review-2026-10-05/repro/fuzz-gen-b-10.gx (fuzz-gen-b-10)
-            s.epochs.remove(rng.below(n));
+            let i = rng.below(n);
+            let sole = s.epochs[i].iter().any(|(name, _)| {
+                !s.epochs
+                    .iter()
+                    .enumerate()
+                    .any(|(j, ep)| j != i && ep.iter().any(|(other, _)| other == name))
+            });
+            if !sole {
+                s.epochs.remove(i);
+            }
         }
         // duplicate an epoch in place
         2 => {
@@ -420,11 +420,10 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
                 let i = s.epochs.len() - 1;
                 let m = s.epochs[i].len();
                 let v = &mut s.epochs[i][rng.below(m)].1;
-                *v = match &*v {
-                    Value::I64(x) => Value::I64(x.wrapping_add(1)),
-                    Value::F64(x) => Value::F64(*x + 1.0),
-                    Value::Bool(b) => Value::Bool(!*b),
-                    other => other.clone(),
+                *v = match *v {
+                    Lit::I64(x) => Lit::I64(x.wrapping_add(1)),
+                    Lit::F64(x) => Lit::F64(x + 1.0),
+                    Lit::Bool(b) => Lit::Bool(!b),
                 };
             }
         }
@@ -437,7 +436,7 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
 /// sections are split off first. `None` = unparseable.
 pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
     let (_, body) = crate::schedule::Schedule::parse(prog).ok()?;
-    let (body, _) = crate::files::split(body).ok()?;
+    let (body, _) = crate::files::split(&body).ok()?;
     let e = parse_one(&body).ok()?;
     let mut sig = 0u64;
     let mut nodes = 0usize;

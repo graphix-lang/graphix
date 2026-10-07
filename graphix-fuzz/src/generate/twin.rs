@@ -10,11 +10,9 @@
 //! form (a `callable-v1` header, both routes). Every template quiesces
 //! by construction.
 
-use netidx::publisher::Value;
-
 use crate::callable::CallSpec;
 use crate::mutate::Rng;
-use crate::schedule::Schedule;
+use crate::schedule::{Lit, Schedule};
 
 fn chance(rng: &mut Rng, pct: usize) -> bool {
     rng.below(100) < pct
@@ -32,7 +30,7 @@ struct Field {
 pub struct TwinShape {
     pub module: String,
     pub args: Vec<(&'static str, &'static str)>,
-    pub epochs: Vec<Vec<Value>>,
+    pub epochs: Vec<Vec<Lit>>,
 }
 
 const FIELDS: [&str; 3] = ["a", "b", "c"];
@@ -146,7 +144,7 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     m.push_str(&format!("let verdict = {verdict}\n"));
     let nepochs = 1 + rng.below(3);
     let epochs =
-        (0..nepochs).map(|_| vec![Value::I64((rng.below(37) as i64) - 5)]).collect();
+        (0..nepochs).map(|_| vec![Lit::I64((rng.below(37) as i64) - 5)]).collect();
     TwinShape { module: m, args: vec![("cx0", "i64")], epochs }
 }
 
@@ -157,10 +155,7 @@ pub fn render_schedule_form(shape: &TwinShape) -> String {
             .epochs
             .iter()
             .map(|vals| {
-                vals.iter()
-                    .enumerate()
-                    .map(|(i, v)| (format!("in{i}"), v.clone()))
-                    .collect()
+                vals.iter().enumerate().map(|(i, v)| (format!("in{i}"), *v)).collect()
             })
             .collect(),
         ..Schedule::default()
@@ -184,7 +179,7 @@ pub fn render_callable_form(shape: &TwinShape) -> String {
             .map(|vals| {
                 vals.iter()
                     .zip(shape.args.iter())
-                    .map(|(v, (name, _))| (name.to_string(), v.clone()))
+                    .map(|(v, (name, _))| (name.to_string(), *v))
                     .collect()
             })
             .collect(),
