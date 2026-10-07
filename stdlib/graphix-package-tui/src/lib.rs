@@ -946,10 +946,9 @@ impl Live {
         if mouse {
             set_mouse(true)
         }
-        let mut terminal = ratatui::Terminal::new(
-            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
-        )?;
-        terminal.clear()?;
+        let terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(
+            std::io::stdout(),
+        ))?;
         Ok(Self {
             events: EventStream::new().fuse(),
             terminal,
@@ -1027,6 +1026,8 @@ async fn display<X: GXExt>(
     let mut term = Term::Live(Live::take(mouse.t == Some(true))?);
     screen.resize(SizeV::from_terminal()?)?;
     let mut dirty = true;
+    // an update arrived since the last batch ended
+    let mut updated = false;
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
@@ -1044,8 +1045,9 @@ async fn display<X: GXExt>(
             m = to_rx.next() => match m {
                 None => break Ok(oneshot::channel().0),
                 Some(ToTui::Stop(tx)) => break Ok(tx),
-                Some(ToTui::Draw) => dirty = true,
+                Some(ToTui::Draw) => dirty |= std::mem::take(&mut updated),
                 Some(ToTui::Update(id, v)) => {
+                    updated = true;
                     if let Ok(Some(v)) = mouse.update(id, &v)
                         && let Term::Live(_) = term
                     {
