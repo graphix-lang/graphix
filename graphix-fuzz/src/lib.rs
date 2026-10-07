@@ -2495,13 +2495,7 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
-            std::process::exit(2)
-        }
-    };
+    let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(order.encode().as_bytes()).await;
     }
@@ -2586,13 +2580,7 @@ async fn run_batch_child(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
-            std::process::exit(2)
-        }
-    };
+    let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
         let mut buf = format!("{}\n", progs.len());
         for p in progs {
@@ -3280,7 +3268,7 @@ pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, 
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let mut child = spawn_child(&mut cmd);
     {
         use tokio::io::AsyncWriteExt;
         let mut stdin = child.stdin.take().ok_or("no stdin")?;
@@ -4217,6 +4205,16 @@ fn child_exe() -> std::path::PathBuf {
 /// the compile's tasks and link batches concurrent.
 const CHILD_COMPILE_THREADS: &str = "2";
 
+/// Spawn a harness child. A spawn failure (fd or process exhaustion)
+/// is a broken harness, not a program's doing: recording it would flood
+/// the corpus at instant-fail speed, so the campaign dies.
+fn spawn_child(cmd: &mut tokio::process::Command) -> tokio::process::Child {
+    cmd.spawn().unwrap_or_else(|e| {
+        eprintln!("FATAL fuzz harness: child spawn failed: {e}");
+        std::process::exit(2)
+    })
+}
+
 /// A child of this binary, its compile threads capped unless the
 /// caller set them.
 // CR claude for claude: [structure] Seven runners repeat this setup: run_order_child,
@@ -4406,13 +4404,7 @@ async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
-            std::process::exit(2)
-        }
-    };
+    let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prog.as_bytes()).await;
     }
@@ -4559,7 +4551,7 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+        let mut child = spawn_child(&mut cmd);
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(prog.as_bytes()).await;
         }
@@ -4633,15 +4625,7 @@ async fn check_isolated_in(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        // a spawn IO error is a broken harness, not a program crash:
-        // recording it would flood the corpus at instant-fail speed
-        Err(e) => {
-            eprintln!("FATAL fuzz harness: child spawn failed: {e}");
-            std::process::exit(2)
-        }
-    };
+    let mut child = spawn_child(cmd);
     if let Some(mut stdin) = child.stdin.take() {
         // a write error means the child died instantly; wait captures it
         let _ = stdin.write_all(prog.as_bytes()).await;
@@ -4779,16 +4763,7 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    // CR claude for claude: [bug] A spawn error here returns None and the caller records
-    // the raw mutant, while design §4 and every other spawn site (check_isolated_in,
-    // run_order_child, run_batch_child, selfcheck_isolated) exit FATAL: under fd or
-    // process exhaustion every divergence lands unminimized, keyed on its raw text.
-    // confirm_typeflip (line 4831) turns typemorph_child's Err (a spawn failure, 'child
-    // deadline', a missing verdict file) into a recorded TYPEFLIP:harness class and
-    // returns confirmed = true, so a measurement failure counts as a confirmed flip,
-    // which TmVerdict::Hung's doc rules out. Exit FATAL on spawn errors in both, and
-    // count a deadline as unconfirmed. (fuzz-lib-b-15)
-    let mut child = cmd.spawn().ok()?;
+    let mut child = spawn_child(&mut cmd);
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(prog.as_bytes()).await;
     }
@@ -5179,14 +5154,16 @@ pub async fn run_aggregator(
 /// does not reproduce is an acceptance flap, its own class. True when
 /// the fresh process flipped too.
 async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> bool {
-    let flips = match typemorph_child(prog, timeout).await {
-        Ok(rep) => tm_flips(&rep),
-        Err(e) => vec![Flip::harness("harness", e)],
-    };
-    let confirmed = !flips.is_empty();
-    let flips = match confirmed {
-        true => flips,
-        false => vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
+    let (flips, confirmed) = match typemorph_child(prog, timeout).await {
+        Ok(rep) => match tm_flips(&rep) {
+            f if f.is_empty() => (
+                vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
+                false,
+            ),
+            f => (f, true),
+        },
+        // a confirm that measured nothing confirms nothing
+        Err(e) => (vec![Flip::harness("unconfirmed", e)], false),
     };
     for Flip { id, head, mutant } in flips {
         if corpus.record_typeflip(prog, &id, &head, mutant.as_deref()) {
