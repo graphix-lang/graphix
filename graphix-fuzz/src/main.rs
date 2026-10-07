@@ -237,6 +237,17 @@ fn feature_report(progs: &[String], ok: &[bool], reactive: bool) {
     }
 }
 
+/// A harness child's last act: its CPU to the sandbox and its verdict
+/// to the file the parent named (argv[2]).
+fn finish_child(args: &[String], verdict: &str) -> Result<()> {
+    let path = args
+        .get(2)
+        .ok_or_else(|| anyhow::anyhow!("{} requires a verdict path", args[1]))?;
+    graphix_fuzz::report_self_cpu();
+    std::fs::write(path, verdict)?;
+    std::process::exit(0)
+}
+
 /// Read a whole program from stdin (the `check-one` / `minimize-one`
 /// isolated-worker input channel).
 fn read_stdin() -> Result<String> {
@@ -641,33 +652,33 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        // Hidden workers. The verdict rides the exit code or a named
-        // file, never stdout: the program under test can write to
-        // stdout itself. detcheck-one drives the program to quiescence
-        // so the lazily compiled per-slot kernels all appear in the
-        // CLIF dump; exit 0 = ran, 3 = compile reject, 4 = timeout.
+        // Hidden workers. The verdict rides a file the parent names,
+        // never stdout or the exit status: the program under test can
+        // write to stdout and call sys::exit. detcheck-one drives the
+        // program to quiescence so the lazily compiled per-slot kernels
+        // all appear in the CLIF dump: `ran`, `reject` or `timeout`.
         Some("detcheck-one") => {
             let code = read_stdin()?;
-            match graphix_fuzz::run_program(code.trim(), Mode::Jit, timeout()).await {
-                graphix_fuzz::Outcome::CompileErr(e) => {
+            let verdict = match graphix_fuzz::run_program(
+                code.trim(),
+                Mode::Jit,
+                timeout(),
+            )
+            .await
+            {
+                Outcome::CompileErr(e) => {
                     eprintln!("COMPILE REJECT: {e}");
-                    std::process::exit(3);
+                    "reject"
                 }
-                graphix_fuzz::Outcome::Timeout(_) => std::process::exit(4),
-                graphix_fuzz::Outcome::Trace(_)
-                | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
-                graphix_fuzz::Outcome::Checked => {
-                    unreachable!("a run never answers Checked")
-                }
-            }
+                Outcome::Timeout(_) => "timeout",
+                Outcome::Trace(_) | Outcome::RuntimeErr(_) => "ran",
+                Outcome::Checked => unreachable!("a run never answers Checked"),
+            };
+            finish_child(&args, verdict)?;
         }
         // typemorph child: base program on stdin, verdict lines to the
         // file named by argv[2]
         Some("typemorph-one") => {
-            let out = args
-                .get(2)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("typemorph-one <outfile>"))?;
             // the parent's per-check budget
             let per_check = args
                 .get(3)
@@ -684,7 +695,7 @@ async fn main() -> Result<()> {
                 Ok(rep) => rep.render(),
                 Err(e) => format!("HARNESS {e}\n"),
             };
-            std::fs::write(&out, text)?;
+            finish_child(&args, &text)?;
         }
         // one-shot triage: every applicable transform on <file>, flips
         // confirmed in a fresh child
@@ -781,27 +792,16 @@ async fn main() -> Result<()> {
         // isolated check: program on stdin, verdict written to the file
         // named by argv[2] (the exit status is the subject's to set)
         Some("check-one") => {
-            let path = args
-                .get(2)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("check-one requires a verdict path"))?;
             let code = read_stdin()?;
-            let verdict = match graphix_fuzz::check(code.trim(), campaign_timeout()).await
-            {
+            let verdict = match check(code.trim(), campaign_timeout()).await {
                 Some(d) => format!("diverge\n{}", graphix_fuzz::Finding::of(&d).encode()),
                 None => "agree\n".to_string(),
             };
-            graphix_fuzz::report_self_cpu();
-            std::fs::write(path, verdict)?;
-            std::process::exit(0);
+            finish_child(&args, &verdict)?;
         }
         // one mode alone: `trace` in the file named by argv[2] when it
         // produced one
         Some("run-one") => {
-            let path = args
-                .get(2)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("run-one requires a verdict path"))?;
             let mode = match args.get(3).map(String::as_str) {
                 Some("interp") => Mode::Interp,
                 Some("jit") => Mode::Jit,
@@ -810,37 +810,28 @@ async fn main() -> Result<()> {
             let code = read_stdin()?;
             let o =
                 graphix_fuzz::run_program(code.trim(), mode, campaign_timeout()).await;
-            std::fs::write(
-                path,
+            finish_child(
+                &args,
                 if matches!(o, Outcome::Trace(_)) { "trace" } else { "other" },
             )?;
-            std::process::exit(0);
         }
         // isolated selfcheck worker: the flaky modes, one per line, in the
         // file named by argv[2]
         Some("selfcheck-one") => {
-            let path = args.get(2).cloned().ok_or_else(|| {
-                anyhow::anyhow!("selfcheck-one requires a verdict path")
-            })?;
             let code = read_stdin()?;
             let modes = graphix_fuzz::selfcheck_one(code.trim(), timeout()).await;
-            std::fs::write(
-                path,
-                modes.iter().map(|m| format!("{m}\n")).collect::<String>(),
+            finish_child(
+                &args,
+                &modes.iter().map(|m| format!("{m}\n")).collect::<String>(),
             )?;
-            std::process::exit(0);
         }
         // isolated minimizer: program on stdin, reduced program written
         // to the file named by argv[2]
         Some("minimize-one") => {
-            let out_path = args
-                .get(2)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("minimize-one requires an output path"))?;
             let code = read_stdin()?;
             let (min, _) =
                 minimize(code.trim(), campaign_timeout(), CAMPAIGN_MINIMIZE_BUDGET).await;
-            std::fs::write(&out_path, min)?;
+            finish_child(&args, &min)?;
         }
         Some(cmd @ ("generate" | "fuzz")) => {
             // `forever`/`0` runs until killed; the corpus is loaded up

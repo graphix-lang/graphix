@@ -2186,21 +2186,6 @@ pub(crate) struct OrderResult {
 
 /// Issue ONE work order to a child and collect its summary.
 async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let out_path = sandbox.path().join("order-out");
-    cmd.arg("gen-batch")
-        .arg(&out_path)
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(order.encode().as_bytes()).await;
-    }
     // progress-based deadline: a healthy child flushes a line per
     // subject, and a typemorph subject is its base and every probe
     let per_subject = match order.kind {
@@ -2208,23 +2193,12 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
         _ => 4,
     };
     let stall = timeout * per_subject + Duration::from_secs(90);
-    let mut last_len = 0u64;
-    let exited_zero = loop {
-        tokio::select! {
-            r = child.wait() => break matches!(r, Ok(s) if s.code() == Some(0)),
-            _ = tokio::time::sleep(stall) => {
-                let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-                if len == last_len {
-                    let _ = child.kill().await;
-                    break false;
-                }
-                last_len = len;
-            }
-        }
-    };
-    let text = std::fs::read_to_string(&out_path).unwrap_or_default();
-    let mut res = order_result(order, &text, exited_zero);
-    res.cpu += child_cpu(sandbox.path());
+    let c =
+        run_child("gen-batch", &[], &[], &order.encode(), false, Deadline::Stall(stall))
+            .await;
+    let exited_zero = c.status.is_some_and(|s| s.success());
+    let mut res = order_result(order, c.verdict.as_deref().unwrap_or(""), exited_zero);
+    res.cpu += c.cpu;
     res
 }
 
@@ -2956,35 +2930,24 @@ async fn must_reject(
     out
 }
 
-/// Spawn the `typemorph-one` child on one subject and return its
-/// verdict-file text.
-pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, String> {
-    use std::process::Stdio;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let out_path = sandbox.path().join("tm-verdicts");
-    cmd.arg("typemorph-one")
-        .arg(&out_path)
-        .arg(per_check.as_millis().to_string())
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = child.stdin.take().ok_or("no stdin")?;
-        stdin.write_all(prog.as_bytes()).await.map_err(|e| format!("stdin: {e}"))?;
-    }
+/// Run the `typemorph-one` child on one subject: its verdict-file text,
+/// and the CPU it burned.
+pub async fn typemorph_child(
+    prog: &str,
+    per_check: Duration,
+) -> (Result<String, String>, Duration) {
     // every check the subject may run, one warmed init, plus slack
     let deadline = per_check * tm_checks(TM_CAP) + Duration::from_secs(60);
-    match tokio::time::timeout(deadline, child.wait()).await {
-        Err(_) => return Err("child deadline".into()),
-        Ok(Err(e)) => return Err(format!("wait: {e}")),
-        Ok(Ok(_)) => (),
-    }
-    std::fs::read_to_string(&out_path).map_err(|e| format!("verdicts: {e}"))
+    let ms = per_check.as_millis().to_string();
+    let c =
+        run_child("typemorph-one", &[&ms], &[], prog, false, Deadline::Fixed(deadline))
+            .await;
+    let r = match (c.status, c.verdict) {
+        (None, _) => Err("child deadline".to_string()),
+        (_, Some(v)) => Ok(v),
+        (Some(s), None) => Err(format!("no verdict ({s})")),
+    };
+    (r, c.cpu)
 }
 
 /// A flip a verdict file reports: the probe, the normalized rejection
@@ -3050,10 +3013,10 @@ pub async fn typemorph_scan(
     let job = |i: usize| {
         let prog = programs[i].1.clone();
         async move {
-            let r = typemorph_child(&prog, per_check).await;
+            let r = typemorph_child(&prog, per_check).await.0;
             let confirm = match &r {
                 Ok(rep) if !tm_flips(rep).is_empty() => {
-                    Some(typemorph_child(&prog, per_check).await)
+                    Some(typemorph_child(&prog, per_check).await.0)
                 }
                 _ => None,
             };
@@ -3826,20 +3789,105 @@ fn spawn_child(cmd: &mut tokio::process::Command) -> tokio::process::Child {
     })
 }
 
+/// What a harness child left behind.
+struct ChildRun {
+    /// `None` when it outlived its deadline (and was killed) or was lost.
+    status: Option<std::process::ExitStatus>,
+    stderr: String,
+    /// Its verdict file, if it wrote one.
+    verdict: Option<String>,
+    cpu: Duration,
+}
+
+/// How long a harness child may run.
+enum Deadline {
+    Fixed(Duration),
+    /// As long as its verdict file keeps growing within the window.
+    Stall(Duration),
+}
+
+/// Run `graphix-fuzz <sub> <verdict file> <args>` in a sandbox of its own
+/// with `input` on its stdin. The verdict comes back in the file, never
+/// the exit status, which a subject can set (`sys::exit`).
+async fn run_child(
+    sub: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: &str,
+    stderr: bool,
+    deadline: Deadline,
+) -> ChildRun {
+    use std::process::Stdio;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut cmd = child_command();
+    let sandbox = sandbox_cwd(&mut cmd);
+    let verdict = sandbox.path().join("verdict");
+    cmd.arg(sub)
+        .arg(&verdict)
+        .args(args)
+        // the pool provides the concurrency; small children keep the
+        // total thread count sane
+        .env("TOKIO_WORKER_THREADS", "2")
+        .envs(env.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(if stderr { Stdio::piped() } else { Stdio::null() })
+        .kill_on_drop(true);
+    let mut child = spawn_child(&mut cmd);
+    if let Some(mut stdin) = child.stdin.take() {
+        // a write error means the child died instantly; the wait sees it
+        let _ = stdin.write_all(input.as_bytes()).await;
+    }
+    let reader = child.stderr.take().map(|mut e| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = e.read_to_end(&mut buf).await;
+            buf
+        })
+    });
+    let status = match deadline {
+        Deadline::Fixed(d) => match tokio::time::timeout(d, child.wait()).await {
+            Ok(r) => r.ok(),
+            Err(_) => {
+                let _ = child.kill().await;
+                None
+            }
+        },
+        Deadline::Stall(window) => {
+            let mut last = 0u64;
+            loop {
+                tokio::select! {
+                    r = child.wait() => break r.ok(),
+                    _ = tokio::time::sleep(window) => {
+                        let len = std::fs::metadata(&verdict).map(|m| m.len()).unwrap_or(0);
+                        if len == last {
+                            let _ = child.kill().await;
+                            break None;
+                        }
+                        last = len;
+                    }
+                }
+            }
+        }
+    };
+    // a grandchild may hold the pipe open past the child's exit
+    let stderr = match reader {
+        Some(r) => match tokio::time::timeout(Duration::from_secs(2), r).await {
+            Ok(Ok(buf)) => String::from_utf8_lossy(&buf).into_owned(),
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+    ChildRun {
+        status,
+        stderr,
+        verdict: std::fs::read_to_string(&verdict).ok(),
+        cpu: child_cpu(sandbox.path()),
+    }
+}
+
 /// A child of this binary, its compile threads capped unless the
 /// caller set them.
-// CR claude for claude: [structure] Seven runners repeat this setup: run_order_child,
-// run_batch_child, typemorph_child, selfcheck_isolated, detcheck's compile_child,
-// check_isolated_in and minimize_isolated. Each repeats this function, sandbox_cwd, the
-// TOKIO_WORKER_THREADS env, stdio, spawn, the stdin feed and the wait, and their
-// policies have drifted. A spawn failure is a fatal exit(2) in four of them ('a broken
-// harness, not a program crash') but an Err or None in the other three. In the
-// campaign, confirm_typeflip records that as a 'harness' typeflip finding and counts a
-// divergence. Only three read child_cpu, and the campaign drops check_isolated's anyway
-// (line 4773), so the per-source CPU shares leave out every suspect re-check,
-// minimization and typeflip confirmation. One spawn helper here that owns the
-// spawn-failure policy, the stdin feed and the CPU read would leave each runner only
-// its deadline and verdict parsing. (x-dup-13)
 fn child_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(child_exe());
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
@@ -4008,33 +4056,17 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 /// memory as much as crash containment: every in-process `run_program`
 /// keeps its context's JIT pages, so the child pays the leak and exits.
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let verdict = sandbox.path().join("verdict");
-    cmd.arg("selfcheck-one")
-        .arg(&verdict)
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prog.as_bytes()).await;
-    }
     // up to 8 in-child runs, each bounded by the per-run timeout
-    let deadline = timeout * 10 + Duration::from_secs(30);
-    let _ = tokio::time::timeout(deadline, child.wait()).await;
+    let deadline = Deadline::Fixed(timeout * 10 + Duration::from_secs(30));
     // a dead or wedged child left no verdict: nondeterminism by definition
-    match std::fs::read_to_string(&verdict) {
-        Ok(v) => v
+    match run_child("selfcheck-one", &[], &[], prog, false, deadline).await.verdict {
+        Some(v) => v
             .lines()
             .map(|l| {
                 SELFCHECK_MODES.iter().find(|m| **m == l).copied().unwrap_or("crash")
             })
             .collect(),
-        Err(_) => vec!["crash"],
+        None => vec!["crash"],
     }
 }
 
@@ -4162,32 +4194,20 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
     async fn compile_child(
         prog: &str,
         timeout: Duration,
-    ) -> std::result::Result<(Option<i32>, String), String> {
-        use tokio::io::AsyncWriteExt;
-        let mut cmd = child_command();
-        let _sandbox = sandbox_cwd(&mut cmd);
-        cmd.arg("detcheck-one")
-            .env("TOKIO_WORKER_THREADS", "2")
-            .env("GRAPHIX_DUMP_CLIF", "1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = spawn_child(&mut cmd);
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prog.as_bytes()).await;
+    ) -> std::result::Result<(Option<String>, String), String> {
+        let deadline = Deadline::Fixed(timeout * 2 + Duration::from_secs(30));
+        let env = [("GRAPHIX_DUMP_CLIF", "1")];
+        let c = run_child("detcheck-one", &[], &env, prog, true, deadline).await;
+        match c.status {
+            None => Err("HANG (compile)".to_string()),
+            Some(_) => Ok((c.verdict, normalize_clif(&c.stderr))),
         }
-        let deadline = timeout * 2 + Duration::from_secs(30);
-        let out = tokio::time::timeout(deadline, child.wait_with_output())
-            .await
-            .map_err(|_| "HANG (compile)".to_string())?
-            .map_err(|e| format!("wait: {e}"))?;
-        Ok((out.status.code(), normalize_clif(&String::from_utf8_lossy(&out.stderr))))
     }
     let (a, b) = tokio::join!(compile_child(prog, timeout), compile_child(prog, timeout));
     match (a, b) {
         (Ok((ca, da)), Ok((cb, db))) => {
-            if ca == Some(4) || cb == Some(4) {
+            let timeout = Some("timeout".to_string());
+            if ca == timeout || cb == timeout {
                 return None;
             }
             if ca != cb {
@@ -4222,50 +4242,27 @@ pub async fn detcheck(
     flaps
 }
 
-/// Run one oracle check in a child process (`graphix-fuzz check-one`,
-/// program on stdin). The verdict comes back in a file in the
-/// parent-owned sandbox, never the exit status, which the subject can set
-/// itself (`sys::exit`); a child that leaves no verdict died. A program
-/// that kills the evaluator kills only the child; the campaign records a
-/// crash finding and keeps running.
+/// Run one oracle check in a child process (`graphix-fuzz check-one`). A
+/// program that kills the evaluator kills only the child; the campaign
+/// records a crash finding and keeps running.
 async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let verdict = sandbox.path().join("verdict");
-    cmd.arg("check-one")
-        .arg(&verdict)
-        // the pool provides the concurrency; small children keep the
-        // total thread count sane
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        // a write error means the child died instantly; wait captures it
-        let _ = stdin.write_all(prog.as_bytes()).await;
-    }
     // every run in the child has its own deadline; this one catches a
     // wedged child
-    let deadline = check_deadline(timeout);
-    let res = match tokio::time::timeout(deadline, child.wait_with_output()).await {
-        Ok(Ok(out)) => match std::fs::read_to_string(&verdict) {
-            Ok(v) => match v.split_once('\n') {
-                Some(("agree", _)) => PoolResult::Agree,
-                Some(("diverge", f)) => match Finding::decode(f) {
-                    Some(f) => PoolResult::Diverge(f),
-                    None => PoolResult::Crash(format!("unreadable verdict: {v}")),
-                },
-                _ => PoolResult::Crash(format!("unreadable verdict: {v}")),
+    let deadline = Deadline::Fixed(check_deadline(timeout));
+    let c = run_child("check-one", &[], &[], prog, true, deadline).await;
+    let res = match (c.status, c.verdict) {
+        (None, _) => PoolResult::Crash("HANG (outer deadline)".into()),
+        (_, Some(v)) => match v.split_once('\n') {
+            Some(("agree", _)) => PoolResult::Agree,
+            Some(("diverge", f)) => match Finding::decode(f) {
+                Some(f) => PoolResult::Diverge(f),
+                None => PoolResult::Crash(format!("unreadable verdict: {v}")),
             },
-            Err(_) => died(prog, timeout, &out).await,
+            _ => PoolResult::Crash(format!("unreadable verdict: {v}")),
         },
-        Ok(Err(e)) => PoolResult::Crash(format!("wait: {e}")),
-        Err(_) => PoolResult::Crash("HANG (outer deadline)".into()),
+        (Some(status), None) => died(prog, timeout, status, &c.stderr).await,
     };
-    (res, child_cpu(sandbox.path()))
+    (res, c.cpu)
 }
 
 /// [`check_isolated`]'s conclusion, for a person: how a campaign reads
@@ -4282,21 +4279,25 @@ pub async fn check_isolated_report(prog: &str, timeout: Duration) -> String {
 }
 
 /// What a check child that left no verdict means.
-async fn died(prog: &str, timeout: Duration, out: &std::process::Output) -> PoolResult {
+async fn died(
+    prog: &str,
+    timeout: Duration,
+    status: std::process::ExitStatus,
+    stderr: &str,
+) -> PoolResult {
     // a SIGTERM death is the campaign stop's own kill signal reaching a
     // mid-flight child, not a finding
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        if out.status.signal() == Some(15) {
+        if status.signal() == Some(15) {
             return PoolResult::Agree;
         }
     }
     // the child's last stderr lines distinguish a node-walk overflow from
     // a SIGSEGV in JIT'd frames (which prints nothing)
-    let stderr = String::from_utf8_lossy(&out.stderr);
     let crash = |what: &str| {
-        let mut status = format!("{what}{}", out.status);
+        let mut status = format!("{what}{status}");
         for l in stderr.lines().rev().take(2).collect::<Vec<_>>().into_iter().rev() {
             status.push_str(" | ");
             status.push_str(l);
@@ -4340,25 +4341,10 @@ async fn died(prog: &str, timeout: Duration, out: &std::process::Output) -> Pool
 /// Run `prog` in one mode in a child (`graphix-fuzz run-one`): whether
 /// it produced a trace, `None` when the child died.
 async fn run_isolated(prog: &str, mode: Mode, timeout: Duration) -> Option<bool> {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    let verdict = sandbox.path().join("verdict");
-    cmd.arg("run-one")
-        .arg(&verdict)
-        .arg(if mode == Mode::Interp { "interp" } else { "jit" })
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prog.as_bytes()).await;
-    }
-    let deadline = slow_budget(timeout) + Duration::from_secs(30);
-    let _ = tokio::time::timeout(deadline, child.wait()).await;
-    std::fs::read_to_string(&verdict).ok().map(|v| v.trim() == "trace")
+    let mode = if mode == Mode::Interp { "interp" } else { "jit" };
+    let deadline = Deadline::Fixed(slow_budget(timeout) + Duration::from_secs(30));
+    let c = run_child("run-one", &[mode], &[], prog, false, deadline).await;
+    c.verdict.map(|v| v.trim() == "trace")
 }
 
 /// Oracle-check budget for the campaign's minimizer: a soak pays this
@@ -4369,37 +4355,15 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 /// itself be a crasher and the minimizer checks candidates in-process.
 /// `None` = the child died or wedged; the caller records the
 /// unminimized mutant instead.
-async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
-    use tokio::io::AsyncWriteExt;
-    let mut cmd = child_command();
-    let sandbox = sandbox_cwd(&mut cmd);
-    // inside the sandbox, so the guard's drop cleans it up
-    let out_path = sandbox.path().join("min.gx");
-    cmd.arg("minimize-one")
-        .arg(&out_path)
-        .env("TOKIO_WORKER_THREADS", "2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = spawn_child(&mut cmd);
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prog.as_bytes()).await;
-    }
+async fn minimize_isolated(prog: &str, timeout: Duration) -> (Option<String>, Duration) {
     // worst case the whole budget is bottom programs sleeping the
     // per-mode timeout
-    let deadline =
-        timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60);
-    let ok = matches!(
-        tokio::time::timeout(deadline, child.wait_with_output()).await,
-        Ok(Ok(out)) if out.status.success()
+    let deadline = Deadline::Fixed(
+        timeout * 2 * CAMPAIGN_MINIMIZE_BUDGET as u32 + Duration::from_secs(60),
     );
-    let min = if ok { std::fs::read_to_string(&out_path).ok() } else { None };
-    let min = min.map(|m| m.trim().to_string());
-    match min {
-        Some(m) if !m.is_empty() => Some(m),
-        _ => None,
-    }
+    let c = run_child("minimize-one", &[], &[], prog, false, deadline).await;
+    let min = c.verdict.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    (min, c.cpu)
 }
 
 /// Environment-broken backstop for the campaign pool: when a majority
@@ -4474,7 +4438,7 @@ pub async fn run_aggregator(
     let mut ring_sigs: ahash::AHashSet<u64> = ahash::AHashSet::default();
     let mut rng = mutate::Rng::new(seed ^ 0xC0FFEE);
     let mut orders: JoinSet<(usize, usize, OrderResult)> = JoinSet::new();
-    let mut derive: JoinSet<bool> = JoinSet::new();
+    let mut derive: JoinSet<(usize, bool, Duration)> = JoinSet::new();
     let mut breakage = BreakageWindow::new();
     let wsum = weights.iter().map(|w| w.max(0.0)).sum::<f64>().max(f64::MIN_POSITIVE);
     let want = |launched: usize| iters.map_or(true, |n| launched < n);
@@ -4487,7 +4451,9 @@ pub async fn run_aggregator(
             let corpus = corpus.clone();
             let found = found.clone();
             derive.spawn(async move {
-                derive_suspect(KINDS[si], &prog, &corpus, &found[si], timeout).await
+                let (finding, cpu) =
+                    derive_suspect(KINDS[si], &prog, &corpus, &found[si], timeout).await;
+                (si, finding, cpu)
             });
         }
         // then orders, choosing the source furthest below its target
@@ -4604,7 +4570,15 @@ pub async fn run_aggregator(
                 to_derive.extend(r.suspect.into_iter().map(|p| (si, p)));
             }
             Some(res) = derive.join_next() => {
-                breakage_note(&mut breakage, res.unwrap_or(true));
+                // a derivation's children are its source's CPU too
+                let finding = match res {
+                    Ok((si, finding, c)) => {
+                        cpu[si] += c;
+                        finding
+                    }
+                    Err(_) => true,
+                };
+                breakage_note(&mut breakage, finding);
             }
             else => {
                 if to_derive.is_empty() {
@@ -4645,23 +4619,25 @@ struct Tally {
 
 /// Derive one suspect in a fresh process and record what it is: a flip
 /// for typemorph, else a crash or a divergence, minimized while its key
-/// has minimizations left. True when it is a finding.
+/// has minimizations left. Whether it is a finding, and the CPU its
+/// children burned.
 async fn derive_suspect(
     kind: SourceKind,
     prog: &str,
     corpus: &Corpus,
     tally: &Tally,
     timeout: Duration,
-) -> bool {
+) -> (bool, Duration) {
     use std::sync::atomic::Ordering::Relaxed;
     if kind == SourceKind::Typemorph {
-        let confirmed = confirm_typeflip(corpus, prog, timeout).await;
+        let (confirmed, cpu) = confirm_typeflip(corpus, prog, timeout).await;
         if confirmed {
             tally.divergences.fetch_add(1, Relaxed);
         }
-        return confirmed;
+        return (confirmed, cpu);
     }
-    match check_isolated(prog, timeout).await.0 {
+    let (res, cpu) = check_isolated(prog, timeout).await;
+    let finding = match res {
         PoolResult::Agree => false,
         // a hang of a program on the clock, the network or a process is
         // the environment's
@@ -4683,28 +4659,33 @@ async fn derive_suspect(
             tally.divergences.fetch_add(1, Relaxed);
             if !corpus.claim(&f.key) {
                 tally.known.fetch_add(1, Relaxed);
-                return true;
+                return (true, cpu);
             }
-            let min = minimize_isolated(prog, timeout)
-                .await
-                .unwrap_or_else(|| prog.to_string());
+            let (min, min_cpu) = minimize_isolated(prog, timeout).await;
+            let min = min.unwrap_or_else(|| prog.to_string());
             if corpus.record(&f, prog, &min) {
                 println!("DIVERGENCE — {}", f.bisect);
                 println!("    minimized: {min}");
                 let (a, b) = &f.labels;
                 println!("    {a}={} {b}={}", f.reference, f.tested);
             }
-            true
+            return (true, cpu + min_cpu);
         }
-    }
+    };
+    (finding, cpu)
 }
 
 /// Re-probe a subject that flipped in a batch child in a fresh process
 /// and record each flip class it shows there; a flip the fresh process
 /// does not reproduce is an acceptance flap, its own class. True when
 /// the fresh process flipped too.
-async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> bool {
-    let (flips, confirmed) = match typemorph_child(prog, timeout).await {
+async fn confirm_typeflip(
+    corpus: &Corpus,
+    prog: &str,
+    timeout: Duration,
+) -> (bool, Duration) {
+    let (r, cpu) = typemorph_child(prog, timeout).await;
+    let (flips, confirmed) = match r {
         Ok(rep) => match tm_flips(&rep) {
             f if f.is_empty() => (
                 vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
@@ -4721,7 +4702,7 @@ async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> boo
             println!("    program: {}", prog.replace('\n', "\\n"));
         }
     }
-    confirmed
+    (confirmed, cpu)
 }
 
 #[cfg(test)]
