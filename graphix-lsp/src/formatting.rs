@@ -39,8 +39,8 @@ pub fn handle(
     };
     let path = uri_to_path(uri);
     let kind = path.as_deref().map_or(SourceKind::Program, SourceKind::of_path);
-    let cfg = match path.as_deref().and_then(|p| p.parent()) {
-        Some(dir) => FormatConfig::discover(dir)?,
+    let cfg = match path.as_deref() {
+        Some(file) => FormatConfig::for_file(file)?,
         None => FormatConfig::default(),
     };
     match edits(kind, &doc.text, &cfg, state.position_encoding) {

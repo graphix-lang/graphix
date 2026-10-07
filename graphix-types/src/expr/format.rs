@@ -19,7 +19,10 @@ use netidx_value::Value;
 use poolshark::local::LPooled;
 use serde_derive::Deserialize;
 use smallvec::SmallVec;
-use std::{fmt, fs, path::Path};
+use std::{
+    fmt, fs,
+    path::{Component, Path, PathBuf},
+};
 use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 90;
@@ -69,6 +72,26 @@ impl FormatConfig {
     /// base), else the user's, in the platform's configuration directory
     /// under `graphix`, else the defaults. A file that is found and does
     /// not parse is an error, never the defaults.
+    /// The configuration that governs `file`, found from its directory
+    /// as the path names it: absolute and lexically normalized, never
+    /// canonical, so a link is laid out by the configuration above the
+    /// link wherever it is formatted.
+    pub fn for_file(file: &Path) -> Result<Self> {
+        let abs = std::path::absolute(file)
+            .with_context(|| format_compact!("resolving {}", file.display()))?;
+        let mut path = PathBuf::new();
+        for c in abs.components() {
+            match c {
+                Component::ParentDir => {
+                    path.pop();
+                }
+                Component::CurDir => (),
+                c => path.push(c),
+            }
+        }
+        Self::discover(path.parent().unwrap_or(&path))
+    }
+
     pub fn discover(dir: &Path) -> Result<Self> {
         let dir = std::path::absolute(dir)
             .with_context(|| format_compact!("resolving {}", dir.display()))?;
@@ -457,6 +480,22 @@ pub fn format_source(
     text: &str,
     cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
+    // a file whose every line ends in CRLF keeps them; the layout is LF
+    let lines = text.matches('\n').count();
+    if lines > 0 && text.matches("\r\n").count() == lines {
+        let formatted = format_lf(kind, &text.replace("\r\n", "\n"), cfg)?;
+        let mut crlf: LPooled<String> = LPooled::take();
+        crlf.push_str(&formatted.replace('\n', "\r\n"));
+        return Ok(crlf);
+    }
+    format_lf(kind, text, cfg)
+}
+
+fn format_lf(
+    kind: SourceKind,
+    text: &str,
+    cfg: &FormatConfig,
+) -> Result<LPooled<String>> {
     let (parsed, buf) = layout(kind, text, cfg)?;
     let reparsed = match Parsed::new(kind, buf.as_str()) {
         Ok(p) => p,
@@ -539,6 +578,19 @@ mod tests {
     fn formats_to(kind: SourceKind, src: &str, want: &str) {
         assert_eq!(&**format_source(kind, src, &FormatConfig::default()).unwrap(), want);
         stable(kind, src)
+    }
+
+    #[test]
+    fn crlf_lines_stay_crlf() {
+        use SourceKind::*;
+        formats_to(Program, "let x =   1;\r\nx\r\n", "let x = 1;\r\nx\r\n");
+        formats_to(
+            Program,
+            "let s = r\"a\r\nb\";\r\ns\r\n",
+            "let s = r\"a\r\nb\";\r\n\r\ns\r\n",
+        );
+        // a mixed file comes out LF
+        formats_to(Program, "let s = \"a\";\r\ns\n", "let s = \"a\";\ns\n");
     }
 
     #[test]

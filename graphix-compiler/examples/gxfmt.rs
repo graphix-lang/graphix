@@ -30,8 +30,7 @@ fn main() -> ExitCode {
 fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let kind = SourceKind::of_path(path);
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
-    let cfg = FormatConfig::discover(dir.unwrap_or(Path::new(".")))?;
+    let cfg = FormatConfig::for_file(path)?;
     if unchecked {
         let s = format_source_unchecked(kind, &text, &cfg)?;
         if !quiet {

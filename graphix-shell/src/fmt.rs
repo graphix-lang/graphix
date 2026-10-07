@@ -22,8 +22,8 @@ pub struct Args {
 impl Args {
     /// The configuration for a source file in `dir`, under the command
     /// line's overrides.
-    fn config(&self, dir: &Path) -> Result<FormatConfig> {
-        let cfg = FormatConfig::discover(dir)?;
+    fn config(&self, file: &Path) -> Result<FormatConfig> {
+        let cfg = FormatConfig::for_file(file)?;
         Ok(FormatConfig {
             width: self.width.unwrap_or(cfg.width),
             indent: self.indent.unwrap_or(cfg.indent),
@@ -35,7 +35,7 @@ fn format_stdin(args: &Args) -> Result<()> {
     let kind = if args.interface { SourceKind::Interface } else { SourceKind::Program };
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).context("reading stdin")?;
-    let cfg = args.config(&std::env::current_dir()?)?;
+    let cfg = args.config(&std::env::current_dir()?.join("stdin.gx"))?;
     let formatted = format_source(kind, &text, &cfg)?;
     if args.check {
         if *formatted != text {
@@ -57,40 +57,28 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.files {
         let res = (|| -> Result<bool> {
             let text = fs::read_to_string(path)?;
-            // CR claude for claude: [bug] The CLI discovers the config from the canonical
-            // path, the LSP (graphix-lsp/src/handlers/formatting.rs:42) from the path
-            // as opened, and gxfmt from the path as given, so a symlinked source is
-            // laid out by the config above its target here and by the one above the
-            // link in the editor: format-on-save and `graphix fmt --check` disagree on
-            // it. FormatConfig::discover also keeps `..` from std::path::absolute, so a
-            // relative `../x/y.gx` (gxfmt run over ../netidx) climbs the working
-            // directory's ancestors. One function from a file path to its config
-            // (absolute, lexically normalized, not canonical, the empty parent handled
-            // once) would serve all three callers. probe:
-            // design/review-2026-10-05/repro/t-format-resolver-11.py
-            // (t-format-resolver-11)
-            let file = fs::canonicalize(path)?;
-            let cfg = args.config(file.parent().unwrap_or(&file))?;
+            let cfg = args.config(path)?;
             let formatted = format_source(SourceKind::of_path(path), &text, &cfg)?;
             if args.stdout {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);
             }
-            // CR claude for claude: [risk] format_source emits LF, so a CRLF file always
-            // counts as changed. `graphix fmt --check` lists every file of a CRLF
-            // checkout (core.autocrlf without this repo's eol=lf) without saying why,
-            // and `graphix fmt` silently rewrites the line endings. format_stdin's
-            // --check (line 41) fails CRLF input the same way, and a CRLF file with a
-            // raw string spanning lines is refused as a 'formatter bug'. Keep the
-            // input's newline style (in format_source, so stdin and the LSP share the
-            // fix), or document LF-only and name line endings in --check's report. The
-            // write at line 69 also truncates before writing, so a failed write leaves
-            // the source cut short; writing a sibling temp file and renaming it over
-            // the original avoids that. probe: printf 'let x = 1;\r\nx\r\n' > crlf.gx;
-            // graphix fmt --check crlf.gx (shell-19)
             let changed = *formatted != text;
             if changed && !args.check {
-                fs::write(path, formatted.as_bytes())?
+                // the whole file or the old one, and a link stays a link
+                let file = fs::canonicalize(path)?;
+                let mut tmp = file.clone().into_os_string();
+                tmp.push(format!(".fmt.{}", std::process::id()));
+                let tmp = PathBuf::from(tmp);
+                let written = fs::write(&tmp, formatted.as_bytes())
+                    .and_then(|()| {
+                        fs::set_permissions(&tmp, fs::metadata(&file)?.permissions())
+                    })
+                    .and_then(|()| fs::rename(&tmp, &file));
+                if let Err(e) = written {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(e.into());
+                }
             }
             Ok(changed)
         })();
