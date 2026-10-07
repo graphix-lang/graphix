@@ -8,17 +8,10 @@ use graphix_package_core::{
     CachedArgsAsync, CachedVals, EvalCachedAsync, ReadFormat, TypedRead,
 };
 use netidx_value::{ValArray, Value};
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
-// CR claude for claude: [style] The connection's lock is a std::sync::Mutex taken with
-// lock().unwrap() (lines 75 and 349), where parking_lot::Mutex is the house default. A
-// panic under the lock would poison the connection for good, and every later call would
-// fail as "spawn_blocking failed". The comment's reason for std (concurrent
-// spawn_blocking calls serialize on it) holds for parking_lot as well. Use
-// parking_lot::Mutex and drop the comment; the Arc stays std for impl_abstract_arc!.
-// (x-alloc-15)
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-// std::sync::Mutex: concurrent spawn_blocking calls serialize on it.
 #[derive(Debug)]
 struct ConnectionValue {
     inner: Arc<Mutex<Option<rusqlite::Connection>>>,
@@ -42,29 +35,23 @@ fn get_conn_arc(
     }
 }
 
-fn sqlite_to_value(v: rusqlite::types::ValueRef<'_>) -> Value {
-    match v {
-        rusqlite::types::ValueRef::Null => Value::Null,
-        rusqlite::types::ValueRef::Integer(i) => Value::I64(i),
-        rusqlite::types::ValueRef::Real(f) => Value::F64(f),
-        rusqlite::types::ValueRef::Text(s) => {
-            // CR claude for claude: [bug] A TEXT value that is not valid UTF-8 (another
-            // writer's Latin-1, CAST(blob AS TEXT), char() of a surrogate) reads as ""
-            // with no error. The program gets a wrong value, and writing the row back
-            // erases the stored bytes. Core's bytes_to_string answers `EncodingError`
-            // and rusqlite's own FromSql for String answers Utf8Error, so either fail
-            // the query and name the column, or keep the valid content with
-            // from_utf8_lossy. map_value also casts error values, so today an error
-            // returned from eval reaches the program as `InvalidCast` wrapping the
-            // `SqliteError` (try `SELEC 1`). probe:
-            // design/review-2026-10-05/repro/http-sqlite-db1-11.gx prints ([{name: "",
-            // stored: "436166E9"}], [{stored: ""}]). (http-sqlite-db1-11)
-            Value::String(ArcStr::from(std::str::from_utf8(s).unwrap_or("")))
-        }
-        rusqlite::types::ValueRef::Blob(b) => {
-            Value::Bytes(bytes::Bytes::copy_from_slice(b).into())
-        }
-    }
+/// A TEXT that is not UTF-8 is refused, naming its column: read as "" it
+/// would be lost on write back.
+fn sqlite_to_value(
+    v: rusqlite::types::ValueRef<'_>,
+    col: &str,
+) -> std::result::Result<Value, Value> {
+    use rusqlite::types::ValueRef;
+    Ok(match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::I64(i),
+        ValueRef::Real(f) => Value::F64(f),
+        ValueRef::Text(s) => match std::str::from_utf8(s) {
+            Ok(s) => Value::String(ArcStr::from(s)),
+            Err(e) => return Err(errf!("SqliteError", "column {col}: {e}")),
+        },
+        ValueRef::Blob(b) => Value::Bytes(bytes::Bytes::copy_from_slice(b).into()),
+    })
 }
 
 fn value_to_sqlite(v: &Value) -> rusqlite::types::Value {
@@ -87,7 +74,7 @@ where
     F: FnOnce(&mut rusqlite::Connection) -> Value + Send + 'static,
 {
     match tokio::task::spawn_blocking(move || {
-        let mut guard = conn_arc.lock().unwrap();
+        let mut guard = conn_arc.lock();
         match guard.as_mut() {
             Some(conn) => f(conn),
             None => errf!("SqliteError", "connection closed"),
@@ -216,59 +203,41 @@ impl ReadFormat for Query {
                     Ok(s) => s,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
-                // CR claude for claude: [bug] column_count and column_name are read from
-                // the cached statement before it steps, and SQLite re-prepares a cached
-                // statement on its first step after a schema change, so rows come back
-                // with the new columns under the old labels: after DROP COLUMN b; ADD
-                // COLUMN d, the same SELECT * returns {a: 1, b: 3, c: 4} for the row
-                // (a, c, d) = (1, 3, 4). When the column count shrank,
-                // row.get_ref(*idx).unwrap() (278) panics while with_conn holds the
-                // std::sync::Mutex (15, 75), and the poisoned mutex fails every later
-                // call on the connection, close (349) included, with spawn_blocking
-                // failed: ... PoisonError. Take the columns from the stepped statement
-                // (the first row's row.as_ref()), return an error instead of
-                // unwrapping, and use parking_lot::Mutex as the db cursor does (the
-                // comment at 17 holds for any mutex). probe:
-                // design/review-2026-10-05/repro/http-sqlite-db1-18.gx
-                // (http-sqlite-db1-18)
-                let col_count = stmt.column_count();
-                let col_names: LPooled<Vec<ArcStr>> = (0..col_count)
-                    .map(|i| ArcStr::from(stmt.column_name(i).unwrap_or("")))
-                    .collect();
-                // Column order is computed once; rows share the ArcStr clones.
-                let mut sorted_cols: LPooled<Vec<(usize, ArcStr)>> = col_names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, name)| (i, name.clone()))
-                    .collect();
-                sorted_cols.sort_by(|a, b| a.1.cmp(&b.1));
-                let mut result_rows: LPooled<Vec<Value>> = LPooled::take();
                 let mut rows = match stmt.query(param_refs.as_slice()) {
                     Ok(r) => r,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
+                // the columns of the statement as stepped: a schema change
+                // re-prepares it on its first step
+                let mut sorted_cols: LPooled<Vec<(usize, ArcStr)>> = LPooled::take();
+                let mut result_rows: LPooled<Vec<Value>> = LPooled::take();
                 loop {
-                    match rows.next() {
+                    let row = match rows.next() {
                         Err(e) => return errf!("SqliteError", "{e}"),
                         Ok(None) => break,
-                        Ok(Some(row)) => {
-                            let mut vals: LPooled<Vec<Value>> = sorted_cols
-                                .iter()
-                                .map(|(idx, name)| {
-                                    Value::Array(
-                                        [
-                                            Value::String(name.clone()),
-                                            sqlite_to_value(row.get_ref(*idx).unwrap()),
-                                        ]
-                                        .into(),
-                                    )
-                                })
-                                .collect();
-                            result_rows.push(Value::Array(ValArray::from_iter_exact(
-                                vals.drain(..),
-                            )));
-                        }
+                        Ok(Some(row)) => row,
+                    };
+                    if result_rows.is_empty() {
+                        let stmt = row.as_ref();
+                        sorted_cols.extend((0..stmt.column_count()).map(|i| {
+                            (i, ArcStr::from(stmt.column_name(i).unwrap_or("")))
+                        }));
+                        sorted_cols.sort_by(|a, b| a.1.cmp(&b.1));
                     }
+                    let mut vals: LPooled<Vec<Value>> = LPooled::take();
+                    for (idx, name) in sorted_cols.iter() {
+                        let v = match row.get_ref(*idx) {
+                            Ok(v) => v,
+                            Err(e) => return errf!("SqliteError", "{e}"),
+                        };
+                        let v = match sqlite_to_value(v, name) {
+                            Ok(v) => v,
+                            Err(e) => return e,
+                        };
+                        vals.push(Value::Array([Value::String(name.clone()), v].into()));
+                    }
+                    result_rows
+                        .push(Value::Array(ValArray::from_iter_exact(vals.drain(..))));
                 }
                 Value::Array(ValArray::from_iter_exact(result_rows.drain(..)))
             })
@@ -329,7 +298,7 @@ impl EvalCachedAsync for SqliteCloseEv {
     fn eval(conn_arc: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
             match tokio::task::spawn_blocking(move || {
-                let mut guard = conn_arc.lock().unwrap();
+                let mut guard = conn_arc.lock();
                 match guard.take() {
                     Some(conn) => {
                         drop(conn);

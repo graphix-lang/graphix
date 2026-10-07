@@ -17,6 +17,7 @@ default = []
 krb5_iov = ["netidx/krb5_iov"]
 
 [dependencies]
+parking_lot = { workspace = true }
 netidx-derive = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }

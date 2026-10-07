@@ -5,37 +5,15 @@ uses type-directed deserialization — annotate the result type to
 control how rows are deserialized.
 
 ```graphix
-/// A SQLite value: integer, float, string, bytes, or null.
-type SqlVal = [i64, f64, string, bytes, null];
-
-/// An opaque SQLite connection handle.
-type Connection;
-
-/// Open (or create) a SQLite database. Use ":memory:" for in-memory.
-val open: fn(path: string) -> Result<Connection, `SqliteError(string)>;
-
-/// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
-val exec: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<u64, `SqliteError(string)>;
-
-/// Execute multiple semicolon-separated statements (no params). Good for schema setup.
-val exec_batch: fn(conn: Connection, sql: string) -> Result<null, `SqliteError(string)>;
-
-/// Query rows, deserializing each into the annotated type.
-/// Annotate as Array<{...}> for typed structs, or Array<Map<string, SqlVal>> for raw maps.
-val query: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
-
-/// Begin a transaction.
-val begin: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
-
-/// Commit the current transaction.
-val commit: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
-
-/// Rollback the current transaction.
-val rollback: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
-
-/// Close the connection explicitly (optional — connections close on drop).
-val close: fn(conn: Connection) -> Result<null, `SqliteError(string)>;
+{{#include ../../../stdlib/graphix-package-sqlite/src/graphix/mod.gxi}}
 ```
+
+SQL is written in an ordinary Graphix string, and an ordinary string
+interpolates every `[..]` in it. Pass values through the `?` params,
+never by splicing them into the text: `"... WHERE name = '[name]'"` is
+SQL injection. SQL that itself holds a `[` (a JSON path such as
+`'$.items[0]'`) is written as a raw string `r"..."` or a template
+`"""..."""`, where brackets are content.
 
 ## Type-directed queries
 
