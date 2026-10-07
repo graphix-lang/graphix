@@ -246,7 +246,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     Ok(res)
 }
 
-/// A formal of quantified function type `fn<'b: C>(..)`, expanded once,
+/// A formal of quantified function type `fn<'b: C>(..)`, its aliases expanded,
 /// with its quantifiers held rigid for the argument's check: the argument
 /// must be well typed for every 'b the bound admits, since the callee may
 /// call it at any. `None` for any other formal.
@@ -254,27 +254,28 @@ fn quantified_formal(
     env: &Env,
     typ: &Type,
 ) -> Result<Option<(Type, LPooled<Vec<RigidGate>>)>> {
-    let deref = typ.with_deref(|t| t.cloned());
-    let expanded = match &deref {
-        Some(Type::Fn(_)) => deref.clone(),
-        // CR claude for claude: [bug] This expands the formal one typedef level only, so
-        // an alias of an alias is missed. With `type G = F`, where F is the pinned
-        // `fn<'b: Number>(x: 'b) -> 'b`, G expands to the Ref F, quantified_formal
-        // returns None, and the argument is checked with 'b open, while each call in
-        // the body still picks a new 'b. With the formal written `|f: G|`,
-        // NESTED_QUANTIFIER_MONO and NESTED_QUANTIFIER_CONCRETE
-        // (stdlib/graphix-tests/src/lang/types.rs) both pass --check. `|f: G| f(1.5)`
-        // runs `|x: i64| -> i64 x + 1` on 1.5, and when its i64 result feeds a kernel
-        // the runtime panics at fusion/kernel.rs:243. Expand the whole alias chain
-        // before matching `Type::Fn`, pin the alias form in that table, and pin there
-        // too the typedef'd struct form (`type T = { f: fn<'c: Number>(c: 'c) -> 'c }`,
-        // used as `|t: T|` or `let t: T = ..`; the hole at typ/fntyp.rs:946,
-        // t-fntyp-03) and the free-variable form `{ f: fn(c: 'c) -> 'c }` (env.rs:1451,
-        // gx-ui-01). probe: design/review-2026-10-05/repro/tests-lang-b-02.gx
-        // (tests-lang-b-02)
-        Some(t @ Type::Ref(_)) => t.lookup_ref_with(env, false)?,
-        _ => None,
-    };
+    let mut expanded = typ.with_deref(|t| t.cloned());
+    // XCR claude for claude: [bug] This expands the formal one typedef level only, so
+    // an alias of an alias is missed. With `type G = F`, where F is the pinned
+    // `fn<'b: Number>(x: 'b) -> 'b`, G expands to the Ref F, quantified_formal
+    // returns None, and the argument is checked with 'b open, while each call in
+    // the body still picks a new 'b. With the formal written `|f: G|`,
+    // NESTED_QUANTIFIER_MONO and NESTED_QUANTIFIER_CONCRETE
+    // (stdlib/graphix-tests/src/lang/types.rs) both pass --check. `|f: G| f(1.5)`
+    // runs `|x: i64| -> i64 x + 1` on 1.5, and when its i64 result feeds a kernel
+    // the runtime panics at fusion/kernel.rs:243. Expand the whole alias chain
+    // before matching `Type::Fn`, pin the alias form in that table, and pin there
+    // too the typedef'd struct form (`type T = { f: fn<'c: Number>(c: 'c) -> 'c }`,
+    // used as `|t: T|` or `let t: T = ..`; the hole at typ/fntyp.rs:946,
+    // t-fntyp-03) and the free-variable form `{ f: fn(c: 'c) -> 'c }` (env.rs:1451,
+    // gx-ui-01). probe: design/review-2026-10-05/repro/tests-lang-b-02.gx
+    // (tests-lang-b-02)
+    // 2026-10-06 claude: the whole alias chain expands now; `|f: G|` is pinned
+    // (NESTED_QUANTIFIER_ALIAS_* in lang::types::unsound_acceptances_are_refused).
+    // The struct and free-variable forms stay with t-fntyp-03 and gx-ui-01.
+    while let Some(t @ Type::Ref(_)) = &expanded {
+        expanded = t.lookup_ref_with(env, false)?;
+    }
     let Some(formal @ Type::Fn(ft)) = &expanded else { return Ok(None) };
     if ft.quantifiers.is_empty() {
         return Ok(None);

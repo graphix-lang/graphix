@@ -1383,6 +1383,20 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   let apply = |f: F| f(3);
   apply(|x| x * x)
 }"#;
+// Through an alias of the quantified type, the same.
+const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  type G = F;
+  let apply = |f: G| f(1.5);
+  let inc = |x: i64| -> i64 x + 1;
+  apply(inc)
+}"#;
+const NESTED_QUANTIFIER_ALIAS_CONCRETE: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  type G = F;
+  let apply = |f: G| f(1.5);
+  apply(|x| x + 1)
+}"#;
 const NESTED_QUANTIFIER_COMPARE: &str = r#"{
   type G = fn<'b: Number>(x: 'b, y: 'b) -> bool;
   let apply = |f: G| select f(1, 2) { true => 1, false => 0 };
@@ -1427,6 +1441,8 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_CONCRETE_INLINE, "cannot compute"),
         (NESTED_QUANTIFIER_MONO, "does not contain"),
+        (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
+        (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {

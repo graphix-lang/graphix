@@ -1,59 +1,62 @@
 // End-to-end fusion tests over `rt.load()`.
 
 use crate::init;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use graphix_compiler::expr::Source;
-use graphix_package_core::{run, testing::FuseExpect};
-use graphix_rt::GXEvent;
+use graphix_compiler::{
+    BitFlags, CFlag,
+    expr::{ExprId, Source},
+};
+use graphix_package_core::{
+    run,
+    testing::{Events, FuseExpect, init_with_flags_and_setup, next_update},
+};
 use netidx::publisher::Value;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::{sync::mpsc, time::Instant};
+
+/// Run `code` in a fresh runtime compiled with `flags`, after compiling
+/// each of `pre` (kept alive): loaded as a file when `as_file`, else
+/// compiled. Its first value and the (fused kernel runs, JIT wrapper
+/// entries) the runtime made from just before it.
+async fn run_code(
+    flags: BitFlags<CFlag>,
+    pre: &[&str],
+    code: &str,
+    as_file: bool,
+) -> Result<(Value, (u64, u64))> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
+        .await?;
+    let mut held = Vec::new();
+    for p in pre {
+        held.push(ctx.rt.compile(ArcStr::from(*p)).await?);
+    }
+    ctx.rt.control().reset_invocations();
+    let res = match as_file {
+        true => ctx.rt.load(Source::Internal(ArcStr::from(code))).await?,
+        false => ctx.rt.compile(ArcStr::from(code)).await?,
+    };
+    let eid = res.exprs.first().context("no top-level expr")?.id;
+    let v = next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
+    let n = ctx.rt.control().invocations();
+    ctx.shutdown().await;
+    Ok((v, n))
+}
 
 async fn load_and_await(code: &str) -> Result<Value> {
-    Ok(load_and_count(code).await?.0)
+    Ok(run_code(BitFlags::empty(), &[], code, true).await?.0)
 }
 
 /// [`load_and_await`] with the runtime's (fused kernel runs, JIT wrapper
 /// entries).
-// CR claude for claude: [structure] This wait-for-the-first-update loop (a 5 s timeout,
-// recv, drain, match Updated(eid)) is written out 14 times in this file: here, in
-// load_value_and_jit and await_map_len, and inline in eleven tests. testing.rs's
-// eval_with_setup has one more. load_qop_unwraps_result, load_variadic_and_jits,
-// load_array_literal_jits and load_calls_builtin_bit_and are load_value_and_jit plus an
-// assert. Keep one `first_update(rx, eid)` helper, which testing.rs can own, and one
-// loader that takes the CFlags, and call them everywhere. The three `*_node_walk` tests
-// then shrink to a call with FusionDisabled, and their issue-number bail texts
-// (#167/#168/#169) go. (tests-lang-b-10)
 async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
-    let eid = res
-        .exprs
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no top-level expr in load result"))?
-        .id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for load result"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                let n = ctx.rt.control().invocations();
-                                ctx.shutdown().await;
-                                return Ok((v, n));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    run_code(BitFlags::empty(), &[], code, true).await
+}
+
+/// [`load_and_await`] under the node-walk.
+async fn load_node_walked(code: &str) -> Result<Value> {
+    Ok(run_code(CFlag::FusionDisabled.into(), &[], code, true).await?.0)
 }
 
 #[cfg(debug_assertions)]
@@ -61,86 +64,19 @@ async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
 async fn load_qop_unwraps_result() -> Result<()> {
     // A `?` over checked arith: the unwrap emits in-kernel and the JIT
     // fires.
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    ctx.rt.control().reset_invocations();
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from("(i64:1 +? i64:1)? == i64:2\n")))
-        .await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    let value = loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                found = Some(v);
-                            }
-                        }
-                    }
-                    if let Some(v) = found { break v; }
-                }
-            }
-        }
-    };
-    assert_eq!(value, Value::Bool(true));
-    let inv = ctx.rt.control().invocations().1;
+    let (v, (_, inv)) = load_and_count("(i64:1 +? i64:1)? == i64:2\n").await?;
+    assert_eq!(v, Value::Bool(true));
     assert!(inv > 0, "JIT_INVOCATIONS=0 — Qop kernel didn't run via JIT");
-    ctx.shutdown().await;
     Ok(())
 }
 
-// CR claude for claude: [readability] load_variadic_and_jits asserts `inv == 0`: the
-// variadic call node-walks, as its own comment says, so `_and_jits` names the opposite.
-// `closure_tuple_capture_falls_back` (446) fuses whole (graphix-fuzz run: fused=1) yet
-// asserts nothing about fusion. `closure_nested_capture` (455) reads the JIT counter
-// only to drop it as `_inv`. Assert `inv > 0` in both, as closure_primitive_capture
-// does, and drop 'falls_back' from the name. `node_shape_names_every_kind` (1405)
-// checks only one kind, Constant, and `impure_hof_builtin_in_residue` (537) never
-// checks the per-slot publications its doc promises; narrow the names or add the
-// checks. (tests-lang-b-12)
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
-async fn load_variadic_and_jits() -> Result<()> {
+async fn load_variadic_node_walks() -> Result<()> {
     // A variadic builtin call node-walks; the value is unchanged.
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    ctx.rt.control().reset_invocations();
-    let res =
-        ctx.rt.load(Source::Internal(ArcStr::from("and(true, true, false)"))).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    let value = loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                found = Some(v);
-                            }
-                        }
-                    }
-                    if let Some(v) = found { break v; }
-                }
-            }
-        }
-    };
-    assert_eq!(value, Value::Bool(false));
-    let inv = ctx.rt.control().invocations().1;
+    let (v, (_, inv)) = load_and_count("and(true, true, false)").await?;
+    assert_eq!(v, Value::Bool(false));
     assert!(inv == 0, "strict fusion: the variadic DynCall path must node-walk");
-    ctx.shutdown().await;
     Ok(())
 }
 
@@ -148,43 +84,9 @@ async fn load_variadic_and_jits() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn load_array_literal_jits() -> Result<()> {
     // `[1, 2, 3]` as a program body; the counter proves the kernel ran.
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    ctx.rt.control().reset_invocations();
-    let res = ctx.rt.load(Source::Internal(ArcStr::from("[1, 2, 3]"))).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    let value = loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                found = Some(v);
-                            }
-                        }
-                    }
-                    if let Some(v) = found { break v; }
-                }
-            }
-        }
-    };
-    let arr = match value {
-        Value::Array(a) => a,
-        other => bail!("expected array, got {other:?}"),
-    };
-    assert_eq!(arr.len(), 3);
-    assert_eq!(arr[0], Value::I64(1));
-    assert_eq!(arr[1], Value::I64(2));
-    assert_eq!(arr[2], Value::I64(3));
-    let inv = ctx.rt.control().invocations().1;
+    let (v, (_, inv)) = load_and_count("[1, 2, 3]").await?;
+    assert_i64s(&v, &[1, 2, 3])?;
     assert!(inv > 0, "JIT_INVOCATIONS=0 — array literal kernel didn't run via JIT");
-    ctx.shutdown().await;
     Ok(())
 }
 
@@ -200,40 +102,9 @@ async fn load_single_arith() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn load_calls_builtin_bit_and() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    // Reset after init so only fixture invocations are counted.
-    ctx.rt.control().reset_invocations();
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from("bit_and(i64:0xFF, i64:0x0F)")))
-        .await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    let value = loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                found = Some(v);
-                            }
-                        }
-                    }
-                    if let Some(v) = found { break v; }
-                }
-            }
-        }
-    };
-    assert_eq!(value, Value::I64(0x0F));
-    let inv = ctx.rt.control().invocations().1;
+    let (v, (_, inv)) = load_and_count("bit_and(i64:0xFF, i64:0x0F)").await?;
+    assert_eq!(v, Value::I64(0x0F));
     assert!(inv > 0, "JIT_INVOCATIONS=0 — bit_and call didn't run via JIT");
-    ctx.shutdown().await;
     Ok(())
 }
 
@@ -271,32 +142,9 @@ async fn load_bind_then_expr() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn compile_then_compile_external_scalar() -> Result<()> {
     // A compile registers a binding a subsequent compile sees.
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    // `CompExp::drop` unbinds `foo`; keep the first result alive through
-    // the second compile.
-    let _first = ctx.rt.compile(ArcStr::from("let foo = 7;")).await?;
-    let res = ctx.rt.compile(ArcStr::from("foo * 6")).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = e {
-                        if id == eid {
-                            assert_eq!(v, Value::I64(42));
-                            ctx.shutdown().await;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (v, _) = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", false).await?;
+    assert_eq!(v, Value::I64(42));
+    Ok(())
 }
 
 /// An external string binding flows into a fused kernel as a string
@@ -304,35 +152,12 @@ async fn compile_then_compile_external_scalar() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_string_region_param() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    let _first = ctx.rt.compile(ArcStr::from("let s = \"hello\";")).await?;
-    ctx.rt.control().reset_invocations();
-    let res = ctx.rt.compile(ArcStr::from("str::len(s)")).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = e {
-                        if id == eid {
-                            assert_eq!(v, Value::I64(5));
-                            assert!(
-                                ctx.rt.control().invocations().1 > 0,
-                                "string region-param kernel should JIT-dispatch"
-                            );
-                            ctx.shutdown().await;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (v, (_, inv)) =
+        run_code(BitFlags::empty(), &["let s = \"hello\";"], "str::len(s)", false)
+            .await?;
+    assert_eq!(v, Value::I64(5));
+    assert!(inv > 0, "string region-param kernel should JIT-dispatch");
+    Ok(())
 }
 
 /// An external `datetime` binding flows into a fused kernel as a value
@@ -340,76 +165,29 @@ async fn external_string_region_param() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn external_datetime_region_param() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    let _first = ctx
-        .rt
-        .compile(ArcStr::from("let d = datetime:\"2024-01-01T00:00:00Z\";"))
-        .await?;
-    ctx.rt.control().reset_invocations();
-    let res = ctx.rt.compile(ArcStr::from("sys::time::add(d, duration:1.s)")).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = e {
-                        if id == eid {
-                            let expected: chrono::DateTime<chrono::Utc> =
-                                "2024-01-01T00:00:01Z".parse().unwrap();
-                            assert!(
-                                matches!(&v, Value::DateTime(dt) if **dt == expected),
-                                "expected 2024-01-01T00:00:01Z, got {v:?}"
-                            );
-                            assert!(
-                                ctx.rt.control().invocations().1 > 0,
-                                "a datetime fastcall site fuses across a region param"
-                            );
-                            ctx.shutdown().await;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (v, (_, inv)) = run_code(
+        BitFlags::empty(),
+        &["let d = datetime:\"2024-01-01T00:00:00Z\";"],
+        "sys::time::add(d, duration:1.s)",
+        false,
+    )
+    .await?;
+    let expected: chrono::DateTime<chrono::Utc> = "2024-01-01T00:00:01Z".parse().unwrap();
+    assert!(
+        matches!(&v, Value::DateTime(dt) if **dt == expected),
+        "expected 2024-01-01T00:00:01Z, got {v:?}"
+    );
+    assert!(inv > 0, "a datetime fastcall site fuses across a region param");
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn load_uses_external_scalar() -> Result<()> {
     // `foo` is bound at root scope by an earlier compile, so it is a
     // free-var Ref inside the loaded file: a scalar kernel input.
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    // Keep the first compile's result alive (see above).
-    let _first = ctx.rt.compile(ArcStr::from("let foo = 7;")).await?;
-    let res = ctx.rt.load(Source::Internal(ArcStr::from("foo * 6"))).await?;
-    let eid = res.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for foo * 6 result"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                assert_eq!(v, Value::I64(42));
-                                ctx.shutdown().await;
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (v, _) = run_code(BitFlags::empty(), &["let foo = 7;"], "foo * 6", true).await?;
+    assert_eq!(v, Value::I64(42));
+    Ok(())
 }
 
 // Closure conversion: a capturing lambda's captures become extra kernel
@@ -417,35 +195,9 @@ async fn load_uses_external_scalar() -> Result<()> {
 
 /// Load `code`, returning the produced Value and the JIT-invocation
 /// delta across the load.
-#[cfg(debug_assertions)]
 async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let ctx = init(tx).await?;
-    ctx.rt.control().reset_invocations();
-    let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
-    let eid = res.exprs.first().ok_or_else(|| anyhow::anyhow!("no top-level expr"))?.id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    let value = loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for result"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    let mut found = None;
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid { found = Some(v); }
-                        }
-                    }
-                    if let Some(v) = found { break v; }
-                }
-            }
-        }
-    };
-    let inv = ctx.rt.control().invocations().1;
-    ctx.shutdown().await;
-    Ok((value, inv))
+    let (v, (_, inv)) = load_and_count(code).await?;
+    Ok((v, inv))
 }
 
 /// A single primitive capture: `let y = 7; let f = |x| x + y; f(3)` is 10.
@@ -460,10 +212,13 @@ async fn closure_primitive_capture() -> Result<()> {
 
 /// A composite (tuple) capture passed across the kernel boundary:
 /// `g(10)` is 13.
+#[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
-async fn closure_tuple_capture_falls_back() -> Result<()> {
-    let v = load_and_await("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)").await?;
+async fn closure_tuple_capture() -> Result<()> {
+    let (v, inv) =
+        load_value_and_jit("let t = (1, 2); let g = |x| t.0 + t.1 + x; g(10)").await?;
     assert_eq!(v, Value::I64(13));
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — tuple-capturing closure didn't fuse");
     Ok(())
 }
 
@@ -471,11 +226,12 @@ async fn closure_tuple_capture_falls_back() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn closure_nested_capture() -> Result<()> {
-    let (v, _inv) = load_value_and_jit(
+    let (v, inv) = load_value_and_jit(
         "let z = 100; let outer = |x| { let inner = |y| y + z; inner(x) }; outer(5)",
     )
     .await?;
     assert_eq!(v, Value::I64(105));
+    assert!(inv > 0, "JIT_INVOCATIONS=0 — nested capturing closures didn't fuse");
     Ok(())
 }
 
@@ -550,8 +306,8 @@ async fn impure_hof_callback_split_captures() -> Result<()> {
     Ok(())
 }
 
-/// An async builtin (`sys::net::publish`) inside an impure callback:
-/// each slot gets its own publication; the map value is `[2,4,6]`.
+/// An async builtin (`sys::net::publish`) inside an impure callback
+/// leaves the map value `[2,4,6]`.
 #[tokio::test(flavor = "current_thread")]
 async fn impure_hof_builtin_in_residue() -> Result<()> {
     let v = load_and_await(
@@ -569,20 +325,13 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
     Ok(())
 }
 
-// clone_rebind equivalence: each fixture forces a callback body through
-// MapQ's per-slot clone path and captures an outer `k`.
+// Impure callbacks: `counter <- x` gives each slot an instance of its
+// own (sharing the prototype's kernels); each fixture captures an outer
+// `k`.
 
 /// Map `body` (an expr over element `x: i64` and captured `k: i64 = 3`)
-/// over `[1,2,3,4]` through the clone path.
-// CR claude for claude: [doc-drift] The compiler has no `clone_rebind` and no per-slot
-// clone path. Yet this helper, its doc, the comments at 554, 900 and 1296,
-// `clone_matches_reference` and the env_accounting bail text at 1173 still name them,
-// so a failure points at code that does not exist. What these tests compare is an
-// impure callback (`counter <- x`, which gives per-slot instances that share kernels)
-// against the pure native loop. Rename them for that (e.g. `impure_map`,
-// `impure_matches_pure`) and fix the bail text. `region_map`'s doc (909) says it fuses
-// through `pure_map`, but it builds its own block-bodied program. (tests-lang-b-11)
-async fn clone_map(body: &str) -> Result<Value> {
+/// over `[1,2,3,4]` as an impure callback.
+async fn impure_map(body: &str) -> Result<Value> {
     // `counter <- x` makes the callback async; `body` may be `let …; expr`.
     let prog = format!(
         "let counter = 0; let k = 3; \
@@ -591,8 +340,8 @@ async fn clone_map(body: &str) -> Result<Value> {
     load_and_await(&prog).await
 }
 
-/// The reference path: the same `body` over the same inputs as a pure
-/// callback (no clone). `body` must be a single expression.
+/// The same `body` over the same inputs as a pure callback, the native
+/// loop. `body` must be a single expression.
 async fn pure_map(body: &str) -> Result<Value> {
     load_and_await(&pure_map_program(body)).await
 }
@@ -675,45 +424,12 @@ async fn nested_fold_grandparent_capture() -> Result<()> {
 /// The grandparent-capture nest under the pure node-walk.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_grandparent_capture_node_walk() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(16);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
-        crate::TEST_REGISTER,
-        vec![],
-        graphix_compiler::CFlag::FusionDisabled.into(),
-        |_| {},
+    let v = load_node_walked(
+        "let n = 100; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| x + n))",
     )
     .await?;
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from(
-            "let n = 100; \
-             array::map([1, 2], |y: i64| array::map([1], |x: i64| x + n))",
-        )))
-        .await?;
-    let eid = res.exprs.first().unwrap().id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => {
-                ctx.shutdown().await;
-                bail!("#168 node-walk regressed — hang under FusionDisabled");
-            }
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut b) => for e in b.drain(..) {
-                    if let GXEvent::Updated(id, v) = &e {
-                        if *id == eid {
-                            let r = assert_nested_i64s(v, &[&[101], &[101]]);
-                            ctx.shutdown().await;
-                            return r;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    assert_nested_i64s(&v, &[&[101], &[101]])
 }
 
 // A function-typed grandparent capture called from a nested HOF's
@@ -754,45 +470,12 @@ async fn nested_hof_anon_lambda_capture() -> Result<()> {
 /// The function-typed grandparent capture under the pure node-walk.
 #[tokio::test(flavor = "current_thread")]
 async fn nested_hof_function_capture_node_walk() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(16);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
-        crate::TEST_REGISTER,
-        vec![],
-        graphix_compiler::CFlag::FusionDisabled.into(),
-        |_| {},
+    let v = load_node_walked(
+        "let f = |z: i64| z * 2; \
+         array::map([1, 2], |y: i64| array::map([1], |x: i64| f(x)))",
     )
     .await?;
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from(
-            "let f = |z: i64| z * 2; \
-             array::map([1, 2], |y: i64| array::map([1], |x: i64| f(x)))",
-        )))
-        .await?;
-    let eid = res.exprs.first().unwrap().id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => {
-                ctx.shutdown().await;
-                bail!("#169 node-walk regressed — hang under FusionDisabled");
-            }
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut b) => for e in b.drain(..) {
-                    if let GXEvent::Updated(id, v) = &e {
-                        if *id == eid {
-                            let r = assert_nested_i64s(v, &[&[2], &[2]]);
-                            ctx.shutdown().await;
-                            return r;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    assert_nested_i64s(&v, &[&[2], &[2]])
 }
 
 // Captures in `StructWith.source` and labeled-arg default positions
@@ -823,116 +506,116 @@ async fn nested_hof_labeled_default_capture() -> Result<()> {
 
 /// `Add`/`Mul` carrying a capture (`x*k + k`).
 #[tokio::test(flavor = "current_thread")]
-async fn clone_arith_capture() -> Result<()> {
-    assert_i64s(&clone_map("x * k + k").await?, &[6, 9, 12, 15])
+async fn impure_arith_capture() -> Result<()> {
+    assert_i64s(&impure_map("x * k + k").await?, &[6, 9, 12, 15])
 }
 
 /// `Select` (single arm + wildcard) on the element, returning a capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_select_capture() -> Result<()> {
-    assert_i64s(&clone_map("select x { 1 => k, n => n * k }").await?, &[3, 6, 9, 12])
+async fn impure_select_capture() -> Result<()> {
+    assert_i64s(&impure_map("select x { 1 => k, n => n * k }").await?, &[3, 6, 9, 12])
 }
 
 /// `Select` with TWO arms binding the SAME name (`a`) — the transient
 /// name-map case; each arm re-mints `a` and its body must resolve to the
 /// fresh id.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_select_same_name() -> Result<()> {
+async fn impure_select_same_name() -> Result<()> {
     assert_i64s(
-        &clone_map("select x { i64 as a if a > k => a + k, i64 as a => a * k }").await?,
+        &impure_map("select x { i64 as a if a > k => a + k, i64 as a => a * k }").await?,
         &[3, 6, 9, 7],
     )
 }
 
 /// Comparison (`Gt`) + capture in the scrutinee.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_compare_capture() -> Result<()> {
+async fn impure_compare_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("select x > k { true => k * 10, false => x }").await?,
+        &impure_map("select x > k { true => k * 10, false => x }").await?,
         &[1, 2, 3, 30],
     )
 }
 
 /// `Or` + `Eq` + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_boolops_capture() -> Result<()> {
+async fn impure_boolops_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("select (x > k) || (x == 1) { true => 1, false => 0 }").await?,
+        &impure_map("select (x > k) || (x == 1) { true => 1, false => 0 }").await?,
         &[1, 0, 0, 1],
     )
 }
 
 /// `Not` + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_not_capture() -> Result<()> {
+async fn impure_not_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("select !(x > k) { true => x, false => k }").await?,
+        &impure_map("select !(x > k) { true => x, false => k }").await?,
         &[1, 2, 3, 3],
     )
 }
 
 /// `Tuple` producer + `TupleRef` accessor, both touching a capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_tuple_accessor_capture() -> Result<()> {
-    assert_i64s(&clone_map("let t = (x, k); t.0 + t.1").await?, &[4, 5, 6, 7])
+async fn impure_tuple_accessor_capture() -> Result<()> {
+    assert_i64s(&impure_map("let t = (x, k); t.0 + t.1").await?, &[4, 5, 6, 7])
 }
 
 /// `Struct` producer + `StructRef` accessor + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_struct_accessor_capture() -> Result<()> {
-    assert_i64s(&clone_map("let s = {a: x, b: k}; s.a * s.b").await?, &[3, 6, 9, 12])
+async fn impure_struct_accessor_capture() -> Result<()> {
+    assert_i64s(&impure_map("let s = {a: x, b: k}; s.a * s.b").await?, &[3, 6, 9, 12])
 }
 
 /// `Array` producer + `ArrayRef` accessor + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_array_accessor_capture() -> Result<()> {
-    assert_i64s(&clone_map("let a2 = [x, k, x + k]; a2[2]").await?, &[4, 5, 6, 7])
+async fn impure_array_accessor_capture() -> Result<()> {
+    assert_i64s(&impure_map("let a2 = [x, k, x + k]; a2[2]").await?, &[4, 5, 6, 7])
 }
 
 /// `Variant` producer + `Select` destructure of it + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_variant_capture() -> Result<()> {
+async fn impure_variant_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("let v = `Pair(x, k); select v { `Pair(a, b) => a + b }").await?,
+        &impure_map("let v = `Pair(x, k); select v { `Pair(a, b) => a + b }").await?,
         &[4, 5, 6, 7],
     )
 }
 
 /// `Map` producer + `MapRef` access + capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_map_accessor_capture() -> Result<()> {
+async fn impure_map_accessor_capture() -> Result<()> {
     assert_i64s(
-        &clone_map("let m = {\"a\" => x, \"b\" => k}; m{\"b\"}").await?,
+        &impure_map("let m = {\"a\" => x, \"b\" => k}; m{\"b\"}").await?,
         &[3, 3, 3, 3],
     )
 }
 
 /// `StringInterpolate` carrying both element and capture.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_string_capture() -> Result<()> {
-    assert_strs(&clone_map("\"[x]:[k]\"").await?, &["1:3", "2:3", "3:3", "4:3"])
+async fn impure_string_capture() -> Result<()> {
+    assert_strs(&impure_map("\"[x]:[k]\"").await?, &["1:3", "2:3", "3:3", "4:3"])
 }
 
 /// Nested: `Tuple` + `Add`/`Mul` + `TupleRef` + `StringInterpolate`.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_nested_capture() -> Result<()> {
+async fn impure_nested_capture() -> Result<()> {
     assert_strs(
-        &clone_map("let p = (x * k, x + k); \"[p.0]/[p.1]\"").await?,
+        &impure_map("let p = (x * k, x + k); \"[p.0]/[p.1]\"").await?,
         &["3/4", "6/5", "9/6", "12/7"],
     )
 }
 
 /// A `select` with an arm binding (`n =>` catch-all) as a `let` value
-/// inside the per-slot clone path.
+/// inside an impure callback.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_select_let_bound() -> Result<()> {
+async fn impure_select_let_bound() -> Result<()> {
     assert_i64s(
-        &clone_map("let r = select x { 1 => k, n => n * k }; r").await?,
+        &impure_map("let r = select x { 1 => k, n => n * k }; r").await?,
         &[3, 6, 9, 12],
     )
 }
 
-/// The same body region-fused through `pure_map`.
+/// The same body as a pure block-bodied callback.
 async fn region_map(body: &str) -> Result<Value> {
     let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {{ {body} }})");
     load_and_await(&prog).await
@@ -1049,63 +732,25 @@ async fn fused_variant_payload_shadow() -> Result<()> {
     assert_i64s(&v, &[14, 15, 16, 17])
 }
 
-/// A `select` arm binding that shadows an outer `n` another arm reads,
-/// inside a per-slot callback: `[100,4,6,8]`. The timeout keeps a
-/// regression from hanging the suite.
 #[tokio::test(flavor = "current_thread")]
 async fn shadow_arm_binding_outer_ref() -> Result<()> {
-    let fut = load_and_await(
+    let v = load_and_await(
         "let n = 100; \
          array::map([1, 2, 3, 4], |x: i64| select x { 1 => n, n => n * 2 })",
-    );
-    match tokio::time::timeout(std::time::Duration::from_secs(5), fut).await {
-        Ok(r) => assert_i64s(&r?, &[100, 4, 6, 8]),
-        Err(_) => bail!("#167 regressed — select arm-binding shadow hangs"),
-    }
+    )
+    .await?;
+    assert_i64s(&v, &[100, 4, 6, 8])
 }
 
 /// The same under the pure node-walk: `[100,4,6,8]`.
 #[tokio::test(flavor = "current_thread")]
 async fn shadow_arm_binding_node_walk() -> Result<()> {
-    let (tx, mut rx) = mpsc::channel(16);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
-        crate::TEST_REGISTER,
-        vec![],
-        graphix_compiler::CFlag::FusionDisabled.into(),
-        |_| {},
+    let v = load_node_walked(
+        "let n = 100; \
+         array::map([1, 2, 3, 4], |x: i64| select x { 1 => n, n => n * 2 })",
     )
     .await?;
-    let res = ctx
-        .rt
-        .load(Source::Internal(ArcStr::from(
-            "let n = 100; \
-             array::map([1, 2, 3, 4], |x: i64| select x { 1 => n, n => n * 2 })",
-        )))
-        .await?;
-    let eid = res.exprs.first().unwrap().id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => {
-                ctx.shutdown().await;
-                bail!("#167 node-walk regressed — hang under FusionDisabled");
-            }
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut b) => for e in b.drain(..) {
-                    if let GXEvent::Updated(id, v) = &e {
-                        if *id == eid {
-                            let r = assert_i64s(v, &[100, 4, 6, 8]);
-                            ctx.shutdown().await;
-                            return r;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    assert_i64s(&v, &[100, 4, 6, 8])
 }
 
 // Env accounting: every per-slot grow mints bindings and every shrink
@@ -1114,26 +759,13 @@ async fn shadow_arm_binding_node_walk() -> Result<()> {
 
 /// Drain `rx` until the map at `eid` emits an array of `target` length;
 /// times out after 5s.
-async fn await_map_len(
-    rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
-    eid: graphix_compiler::expr::ExprId,
-    target: usize,
-) -> Result<()> {
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
+async fn await_map_len(rx: &mut Events, eid: ExprId, target: usize) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for map len {target}"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, Value::Array(a)) = &e {
-                        if *id == eid && a.len() == target {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
+        if let Value::Array(a) = next_update(rx, eid, deadline).await?
+            && a.len() == target
+        {
+            return Ok(());
         }
     }
 }
@@ -1196,7 +828,7 @@ async fn env_accounting_grow_shrink() -> Result<()> {
         if *b != base {
             bail!(
                 "env-accounting leak: cycle {i} bottom {b:?} != baseline \
-                 {base:?} — clone_rebind minted bindings/refs that \
+                 {base:?} — a slot's instance minted bindings/refs that \
                  Slot::delete did not reverse. Full series: {bottoms:?}"
             );
         }
@@ -1287,9 +919,9 @@ async fn deleted_sample_releases_store() -> Result<()> {
 /// A catch handler that fires and captures both the element `x` and
 /// the outer `k`, driving `res <- x + k`: `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_trycatch_catch_capture() -> Result<()> {
+async fn impure_trycatch_catch_capture() -> Result<()> {
     assert_i64s(
-        &clone_map(
+        &impure_map(
             "let res = never(); \
              catch(e) res <- (x + k); \
              (0 /? 0)?; \
@@ -1302,24 +934,24 @@ async fn clone_trycatch_catch_capture() -> Result<()> {
 
 /// A covered block that captures `k` and does not error: `x / k`.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_trycatch_try_capture() -> Result<()> {
-    assert_i64s(&clone_map("{ catch(e) -1; x / k }").await?, &[0, 0, 1, 1])
+async fn impure_trycatch_try_capture() -> Result<()> {
+    assert_i64s(&impure_map("{ catch(e) -1; x / k }").await?, &[0, 0, 1, 1])
 }
 
 /// `x ~ k` emits `k` when the element fires: `[3,3,3,3]`.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_sample_capture() -> Result<()> {
-    assert_i64s(&clone_map("x ~ k").await?, &[3, 3, 3, 3])
+async fn impure_sample_capture() -> Result<()> {
+    assert_i64s(&impure_map("x ~ k").await?, &[3, 3, 3, 3])
 }
 
 /// ByRef + Deref capturing `k`: `*r + x` is `[4,5,6,7]`.
 #[tokio::test(flavor = "current_thread")]
-async fn clone_byref_deref_capture() -> Result<()> {
-    assert_i64s(&clone_map("let r = &k; *r + x").await?, &[4, 5, 6, 7])
+async fn impure_byref_deref_capture() -> Result<()> {
+    assert_i64s(&impure_map("let r = &k; *r + x").await?, &[4, 5, 6, 7])
 }
 
 // Proptest swarm: random total i64 callback bodies over `x` and `k`;
-// the clone path must agree with the reference path.
+// the impure callback must agree with the pure one.
 
 /// A random single-expression i64 body over `x`, `k`, and small literals.
 fn body_strategy() -> impl proptest::strategy::Strategy<Value = String> {
@@ -1362,7 +994,7 @@ proptest::proptest! {
         ..proptest::prelude::ProptestConfig::default()
     })]
     #[test]
-    fn clone_matches_reference(body in body_strategy()) {
+    fn impure_matches_pure(body in body_strategy()) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1370,7 +1002,7 @@ proptest::proptest! {
         let (reference, cloned) = rt
             .block_on(async {
                 let r = pure_map(&body).await?;
-                let c = clone_map(&body).await?;
+                let c = impure_map(&body).await?;
                 anyhow::Ok((r, c))
             })
             .map_err(|e| {
@@ -1425,10 +1057,10 @@ async fn node_shape_external_scalar() -> Result<()> {
     Ok(())
 }
 
-// Every node kind is matched by its own name (fusion off, so the root
-// is the node itself, not the kernel that would replace it).
+// A node is matched by its own kind's name and refused by another's
+// (fusion off, so the root is the node itself, not a kernel).
 #[tokio::test(flavor = "current_thread")]
-async fn node_shape_names_every_kind() -> Result<()> {
+async fn node_shape_matches_by_kind_name() -> Result<()> {
     use graphix_compiler::{CFlag, node_shape::NodeShape};
     use graphix_package_core::testing::init_with_flags_and_setup;
 
@@ -1900,24 +1532,17 @@ run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, |v: Result<&Value
 // A lambda call whose arguments do not all fuse (an effect, a stateful
 // builtin) fuses with each such argument as a feeder: the node-walk runs
 // it and the kernel reads its production as an input.
-// CR claude for claude: [test-gap] run! checks only the first update, (55, 56). This
-// fixture therefore never sees the kernel run again when the feeder `{ let s = 0; s <-
-// 1; s }` produces its second value, so a feeder read once at init instead of wired in
-// as an input would pass. Both engines emit (55, 56) and then (56, 57). End the fixture
-// with `select count(a) { 2 => (a, b), _ => never() }` and expect (56, 57). It still
-// fuses (graphix-fuzz run: fused=4), and a feeder that stops firing becomes a timeout.
-// (tests-lang-b-07)
 const CALL_FED_BY_NODE_WALKED_ARGS: &str = r#"
 {
   let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) };
   let a = #[native] f(10, { let s = 0; s <- 1; s });
   let b = #[native] f(10, count(a));
-  (a, b)
+  select count(a) { 2 => (a, b), _ => never() }
 }
 "#;
 
 run!(call_fed_by_node_walked_args, CALL_FED_BY_NODE_WALKED_ARGS, |v: Result<&Value>| match v {
-    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(55), Value::I64(56)]),
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(56), Value::I64(57)]),
     _ => false,
 }; FuseExpect::Jit);
 
