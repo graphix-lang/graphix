@@ -977,7 +977,22 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     // give the generator calls to them, which would also put each reader's imaged cast
     // target under the cold/warm comparison. probe:
     // design/review-2026-10-05/repro/small-pkgs-19.gx (small-pkgs-19)
-    if ["sys::", "http::"].iter().any(|m| code.contains(m)) {
+    // 2026-10-07 claude: the markers are in; the generator does not call
+    // these packages yet, so selfcheck still cannot police them and their
+    // imaged cast targets reach no cold/warm comparison.
+    // the async readers land their reply in whichever cycle the scheduler
+    // allows, like sys:: and http::
+    let async_markers = [
+        "sys::",
+        "http::",
+        "json::read",
+        "toml::read",
+        "pack::read",
+        "xls::",
+        "db::",
+        "sqlite::",
+    ];
+    if async_markers.iter().any(|m| code.contains(m)) {
         // FinalValues assumes the async values themselves settle
         // deterministically; a `<-` weaves arrival order into state, and
         // the fire-count/arrival-order-sensitive builtins leak it too.

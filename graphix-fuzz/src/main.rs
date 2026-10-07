@@ -1052,14 +1052,6 @@ fn vm_rss_kb(pid: u32) -> Option<u64> {
 
 /// Long-running leak witnesses for `leakcheck`. The control rows keep
 /// the gate honest: a shared baseline drift fails nothing.
-// CR claude for claude: [test-gap] No witness drives a fused select's or-arm, whose owned
-// binds are forwarded through the or-chain's done block
-// (graphix-compiler/src/fusion/emit/select.rs:1868-1888), or a guard that goes bottom
-// with owned binds in scope (the ubdrop edge, select.rs:814-819); every guard below is
-// total. design/distributed_jit.md item 7 says these witnesses pin every arm exit, so a
-// leak on either edge would pass leakcheck. Add one: `` `A(s, a) | `B(s, a) if (i64:10
-// / d) > k => str::len(s) + array::len(a) `` over a timer-fed `d = x % i64:5`, which
-// fuses today. (f-select-11)
 const LEAK_WITNESSES: &[(&str, &str)] = &[
     (
         // fused handler-less `$` minting an owned error every tick
@@ -1096,6 +1088,23 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          let x = i64:0;\n\
          x <- clk ~ (x + i64:1);\n\
          select `A([x, i64:2, i64:3]) { `A(xs) => array::len(xs) }\n",
+    ),
+    (
+        // an or-arm's owned binds forwarded through the or-chain, under a
+        // guard that goes bottom (div0) with them in scope
+        "select-or-arm-bottom-guard",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let d = x % i64:5;\n\
+         let v: [`A(string, Array<i64>), `B(string, Array<i64>)] = select x % i64:2 {\n\
+             i64:0 => `A(\"s[x]\", [x]),\n\
+             _ => `B(\"t\", [x, x])\n\
+         };\n\
+         select v {\n\
+             `A(s, a) | `B(s, a) if (i64:10 / d) > i64:1 => str::len(s) + array::len(a),\n\
+             _ => i64:0\n\
+         }\n",
     ),
     (
         // the list face: `ListHead`/`ListTail` clones in a list-pattern arm
