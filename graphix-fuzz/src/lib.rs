@@ -1222,8 +1222,8 @@ async fn session_divergence(
         if !again.get(a).agrees_with_at(again.get(b), strength) {
             return Some(Divergence {
                 code: code.to_string(),
-                interp: again.get(a).clone(),
-                jit: again.get(b).clone(),
+                reference: again.get(a).clone(),
+                tested: again.get(b).clone(),
                 tier,
                 pair,
             });
@@ -1298,31 +1298,24 @@ fn program_scope(env: &Env) -> Scope {
     scope
 }
 
-/// A detected disagreement between the reference (interp = node-walk)
-/// and the system under test (jit = fusion + cranelift).
+/// A detected disagreement between the two runs `pair` compares; their
+/// names are [`Divergence::labels`].
 #[derive(Debug, Clone)]
 pub struct Divergence {
     pub code: String,
-    // CR claude for claude: [readability] These fields hold whichever two runs `pair`
-    // compares (nocache/cold, cold/warm, check/build, serial/forked,
-    // in-language/dispatch). They are not the node-walk and the JIT, as their names and
-    // the doc above say. Only `check` (main.rs:1064) and Corpus::record print through
-    // labels(). regress (main.rs:145-146), minimize (main.rs:1000) and the campaign
-    // consoles (lib.rs:4797, 5137) print `interp=`/`jit=` for every pair, so a Warm
-    // regression shows its cold outcome as `interp`. Name the fields for the pair's two
-    // sides and print through labels() everywhere. Three doc comments are garbled too:
-    // 1933 repeats its first sentence, 1608-1611 is retry_one_sided_timeout's doc
-    // sitting on slow_budget, and Pair's doc (1219-1221) still speaks of 'the other
-    // two' variants. (fuzz-lib-a-12)
-    pub interp: Outcome,
-    pub jit: Outcome,
+    /// The run the other is judged against: the node-walk, the uncached
+    /// session, the cold one, the check, the serial run, the in-language
+    /// route.
+    pub reference: Outcome,
+    /// The run under test.
+    pub tested: Outcome,
     pub tier: OracleTier,
     pub pair: Pair,
 }
 
 /// Which two runs a [`Divergence`] compares. `Engine` is the classic
-/// node-walk-vs-JIT check; the other two exist only for `callable-v1`
-/// programs (see [`callable`]).
+/// node-walk-vs-JIT check; `EngineDispatch` and `Route` exist only for
+/// `callable-v1` programs (see [`callable`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pair {
     /// node-walk vs fused+JIT, in-language route (`interp`/`jit`
@@ -1384,7 +1377,7 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
 impl Divergence {
     /// A one-line classification.
     pub fn bisect(&self) -> &'static str {
-        match (&self.interp, &self.jit) {
+        match (&self.reference, &self.tested) {
             // Survived the 8x interp retry: either the JIT fabricated a
             // value or the node-walk is >8x slower on a heavy terminating
             // program. Verify by hand.
@@ -1443,7 +1436,7 @@ impl Divergence {
         }
     }
 
-    /// Human labels for the two outcome fields, by pair.
+    /// Human labels for `reference` and `tested`, by pair.
     pub fn labels(&self) -> (&'static str, &'static str) {
         match self.pair {
             Pair::Engine => ("interp", "jit"),
@@ -1563,8 +1556,8 @@ pub async fn check_verdict(
     {
         let d = Divergence {
             code: code.to_string(),
-            interp: Outcome::Checked,
-            jit,
+            reference: Outcome::Checked,
+            tested: jit,
             tier,
             pair: Pair::Check,
         };
@@ -1582,8 +1575,8 @@ pub async fn check_verdict(
             if twin_violation(&again) {
                 let d = Divergence {
                     code: code.to_string(),
-                    interp: o.clone(),
-                    jit: o.clone(),
+                    reference: o.clone(),
+                    tested: o.clone(),
                     tier,
                     pair: Pair::Twin,
                 };
@@ -1662,8 +1655,8 @@ pub async fn check_verdict(
     (
         Some(Divergence {
             code: code.to_string(),
-            interp,
-            jit,
+            reference: interp,
+            tested: jit,
             tier,
             pair: Pair::Engine,
         }),
@@ -1705,8 +1698,8 @@ async fn check_par(
         }
         return Some(Divergence {
             code: code.to_string(),
-            interp: interp.clone(),
-            jit: forked,
+            reference: interp.clone(),
+            tested: forked,
             tier,
             pair: Pair::Par(mode),
         });
@@ -1720,15 +1713,16 @@ struct SlowRetry {
     cpu_burned: Duration,
 }
 
-/// Re-run the timed-out side at 8x the budget, with an absolute floor:
-/// the scale gap is unbounded and load stretches CPU seconds into wall
-/// minutes. The CPU delta is process-wide, so a concurrent pool can only
-/// over-count, which errs toward dropping.
-/// The budget that tells a starved child from a hang.
+/// The budget that tells a starved child from a hang: 8x, with an
+/// absolute floor, since the scale gap is unbounded and load stretches
+/// CPU seconds into wall minutes.
 fn slow_budget(timeout: Duration) -> Duration {
     (timeout * 8).max(Duration::from_secs(60))
 }
 
+/// Re-run the timed-out side at [`slow_budget`]. The CPU delta is
+/// process-wide, so a concurrent pool can only over-count, which errs
+/// toward dropping.
 async fn retry_one_sided_timeout(code: &str, mode: Mode, timeout: Duration) -> SlowRetry {
     let budget = slow_budget(timeout);
     let cpu_before = self_cpu();
@@ -1776,8 +1770,8 @@ async fn check_callable(
             if twin_violation(&again) {
                 let d = Divergence {
                     code: code.to_string(),
-                    interp: o.clone(),
-                    jit: o.clone(),
+                    reference: o.clone(),
+                    tested: o.clone(),
                     tier,
                     pair: Pair::Twin,
                 };
@@ -1885,8 +1879,8 @@ async fn check_callable(
     {
         let d = Divergence {
             code: code.to_string(),
-            interp: a,
-            jit: b,
+            reference: a,
+            tested: b,
             tier,
             pair: Pair::Engine,
         };
@@ -1907,8 +1901,8 @@ async fn check_callable(
     {
         let d = Divergence {
             code: code.to_string(),
-            interp: a,
-            jit: b,
+            reference: a,
+            tested: b,
             tier,
             pair: Pair::EngineDispatch,
         };
@@ -1929,8 +1923,8 @@ async fn check_callable(
     {
         let d = Divergence {
             code: code.to_string(),
-            interp: a,
-            jit: b,
+            reference: a,
+            tested: b,
             tier,
             pair: Pair::Route,
         };
@@ -2599,7 +2593,7 @@ async fn run_batch_child(
 // label for a Pair::Par(JitPar) finding (interp: Timeout(StackBudget), jit/par: Trace)
 // after 18 s, with no 8x retry run. (fuzz-lib-a-09)
 fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
-    let td = match (&d.interp, &d.jit) {
+    let td = match (&d.reference, &d.tested) {
         (Outcome::Trace(a), Outcome::Trace(b)) => match (d.pair, d.tier) {
             (Pair::Route, _) | (_, OracleTier::FinalValues) => {
                 a.first_final_difference(b)
@@ -2608,7 +2602,7 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
         },
         _ => None,
     };
-    (d.bisect(), d.interp.kind(), d.jit.kind(), td)
+    (d.bisect(), d.reference.kind(), d.tested.kind(), td)
 }
 
 /// Minimize a diverging wrapper: schedule reductions first (drop the
@@ -3511,8 +3505,8 @@ async fn undeclared_rejection(prog: &str, timeout: Duration) -> Option<Divergenc
     }
     Some(Divergence {
         code: prog.to_string(),
-        interp: outcome.clone(),
-        jit: outcome,
+        reference: outcome.clone(),
+        tested: outcome,
         tier: oracle_tier(prog),
         pair: Pair::Rejected,
     })
@@ -3875,8 +3869,8 @@ impl Corpus {
             "// bisect: {}\n// {la}: {}\n// {lb}: {}\n\
              // mutant: {}\n// minimized:\n{}\n",
             d.bisect(),
-            clip(format!("{:?}", d.interp)),
-            clip(format!("{:?}", d.jit)),
+            clip(format!("{:?}", d.reference)),
+            clip(format!("{:?}", d.tested)),
             mutant.replace('\n', "\\n"),
             minimized,
         );
@@ -5172,7 +5166,8 @@ pub async fn run_aggregator(
                                 if corpus.record(&d, &prog, &min) {
                                     println!("DIVERGENCE — {}", d.bisect());
                                     println!("    minimized: {min}");
-                                    println!("    interp={:?} jit={:?}", d.interp, d.jit);
+                                    let (a, b) = d.labels();
+                                    println!("    {a}={:?} {b}={:?}", d.reference, d.tested);
                                 }
                             }
                         }
@@ -5523,10 +5518,8 @@ pub async fn run_pool_multi(
                                 if corpus.record(&d, &prog, &min) {
                                     println!("DIVERGENCE — {}", d.bisect());
                                     println!("    minimized: {min}");
-                                    println!(
-                                        "    interp={:?} jit={:?}",
-                                        d.interp, d.jit
-                                    );
+                                    let (a, b) = d.labels();
+                                    println!("    {a}={:?} {b}={:?}", d.reference, d.tested);
                                 }
                             });
                             true
@@ -6630,7 +6623,7 @@ mod tests {
             if let Some(d) = check(seed, t).await {
                 panic!(
                     "scheduled seed diverges:\n{seed}\n  interp={:?}\n  jit={:?}",
-                    d.interp, d.jit
+                    d.reference, d.tested
                 );
             }
         }

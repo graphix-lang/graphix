@@ -142,8 +142,9 @@ async fn regress(bless: bool) -> Regression {
     );
     for (name, d) in &r.regressions {
         println!("  REGRESSION {name} — {}", d.bisect());
-        println!("    interp={}", render(&d.interp));
-        println!("    jit=  {}", render(&d.jit));
+        let (a, b) = d.labels();
+        println!("    {a}={}", render(&d.reference));
+        println!("    {b}={}", render(&d.tested));
     }
     r
 }
@@ -1041,7 +1042,8 @@ async fn main() -> Result<()> {
                 Some(d) => {
                     println!("minimized ({calls} checks) — {}", d.bisect());
                     println!("{min}");
-                    println!("  interp={} jit={}", render(&d.interp), render(&d.jit));
+                    let (a, b) = d.labels();
+                    println!("  {a}={} {b}={}", render(&d.reference), render(&d.tested));
                 }
             }
         }
@@ -1119,8 +1121,8 @@ async fn main() -> Result<()> {
                     Some(d) => {
                         let (la, lb) = d.labels();
                         println!("DIVERGENCE — {}", d.bisect());
-                        println!("  {la}: {}", render(&d.interp));
-                        println!("  {lb}: {}", render(&d.jit));
+                        println!("  {la}: {}", render(&d.reference));
+                        println!("  {lb}: {}", render(&d.tested));
                         drop(cwd_guard);
                         std::process::exit(1);
                     }
