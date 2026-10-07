@@ -20,4 +20,4 @@ data <- array::window(
     new_value
 );
 
-sparkline(#max: &100, &data)
+sparkline(#max: &100.0, &data)

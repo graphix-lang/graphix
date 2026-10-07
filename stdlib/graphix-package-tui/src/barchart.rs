@@ -1,71 +1,35 @@
-use super::{DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line, validate};
+use super::{
+    DirectionV, LineV, StyleV, TuiW, TuiWidget, into_borrowed_line,
+    validate::{Dim, Index},
+};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use crossterm::event::Event;
-use futures::future::{self, try_join_all};
+use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Direction, Rect},
     widgets::{Bar, BarChart, BarGroup},
 };
-use smallvec::{SmallVec, smallvec};
-use tokio::try_join;
+use smallvec::SmallVec;
 
-struct BarW<X: GXExt> {
-    label: TRef<X, Option<LineV>>,
-    style: TRef<X, Option<StyleV>>,
-    text_value: TRef<X, Option<ArcStr>>,
-    value: TRef<X, i64>,
-    value_style: TRef<X, Option<StyleV>>,
-    last_warned_value: Option<i64>,
+graphix_rt::props! {
+    struct BarProps {
+        label: Option<LineV>,
+        style: Option<StyleV>,
+        text_value: Option<ArcStr>,
+        value: Index,
+        value_style: Option<StyleV>,
+    }
 }
 
-impl<X: GXExt> BarW<X> {
-    async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        #[derive(FromValue)]
-        struct Fields {
-            label: u64,
-            style: u64,
-            text_value: u64,
-            value: u64,
-            value_style: u64,
-        }
-        let Fields { label, style, text_value, value, value_style } = v.cast_to()?;
-        let (label, style, text_value, value, value_style) = try_join! {
-            gx.compile_ref(label),
-            gx.compile_ref(style),
-            gx.compile_ref(text_value),
-            gx.compile_ref(value),
-            gx.compile_ref(value_style)
-        }?;
-        Ok(Self {
-            label: TRef::new(label)?,
-            style: TRef::new(style)?,
-            text_value: TRef::new(text_value)?,
-            value: TRef::new(value)?,
-            value_style: TRef::new(value_style)?,
-            last_warned_value: None,
-        })
-    }
-
-    fn update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.label.update(id, v).context("bar label update")?;
-        self.style.update(id, v).context("bar style update")?;
-        self.text_value.update(id, v).context("bar text_value update")?;
-        self.value.update(id, v).context("bar value update")?;
-        self.value_style.update(id, v).context("bar value_style update")?;
-        Ok(())
-    }
-
-    fn build<'a>(&'a mut self) -> Bar<'a> {
-        let raw = self.value.t.unwrap_or(0);
-        let v = validate::clamp_u64("bar", "value", &mut self.last_warned_value, raw);
-        let mut bar = Bar::default().value(v);
+impl<X: GXExt> BarProps<X> {
+    fn build(&self) -> Bar<'_> {
+        let mut bar = Bar::default().value(self.value.t.map_or(0, |v| v.0 as u64));
         if let Some(Some(LineV(l))) = &self.label.t {
             bar = bar.label(into_borrowed_line(l));
         }
@@ -84,7 +48,7 @@ impl<X: GXExt> BarW<X> {
 
 struct BarGroupW<X: GXExt> {
     label: Option<LineV>,
-    bars: Vec<BarW<X>>,
+    bars: Vec<BarProps<X>>,
 }
 
 impl<X: GXExt> BarGroupW<X> {
@@ -95,116 +59,42 @@ impl<X: GXExt> BarGroupW<X> {
             label: Option<LineV>,
         }
         let Fields { bars, label } = v.cast_to().context("bargroup fields")?;
-        let bars = bars.into_iter().map(|b| BarW::compile(gx, b));
-        let bars = future::try_join_all(bars).await?;
+        let bars = try_join_all(bars.iter().map(|b| BarProps::compile(gx, b))).await?;
         Ok(Self { label, bars })
+    }
+}
+
+graphix_rt::props! {
+    struct Props {
+        bar_gap: Option<Dim>,
+        bar_style: Option<StyleV>,
+        bar_width: Option<Dim>,
+        direction: Option<DirectionV>,
+        group_gap: Option<Dim>,
+        label_style: Option<StyleV>,
+        max: Option<Index>,
+        style: Option<StyleV>,
+        value_style: Option<StyleV>,
     }
 }
 
 pub(super) struct BarChartW<X: GXExt> {
     gx: GXHandle<X>,
+    p: Props<X>,
     data_ref: Ref<X>,
     data: Vec<BarGroupW<X>>,
-    bar_gap: TRef<X, Option<i64>>,
-    bar_style: TRef<X, Option<StyleV>>,
-    bar_width: TRef<X, Option<i64>>,
-    direction: TRef<X, Option<DirectionV>>,
-    group_gap: TRef<X, Option<i64>>,
-    label_style: TRef<X, Option<StyleV>>,
-    max: TRef<X, Option<i64>>,
-    style: TRef<X, Option<StyleV>>,
-    value_style: TRef<X, Option<StyleV>>,
-    last_warned_bar_gap: Option<i64>,
-    last_warned_bar_width: Option<i64>,
-    last_warned_group_gap: Option<i64>,
-    last_warned_max: Option<i64>,
 }
 
 impl<X: GXExt> BarChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         #[derive(FromValue)]
-        struct Fields {
-            bar_gap: u64,
-            bar_style: u64,
-            bar_width: u64,
+        struct Data {
             data: u64,
-            direction: u64,
-            group_gap: u64,
-            label_style: u64,
-            max: u64,
-            style: u64,
-            value_style: u64,
         }
-        let Fields {
-            bar_gap,
-            bar_style,
-            bar_width,
-            data,
-            direction,
-            group_gap,
-            label_style,
-            max,
-            style,
-            value_style,
-        } = v.cast_to().context("barchart fields")?;
-        let (
-            bar_gap,
-            bar_style,
-            bar_width,
-            data_ref,
-            direction,
-            group_gap,
-            label_style,
-            max,
-            style,
-            value_style,
-        ) = try_join! {
-            gx.compile_ref(bar_gap),
-            gx.compile_ref(bar_style),
-            gx.compile_ref(bar_width),
-            gx.compile_ref(data),
-            gx.compile_ref(direction),
-            gx.compile_ref(group_gap),
-            gx.compile_ref(label_style),
-            gx.compile_ref(max),
-            gx.compile_ref(style),
-            gx.compile_ref(value_style)
-        }?;
-        let bar_gap =
-            TRef::<X, Option<i64>>::new(bar_gap).context("barchart tref bar_gap")?;
-        let bar_style = TRef::<X, Option<StyleV>>::new(bar_style)
-            .context("barchart tref bar_style")?;
-        let bar_width =
-            TRef::<X, Option<i64>>::new(bar_width).context("barchart tref bar_width")?;
-        let direction = TRef::<X, Option<DirectionV>>::new(direction)
-            .context("barchart tref direction")?;
-        let group_gap =
-            TRef::<X, Option<i64>>::new(group_gap).context("barchart tref group_gap")?;
-        let label_style = TRef::<X, Option<StyleV>>::new(label_style)
-            .context("barchart tref label_style")?;
-        let max = TRef::<X, Option<i64>>::new(max).context("barchart tref max")?;
-        let style =
-            TRef::<X, Option<StyleV>>::new(style).context("barchart tref style")?;
-        let value_style = TRef::<X, Option<StyleV>>::new(value_style)
-            .context("barchart tref value_style")?;
-        let mut t = Self {
-            gx: gx.clone(),
-            data_ref,
-            data: vec![],
-            bar_gap,
-            bar_style,
-            bar_width,
-            direction,
-            group_gap,
-            label_style,
-            max,
-            style,
-            value_style,
-            last_warned_bar_gap: None,
-            last_warned_bar_width: None,
-            last_warned_group_gap: None,
-            last_warned_max: None,
-        };
+        let p = Props::compile(&gx, &v).await.context("bar_chart")?;
+        let Data { data } = v.cast_to().context("bar_chart data")?;
+        let data_ref = gx.compile_ref(data).await?;
+        let mut t = Self { gx, p, data_ref, data: vec![] };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(v).await?;
         }
@@ -212,148 +102,96 @@ impl<X: GXExt> BarChartW<X> {
     }
 
     async fn set_data(&mut self, v: Value) -> Result<()> {
-        let groups = v
-            .cast_to::<SmallVec<[Value; 8]>>()?
-            .into_iter()
-            .map(|g| BarGroupW::compile(&self.gx, g));
-        Ok(self.data = try_join_all(groups).await?)
+        let groups = v.cast_to::<SmallVec<[Value; 8]>>()?;
+        self.data =
+            try_join_all(groups.into_iter().map(|g| BarGroupW::compile(&self.gx, g)))
+                .await?;
+        Ok(())
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for BarChartW<X> {
-    async fn handle_event(&mut self, _e: Event, _v: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            gx: _,
-            data_ref,
-            data: _,
-            bar_gap,
-            bar_style,
-            bar_width,
-            direction,
-            group_gap,
-            label_style,
-            max,
-            style,
-            value_style,
-            last_warned_bar_gap: _,
-            last_warned_bar_width: _,
-            last_warned_group_gap: _,
-            last_warned_max: _,
-        } = self;
-        bar_gap.update(id, &v).context("barchart update bar_gap")?;
-        bar_style.update(id, &v).context("barchart update bar_style")?;
-        bar_width.update(id, &v).context("barchart update bar_width")?;
-        direction.update(id, &v).context("barchart update direction")?;
-        group_gap.update(id, &v).context("barchart update group_gap")?;
-        label_style.update(id, &v).context("barchart update label_style")?;
-        max.update(id, &v).context("barchart update max")?;
-        style.update(id, &v).context("barchart update style")?;
-        value_style.update(id, &v).context("barchart update value_style")?;
-        if data_ref.id == id {
+        self.p.update(id, &v).context("bar_chart")?;
+        if self.data_ref.id == id {
             self.set_data(v.clone()).await?;
         }
         for g in self.data.iter_mut() {
             for b in &mut g.bars {
-                b.update(id, &v)?;
+                b.update(id, &v).context("bar")?;
             }
         }
         Ok(())
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            gx: _,
-            data_ref: _,
-            data,
-            bar_gap,
-            bar_style,
-            bar_width,
-            direction,
-            group_gap,
-            label_style,
-            max,
-            style,
-            value_style,
-            last_warned_bar_gap,
-            last_warned_bar_width,
-            last_warned_group_gap,
-            last_warned_max,
-        } = self;
-        let mut chart = BarChart::default();
-        if let Some(Some(g)) = bar_gap.t {
-            chart = chart.bar_gap(validate::clamp_u16(
-                "bar_chart",
-                "bar_gap",
-                last_warned_bar_gap,
-                g,
-            ));
-        }
-        if let Some(Some(w)) = bar_width.t {
-            chart = chart.bar_width(validate::clamp_u16(
-                "bar_chart",
-                "bar_width",
-                last_warned_bar_width,
-                w,
-            ));
-        }
-        if let Some(Some(s)) = &bar_style.t {
+        let p = &self.p;
+        let dim = |r: &crate::TRef<X, Option<Dim>>, default| {
+            r.t.flatten().map_or(default, |d| d.0)
+        };
+        let (bar_width, bar_gap, group_gap) =
+            (dim(&p.bar_width, 1), dim(&p.bar_gap, 1), dim(&p.group_gap, 0));
+        let mut chart = BarChart::default()
+            .bar_width(bar_width)
+            .bar_gap(bar_gap)
+            .group_gap(group_gap);
+        if let Some(Some(s)) = &p.bar_style.t {
             chart = chart.bar_style(s.0);
         }
-        if let Some(Some(s)) = &value_style.t {
+        if let Some(Some(s)) = &p.value_style.t {
             chart = chart.value_style(s.0);
         }
-        if let Some(Some(s)) = &label_style.t {
+        if let Some(Some(s)) = &p.label_style.t {
             chart = chart.label_style(s.0);
         }
-        if let Some(Some(s)) = &style.t {
+        if let Some(Some(s)) = &p.style.t {
             chart = chart.style(s.0);
         }
-        if let Some(Some(m)) = max.t {
-            chart =
-                chart.max(validate::clamp_u64("bar_chart", "max", last_warned_max, m));
+        if let Some(Some(m)) = p.max.t {
+            chart = chart.max(m.0 as u64);
         }
-        if let Some(Some(d)) = direction.t {
-            chart = chart.direction(d.0);
-        }
-        if let Some(Some(gap)) = group_gap.t {
-            chart = chart.group_gap(validate::clamp_u16(
-                "bar_chart",
-                "group_gap",
-                last_warned_group_gap,
-                gap,
-            ));
-        }
-        // CR claude for claude: [bug] ratatui-widgets 0.3.0's BarChart overflows on
-        // values that draw passes to it unchecked. A bar value above u64::MAX / (8 *
-        // chart height, or width for horizontal bars), which is 1e17 on 24 rows,
-        // overflows `value * height * 8` (its barchart.rs:456). A group whose `n *
-        // bar_width + (n - 1) * bar_gap` exceeds u16::MAX (32769 bars at default
-        // widths, or 64 at bar_width 1024) overflows its barchart.rs:436, and the 1024
-        // cap in validate.rs cannot bound a sum that grows with the bar count. A debug
-        // build panics and the display never draws again. A release build draws the
-        // tallest bar as a 7/8 cell, and for the wide group admits every bar and panics
-        // with `index outside of buffer`. ratatui-widgets 0.3.2 computes ticks in u128,
-        // which fixes the values; the width sum needs this loop to pass only the bars
-        // the rect can show. probe: design/review-2026-10-05/repro/tui-widgets-05.py
-        // (tui-widgets-05)
-        for group in data.iter_mut() {
-            let mut bars: SmallVec<[Bar; 8]> = smallvec![];
-            let mut g = BarGroup::default();
-            if let Some(LineV(l)) = &group.label {
-                g = g.label(into_borrowed_line(l));
-            }
-            for bar in group.bars.iter_mut() {
+        let direction = p.direction.t.flatten().map_or(Direction::Vertical, |d| d.0);
+        chart = chart.direction(direction);
+        // only the bars the rect shows: ratatui sums a group's widths in u16
+        let room = match direction {
+            Direction::Vertical => rect.width,
+            Direction::Horizontal => rect.height,
+        } as u32;
+        let mut used = 0u32;
+        'groups: for group in &self.data {
+            let mut bars: SmallVec<[Bar; 8]> = SmallVec::new();
+            for bar in &group.bars {
+                let gap = if !bars.is_empty() {
+                    bar_gap
+                } else if used > 0 {
+                    group_gap
+                } else {
+                    0
+                };
+                let need = gap as u32 + bar_width as u32;
+                if used + need > room {
+                    if !bars.is_empty() {
+                        chart = chart.data(Self::group(group, &bars));
+                    }
+                    break 'groups;
+                }
+                used += need;
                 bars.push(bar.build());
             }
-            let g = g.bars(&bars);
-            chart = chart.data(g);
+            chart = chart.data(Self::group(group, &bars));
         }
         frame.render_widget(chart, rect);
         Ok(())
+    }
+}
+
+impl<X: GXExt> BarChartW<X> {
+    fn group<'a>(group: &'a BarGroupW<X>, bars: &[Bar<'a>]) -> BarGroup<'a> {
+        let g = BarGroup::default().bars(bars);
+        match &group.label {
+            Some(LineV(l)) => g.label(into_borrowed_line(l)),
+            None => g,
+        }
     }
 }

@@ -140,7 +140,7 @@ val size: Size;
 mod input_handler;
 
 /// The raw event stream from the terminal. Use input_handlers
-/// to route events to widets in a more ergonomic way.
+/// to route events to widgets in a more ergonomic way.
 val event: input_handler::Event;
 
 /// True if mouse input is enabled (and supported by the

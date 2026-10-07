@@ -22,16 +22,17 @@ val browser: fn(
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
-    s: string
+    path: string
 ) -> Tui;
 ```
 
 ## Parameters
 
+- **path** - The netidx path whose children are listed. The listing is fetched once each time `path` changes, so rows published later appear when the path next changes
 - **cursor** - Programmatic cursor movement: `Left(n)`, `Right(n)`, `Up(n)`, `Down(n)`
-- **selected_row** (output) - Display name of the selected row
-- **selected_path** (output, required) - Full path of the currently selected item
-- **size** (output) - Rendered size of the browser
+- **selected_row** (output) - Full path of the selected row (e.g. `/t/r1`)
+- **selected_path** (output) - Full path of the selected cell: the row in a list, the row and column in a table
+- **size** (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block's `#size` output
 
 ## Examples
 

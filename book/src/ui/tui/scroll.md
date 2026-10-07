@@ -33,8 +33,9 @@ val scrollbar: fn(
 
 ## Parameters
 
-- **position** (required) - Current scroll position (typically the Y offset)
-- **content_length** - Total length of the content (auto-detected if not specified)
+- **position** - Current scroll position, typically the Y offset (default: 0)
+- **content_length** - The number of scroll positions in the content; nothing measures the child, so a scrollbar without one draws no bar (default: 0)
+- **viewport_length** - How many positions the view shows at once, which sizes the thumb (default: the bar's own length)
 - **size** (output) - Rendered size of the scrollbar area
 
 ## Examples

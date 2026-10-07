@@ -28,7 +28,7 @@ use poolshark::{
     local::LPooled,
 };
 use smallvec::{SmallVec, smallvec};
-use std::{future, mem, result, time::Duration};
+use std::{collections::VecDeque, future, mem, result, time::Duration};
 use tokio::{
     select,
     sync::{
@@ -243,8 +243,15 @@ fn joined<T>(r: result::Result<(BindId, T), JoinError>) -> Option<(BindId, T)> {
     r.map_err(|e| error!("a runtime task ended without replying: {e}")).ok()
 }
 
+struct CallInFlight {
+    arg: Option<BindId>,
+    expr: ExprId,
+    answer: Option<ExprId>,
+}
+
 struct CallableInt {
     expr: ExprId,
+    answer: ExprId,
     args: Box<[BindId]>,
 }
 
@@ -252,6 +259,10 @@ pub(super) struct GX<X: GXExt> {
     ctx: ExecState<GXRt<X>, X::UserEvent>,
     nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, BuildNoHashHasher<ExprId>>,
     callables: IntMap<CallableId, CallableInt>,
+    /// Calls whose arguments have not landed, oldest first: a call is
+    /// made in the cycle its first argument is delivered, which a write
+    /// already waiting on that variable puts off.
+    calls: VecDeque<CallInFlight>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -296,6 +307,7 @@ impl<X: GXExt> GX<X> {
             ctx,
             nodes: IndexMap::default(),
             callables: IntMap::default(),
+            calls: VecDeque::new(),
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
@@ -444,6 +456,8 @@ impl<X: GXExt> GX<X> {
         for set in sets.drain(..) {
             self.write_set(set);
         }
+        let mut answering: LPooled<Vec<(ExprId, ExprId)>> = LPooled::take();
+        self.calls_made(&mut answering);
         let mut due: Vec<(BindId, Box<dyn CustomBuiltinType>, Via)> = Vec::new();
         self.ctx.rt.custom_updates.take(&mut due);
         for (id, u, via) in due {
@@ -475,7 +489,14 @@ impl<X: GXExt> GX<X> {
             // On the thread that runs the nodes: the task may migrate
             // between cycles.
             let _interrupt = graphix_compiler::InterruptScope::new(&control);
-            self.update_nodes(&mut batch)
+            self.update_nodes(&mut batch);
+            for (expr, answer) in answering.drain(..) {
+                let v = batch.iter().find_map(|e| match e {
+                    GXEvent::Updated(id, v) if *id == expr => Some(v.clone()),
+                    _ => None,
+                });
+                batch.push(GXEvent::Updated(answer, v.unwrap_or(Value::Null)))
+            }
         };
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
@@ -670,8 +691,8 @@ impl<X: GXExt> GX<X> {
                 // one message, one set, one cycle (GXHandle::set_many)
                 ToGX::SetMany { sets: set } => sets.push(set),
                 ToGX::DeleteCallable { id } => self.delete_callable(id),
-                ToGX::Call { id, args } => {
-                    if let Err(e) = self.call_callable(id, args, sets) {
+                ToGX::Call { id, args, answered } => {
+                    if let Err(e) = self.call_callable(id, args, answered, sets) {
                         error!("calling callable {id:?} failed with {e:?}")
                     }
                 }
@@ -1088,10 +1109,11 @@ impl<X: GXExt> GX<X> {
         // its init runs in the next cycle, as a compiled root's does
         self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();
-        self.callables.insert(cid, CallableInt { expr: eid, args });
+        let answer = ExprId::new();
+        self.callables.insert(cid, CallableInt { expr: eid, answer, args });
         self.nodes.insert(eid, n);
         let env = self.ctx.env.clone();
-        Ok(Callable { expr: eid, rt, env, id: cid, lambda: lb.id, typ: ftype })
+        Ok(Callable { expr: eid, answer, rt, env, id: cid, lambda: lb.id, typ: ftype })
     }
 
     fn compile_ref(&mut self, rt: GXHandle<X>, id: BindId) -> Result<Ref<X>> {
@@ -1113,6 +1135,7 @@ impl<X: GXExt> GX<X> {
         &mut self,
         id: CallableId,
         args: ValArray,
+        answered: bool,
         sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
     ) -> Result<()> {
         let c =
@@ -1120,14 +1143,45 @@ impl<X: GXExt> GX<X> {
         if args.len() != c.args.len() {
             bail!("expected {} arguments", c.args.len());
         }
+        self.calls.push_back(CallInFlight {
+            arg: c.args.first().copied(),
+            expr: c.expr,
+            answer: answered.then_some(c.answer),
+        });
         let mut set = SETS.take();
         set.extend(c.args.iter().zip(args.iter()).map(|(id, v)| (*id, v.clone())));
         sets.push(set);
         Ok(())
     }
 
+    /// The calls whose arguments this cycle delivered, leaving the rest:
+    /// (call site, answer id) for each answered one. A variable takes one
+    /// delivery a cycle, so its oldest call is the one made.
+    fn calls_made(&mut self, answering: &mut Vec<(ExprId, ExprId)>) {
+        let mut seen: LPooled<Vec<BindId>> = LPooled::take();
+        let variables = &self.ctx.event.variables;
+        self.calls.retain(|c| {
+            let now = match c.arg {
+                None => true,
+                Some(arg) if seen.contains(&arg) => false,
+                Some(arg) => {
+                    seen.push(arg);
+                    variables.contains_key(&arg)
+                }
+            };
+            if now && let Some(answer) = c.answer {
+                answering.push((c.expr, answer))
+            }
+            !now
+        });
+    }
+
     fn delete_callable(&mut self, id: CallableId) {
         if let Some(c) = self.callables.remove(&id) {
+            // its calls are made, with nothing to answer, next cycle
+            for call in self.calls.iter_mut().filter(|call| call.expr == c.expr) {
+                call.arg = None
+            }
             for a in c.args.iter() {
                 self.ctx.rt.store_remove(a);
             }

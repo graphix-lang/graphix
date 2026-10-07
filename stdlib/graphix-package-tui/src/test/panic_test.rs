@@ -1,18 +1,7 @@
 //! Panic-surface regression tests: each drives a widget with an input
 //! that, unclamped, would trigger an assert in ratatui or a downstream
-//! cast. A failure means a clamp is still missing.
+//! cast, and pins what the clamped input draws.
 
-// CR claude for claude: [test-gap] These tests assert only that render() returns. For
-// fields read through netidx's wrapping casts (list selected/scroll, tabs selected,
-// table selected, sparkline max; see tui-widgets-12), ratatui accepts the wrapped
-// value, so the tests pass with no clamp in place, contrary to the module doc. On a
-// pty, list_selected_negative's program highlights the last item (`>>B` with a
-// highlight symbol), tabs_selected_negative's draws no tab body, and
-// sparkline_max_negative's draws nothing. Assert what each bad input should render
-// (assert_lines/render_lines). widgets_test.rs has the same gap: its barchart,
-// calendar, canvas, chart, gauge, line_gauge, list, scrollbar, sparkline, table and
-// tabs tests check only that nothing panicked, though their output is stable.
-// (tui-widgets-14)
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
@@ -25,7 +14,18 @@ async fn gauge_ratio_above_one_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&5.0)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "██████████████████100% █████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+    ])?;
     Ok(())
 }
 
@@ -35,7 +35,7 @@ async fn gauge_ratio_negative_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&-0.3)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["", "", "", "", "", "                   0%"])?;
     Ok(())
 }
 
@@ -45,7 +45,7 @@ async fn gauge_ratio_nan_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&(0.0 / 0.0))",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["", "", "", "", "", "                   0%"])?;
     Ok(())
 }
 
@@ -55,7 +55,7 @@ async fn line_gauge_ratio_negative_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::line_gauge::{self, *};\nlet result = line_gauge(&-0.5)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["  0% ───────────────────────────────────"])?;
     Ok(())
 }
 
@@ -65,7 +65,7 @@ async fn line_gauge_ratio_above_one_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::line_gauge::{self, *};\nlet result = line_gauge(&2.5)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["100% ───────────────────────────────────"])?;
     Ok(())
 }
 
@@ -83,7 +83,7 @@ let result = bar_chart(#bar_width: &-1, &[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -98,7 +98,7 @@ let result = bar_chart(#bar_gap: &999999, &[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["█", "█", "█", "█", "█", "█", "█", "█", "X", "G"])?;
     Ok(())
 }
 
@@ -113,7 +113,7 @@ let result = bar_chart(#max: &0, &[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["█", "█", "█", "█", "█", "█", "█", "█", "X", "G"])?;
     Ok(())
 }
 
@@ -128,7 +128,7 @@ let result = bar_chart(#max: &-50, &[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["█", "█", "█", "█", "█", "█", "█", "█", "X", "G"])?;
     Ok(())
 }
 
@@ -143,7 +143,7 @@ let result = bar_chart(&[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["", "", "", "", "", "", "", "", "X", "G"])?;
     Ok(())
 }
 
@@ -154,11 +154,22 @@ async fn sparkline_max_zero_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::sparkline::{self, *};
 let data = [1.0, 2.0, 3.0];
-let result = sparkline(#max: &0, &data)
+let result = sparkline(#max: &0.0, &data)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "  █",
+        "  █",
+        "  █",
+        " ▅█",
+        " ██",
+        " ██",
+        "▂██",
+        "███",
+        "███",
+        "███",
+    ])?;
     Ok(())
 }
 
@@ -169,11 +180,22 @@ async fn sparkline_max_negative_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::sparkline::{self, *};
 let data = [1.0, 2.0, 3.0];
-let result = sparkline(#max: &-100, &data)
+let result = sparkline(#max: &-100.0, &data)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "  █",
+        "  █",
+        "  █",
+        " ▅█",
+        " ██",
+        " ██",
+        "▂██",
+        "███",
+        "███",
+        "███",
+    ])?;
     Ok(())
 }
 
@@ -189,7 +211,7 @@ let result = scrollbar(#position: &-5, &inner)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["body"])?;
     Ok(())
 }
 
@@ -205,7 +227,7 @@ let result = scrollbar(#position: &0, #content_length: &-10, &inner)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["body"])?;
     Ok(())
 }
 
@@ -221,7 +243,7 @@ let result = tabs(#selected: &-3, &[(line("A"), one)])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[" A", "one"])?;
     Ok(())
 }
 
@@ -237,7 +259,7 @@ let result = tabs(#selected: &99, &[(line("A"), one)])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[" A", "one"])?;
     Ok(())
 }
 
@@ -248,11 +270,11 @@ async fn list_selected_negative_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::list::{self, *};
 let items = [line("A"), line("B")];
-let result = list(#selected: &-2, &items)
+let result = list(#highlight_symbol: &">>", #selected: &-2, &items)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[">>A", "  B"])?;
     Ok(())
 }
 
@@ -263,11 +285,11 @@ async fn list_selected_out_of_range_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::list::{self, *};
 let items = [line("A"), line("B")];
-let result = list(#selected: &99, &items)
+let result = list(#highlight_symbol: &">>", #selected: &99, &items)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["  A", ">>B"])?;
     Ok(())
 }
 
@@ -282,7 +304,7 @@ let result = list(#scroll: &-5, &items)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["A", "B"])?;
     Ok(())
 }
 
@@ -293,11 +315,11 @@ async fn table_selected_negative_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::table::{self, *};
 let r1 = row([cell(line("a"))]);
-let result = table(#selected: &-1, &[&r1])
+let result = table(#highlight_symbol: &">>", #selected: &-1, &[&r1])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[">>a"])?;
     Ok(())
 }
 
@@ -308,11 +330,11 @@ async fn table_selected_out_of_range_does_not_panic() -> Result<()> {
 use tui::*;
 use tui::table::{self, *};
 let r1 = row([cell(line("a"))]);
-let result = table(#selected: &50, &[&r1])
+let result = table(#highlight_symbol: &">>", #selected: &50, &[&r1])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[">>a"])?;
     Ok(())
 }
 
@@ -335,7 +357,7 @@ let result = chart(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -356,7 +378,7 @@ let result = chart(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -377,7 +399,18 @@ let result = chart(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "                                       •",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "•",
+    ])?;
     Ok(())
 }
 
@@ -399,7 +432,7 @@ let result = chart(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -418,7 +451,7 @@ let result = canvas(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -437,7 +470,7 @@ let result = canvas(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -457,7 +490,7 @@ let result = canvas(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -471,7 +504,7 @@ let result = paragraph(#scroll: &{x: -5, y: -10}, &"body")
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["body"])?;
     Ok(())
 }
 
@@ -485,7 +518,7 @@ let result = paragraph(#scroll: &{x: 99999, y: 99999}, &"body")
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[])?;
     Ok(())
 }
 
@@ -500,7 +533,13 @@ async fn calendar_invalid_month_does_not_panic() -> Result<()> {
         10,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "  1  2  3  4  5  6  7",
+        "  8  9 10 11 12 13 14",
+        " 15 16 17 18 19 20 21",
+        " 22 23 24 25 26 27 28",
+        " 29 30 31",
+    ])?;
     Ok(())
 }
 
@@ -512,7 +551,13 @@ async fn calendar_invalid_day_does_not_panic() -> Result<()> {
         10,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "              1  2  3",
+        "  4  5  6  7  8  9 10",
+        " 11 12 13 14 15 16 17",
+        " 18 19 20 21 22 23 24",
+        " 25 26 27 28 29",
+    ])?;
     Ok(())
 }
 
@@ -524,6 +569,13 @@ async fn calendar_negative_year_does_not_panic() -> Result<()> {
         10,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "                 1  2",
+        "  3  4  5  6  7  8  9",
+        " 10 11 12 13 14 15 16",
+        " 17 18 19 20 21 22 23",
+        " 24 25 26 27 28 29 30",
+        " 31",
+    ])?;
     Ok(())
 }

@@ -1,9 +1,8 @@
 use super::{StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
@@ -12,66 +11,18 @@ use ratatui::{
     widgets::calendar::{CalendarEventStore, Monthly},
 };
 use time::{Date, Month};
-use tokio::try_join;
 
-/// Build a [`Date`] from a possibly-out-of-range (year, month, day)
-/// triple. Returns the coerced date and the original `(year, month,
-/// day)` if any clamping happened, so the caller can warn once.
-///
-/// Clamping rules: month → `[1, 12]`, day → `[1, days_in_month]`,
-/// year → the i32 range. The result is always a valid `Date` for any
-/// finite input, so widgets that depend on `Date` can render without
-/// panicking on user input that came from unchecked arithmetic.
-fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)>) {
-    let mut clamped = false;
-    // CR claude for claude: [bug] The year is clamped only to i32, but `time` holds years
-    // -9999..=9999 only. A year past that falls through to the 1970-01-01 fallback with
-    // `clamped` still false, so date(20000, 6, 15) shows January 1970 and logs nothing.
-    // A valid date in December 9999 or January -9999 makes ratatui's Monthly step past
-    // Date::MAX or Date::MIN, which panics the display task. The process then hangs
-    // with no display, and Ctrl-C does not end it. Clamp the year to Date::MIN.year() +
-    // 1 ..= Date::MAX.year() - 1 and mark it clamped; month_length then becomes
-    // `m.length(y)`, and its fallback comments are wrong anyway. probe:
-    // design/review-2026-10-05/repro/tui-widgets-06.gx (tui-widgets-06)
-    let y = year.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    if y as i64 != year {
-        clamped = true;
-    }
-    let m_clamped = month.clamp(1, 12);
-    if m_clamped != month {
-        clamped = true;
-    }
-    let m = Month::try_from(m_clamped as u8).unwrap_or(Month::January);
-    // `time` accepts year-month-aware day ranges, so we have to query
-    // the month's length to clamp day correctly.
-    let last_day = month_length(y, m) as i64;
-    let d_clamped = day.clamp(1, last_day);
-    if d_clamped != day {
-        clamped = true;
-    }
-    // If `time` still rejects the clamped triple, fall back to 1970-01-01.
-    let date = Date::from_calendar_date(y, m, d_clamped as u8)
-        .unwrap_or_else(|_| Date::from_calendar_date(1970, Month::January, 1).unwrap());
-    if clamped { (date, Some((year, month, day))) } else { (date, None) }
-}
-
-fn month_length(year: i32, month: Month) -> u8 {
-    // Walk from the first of the month forward to find the next
-    // first; the day before is the last of `month`. Avoids
-    // hand-rolling leap-year math.
-    let first = Date::from_calendar_date(year, month, 1)
-        .unwrap_or_else(|_| Date::from_calendar_date(2000, Month::January, 1).unwrap());
-    let next = first.replace_month(month.next()).unwrap_or_else(|_| {
-        // December → January next year. If that overflows, fall back
-        // to a 31-day default — cosmetic, the widget still renders.
-        first
-    });
-    if month == Month::December {
-        31
-    } else {
-        let days = (next - first).whole_days();
-        days.clamp(28, 31) as u8
-    }
+/// The [`Date`] nearest `(year, month, day)`, and whether it differs.
+/// The year stays a step inside `Date`'s range, since a month view
+/// steps past the date it shows.
+fn coerce_date(year: i64, month: i64, day: i64) -> (Date, bool) {
+    let y = year.clamp(Date::MIN.year() as i64 + 1, Date::MAX.year() as i64 - 1);
+    let m = month.clamp(1, 12);
+    let month_v = Month::try_from(m as u8).expect("a month in 1..=12");
+    let d = day.clamp(1, month_v.length(y as i32) as i64);
+    let date = Date::from_calendar_date(y as i32, month_v, d as u8)
+        .expect("a clamped date is valid");
+    (date, (y, m, d) != (year, month, day))
 }
 
 #[derive(Clone, Copy)]
@@ -87,8 +38,8 @@ impl FromValue for DateV {
         }
         let Fields { day, month, year } = v.cast_to()?;
         let (date, clamped) = coerce_date(year, month, day);
-        if let Some((y, m, d)) = clamped {
-            log::warn!("calendar date ({y}, {m}, {d}) coerced to {date}");
+        if clamped {
+            log::warn!("calendar date ({year}, {month}, {day}) coerced to {date}");
         }
         Ok(Self(date))
     }
@@ -100,63 +51,32 @@ struct EventV {
     style: StyleV,
 }
 
+graphix_rt::props! {
+    struct Props {
+        default_style: Option<StyleV>,
+        display_date: DateV,
+        show_month: Option<StyleV>,
+        show_surrounding: Option<StyleV>,
+        show_weekday: Option<StyleV>,
+    }
+}
+
 pub(super) struct CalendarW<X: GXExt> {
-    display_date: TRef<X, DateV>,
+    p: Props<X>,
     events_ref: Ref<X>,
     events: CalendarEventStore,
-    show_month: TRef<X, Option<StyleV>>,
-    show_surrounding: TRef<X, Option<StyleV>>,
-    show_weekday: TRef<X, Option<StyleV>>,
-    default_style: TRef<X, Option<StyleV>>,
 }
 
 impl<X: GXExt> CalendarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
         #[derive(FromValue)]
         struct Fields {
-            default_style: u64,
-            display_date: u64,
             events: u64,
-            show_month: u64,
-            show_surrounding: u64,
-            show_weekday: u64,
         }
-        let Fields {
-            default_style,
-            display_date,
-            events,
-            show_month,
-            show_surrounding,
-            show_weekday,
-        } = v.cast_to().context("calendar fields")?;
-        let (
-            default_style,
-            display_date,
-            events_ref,
-            show_month,
-            show_surrounding,
-            show_weekday,
-        ) = try_join! {
-            gx.compile_ref(default_style),
-            gx.compile_ref(display_date),
-            gx.compile_ref(events),
-            gx.compile_ref(show_month),
-            gx.compile_ref(show_surrounding),
-            gx.compile_ref(show_weekday)
-        }?;
-        let mut t = Self {
-            display_date: TRef::new(display_date)
-                .context("calendar tref display_date")?,
-            events_ref,
-            events: CalendarEventStore::default(),
-            show_month: TRef::new(show_month).context("calendar tref show_month")?,
-            show_surrounding: TRef::new(show_surrounding)
-                .context("calendar tref show_surrounding")?,
-            show_weekday: TRef::new(show_weekday)
-                .context("calendar tref show_weekday")?,
-            default_style: TRef::new(default_style)
-                .context("calendar tref default_style")?,
-        };
+        let p = Props::compile(&gx, &v).await.context("calendar")?;
+        let Fields { events } = v.cast_to().context("calendar fields")?;
+        let events_ref = gx.compile_ref(events).await?;
+        let mut t = Self { p, events_ref, events: CalendarEventStore::default() };
         if let Some(v) = t.events_ref.last.take() {
             t.set_events(&v)?;
         }
@@ -181,66 +101,59 @@ impl<X: GXExt> CalendarW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for CalendarW<X> {
-    async fn handle_event(&mut self, _e: Event, _v: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            display_date,
-            events_ref,
-            events: _,
-            show_month,
-            show_surrounding,
-            show_weekday,
-            default_style,
-        } = self;
-        display_date.update(id, &v).context("calendar update display_date")?;
-        show_month.update(id, &v).context("calendar update show_month")?;
-        show_surrounding.update(id, &v).context("calendar update show_surrounding")?;
-        show_weekday.update(id, &v).context("calendar update show_weekday")?;
-        default_style.update(id, &v).context("calendar update default_style")?;
-        if events_ref.id == id {
+        self.p.update(id, &v).context("calendar")?;
+        if self.events_ref.id == id {
             self.set_events(&v)?;
         }
         Ok(())
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            display_date,
-            events_ref: _,
-            events,
-            show_month,
-            show_surrounding,
-            show_weekday,
-            default_style,
-        } = self;
-        // CR claude for claude: [bug] display_date.t.unwrap() panics when the date has no
-        // value yet. TRef::new leaves t as None when the referent has not produced by
-        // the time the widget is built (a date loaded by a seq, from a file or the
-        // network, or never()), and the first frame is drawn before the date arrives.
-        // The panic also wedges the process. It skips the stop signal (src/lib.rs:656
-        // fires it only on an Err), and dropping the display task drops the root
-        // CompExp, which deletes the whole program. The terminal is restored, but
-        // nothing runs again: a gated sys::exit never fires and Ctrl-C does nothing,
-        // and any widget panic does the same. Draw nothing until a date arrives, the
-        // way the other widgets default a missing value. probe:
-        // design/review-2026-10-05/repro/x-panics-10.gx (x-panics-10)
-        let mut cal = Monthly::new(display_date.t.unwrap().0, &*events);
-        if let Some(Some(s)) = &show_surrounding.t {
+        let p = &self.p;
+        let Some(date) = p.display_date.t else { return Ok(()) };
+        let mut cal = Monthly::new(date.0, &self.events);
+        if let Some(Some(s)) = &p.show_surrounding.t {
             cal = cal.show_surrounding(s.0);
         }
-        if let Some(Some(s)) = &show_weekday.t {
+        if let Some(Some(s)) = &p.show_weekday.t {
             cal = cal.show_weekdays_header(s.0);
         }
-        if let Some(Some(s)) = &show_month.t {
+        if let Some(Some(s)) = &p.show_month.t {
             cal = cal.show_month_header(s.0);
         }
-        if let Some(Some(s)) = &default_style.t {
+        if let Some(Some(s)) = &p.default_style.t {
             cal = cal.default_style(s.0);
         }
         frame.render_widget(cal, rect);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::coerce_date;
+    use time::{Date, Month};
+
+    fn date(y: i32, m: Month, d: u8) -> Date {
+        Date::from_calendar_date(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn valid_dates_pass_through() {
+        assert_eq!(coerce_date(2024, 2, 29), (date(2024, Month::February, 29), false));
+    }
+
+    #[test]
+    fn days_and_months_clamp() {
+        assert_eq!(coerce_date(2023, 2, 30), (date(2023, Month::February, 28), true));
+        assert_eq!(coerce_date(2023, 13, 0), (date(2023, Month::December, 1), true));
+    }
+
+    #[test]
+    fn years_stay_a_step_inside_the_range() {
+        assert_eq!(coerce_date(20000, 6, 15), (date(9998, Month::June, 15), true));
+        assert_eq!(coerce_date(9999, 12, 31), (date(9998, Month::December, 31), true));
+        assert_eq!(coerce_date(-20000, 1, 1), (date(-9998, Month::January, 1), true));
     }
 }

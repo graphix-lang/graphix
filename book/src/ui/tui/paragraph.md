@@ -9,6 +9,7 @@ val paragraph: fn(
   ?#style: &Style,
   ?#alignment: &[Alignment, null],
   ?#scroll: &{x: i64, y: i64},
+  ?#wrap: &bool,
   ?#trim: &bool,
   v: &[Array<Line>, string]
 ) -> Tui;
@@ -18,6 +19,7 @@ val paragraph: fn(
 
 - **scroll** - Record with `x` and `y` fields for scroll position
 - **alignment** - `Left`, `Center`, or `Right`
+- **wrap** - Break long lines at the paragraph's width (default: true); `scroll.x` applies only when this is false
 - **trim** - Trim leading whitespace when wrapping (default: true)
 
 ## Examples

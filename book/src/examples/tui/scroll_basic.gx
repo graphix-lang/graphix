@@ -1,13 +1,14 @@
-use tui::{paragraph::paragraph, scrollbar::scrollbar};
+use tui::{line, paragraph::paragraph, scrollbar::scrollbar};
 
-let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
+let lines = array::init(50, |i| line("Line [i]"));
 let position = 0;
 let content = paragraph(
     #scroll: &{x: 0, y: position},
-    &long_text
+    &lines
 );
 
 scrollbar(
     #position: &position,
+    #content_length: &array::len(lines),
     &content
 )

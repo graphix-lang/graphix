@@ -1,18 +1,17 @@
-use super::{DirectionV, FlexV, SizeV, TuiW, TuiWidget, compile};
+use super::{
+    DirectionV, FlexV, SizeReport, TuiW, TuiWidget, compile, compile_each,
+    validate::{Dim, Index, Offset, Percent},
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crossterm::event::Event;
-use futures::future;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect, Spacing},
 };
-use smallvec::SmallVec;
-use tokio::try_join;
 
 #[derive(Clone, Copy)]
 pub(super) struct ConstraintV(pub Constraint);
@@ -21,20 +20,24 @@ impl FromValue for ConstraintV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
         enum Repr {
-            Min(i64),
-            Max(i64),
-            Length(i64),
-            Percentage(i64),
-            Ratio(i64, i64),
-            Fill(i64),
+            Min(Offset),
+            Max(Offset),
+            Length(Offset),
+            Percentage(Percent),
+            Ratio(Index, Index),
+            Fill(Offset),
         }
         Ok(Self(match v.cast_to()? {
-            Repr::Min(p) => Constraint::Min(p as u16),
-            Repr::Max(p) => Constraint::Max(p as u16),
-            Repr::Length(p) => Constraint::Length(p as u16),
-            Repr::Percentage(p) => Constraint::Percentage(p as u16),
-            Repr::Ratio(n, d) => Constraint::Ratio(n as u32, d as u32),
-            Repr::Fill(p) => Constraint::Fill(p as u16),
+            Repr::Min(p) => Constraint::Min(p.0),
+            Repr::Max(p) => Constraint::Max(p.0),
+            Repr::Length(p) => Constraint::Length(p.0),
+            Repr::Percentage(p) => Constraint::Percentage(p.0),
+            Repr::Ratio(n, d) => {
+                let n = n.0.min(u32::MAX as usize) as u32;
+                let d = d.0.clamp(1, u32::MAX as usize) as u32;
+                Constraint::Ratio(n.min(d), d)
+            }
+            Repr::Fill(p) => Constraint::Fill(p.0),
         }))
     }
 }
@@ -46,118 +49,60 @@ impl FromValue for SpacingV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
         enum Repr {
-            Space(u16),
-            Overlap(u16),
+            Space(Dim),
+            Overlap(Dim),
         }
         Ok(Self(match v.cast_to()? {
-            Repr::Space(p) => Spacing::Space(p),
-            Repr::Overlap(p) => Spacing::Overlap(p),
+            Repr::Space(p) => Spacing::Space(p.0),
+            Repr::Overlap(p) => Spacing::Overlap(p.0),
         }))
     }
 }
 
-struct ChildW<X: GXExt> {
-    size_ref: Ref<X>,
-    last_size: SizeV,
+struct Slot<X: GXExt> {
+    size: SizeReport<X>,
     constraint: Constraint,
     child: TuiW,
 }
 
-impl<X: GXExt> ChildW<X> {
+impl<X: GXExt> Slot<X> {
     async fn compile(gx: GXHandle<X>, v: Value) -> Result<Self> {
         #[derive(FromValue)]
         struct Fields {
             child: Value,
             constraint: ConstraintV,
-            size: u64,
         }
-        let Fields { child, constraint, size } = v.cast_to()?;
-        let child = compile(gx.clone(), child).await.context("compiling child")?;
-        let constraint = constraint.0;
-        let size_ref = gx.compile_ref(size).await.context("compiling size ref")?;
-        Ok(Self { size_ref, last_size: SizeV::default(), constraint, child })
+        let size = SizeReport::compile(&gx, &v).await?;
+        let Fields { child, constraint } = v.cast_to()?;
+        let child = compile(gx, child).await.context("compiling child")?;
+        Ok(Self { size, constraint: constraint.0, child })
+    }
+}
+
+graphix_rt::props! {
+    struct Props {
+        direction: Option<DirectionV>,
+        flex: Option<FlexV>,
+        focused: Option<Index>,
+        horizontal_margin: Option<Dim>,
+        margin: Option<Dim>,
+        spacing: Option<SpacingV>,
+        vertical_margin: Option<Dim>,
     }
 }
 
 pub(super) struct LayoutW<X: GXExt> {
     gx: GXHandle<X>,
-    children: Vec<ChildW<X>>,
+    p: Props<X>,
+    children: Vec<Slot<X>>,
     children_ref: Ref<X>,
-    direction: TRef<X, Option<DirectionV>>,
-    flex: TRef<X, Option<FlexV>>,
-    horizontal_margin: TRef<X, Option<u16>>,
-    margin: TRef<X, Option<u16>>,
-    spacing: TRef<X, Option<SpacingV>>,
-    vertical_margin: TRef<X, Option<u16>>,
-    focused: TRef<X, Option<u32>>,
 }
 
 impl<X: GXExt> LayoutW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            children: u64,
-            direction: u64,
-            flex: u64,
-            focused: u64,
-            horizontal_margin: u64,
-            margin: u64,
-            spacing: u64,
-            vertical_margin: u64,
-        }
-        let Fields {
-            children,
-            direction,
-            flex,
-            focused,
-            horizontal_margin,
-            margin,
-            spacing,
-            vertical_margin,
-        } = v.cast_to().context("layout fields")?;
-        let (
-            children_ref,
-            direction,
-            flex,
-            focused,
-            horizontal_margin,
-            margin,
-            spacing,
-            vertical_margin,
-        ) = try_join! {
-            gx.compile_ref(children),
-            gx.compile_ref(direction),
-            gx.compile_ref(flex),
-            gx.compile_ref(focused),
-            gx.compile_ref(horizontal_margin),
-            gx.compile_ref(margin),
-            gx.compile_ref(spacing),
-            gx.compile_ref(vertical_margin)
-        }?;
-        let direction = TRef::<X, Option<DirectionV>>::new(direction)
-            .context("layout tref direction")?;
-        let flex = TRef::<X, Option<FlexV>>::new(flex).context("layout tref flex")?;
-        let horizontal_margin = TRef::<X, Option<u16>>::new(horizontal_margin)
-            .context("layout tref horizontal_margin")?;
-        let margin = TRef::<X, Option<u16>>::new(margin).context("layout tref margin")?;
-        let spacing =
-            TRef::<X, Option<SpacingV>>::new(spacing).context("layout tref spacing")?;
-        let vertical_margin = TRef::<X, Option<u16>>::new(vertical_margin)
-            .context("layout tref vertical_margin")?;
-        let focused =
-            TRef::<X, Option<u32>>::new(focused).context("layout tref focused")?;
-        let mut t = Self {
-            gx,
-            children: vec![],
-            children_ref,
-            direction,
-            flex,
-            horizontal_margin,
-            margin,
-            spacing,
-            vertical_margin,
-            focused,
-        };
+        let p = Props::compile(&gx, &v).await.context("layout")?;
+        let children_ref = gx.compile_field(&v, "children").await?;
+        let mut t = Self { gx, p, children: vec![], children_ref };
         if let Some(v) = t.children_ref.last.take() {
             t.set_children(v).await?;
         }
@@ -165,52 +110,25 @@ impl<X: GXExt> LayoutW<X> {
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        self.children =
-            future::join_all(v.cast_to::<SmallVec<[Value; 8]>>()?.into_iter().map(|v| {
-                let gx = self.gx.clone();
-                async move {
-                    let child = ChildW::compile(gx, v).await?;
-                    Ok(child)
-                }
-            }))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?;
+        self.children = compile_each(v, |v| Slot::compile(self.gx.clone(), v)).await?;
         Ok(())
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for LayoutW<X> {
-    async fn handle_event(&mut self, e: Event, v: Value) -> Result<()> {
-        let idx = self.focused.t.and_then(|o| o.map(|i| i as usize)).unwrap_or(0);
+    async fn handle_event(&mut self, v: Value) -> Result<()> {
+        let focused = self.p.focused.t.flatten().map_or(0, |i| i.0);
+        let idx = focused.min(self.children.len().saturating_sub(1));
         if let Some(c) = self.children.get_mut(idx) {
-            c.child.handle_event(e, v).await?;
+            c.child.handle_event(v).await?;
         }
         Ok(())
     }
 
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            gx: _,
-            children: _,
-            children_ref,
-            direction,
-            flex,
-            focused,
-            horizontal_margin,
-            margin,
-            spacing,
-            vertical_margin,
-        } = self;
-        direction.update(id, &v).context("layout direction update")?;
-        flex.update(id, &v).context("layout flex update")?;
-        focused.update(id, &v).context("layout focused update")?;
-        horizontal_margin.update(id, &v).context("layout horizontal_margin update")?;
-        margin.update(id, &v).context("layout margin update")?;
-        spacing.update(id, &v).context("layout spacing update")?;
-        vertical_margin.update(id, &v).context("layout vertical_margin update")?;
-        if children_ref.id == id {
+        self.p.update(id, &v).context("layout")?;
+        if self.children_ref.id == id {
             self.set_children(v.clone()).await?;
         }
         for c in &mut self.children {
@@ -220,54 +138,32 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            gx: _,
-            children,
-            children_ref: _,
-            direction,
-            flex,
-            focused: _,
-            horizontal_margin,
-            margin,
-            spacing,
-            vertical_margin,
-        } = self;
+        let p = &self.p;
         let mut layout = Layout::default();
-        if let Some(Some(d)) = direction.t {
+        if let Some(Some(d)) = p.direction.t {
             layout = layout.direction(d.0);
         }
-        if let Some(Some(f)) = flex.t {
+        if let Some(Some(f)) = p.flex.t {
             layout = layout.flex(f.0);
         }
-        // CR claude for claude: [bug] ratatui's `margin(m)` sets both axes, so applying
-        // it between the two per-axis margins makes `#margin` override
-        // `#horizontal_margin` but not `#vertical_margin`. Probe:
-        // `layout(#horizontal_margin: &10, #margin: &1, #vertical_margin: &3, ..)` puts
-        // its child's corner at row 4, column 2 (vertical 3, horizontal 1), while
-        // without `#margin` it lands at column 11
-        // (design/review-2026-10-05/repro/tui-core-13.gx). Apply `margin` first, then
-        // the per-axis margins. (tui-core-13)
-        if let Some(Some(m)) = horizontal_margin.t {
-            layout = layout.horizontal_margin(m);
+        // margin sets both axes, so the per-axis margins go after it
+        if let Some(Some(m)) = p.margin.t {
+            layout = layout.margin(m.0);
         }
-        if let Some(Some(m)) = margin.t {
-            layout = layout.margin(m);
+        if let Some(Some(m)) = p.horizontal_margin.t {
+            layout = layout.horizontal_margin(m.0);
         }
-        if let Some(Some(s)) = &spacing.t {
+        if let Some(Some(s)) = &p.spacing.t {
             layout = layout.spacing(s.0.clone());
         }
-        if let Some(Some(m)) = vertical_margin.t {
-            layout = layout.vertical_margin(m);
+        if let Some(Some(m)) = p.vertical_margin.t {
+            layout = layout.vertical_margin(m.0);
         }
-        layout = layout.constraints(children.iter().map(|c| c.constraint));
+        layout = layout.constraints(self.children.iter().map(|c| c.constraint));
         let areas = layout.split(rect);
-        for (rect, child) in areas.iter().zip(children.iter_mut()) {
-            let size = SizeV::from(*rect);
-            if child.last_size != size {
-                child.last_size = size;
-                child.size_ref.set_deref(size)?;
-            }
-            child.child.draw(frame, *rect)?
+        for (rect, slot) in areas.iter().zip(self.children.iter_mut()) {
+            slot.size.report(*rect)?;
+            slot.child.draw(frame, *rect)?
         }
         Ok(())
     }

@@ -72,6 +72,33 @@ impl MainThreadHandle {
     }
 }
 
+/// Whether `e` settled to the display type the named typedef at `path`
+/// describes, wrapped by `wrap` (`|t| t` for the type itself). The type
+/// is built for each question: its reference resolves in `env`, the
+/// runtime asking. A probe decides nothing about `e`'s type: a type
+/// still holding unbound variables is not a display.
+pub fn shows_as<X: GXExt>(
+    env: &Env,
+    e: &CompExp<X>,
+    path: &[&str],
+    wrap: impl FnOnce(graphix_compiler::typ::Type) -> graphix_compiler::typ::Type,
+) -> bool {
+    use graphix_compiler::{
+        expr::ModPath,
+        typ::{Type, TypeRef},
+    };
+    let Some(typ) = e.typ.with_deref(|t| t.cloned()) else { return false };
+    if typ.all_bottom() || typ == Type::Any || typ.has_unbound() {
+        return false;
+    }
+    let display = wrap(Type::Ref(TypeRef::synthetic(
+        ModPath::root(),
+        ModPath::from_iter(path.iter().copied()),
+        triomphe::Arc::from_iter([]),
+    )));
+    display.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
+}
+
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.
 #[async_trait]
 pub trait CustomDisplay<X: GXExt>: Any {
@@ -92,6 +119,10 @@ pub trait CustomDisplay<X: GXExt>: Any {
     /// to the custom display. If the future returned by this method
     /// is never determined then the shell will hang.
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value);
+
+    /// The updates of one runtime cycle have all been processed: a
+    /// display that redraws shows the cycle whole here.
+    async fn batch_done(&mut self);
 }
 
 /// How a custom display tells the shell it is done: `Ok` when the

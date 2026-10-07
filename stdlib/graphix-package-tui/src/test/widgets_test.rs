@@ -1,16 +1,9 @@
 //! Smoke tests for every widget the TUI package exposes: each compiles
 //! a minimal graphix expression producing the widget and renders it
 //! through `TuiTestHarness`, so a ratatui panic on default inputs
-//! surfaces here. Content assertions only where output is stable.
+//! surfaces here, and each pins what it draws. Forms, the line editor
+//! and the browser are in input_test.
 
-// CR claude for claude: [test-gap] The module doc above promises a smoke test for every
-// widget, but tui::form and tui::browser have none. form has real key handling:
-// Tab/Down and BackTab/Up move focus, Enter calls on_submit with every field in order,
-// Esc calls on_cancel, and a new fields delivery re-seeds. Only netidx-admin's tui
-// tests reach it, and this repo's gate does not run them. Add a form test through
-// TuiTestHarness (type into two fields, Tab, Enter, assert on_submit's values, Esc
-// calls on_cancel) and a browser smoke test over the internal netidx, or narrow the
-// doc. (tests-ui-17)
 use crate::testing::TuiTestHarness;
 use anyhow::Result;
 
@@ -56,7 +49,18 @@ let result = block(#border: &`All, #title: &line("T"), &inner)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "┌T─────────────────────────────────────┐",
+        "│in                                    │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "│                                      │",
+        "└──────────────────────────────────────┘",
+    ])?;
     Ok(())
 }
 
@@ -68,11 +72,15 @@ use tui::*;
 use tui::scrollbar::{self, *};
 use tui::paragraph::{self, *};
 let inner = paragraph(&"body");
-let result = scrollbar(#position: &0, &inner)
+let result = scrollbar(#position: &0, #content_length: &20, &inner)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "body                                   █",
+        "                                       █",
+        "                                       █",
+    ])?;
     Ok(())
 }
 
@@ -95,7 +103,7 @@ let result = layout(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["A                   B"])?;
     Ok(())
 }
 
@@ -115,7 +123,7 @@ let result = tabs(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[" A │ B", "one"])?;
     Ok(())
 }
 
@@ -130,7 +138,7 @@ let result = bar_chart(&[bar_group(#label: line("G"), [b])])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["█", "█", "█", "█", "█", "█", "█", "█", "Q", "G"])?;
     Ok(())
 }
 
@@ -150,7 +158,18 @@ let result = chart(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "                                      ••",
+        "                                   •••",
+        "                                 ••",
+        "                              •••",
+        "                           •••",
+        "                         ••",
+        "                      •••",
+        "                ••••••",
+        "      ••••••••••",
+        "••••••",
+    ])?;
     Ok(())
 }
 
@@ -161,11 +180,22 @@ async fn sparkline_compiles_and_renders() -> Result<()> {
 use tui::*;
 use tui::sparkline::{self, *};
 let data = [10.0, 25.0, 40.0, 55.0, 70.0];
-let result = sparkline(#max: &100, &data)
+let result = sparkline(#max: &100.0, &data)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "",
+        "",
+        "",
+        "    ▇",
+        "   ▃█",
+        "   ██",
+        "  ▇██",
+        " ▄███",
+        " ████",
+        "▇████",
+    ])?;
     Ok(())
 }
 
@@ -175,7 +205,7 @@ async fn line_gauge_compiles_and_renders() -> Result<()> {
         "use tui::*;\nuse tui::line_gauge::{self, *};\nlet result = line_gauge(&0.5)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[" 50% ───────────────────────────────────"])?;
     Ok(())
 }
 
@@ -185,7 +215,7 @@ async fn line_gauge_out_of_range_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::line_gauge::{self, *};\nlet result = line_gauge(&-0.3)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["  0% ───────────────────────────────────"])?;
     Ok(())
 }
 
@@ -195,7 +225,18 @@ async fn gauge_in_range_renders() -> Result<()> {
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&0.5)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "████████████████████",
+        "████████████████████",
+        "████████████████████",
+        "████████████████████",
+        "████████████████████",
+        "██████████████████50%",
+        "████████████████████",
+        "████████████████████",
+        "████████████████████",
+        "████████████████████",
+    ])?;
     Ok(())
 }
 
@@ -206,7 +247,18 @@ async fn gauge_out_of_range_does_not_panic() -> Result<()> {
         "use tui::*;\nuse tui::gauge::{self, *};\nlet result = gauge(&5.0)",
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "██████████████████100% █████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+        "████████████████████████████████████████",
+    ])?;
     Ok(())
 }
 
@@ -225,7 +277,7 @@ let result = input_handler(#handle: &on_event, &inner)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["x"])?;
     Ok(())
 }
 
@@ -240,7 +292,7 @@ let result = list(#selected: &0, &items)
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["A", "B", "C"])?;
     Ok(())
 }
 
@@ -256,7 +308,7 @@ let result = table(#selected: &0, &[&r1, &r2])
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&["a                    1", "b                    2"])?;
     Ok(())
 }
 
@@ -268,7 +320,13 @@ async fn calendar_compiles_and_renders() -> Result<()> {
         10,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "           1  2  3  4",
+        "  5  6  7  8  9 10 11",
+        " 12 13 14 15 16 17 18",
+        " 19 20 21 22 23 24 25",
+        " 26 27 28 29 30 31",
+    ])?;
     Ok(())
 }
 
@@ -287,7 +345,18 @@ let result = canvas(
 "#,
     )
     .await?;
-    h.render()?;
+    h.assert_lines(&[
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                ⢀⣀⡠⠤⠔⠒⠊⠉",
+        "                        ⣀⣀⠤⠤⠔⠒⠊⠉⠁",
+        "                ⣀⣀⠤⠤⠒⠒⠉⠉",
+        "       ⢀⣀⡠⠤⠔⠒⠒⠉⠉",
+        "⣀⡠⠤⠔⠒⠊⠉⠁",
+    ])?;
     Ok(())
 }
 
@@ -503,16 +572,6 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
     Ok(())
 }
 
-// CR claude for claude: [test-gap] No test in this crate or in stdlib/graphix-tests runs
-// tui::browser or tui::form (the book's browser examples are only compile-checked by
-// graphix-shell/tests/examples_compile.rs), and both line_edit tests type ASCII only.
-// Confirmed bugs in all three pass cargo test: #selected_path never fires without
-// #selected_row, which is browser_basic.gx's shape (gx-ui-03); a re-seed after Tab
-// keeps the old focus (gx-ui-04); an empty form stalls its input_handler (gx-ui-11);
-// line_edit steps by bytes on "héé" and masks "é" as "**" (collections-str-07); repros
-// under design/review-2026-10-05/repro/. Pin them here with TuiTestHarness: a browser
-// with only #selected_path, a form re-seed after Tab, Enter and Esc, an empty form
-// answering keys, and line_edit editing and masking a non-ASCII value. (gx-ui.r2-09)
 #[tokio::test]
 async fn line_edit_types_moves_and_deletes() -> Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent};

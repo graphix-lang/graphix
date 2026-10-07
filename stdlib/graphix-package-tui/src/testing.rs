@@ -25,7 +25,7 @@ use ratatui::{
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use crate::{TuiW, compile, input_handler::event_to_value};
+use crate::{Screen, SizeV, TuiControl};
 
 /// The register `new`/`with_viewport` use: this crate's runtime deps +
 /// itself. A program needing more (map, a package under test) passes
@@ -47,7 +47,9 @@ pub struct TuiTestHarness {
     gx: graphix_rt::GXHandle<NoExt>,
     compiled: CompRes<NoExt>,
     rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>,
-    widget: TuiW,
+    screen: Screen<NoExt>,
+    /// Ctrl-C was dispatched: the display would have stopped.
+    stopped: bool,
     terminal: Terminal<TestBackend>,
     watches: testing::Watches,
     _refs: Vec<Ref<NoExt>>,
@@ -85,24 +87,26 @@ impl TuiTestHarness {
         let resolver = VfsResolver::new(tbl);
         let ctx = testing::init_with_resolvers(tx, register, vec![resolver]).await?;
         let gx = ctx.rt.clone();
+        gx.with_ctx(|ctx| {
+            let control = ctx.libstate.get_or_default::<TuiControl>();
+            control.0.headless.store(true, std::sync::atomic::Ordering::Relaxed)
+        })
+        .await?;
         let compiled = gx
             .compile(arcstr::literal!("{ mod test; test::result }"))
             .await
             .context("compile graphix code")?;
         let expr_id = compiled.exprs[0].id;
 
-        // Wait for the initial root widget value.
+        let mut screen = Screen::new(gx.clone(), &compiled.env, expr_id)?;
+        screen.resize(SizeV::new(width, height))?;
         let initial_value = testing::next_update(
             &mut rx,
             expr_id,
             tokio::time::Instant::now() + Duration::from_secs(5),
         )
         .await?;
-
-        // Build the live widget tree. Same path as the runtime's `run()`
-        // takes for the root expression's first delivery.
-        let widget =
-            compile(gx.clone(), initial_value).await.context("compile widget tree")?;
+        screen.update(expr_id, initial_value).await.context("compile widget tree")?;
 
         let backend = TestBackend::new(width, height);
         let terminal = Terminal::new(backend).context("build TestBackend terminal")?;
@@ -112,7 +116,8 @@ impl TuiTestHarness {
             gx,
             compiled,
             rx,
-            widget,
+            screen,
+            stopped: false,
             terminal,
             watches: testing::Watches::default(),
             _refs: Vec::new(),
@@ -130,10 +135,10 @@ impl TuiTestHarness {
     /// `drain`, answering when the last update batch arrived (`None` when
     /// there was none).
     async fn drain_timed(&mut self) -> Result<Option<Instant>> {
-        let Self { gx, rx, widget, watches, .. } = self;
+        let Self { gx, rx, screen, watches, .. } = self;
         let deliver = async |id, v: Value| {
             watches.note(id, &v);
-            widget.handle_update(id, v).await.context("widget handle_update")?;
+            screen.update(id, v).await.context("widget handle_update")?;
             Ok(true)
         };
         Ok(testing::drain_idle(gx, rx, deliver).await?.1.map(|t| t.into_std()))
@@ -151,8 +156,8 @@ impl TuiTestHarness {
                         if let GXEvent::Updated(id, v) = e {
                             updated = true;
                             self.watches.note(id, &v);
-                            self.widget
-                                .handle_update(id, v)
+                            self.screen
+                                .update(id, v)
                                 .await
                                 .context("widget handle_update")?;
                         }
@@ -186,9 +191,33 @@ impl TuiTestHarness {
     /// reactive updates the callbacks produce. Same path the live
     /// runtime takes in `run()`.
     pub async fn dispatch_event(&mut self, e: Event) -> Result<()> {
-        let v = event_to_value(&e);
-        self.widget.handle_event(e, v).await.context("widget handle_event")?;
+        self.dispatch_events([e]).await
+    }
+
+    /// Deliver several events before draining, as a burst of input
+    /// (type-ahead, a paste) reaches the display.
+    pub async fn dispatch_events(
+        &mut self,
+        es: impl IntoIterator<Item = Event>,
+    ) -> Result<()> {
+        for e in es {
+            self.deliver(&e).await?
+        }
         self.drain().await
+    }
+
+    /// The display's path: `tui::size` on a resize, `tui::event`, the
+    /// widgets; a Ctrl-C stops it.
+    async fn deliver(&mut self, e: &Event) -> Result<()> {
+        if !self.stopped {
+            self.stopped = !self.screen.event(e).await.context("widget handle_event")?;
+        }
+        Ok(())
+    }
+
+    /// Whether a Ctrl-C was dispatched, which stops a display.
+    pub fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Deliver a crossterm event and report how long the runtime took
@@ -196,8 +225,7 @@ impl TuiTestHarness {
     /// the event produced no update).
     pub async fn dispatch_event_timed(&mut self, e: Event) -> Result<Duration> {
         let start = Instant::now();
-        let v = event_to_value(&e);
-        self.widget.handle_event(e, v).await.context("widget handle_event")?;
+        self.deliver(&e).await?;
         Ok(self.drain_timed().await?.map_or(Duration::ZERO, |t| t - start))
     }
 
@@ -209,8 +237,7 @@ impl TuiTestHarness {
         let mut draw_err: Option<anyhow::Error> = None;
         self.terminal
             .draw(|f| {
-                let area = f.area();
-                if let Err(e) = self.widget.draw(f, area) {
+                if let Err(e) = self.screen.draw(f) {
                     draw_err = Some(e);
                 }
             })
@@ -230,16 +257,14 @@ impl TuiTestHarness {
     }
 
     /// Render and assert the buffer matches the expected lines. Each
-    /// expected line is right-padded to the terminal width before
-    /// comparison.
+    /// expected line is right-padded to the terminal width, and rows
+    /// past the last expected one are blank.
     pub fn assert_lines(&mut self, expected: &[&str]) -> Result<()> {
         let actual = self.render_lines()?;
-        let expected_padded: Vec<String> = expected
-            .iter()
-            .map(|s| {
-                let w = self.terminal.backend().size().unwrap_or_default().width as usize;
-                format!("{:width$}", s, width = w)
-            })
+        let size = self.terminal.backend().size().unwrap_or_default();
+        let (w, h) = (size.width as usize, size.height as usize);
+        let expected_padded: Vec<String> = (0..h)
+            .map(|i| format!("{:w$}", expected.get(i).copied().unwrap_or("")))
             .collect();
         assert_eq!(
             actual, expected_padded,
@@ -296,18 +321,6 @@ impl TuiTestHarness {
     }
 }
 
-/// Deliver a batch's updates; false when it held none (the runtime sends
-/// a batch every cycle, empty or not).
-// CR claude for claude: [test-gap] The harness says it builds and drives the tree the way
-// the runtime does, but it differs from the display in four ways that hide bugs from
-// tests. An update to the root expression goes to `handle_update` instead of rebuilding
-// the tree as display does (lib.rs:804-808), so a program whose root re-fires (a
-// `select` over screens) keeps its first tree. `tui::size` and `tui::event` are never
-// set, so a program reading them sees nothing. `dispatch_event` always drains, so no
-// test can put a second event in front of the input handler while a reply is pending,
-// and Ctrl-C reaches the widgets instead of stopping. Rebuild on the root id here, set
-// `size` from the viewport and `event` on each dispatch, and add a dispatch that
-// delivers several events before draining. (tui-core-10)
 /// Render a `Buffer` into one `String` per row by concatenating each
 /// cell's `symbol()`. Empty / overdrawn cells render as a single space;
 /// a wide glyph leaves a trailing space for the cell after it.

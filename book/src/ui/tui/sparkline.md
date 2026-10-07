@@ -24,7 +24,7 @@ val sparkline: fn(
   ?#absent_value_style: &[Style, null],
   ?#absent_value_symbol: &[string, null],
   ?#direction: &[RenderDirection, null],
-  ?#max: &[i64, null],
+  ?#max: &[f64, null],
   ?#style: &[Style, null],
   a: &Array<[SparklineBar, f64, null]>
 ) -> Tui;

@@ -1,42 +1,34 @@
 let state = |initial: string| -> State {
     value: initial,
-    // CR claude for claude: [bug] The cursor is a char position (one step per `Char,
-    // sliced with str::sub's char indexes), but it is set and bounded by str::len,
-    // which counts bytes. The same mistake is in step's Backspace, Delete, Right and
-    // End arms and in view's mask and cursor cell. On text holding a non-ASCII char the
-    // cursor starts and ends past the last char, so Backspace after End deletes nothing
-    // once per extra byte, the cursor cell renders empty, and a mask shows one glyph
-    // per byte. The str package has no char count; today it is spelled
-    // array::len(str::split(#pat: "", s)) - 2. A char-count builtin is needed here, in
-    // netidx-admin's tui/remote.gx:39, and in the browser_commands example's backspace
-    // (a no-op on any command holding a non-ASCII char) and text_editor's "characters"
-    // label. probe: design/review-2026-10-05/repro/collections-str-07.gx
-    // (collections-str-07)
-    cursor: str::len(initial)
+    cursor: str::char_len(initial)
+};
+
+let insert = |st: State, text: string| -> State {
+    let n = str::char_len(st.value);
+    {
+        value: "[str::sub(#start:0, #len:st.cursor, st.value)$][text][str::sub(#start:st.cursor, #len:n - st.cursor, st.value)$]",
+        cursor: st.cursor + str::char_len(text)
+    }
+};
+
+// A key that types its character: no modifier but Shift, or Control+Alt,
+// which is how Windows reports AltGr.
+let types = |mods: Array<input_handler::KeyModifier>| -> bool {
+    let only = |allowed: fn(m: input_handler::KeyModifier) -> bool|
+        array::len(array::filter(mods, |m| !allowed(m))) == 0;
+    let has = |m: input_handler::KeyModifier| opt::is_some(array::find(mods, |x| x == m));
+    only(|m| select m { `Shift => true, _ => false })
+        || (has(`Control) && has(`Alt)
+            && only(|m| select m { `Shift | `Control | `Alt => true, _ => false }))
 };
 
 let step = |st: State, e: input_handler::Event| -> [State, null] select e {
+    `Paste(text) => insert(st, str::replace(#pat: "\n", #rep: " ", text)),
     `Key(k) => select k.kind {
         `Press => select k.code {
-            // CR claude for claude: [bug] This arm inserts every Char key, whatever
-            // k.modifiers holds. crossterm reports Ctrl+U as Char("u") with [`Control]
-            // and Alt+B as Char("b") with [`Alt], and only Ctrl+C is taken in Rust
-            // (tui/src/lib.rs:676). So a chord types its letter into the field: form.gx
-            // sends every key it does not take to the focused editor, and
-            // netidx-admin's line prompts do the same. Insert only when the modifiers
-            // hold nothing but `Shift, and return null otherwise so handle answers
-            // `Continue. Windows reports an AltGr character with Control+Alt, so handle
-            // that pair deliberately. probe: design/review-2026-10-05/repro/gx-ui-10.gx
-            // (gx-ui-10)
-            `Char(ch) => {
-                let n = str::len(st.value);
-                {
-                    value: "[str::sub(#start:0, #len:st.cursor, st.value)$][ch][str::sub(#start:st.cursor, #len:n - st.cursor, st.value)$]",
-                    cursor: st.cursor + 1
-                }
-            },
+            `Char(ch) if types(k.modifiers) => insert(st, ch),
             `Backspace => {
-                let n = str::len(st.value);
+                let n = str::char_len(st.value);
                 select st.cursor {
                     cur if cur > 0 => {
                         value: "[str::sub(#start:0, #len:cur - 1, st.value)$][str::sub(#start:cur, #len:n - cur, st.value)$]",
@@ -46,7 +38,7 @@ let step = |st: State, e: input_handler::Event| -> [State, null] select e {
                 }
             },
             `Delete => {
-                let n = str::len(st.value);
+                let n = str::char_len(st.value);
                 select st.cursor {
                     cur if cur < n => {
                         st with value: "[str::sub(#start:0, #len:cur, st.value)$][str::sub(#start:cur + 1, #len:n - cur - 1, st.value)$]"
@@ -55,9 +47,9 @@ let step = |st: State, e: input_handler::Event| -> [State, null] select e {
                 }
             },
             `Left => { st with cursor: max(0, st.cursor - 1) },
-            `Right => { st with cursor: min(str::len(st.value), st.cursor + 1) },
+            `Right => { st with cursor: min(str::char_len(st.value), st.cursor + 1) },
             `Home => { st with cursor: 0 },
-            `End => { st with cursor: str::len(st.value) },
+            `End => { st with cursor: str::char_len(st.value) },
             _ => null
         },
         _ => null
@@ -81,7 +73,7 @@ let view = |
     let shown = select mask {
         null as _ => s.value,
         m => {
-            let n = str::len(s.value);
+            let n = str::char_len(s.value);
             select n {
                 0 => "",
                 _ => str::join(#sep: "", array::init(n, |_| m))
@@ -96,7 +88,7 @@ let view = |
     select focused {
         false => line(#style: base, shown),
         true => {
-            let n = str::len(shown);
+            let n = str::char_len(shown);
             let cur = min(s.cursor, n);
             let before = str::sub(#start: 0, #len: cur, shown)$;
             let at = select cur {

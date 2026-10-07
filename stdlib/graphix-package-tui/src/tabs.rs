@@ -1,98 +1,41 @@
 use super::{
-    LineV, SizeV, SpanV, StyleV, TRef, TuiW, TuiWidget, compile, into_borrowed_line,
+    LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, into_borrowed_line,
+    validate::Index,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crossterm::event::Event;
 use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, widgets::Tabs};
 use smallvec::SmallVec;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        divider: Option<SpanV>,
+        highlight_style: Option<StyleV>,
+        padding_left: Option<LineV>,
+        padding_right: Option<LineV>,
+        selected: Option<Index>,
+        style: Option<StyleV>,
+    }
+}
 
 pub(super) struct TabsW<X: GXExt> {
     gx: GXHandle<X>,
+    p: Props<X>,
     tabs: Vec<(LineV, TuiW)>,
     tabs_ref: Ref<X>,
-    size_ref: Ref<X>,
-    last_size: SizeV,
-    divider: TRef<X, Option<SpanV>>,
-    highlight_style: TRef<X, Option<StyleV>>,
-    padding_left: TRef<X, Option<LineV>>,
-    padding_right: TRef<X, Option<LineV>>,
-    selected: TRef<X, Option<u32>>,
-    style: TRef<X, Option<StyleV>>,
+    size: SizeReport<X>,
 }
 
 impl<X: GXExt> TabsW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            divider: u64,
-            highlight_style: u64,
-            padding_left: u64,
-            padding_right: u64,
-            selected: u64,
-            size: u64,
-            style: u64,
-            tabs: u64,
-        }
-        let Fields {
-            divider,
-            highlight_style,
-            padding_left,
-            padding_right,
-            selected,
-            size,
-            style,
-            tabs,
-        } = v.cast_to().context("tabs fields")?;
-        let (
-            divider,
-            highlight_style,
-            padding_left,
-            padding_right,
-            selected,
-            size_ref,
-            style,
-            tabs_ref,
-        ) = try_join! {
-            gx.compile_ref(divider),
-            gx.compile_ref(highlight_style),
-            gx.compile_ref(padding_left),
-            gx.compile_ref(padding_right),
-            gx.compile_ref(selected),
-            gx.compile_ref(size),
-            gx.compile_ref(style),
-            gx.compile_ref(tabs)
-        }?;
-        let divider =
-            TRef::<X, Option<SpanV>>::new(divider).context("tabs tref divider")?;
-        let highlight_style = TRef::<X, Option<StyleV>>::new(highlight_style)
-            .context("tabs tref highlight_style")?;
-        let padding_left = TRef::<X, Option<LineV>>::new(padding_left)
-            .context("tabs tref padding_left")?;
-        let padding_right = TRef::<X, Option<LineV>>::new(padding_right)
-            .context("tabs tref padding_right")?;
-        let selected =
-            TRef::<X, Option<u32>>::new(selected).context("tabs tref selected")?;
-        let style = TRef::<X, Option<StyleV>>::new(style).context("tabs tref style")?;
-        let mut t = Self {
-            gx: gx.clone(),
-            tabs: vec![],
-            tabs_ref,
-            divider,
-            highlight_style,
-            padding_left,
-            padding_right,
-            selected,
-            size_ref,
-            last_size: SizeV::default(),
-            style,
-        };
+        let p = Props::compile(&gx, &v).await.context("tabs")?;
+        let size = SizeReport::compile(&gx, &v).await?;
+        let tabs_ref = gx.compile_field(&v, "tabs").await?;
+        let mut t = Self { gx, p, tabs: vec![], tabs_ref, size };
         if let Some(v) = t.tabs_ref.last.take() {
             t.set_tabs(v).await?;
         }
@@ -103,47 +46,32 @@ impl<X: GXExt> TabsW<X> {
         let arr = v.cast_to::<SmallVec<[(LineV, Value); 8]>>()?;
         self.tabs = future::try_join_all(arr.into_iter().map(|(l, v)| {
             let gx = self.gx.clone();
-            async move {
-                let w = compile(gx, v).await?;
-                Ok::<(LineV, TuiW), anyhow::Error>((l, w))
-            }
+            async move { Ok::<_, anyhow::Error>((l, compile(gx, v).await?)) }
         }))
         .await?;
         Ok(())
+    }
+
+    /// The tab shown: `selected`, at most the last tab.
+    fn selected(&self) -> usize {
+        let s = self.p.selected.t.flatten().map_or(0, |i| i.0);
+        s.min(self.tabs.len().saturating_sub(1))
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for TabsW<X> {
-    async fn handle_event(&mut self, e: Event, v: Value) -> Result<()> {
-        let idx = self.selected.t.and_then(|o| o.map(|s| s as usize)).unwrap_or(0);
+    async fn handle_event(&mut self, v: Value) -> Result<()> {
+        let idx = self.selected();
         if let Some((_, child)) = self.tabs.get_mut(idx) {
-            child.handle_event(e, v).await?;
+            child.handle_event(v).await?;
         }
         Ok(())
     }
 
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            gx: _,
-            tabs: _,
-            tabs_ref,
-            size_ref: _,
-            last_size: _,
-            divider,
-            highlight_style,
-            padding_left,
-            padding_right,
-            selected,
-            style,
-        } = self;
-        divider.update(id, &v).context("tabs divider update")?;
-        highlight_style.update(id, &v).context("tabs highlight_style update")?;
-        padding_left.update(id, &v).context("tabs padding_left update")?;
-        padding_right.update(id, &v).context("tabs padding_right update")?;
-        selected.update(id, &v).context("tabs selected update")?;
-        style.update(id, &v).context("tabs style update")?;
-        if tabs_ref.id == id {
+        self.p.update(id, &v).context("tabs")?;
+        if self.tabs_ref.id == id {
             self.set_tabs(v.clone()).await?;
         }
         for (_, c) in &mut self.tabs {
@@ -153,66 +81,35 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            gx: _,
-            tabs,
-            tabs_ref: _,
-            size_ref,
-            last_size,
-            divider,
-            highlight_style,
-            padding_left,
-            padding_right,
-            selected,
-            style,
-        } = self;
-        let titles: Vec<_> = tabs.iter().map(|(l, _)| into_borrowed_line(&l.0)).collect();
-        let mut t = Tabs::new(titles);
-        if let Some(Some(s)) = &style.t {
+        let idx = self.selected();
+        let p = &self.p;
+        let titles = self.tabs.iter().map(|(l, _)| into_borrowed_line(&l.0));
+        let mut t = Tabs::new(titles).select(idx);
+        if let Some(Some(s)) = &p.style.t {
             t = t.style(s.0);
         }
-        if let Some(Some(s)) = &highlight_style.t {
+        if let Some(Some(s)) = &p.highlight_style.t {
             t = t.highlight_style(s.0);
         }
-        if let Some(Some(s)) = &divider.t {
+        if let Some(Some(s)) = &p.divider.t {
             t = t.divider(s.0.clone());
         }
-        if let Some(Some(l)) = &padding_left.t {
+        if let Some(Some(l)) = &p.padding_left.t {
             t = t.padding_left(into_borrowed_line(&l.0));
         }
-        if let Some(Some(r)) = &padding_right.t {
+        if let Some(Some(r)) = &p.padding_right.t {
             t = t.padding_right(into_borrowed_line(&r.0));
         }
-        if let Some(Some(s)) = selected.t {
-            t = t.select(s as usize);
-        }
         let mut bar_rect = rect;
-        if bar_rect.height > 0 {
-            bar_rect.height = 1;
-        }
+        bar_rect.height = bar_rect.height.min(1);
         frame.render_widget(t, bar_rect);
         let mut child_rect = rect;
         if child_rect.height > 0 {
             child_rect.y = child_rect.y.saturating_add(1);
-            child_rect.height = child_rect.height.saturating_sub(1);
+            child_rect.height -= 1;
         }
-        // CR claude for claude: [bug] The selected index reaches the body here, the title
-        // highlight (line 187) and event routing (line 119) without being clamped to
-        // the tab count. Its `Option<u32>` decode also wraps the i64: -1 becomes
-        // 4294967295 and 4294967296 becomes 0. An index at or past the end draws no
-        // body, highlights no title and drops every event. So a tab list that shrinks
-        // below `selected` goes blank and stops taking input until the program lowers
-        // the index, while list and table clamp the same index to their last item.
-        // Compute the index once, negative to 0 and past the end to len - 1, and use it
-        // in all three places. probe:
-        // design/review-2026-10-05/repro/tui-widgets.r2-13.gx (tui-widgets.r2-13)
-        let idx = selected.t.and_then(|o| o.map(|s| s as usize)).unwrap_or(0);
-        let size = SizeV::from(child_rect);
-        if *last_size != size {
-            *last_size = size;
-            size_ref.set_deref(size)?
-        }
-        if let Some((_, child)) = tabs.get_mut(idx) {
+        self.size.report(child_rect)?;
+        if let Some((_, child)) = self.tabs.get_mut(idx) {
             child.draw(frame, child_rect)?;
         }
         Ok(())

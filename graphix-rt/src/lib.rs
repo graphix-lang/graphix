@@ -9,7 +9,7 @@
 //! builtins. The graphix interperter is run in a background task, and
 //! can be interacted with via a handle. All features of the standard
 //! library are supported by this runtime.
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
 use derive_builder::Builder;
@@ -193,6 +193,75 @@ impl<X: GXExt> Ref<X> {
     }
 }
 
+/// The bind id a widget value's struct holds in the field `name`: a
+/// struct value is an array of `[name, value]` pairs.
+#[doc(hidden)]
+pub fn field_id(v: &Value, name: &str) -> Result<u64> {
+    match v {
+        Value::Array(fields) => fields
+            .iter()
+            .find_map(|f| match f {
+                Value::Array(kv)
+                    if kv.len() == 2
+                        && matches!(&kv[0], Value::String(s) if s == name) =>
+                {
+                    kv[1].clone().cast_to::<u64>().ok()
+                }
+                _ => None,
+            })
+            .ok_or_else(|| anyhow!("no field {name}")),
+        _ => bail!("expected a struct with the field {name}, got {v}"),
+    }
+}
+
+/// A widget's reactive properties, each named once with its type: the
+/// struct of `TRef`s, `compile` from a widget value whose fields are the
+/// properties' bind ids (it may hold other fields), compiling every ref
+/// at once, and `update`, true when one of them took the update.
+///
+/// ```ignore
+/// props! { pub(crate) struct GaugeProps { label: Option<SpanV>, ratio: f64 } }
+/// ```
+#[macro_export]
+macro_rules! props {
+    ($vis:vis struct $name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
+        $vis struct $name<X: $crate::GXExt> {
+            $(pub $field: $crate::TRef<X, $ty>,)*
+        }
+
+        impl<X: $crate::GXExt> $name<X> {
+            pub async fn compile(
+                gx: &$crate::GXHandle<X>,
+                v: &netidx::publisher::Value,
+            ) -> anyhow::Result<Self> {
+                use anyhow::Context as _;
+                let names = [$(stringify!($field)),*];
+                let refs = futures::future::try_join_all(
+                    names.into_iter().map(|name| gx.compile_field(v, name)),
+                )
+                .await?;
+                let mut refs = refs.into_iter();
+                Ok(Self {
+                    $($field: $crate::TRef::new(refs.next().expect("one ref a field"))
+                        .context(stringify!($field))?,)*
+                })
+            }
+
+            #[allow(unused)]
+            pub fn update(
+                &mut self,
+                id: graphix_compiler::expr::ExprId,
+                v: &netidx::publisher::Value,
+            ) -> anyhow::Result<bool> {
+                use anyhow::Context as _;
+                let mut changed = false;
+                $(changed |= self.$field.update(id, v).context(stringify!($field))?.is_some();)*
+                Ok(changed)
+            }
+        }
+    };
+}
+
 pub struct TRef<X: GXExt, T: FromValue> {
     pub r: Ref<X>,
     pub t: Option<T>,
@@ -250,6 +319,8 @@ pub struct Callable<X: GXExt> {
     env: Env,
     pub typ: FnType,
     pub expr: ExprId,
+    /// The id a `call_answered` call's answer arrives under.
+    pub answer: ExprId,
 }
 
 impl<X: GXExt> Drop for Callable<X> {
@@ -277,6 +348,20 @@ impl<X: GXExt> Callable<X> {
     /// returns there is no guarantee that the returns will arrive in the order
     /// of the calls. There is no guarantee that a function must return.
     pub async fn call(&self, args: ValArray) -> Result<()> {
+        self.check_args(&args)?;
+        self.send(args, false)
+    }
+
+    /// Call the lambda and have it answer: at the end of the cycle that
+    /// writes `args`, an update under `self.answer` carries what the call
+    /// site produced in that cycle, null when it produced nothing. A later
+    /// output of the call site answers nothing.
+    pub async fn call_answered(&self, args: ValArray) -> Result<()> {
+        self.check_args(&args)?;
+        self.send(args, true)
+    }
+
+    fn check_args(&self, args: &ValArray) -> Result<()> {
         if self.typ.args.len() != args.len() {
             bail!("expected {} args", self.typ.args.len())
         }
@@ -285,18 +370,22 @@ impl<X: GXExt> Callable<X> {
                 bail!("type mismatch arg {i} expected {}", a.typ)
             }
         }
-        self.call_unchecked(args).await
+        Ok(())
+    }
+
+    fn send(&self, args: ValArray, answered: bool) -> Result<()> {
+        self.rt
+            .0
+            .tx
+            .send(ToGX::Call { id: self.id, args, answered })
+            .map_err(|_| anyhow!("runtime is dead"))
     }
 
     /// Call the lambda with args. Argument types and arity will NOT
     /// be checked. This can result in a runtime panic, invalid
     /// results, and probably other bad things.
     pub async fn call_unchecked(&self, args: ValArray) -> Result<()> {
-        self.rt
-            .0
-            .tx
-            .send(ToGX::Call { id: self.id, args })
-            .map_err(|_| anyhow!("runtime is dead"))
+        self.send(args, false)
     }
 
     /// Return Some(v) if this update is the return value of the callable
@@ -365,6 +454,7 @@ enum ToGX<X: GXExt> {
     Call {
         id: CallableId,
         args: ValArray,
+        answered: bool,
     },
     DeleteCallable {
         id: CallableId,
@@ -834,6 +924,14 @@ impl<X: GXExt> GXHandle<X> {
             .await??)
     }
 
+    /// Compile a ref to the bind id a widget value's struct holds in its
+    /// field `name`.
+    pub async fn compile_field(&self, v: &Value, name: &str) -> Result<Ref<X>> {
+        self.compile_ref(field_id(v, name)?)
+            .await
+            .with_context(|| format!("field {name}"))
+    }
+
     /// Compile a ref to a name
     ///
     /// Return an error if the name does not exist in the environment
@@ -890,7 +988,10 @@ impl<X: GXExt> GXHandle<X> {
     /// This is a fire-and-forget call that does not wait for the result.
     /// Unlike `Callable::call`, no type or arity checking is performed.
     pub fn call(&self, id: CallableId, args: ValArray) -> Result<()> {
-        self.0.tx.send(ToGX::Call { id, args }).map_err(|_| anyhow!("runtime is dead"))
+        self.0
+            .tx
+            .send(ToGX::Call { id, args, answered: false })
+            .map_err(|_| anyhow!("runtime is dead"))
     }
 }
 

@@ -1,18 +1,21 @@
 use super::{Alignment, Line, Style, style, Tui};
-/// `scroll.y` is in lines and `scroll.x` is in chars; `trim` drops
-/// leading whitespace when wrapping.
+/// `scroll.y` is in lines and `scroll.x` is in chars, and x scrolls only
+/// unwrapped text; `wrap` breaks long lines at the width, and `trim`
+/// drops the leading whitespace of a wrapped line.
 type Paragraph = {
   alignment: &[Alignment, null],
   lines: &[Array<Line>, string],
   scroll: &{ x: i64, y: i64 },
   style: &Style,
-  trim: &bool
+  trim: &bool,
+  wrap: &bool
 };
 
 val paragraph: fn(
   ?#style: &Style,
   ?#alignment: &[Alignment, null],
   ?#scroll: &{x: i64, y: i64},
+  ?#wrap: &bool,
   ?#trim: &bool,
   lines: &[Array<Line>, string]
 ) -> Tui;

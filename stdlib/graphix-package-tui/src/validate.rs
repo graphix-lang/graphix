@@ -1,151 +1,130 @@
-//! Clamp user-supplied numeric values into the ranges ratatui (or a
-//! downstream cast) requires, warning once per distinct bad value: the
-//! caller threads an `Option<u64>` holding the last-warned bit pattern.
+//! Numbers a widget takes clamped into the range ratatui accepts. Each
+//! type's `FromValue` clamps a delivered value once and warns, so a
+//! widget holds only valid values and draws without checking them.
 
-/// Upper bound for per-element visual sizes (bar widths, gaps, scroll
-/// offsets): well below `u16::MAX` so ratatui's internal sums cannot
-/// overflow u16, yet larger than any terminal dimension.
+use anyhow::Result;
+use netidx::publisher::{FromValue, Value};
+
+/// Upper bound for per-element visual sizes (bar widths, gaps, margins):
+/// well below `u16::MAX` so ratatui's internal sums cannot overflow u16,
+/// yet larger than any terminal dimension.
 pub(crate) const VISUAL_DIMENSION_CAP: i64 = 1024;
 
-/// Clamp an `i64` into `[0, VISUAL_DIMENSION_CAP]`. ratatui's layout
-/// arithmetic overflows u16 well before `u16::MAX`.
-// CR claude for claude: [structure] clamp_u16 caps at VISUAL_DIMENSION_CAP (1024), not at
-// u16::MAX as its name and its call sites suggest; name it for what it bounds
-// (clamp_visual_size). Every clamp here, and gauge.rs's clamp_ratio, threads a `last`
-// slot only because the widgets clamp in draw. Draw runs after every update, every
-// terminal event and the 1 s liveness tick, and would warn each time without the slot.
-// That costs 12 last_warned_*/last_clamp_warning fields across bar_chart, paragraph,
-// scrollbar, gauge and line_gauge, plus their `_` destructures. Clamping once when the
-// value is delivered warns once per bad value, needs no slot, and leaves each widget
-// holding only valid values. (tui-widgets.r2-16)
-pub(crate) fn clamp_u16(
-    widget: &str,
-    label: &str,
-    last: &mut Option<i64>,
-    raw: i64,
-) -> u16 {
-    if (0..=VISUAL_DIMENSION_CAP).contains(&raw) {
-        *last = None;
-        return raw as u16;
+/// `raw` clamped into `lo..=hi`, warning when it was outside.
+fn clamped(what: &str, raw: i64, lo: i64, hi: i64) -> i64 {
+    let c = raw.clamp(lo, hi);
+    if c != raw {
+        log::warn!("{what} {raw} outside [{lo}, {hi}]; clamping to {c}");
     }
-    let clamped = raw.clamp(0, VISUAL_DIMENSION_CAP) as u16;
-    if *last != Some(raw) {
-        log::warn!(
-            "{widget} {label} {raw} outside [0, {VISUAL_DIMENSION_CAP}]; \
-             clamping to {clamped}"
-        );
-        *last = Some(raw);
-    }
-    clamped
+    c
 }
 
-/// Clamp an `i64` into the `[0, u64::MAX]` range. Negative values
-/// become 0; unsigned overflow isn't reachable from i64.
-pub(crate) fn clamp_u64(
-    widget: &str,
-    label: &str,
-    last: &mut Option<i64>,
-    raw: i64,
-) -> u64 {
-    if raw >= 0 {
-        *last = None;
-        return raw as u64;
+/// A visual size (a bar width, a gap, a margin, a spacing):
+/// `0..=VISUAL_DIMENSION_CAP`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Dim(pub u16);
+
+impl FromValue for Dim {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(Self(clamped("size", v.cast_to::<i64>()?, 0, VISUAL_DIMENSION_CAP) as u16))
     }
-    if *last != Some(raw) {
-        log::warn!("{widget} {label} {raw} negative; clamping to 0");
-        *last = Some(raw);
-    }
-    0
 }
 
-/// Clamp an `i64` into `[0, usize::MAX]`. Negative values become 0;
-/// 32-bit targets additionally truncate to `usize::MAX`.
-pub(crate) fn clamp_usize(
-    widget: &str,
-    label: &str,
-    last: &mut Option<i64>,
-    raw: i64,
-) -> usize {
-    if raw < 0 {
-        if *last != Some(raw) {
-            log::warn!("{widget} {label} {raw} negative; clamping to 0");
-            *last = Some(raw);
-        }
-        return 0;
+/// A content offset (lines or chars to scroll past): `0..=u16::MAX`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Offset(pub u16);
+
+impl FromValue for Offset {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(Self(clamped("offset", v.cast_to::<i64>()?, 0, u16::MAX as i64) as u16))
     }
-    let max = usize::MAX as u128;
-    if raw as u128 > max {
-        if *last != Some(raw) {
-            log::warn!("{widget} {label} {raw} exceeds usize::MAX; clamping");
-            *last = Some(raw);
-        }
-        return usize::MAX;
+}
+
+/// An index or a count: not negative.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Index(pub usize);
+
+impl FromValue for Index {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(Self(clamped("index", v.cast_to::<i64>()?, 0, i64::MAX) as usize))
     }
-    *last = None;
-    raw as usize
+}
+
+/// A percentage: `0..=100`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Percent(pub u16);
+
+impl FromValue for Percent {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(Self(clamped("percentage", v.cast_to::<i64>()?, 0, 100) as u16))
+    }
+}
+
+/// A color channel or palette index: `0..=255`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Byte(pub u8);
+
+impl FromValue for Byte {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(Self(clamped("color component", v.cast_to::<i64>()?, 0, 255) as u8))
+    }
+}
+
+/// A fraction: `0.0..=1.0`, NaN read as 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Ratio(pub f64);
+
+impl FromValue for Ratio {
+    fn from_value(v: Value) -> Result<Self> {
+        let raw = v.cast_to::<f64>()?;
+        let c = if raw.is_nan() { 0.0 } else { raw.clamp(0.0, 1.0) };
+        if c != raw {
+            log::warn!("ratio {raw} outside [0, 1]; clamping to {c}");
+        }
+        Ok(Self(c))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn u16_in_range() {
-        let mut last = None;
-        assert_eq!(clamp_u16("w", "v", &mut last, 100), 100);
-        assert_eq!(clamp_u16("w", "v", &mut last, 0), 0);
-        assert_eq!(
-            clamp_u16("w", "v", &mut last, VISUAL_DIMENSION_CAP),
-            VISUAL_DIMENSION_CAP as u16
-        );
-        assert_eq!(last, None);
+    fn of<T: FromValue>(v: Value) -> T {
+        T::from_value(v).unwrap()
     }
 
     #[test]
-    fn u16_clamps_negative() {
-        let mut last = None;
-        assert_eq!(clamp_u16("w", "v", &mut last, -1), 0);
-        assert!(last.is_some());
+    fn sizes_clamp_to_the_cap() {
+        assert_eq!(of::<Dim>(Value::I64(100)), Dim(100));
+        assert_eq!(of::<Dim>(Value::I64(-1)), Dim(0));
+        assert_eq!(of::<Dim>(Value::I64(1_000_000)), Dim(VISUAL_DIMENSION_CAP as u16));
     }
 
     #[test]
-    fn u16_clamps_above_visual_cap() {
-        let mut last = None;
-        assert_eq!(
-            clamp_u16("w", "v", &mut last, 1_000_000),
-            VISUAL_DIMENSION_CAP as u16
-        );
-        assert!(last.is_some());
+    fn offsets_reach_u16_max() {
+        assert_eq!(of::<Offset>(Value::I64(1500)), Offset(1500));
+        assert_eq!(of::<Offset>(Value::I64(-3)), Offset(0));
+        assert_eq!(of::<Offset>(Value::I64(1 << 40)), Offset(u16::MAX));
     }
 
     #[test]
-    fn u16_dedupes() {
-        let mut last = None;
-        clamp_u16("w", "v", &mut last, -5);
-        let after_first = last;
-        clamp_u16("w", "v", &mut last, -5);
-        assert_eq!(last, after_first);
+    fn indexes_are_not_negative() {
+        assert_eq!(of::<Index>(Value::I64(-1)), Index(0));
+        assert_eq!(of::<Index>(Value::I64(7)), Index(7));
     }
 
     #[test]
-    fn u64_clamps_negative() {
-        let mut last = None;
-        assert_eq!(clamp_u64("w", "v", &mut last, -10), 0);
-        assert!(last.is_some());
+    fn percentages_and_bytes_clamp() {
+        assert_eq!(of::<Percent>(Value::I64(101)), Percent(100));
+        assert_eq!(of::<Percent>(Value::I64(-1)), Percent(0));
+        assert_eq!(of::<Byte>(Value::I64(300)), Byte(255));
     }
 
     #[test]
-    fn u64_passes_zero_and_positive() {
-        let mut last = None;
-        assert_eq!(clamp_u64("w", "v", &mut last, 0), 0);
-        assert_eq!(clamp_u64("w", "v", &mut last, i64::MAX), i64::MAX as u64);
-        assert_eq!(last, None);
-    }
-
-    #[test]
-    fn usize_clamps_negative() {
-        let mut last = None;
-        assert_eq!(clamp_usize("w", "v", &mut last, -1), 0);
-        assert!(last.is_some());
+    fn ratios_clamp_and_nan_is_zero() {
+        for (raw, want) in [(0.5, 0.5), (1.5, 1.0), (-0.3, 0.0), (f64::INFINITY, 1.0)] {
+            assert_eq!(of::<Ratio>(Value::F64(raw)), Ratio(want));
+        }
+        assert_eq!(of::<Ratio>(Value::F64(f64::NAN)), Ratio(0.0));
     }
 }

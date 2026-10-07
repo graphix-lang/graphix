@@ -6,14 +6,14 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::{
     env::Env,
-    expr::{ExprId, ModPath},
-    typ::{Mutability, Type, TypeRef},
+    expr::ExprId,
+    typ::{Mutability, Type},
 };
 use graphix_package::{CustomDisplay, Stop};
 use graphix_rt::{CompExp, GXExt, GXHandle};
 use log::error;
 use netidx::publisher::Value;
-use std::{marker::PhantomData, sync::LazyLock};
+use std::marker::PhantomData;
 use tokio::sync::oneshot;
 use triomphe::Arc;
 use winit::{event_loop::EventLoopProxy, window::WindowId};
@@ -99,17 +99,6 @@ impl<X: GXExt> Gui<X> {
     }
 }
 
-pub static GUITYP: LazyLock<Type> = LazyLock::new(|| {
-    Type::Array(Arc::new(Type::ByRef(
-        Mutability::Shared,
-        Arc::new(Type::Ref(TypeRef::synthetic(
-            ModPath::root(),
-            ModPath::from(["gui", "Window"]),
-            Arc::from_iter([]),
-        ))),
-    )))
-});
-
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Gui<X> {
     async fn clear(&mut self) {
@@ -121,6 +110,8 @@ impl<X: GXExt> CustomDisplay<X> for Gui<X> {
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
         self.update(id, v);
     }
+
+    async fn batch_done(&mut self) {}
 }
 
 graphix_derive::defpackage! {
@@ -136,16 +127,9 @@ graphix_derive::defpackage! {
         clipboard::Clear,
     ],
     is_custom => |gx, env, e| {
-        if let Some(typ) = e.typ.with_deref(|t| t.cloned())
-            && !typ.all_bottom()
-            && typ != Type::Any
-        {
-            // a probe: claiming the value must decide nothing about its type
-            !typ.has_unbound()
-                && GUITYP.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
-        } else {
-            false
-        }
+        graphix_package::shows_as(env, e, &["gui", "Window"], |w| {
+            Type::Array(Arc::new(Type::ByRef(Mutability::Shared, Arc::new(w))))
+        })
     },
     init_custom => |gx, env, stop, e, run_on_main| {
         Ok(Box::new(Gui::<X>::start(gx, env.clone(), e, stop, run_on_main).await?))

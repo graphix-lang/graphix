@@ -9,15 +9,14 @@ type MoveCursor = [
     `Down(i64)
 ];
 
-// CR claude for claude: [doc-drift] book/src/ui/tui/browser.md misstates this signature
-// in four places. The positional is `path`, not `s` (line 25). #selected_row is the
-// selected row's full path (/t/r1), not its display name. #selected_path is optional,
-// not required. #size is an input the viewport is sized from, not an output (lines
-// 32-34); browser_commands.gx feeds it the enclosing block's #size output. Neither the
-// page nor this gxi says the listing is fetched once per new path
-// (net::list_table(path) without #update, browser.gx:21), so rows published later
-// appear only after the path changes. Correct the page and give this val `///` docs
-// that say the same; tui/mod.gxi:143 also says 'widets'. (gx-ui-12)
+/// A netidx browser over `path`: a table of its children, with one
+/// column per published column when the children are rows of a table.
+/// The listing is fetched once each time `path` changes, so rows
+/// published later appear when the path next changes.
+/// `#size` is the area the browser is drawn in, which sizes its
+/// viewport (pass the enclosing block's `#size` output); `#cursor`
+/// moves the selection. `#selected_row` is set to the selected row's
+/// full path, and `#selected_path` to the selected cell's.
 val browser: fn(
     ?#selected_style: Style,
     ?#header_style: Style,

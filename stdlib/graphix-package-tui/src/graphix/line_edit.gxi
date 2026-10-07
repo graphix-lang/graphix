@@ -1,15 +1,16 @@
 use super::{input_handler, Line, line, span, Style};
 /// A single-line text editor's state: the text and the cursor's
-/// character position within it (0 ..= str::len(value)).
+/// character position within it (0 ..= str::char_len(value)).
 type State = { value: string, cursor: i64 };
 
 /// Fresh editor state holding `initial`, cursor at the end.
 val state: fn(initial: string) -> State;
 
-/// The editor's transition, pure: the state after one terminal key
-/// event — printable characters insert at the cursor; Backspace and
+/// The editor's transition, pure: the state after one terminal event —
+/// a typed character (no modifier but Shift, or AltGr) or a paste
+/// (line breaks become spaces) inserts at the cursor; Backspace and
 /// Delete remove; Left, Right, Home, and End move — or null for an
-/// event the editor does not consume. `handle` is this applied
+/// event the editor does not consume, a Ctrl or Alt chord included. `handle` is this applied
 /// through a reference (a place reference such as `&editors[i]`
 /// reaches an editor held in a collection).
 val step: fn(st: State, e: input_handler::Event) -> [State, null];

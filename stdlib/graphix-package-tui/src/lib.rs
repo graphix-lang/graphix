@@ -12,10 +12,11 @@ use chart::ChartW;
 use crossterm::{
     ExecutableCommand,
     event::{
-        DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-        Event, EventStream, KeyCode, KeyModifiers,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, Event, EventStream,
+        KeyCode, KeyModifiers,
     },
-    terminal,
+    terminal::{self, EnterAlternateScreen},
 };
 use futures::{SinkExt, StreamExt, channel::mpsc, stream::Fuse};
 use gauge::GaugeW;
@@ -27,7 +28,6 @@ use graphix_compiler::{
     expr::{ExprId, ModPath},
     image::{self, ImageBuf},
     typ::FnType,
-    typ::{Type, TypeRef},
 };
 use graphix_package::{CustomDisplay, Stop};
 use graphix_package_core::{
@@ -56,8 +56,7 @@ use scrollbar::ScrollbarW;
 use smallvec::SmallVec;
 use sparkline::SparklineW;
 use std::{
-    borrow::Cow, fmt, future::Future, marker::PhantomData, pin::Pin, sync::LazyLock,
-    time::Duration,
+    borrow::Cow, fmt, future::Future, marker::PhantomData, pin::Pin, time::Duration,
 };
 use text::TextW;
 use tokio::{
@@ -67,6 +66,7 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 use triomphe::Arc;
+use validate::{Byte, Offset};
 
 mod barchart;
 mod block;
@@ -140,15 +140,15 @@ impl FromValue for ColorV {
                 (s, v) if &*s == "Rgb" => {
                     #[derive(FromValue)]
                     struct Rgb {
-                        b: u8,
-                        g: u8,
-                        r: u8,
+                        b: Byte,
+                        g: Byte,
+                        r: Byte,
                     }
                     let Rgb { b, g, r } = v.cast_to()?;
-                    Ok(Self(Color::Rgb(r, g, b)))
+                    Ok(Self(Color::Rgb(r.0, g.0, b.0)))
                 }
                 (s, v) if &*s == "Indexed" => {
-                    Ok(Self(Color::Indexed(v.cast_to::<u8>()?)))
+                    Ok(Self(Color::Indexed(v.cast_to::<Byte>()?.0)))
                 }
                 (s, v) => bail!("invalid color ({s} {v})"),
             },
@@ -276,18 +276,36 @@ impl FromValue for FlexV {
     }
 }
 
-/// An out-of-range offset reaches the draw-time clamp and warns; it
-/// never fails the widget compile.
+/// A scroll in content lines (y) and chars (x).
 #[derive(Debug, Clone, Copy, FromValue)]
 struct ScrollV {
-    x: i64,
-    y: i64,
+    x: Offset,
+    y: Offset,
 }
 
-#[derive(Clone, Copy, FromValue)]
+/// An axis range; a bound that is not a number is read as the empty
+/// range, which draws nothing (ratatui paints a NaN at the edge).
+#[derive(Clone, Copy)]
 struct BoundsV {
     max: f64,
     min: f64,
+}
+
+impl FromValue for BoundsV {
+    fn from_value(v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        struct Fields {
+            max: f64,
+            min: f64,
+        }
+        let Fields { max, min } = v.cast_to()?;
+        if max.is_finite() && min.is_finite() {
+            Ok(Self { max, min })
+        } else {
+            log::warn!("bounds [{min}, {max}] are not numbers; drawing nothing");
+            Ok(Self { max: 0., min: 0. })
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -396,13 +414,11 @@ fn into_borrowed_lines<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
 
 #[async_trait]
 trait TuiWidget {
-    // CR claude for claude: [structure] No widget reads the crossterm `Event`. The
-    // routing widgets pass it on, InputHandlerW queues it beside the Value and reads it
-    // only in a `debug!` (input_handler.rs:404), and eleven leaf widgets plus EmptyW
-    // implement `handle_event` as an empty stub. Take only the Value, give the method a
-    // default `Ok(())` body, and queue Values; the stubs and each leaf's crossterm
-    // import go away. (tui-core-18)
-    async fn handle_event(&mut self, e: Event, v: Value) -> Result<()>;
+    /// A terminal event, as the `tui::event` value; only routing widgets
+    /// and input handlers take it.
+    async fn handle_event(&mut self, _v: Value) -> Result<()> {
+        Ok(())
+    }
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()>;
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()>;
 }
@@ -439,10 +455,6 @@ struct EmptyW;
 
 #[async_trait]
 impl TuiWidget for EmptyW {
-    async fn handle_event(&mut self, _e: Event, _v: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, _id: ExprId, _v: Value) -> Result<()> {
         Ok(())
     }
@@ -452,8 +464,69 @@ impl TuiWidget for EmptyW {
     }
 }
 
+/// A widget the struct field `name` refers to, rebuilt when the
+/// reference fires.
+struct ChildW<X: GXExt> {
+    r: graphix_rt::Ref<X>,
+    w: TuiW,
+}
+
+impl<X: GXExt> ChildW<X> {
+    async fn compile(gx: &GXHandle<X>, v: &Value, name: &str) -> Result<Self> {
+        let mut r = gx.compile_field(v, name).await?;
+        let w = match r.last.take() {
+            Some(v) => compile(gx.clone(), v).await.context("child")?,
+            None => Box::new(EmptyW),
+        };
+        Ok(Self { r, w })
+    }
+
+    async fn update(&mut self, gx: &GXHandle<X>, id: ExprId, v: Value) -> Result<()> {
+        if id == self.r.id {
+            self.w = compile(gx.clone(), v).await.context("child")?;
+            Ok(())
+        } else {
+            self.w.handle_update(id, v).await
+        }
+    }
+}
+
+/// `f` over each element of the array `v`, together.
+async fn compile_each<T, F: Future<Output = Result<T>>>(
+    v: Value,
+    f: impl FnMut(Value) -> F,
+) -> Result<Vec<T>> {
+    futures::future::try_join_all(v.cast_to::<SmallVec<[Value; 8]>>()?.into_iter().map(f))
+        .await
+}
+
+/// Where a widget tells the program the size its content draws in: the
+/// struct field `size`, written when the size changes.
+struct SizeReport<X: GXExt> {
+    r: graphix_rt::Ref<X>,
+    last: SizeV,
+}
+
+impl<X: GXExt> SizeReport<X> {
+    async fn compile(gx: &GXHandle<X>, v: &Value) -> Result<Self> {
+        let r = gx.compile_field(v, "size").await?;
+        Ok(Self { r, last: SizeV::default() })
+    }
+
+    fn report(&mut self, rect: Rect) -> Result<()> {
+        let size = SizeV::from(rect);
+        if self.last != size {
+            self.last = size;
+            self.r.set_deref(size)?
+        }
+        Ok(())
+    }
+}
+
 enum ToTui {
     Update(ExprId, Value),
+    /// A cycle's updates are all in.
+    Draw,
     Stop(oneshot::Sender<()>),
 }
 
@@ -472,6 +545,9 @@ struct TuiControlInner {
     stop: Mutex<Option<Stop>>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
     suspend_rx: Mutex<Option<mpsc::UnboundedReceiver<Suspend>>>,
+    /// No display will ever run (a test harness): a suspend is refused
+    /// instead of waiting for one.
+    headless: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -484,6 +560,7 @@ impl Default for TuiControl {
             stop: Mutex::new(None),
             suspend_tx,
             suspend_rx: Mutex::new(Some(suspend_rx)),
+            headless: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 }
@@ -543,17 +620,7 @@ impl EvalCachedAsync for SuspendEv {
             if held.lock().is_some() {
                 return Value::Bool(true);
             }
-            // CR claude for claude: [bug] A receiver still parked here is read as 'no
-            // display'. But the display takes it (726) only after the shell has built
-            // the display from the program's first value and its task has run
-            // `with_ctx`, so a suspend asked in the program's first cycles fails with
-            // 'no terminal display is running' in a real terminal. Probe:
-            // `tui::suspend(true)` in the first cycle errors in 5 of 5 runs, and the
-            // release a second later succeeds
-            // (design/review-2026-10-05/repro/tui-core-16.gx). The error is documented
-            // for a context with no display at all (the headless harness); a display
-            // that is still starting should take the request. (tui-core-16)
-            if control.0.suspend_rx.lock().is_some() {
+            if control.0.headless.load(std::sync::atomic::Ordering::Relaxed) {
                 return errf!("TerminalError", "no terminal display is running");
             }
             let (ack, done) = oneshot::channel();
@@ -667,21 +734,15 @@ impl<X: GXExt> Tui<X> {
                 Ok(control) => control,
                 Err(e) => return error!("tui: no runtime to display for {e:?}"),
             };
-            // A display that dies takes the program with it: the shell
-            // waits on the stop signal, and nothing else would send it.
-            // CR claude for claude: [bug] A panic anywhere in this task (a widget's draw,
-            // handle_update or compile, or a ratatui assert) unwinds it and tokio drops
-            // it. This fire never runs, and the Stop parked in libstate's TuiControl
-            // (line 646) is never dropped either, so the shell's read_line waits
-            // forever. Dropping the task also drops `root`, whose Delete removes the
-            // whole program: its timers, its writes and a gated sys::exit all stop. The
-            // panic hook has restored the terminal, so ^C is now a SIGINT that the
-            // shell only turns into gx.interrupt(); the process must be killed, and a
-            // REPL session is lost. Fire the stop with an error when the task ends by
-            // panic too, e.g. a drop guard over the control or awaiting an inner
-            // spawn's JoinHandle. probe:
-            // design/review-2026-10-05/repro/tui-widgets-07.gx (tui-widgets-07)
-            if let Err(e) = run(gx, env, root, to_rx, &control).await {
+            let display = task::spawn({
+                let control = control.clone();
+                async move { run(gx, env, root, to_rx, &control).await }
+            });
+            let r = match display.await {
+                Ok(r) => r,
+                Err(e) => Err(anyhow!("the display failed: {e}")),
+            };
+            if let Err(e) = r {
                 fire(&control.0.stop, Err(e))
             }
         });
@@ -694,9 +755,9 @@ impl<X: GXExt> Tui<X> {
         let _ = rx.await;
     }
 
-    async fn update(&mut self, id: ExprId, v: Value) {
-        if let Err(_) = self.to.send(ToTui::Update(id, v)).await {
-            error!("could not send update because tui task died")
+    async fn send(&mut self, m: ToTui) {
+        if let Err(_) = self.to.send(m).await {
+            error!("could not send to the display because its task died")
         }
     }
 }
@@ -716,10 +777,6 @@ fn get_id(env: &Env, name: &ModPath) -> Result<BindId> {
         .ok_or_else(|| anyhow!("could not find {name}"))?
         .1
         .id)
-}
-
-fn set_size<X: GXExt>(gx: &GXHandle<X>, id: BindId, size: SizeV) -> Result<()> {
-    gx.set(id, size)
 }
 
 fn set_mouse(enable: bool) {
@@ -742,6 +799,188 @@ fn set_mouse(enable: bool) {
     }
 }
 
+/// The widget tree a display shows and the way the program's input
+/// reaches it; the display and the test harness drive it alike.
+pub(crate) struct Screen<X: GXExt> {
+    gx: GXHandle<X>,
+    root_id: ExprId,
+    root: TuiW,
+    size: BindId,
+    event: BindId,
+}
+
+impl<X: GXExt> Screen<X> {
+    pub(crate) fn new(gx: GXHandle<X>, env: &Env, root_id: ExprId) -> Result<Self> {
+        Ok(Self {
+            gx,
+            root_id,
+            root: Box::new(EmptyW),
+            size: get_id(env, &["tui", "size"].into())?,
+            event: get_id(env, &["tui", "event"].into())?,
+        })
+    }
+
+    /// A value of the program: the root rebuilds the tree, anything else
+    /// goes to the widgets.
+    pub(crate) async fn update(&mut self, id: ExprId, v: Value) -> Result<()> {
+        if id == self.root_id {
+            self.root = compile(self.gx.clone(), v)
+                .await
+                .context("invalid widget specification")?;
+            Ok(())
+        } else {
+            self.root.handle_update(id, v).await
+        }
+    }
+
+    pub(crate) fn resize(&self, size: SizeV) -> Result<()> {
+        self.gx.set(self.size, size)
+    }
+
+    /// A terminal event, through `tui::event` and the widgets; false for
+    /// Ctrl-C, which stops the display instead.
+    pub(crate) async fn event(&mut self, e: &Event) -> Result<bool> {
+        if is_ctrl_c(e) {
+            return Ok(false);
+        }
+        if let Event::Resize(width, height) = e {
+            self.resize(SizeV::new(*width, *height))?
+        }
+        let v = event_to_value(e);
+        self.gx.set(self.event, v.clone())?;
+        self.root.handle_event(v).await?;
+        Ok(true)
+    }
+
+    pub(crate) fn draw(&mut self, frame: &mut Frame) -> Result<()> {
+        self.root.draw(frame, frame.area())
+    }
+}
+
+/// While the display holds the terminal, stderr goes to a file, written
+/// out once the terminal is given back: a diagnostic written into the
+/// alternate screen garbles it and is lost with it.
+#[cfg(unix)]
+struct StderrHeld {
+    saved: std::os::fd::OwnedFd,
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl StderrHeld {
+    fn hold() -> Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let file = tempfile::tempfile().context("a file for stderr")?;
+        // SAFETY: dup and dup2 over fds this process owns; `saved` takes the
+        // new descriptor dup returns.
+        let saved = unsafe { libc::dup(2) };
+        if saved < 0 {
+            bail!("saving stderr: {}", std::io::Error::last_os_error())
+        }
+        let saved = unsafe { OwnedFd::from_raw_fd(saved) };
+        if unsafe { libc::dup2(file.as_raw_fd(), 2) } < 0 {
+            bail!("redirecting stderr: {}", std::io::Error::last_os_error())
+        }
+        Ok(Self { saved, file })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrHeld {
+    fn drop(&mut self) {
+        use std::{
+            io::{Seek, SeekFrom},
+            os::fd::AsRawFd,
+        };
+        // SAFETY: restores fd 2 from the descriptor `hold` saved.
+        unsafe { libc::dup2(self.saved.as_raw_fd(), 2) };
+        if self.file.seek(SeekFrom::Start(0)).is_ok() {
+            let _ = std::io::copy(&mut self.file, &mut std::io::stderr());
+        }
+    }
+}
+
+/// Give the terminal back: what `Live` took, whatever was enabled.
+fn give_back_terminal() {
+    let mut out = std::io::stdout();
+    let _ = out.execute(DisableBracketedPaste);
+    let _ = out.execute(DisableMouseCapture);
+    let _ = out.execute(DisableFocusChange);
+    let _ = out.execute(crossterm::cursor::Show);
+    ratatui::restore();
+}
+
+struct GiveBack;
+
+impl Drop for GiveBack {
+    fn drop(&mut self) {
+        give_back_terminal()
+    }
+}
+
+/// The terminal while the display holds it: raw mode, the alternate
+/// screen, bracketed paste, its events and stderr. Dropping it gives all
+/// of that back, the event reader first.
+struct Live {
+    events: Fuse<EventStream>,
+    terminal: DefaultTerminal,
+    _give_back: GiveBack,
+    #[cfg(unix)]
+    _stderr: Option<StderrHeld>,
+}
+
+impl Live {
+    fn take(mouse: bool) -> Result<Self> {
+        static HOOK: std::sync::Once = std::sync::Once::new();
+        HOOK.call_once(|| {
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                give_back_terminal();
+                prev(info)
+            }))
+        });
+        terminal::enable_raw_mode().context("raw mode")?;
+        let give_back = GiveBack;
+        let mut out = std::io::stdout();
+        out.execute(EnterAlternateScreen)?.execute(EnableBracketedPaste)?;
+        if mouse {
+            set_mouse(true)
+        }
+        let mut terminal = ratatui::Terminal::new(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+        )?;
+        terminal.clear()?;
+        Ok(Self {
+            events: EventStream::new().fuse(),
+            terminal,
+            _give_back: give_back,
+            #[cfg(unix)]
+            _stderr: StderrHeld::hold()
+                .inspect_err(|e| error!("stderr stays on the terminal: {e:?}"))
+                .ok(),
+        })
+    }
+}
+
+enum Term {
+    Live(Live),
+    /// Given to a child until the signal resumes it.
+    Suspended(oneshot::Receiver<()>),
+}
+
+impl Term {
+    /// The next terminal event, or `None` when a suspension ends.
+    async fn next(&mut self) -> Option<std::io::Result<Event>> {
+        match self {
+            Term::Live(live) => Some(live.events.select_next_some().await),
+            Term::Suspended(rx) => {
+                let _ = rx.await;
+                None
+            }
+        }
+    }
+}
+
 async fn run<X: GXExt>(
     gx: GXHandle<X>,
     env: Env,
@@ -749,35 +988,11 @@ async fn run<X: GXExt>(
     to_rx: mpsc::Receiver<ToTui>,
     control: &TuiControl,
 ) -> Result<()> {
-    // the suspend channel's receiver: parked in the control while no
-    // display runs, ours while this one does
     let mut suspend_rx = match control.0.suspend_rx.lock().take() {
         Some(rx) => rx,
         None => mpsc::unbounded().1,
     };
-    // CR claude for claude: [bug] While the display owns the terminal, anything written
-    // to stderr lands in the alternate screen at ratatui's cursor. That includes every
-    // unhandled error and hot-operator failure (report_failure!,
-    // graphix-compiler/src/node/error.rs:567-573) and the warnings of a compile at run
-    // time. ratatui never repaints those cells, and leaving the alternate screen
-    // discards them, so the diagnostic garbles the UI and is gone after exit. Probe: an
-    // unhandled `Boom` one second in prints 'unhandled error ... "Boom"' on the TUI's
-    // first row, and after Ctrl-C the normal screen does not show it
-    // (design/review-2026-10-05/repro/tui-core-17.gx). Redirect fd 2 while the display
-    // runs (to the log, replayed after restore), or repaint after anything is written.
-    // (tui-core-17)
-    let notify = match ratatui::try_init().context("initializing the terminal") {
-        Err(e) => Err(e),
-        Ok(terminal) => {
-            let r = display(gx, env, root_exp, to_rx, control, &mut suspend_rx, terminal)
-                .await;
-            if r.is_err() {
-                set_mouse(false);
-                ratatui::restore()
-            }
-            r
-        }
-    };
+    let notify = display(gx, env, root_exp, to_rx, control, &mut suspend_rx).await;
     *control.0.suspend_rx.lock() = Some(suspend_rx);
     let _ = notify?.send(());
     Ok(())
@@ -796,7 +1011,8 @@ fn terminal_connected() -> Result<()> {
 }
 
 /// Draw and serve events until told to stop, leaving the terminal
-/// restored; the value is who to tell that it is.
+/// restored; the value is who to tell that it is. A frame is drawn once
+/// a cycle's updates are all in, never in the middle of one.
 async fn display<X: GXExt>(
     gx: GXHandle<X>,
     env: Env,
@@ -804,193 +1020,70 @@ async fn display<X: GXExt>(
     mut to_rx: mpsc::Receiver<ToTui>,
     control: &TuiControl,
     suspend_rx: &mut mpsc::UnboundedReceiver<Suspend>,
-    mut terminal: DefaultTerminal,
 ) -> Result<oneshot::Sender<()>> {
-    // the display's suspension: no draws while it holds one; the
-    // resume signal is a select branch
-    let mut suspended: Option<oneshot::Receiver<()>> = None;
-    let size = get_id(&env, &["tui", "size"].into())?;
-    let event = get_id(&env, &["tui", "event"].into())?;
+    let mut screen = Screen::new(gx.clone(), &env, root_exp.id)?;
     let mut mouse: TRef<X, bool> =
         TRef::new(gx.compile_ref(get_id(&env, &["tui", "mouse"].into())?).await?)?;
-    // CR claude for claude: [bug] Nothing turns on bracketed paste (crossterm's
-    // EnableBracketedPaste; ratatui's init does not either). So a terminal never
-    // brackets a paste, and the `Paste(string)` event in input_handler.gxi and
-    // book/src/ui/tui/input.md never arrives. Instead a paste comes in as one key event
-    // per character, each a handler round trip, and a pasted newline or bound key acts
-    // as a keypress. No captured stream of a running display contains ESC[?2004h.
-    // Enable it with the terminal, at start and on resume, and disable it at suspend
-    // and restore; line_edit has no `Paste` arm and would then need one. The
-    // alternative is to drop `Paste` from the type and the docs. (tui-core-15)
-    if let Some(b) = mouse.t {
-        set_mouse(b)
-    }
-    set_size(&gx, size, SizeV::from_terminal()?)?;
-    // the crossterm reader; `None` only while suspended, so its thread
-    // cannot fight the child for stdin
-    let mut events: Option<Fuse<EventStream>> = Some(EventStream::new().fuse());
-    let mut root: TuiW = Box::new(EmptyW);
+    let mut term = Term::Live(Live::take(mouse.t == Some(true))?);
+    screen.resize(SizeV::from_terminal()?)?;
+    let mut dirty = true;
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let notify = loop {
-        // CR claude for claude: [perf] The loop draws the whole tree before every
-        // message, and the shell hands a cycle's batch over one update at a time
-        // (graphix-shell/src/lib.rs:477). So a cycle that changes N refs renders N full
-        // frames, and N-1 of them show a half-applied cycle the program never produced
-        // (new `items` with an old `selected`), which every widget's draw has to
-        // survive. The liveness tick (796) adds another full render every second.
-        // Probe: ten `text`s reading one 1 s counter draw ten frames per tick, each
-        // rewriting one line (69 draws in 6.5 s;
-        // design/review-2026-10-05/repro/tui-core-09.gx). Give `CustomDisplay` the
-        // batch boundary the shell already has, draw once per batch, and skip the draw
-        // on a liveness tick. (tui-core-09)
-        if suspended.is_none() {
-            terminal.draw(|f| {
-                if let Err(e) = root.draw(f, f.area()) {
+    loop {
+        if let Term::Live(live) = &mut term
+            && std::mem::take(&mut dirty)
+        {
+            live.terminal.draw(|f| {
+                if let Err(e) = screen.draw(f) {
                     error!("error drawing {e:?}")
                 }
             })?;
         }
-        // CR claude for claude: [bug] Nothing restores the terminal when the process gets
-        // SIGTERM or SIGHUP. This select has no signal branch and the shell handles
-        // only SIGINT (graphix-shell/src/lib.rs:449). So `kill <pid>`, `timeout`, or a
-        // parent's `sys::process::kill(#grace: ..)` (SIGTERM first) leaves the terminal
-        // raw, on the alternate screen, with the cursor hidden and mouse capture on,
-        // and a Graphix program cannot handle the signal itself. A display that resumes
-        // after such a child (line 839) then saves the child's raw mode as the mode to
-        // restore, so the parent's own clean exit leaves the terminal raw too. The
-        // handler belongs in the shell's run loop, which should break so
-        // `output.clear()` restores the display: tokio never unregisters a signal
-        // handler, so a handler in this select would make the REPL ignore SIGTERM once
-        // the display ends. probe: design/review-2026-10-05/repro/tui-core-06.py
-        // (tui-core-06)
         select! {
             _ = liveness.tick() => terminal_connected()?,
             m = to_rx.next() => match m {
-                None => break oneshot::channel().0,
-                Some(ToTui::Stop(tx)) => break tx,
+                None => break Ok(oneshot::channel().0),
+                Some(ToTui::Stop(tx)) => break Ok(tx),
+                Some(ToTui::Draw) => dirty = true,
                 Some(ToTui::Update(id, v)) => {
-                    if let Ok(Some(v)) = mouse.update(id, &v) {
+                    if let Ok(Some(v)) = mouse.update(id, &v)
+                        && let Term::Live(_) = term
+                    {
                         set_mouse(*v)
                     }
-                    if id == root_exp.id {
-                        match compile(gx.clone(), v).await {
-                            Err(e) => error!("invalid widget specification {e:?}"),
-                            Ok(w) => root = w,
-                        }
-                    } else {
-                        if let Err(e) = root.handle_update(id, v).await {
-                            error!("error handling update {e:?}")
-                        }
+                    if let Err(e) = screen.update(id, v).await {
+                        error!("error handling update {e:?}")
                     }
                 },
             },
             s = suspend_rx.next() => if let Some(Suspend { ack }) = s {
-                if suspended.is_some() {
+                if let Term::Suspended(_) = term {
                     let _ = ack.send(Err(anyhow!("the display is already suspended")));
                 } else {
-                    drop(events.take());
-                    if let Some(true) = mouse.t {
-                        set_mouse(false)
-                    }
-                    // CR claude for claude: [bug] Suspending hands the child a hidden
-                    // cursor. Every draw hides it, because no widget sets a cursor
-                    // position. ratatui::restore() only leaves raw mode and the
-                    // alternate screen, and the show comes from the Terminal's Drop,
-                    // which runs only on resume, after try_init has entered the new
-                    // alternate screen. So a sudo or su password prompt, sh or less
-                    // runs with no cursor; nano, vim and micro show it again
-                    // themselves. Drop the Terminal here so its Drop shows the cursor,
-                    // holding the state as Live { terminal, events } | Suspended {
-                    // resume } so that events is None exactly while suspended, or call
-                    // terminal.show_cursor() before restoring. probe:
-                    // design/review-2026-10-05/repro/tui-core-05.py (tui-core-05)
-                    ratatui::restore();
                     let (resume_tx, resume_rx) = oneshot::channel();
-                    suspended = Some(resume_rx);
+                    term = Term::Suspended(resume_rx);
                     let _ = ack.send(Ok(resume_tx));
                 }
             },
-            _ = async {
-                match suspended.as_mut() {
-                    Some(rx) => {
-                        let _ = rx.await;
-                    }
-                    None => futures::future::pending().await,
-                }
-            } => {
-                suspended = None;
-                // CR claude for claude: [bug] Every `ratatui::try_init` wraps the current
-                // panic hook in a new one that calls `restore()`. The display calls it
-                // here at each resume and at each start (730, every REPL display
-                // included), so hooks pile up for the life of the process, and any
-                // panic in the process runs one nested restore per hook. Probe: after k
-                // resumes, a panic writes k+1 consecutive ESC[?1049l before its message
-                // (design/review-2026-10-05/repro/tui-core-14.gx). Install the hook
-                // once, and on resume re-enable raw mode and the alternate screen and
-                // clear the existing terminal instead of calling try_init.
-                // (tui-core-14)
-                terminal = ratatui::try_init().context("taking the terminal back")?;
-                if let Ok(size) = terminal.size() {
-                    let _ = terminal.resize(size.into());
-                }
-                if let Some(true) = mouse.t {
-                    set_mouse(true)
-                }
-                events = Some(EventStream::new().fuse());
-            },
-            e = async {
-                match events.as_mut() {
-                    Some(s) => s.select_next_some().await,
-                    None => futures::future::pending().await,
-                }
-            } => match e {
-                Ok(e) if is_ctrl_c(&e) => fire(&control.0.stop, Ok(())),
-                Ok(e) => {
-                    let v = event_to_value(&e);
-                    if let Event::Resize(width, height) = e
-                        && let Err(e) = set_size(&gx, size, SizeV::new(width, height)) {
-                        error!("could not set the size ref {e:?}")
-                    }
-                    if let Err(e) = gx.set(event, v.clone()) {
-                        error!("could not set event ref {e:?}")
-                    }
-                    if let Err(e) = root.handle_event(e, v).await {
-                        error!("error handling event {e:?}")
+            t = term.next() => match t {
+                None => {
+                    term = Term::Live(Live::take(mouse.t == Some(true))?);
+                    screen.resize(SizeV::from_terminal()?)?;
+                    dirty = true;
+                },
+                Some(Ok(e)) => {
+                    dirty |= matches!(e, Event::Resize(..));
+                    match screen.event(&e).await {
+                        Ok(true) => (),
+                        Ok(false) => fire(&control.0.stop, Ok(())),
+                        Err(e) => error!("error handling event {e:?}"),
                     }
                 },
-                Err(e) => bail!("reading the terminal: {e}"),
+                Some(Err(e)) => bail!("reading the terminal: {e}"),
             }
         }
-    };
-    if suspended.is_none() {
-        if let Some(true) = mouse.t {
-            set_mouse(false)
-        }
-        ratatui::restore();
     }
-    Ok(notify)
 }
-
-// CR claude for claude: [risk] TUITYP is a process-wide `TypeRef`. Its write-once
-// resolution cell is filled, weakly, by the first runtime that checks it, and it is
-// never re-resolved (TypeRef::resolve_in, graphix-types/src/typ/mod.rs:627-649). So a
-// second runtime in the process is checked against the first one's `tui::Tui`. Once the
-// first runtime is dropped the cell is dead: `contains` fails, `unwrap_or(false)`
-// answers false, and the TUI is printed as a value. Probe: two runtimes in turn ask
-// `maybe_init_custom` about `tui::text::text(&"x")`; the first answers Custom, the
-// second NotCustom and logs 'type `tui::Tui` outlived its definition'
-// (design/review-2026-10-05/repro/tui-core-12.rs). A static must not cache what differs
-// between contexts, so build the ref per call; GUITYP
-// (graphix-package-gui/src/lib.rs:101) has the same hazard, and its `is_custom` closure
-// is a copy of this one. (tui-core-12)
-static TUITYP: LazyLock<Type> = LazyLock::new(|| {
-    Type::Ref(TypeRef::synthetic(
-        ModPath::root(),
-        ModPath::from(["tui", "Tui"]),
-        Arc::from_iter([]),
-    ))
-});
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Tui<X> {
@@ -999,22 +1092,17 @@ impl<X: GXExt> CustomDisplay<X> for Tui<X> {
     }
 
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
-        self.update(id, v).await;
+        self.send(ToTui::Update(id, v)).await;
+    }
+
+    async fn batch_done(&mut self) {
+        self.send(ToTui::Draw).await;
     }
 }
 
 graphix_derive::defpackage! {
     builtins => [Exit, SuspendB],
-    is_custom => |gx, env, e| {
-        if let Some(typ) = e.typ.with_deref(|t| t.cloned())
-            && !typ.all_bottom()
-            && typ != Type::Any
-        {
-            TUITYP.contains(env, &typ).unwrap_or(false)
-        } else {
-            false
-        }
-    },
+    is_custom => |gx, env, e| graphix_package::shows_as(env, e, &["tui", "Tui"], |t| t),
     init_custom => |gx, env, stop, e, _run_on_main| {
         Ok(Box::new(Tui::<X>::start(gx, env.clone(), e, stop)))
     },

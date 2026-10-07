@@ -124,6 +124,49 @@ impl<X: GXExt> Output<X> {
             Self::Text(_) => Ok(()),
         }
     }
+
+    async fn batch_done(&mut self) {
+        if let Self::Custom(cdc) = self {
+            cdc.custom.batch_done().await
+        }
+    }
+}
+
+/// The signals that ask the process to end (SIGTERM, SIGHUP): the shell
+/// stops as it would at Ctrl-D, so a display gives the terminal back.
+/// The answer is the exit code a shell reports for the signal.
+struct Terminated {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+}
+
+impl Terminated {
+    fn new() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self {
+                term: signal(SignalKind::terminate())?,
+                hup: signal(SignalKind::hangup())?,
+            })
+        }
+        #[cfg(not(unix))]
+        Ok(Self {})
+    }
+
+    async fn recv(&mut self) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.term.recv() => Some(128 + 15),
+                _ = self.hup.recv() => Some(128 + 1),
+            }
+        }
+        #[cfg(not(unix))]
+        futures::future::pending().await
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +543,7 @@ impl<X: GXExt> Shell<X> {
                 }
             })
         };
+        let mut terminated = Terminated::new()?;
         let script = self.mode.file_mode();
         let mut input = InputReader::new();
         let mut output = if script { Output::EmptyScript } else { Output::None };
@@ -539,8 +583,10 @@ impl<X: GXExt> Shell<X> {
                                 }
                             }
                         }
+                        output.batch_done().await
                     }
                 },
+                code = terminated.recv() => break 'repl Ok(code),
                 input = input.read_line(&mut output, &mut newenv) => {
                     match input {
                         // with no display up the error is the input's own

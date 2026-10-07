@@ -9,11 +9,11 @@ layout(
     &[
         child(#constraint: `Percentage(33), block(
             #title: &line("CPU"),
-            &sparkline(#style: &style(#fg: `Red), #max: &100, &cpu_data)
+            &sparkline(#style: &style(#fg: `Red), #max: &100.0, &cpu_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &line("Memory"),
-            &sparkline(#style: &style(#fg: `Yellow), #max: &100, &mem_data)
+            &sparkline(#style: &style(#fg: `Yellow), #max: &100.0, &mem_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &line("Network"),

@@ -1,5 +1,5 @@
-use super::{EmptyW, TuiW, TuiWidget, compile};
-use anyhow::{Context, Result, bail};
+use super::{ChildW, TuiW, TuiWidget};
+use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use async_trait::async_trait;
 use crossterm::event::{
@@ -7,14 +7,13 @@ use crossterm::event::{
     ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
-use log::debug;
+use graphix_rt::{Callable, GXExt, GXHandle, Ref};
+use log::{debug, error};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use netidx_derive::{FromValue, IntoValue};
+use netidx_derive::IntoValue;
 use ratatui::{Frame, layout::Rect};
 use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
-use tokio::try_join;
 
 fn media_keycode_to_value(kc: &MediaKeyCode) -> Value {
     use MediaKeyCode::*;
@@ -351,157 +350,113 @@ pub(super) fn event_to_value(e: &Event) -> Value {
     }
 }
 
+/// The events a handler may have waiting: past this a new event is
+/// dropped, so a handler that falls behind loses input, not memory.
+const MAX_QUEUED: usize = 256;
+
+graphix_rt::props! {
+    struct Props {
+        enabled: Option<bool>,
+    }
+}
+
+/// Events go to the handler one at a time, each with the answer id its
+/// call replies under; the answer decides whether the child sees it.
 pub(super) struct InputHandlerW<X: GXExt> {
     gx: GXHandle<X>,
-    enabled: TRef<X, Option<bool>>,
+    p: Props<X>,
     handle_ref: Ref<X>,
     handle: Option<Callable<X>>,
-    child_ref: Ref<X>,
-    child: TuiW,
-    queued: VecDeque<(Event, Value)>,
-    pending: bool,
+    child: ChildW<X>,
+    queued: VecDeque<Value>,
+    in_flight: Option<(ExprId, Value)>,
 }
 
 impl<X: GXExt> InputHandlerW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            child: u64,
-            enabled: u64,
-            handle: u64,
-        }
-        let Fields { child, enabled, handle } =
-            v.cast_to().context("input handler fields")?;
-        let (child_ref, enabled, handle_ref) = try_join! {
-            gx.compile_ref(child),
-            gx.compile_ref(enabled),
-            gx.compile_ref(handle)
-        }?;
+        let p = Props::compile(&gx, &v).await.context("input_handler")?;
+        let child = ChildW::compile(&gx, &v, "child").await.context("input_handler")?;
+        let handle_ref = gx.compile_field(&v, "handle").await?;
         let mut t = Self {
             gx,
-            enabled: TRef::new(enabled).context("input handler tref enabled")?,
+            p,
             handle_ref,
             handle: None,
-            child_ref,
-            child: Box::new(EmptyW),
+            child,
             queued: VecDeque::new(),
-            pending: false,
+            in_flight: None,
         };
         if let Some(v) = t.handle_ref.last.take() {
             t.set_handle(v).await?
         }
-        if let Some(v) = t.child_ref.last.take() {
-            t.child = compile(t.gx.clone(), v).await?;
-        }
         Ok(Box::new(t))
     }
 
-    async fn maybe_send_queued(&mut self) -> Result<()> {
-        if !self.pending
-            && let Some((e, v)) = self.queued.front()
+    async fn send_next(&mut self) -> Result<()> {
+        if self.in_flight.is_none()
             && let Some(h) = &self.handle
+            && let Some(v) = self.queued.pop_front()
         {
-            debug!("sending event: {e:?}");
-            h.call(ValArray::from_iter_exact([v.clone()].into_iter())).await?;
-            self.pending = true
+            debug!("sending event: {v}");
+            h.call_answered(ValArray::from_iter_exact([v.clone()].into_iter())).await?;
+            self.in_flight = Some((h.answer, v));
         }
         Ok(())
     }
 
-    // CR claude for claude: [bug] When the handler lambda changes, update_callable drops
-    // the old Callable and compiles a new one, but `pending` stays true if a call is
-    // still out. That call's reply comes back, if at all, under the old callable's
-    // expr, which the `id == h.expr` test in handle_update no longer matches. So
-    // `pending` is never cleared, maybe_send_queued never sends again, and every later
-    // event (mouse moves included) is queued forever. A handler chosen by `select mode
-    // { `A => fa, `B => fb }`, where a key flips `mode`, wedges as soon as the next key
-    // arrives before the swap lands (fast typing, key repeat, a paste). probe:
-    // design/review-2026-10-05/repro/tui-core-03.py. Typing 'ma' in one burst leaves
-    // count at 1 and no later key is handled; the same keys a second apart work.
-    // (tui-core-03)
     async fn set_handle(&mut self, v: Value) -> Result<()> {
         self.gx.update_callable(&mut self.handle, v).await?;
-        self.maybe_send_queued().await?;
+        self.send_next().await
+    }
+
+    /// The handler's answer to the event in flight: the child sees the
+    /// event when it continues, and an event the handler did not answer
+    /// (its call produced nothing, or raised) goes nowhere.
+    async fn answered(&mut self, ev: Value, answer: Value) -> Result<()> {
+        match answer {
+            Value::String(s) if &*s == "Continue" => {
+                self.child.w.handle_event(ev).await?
+            }
+            Value::String(s) if &*s == "Stop" => (),
+            Value::Null => debug!("the handler did not answer {ev}"),
+            v => error!("invalid response from input handler {v}"),
+        }
         Ok(())
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for InputHandlerW<X> {
-    // CR claude for claude: [bug] Events go to the handler one at a time, and `pending`
-    // is cleared only by a reply (451) or by `#enabled` going false (442). So one call
-    // whose reply never fires stops this handler for good: a raise in the reply, which
-    // the `throws 'e` signature allows, or a bottom such as `(k ~ mode)$` over a null.
-    // After that every event, mouse moves included, is pushed onto `queued` and kept
-    // (about 1 KB each), nothing beneath this handler sees input again, a bottom logs
-    // nothing, and only Ctrl-C still works. One missed reply should cost one event, and
-    // the queue needs a bound. probe: design/review-2026-10-05/repro/tui-core-04.py
-    // (keys a a x m a b: the handler is called for a, a, x and the count stops at 2;
-    // --mem: RSS 62 -> 147 MB over 80000 more keys, flat with no handler).
-    // (tui-core-04)
-    async fn handle_event(&mut self, e: Event, v: Value) -> Result<()> {
-        if self.enabled.t.and_then(|b| b).unwrap_or(true) {
-            self.queued.push_back((e, v));
-            self.maybe_send_queued().await?
+    async fn handle_event(&mut self, v: Value) -> Result<()> {
+        if self.p.enabled.t.flatten().unwrap_or(true) {
+            if self.queued.len() < MAX_QUEUED {
+                self.queued.push_back(v);
+            } else {
+                debug!("the handler is behind; dropped {v}")
+            }
+            self.send_next().await?
         }
         Ok(())
     }
 
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            gx: _,
-            enabled,
-            handle_ref: _,
-            handle,
-            child_ref,
-            child,
-            queued,
-            pending,
-        } = self;
-        if let Some(Some(false)) =
-            enabled.update(id, &v).context("input handler enabled update")?
-        {
-            *pending = false;
-            queued.clear();
+        if let Some(Some(false)) = self.p.enabled.update(id, &v).context("enabled")? {
+            self.queued.clear();
         }
-        if id == child_ref.id {
-            *child = compile(self.gx.clone(), v.clone()).await?;
-        }
-        // CR claude for claude: [bug] Every update of the handler's call site is taken as
-        // the reply to queued.front(), but the call site also fires when no call was
-        // made. A select emits when a consulted guard's input fires, so the canonical
-        // `kk@ `Up if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop }` answers Stop a
-        // second time in the cycle where `sel` lands: one call, two replies (the book's
-        // `select (mode, event)` handler does the same). When the next key is already
-        // queued (type-ahead, or a paste, since bracketed paste is off), it gets that
-        // stale verdict and its own reply goes to the key after it, so keys the handler
-        // continues never reach the child and keys it stops leak through. An in-flight
-        // flag cannot tell the stale reply from the real one, because it arrives after
-        // the next key's call was sent; the runtime has to say which call an output
-        // answers. probe: timeout -s KILL 170 python3
-        // design/review-2026-10-05/repro/tui-core-01.py <graphix> (Up+'x' in one write:
-        // 0 of 20 'x' reach the inner handler; a stopped 'a' after 'b' leaks 7-37 of
-        // 60). (tui-core-01)
-        if let Some(h) = handle
-            && id == h.expr
+        if let Some((answer, _)) = &self.in_flight
+            && *answer == id
         {
-            *pending = false;
-            if let Some((e, ev)) = queued.pop_front() {
-                match &*v.clone().cast_to::<ArcStr>()? {
-                    "Stop" => (),
-                    "Continue" => child.handle_event(e, ev).await?,
-                    v => bail!("invalid respose from input handler {v}"),
-                }
-            }
-            self.maybe_send_queued().await?
+            let (_, ev) = self.in_flight.take().expect("an event in flight");
+            self.answered(ev, v).await?;
+            return self.send_next().await;
         }
         if id == self.handle_ref.id {
             self.set_handle(v.clone()).await?;
         }
-        self.child.handle_update(id, v).await
+        self.child.update(&self.gx, id, v).await
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        self.child.draw(frame, rect)
+        self.child.w.draw(frame, rect)
     }
 }

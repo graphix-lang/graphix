@@ -129,11 +129,16 @@ type InputHandler = {
   handle: &fn(e: Event) -> [`Stop, `Continue]
 };
 
+/// Route terminal events through `handle` before `child` sees them, one
+/// at a time: the child gets an event the handler answers `Continue.
+/// An event the handler does not answer in the cycle it was given (its
+/// call produced nothing) goes nowhere. The handler is called from the
+/// display, outside any `catch`, so it may not raise.
 val input_handler: fn(
   ?#enabled: &[bool, null],
-  #handle: &fn(e: Event) -> [`Stop, `Continue] throws 'e,
+  #handle: &fn(e: Event) -> [`Stop, `Continue],
   child: &Tui
-) -> Tui throws 'e;
+) -> Tui;
 
 /// Call `f` with the key event when `e` is a key press, and continue
 /// on everything else: releases and repeats (a terminal that reports

@@ -1,18 +1,21 @@
-use super::{StyleV, TRef, TuiW, TuiWidget};
+use super::{StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref};
+use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     widgets::{RenderDirection, Sparkline, SparklineBar},
 };
-use tokio::try_join;
+
+/// The integer range bars are scaled into: ratatui scales by integer math
+/// (`value * height * 8 / max`), which this keeps exact and overflow free.
+const SCALE: u64 = 1 << 20;
 
 #[derive(Clone, Copy)]
 struct RenderDirectionV(RenderDirection);
@@ -27,12 +30,15 @@ impl FromValue for RenderDirectionV {
     }
 }
 
-#[derive(Clone, Copy)]
-struct SparklineBarV(SparklineBar);
+/// A bar's value, absent when it is null or not finite.
+struct Bar {
+    value: Option<f64>,
+    style: Option<Style>,
+}
 
-impl FromValue for SparklineBarV {
+impl FromValue for Bar {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
+        let (value, style) = match v {
             Value::Array(_) => {
                 #[derive(FromValue)]
                 struct Fields {
@@ -40,154 +46,80 @@ impl FromValue for SparklineBarV {
                     value: Option<f64>,
                 }
                 let Fields { style, value } = v.cast_to()?;
-                // CR claude for claude: [bug] `v as u64` here and at line 47 truncates
-                // each value before ratatui scales it with integer math (`value *
-                // height * 8 / max`, ratatui-widgets sparkline.rs:392). Data in [0, 1)
-                // becomes 0, so `sparkline(&[0.2, 0.5, 0.9, 0.4])` draws nothing, and
-                // 1.2 and 1.9 draw equal bars. `inf` becomes u64::MAX, and any value
-                // above about 2^64/(8*rows) overflows that product: a dev build panics
-                // in the display task (the display dies and the process ignores
-                // Ctrl-C), and a release build wraps and blanks every bar. Scale in f64
-                // in `draw`, where the max (the finite data max or `#max`) is known:
-                // clamp to [0, 1], multiply by a fixed scale, pass that scale as the
-                // max, and treat NaN as absent. `#max` is i64, so it cannot express a
-                // fractional scale either. probe:
-                // design/review-2026-10-05/repro/tui-widgets-04.gx (tui-widgets-04)
-                let value = value.map(|v| v as u64);
-                Ok(Self(SparklineBar::from(value).style(style.map(|s| s.0))))
+                (value, style.map(|s| s.0))
             }
-            v => {
-                let value = v.cast_to::<Option<f64>>()?.map(|v| v as u64);
-                Ok(Self(SparklineBar::from(value)))
+            v => (v.cast_to::<Option<f64>>()?, None),
+        };
+        Ok(Self { value: value.filter(|v| v.is_finite()), style })
+    }
+}
+
+/// The scale's top: positive and finite, else the data's maximum.
+#[derive(Clone, Copy)]
+struct MaxV(Option<f64>);
+
+impl FromValue for MaxV {
+    fn from_value(v: Value) -> Result<Self> {
+        match v.cast_to::<Option<f64>>()? {
+            Some(m) if !(m.is_finite() && m > 0.) => {
+                log::warn!("sparkline max {m} is not positive; scaling to the data");
+                Ok(Self(None))
             }
+            m => Ok(Self(m)),
         }
     }
 }
 
-pub(super) struct SparklineW<X: GXExt> {
-    absent_value_style: TRef<X, Option<StyleV>>,
-    absent_value_symbol: TRef<X, Option<ArcStr>>,
-    data_ref: Ref<X>,
-    data: Vec<SparklineBar>,
-    direction: TRef<X, Option<RenderDirectionV>>,
-    max: TRef<X, Option<u64>>,
-    style: TRef<X, Option<StyleV>>,
+graphix_rt::props! {
+    struct Props {
+        absent_value_style: Option<StyleV>,
+        absent_value_symbol: Option<ArcStr>,
+        data: Vec<Bar>,
+        direction: Option<RenderDirectionV>,
+        max: MaxV,
+        style: Option<StyleV>,
+    }
 }
+
+pub(super) struct SparklineW<X: GXExt>(Props<X>);
 
 impl<X: GXExt> SparklineW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            absent_value_style: u64,
-            absent_value_symbol: u64,
-            data: u64,
-            direction: u64,
-            max: u64,
-            style: u64,
-        }
-        let Fields {
-            absent_value_style,
-            absent_value_symbol,
-            data,
-            direction,
-            max,
-            style,
-        } = v.cast_to()?;
-        let (absent_value_style, absent_value_symbol, data_ref, direction, max, style) =
-            try_join! {
-                gx.compile_ref(absent_value_style),
-                gx.compile_ref(absent_value_symbol),
-                gx.compile_ref(data),
-                gx.compile_ref(direction),
-                gx.compile_ref(max),
-                gx.compile_ref(style),
-            }?;
-        let mut t = Self {
-            absent_value_style: TRef::new(absent_value_style)
-                .context("sparkline tref absent_value_style")?,
-            absent_value_symbol: TRef::new(absent_value_symbol)
-                .context("sparkline tref absent_value_symbol")?,
-            data_ref,
-            data: vec![],
-            direction: TRef::new(direction).context("sparkline tref direction")?,
-            max: TRef::new(max).context("sparkline tref max")?,
-            style: TRef::new(style).context("sparkline tref style")?,
-        };
-        if let Some(v) = t.data_ref.last.take() {
-            t.set_data(&v)?;
-        }
-        Ok(Box::new(t))
-    }
-
-    fn set_data(&mut self, v: &Value) -> Result<()> {
-        self.data.clear();
-        match v {
-            Value::Array(a) => {
-                for v in a {
-                    self.data.push(v.clone().cast_to::<SparklineBarV>()?.0);
-                }
-            }
-            v => bail!("invalid sparkline data {v}"),
-        }
-        Ok(())
+        Ok(Box::new(Self(Props::compile(&gx, &v).await.context("sparkline")?)))
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for SparklineW<X> {
-    async fn handle_event(&mut self, _e: Event, _v: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            absent_value_style,
-            absent_value_symbol,
-            data_ref,
-            data: _,
-            direction,
-            max,
-            style,
-        } = self;
-        absent_value_style
-            .update(id, &v)
-            .context("sparkline update absent_value_style")?;
-        absent_value_symbol
-            .update(id, &v)
-            .context("sparkline update absent_value_symbol")?;
-        direction.update(id, &v).context("sparkline update direction")?;
-        max.update(id, &v).context("sparkline update max")?;
-        style.update(id, &v).context("sparkline update style")?;
-        if data_ref.id == id {
-            self.set_data(&v)?;
-        }
+        self.0.update(id, &v).context("sparkline")?;
         Ok(())
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            absent_value_style,
-            absent_value_symbol,
-            data_ref: _,
-            data,
-            direction,
-            max,
-            style,
-        } = self;
-        let mut spark = Sparkline::default().data(data.iter().map(|b| b.clone()));
-        if let Some(Some(s)) = &absent_value_style.t {
+        let p = &self.0;
+        let data = p.data.t.as_deref().unwrap_or(&[]);
+        let max =
+            p.max.t.and_then(|m| m.0).unwrap_or_else(|| {
+                data.iter().filter_map(|b| b.value).fold(0., f64::max)
+            });
+        let bars = data.iter().map(|b| {
+            let scaled = b.value.map(|v| {
+                if max > 0. { ((v / max).clamp(0., 1.) * SCALE as f64) as u64 } else { 0 }
+            });
+            SparklineBar::from(scaled).style(b.style)
+        });
+        let mut spark = Sparkline::default().data(bars).max(SCALE);
+        if let Some(Some(s)) = &p.absent_value_style.t {
             spark = spark.absent_value_style(s.0);
         }
-        if let Some(Some(s)) = &absent_value_symbol.t {
+        if let Some(Some(s)) = &p.absent_value_symbol.t {
             spark = spark.absent_value_symbol(s.to_string());
         }
-        if let Some(Some(m)) = max.t {
-            spark = spark.max(m);
-        }
-        if let Some(Some(s)) = &style.t {
+        if let Some(Some(s)) = &p.style.t {
             spark = spark.style(s.0);
         }
-        if let Some(Some(d)) = direction.t {
+        if let Some(Some(d)) = p.direction.t {
             spark = spark.direction(d.0);
         }
         frame.render_widget(spark, rect);

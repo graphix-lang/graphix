@@ -1,46 +1,34 @@
-use super::{AlignmentV, LinesV, StyleV, TRef, TuiW, TuiWidget};
+use super::{AlignmentV, LinesV, StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
-use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, style::Style, text::Text};
 use std::mem;
-use tokio::try_join;
+
+graphix_rt::props! {
+    struct Props {
+        alignment: Option<AlignmentV>,
+        lines: LinesV,
+        style: StyleV,
+    }
+}
 
 pub(super) struct TextW<X: GXExt> {
-    alignment: TRef<X, Option<AlignmentV>>,
-    lines: TRef<X, LinesV>,
-    style: TRef<X, StyleV>,
+    p: Props<X>,
     text: Text<'static>,
 }
 
 impl<X: GXExt> TextW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, source: Value) -> Result<TuiW> {
-        #[derive(FromValue)]
-        struct Fields {
-            alignment: u64,
-            lines: u64,
-            style: u64,
-        }
-        let Fields { alignment, lines, style } = source.cast_to().context("text flds")?;
-        let (alignment, lines, style) = try_join! {
-            gx.compile_ref(alignment),
-            gx.compile_ref(lines),
-            gx.compile_ref(style)
-        }?;
-        let alignment = TRef::<X, Option<AlignmentV>>::new(alignment)
-            .context("text tref alignment")?;
-        let mut lines = TRef::<X, LinesV>::new(lines).context("text tref lines")?;
-        let style = TRef::<X, StyleV>::new(style).context("text tref style")?;
+        let mut p = Props::compile(&gx, &source).await.context("text")?;
         let text = Text {
-            alignment: alignment.t.as_ref().and_then(|a| a.map(|a| a.0)),
-            style: style.t.as_ref().map(|s| s.0).unwrap_or(Style::new()),
-            lines: lines.t.take().map(|l| l.0).unwrap_or(vec![]),
+            alignment: p.alignment.t.and_then(|a| a.map(|a| a.0)),
+            style: p.style.t.map_or(Style::new(), |s| s.0),
+            lines: p.lines.t.take().map(|l| l.0).unwrap_or_default(),
         };
-        Ok(Box::new(Self { alignment, lines, style, text }))
+        Ok(Box::new(Self { p, text }))
     }
 }
 
@@ -51,19 +39,15 @@ impl<X: GXExt> TuiWidget for TextW<X> {
         Ok(())
     }
 
-    async fn handle_event(&mut self, _: Event, _: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self { alignment, lines, style, text } = self;
-        if let Some(a) = alignment.update(id, &v).context("text update alignment")? {
+        let Self { p, text } = self;
+        if let Some(a) = p.alignment.update(id, &v).context("text alignment")? {
             text.alignment = a.map(|a| a.0);
         }
-        if let Some(l) = lines.update(id, &v).context("text update lines")? {
+        if let Some(l) = p.lines.update(id, &v).context("text lines")? {
             text.lines = mem::take(&mut l.0);
         }
-        if let Some(s) = style.update(id, &v).context("text update style")? {
+        if let Some(s) = p.style.update(id, &v).context("text style")? {
             text.style = s.0;
         }
         Ok(())

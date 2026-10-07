@@ -7,7 +7,7 @@ let sparkline = |
   #absent_value_style: &[Style, null] = &null,
   #absent_value_symbol: &[string, null] = &null,
   #direction: &[RenderDirection, null] = &null,
-  #max: &[i64, null] = &null,
+  #max: &[f64, null] = &null,
   #style: &[Style, null] = &null,
   data: &Array<[SparklineBar, f64, null]>
 | -> Tui `Sparkline({

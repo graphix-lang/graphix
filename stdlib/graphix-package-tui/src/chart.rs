@@ -5,11 +5,9 @@ use super::{
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use crossterm::event::Event;
 use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{GXExt, GXHandle, Ref, TRef};
-use log::debug;
+use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use ratatui::{
@@ -18,7 +16,6 @@ use ratatui::{
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
 };
 use smallvec::SmallVec;
-use tokio::try_join;
 
 #[derive(Clone, Copy)]
 struct GraphTypeV(GraphType);
@@ -70,17 +67,6 @@ impl FromValue for AxisV {
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
         let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
-        // CR claude for claude: [bug] A y axis with exactly one label panics the display.
-        // The locked ratatui-widgets 0.3.0 divides by `labels_len - 1` in
-        // render_y_labels (its chart.rs:956) with no guard, which is an integer
-        // division by zero in every build profile. The display task dies on its first
-        // frame and nothing fires the stop signal, so the program keeps running with no
-        // display and Ctrl-C no longer exits it. ratatui-widgets 0.3.2, which ratatui
-        // 0.30.2 requires, adds the `labels_len < 2` guard. Raising the workspace
-        // ratatui floor to 0.30.2 fixes it at the root; the other fix is to set labels
-        // here only when there are at least two. probe:
-        // design/review-2026-10-05/repro/tui-widgets-02.gx (run in a terminal).
-        // (tui-widgets-02)
         if let Some(lbls) = labels {
             let lbls = lbls.into_iter().map(|l| l.0).collect::<Vec<_>>();
             axis = axis.labels(lbls);
@@ -104,13 +90,19 @@ struct HLConstraintsV {
     width: ConstraintV,
 }
 
+graphix_rt::props! {
+    struct DatasetProps {
+        graph_type: Option<GraphTypeV>,
+        marker: Option<MarkerV>,
+        name: Option<LineV>,
+        style: Option<StyleV>,
+    }
+}
+
 struct DatasetW<X: GXExt> {
-    name: TRef<X, Option<LineV>>,
+    p: DatasetProps<X>,
     data_ref: Ref<X>,
     data: Vec<(f64, f64)>,
-    marker: TRef<X, Option<MarkerV>>,
-    graph_type: TRef<X, Option<GraphTypeV>>,
-    style: TRef<X, Option<StyleV>>,
 }
 
 impl<X: GXExt> DatasetW<X> {
@@ -118,36 +110,19 @@ impl<X: GXExt> DatasetW<X> {
         #[derive(FromValue)]
         struct Fields {
             data: u64,
-            graph_type: u64,
-            marker: u64,
-            name: u64,
-            style: u64,
         }
-        let Fields { data, graph_type, marker, name, style } = v.cast_to()?;
-        let (name, data_ref, marker, graph_type, style) = try_join! {
-            gx.compile_ref(name),
-            gx.compile_ref(data),
-            gx.compile_ref(marker),
-            gx.compile_ref(graph_type),
-            gx.compile_ref(style)
-        }?;
-        let mut t = Self {
-            name: TRef::new(name)?,
-            data_ref,
-            data: vec![],
-            marker: TRef::new(marker)?,
-            graph_type: TRef::new(graph_type)?,
-            style: TRef::new(style)?,
-        };
+        let p = DatasetProps::compile(gx, &v).await.context("dataset")?;
+        let Fields { data } = v.cast_to()?;
+        let mut t = Self { p, data_ref: gx.compile_ref(data).await?, data: vec![] };
         if let Some(v) = t.data_ref.last.take() {
             t.set_data(&v)?;
         }
         Ok(t)
     }
 
+    /// The finite points: ratatui paints a NaN at the canvas edge.
     fn set_data(&mut self, v: &Value) -> Result<()> {
         self.data.clear();
-        debug!("dataset: {}", v);
         match v {
             Value::Array(a) => {
                 for v in a {
@@ -155,22 +130,9 @@ impl<X: GXExt> DatasetW<X> {
                         .clone()
                         .cast_to::<(f64, f64)>()
                         .context("invalid dataset pair")?;
-                    // CR claude for claude: [bug] This keeps non-finite points, and
-                    // ratatui-widgets 0.3.0 paints NaN at the edge: Painter::get_point
-                    // lets NaN through its bounds test and `NaN as usize` is 0, so a
-                    // NaN x lands in column 0 and a NaN y in row 0, and line-clipping
-                    // counts a NaN point as inside. One (NaN, NaN) sample in a Line
-                    // dataset draws a diagonal from its neighbour to the top-left
-                    // corner. In a Scatter it draws a dot there, and a NaN y in a Bar
-                    // dataset draws a full-height bar; an infinite point draws a
-                    // diagonal to the top-right corner. The canvas Line and Points
-                    // shapes (canvas.rs CanvasLineV, CanvasPointsV) take the same path.
-                    // Skip non-finite points here (or split the series at them so a
-                    // Line shows a gap), and make
-                    // chart_dataset_nan_point_does_not_panic assert the drawn buffer.
-                    // probe: design/review-2026-10-05/repro/tui-widgets.r2-11.py
-                    // (tui-widgets.r2-11)
-                    self.data.push((x, y));
+                    if x.is_finite() && y.is_finite() {
+                        self.data.push((x, y));
+                    }
                 }
             }
             v => bail!("invalid dataset {v}"),
@@ -179,44 +141,47 @@ impl<X: GXExt> DatasetW<X> {
     }
 
     fn update(&mut self, id: ExprId, v: &Value) -> Result<()> {
-        self.name.update(id, v).context("dataset name update")?;
+        self.p.update(id, v).context("dataset")?;
         if id == self.data_ref.id {
             self.set_data(v)?;
         }
-        self.marker.update(id, v).context("dataset marker update")?;
-        self.graph_type.update(id, v).context("dataset graph_type update")?;
-        self.style.update(id, v).context("dataset style update")?;
         Ok(())
     }
 
-    fn build<'a>(&'a self) -> Dataset<'a> {
-        let Self { name, data_ref: _, data, marker, graph_type, style } = self;
-        let mut ds = Dataset::default().data(data);
-        if let Some(Some(LineV(l))) = &name.t {
+    fn build(&self) -> Dataset<'_> {
+        let p = &self.p;
+        let mut ds = Dataset::default().data(&self.data);
+        if let Some(Some(LineV(l))) = &p.name.t {
             ds = ds.name(into_borrowed_line(l));
         }
-        if let Some(Some(m)) = marker.t {
+        if let Some(Some(m)) = p.marker.t {
             ds = ds.marker(m.0);
         }
-        if let Some(Some(g)) = graph_type.t {
+        if let Some(Some(g)) = p.graph_type.t {
             ds = ds.graph_type(g.0);
         }
-        if let Some(Some(s)) = style.t {
+        if let Some(Some(s)) = p.style.t {
             ds = ds.style(s.0);
         }
         ds
     }
 }
 
+graphix_rt::props! {
+    struct Props {
+        hidden_legend_constraints: Option<HLConstraintsV>,
+        legend_position: Option<LegendPositionV>,
+        style: Option<StyleV>,
+        x_axis: Option<AxisV>,
+        y_axis: Option<AxisV>,
+    }
+}
+
 pub(super) struct ChartW<X: GXExt> {
     gx: GXHandle<X>,
+    p: Props<X>,
     datasets_ref: Ref<X>,
     datasets: Vec<DatasetW<X>>,
-    hidden_legend_constraints: TRef<X, Option<HLConstraintsV>>,
-    legend_position: TRef<X, Option<LegendPositionV>>,
-    style: TRef<X, Option<StyleV>>,
-    x_axis: TRef<X, Option<AxisV>>,
-    y_axis: TRef<X, Option<AxisV>>,
 }
 
 impl<X: GXExt> ChartW<X> {
@@ -224,45 +189,11 @@ impl<X: GXExt> ChartW<X> {
         #[derive(FromValue)]
         struct Fields {
             datasets: u64,
-            hidden_legend_constraints: u64,
-            legend_position: u64,
-            style: u64,
-            x_axis: u64,
-            y_axis: u64,
         }
-        let Fields {
-            datasets,
-            hidden_legend_constraints,
-            legend_position,
-            style,
-            x_axis,
-            y_axis,
-        } = v.cast_to()?;
-        let (
-            datasets_ref,
-            hidden_legend_constraints,
-            legend_position,
-            style,
-            x_axis,
-            y_axis,
-        ) = try_join! {
-            gx.compile_ref(datasets),
-            gx.compile_ref(hidden_legend_constraints),
-            gx.compile_ref(legend_position),
-            gx.compile_ref(style),
-            gx.compile_ref(x_axis),
-            gx.compile_ref(y_axis)
-        }?;
-        let mut t = Self {
-            gx: gx.clone(),
-            datasets_ref,
-            datasets: vec![],
-            hidden_legend_constraints: TRef::new(hidden_legend_constraints)?,
-            legend_position: TRef::new(legend_position)?,
-            style: TRef::new(style)?,
-            x_axis: TRef::new(x_axis)?,
-            y_axis: TRef::new(y_axis)?,
-        };
+        let p = Props::compile(&gx, &v).await.context("chart")?;
+        let Fields { datasets } = v.cast_to()?;
+        let datasets_ref = gx.compile_ref(datasets).await?;
+        let mut t = Self { gx, p, datasets_ref, datasets: vec![] };
         if let Some(v) = t.datasets_ref.last.take() {
             t.set_datasets(v).await?;
         }
@@ -270,37 +201,17 @@ impl<X: GXExt> ChartW<X> {
     }
 
     async fn set_datasets(&mut self, v: Value) -> Result<()> {
-        let ds = v
-            .cast_to::<SmallVec<[Value; 8]>>()?
-            .into_iter()
-            .map(|d| DatasetW::compile(&self.gx, d));
-        self.datasets = try_join_all(ds).await?;
+        let ds = v.cast_to::<SmallVec<[Value; 8]>>()?;
+        self.datasets =
+            try_join_all(ds.into_iter().map(|d| DatasetW::compile(&self.gx, d))).await?;
         Ok(())
     }
 }
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for ChartW<X> {
-    async fn handle_event(&mut self, _e: Event, _v: Value) -> Result<()> {
-        Ok(())
-    }
-
     async fn handle_update(&mut self, id: ExprId, v: Value) -> Result<()> {
-        let Self {
-            gx: _,
-            datasets_ref: _,
-            datasets: _,
-            hidden_legend_constraints,
-            legend_position,
-            style,
-            x_axis,
-            y_axis,
-        } = self;
-        hidden_legend_constraints.update(id, &v).context("chart hidden update")?;
-        legend_position.update(id, &v).context("chart legend update")?;
-        style.update(id, &v).context("chart style update")?;
-        x_axis.update(id, &v).context("chart x_axis update")?;
-        y_axis.update(id, &v).context("chart y_axis update")?;
+        self.p.update(id, &v).context("chart")?;
         if self.datasets_ref.id == id {
             self.set_datasets(v.clone()).await?;
         }
@@ -311,31 +222,21 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let Self {
-            gx: _,
-            datasets_ref: _,
-            datasets,
-            hidden_legend_constraints,
-            legend_position,
-            style,
-            x_axis,
-            y_axis,
-        } = self;
-        debug!("drawing datasets: {}", datasets.len());
-        let mut chart = Chart::new(datasets.iter().map(|d| d.build()).collect());
-        if let Some(Some(h)) = &hidden_legend_constraints.t {
+        let p = &self.p;
+        let mut chart = Chart::new(self.datasets.iter().map(|d| d.build()).collect());
+        if let Some(Some(h)) = &p.hidden_legend_constraints.t {
             chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
-        if let Some(Some(p)) = legend_position.t {
-            chart = chart.legend_position(Some(p.0));
+        if let Some(Some(lp)) = p.legend_position.t {
+            chart = chart.legend_position(Some(lp.0));
         }
-        if let Some(Some(s)) = &style.t {
+        if let Some(Some(s)) = &p.style.t {
             chart = chart.style(s.0);
         }
-        if let Some(Some(a)) = &x_axis.t {
+        if let Some(Some(a)) = &p.x_axis.t {
             chart = chart.x_axis(a.0.clone());
         }
-        if let Some(Some(a)) = &y_axis.t {
+        if let Some(Some(a)) = &p.y_axis.t {
             chart = chart.y_axis(a.0.clone());
         }
         frame.render_widget(chart, rect);

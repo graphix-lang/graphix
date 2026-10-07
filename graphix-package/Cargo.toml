@@ -19,6 +19,8 @@ exclude = ["../book"]
 slow-tests = []
 
 [dependencies]
+enumflags2 = { workspace = true }
+triomphe = { workspace = true }
 crates_io_api = { workspace = true }
 cp_r = { workspace = true }
 dirs = { workspace = true }
