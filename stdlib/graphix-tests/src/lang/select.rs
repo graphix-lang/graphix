@@ -2506,15 +2506,6 @@ run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>|
 
 // While a consulted guard stands bottom the selection is undecidable on
 // every cycle, quiet ones included: the held arm does not run.
-// CR claude for claude: [test-gap] No fixture gives `&&` or `||` a bottomed operand, so
-// nothing pins the strict rule (`false && ⊥ = ⊥`, `true || ⊥ = ⊥`) that decides a
-// consulted guard. If either engine short-circuited, a guard would take a different arm
-// and no test would fail. Add a fixture beside this one: `let f = |k: i64, z: i64| ->
-// i64 select k { 0 if false && ((1 / z) > 0) => 1, _ => 2 }; let g = |k: i64, z: i64|
-// -> i64 select k { 0 if true || ((1 / z) > 0) => 1, _ => 2 }; (any(f(0, 0), -1),
-// any(g(0, 0), -1))` expecting [-1, -1], plus the value forms `false && ((1 / z) > 0)`
-// and `true || ((1 / z) > 0)`. Both engines give bottom today, with f and g fused.
-// (tests-lang-a-06)
 const SELECT_UNDECIDABLE_QUIET: &str = r#"
 {
   let clock = sys::time::timer(duration:0.01s, true);
@@ -2530,6 +2521,23 @@ const SELECT_UNDECIDABLE_QUIET: &str = r#"
 
 run!(select_undecidable_quiet, SELECT_UNDECIDABLE_QUIET, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:2, i64:6, i64:7]"
+});
+
+// `&&` and `||` are strict: `false && ⊥` and `true || ⊥` are bottom, in a
+// consulted guard (the selection is undecidable) and as values.
+const STRICT_LOGIC_OVER_BOTTOM: &str = r#"
+{
+  let f = |k: i64, z: i64| -> i64 select k { 0 if false && ((1 / z) > 0) => 1, _ => 2 };
+  let g = |k: i64, z: i64| -> i64 select k { 0 if true || ((1 / z) > 0) => 1, _ => 2 };
+  let z = 0;
+  let a = false && ((1 / z) > 0);
+  let b = true || ((1 / z) > 0);
+  (any(f(0, 0), -1), any(g(0, 0), -1), any(a, true), any(b, false))
+}
+"#;
+
+run!(strict_logic_over_bottom, STRICT_LOGIC_OVER_BOTTOM, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:-1, i64:-1, true, false]"
 });
 
 // A `null` literal arm covers `null`, its type's one value, beside a
