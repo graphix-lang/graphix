@@ -199,27 +199,32 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
     }
 }
 
-/// The map a Map HOF builds from its `[k, v]` pairs, both engines; a
-/// malformed pair is logged and skipped. Key order reads the core-trait
-/// hooks, so the caller runs this under them.
+/// The map a Map HOF builds from its `[k, v]` pairs, both engines; the
+/// last pair of a key wins, as in a literal, and a malformed pair is
+/// logged and skipped. Key order reads the core-trait hooks, so the
+/// caller runs this under them.
 pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Value {
-    // CR claude for claude: [bug] CMap::from_iter is chunkmap's insert_many: a stable
-    // sort, then dedup_by, which keeps the FIRST pair of each equal key. So map::map
-    // and map::filter_map keep the first of colliding output keys, while a map literal
-    // and map::insert keep the last: map::map({"a" => 1, "b" => 2}, |(k, v)| (1, k)) is
-    // {1 => "a"}, and {1 => "a", 1 => "b"} is {1 => "b"}. Both engines come through
-    // here, so they agree, and map/mod.gxi states neither rule. Make it last-wins,
-    // which matches literals, insert and union's documented rule, and state it in the
-    // map and filter_map docs. probe:
-    // design/review-2026-10-05/repro/x-engine-collections-08.gx
-    // (x-engine-collections-08)
-    Value::Map(CMap::from_iter(pairs.into_iter().filter_map(|v| {
+    let mut kv: LPooled<Vec<(Value, Value)>> = LPooled::take();
+    kv.extend(pairs.into_iter().filter_map(|v| {
         let pair = split_pair(v);
         if pair.is_none() {
             log::error!("map result: malformed pair {v:?}");
         }
         pair
-    })))
+    }));
+    // insert_many keeps the first of equal keys, so it sees them last
+    // first; an Ord that is no total order (a user impl) may panic its
+    // sort, and the map is then built a pair at a time, wrong but whole
+    let bulk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CMap::from_iter(kv.iter().rev().cloned())
+    }));
+    Value::Map(bulk.unwrap_or_else(|_| {
+        let mut m = CMap::new();
+        for (k, v) in kv.drain(..) {
+            m.insert_cow(k, v);
+        }
+        m
+    }))
 }
 
 impl MapCollection for ValueMap {

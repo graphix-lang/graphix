@@ -329,3 +329,16 @@ run!(map_union_second_wins, MAP_UNION_SECOND_WINS, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => s == "baba",
     _ => false,
 });
+
+const MAP_MAP_LAST_KEY_WINS: &str = r#"
+{
+  let m = map::map({"a" => 1, "b" => 2}, |(k, v)| (1, k));
+  let f = map::filter_map({"a" => 1, "b" => 2}, |(k, v)| (1, k));
+  "[map::get(m, 1)$][map::get(f, 1)$]"
+}
+"#;
+
+run!(map_map_last_key_wins, MAP_MAP_LAST_KEY_WINS, |v: Result<&Value>| match v {
+    Ok(Value::String(s)) => s == "bb",
+    _ => false,
+});

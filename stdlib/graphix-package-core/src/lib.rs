@@ -619,28 +619,20 @@ pub fn sort_values(
         v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
     }
     let mut buf: LPooled<Vec<Value>> = vals.collect();
-    // CR claude for claude: [bug] A user `impl Ord` that is not a total order
-    // (antisymmetric but intransitive, which the checker accepts) makes these std sorts
-    // panic with "does not correctly implement a total order", and nothing contains it.
-    // array::sort and list::sort kill the runtime in both engines: in a kernel,
-    // fast_dispatch catches the panic and FusedKernel::update resumes it. Map HOFs
-    // build their result through pairs_to_map
-    // (graphix-compiler/src/node/collection.rs:205), whose CMap::from_iter sorts the
-    // same way. Under the JIT that runs in graphix_valarray_into_cmap
-    // (graphix-compiler/src/fusion/emit_helpers.rs:1104), which has no catch_unwind, so
-    // the unwind meets the kernel's frames and the process aborts with a core dump
-    // (exit 134, against exit 1 on the node-walk). design/traits.md accepts wrong
-    // results from such an impl ("corrupts its maps"), not a dead runtime or an aborted
-    // process. probe: design/review-2026-10-05/repro/collections-str-02.sh (21 values).
-    // (collections-str-02)
-    match (dir, numeric) {
-        ("Ascending", true) => buf.sort_by(|a, b| cn(a).cmp(&cn(b))),
-        ("Ascending", false) => buf.sort(),
-        ("Descending", true) => buf.sort_by(|a, b| cn(b).cmp(&cn(a))),
-        ("Descending", false) => buf.sort_by(|a, b| b.cmp(a)),
-        _ => return None,
+    let sort = |buf: &mut LPooled<Vec<Value>>| match (dir, numeric) {
+        ("Ascending", true) => Some(buf.sort_by(|a, b| cn(a).cmp(&cn(b)))),
+        ("Ascending", false) => Some(buf.sort()),
+        ("Descending", true) => Some(buf.sort_by(|a, b| cn(b).cmp(&cn(a)))),
+        ("Descending", false) => Some(buf.sort_by(|a, b| b.cmp(a))),
+        _ => None,
+    };
+    // an Ord that is no total order (a user impl) may panic the sort,
+    // which leaves every element in the buffer: its order is wrong, and
+    // the runtime goes on
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sort(&mut buf))) {
+        Ok(None) => None,
+        Ok(Some(())) | Err(_) => Some(buf),
     }
-    Some(buf)
 }
 
 /// A builtin over cached arguments. `eval` runs unarmed: a fast fn is
