@@ -320,9 +320,10 @@ async fn main() -> Result<()> {
             Some(
                 "check-one" | "check-batch" | "gen-batch" | "detcheck-one"
                 | "selfcheck-one" | "minimize-one" | "typemorph-one" | "gen-check"
-                | "regress" | "fusecheck" | "leakcheck",
+                | "regress" | "fusecheck",
             ) => true,
-            Some("check" | "run") => {
+            // the path argument is resolved before the chdir
+            Some("check" | "run" | "minimize" | "leakcheck") => {
                 if let Some(f) = args.get_mut(2) {
                     if let Ok(abs) = std::fs::canonicalize(&*f) {
                         *f = abs.to_string_lossy().into_owned();
@@ -471,6 +472,7 @@ async fn main() -> Result<()> {
                 let f = dir.path().join("w.gx");
                 std::fs::write(&f, prog)?;
                 let mut slopes = [0f64; 2];
+                let mut died = false;
                 for (i, mode_args) in [&["--no-fusion"][..], &[][..]].iter().enumerate() {
                     let mut child = std::process::Command::new(&bin)
                         .args(*mode_args)
@@ -483,27 +485,25 @@ async fn main() -> Result<()> {
                     let a = vm_rss_kb(pid);
                     std::thread::sleep(Duration::from_secs(secs));
                     let b = vm_rss_kb(pid);
+                    let exited = child.try_wait()?;
                     let _ = child.kill();
                     let _ = child.wait();
-                    // CR claude for claude: [bug] A dead child only leaves this mode's
-                    // slope at 0, because the `continue` is in the mode loop. The
-                    // witness is still scored and printed as a measurement. A shell
-                    // whose fused mode segfaults on every witness, or one that compiles
-                    // none of them, reports `leakcheck: 16 witnesses, 0 leaks` and
-                    // exits 0; a dead child should fail the witness. Also, `bin` (line
-                    // 479) is not canonicalized before the sandbox chdir the way the
-                    // `check`/`run` path is (line 322), so `leakcheck ./graphix` fails
-                    // with a bare `No such file or directory`. And `minimize` is not in
-                    // the sandboxed set (line 315), so its checks run the program in
-                    // the caller's cwd, where a relative `sys::fs::write_all` lands.
-                    // probe: FAST=1 FUZZ=<graphix-fuzz> bash
-                    // design/review-2026-10-05/repro/fuzz-main-aux-09.sh
-                    // (fuzz-main-aux-09)
-                    let (Some(a), Some(b)) = (a, b) else {
-                        eprintln!("  {name}: child died early — skipping");
-                        continue;
-                    };
-                    slopes[i] = (b as f64 - a as f64) / secs as f64;
+                    match (a, b, exited) {
+                        (Some(a), Some(b), None) => {
+                            slopes[i] = (b as f64 - a as f64) / secs as f64
+                        }
+                        (.., status) => {
+                            let mode = if i == 0 { "interp" } else { "jit" };
+                            println!(
+                                "  {name}: {mode} child died early ({status:?})  <-- DIED"
+                            );
+                            died = true;
+                        }
+                    }
+                }
+                if died {
+                    bad += 1;
+                    continue;
                 }
                 let [interp, jit] = slopes;
                 // 50 kB/s of slack rides load noise without hiding a
@@ -518,7 +518,10 @@ async fn main() -> Result<()> {
                     if ok { "" } else { "  <-- LEAK" }
                 );
             }
-            println!("leakcheck: {} witnesses, {bad} leaks", LEAK_WITNESSES.len());
+            println!(
+                "leakcheck: {} witnesses, {bad} leaks or deaths",
+                LEAK_WITNESSES.len()
+            );
             if bad > 0 {
                 drop(cwd_guard);
                 std::process::exit(1);
