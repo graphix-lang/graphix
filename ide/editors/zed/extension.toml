@@ -12,16 +12,9 @@ repository = "https://github.com/graphix-lang/graphix"
 # (or a release tag SHA) when cutting a release.
 [grammars.graphix]
 repository = "https://github.com/graphix-lang/graphix"
-# CR claude for claude: [bug] Zed builds the grammar at this rev, which is 32 grammar.js
-# commits behind HEAD. But languages/graphix/*.scm are symlinks to HEAD's queries, and
-# highlights.scm and indents.scm name nodes this grammar lacks (`attribute`,
-# `catch_stmt`, `use_path`, `seq_block`, ...). Zed fails the whole language load on a
-# query error, so .gx/.gxi files open as plain text: no highlighting, no indentation and
-# no graphix-lsp. queries_compile (graphix-types/src/expr/test.rs:2248) checks the
-# queries only against the in-tree grammar, so nothing notices this rev going stale;
-# bump it with every grammar change, or make that gate compare this rev's src/parser.c
-# with HEAD's. probe: design/review-2026-10-05/repro/ide-tooling-01.sh (ide-tooling-01)
-rev = "4057fc633db02e4835d5e98af18ae88c0dc5d83a"
+# graphix-types' zed_grammar_rev_is_current fails when this rev's
+# parser.c or scanner.c differs from the checkout's.
+rev = "1ee8942541b174afab1f9597f938b8c33bea814b"
 path = "ide/tree-sitter-graphix"
 
 [language_servers.graphix-lsp]

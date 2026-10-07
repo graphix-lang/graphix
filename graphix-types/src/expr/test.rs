@@ -2349,6 +2349,40 @@ mod tree_sitter_compat {
         }
     }
 
+    /// Zed builds the grammar at the commit its extension.toml pins and
+    /// reads the queries from the checkout, so the pinned grammar must be
+    /// this one. Skipped outside a git checkout.
+    #[test]
+    fn zed_grammar_rev_is_current() {
+        let toml = include_str!("../../../ide/editors/zed/extension.toml");
+        let rev = toml
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("rev = \""))
+            .and_then(|r| r.strip_suffix('"'))
+            .expect("extension.toml pins a grammar rev");
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+        for file in ["src/parser.c", "src/scanner.c"] {
+            let path = format!("ide/tree-sitter-graphix/{file}");
+            let Ok(out) = std::process::Command::new("git")
+                .args(["-C", root, "show", &format!("{rev}:{path}")])
+                .output()
+            else {
+                return;
+            };
+            if !out.status.success() {
+                let shallow = std::path::Path::new(root).join(".git").exists();
+                assert!(!shallow, "the zed grammar rev {rev} has no {path}: {out:?}");
+                return;
+            }
+            let now = std::fs::read(format!("{root}/{path}")).unwrap();
+            assert!(
+                out.stdout == now,
+                "ide/editors/zed/extension.toml pins {rev}, whose {file} differs from \
+                 the checkout's: bump the rev to the latest commit that changed the grammar"
+            );
+        }
+    }
+
     /// The tree-sitter queries embedded in the emacs mode: the form after
     /// each `:feature 'name` keyword, a quoted list or a string.
     fn emacs_queries(src: &str) -> Vec<(String, String)> {
