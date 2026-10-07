@@ -29,7 +29,7 @@ let rand01 = || rand::rand(#start: f64:0., #end: f64:1., #clock: tick);
 let rand100 = || rand::rand(#start: f64:0., #end: f64:100., #clock: tick);
 let rand_mbps = || rand::rand(#start: f64:0., #end: f64:1000., #clock: tick);
 
-let publish_host = |name: string| -> bool {
+let publish_host = |name: string| {
     net::publish("[base]/host-[name]/cpu_pct", rand100());
     net::publish("[base]/host-[name]/mem_pct", rand100());
     net::publish("[base]/host-[name]/disk_pct", rand100());
@@ -39,12 +39,10 @@ let publish_host = |name: string| -> bool {
     net::publish("[base]/host-[name]/load_5m", rand01());
     net::publish("[base]/host-[name]/load_15m", rand01());
     net::publish("[base]/host-[name]/error_count", rand100());
-    net::publish("[base]/host-[name]/request_count", rand_mbps());
-    true
+    net::publish("[base]/host-[name]/request_count", rand_mbps())
 };
 
-// Keep the result live so the publishers stay registered.
-let publishers = array::map(host_ids, publish_host);
+array::map(host_ids, publish_host);
 
 let make_columns = |raw: Array<string>| array::map(raw, |name| select name {
     "cpu_pct"       => progress_column(#name: "cpu_pct",     #display_name: "CPU %",   #width: &f64:90.),
