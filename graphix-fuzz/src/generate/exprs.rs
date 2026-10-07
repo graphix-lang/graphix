@@ -327,21 +327,6 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                     "list::to_array(list::filter(list::from_array({src}), |{binder}| {body}))"
                 ))
             }
-            // CR claude for claude: [test-gap] This arm is the only flat_map the
-            // generator draws, and its callback returns a scalar, so the splice is
-            // never generated. try_hof never draws array::filter_map or find_map (two
-            // of the eight native-loop HOFs) or the list twins, and try_map_builtin
-            // draws no Map HOF but map::filter. A flat_map whose callback returns
-            // nested arrays is where --check accepts what the build refuses
-            // (x-engine-collections-02), which Pair::Check would report if this arm
-            // drew one. These shapes reach the fleet only through mutation of the
-            // harvested fixtures, and map::union has no test or fixture anywhere. Add
-            // array-returning flat_map bodies, filter_map and find_map arms, and the
-            // list and map twins (map::map, map::fold, map::filter_map, map::union with
-            // overlapping keys). (x-engine-collections-11)
-            // 2026-10-06 claude: flat_map's callback returns an array of any element
-            // type, filter_map's an option and find_map's (below) an option; the
-            // list and map twins remain.
             // flat_map's callback returns the collection it splices
             2 => {
                 let d_ty = map_source_elem(rng, e);
@@ -401,13 +386,33 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
                 Some(format!("list::filter({src}, |{binder}| {body})"))
             }
-            _ => None,
+            _ => {
+                let d_ty = map_source_elem(rng, e);
+                let src = gen_pinned(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
+                let mut inner = ctx.clone();
+                let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
+                if e.is_scalar() && rng.below(2) == 0 {
+                    // filter_map keeps the payloads its callback does not null
+                    let body =
+                        gen_typed(&inner, rng, &GenType::Nullable(e.clone()), d.min(2));
+                    Some(format!("list::filter_map({src}, |{binder}| {body})"))
+                } else {
+                    // flat_map splices the list its callback returns
+                    let body = gen_typed(&inner, rng, ty, d.min(2));
+                    Some(format!("list::flat_map({src}, |{binder}| {body})"))
+                }
+            }
         },
         // find_map: the first payload its callback does not null
         GenType::Nullable(e) if e.is_scalar() && rng.below(3) == 0 => {
             let d_ty = map_source_elem(rng, e);
             let HofParts { src, binder, body } = map_parts(ctx, rng, ty, d_ty, d);
-            Some(format!("array::find_map({src}, |{binder}| {body})"))
+            Some(if rng.below(3) == 0 {
+                // the list twin
+                format!("list::find_map(list::from_array({src}), |{binder}| {body})")
+            } else {
+                format!("array::find_map({src}, |{binder}| {body})")
+            })
         }
         // find: the union return `[e, null]` is the Nullable type
         GenType::Nullable(e) if e.is_scalar() => {
@@ -708,21 +713,54 @@ fn try_map_builtin(
 ) -> Option<String> {
     let d = depth.min(1);
     match ty {
-        GenType::Num(NumTy::I64) => {
+        GenType::Num(NumTy::I64) if rng.below(2) == 0 => {
             let elem = types::scalar_type(rng);
             let m = gen_typed(ctx, rng, &GenType::Map(Box::new(elem)), d);
             Some(format!("map::len({m})"))
         }
+        // a fold over the (key, value) pairs, now and then: every scalar
+        // target reaches here
+        t if t.is_scalar() && rng.below(8) == 0 => {
+            let elem = types::scalar_type(rng);
+            let m = gen_typed(ctx, rng, &GenType::Map(Box::new(elem.clone())), d);
+            let init = gen_typed(ctx, rng, t, d);
+            let mut inner = ctx.clone();
+            let acc = inner.name_avoiding(rng, |_, _| false);
+            inner.push(acc.clone(), t.clone());
+            let kv = GenType::Tuple(vec![GenType::Str, elem]);
+            let binder = callback_binder(&mut inner, rng, &kv, &[acc.clone()]);
+            let body = gen_typed(&inner, rng, t, d);
+            Some(format!("map::fold({m}, {init}, |{acc}, {binder}| {body})"))
+        }
         GenType::Map(e) => {
             let m = gen_pinned(ctx, rng, ty, d);
             let k = types::KEYS[rng.below(types::KEYS.len())];
-            match rng.below(3) {
+            let kv = GenType::Tuple(vec![GenType::Str, (**e).clone()]);
+            match rng.below(6) {
                 0 => {
                     let v = gen_typed(ctx, rng, e, d);
                     Some(format!("map::insert({m}, \"{k}\", {v})"))
                 }
                 1 => Some(format!("map::remove({m}, \"{k}\")")),
-                _ => Some(format!("map::filter({m}, |kv| str::len(kv.0) > i64:1)")),
+                2 => Some(format!("map::filter({m}, |kv| str::len(kv.0) > i64:1)")),
+                3 => {
+                    let mut inner = ctx.clone();
+                    let binder = callback_binder(&mut inner, rng, &kv, &[]);
+                    let body = gen_typed(&inner, rng, &kv, d);
+                    Some(format!("map::map({m}, |{binder}| {body})"))
+                }
+                4 => {
+                    let mut inner = ctx.clone();
+                    let binder = callback_binder(&mut inner, rng, &kv, &[]);
+                    let body =
+                        gen_typed(&inner, rng, &GenType::Nullable(Box::new(kv)), d);
+                    Some(format!("map::filter_map({m}, |{binder}| {body})"))
+                }
+                // both over the same small key pool, so their keys overlap
+                _ => {
+                    let other = gen_typed(ctx, rng, ty, d);
+                    Some(format!("map::union({m}, {other})"))
+                }
             }
         }
         _ => None,
