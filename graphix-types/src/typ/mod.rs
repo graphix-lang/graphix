@@ -1899,22 +1899,28 @@ impl Type {
         let a = actual.deref_cloned();
         match (&d, &a) {
             (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
-            // CR claude for claude: [bug] For a union formal this commits the argument's
-            // still-open cell to the first member, in canonical order, that admits it
-            // (contains -> set_commit). It does so before the argument has typechecked.
-            // So an inline array, list or map literal whose elements fit a later member
-            // is refused: with `g: |x: [Array<f64>, Array<string>]|`, `g(["a"])` fails
-            // with "Array<'_: f64> does not contain Array<string>", while `let d =
-            // ["a"]; g(d)` and `let v: [Array<f64>, Array<string>] = ["a"]` pass. The
-            // same refusal hits chart::line, scatter, candlestick and error_bar called
-            // with inline datetime data, e.g.
-            // `chart::line(&[(datetime:"2026-01-01T00:00:00Z", 1.0)])`. Committing
-            // through a set only when exactly one member admits the argument would
-            // leave the choice to the check after typecheck0 in callsite.rs
-            // typecheck_arg. probe: design/review-2026-10-05/repro/gui-chart-09.gx
-            // (gui-chart-09)
+            // a union formal two of whose members admit the argument leaves
+            // the choice to the argument's own check
+            (Some(Type::Set(ms)), _) => {
+                let mut admit = 0;
+                for m in ms.iter() {
+                    if m.contains_with_flags(BitFlags::empty(), env, actual)? {
+                        admit += 1;
+                    }
+                }
+                match admit {
+                    0 | 1 => declared.contains(env, actual).map(|_| ()),
+                    _ => Ok(()),
+                }
+            }
             _ => declared.contains(env, actual).map(|_| ()),
         }
+    }
+
+    /// The name of the element a constructor quantifier `q` is applied
+    /// to; a fn type lists it among its quantifiers, so a call copies it.
+    pub fn elem_name(q: &str) -> ArcStr {
+        format_compact!("{q}#elem").as_str().into()
     }
 
     /// The type of a parameter whose written type is the trait `tr`:
@@ -1922,12 +1928,6 @@ impl Type {
     /// when the trait is a constructor trait (`|c: Collection|` ≡
     /// `'c: Collection, c: 'c<'e>`).
     #[doc(hidden)]
-    /// The name of the element a constructor quantifier `q` is applied
-    /// to; a fn type lists it among its quantifiers, so a call copies it.
-    pub fn elem_name(q: &str) -> ArcStr {
-        format_compact!("{q}#elem").as_str().into()
-    }
-
     pub fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
         let hole = env
             .trait_of_ref(tr)

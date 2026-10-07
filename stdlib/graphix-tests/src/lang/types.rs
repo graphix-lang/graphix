@@ -2127,3 +2127,18 @@ const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
 "#;
 
 run!(hole_in_a_fn_quantifier, HOLE_IN_A_FN_QUANTIFIER, refused("'_ is the hole"); FuseExpect::None);
+
+/// An inline literal passed to a union formal is checked before a member
+/// is chosen for it.
+const UNION_FORMAL_INLINE_LITERAL: &str = r#"
+{
+    let g = |x: [Array<f64>, Array<string>]| 7;
+    g(["a"])
+}
+"#;
+
+run!(
+    union_formal_inline_literal,
+    UNION_FORMAL_INLINE_LITERAL,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7)))
+);
