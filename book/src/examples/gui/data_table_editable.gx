@@ -10,69 +10,17 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
-// CR claude for claude: [structure] Lines 13-63 are eight copies of one publish block
-// (two hosts times four fields) plus eight state lets, differing only in host and
-// field. A new host or column means four or eight more copies, and a typo in one path
-// or variable silently publishes the wrong cell. data_table_basic.gx and
-// data_table_dashboard.gx already use a helper: `let publish_host = |#name: string,
-// #enabled: bool, #zone: string, #cpu: f64, host: string| { let base =
-// "/local/graphix/data_table_editable/[host]"; sys::net::publish(#on_write: |v: string|
-// name <- v, "[base]/name", name); .. }`, then one `publish_host(#name: "alpha",
-// #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01")` per host. That rewrite
-// passes graphix --check at 90 lines instead of 131. A parameter written by its own
-// #on_write republishes the new value: in a probe, the published name went from alpha
-// to beta after a sys::net::write. (examples.r2-18)
-let host_01_name = "alpha";
-let host_01_enabled = true;
-let host_01_zone = "us-east-1";
-let host_01_cpu = f64:4.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_01_name <- v,
-    "/local/graphix/data_table_editable/host-01/name",
-    host_01_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_01_enabled <- v,
-    "/local/graphix/data_table_editable/host-01/enabled",
-    host_01_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_01_zone <- v,
-    "/local/graphix/data_table_editable/host-01/zone",
-    host_01_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_01_cpu <- v,
-    "/local/graphix/data_table_editable/host-01/cpu",
-    host_01_cpu
-);
-
-let host_02_name = "bravo";
-let host_02_enabled = false;
-let host_02_zone = "eu-west-1";
-let host_02_cpu = f64:8.0;
-
-sys::net::publish(
-    #on_write: |v: string| host_02_name <- v,
-    "/local/graphix/data_table_editable/host-02/name",
-    host_02_name
-);
-sys::net::publish(
-    #on_write: |v: bool| host_02_enabled <- v,
-    "/local/graphix/data_table_editable/host-02/enabled",
-    host_02_enabled
-);
-sys::net::publish(
-    #on_write: |v: string| host_02_zone <- v,
-    "/local/graphix/data_table_editable/host-02/zone",
-    host_02_zone
-);
-sys::net::publish(
-    #on_write: |v: f64| host_02_cpu <- v,
-    "/local/graphix/data_table_editable/host-02/cpu",
-    host_02_cpu
-);
+// One host's four cells. A parameter is the cell's state: its
+// #on_write writes it, and the publish republishes the new value.
+let publish_host = |#name: string, #enabled: bool, #zone: string, #cpu: f64, host: string| {
+    let base = "/local/graphix/data_table_editable/[host]";
+    sys::net::publish(#on_write: |v: string| name <- v, "[base]/name", name);
+    sys::net::publish(#on_write: |v: bool| enabled <- v, "[base]/enabled", enabled);
+    sys::net::publish(#on_write: |v: string| zone <- v, "[base]/zone", zone);
+    sys::net::publish(#on_write: |v: f64| cpu <- v, "[base]/cpu", cpu)
+};
+publish_host(#name: "alpha", #enabled: true, #zone: "us-east-1", #cpu: 4.0, "host-01");
+publish_host(#name: "bravo", #enabled: false, #zone: "eu-west-1", #cpu: 8.0, "host-02");
 
 // Map the resolver-derived columns array. Each editable column gets
 // an explicit ColumnSpec; anything else (none expected here) passes
