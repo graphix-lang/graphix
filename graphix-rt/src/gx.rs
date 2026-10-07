@@ -17,7 +17,7 @@ use graphix_compiler::{
         lambda::LambdaDef,
         place::{self, VarUpdate},
     },
-    typ::Type,
+    typ::{FnType, Type},
 };
 use indexmap::IndexMap;
 use log::{debug, error, info, warn};
@@ -1088,33 +1088,16 @@ impl<X: GXExt> GX<X> {
         let lb = v
             .downcast_ref::<LambdaDef<GXRt<X>, X::UserEvent>>()
             .ok_or_else(|| anyhow!("invalid lambda {v}"))?;
-        let args = lb.typ.args.iter();
-        let args = args
-            .map(|a| {
-                // CR claude for claude: [bug] This refuses every lambda with a defaulted
-                // labeled argument. The checker accepts such a lambda wherever a
-                // callback type like `fn(e: null) -> Any` is expected (fntyp.rs::align
-                // lets the default be omitted), and an in-language call through that
-                // value fills the default. So a well-typed GUI or TUI handler such as
-                // `|#x = 1, e: null| ..` fails at run time. At construction the error
-                // propagates through every ancestor widget and reconcile_windows stops:
-                // that window and every later one are never created, and the error only
-                // reaches the log. When the handler changes later, update_callable! has
-                // already stored `last`, and the old Callable stays installed. probe:
-                // design/review-2026-10-05/repro/gui-widgets-a-03.gx (`graphix-fuzz
-                // check` reports a route DIVERGENCE: in-language 107 then 109, dispatch
-                // RuntimeErr). (gui-widgets-a-03)
-                if a.has_default() {
-                    bail!("can't call lambda with an optional argument from rust")
-                } else {
-                    Ok(BindId::new())
-                }
-            })
-            .collect::<Result<Box<[_]>>>()?;
         let eid = ExprId::new();
         // the call's own instance: typing the argument references with the
-        // definition's cells would merge this site's copy into them
+        // definition's cells would merge this site's copy into them. A
+        // defaulted label is left out, and the bind fills its default.
         let ftype = lb.typ.instantiate(&nohash::IntSet::default());
+        let ftype = FnType {
+            args: ftype.args.iter().filter(|a| !a.has_default()).cloned().collect(),
+            ..ftype
+        };
+        let args: Box<[BindId]> = ftype.args.iter().map(|_| BindId::new()).collect();
         let argn = ftype.args.iter().zip(args.iter());
         let argn = argn
             .map(|(arg, id)| {
@@ -1131,14 +1114,7 @@ impl<X: GXExt> GX<X> {
         self.callables.insert(cid, CallableInt { expr: eid, args });
         self.nodes.insert(eid, n);
         let env = self.ctx.env.clone();
-        Ok(Callable {
-            expr: eid,
-            rt,
-            env,
-            id: cid,
-            lambda: lb.id,
-            typ: (*lb.typ).clone(),
-        })
+        Ok(Callable { expr: eid, rt, env, id: cid, lambda: lb.id, typ: ftype })
     }
 
     fn compile_ref(&mut self, rt: GXHandle<X>, id: BindId) -> Result<Ref<X>> {
