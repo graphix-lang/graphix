@@ -56,19 +56,20 @@ fn parse_sheet<RS: std::io::Read + std::io::Seek + Clone>(rs: RS, sheet: &str) -
         Ok(r) => r,
         Err(e) => return errf!("XlsErr", "{e}"),
     };
+    // the range covers only the used cells: pad it out to A1
+    let (r0, c0) = range.start().map_or((0, 0), |(r, c)| (r as usize, c as usize));
+    let width = c0 + range.width();
     let mut rows: LPooled<Vec<Value>> = LPooled::take();
-    // CR claude for claude: [bug] calamine's worksheet_range covers only the non-empty
-    // cells (Range::from_sparse for xlsx/xls/xlsb, get_range for ods), and
-    // range.start() is dropped here. So rows[0][0] is the first used row and the first
-    // used column of the whole sheet, not A1, and the caller cannot learn the offset. A
-    // sheet with B3=1, C3=2, B4=3 reads as [[1, 2], [3, null]]. Adding "note" in A6
-    // makes it [[null, 1, 2], [null, 3, null], [null, null, null], ["note", null,
-    // null]], so an edit to an unrelated empty cell shifts every column. Pad with
-    // start.0 empty rows and start.1 leading nulls (or return the offset), and say
-    // which in mod.gxi. probe: design/review-2026-10-05/repro/small-pkgs-15.sh
-    // (small-pkgs-15)
+    for _ in 0..r0 {
+        rows.push(Value::Array(ValArray::from_iter_exact(std::iter::repeat_n(
+            Value::Null,
+            width,
+        ))));
+    }
     for row in range.rows() {
-        let mut cells: LPooled<Vec<Value>> = row.iter().map(data_to_value).collect();
+        let mut cells: LPooled<Vec<Value>> = std::iter::repeat_n(Value::Null, c0)
+            .chain(row.iter().map(data_to_value))
+            .collect();
         rows.push(Value::Array(ValArray::from_iter_exact(cells.drain(..))));
     }
     Value::Array(ValArray::from_iter_exact(rows.drain(..)))

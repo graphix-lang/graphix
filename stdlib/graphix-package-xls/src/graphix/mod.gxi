@@ -4,5 +4,6 @@
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -> Result<Array<string>, `XlsErr(string)>;
 
-/// Read a sheet by name as a 2D array of rows.
+/// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
+/// every row as wide as the last used column, an empty cell null.
 val read: fn(input: bytes, sheet: string) -> Result<Array<Array<PrimNoErr>>, `XlsErr(string)>;
