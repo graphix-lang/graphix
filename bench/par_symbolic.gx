@@ -1,9 +1,9 @@
 // `symbolic` written to run in parallel: each seed's build -> deriv ->
 // simplify -> eval is independent, so the seeds map under `#[parallel]`
-// and the checksum folds after. Recursive ADTs node-walk even with
-// fusion on, so the map's slots fork in both modes. Run with
-// GRAPHIX_PAR=auto (bench/par.sh); under the default `off` it is
-// `symbolic` with a map in place of the fold.
+// and the checksum folds after. simplify node-walks even with fusion on,
+// so the map's slots fork in both modes. Run under the default
+// GRAPHIX_PAR=auto (bench/par.sh); under `off` it is `symbolic` with a map
+// in place of the fold.
 type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
 
 let n = 32;

@@ -7,25 +7,9 @@
 // select on the simplified child pair), and evaluated at a point. The
 // per-seed results accumulate into a float checksum via array::fold.
 //
-// Hypothesis under test: recursive ADTs have no fixed kernel ABI, so this
-// class should get near-zero fusion — this bench quantifies that honestly.
-//
-// This bench found (and now regression-guards) audit-jul2026/03: per-slot
-// HOF template cloning resolved refs by NAME, so run_one's local `e`
-// aliased to eval_at's parameter `e` and the checksum came out exactly 2x
-// under fusion. Fixed 2026-07-02 (clone_rebind BindId remap); both modes
-// agree. See graphix-fuzz/findings/audit-jul2026/03.
-// CR claude for claude: [doc-drift] This header, par_symbolic.gx:3-4 and
-// bench/README.md:81-82, 131, 148 and 167-169 say recursive ADTs have no kernel ABI, so
-// this bench barely fuses. At HEAD recursive ADTs use the opaque 2-word ABI.
-// `#[native]` holds on build, deriv and eval_at at their calls in run_one. The one
-// blocker is `simplify`: its tuple-of-variant patterns (`(`Num(x), `Num(y))`) are
-// refused with 'nested variant pattern leaf not lowerable' (fusion/emit/select.rs:613),
-// and its recursive calls then fail as 'mutually recursive static call edge'. With
-// simplify removed, graphix-fuzz run reports only the sys::time::now failures. Lines
-// 13-17 are history and should be deleted. par_symbolic.gx:5 also calls `off` the
-// default GRAPHIX_PAR; the default is `auto` (graphix-types/src/stack.rs:240).
-// (examples-07)
+// Recursive ADTs ride the opaque two-word kernel ABI: build, deriv and
+// eval_at fuse; simplify, whose tuple-of-variant patterns do not lower,
+// node-walks.
 type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
 
 let n = 32;

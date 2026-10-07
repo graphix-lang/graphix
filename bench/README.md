@@ -118,11 +118,11 @@ every loop.
 
 The HOF benches show the largest gap (node-walk builds a per-element node
 graph); the fully-fused scalar loops (`mandelbrot`, `tail_sum`,
-`leibniz_pi`) show the smallest (node-walk runs tail self-calls as a
-tight iterative loop). `stream_stats` shows what fusing only the
+`leibniz_pi`) show the smallest. `stream_stats` shows what fusing only the
 per-event compute buys on a stream (32x end-to-end); `netidx_stream`
 shows the same compute hidden behind a real network round trip (~1x);
-`symbolic` shows the recursive-ADT class the JIT cannot touch. Re-run
+`symbolic` shows a recursive-ADT workload whose `simplify` still
+node-walks. Re-run
 with `run.sh` to reproduce; absolute times vary with machine load, the
 ratios less so.
 
@@ -139,7 +139,7 @@ ratios less so.
 | `mandelbrot`       | per-pixel escape-time, 100x75                    | yes           |
 | `stream_stats`     | per-tick sliding-window stats, 5000 events       | per-event compute only (async spine node-walks) |
 | `netidx_stream`    | same stats, each tick a real netidx round trip   | per-event compute only (round trip dominates) |
-| `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | no (recursive ADT — no kernel ABI) |
+| `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | build, deriv, eval (simplify's tuple-of-variant patterns node-walk) |
 
 `mandelbrot`'s per-pixel `iterate` is a recursive function called inside
 `array::init`'s callback (a nested recursive lambda). That case (#203)
@@ -159,15 +159,11 @@ modes tie (~1x): fusion doesn't help a workload whose bottleneck is the
 network, and the bench documents that honestly.
 
 `symbolic` builds, differentiates, simplifies, and evaluates expression
-trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). Recursive ADTs
-have no fixed kernel ABI, so the hot path node-walks even with fusion
-on — with fusion enabled the program runs a little *slower* than plain
-node-walk (partial fusion of tiny scalar fragments inside a
-node-walked recursive region costs more than it saves). The bench also
-found a real fusion value divergence on its first run (the checksum
-came out exactly 2x under fusion — a name-keyed clone_rebind bug,
-fixed 2026-07-02; see graphix-fuzz/findings/audit-jul2026/03), which
-is exactly the kind of finding it exists to surface.
+trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). A recursive
+ADT is an opaque two-word value in a kernel, so `build`, `deriv` and
+`eval_at` fuse; `simplify`'s tuple-of-variant patterns
+(`` (`Num(x), `Num(y)) ``) do not lower, so it node-walks.
+graphix-fuzz/findings/audit-jul2026/03 is the divergence it once found.
 
 ## Parallel evaluation
 
