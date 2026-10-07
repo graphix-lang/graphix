@@ -1,6 +1,7 @@
 // Tests for lambdas, first-class functions, labeled arguments, recursive functions
 
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
@@ -2051,31 +2052,21 @@ const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
   f(n, 5 / b)
 }"#;
 
-async fn tail_quiet_bottom(code: &str, fusion_disabled: bool) -> Result<()> {
-    let (values, _) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
+async fn tail_quiet_bottom(code: &str, mode: Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(code, mode).await?;
     assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 6]);
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn tail_quiet_bottom_call_interp() -> Result<()> {
-    tail_quiet_bottom(TAIL_QUIET_BOTTOM_CALL, true).await
+async fn tail_quiet_bottom_call(mode: Mode) -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_CALL, mode).await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn tail_quiet_bottom_call_jit() -> Result<()> {
-    tail_quiet_bottom(TAIL_QUIET_BOTTOM_CALL, false).await
+async fn tail_quiet_bottom_inline(mode: Mode) -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_INLINE, mode).await
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn tail_quiet_bottom_inline_interp() -> Result<()> {
-    tail_quiet_bottom(TAIL_QUIET_BOTTOM_INLINE, true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn tail_quiet_bottom_inline_jit() -> Result<()> {
-    tail_quiet_bottom(TAIL_QUIET_BOTTOM_INLINE, false).await
-}
+modes!(tail_quiet_bottom_call, tail_quiet_bottom_inline);
 
 // A `let rec` annotation reads a trait parameter as a bounded
 // quantifier, as a plain `let` does.

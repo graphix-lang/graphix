@@ -1,8 +1,9 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use netidx_value::{ValArray, Value};
 
-async fn carried_arguments(fusion_disabled: bool) -> Result<()> {
+async fn carried_arguments(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for body in [
             "let x = request; let f = |v| v ~ x; f(request)",
@@ -32,14 +33,14 @@ async fn carried_arguments(fusion_disabled: bool) -> Result<()> {
                     {form} request {{ {body} }}
                 }}"#
             );
-            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            let (values, _) = run_delta(&code, mode).await?;
             assert_eq!(as_i64s(&values), [1, 2, 3], "{form}: {body}");
         }
     }
     Ok(())
 }
 
-async fn inputs_ready_together(fusion_disabled: bool) -> Result<()> {
+async fn inputs_ready_together(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { n if n < 30 => n + 1, _ => never() };
@@ -54,12 +55,12 @@ async fn inputs_ready_together(fusion_disabled: bool) -> Result<()> {
         let result = seq request { f(a, b) };
         result ~ (result, calls)
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(values, [Value::Array(ValArray::from([Value::I64(50), Value::I64(1)]))]);
     Ok(())
 }
 
-async fn bottom_at_reentry(fusion_disabled: bool) -> Result<()> {
+async fn bottom_at_reentry(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { n if n < 50 => n + 1, _ => never() };
@@ -74,24 +75,24 @@ async fn bottom_at_reentry(fusion_disabled: bool) -> Result<()> {
         let f = |v| v ~ v;
         seq request { f(input) }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 2, 3]);
     Ok(())
 }
 
-async fn until_stays_live(fusion_disabled: bool) -> Result<()> {
+async fn until_stays_live(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { n if n < 20 => n + 1, _ => never() };
         let ready = |n| n >= 10;
         seq { until ready(step); step }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [10]);
     Ok(())
 }
 
-async fn pending_call_keeps_inputs(fusion_disabled: bool) -> Result<()> {
+async fn pending_call_keeps_inputs(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { n if n < 30 => n + 1, _ => never() };
@@ -100,12 +101,12 @@ async fn pending_call_keeps_inputs(fusion_disabled: bool) -> Result<()> {
         let f = |v| sys::time::after_idle(duration:10.ms, v);
         seq request { f(input) }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [7]);
     Ok(())
 }
 
-async fn native_call(fusion_disabled: bool) -> Result<()> {
+async fn native_call(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { n if n < 90 => n + 1, _ => never() };
@@ -113,14 +114,14 @@ async fn native_call(fusion_disabled: bool) -> Result<()> {
         let f = |v| v + 0;
         seq request { let x = request; #[native] f(x) }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 2, 3]);
     Ok(())
 }
 
 // A call handed a reference may write through it: the statement after
 // it that reads the variable starts the next cycle and sees the write.
-async fn reference_argument_writes(fusion_disabled: bool) -> Result<()> {
+async fn reference_argument_writes(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for body in ["set(&mut b, 5); let s = b; s", "let r = &mut b; set(r, 5); b"] {
             let code = format!(
@@ -130,25 +131,11 @@ async fn reference_argument_writes(fusion_disabled: bool) -> Result<()> {
                     {form} {{ {body} }}
                 }}"#
             );
-            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            let (values, _) = run_delta(&code, mode).await?;
             assert_eq!(as_i64s(&values), [5], "{form}: {body}");
         }
     }
     Ok(())
-}
-
-macro_rules! modes {
-    ($($test:ident),+ $(,)?) => {$ (
-        mod $test {
-            use super::*;
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn interp() -> Result<()> { super::$test(true).await }
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn jit() -> Result<()> { super::$test(false).await }
-        }
-    )+};
 }
 
 modes!(

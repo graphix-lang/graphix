@@ -343,6 +343,10 @@ impl Mode {
         }
     }
 
+    pub fn node_walk(self) -> bool {
+        matches!(self, Mode::Interp | Mode::Par)
+    }
+
     /// The serial modes fork nothing unless `GRAPHIX_PAR` says otherwise.
     pub fn par(self) -> ParMode {
         match self {

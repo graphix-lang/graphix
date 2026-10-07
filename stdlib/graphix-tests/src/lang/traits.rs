@@ -2,6 +2,7 @@
 // dispatch over a union self type.
 
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use graphix_package_core::{run, testing::FuseExpect};
 
 use netidx::publisher::Value;
@@ -601,7 +602,7 @@ run!(
 // both engines (the builtin formats through the hook from inside a
 // fused kernel's DynCall as well). A block's statements are unordered,
 // so are its lines.
-async fn core_display_println(fusion_disabled: bool) -> Result<()> {
+async fn core_display_println(mode: Mode) -> Result<()> {
     let code = r##"{
         type Color = Abstract<{r: i64, g: i64, b: i64}>;
         impl Display for Color { let fmt = |c| "#[c.0.r][c.0.g][c.0.b]" };
@@ -612,7 +613,7 @@ async fn core_display_println(fusion_disabled: bool) -> Result<()> {
         dbg(#dest: `Stdout, {c, n: 1});
         42
     }"##;
-    let (values, out) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
+    let (values, out) = super::dense_deltas::run_delta(code, mode).await?;
     assert_eq!(super::dense_deltas::as_i64s(&values), vec![42]);
     let (dbg, mut lines): (Vec<&str>, Vec<&str>) =
         out.lines().partition(|l| l.ends_with("): {c: #123, n: 1}"));
@@ -622,15 +623,7 @@ async fn core_display_println(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn core_display_println_interp() -> Result<()> {
-    core_display_println(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn core_display_println_jit() -> Result<()> {
-    core_display_println(false).await
-}
+modes!(core_display_println);
 
 // A trait call on a union self type inside a lambda: the lowered select
 // binds the call's argument nodes rather than recompiling their source.

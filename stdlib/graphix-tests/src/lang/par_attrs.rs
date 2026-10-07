@@ -1,12 +1,14 @@
 // `#[parallel]` and `#[serial]` (design/parallel_eval.md §7), and how a
 // collection's growth runs under `Auto` (§8).
 
-use anyhow::{Result, bail};
-use graphix_compiler::{BitFlags, CFlag, ParMode};
-use graphix_package_core::testing::init_with_flags_and_setup;
-use graphix_rt::GXEvent;
+use anyhow::Result;
+use graphix_compiler::ParMode;
+use graphix_package_core::testing::{
+    Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+};
 use netidx::publisher::Value;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// What a run made.
 struct Ran {
@@ -18,61 +20,42 @@ struct Ran {
     build_forks: u64,
 }
 
-/// Run `code` (as `let result = {code}`) node-walked under `mode` until it
+/// Run `code` (as `let result = {code}`) node-walked under `par` until it
 /// is quiet for 300ms.
-async fn run_par(code: &str, mode: ParMode) -> Result<Ran> {
-    run_with(code, mode, CFlag::FusionDisabled.into()).await
+async fn run_par(code: &str, par: ParMode) -> Result<Ran> {
+    run_with(code, par, Mode::Interp).await
 }
 
 /// [`run_par`] fused: a kernel's loops fork as chunks of its slots.
-async fn run_fused(code: &str, mode: ParMode) -> Result<Ran> {
-    run_with(code, mode, BitFlags::empty()).await
+async fn run_fused(code: &str, par: ParMode) -> Result<Ran> {
+    run_with(code, par, Mode::Jit).await
 }
 
-/// Run `code` compiled with `flags` under `mode` until it is quiet for
-/// 300ms. Under `Auto` the run waits for the fork threshold's
+/// Run `code` built as `mode` builds it, forking under `par`, until it is
+/// quiet for 300ms. Under `Auto` the run waits for the fork threshold's
 /// calibration first: nothing forks until it.
-async fn run_with(code: &str, mode: ParMode, flags: BitFlags<CFlag>) -> Result<Ran> {
-    if mode == ParMode::Auto {
+async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Ran> {
+    if par == ParMode::Auto {
         while graphix_compiler::cost::calibration().is_none() {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    let (tx, mut rx) = mpsc::channel(10);
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(format!(
-            "let result = {code}"
-        ))),
-    )]);
-    let ctx = init_with_flags_and_setup(
-        tx,
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
-        vec![graphix_compiler::expr::VfsResolver::new(tbl)],
-        flags,
-        move |ctx| ctx.control.set_par_mode(mode),
+        mode,
+        move |ctx| ctx.control.set_par_mode(par),
     )
     .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
-    let mut values = Vec::new();
-    let deadline = tokio::time::sleep(std::time::Duration::from_secs(20));
-    tokio::pin!(deadline);
-    loop {
-        let quiet = tokio::time::sleep(std::time::Duration::from_millis(300));
-        tokio::pin!(quiet);
-        tokio::select! {
-            _ = &mut deadline => bail!("the program did not quiesce"),
-            _ = &mut quiet => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => values.extend(batch.drain(..).filter_map(|e| match e {
-                    GXEvent::Updated(id, v) if id == eid => Some(v),
-                    _ => None,
-                })),
-            }
-        }
-    }
+    let res = compile_result(&ctx).await?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let values = updates_until_quiet(
+        &mut rx,
+        res.exprs[0].id,
+        Duration::from_millis(300),
+        deadline,
+    )
+    .await?;
     let control = ctx.rt.control();
     let (forks, build_forks) = (control.forks(), control.build_forks());
     ctx.shutdown().await;
@@ -228,15 +211,20 @@ async fn parallel_names_the_dependency() {
     assert!(e.contains("statement 2 reads `a`"), "{e}");
 }
 
-// CR claude for claude: [test-gap] Only the #[serial] half of the callee rule is pinned
-// (serial_reaches_callees). Nothing pins that #[parallel]'s check stops at a callee
-// (CLAUDE.md: 'callees excluded'), so a change that let it count fork points inside
-// callee bodies would pass the gate. Add a refusal case next to this one: `{ let double
-// = |xs: Array<i64>| array::map(xs, |x| x * 2); #[parallel] double([1, 2, 3]) }` is
-// refused today with '#[parallel] has nothing to run in parallel'. (tests-lang-d-14)
 #[tokio::test(flavor = "current_thread")]
 async fn parallel_needs_something_to_fork() {
     let e = refusal("#[parallel]\n42").await;
+    assert!(e.contains("#[parallel] has nothing to run in parallel"), "{e}");
+}
+
+// #[parallel] counts only its own fork points: the map inside the callee
+// does not make the call parallel.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_stops_at_callees() {
+    let e = refusal(
+        "{ let double = |xs: Array<i64>| array::map(xs, |x| x * 2); #[parallel] double([1, 2, 3]) }",
+    )
+    .await;
     assert!(e.contains("#[parallel] has nothing to run in parallel"), "{e}");
 }
 

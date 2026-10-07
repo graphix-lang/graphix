@@ -2,87 +2,41 @@
 // a builtin arg never rides its previous value. Do not adjust these
 // expectations without a ruling.
 
-use anyhow::{Result, bail};
-use graphix_compiler::CFlag;
-use graphix_package_core::{PrintSink, testing::init_with_flags_and_setup};
-use graphix_rt::GXEvent;
+use anyhow::Result;
+use graphix_package_core::{
+    PrintSink,
+    testing::{
+        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    },
+};
 use netidx::publisher::Value;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::time::Instant;
 
-/// Run `code` (wrapped as `let result = {code}`) to quiescence in one
-/// mode, collecting every update of the result expression and the
-/// captured print output. Quiescence = no events for 700ms.
-// CR claude for claude: [structure] run_delta sets no ParMode, so every cadence test
-// built on it (dense_deltas, organic_deltas, printing, byref, async_restart and the
-// seq_* files) runs only under Auto, where programs this small never fork. None of them
-// runs with forks forced, as run!'s par and jit_par do, so a fork/merge bug that drops
-// or repeats a fire across cycles passes the gate. The callers also hand-write 15
-// _interp/_jit pairs, async_restart.rs:207 and eight seq_* files each define their own
-// modes!, and par_attrs::run_with (par_attrs.rs:35) and testing::eval_converged repeat
-// this quiescence loop. Give run_delta a ParMode and a quiet-window parameter, put one
-// modes! beside it that generates interp, jit, par and jit_par, and have
-// par_attrs::run_with call run_delta. (tests-lang-d-13)
-// CR claude for claude: [test-gap] run_delta never sets a par mode, so every test that
-// runs through it only ever runs under Auto, where these small programs never fork. The
-// seq suites alone are about 80 of them; run! fixtures also run par and jit_par under
-// ParMode::Force. Nine files (seq_abort, seq_calls, seq_errors, seq_let, seq_shadow,
-// seq_steps, seq_try, seqq, async_restart) each define their own `modes!` macro, in one
-// of two shapes, emitting interp and jit only, and seq.rs hand-writes three more pairs.
-// Take a ParMode here (set it with ctx.control.set_par_mode in the setup closure, as
-// run! does). Define one macro beside it that emits interp, jit, par and jit_par, and
-// delete the copies. (tests-lang-c-07)
-pub(super) async fn run_delta(
-    code: &str,
-    fusion_disabled: bool,
-) -> Result<(Vec<Value>, String)> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let gx_code = format!("let result = {code}");
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
-    )]);
-    let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
-    let flags = if fusion_disabled {
-        CFlag::FusionDisabled.into()
-    } else {
-        graphix_compiler::BitFlags::empty()
-    };
+/// Run `code` (wrapped as `let result = {code}`) in `mode` until no
+/// event arrives for 700ms, collecting every update of the result and the
+/// captured print output.
+pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
     let sink = PrintSink::default();
     let seeded = sink.clone();
-    let ctx = init_with_flags_and_setup(
-        tx,
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
-        vec![resolver],
-        flags,
+        mode,
         move |ctx| {
             ctx.libstate.set(seeded);
         },
     )
     .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
-    let mut values = Vec::new();
-    let deadline = tokio::time::sleep(std::time::Duration::from_secs(20));
-    tokio::pin!(deadline);
-    loop {
-        let quiet = tokio::time::sleep(std::time::Duration::from_millis(700));
-        tokio::pin!(quiet);
-        tokio::select! {
-            _ = &mut deadline => bail!("global deadline: program did not quiesce"),
-            _ = &mut quiet => break,
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        match e {
-                            GXEvent::Updated(id, v) if id == eid => values.push(v),
-                            _ => (),
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let res = compile_result(&ctx).await?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let values = updates_until_quiet(
+        &mut rx,
+        res.exprs[0].id,
+        Duration::from_millis(700),
+        deadline,
+    )
+    .await?;
     let out = sink.take();
     ctx.shutdown().await;
     Ok((values, out))
@@ -106,22 +60,14 @@ const PRINT_CONST_ONCE: &str = r#"{
   r
 }"#;
 
-async fn print_const_once(fusion_disabled: bool) -> Result<()> {
-    let (values, out) = run_delta(PRINT_CONST_ONCE, fusion_disabled).await?;
+async fn print_const_once(mode: Mode) -> Result<()> {
+    let (values, out) = run_delta(PRINT_CONST_ONCE, mode).await?;
     assert_eq!(as_i64s(&values), vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(out, "A\n");
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn print_const_once_interp() -> Result<()> {
-    print_const_once(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn print_const_once_jit() -> Result<()> {
-    print_const_once(false).await
-}
+modes!(print_const_once);
 
 // A callback's print fires once per element, not per kernel invocation.
 // The slots print unordered.
@@ -134,8 +80,8 @@ const PRINT_HOF_ONCE: &str = r#"{
   i64:0
 }"#;
 
-async fn print_hof_once(fusion_disabled: bool) -> Result<()> {
-    let (values, out) = run_delta(PRINT_HOF_ONCE, fusion_disabled).await?;
+async fn print_hof_once(mode: Mode) -> Result<()> {
+    let (values, out) = run_delta(PRINT_HOF_ONCE, mode).await?;
     assert_eq!(as_i64s(&values), vec![0]);
     let mut lines: Vec<&str> = out.lines().collect();
     lines[..2].sort();
@@ -147,15 +93,7 @@ async fn print_hof_once(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn print_hof_once_interp() -> Result<()> {
-    print_hof_once(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn print_hof_once_jit() -> Result<()> {
-    print_hof_once(false).await
-}
+modes!(print_hof_once);
 
 // A bottomed builtin arg bottoms the invocation: epochs give
 // [1, 9] and the bottoming third epoch emits nothing.
@@ -168,18 +106,10 @@ const BOTTOM_PROPAGATES: &str = r#"{
   select in1 { true => i64:9, _ => max(in0 * i64:10, i64:1 / v0) }
 }"#;
 
-async fn builtin_bottom_propagates(fusion_disabled: bool) -> Result<()> {
-    let (values, _) = run_delta(BOTTOM_PROPAGATES, fusion_disabled).await?;
+async fn builtin_bottom_propagates(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(BOTTOM_PROPAGATES, mode).await?;
     assert_eq!(as_i64s(&values), vec![1, 9]);
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn builtin_bottom_propagates_interp() -> Result<()> {
-    builtin_bottom_propagates(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn builtin_bottom_propagates_jit() -> Result<()> {
-    builtin_bottom_propagates(false).await
-}
+modes!(builtin_bottom_propagates);

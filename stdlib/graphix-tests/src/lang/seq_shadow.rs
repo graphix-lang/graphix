@@ -1,8 +1,9 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::{Context, Result};
 use arcstr::format;
+use graphix_package_core::testing::Mode;
 
-async fn check(body: &str, expected: &[i64], fusion_disabled: bool) -> Result<()> {
+async fn check(body: &str, expected: &[i64], mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let requests =
             if form == "seq" { "1 => 1, 25 => 2, 50 => 3" } else { "1 | 2 | 3 => step" };
@@ -14,46 +15,45 @@ async fn check(body: &str, expected: &[i64], fusion_disabled: bool) -> Result<()
                 {form} request {{ {body} }}
             }}"#
         );
-        let (values, _) =
-            run_delta(&code, fusion_disabled).await.with_context(|| code.clone())?;
+        let (values, _) = run_delta(&code, mode).await.with_context(|| code.clone())?;
         assert_eq!(as_i64s(&values), expected, "{code}");
     }
     Ok(())
 }
 
-async fn references(fusion_disabled: bool) -> Result<()> {
+async fn references(mode: Mode) -> Result<()> {
     for body in [
         "let x = request; let a = &x; let x = 99; *a",
         "let x = request; let a = &x; { let x = 99; *a }",
         "{ let x = request; let a = &x; let x = 99; *a }",
         "let x = request; let a = &x; { let x = 99; x }; *a",
     ] {
-        check(body, &[1, 2, 3], fusion_disabled).await?;
+        check(body, &[1, 2, 3], mode).await?;
     }
     Ok(())
 }
 
-async fn type_changes(fusion_disabled: bool) -> Result<()> {
+async fn type_changes(mode: Mode) -> Result<()> {
     for body in [
         r#"let x = request; let a = &x; let x = "later"; *a"#,
         r#"{ let x = request; let a = &x; let x = "later"; *a }"#,
     ] {
-        check(body, &[1, 2, 3], fusion_disabled).await?;
+        check(body, &[1, 2, 3], mode).await?;
     }
     Ok(())
 }
 
-async fn closures(fusion_disabled: bool) -> Result<()> {
+async fn closures(mode: Mode) -> Result<()> {
     for body in [
         "let x = request; let f = |v| v + x; let x = 99; f(0)",
         "{ let x = request; let f = |v| v + x; let x = 99; f(0) }",
     ] {
-        check(body, &[1, 2, 3], fusion_disabled).await?;
+        check(body, &[1, 2, 3], mode).await?;
     }
     Ok(())
 }
 
-async fn initializers_and_patterns(fusion_disabled: bool) -> Result<()> {
+async fn initializers_and_patterns(mode: Mode) -> Result<()> {
     for body in [
         "let x = request; let a = &x; let x = x + 10; x - *a",
         "{ let x = request; let a = &x; let x = x + 10; x - *a }",
@@ -61,38 +61,37 @@ async fn initializers_and_patterns(fusion_disabled: bool) -> Result<()> {
         "{ let {x, y} = {x: request, y: 10}; let a = &x; \
          let {x, y} = {x: y, y: x}; x + y - *a }",
     ] {
-        check(body, &[10, 10, 10], fusion_disabled).await?;
+        check(body, &[10, 10, 10], mode).await?;
     }
     Ok(())
 }
 
-async fn writes(fusion_disabled: bool) -> Result<()> {
+async fn writes(mode: Mode) -> Result<()> {
     for body in ["let x = request; let a = &mut x; let x = 99; \
          *a <- *a + 10; x <- x + 1; *a"]
     {
-        check(body, &[11, 12, 13], fusion_disabled).await?;
+        check(body, &[11, 12, 13], mode).await?;
     }
     Ok(())
 }
 
-async fn trigger_shadowing(fusion_disabled: bool) -> Result<()> {
+async fn trigger_shadowing(mode: Mode) -> Result<()> {
     for body in [
         "let initial = request; let request = request + 10; request - initial",
         "{ let initial = request; let request = request + 10; request - initial }",
     ] {
-        check(body, &[10, 10, 10], fusion_disabled).await?;
+        check(body, &[10, 10, 10], mode).await?;
     }
     Ok(())
 }
 
-async fn sampled_closure(fusion_disabled: bool) -> Result<()> {
-    check("let x = request; let f = |v| v ~ x; f(request)", &[1, 2, 3], fusion_disabled)
-        .await
+async fn sampled_closure(mode: Mode) -> Result<()> {
+    check("let x = request; let f = |v| v ~ x; f(request)", &[1, 2, 3], mode).await
 }
 
 // A `let rec` binds its name in its own value: the recursive call is
 // the function being defined, not a carried cell or a capture outside.
-async fn let_rec_scopes_its_value(fusion_disabled: bool) -> Result<()> {
+async fn let_rec_scopes_its_value(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -109,24 +108,10 @@ async fn let_rec_scopes_its_value(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [10], "{form}");
     }
     Ok(())
-}
-
-macro_rules! modes {
-    ($($test:ident),+ $(,)?) => {$ (
-        mod $test {
-            use super::*;
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn interp() -> Result<()> { super::$test(true).await }
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn jit() -> Result<()> { super::$test(false).await }
-        }
-    )+};
 }
 
 modes!(

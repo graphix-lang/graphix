@@ -3,6 +3,7 @@
 
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
@@ -322,8 +323,8 @@ async fn seq_nested_connect_completion() -> Result<()> {
             go
         }
     }"#;
-    for fusion_disabled in [true, false] {
-        let (values, _) = run_delta(code, fusion_disabled).await?;
+    for mode in Mode::ALL {
+        let (values, _) = run_delta(code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 10]);
     }
     Ok(())
@@ -547,7 +548,7 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 // A block issues its statements at entry, so two calls in one block are
 // in flight together; at the seq level a call is opaque, so the second
 // waits for the write before it.
-async fn block_issues_together(fusion_disabled: bool) -> Result<()> {
+async fn block_issues_together(mode: Mode) -> Result<()> {
     for (body, expected) in
         [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
     {
@@ -562,7 +563,7 @@ async fn block_issues_together(fusion_disabled: bool) -> Result<()> {
                 sys::time::after_idle(duration:100.ms, first)
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(values.len(), 1, "{body}: {values:?}");
         assert!(
             matches!(&values[0], Value::String(s) if &**s == expected),
@@ -572,17 +573,9 @@ async fn block_issues_together(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn block_issues_together_interp() -> Result<()> {
-    block_issues_together(true).await
-}
+modes!(block_issues_together);
 
-#[tokio::test(flavor = "current_thread")]
-async fn block_issues_together_jit() -> Result<()> {
-    block_issues_together(false).await
-}
-
-async fn block_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
+async fn block_trailing_semicolon(mode: Mode) -> Result<()> {
     use arcstr::format;
 
     for form in ["seq", "seqq"] {
@@ -603,33 +596,25 @@ async fn block_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
                         {form} request {{ {{ {body}{semi} }}{tail} }}
                     }}"#
                 );
-                let (values, _) = run_delta(&code, fusion_disabled).await?;
+                let (values, _) = run_delta(&code, mode).await?;
                 assert_eq!(as_i64s(&values), [1, 2, 3], "{code}");
             }
         }
         for body in ["request; never();", "{ let x = request; never(); };"] {
             let code = format!("{form} {{ {{ let request = 1; {body} }}; 42 }}");
-            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            let (values, _) = run_delta(&code, mode).await?;
             assert!(values.is_empty(), "{code}: {values:?}");
         }
     }
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn block_trailing_semicolon_interp() -> Result<()> {
-    block_trailing_semicolon(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn block_trailing_semicolon_jit() -> Result<()> {
-    block_trailing_semicolon(false).await
-}
+modes!(block_trailing_semicolon);
 
 // A step completes on a fired production after its entry, never on a
 // standing value. Each fixture runs three requests; a machine that
 // accepts the previous run's resident answers one behind.
-async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
+async fn reentry_fired_only(mode: Mode) -> Result<()> {
     use arcstr::format;
 
     const CLOCK: &str = r#"
@@ -686,39 +671,24 @@ async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
     ];
     for (name, body, expected) in cases {
         let code = format!("{{ {CLOCK} {BAD} seqq request {{ {body} }} }}");
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), expected, "{name}\n{out}");
     }
     // A lambda whose result is a standing level not derived from its
     // argument produces no fire when re-called: the run never completes.
     let stalls =
         format!("{{ {CLOCK} let k = 7; let f = |v| k; seqq request {{ f(request) }} }}");
-    let (values, _) = run_delta(&stalls, fusion_disabled).await?;
-    // CR claude for claude: [test-gap] `values.len() <= 1` also passes for [] (the first
-    // run stalling too) and for any single wrong value; both engines print [7], so
-    // assert `as_i64s(&values) == [7]`. Two sibling assertions are loose the same way.
-    // seq_errors.rs:486 (slept_catch_in_flight) never checks `out`, so a `B(1)`
-    // delivered after its catch slept would pass; today it prints only "caught `A(1)".
-    // seq_let.rs:51 accepts BIND_IS_SCOPED's refusal on the needle "c", which nearly
-    // any message contains; the refusal is "c not defined". (tests-lang-c-08)
-    assert!(values.len() <= 1, "{values:?}");
+    let (values, _) = run_delta(&stalls, mode).await?;
+    assert_eq!(as_i64s(&values), [7]);
     let sampled = format!(
         "{{ {CLOCK} let k = 7; let f = |v| v ~ k; seqq request {{ f(request) }} }}"
     );
-    let (values, _) = run_delta(&sampled, fusion_disabled).await?;
+    let (values, _) = run_delta(&sampled, mode).await?;
     assert_eq!(as_i64s(&values), [7, 7, 7]);
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn reentry_fired_only_interp() -> Result<()> {
-    reentry_fired_only(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn reentry_fired_only_jit() -> Result<()> {
-    reentry_fired_only(false).await
-}
+modes!(reentry_fired_only);
 
 // The machine's generated calls name `core::` explicitly, so a user
 // binding called `filter` does not capture them.

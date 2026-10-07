@@ -1,8 +1,9 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use netidx_value::Value;
 
-async fn seq_timers(fusion_disabled: bool) -> Result<()> {
+async fn seq_timers(mode: Mode) -> Result<()> {
     for (expr, check) in [
         (
             "sys::time::after_idle(duration:40.ms, go)",
@@ -26,13 +27,13 @@ async fn seq_timers(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(values, [Value::Bool(true), Value::Bool(true)], "{expr}");
     }
     Ok(())
 }
 
-async fn seq_iterators(fusion_disabled: bool) -> Result<()> {
+async fn seq_iterators(mode: Mode) -> Result<()> {
     for (expr, result) in [
         ("range(go, go + 1)?", "reply"),
         ("array::iter([go])", "reply"),
@@ -51,7 +52,7 @@ async fn seq_iterators(fusion_disabled: bool) -> Result<()> {
                 seq go {{ let reply = {expr}; {result} }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 10], "{expr}");
     }
     Ok(())
@@ -59,20 +60,20 @@ async fn seq_iterators(fusion_disabled: bool) -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn seq_projected_iterator() -> Result<()> {
-    for fusion_disabled in [true, false] {
+    for mode in Mode::ALL {
         let code = r#"{
             let step = 0;
             step <- select step { s if s < 20 => s + 1, _ => never() };
             let go = select step { 1 | 10 => step, _ => never() };
             seq go { let reply = (map::iter({go => go})).1; reply }
         }"#;
-        let (values, _) = run_delta(code, fusion_disabled).await?;
+        let (values, _) = run_delta(code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 10]);
     }
     Ok(())
 }
 
-async fn seq_composed_iterators(fusion_disabled: bool) -> Result<()> {
+async fn seq_composed_iterators(mode: Mode) -> Result<()> {
     for expr in [
         "(map::iter({go => go})).1 + 0",
         "(array::iter([go]), 0).0",
@@ -91,23 +92,15 @@ async fn seq_composed_iterators(fusion_disabled: bool) -> Result<()> {
                 seq go {{ let reply = {expr}; reply }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 15, 30], "{expr}");
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn seq_composed_iterators_interp() -> Result<()> {
-    seq_composed_iterators(true).await
-}
+modes!(seq_composed_iterators);
 
-#[tokio::test]
-async fn seq_composed_iterators_jit() -> Result<()> {
-    seq_composed_iterators(false).await
-}
-
-async fn seq_io(fusion_disabled: bool) -> Result<()> {
+async fn seq_io(mode: Mode) -> Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("1"), "first")?;
     std::fs::write(dir.path().join("2"), "second")?;
@@ -121,7 +114,7 @@ async fn seq_io(fusion_disabled: bool) -> Result<()> {
             }}
         }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(values, [Value::from("first"), Value::from("second")]);
     Ok(())
 }
@@ -138,7 +131,7 @@ async fn seq_io(fusion_disabled: bool) -> Result<()> {
 // nodes, so the fuzzer cannot see any of it. Add an interp/jit fixture per family, `let
 // a = ..; select phase { true => f(a), false => .. }` with phase going true, false,
 // true, plus range(0, late) and range(bottoming, 2). (core-lib-14)
-async fn select_restarts_timer(fusion_disabled: bool) -> Result<()> {
+async fn select_restarts_timer(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
         let issued = never<i64>();
@@ -150,12 +143,12 @@ async fn select_restarts_timer(fusion_disabled: bool) -> Result<()> {
         };
         issued
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 3]);
     Ok(())
 }
 
-async fn seq_network(fusion_disabled: bool) -> Result<()> {
+async fn seq_network(mode: Mode) -> Result<()> {
     for expr in [
         r#"sys::net::subscribe("/restart/[go]")?"#,
         r#"sys::net::call("/restart/echo", {n: go})?"#,
@@ -174,26 +167,26 @@ async fn seq_network(fusion_disabled: bool) -> Result<()> {
                 seq go {{ let reply: i64 = {expr}; reply }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 2], "{expr}");
     }
     Ok(())
 }
 
-async fn live_timer_keeps_value(fusion_disabled: bool) -> Result<()> {
+async fn live_timer_keeps_value(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 2)?);
         let ready = sys::time::after_idle(duration:30.ms, tick);
         let probe = sys::time::after_idle(duration:10.ms, tick);
         probe ~ ready
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 1]);
     Ok(())
 }
 
 #[cfg(unix)]
-async fn line_reader_rewake(fusion_disabled: bool) -> Result<()> {
+async fn line_reader_rewake(mode: Mode) -> Result<()> {
     let code = r#"{
         use sys::io::Lines;
         let child = sys::process::spawn(sys::process::options(
@@ -211,30 +204,16 @@ async fn line_reader_rewake(fusion_disabled: bool) -> Result<()> {
             false => never()
         }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(values, [Value::from("first"), Value::from("second")]);
     Ok(())
 }
 
-macro_rules! modes {
-    ($test:ident, $interp:ident, $jit:ident) => {
-        #[tokio::test(flavor = "current_thread")]
-        async fn $interp() -> Result<()> {
-            $test(true).await
-        }
-
-        #[tokio::test(flavor = "current_thread")]
-        async fn $jit() -> Result<()> {
-            $test(false).await
-        }
-    };
-}
-
-modes!(seq_timers, seq_timers_interp, seq_timers_jit);
-modes!(seq_iterators, seq_iterators_interp, seq_iterators_jit);
-modes!(seq_io, seq_io_interp, seq_io_jit);
-modes!(select_restarts_timer, select_restarts_timer_interp, select_restarts_timer_jit);
-modes!(seq_network, seq_network_interp, seq_network_jit);
-modes!(live_timer_keeps_value, live_timer_keeps_value_interp, live_timer_keeps_value_jit);
+modes!(seq_timers);
+modes!(seq_iterators);
+modes!(seq_io);
+modes!(select_restarts_timer);
+modes!(seq_network);
+modes!(live_timer_keeps_value);
 #[cfg(unix)]
-modes!(line_reader_rewake, line_reader_rewake_interp, line_reader_rewake_jit);
+modes!(line_reader_rewake);

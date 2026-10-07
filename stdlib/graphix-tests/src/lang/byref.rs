@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use graphix_package_core::run;
+use graphix_package_core::testing::Mode;
 use netidx::publisher::Value;
 
 const BYREF_DEREF: &str = r#"
@@ -431,24 +432,16 @@ const BYREF_LET: &str = r#"{
   *r
 }"#;
 
-async fn byref_expr_same_cycle(fusion_disabled: bool) -> Result<()> {
+async fn byref_expr_same_cycle(mode: Mode) -> Result<()> {
     use super::dense_deltas::{as_i64s, run_delta};
-    let (expr, _) = run_delta(BYREF_EXPR, fusion_disabled).await?;
-    let (bind, _) = run_delta(BYREF_LET, fusion_disabled).await?;
+    let (expr, _) = run_delta(BYREF_EXPR, mode).await?;
+    let (bind, _) = run_delta(BYREF_LET, mode).await?;
     assert_eq!(as_i64s(&expr), as_i64s(&bind));
     assert_eq!(as_i64s(&expr), vec![1, 11, 31]);
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn byref_expr_same_cycle_interp() -> Result<()> {
-    byref_expr_same_cycle(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn byref_expr_same_cycle_jit() -> Result<()> {
-    byref_expr_same_cycle(false).await
-}
+modes!(byref_expr_same_cycle);
 
 // A dereference whose address moved to a binding that has never
 // delivered is bottom, not the previous referent's value.

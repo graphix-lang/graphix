@@ -2,6 +2,7 @@ use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::CFlag;
+use graphix_package_core::testing::Mode;
 use graphix_package_core::testing::init_with_flags_and_setup;
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
@@ -12,7 +13,7 @@ const BURST: &str = r#"
     let request = select step { 1 | 2 | 3 => step, _ => never() };
 "#;
 
-async fn burst_captures(fusion_disabled: bool) -> Result<()> {
+async fn burst_captures(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -20,7 +21,7 @@ async fn burst_captures(fusion_disabled: bool) -> Result<()> {
         seqq request {{ sys::time::after_idle(duration:20.ms, (request, x)) }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     let expected: Vec<_> = (1..=3)
         .map(|n| Value::Array(ValArray::from([Value::I64(n), Value::I64(n * 10)])))
         .collect();
@@ -28,7 +29,7 @@ async fn burst_captures(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn repeated_outputs(fusion_disabled: bool) -> Result<()> {
+async fn repeated_outputs(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -36,12 +37,12 @@ async fn repeated_outputs(fusion_disabled: bool) -> Result<()> {
         seqq same {{ sys::time::after_idle(duration:10.ms, same) }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [7, 7, 7]);
     Ok(())
 }
 
-async fn delayed_capture(fusion_disabled: bool) -> Result<()> {
+async fn delayed_capture(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -49,12 +50,12 @@ async fn delayed_capture(fusion_disabled: bool) -> Result<()> {
         seqq request {{ late }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [22, 22, 22]);
     Ok(())
 }
 
-async fn stale_capture(fusion_disabled: bool) -> Result<()> {
+async fn stale_capture(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -62,50 +63,50 @@ async fn stale_capture(fusion_disabled: bool) -> Result<()> {
         seqq request {{ x }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [10, 20, 20]);
     Ok(())
 }
 
-async fn call_trigger_debounces(fusion_disabled: bool) -> Result<()> {
+async fn call_trigger_debounces(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
         seqq sys::time::after_idle(duration:20.ms, request) {{ request }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [3]);
     Ok(())
 }
 
 // A bound trigger under seqq is the value that queued the run.
-async fn let_binds_each_request(fusion_disabled: bool) -> Result<()> {
+async fn let_binds_each_request(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
         seqq let v = request * 10 {{ sys::time::after_idle(duration:20.ms, v) }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [10, 20, 30]);
     Ok(())
 }
 
-async fn live_until(fusion_disabled: bool) -> Result<()> {
+async fn live_until(mode: Mode) -> Result<()> {
     let code = r#"{
         let ready = false;
         ready <- sys::time::after_idle(duration:30.ms, true);
         seqq { until ready; 42 }
     }"#;
-    let (values, _) = run_delta(code, fusion_disabled).await?;
+    let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [42]);
     Ok(())
 }
 
 // An `until` reads everything live but the trigger's name, which is the
 // request this run serves, as it is under `seq`.
-async fn until_waits_on_its_own_request(fusion_disabled: bool) -> Result<()> {
+async fn until_waits_on_its_own_request(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -116,7 +117,7 @@ async fn until_waits_on_its_own_request(fusion_disabled: bool) -> Result<()> {
             done ~ step - done
         }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         let waits = as_i64s(&values);
         assert_eq!(waits.len(), 2, "{kw}: {waits:?}");
         assert!(waits.iter().all(|w| (11..16).contains(w)), "{kw}: {waits:?}");
@@ -124,17 +125,17 @@ async fn until_waits_on_its_own_request(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn live_writes(fusion_disabled: bool) -> Result<()> {
+async fn live_writes(mode: Mode) -> Result<()> {
     for body in ["n <- n + 1; n", "let target = &mut n; *target <- *target + 1; *target"]
     {
         let code = format!(r#"{{ {BURST} let n = 0; seqq request {{ {body} }} }}"#);
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 2, 3], "{body}");
     }
     Ok(())
 }
 
-async fn capture_scopes(fusion_disabled: bool) -> Result<()> {
+async fn capture_scopes(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -146,7 +147,7 @@ async fn capture_scopes(fusion_disabled: bool) -> Result<()> {
         }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     let expected: Vec<_> = (1..=3)
         .map(|n| {
             Value::Array(ValArray::from([
@@ -160,7 +161,7 @@ async fn capture_scopes(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn abort_releases(fusion_disabled: bool) -> Result<()> {
+async fn abort_releases(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -169,13 +170,13 @@ async fn abort_releases(fusion_disabled: bool) -> Result<()> {
         seqq request {{ f(request) }}
     }}"#
     );
-    let (values, out) = run_delta(&code, fusion_disabled).await?;
+    let (values, out) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [1, 3]);
     assert_eq!(out.lines().count(), 1);
     Ok(())
 }
 
-async fn block_lets_are_local(fusion_disabled: bool) -> Result<()> {
+async fn block_lets_are_local(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -186,12 +187,12 @@ async fn block_lets_are_local(fusion_disabled: bool) -> Result<()> {
         }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [100, 100, 100]);
     Ok(())
 }
 
-async fn sleep_restarts(fusion_disabled: bool) -> Result<()> {
+async fn sleep_restarts(mode: Mode) -> Result<()> {
     for (trigger, expr) in [
         ("", "tick"),
         ("tick", "tick"),
@@ -208,13 +209,13 @@ async fn sleep_restarts(fusion_disabled: bool) -> Result<()> {
         issued
     }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 3], "seqq {trigger}: {expr}");
     }
     Ok(())
 }
 
-async fn reference_inputs(fusion_disabled: bool) -> Result<()> {
+async fn reference_inputs(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -225,7 +226,7 @@ async fn reference_inputs(fusion_disabled: bool) -> Result<()> {
         done ~ (a, b)
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(
         values,
         [
@@ -237,7 +238,7 @@ async fn reference_inputs(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn function_captures_stay_static(fusion_disabled: bool) -> Result<()> {
+async fn function_captures_stay_static(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
@@ -246,15 +247,15 @@ async fn function_captures_stay_static(fusion_disabled: bool) -> Result<()> {
         seqq request {{ let a = #[native] h(request + k); a }}
     }}"#
     );
-    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    let (values, _) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [17, 19, 21]);
     Ok(())
 }
 
-async fn unhandled_warnings(fusion_disabled: bool) -> Result<()> {
+async fn unhandled_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);
     let mut flags = CFlag::WarnUnhandled | CFlag::WarningsAreErrors;
-    if fusion_disabled {
+    if mode.node_walk() {
         flags.insert(CFlag::FusionDisabled);
     }
     let ctx = init_with_flags_and_setup(tx, &crate::TEST_REGISTER, vec![], flags, |_| {})
@@ -280,40 +281,19 @@ async fn unhandled_warnings(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-macro_rules! modes {
-    ($test:ident, $interp:ident, $jit:ident) => {
-        #[tokio::test(flavor = "current_thread")]
-        async fn $interp() -> Result<()> {
-            $test(true).await
-        }
-        #[tokio::test(flavor = "current_thread")]
-        async fn $jit() -> Result<()> {
-            $test(false).await
-        }
-    };
-}
-
-modes!(burst_captures, burst_captures_interp, burst_captures_jit);
-modes!(repeated_outputs, repeated_outputs_interp, repeated_outputs_jit);
-modes!(delayed_capture, delayed_capture_interp, delayed_capture_jit);
-modes!(stale_capture, stale_capture_interp, stale_capture_jit);
-modes!(call_trigger_debounces, call_trigger_debounces_interp, call_trigger_debounces_jit);
-modes!(let_binds_each_request, let_binds_each_request_interp, let_binds_each_request_jit);
-modes!(live_until, live_until_interp, live_until_jit);
-modes!(
-    until_waits_on_its_own_request,
-    until_waits_on_its_own_request_interp,
-    until_waits_on_its_own_request_jit
-);
-modes!(live_writes, live_writes_interp, live_writes_jit);
-modes!(capture_scopes, capture_scopes_interp, capture_scopes_jit);
-modes!(abort_releases, abort_releases_interp, abort_releases_jit);
-modes!(block_lets_are_local, block_lets_are_local_interp, block_lets_are_local_jit);
-modes!(sleep_restarts, sleep_restarts_interp, sleep_restarts_jit);
-modes!(reference_inputs, reference_inputs_interp, reference_inputs_jit);
-modes!(unhandled_warnings, unhandled_warnings_interp, unhandled_warnings_jit);
-modes!(
-    function_captures_stay_static,
-    function_captures_stay_static_interp,
-    function_captures_stay_static_jit
-);
+modes!(burst_captures);
+modes!(repeated_outputs);
+modes!(delayed_capture);
+modes!(stale_capture);
+modes!(call_trigger_debounces);
+modes!(let_binds_each_request);
+modes!(live_until);
+modes!(until_waits_on_its_own_request);
+modes!(live_writes);
+modes!(capture_scopes);
+modes!(abort_releases);
+modes!(block_lets_are_local);
+modes!(sleep_restarts);
+modes!(reference_inputs);
+modes!(unhandled_warnings);
+modes!(function_captures_stay_static);

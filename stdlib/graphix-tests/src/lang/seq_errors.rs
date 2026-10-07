@@ -1,5 +1,6 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use graphix_package_core::testing::eval;
 use netidx_value::{ValArray, Value};
 
@@ -8,7 +9,7 @@ const CLOCK: &str = r#"
     step <- select step { n if n < 60 => n + 1, _ => never() };
 "#;
 
-async fn continuations(fusion_disabled: bool) -> Result<()> {
+async fn continuations(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for (body, written) in [
             ("{ error(`Oops)?; 1 }; n <- n + 1", 0),
@@ -42,7 +43,7 @@ async fn continuations(fusion_disabled: bool) -> Result<()> {
                         select step {{ 60 => (n, errors), _ => never() }})
                 }}"#
             );
-            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            let (values, _) = run_delta(&code, mode).await?;
             assert_eq!(
                 values,
                 [Value::Array(ValArray::from([Value::I64(written), Value::I64(1)]))],
@@ -53,7 +54,7 @@ async fn continuations(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn final_output(fusion_disabled: bool) -> Result<()> {
+async fn final_output(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for body in [
             "{ error(`Oops)?; 42 }",
@@ -70,7 +71,7 @@ async fn final_output(fusion_disabled: bool) -> Result<()> {
                     {form} {{ {body} }}
                 }}"#
             );
-            let (values, out) = run_delta(&code, fusion_disabled).await?;
+            let (values, out) = run_delta(&code, mode).await?;
             assert!(values.is_empty(), "{form} {{ {body} }}: {values:?}");
             assert_eq!(out.trim(), "caught", "{form} {{ {body} }}");
         }
@@ -78,7 +79,7 @@ async fn final_output(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn queue_credit(fusion_disabled: bool) -> Result<()> {
+async fn queue_credit(mode: Mode) -> Result<()> {
     for body in [
         "select request { 1 | 3 => error(`Oops)?, _ => request }",
         "bad(request)",
@@ -97,14 +98,14 @@ async fn queue_credit(fusion_disabled: bool) -> Result<()> {
                 seqq request {{ {body} }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [2, 4, 5], "{body}");
         assert_eq!(out.lines().collect::<Vec<_>>(), ["caught", "caught"], "{body}");
     }
     Ok(())
 }
 
-async fn restart(fusion_disabled: bool) -> Result<()> {
+async fn restart(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for (body, expected) in [
             ("bad(request)", "caught"),
@@ -127,7 +128,7 @@ async fn restart(fusion_disabled: bool) -> Result<()> {
                     {form} request {{ {body} }}
                 }}"#
             );
-            let (values, out) = run_delta(&code, fusion_disabled).await?;
+            let (values, out) = run_delta(&code, mode).await?;
             assert_eq!(as_i64s(&values), [2, 3], "{form}, {body}");
             assert_eq!(out.trim(), expected, "{form}, {body}");
         }
@@ -135,7 +136,7 @@ async fn restart(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn scoped_errors(fusion_disabled: bool) -> Result<()> {
+async fn scoped_errors(mode: Mode) -> Result<()> {
     for code in [
         r#"{ catch(e) println(e ~ "caught"); error(`Oops)?; 42 }"#,
         r#"seq { try { error(`Oops)?; 42 } with(e) { println("caught"); 42 } }"#,
@@ -152,14 +153,14 @@ async fn scoped_errors(fusion_disabled: bool) -> Result<()> {
             seq { f(42) }
         }"#,
     ] {
-        let (values, out) = run_delta(code, fusion_disabled).await?;
+        let (values, out) = run_delta(code, mode).await?;
         assert_eq!(as_i64s(&values), [42], "{code}");
         assert_eq!(out.trim(), "caught", "{code}");
     }
     Ok(())
 }
 
-async fn recursive_errors(fusion_disabled: bool) -> Result<()> {
+async fn recursive_errors(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -171,7 +172,7 @@ async fn recursive_errors(fusion_disabled: bool) -> Result<()> {
                 {form} {{ bad(1000) }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert!(values.is_empty(), "{form}: {values:?}");
         assert_eq!(out.trim(), "caught", "{form}");
     }
@@ -180,7 +181,7 @@ async fn recursive_errors(fusion_disabled: bool) -> Result<()> {
 
 // An inner seq's error inside a try takes the with branch; the outer
 // run recovers, and the next run's inner seq starts afresh.
-async fn nested_sequence_in_try(fusion_disabled: bool) -> Result<()> {
+async fn nested_sequence_in_try(mode: Mode) -> Result<()> {
     for inner in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -195,13 +196,13 @@ async fn nested_sequence_in_try(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let (values, _) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [-99, 1010], "{inner}");
     }
     Ok(())
 }
 
-async fn nested_sequences(fusion_disabled: bool) -> Result<()> {
+async fn nested_sequences(mode: Mode) -> Result<()> {
     for inner in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -209,14 +210,14 @@ async fn nested_sequences(fusion_disabled: bool) -> Result<()> {
                 seq {{ {inner} {{ {{ error(`Oops)?; 1 }} }}; 42 }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert!(values.is_empty(), "{inner}: {values:?}");
         assert_eq!(out.trim(), "caught", "{inner}");
     }
     Ok(())
 }
 
-async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
+async fn multiple_errors(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         for body in ["bad(request)", "{ let r = bad(request); r }"] {
             let requests = if form == "seq" {
@@ -251,7 +252,7 @@ async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
                     }}
                 }}"#
             );
-            let (values, out) = run_delta(&code, fusion_disabled).await?;
+            let (values, out) = run_delta(&code, mode).await?;
             assert_eq!(as_i64s(&values), [2, 4, 5], "{form}: {body}\n{out}");
             // three `?` raise in one cycle; the with body sees the first
             // and rethrows it once
@@ -266,7 +267,7 @@ async fn multiple_errors(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn nested_multiple_errors(fusion_disabled: bool) -> Result<()> {
+async fn nested_multiple_errors(mode: Mode) -> Result<()> {
     for inner in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -288,14 +289,14 @@ async fn nested_multiple_errors(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [2, 3], "{inner}\n{out}");
         assert_eq!(out.trim(), "inner 1 First\nouter 1 First\ncaught First", "{inner}");
     }
     Ok(())
 }
 
-async fn recursive_multiple_errors(fusion_disabled: bool) -> Result<()> {
+async fn recursive_multiple_errors(mode: Mode) -> Result<()> {
     for (body, expected) in [
         ("select request { 1 => bad(1000), _ => request }", "caught Same\ncaught Same"),
         (
@@ -318,14 +319,14 @@ async fn recursive_multiple_errors(fusion_disabled: bool) -> Result<()> {
                 seqq request {{ {body} }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [2, 3], "{body}\n{out}");
         assert_eq!(out.trim(), expected, "{body}");
     }
     Ok(())
 }
 
-async fn multiple_errors_after_sleep(fusion_disabled: bool) -> Result<()> {
+async fn multiple_errors_after_sleep(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -349,7 +350,7 @@ async fn multiple_errors_after_sleep(fusion_disabled: bool) -> Result<()> {
                 done
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [5], "{form}\n{out}");
         assert_eq!(
             out.trim(),
@@ -360,7 +361,7 @@ async fn multiple_errors_after_sleep(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn error_payloads(fusion_disabled: bool) -> Result<()> {
+async fn error_payloads(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
             {CLOCK}
@@ -378,13 +379,13 @@ async fn error_payloads(fusion_disabled: bool) -> Result<()> {
             }}
         }}"#
     );
-    let (values, out) = run_delta(&code, fusion_disabled).await?;
+    let (values, out) = run_delta(&code, mode).await?;
     assert_eq!(as_i64s(&values), [2, 3], "{out}");
     assert_eq!(out.trim(), "cleanup 1 1\ncaught 1");
     Ok(())
 }
 
-async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
+async fn nested_handler_choices(mode: Mode) -> Result<()> {
     for rethrow in [false, true] {
         let handler = if rethrow {
             "select (e.0).error { `First => e?, `Second => request }"
@@ -408,7 +409,7 @@ async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         let expected_values: &[i64] = if rethrow { &[2, 3] } else { &[1, 2, 3] };
         assert_eq!(as_i64s(&values), expected_values, "{handler}\n{out}");
         let expected = if rethrow { "local First\ncaught First" } else { "local First" };
@@ -420,7 +421,7 @@ async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
 // A callee's own catch consumes both of its errors; the second arrives
 // a cycle late, and the call's value, fired while it was in flight,
 // still completes the step.
-async fn nested_catch_drains(fusion_disabled: bool) -> Result<()> {
+async fn nested_catch_drains(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -433,7 +434,7 @@ async fn nested_catch_drains(fusion_disabled: bool) -> Result<()> {
                 {form} let k = 1 {{ f(k) }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [2], "{form}\n{out}");
         assert_eq!(out.trim(), "caught `A(1)\ncaught `B(1)", "{form}");
     }
@@ -442,7 +443,7 @@ async fn nested_catch_drains(fusion_disabled: bool) -> Result<()> {
 
 // Each slot's callback catches its own overflow, and the map's value
 // completes the step.
-async fn slot_catches_complete_the_step(fusion_disabled: bool) -> Result<()> {
+async fn slot_catches_complete_the_step(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -456,7 +457,7 @@ async fn slot_catches_complete_the_step(fusion_disabled: bool) -> Result<()> {
                 }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(values.len(), 1, "{form}\n{out}");
         assert_eq!(format!("{}", values[0]), "[i64:1, i64:2, i64:3]", "{form}\n{out}");
     }
@@ -465,7 +466,7 @@ async fn slot_catches_complete_the_step(fusion_disabled: bool) -> Result<()> {
 
 // An error still in flight when its catch sleeps is given up, so the
 // step waiting on the callee is not held by it.
-async fn slept_catch_in_flight(fusion_disabled: bool) -> Result<()> {
+async fn slept_catch_in_flight(mode: Mode) -> Result<()> {
     for form in ["seq", "seqq"] {
         let code = format!(
             r#"{{
@@ -483,24 +484,11 @@ async fn slept_catch_in_flight(fusion_disabled: bool) -> Result<()> {
                 {form} {{ f(1) }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [101], "{form}\n{out}");
+        assert_eq!(out, "caught `A(1)\n", "{form}");
     }
     Ok(())
-}
-
-macro_rules! modes {
-    ($($test:ident),+ $(,)?) => {$ (
-        mod $test {
-            use super::*;
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn interp() -> Result<()> { super::$test(true).await }
-
-            #[tokio::test(flavor = "current_thread")]
-            async fn jit() -> Result<()> { super::$test(false).await }
-        }
-    )+};
 }
 
 async fn seq_statement_refusals() -> Result<()> {

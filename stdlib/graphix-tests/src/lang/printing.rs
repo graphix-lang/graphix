@@ -1,8 +1,9 @@
 use super::dense_deltas::{as_i64s, run_delta};
 use anyhow::Result;
+use graphix_package_core::testing::Mode;
 use netidx_value::Value;
 
-async fn acknowledgements(fusion_disabled: bool) -> Result<()> {
+async fn acknowledgements(mode: Mode) -> Result<()> {
     for builtin in ["print", "println", "log"] {
         let code = format!(
             r#"{{
@@ -15,7 +16,7 @@ async fn acknowledgements(fusion_disabled: bool) -> Result<()> {
                 done ~ step
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [3, 6], "{builtin}: {out}");
         match builtin {
             "print" => assert_eq!(out, "messagemessage"),
@@ -31,19 +32,11 @@ async fn acknowledgements(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn acknowledgements_interp() -> Result<()> {
-    acknowledgements(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn acknowledgements_jit() -> Result<()> {
-    acknowledgements(false).await
-}
+modes!(acknowledgements);
 
 /// Steps print in order; a block's statements are issued together, so
 /// within one run its lines are unordered.
-async fn seq_printing(fusion_disabled: bool) -> Result<()> {
+async fn seq_printing(mode: Mode) -> Result<()> {
     for (body, ordered) in [
         (r#"print("a"); println("b"); log("c"); go"#, true),
         (r#"{ println("a"); println("b"); log("c"); go }"#, false),
@@ -56,7 +49,7 @@ async fn seq_printing(fusion_disabled: bool) -> Result<()> {
                 seq go {{ {body} }}
             }}"#
         );
-        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        let (values, out) = run_delta(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 10], "{body}: {out}");
         let lines: Vec<_> = out.lines().collect();
         let per_run = if ordered { 2 } else { 3 };
@@ -77,17 +70,9 @@ async fn seq_printing(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn seq_printing_interp() -> Result<()> {
-    seq_printing(true).await
-}
+modes!(seq_printing);
 
-#[tokio::test(flavor = "current_thread")]
-async fn seq_printing_jit() -> Result<()> {
-    seq_printing(false).await
-}
-
-async fn seq_printing_waits_for_message(fusion_disabled: bool) -> Result<()> {
+async fn seq_printing_waits_for_message(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;
         step <- select step { s if s < 12 => s + 1, _ => never() };
@@ -101,18 +86,10 @@ async fn seq_printing_waits_for_message(fusion_disabled: bool) -> Result<()> {
             }
         }
     }"#;
-    let (values, out) = run_delta(code, fusion_disabled).await?;
+    let (values, out) = run_delta(code, mode).await?;
     assert_eq!(values, [Value::I64(6)]);
     assert_eq!(out, "ready\n");
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn seq_printing_waits_for_message_interp() -> Result<()> {
-    seq_printing_waits_for_message(true).await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn seq_printing_waits_for_message_jit() -> Result<()> {
-    seq_printing_waits_for_message(false).await
-}
+modes!(seq_printing_waits_for_message);
