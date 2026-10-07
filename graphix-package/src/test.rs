@@ -374,7 +374,7 @@ println(\"GRAPHIX_STANDALONE_OK var=[v] ex=[ex]\")
 mod pure {
     use super::super::{
         DEFAULT_PACKAGES, INTERNAL_PACKAGES, PackageEntry, Packages, Selection,
-        UpdatePlan, apply_selection, compute_update_plan, feature_depends_on,
+        ShellBump, UpdatePlan, apply_selection, compute_update_plan, feature_depends_on,
         feature_edges, installed_dependents, normalize_selection, parse_packages,
         parse_toggles, plan_items, selection_from_indices, stdlib_packages_in_cargo_toml,
         to_toml_string, version_gt,
@@ -558,8 +558,9 @@ anyhow = \"1\"\n";
         let mut latest = BTreeMap::new();
         latest.insert("widgets".to_string(), "1.5.0".to_string());
         let plan = compute_update_plan("0.9.0", "0.10.0", &src, &pkgs, &latest);
-        assert_eq!(plan.shell, Some(("0.9.0".to_string(), "0.10.0".to_string())));
-        assert_eq!(plan.new_stdlib, vec!["math".to_string()]);
+        let bump = plan.shell.as_ref().unwrap();
+        assert_eq!((bump.current.as_str(), bump.latest.as_str()), ("0.9.0", "0.10.0"));
+        assert_eq!(bump.new_stdlib, vec!["math".to_string()]);
         assert_eq!(
             plan.external_updates,
             vec![("widgets".to_string(), "1.2.0".to_string(), "1.5.0".to_string())]
@@ -574,8 +575,11 @@ anyhow = \"1\"\n";
             external: ext(&[("widgets", ver("1.2.0"))]),
         };
         let plan = UpdatePlan {
-            shell: Some(("0.9.0".to_string(), "0.10.0".to_string())),
-            new_stdlib: vec!["math".to_string(), "time".to_string()],
+            shell: Some(ShellBump {
+                current: "0.9.0".to_string(),
+                latest: "0.10.0".to_string(),
+                new_stdlib: vec!["math".to_string(), "time".to_string()],
+            }),
             external_updates: vec![(
                 "widgets".to_string(),
                 "1.2.0".to_string(),
@@ -588,7 +592,7 @@ anyhow = \"1\"\n";
             new_stdlib: sset(&["math"]),
             external: sset(&["widgets"]),
         };
-        let bv = apply_selection("0.9.0", "0.10.0", &plan, &sel, &mut pkgs);
+        let bv = apply_selection("0.9.0", &plan, &sel, &mut pkgs);
         assert_eq!(bv, "0.10.0");
         assert!(pkgs.stdlib_installed.contains("math"));
         assert!(pkgs.stdlib_removed.contains("time"));
@@ -603,8 +607,11 @@ anyhow = \"1\"\n";
             external: ext(&[("widgets", ver("1.2.0"))]),
         };
         let plan = UpdatePlan {
-            shell: Some(("0.9.0".to_string(), "0.10.0".to_string())),
-            new_stdlib: vec!["math".to_string()],
+            shell: Some(ShellBump {
+                current: "0.9.0".to_string(),
+                latest: "0.10.0".to_string(),
+                new_stdlib: vec!["math".to_string()],
+            }),
             external_updates: vec![(
                 "widgets".to_string(),
                 "1.2.0".to_string(),
@@ -616,36 +623,13 @@ anyhow = \"1\"\n";
             new_stdlib: BTreeSet::new(),
             external: sset(&["widgets"]),
         };
-        let bv = apply_selection("0.9.0", "0.10.0", &plan, &sel, &mut pkgs);
+        let bv = apply_selection("0.9.0", &plan, &sel, &mut pkgs);
         assert_eq!(bv, "0.9.0");
         // new stdlib stays pending (neither installed nor removed)
         assert!(!pkgs.stdlib_installed.contains("math"));
         assert!(!pkgs.stdlib_removed.contains("math"));
         // external update still applied
         assert_eq!(pkgs.external.get("widgets"), Some(&ver("1.5.0")));
-    }
-
-    #[test]
-    fn apply_no_shell_item_allows_new_optin() {
-        let mut pkgs = Packages {
-            stdlib_installed: sset(&["core"]),
-            stdlib_removed: BTreeSet::new(),
-            external: BTreeMap::new(),
-        };
-        let plan = UpdatePlan {
-            shell: None,
-            new_stdlib: vec!["math".to_string()],
-            external_updates: vec![],
-        };
-        let sel = Selection {
-            shell: false,
-            new_stdlib: sset(&["math"]),
-            external: BTreeSet::new(),
-        };
-        // build version is current == latest, so the opt-in still applies
-        let bv = apply_selection("0.9.0", "0.9.0", &plan, &sel, &mut pkgs);
-        assert_eq!(bv, "0.9.0");
-        assert!(pkgs.stdlib_installed.contains("math"));
     }
 
     #[test]
@@ -660,8 +644,11 @@ anyhow = \"1\"\n";
     fn normalize_deselects_new_stdlib_when_shell_off() {
         // items: [0]=shell, [1]=new stdlib "math", [2]=external "widgets"
         let plan = UpdatePlan {
-            shell: Some(("0.9.0".to_string(), "0.10.0".to_string())),
-            new_stdlib: vec!["math".to_string()],
+            shell: Some(ShellBump {
+                current: "0.9.0".to_string(),
+                latest: "0.10.0".to_string(),
+                new_stdlib: vec!["math".to_string()],
+            }),
             external_updates: vec![(
                 "widgets".to_string(),
                 "1.2.0".to_string(),
@@ -685,8 +672,11 @@ anyhow = \"1\"\n";
     #[test]
     fn selection_from_indices_maps_items() {
         let plan = UpdatePlan {
-            shell: Some(("0.9.0".to_string(), "0.10.0".to_string())),
-            new_stdlib: vec!["math".to_string()],
+            shell: Some(ShellBump {
+                current: "0.9.0".to_string(),
+                latest: "0.10.0".to_string(),
+                new_stdlib: vec!["math".to_string()],
+            }),
             external_updates: vec![(
                 "widgets".to_string(),
                 "1.2.0".to_string(),

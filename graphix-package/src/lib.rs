@@ -456,21 +456,17 @@ fn to_toml_string(p: &Packages) -> Result<String> {
 /// Read packages.toml, creating it with defaults (and migrating if needed).
 /// An old-format file is upgraded to v2 in place on first read (best-effort —
 /// a write failure doesn't fail the read), so migration runs exactly once.
+/// The record, migrated from an old format or the defaults when there is
+/// none. Nothing is written here: the commands that change the record
+/// write it, under the package lock.
 async fn read_packages() -> Result<Packages> {
     let path = packages_toml_path()?;
     match fs::read_to_string(&path).await {
-        Ok(contents) => {
-            let (p, migrated) = parse_packages(&contents)?;
-            if migrated {
-                let _ = write_packages(&p).await;
-            }
-            Ok(p)
-        }
+        Ok(contents) => Ok(parse_packages(&contents)?.0),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut p = Packages::default();
             p.stdlib_installed = DEFAULT_PACKAGES.iter().map(|n| n.to_string()).collect();
             p.enforce_invariants();
-            write_packages(&p).await?;
             Ok(p)
         }
         Err(e) => Err(e.into()),
@@ -483,18 +479,10 @@ async fn write_packages(p: &Packages) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    // CR claude for claude: [risk] write_packages truncates and rewrites packages.toml in
-    // place, and read_packages also writes it (migration, first creation) from list(),
-    // which holds no lock. An interrupted write leaves an empty file, after which every
-    // package command fails with 'packages.toml missing [packages] table'. A write cut
-    // off right after the [packages] table, which is written first, is quietly migrated
-    // to a file with every stdlib package removed, and a list() that reads a
-    // half-written file writes that migration back. Probe (scratch XDG_DATA_HOME): an
-    // empty packages.toml makes `graphix package list` fail, and a file holding only
-    // `[packages]` with one entry is rewritten with installed = ["core"]. Write a
-    // temporary file in the same directory and rename it over packages.toml, and have
-    // list() either not write or take the lock. (package-15)
-    fs::write(&path, to_toml_string(p)?).await?;
+    // a whole file or the old one: written beside it, then renamed over it
+    let tmp = path.with_extension("toml.tmp");
+    fs::write(&tmp, to_toml_string(p)?).await?;
+    fs::rename(&tmp, &path).await?;
     Ok(())
 }
 
@@ -880,28 +868,25 @@ impl PackageId {
 
 /// The set of changes `update` discovered as available.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// CR claude for claude: [structure] UpdatePlan can hold new_stdlib entries with shell =
-// None, a state update never builds (stdlib_latest is empty without a bump, 1607-1613).
-// apply_selection still guards against it through its `build_version == latest_shell`
-// proxy, and apply_no_shell_item_allows_new_optin pins the unreachable state. Nesting
-// the list in the bump (shell: Option<ShellBump { current, latest, new_stdlib }>) makes
-// 'new stdlib packages need the shell update' part of the type. apply_selection then
-// applies them only when the bump is selected, and the proxy and that test go.
-// (package-13)
 struct UpdatePlan {
-    /// `Some((current, latest))` iff a newer shell version is available.
-    shell: Option<(String, String)>,
-    /// Newly-shipped stdlib packages not yet seen (installed or removed).
-    new_stdlib: Vec<String>,
+    /// A newer shell version, when one is available.
+    shell: Option<ShellBump>,
     /// `(name, old, new)` for each external package with a newer version.
     external_updates: Vec<(String, String, String)>,
 }
 
+/// A newer shell, and the stdlib packages it ships that the record has
+/// not seen (installed or removed): only that shell builds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellBump {
+    current: String,
+    latest: String,
+    new_stdlib: Vec<String>,
+}
+
 impl UpdatePlan {
     fn is_empty(&self) -> bool {
-        self.shell.is_none()
-            && self.new_stdlib.is_empty()
-            && self.external_updates.is_empty()
+        self.shell.is_none() && self.external_updates.is_empty()
     }
 }
 
@@ -918,7 +903,11 @@ impl Selection {
     fn all(plan: &UpdatePlan) -> Self {
         Self {
             shell: plan.shell.is_some(),
-            new_stdlib: plan.new_stdlib.iter().cloned().collect(),
+            new_stdlib: plan
+                .shell
+                .iter()
+                .flat_map(|b| b.new_stdlib.iter().cloned())
+                .collect(),
             external: plan.external_updates.iter().map(|(n, _, _)| n.clone()).collect(),
         }
     }
@@ -932,21 +921,20 @@ fn compute_update_plan(
     packages: &Packages,
     external_latest: &BTreeMap<String, String>,
 ) -> UpdatePlan {
-    let shell = if version_gt(latest_shell, current_shell) {
-        Some((current_shell.to_string(), latest_shell.to_string()))
-    } else {
-        None
-    };
     // BTreeSet iterates sorted, so new_stdlib comes out sorted.
-    let new_stdlib = stdlib_set_from_source
-        .iter()
-        .filter(|n| {
-            !packages.stdlib_installed.contains(*n)
-                && !packages.stdlib_removed.contains(*n)
-                && !INTERNAL_PACKAGES.contains(&n.as_str())
-        })
-        .cloned()
-        .collect();
+    let shell = version_gt(latest_shell, current_shell).then(|| ShellBump {
+        current: current_shell.to_string(),
+        latest: latest_shell.to_string(),
+        new_stdlib: stdlib_set_from_source
+            .iter()
+            .filter(|n| {
+                !packages.stdlib_installed.contains(*n)
+                    && !packages.stdlib_removed.contains(*n)
+                    && !INTERNAL_PACKAGES.contains(&n.as_str())
+            })
+            .cloned()
+            .collect(),
+    });
     let mut external_updates = Vec::new();
     for (name, entry) in &packages.external {
         if let PackageEntry::Version(cur) = entry {
@@ -957,7 +945,7 @@ fn compute_update_plan(
             }
         }
     }
-    UpdatePlan { shell, new_stdlib, external_updates }
+    UpdatePlan { shell, external_updates }
 }
 
 /// Apply a selection to `packages`, returning the shell version to build
@@ -966,27 +954,25 @@ fn compute_update_plan(
 /// with it taken, a deselected new package is recorded in `removed`.
 fn apply_selection(
     current_shell: &str,
-    latest_shell: &str,
     plan: &UpdatePlan,
     sel: &Selection,
     packages: &mut Packages,
 ) -> String {
-    let build_version = if plan.shell.is_some() && sel.shell {
-        latest_shell.to_string()
-    } else {
-        current_shell.to_string()
-    };
-    if build_version == latest_shell {
-        for name in &plan.new_stdlib {
-            if sel.new_stdlib.contains(name) {
-                packages.stdlib_removed.remove(name);
-                packages.stdlib_installed.insert(name.clone());
-            } else {
-                packages.stdlib_installed.remove(name);
-                packages.stdlib_removed.insert(name.clone());
+    let build_version = match &plan.shell {
+        Some(bump) if sel.shell => {
+            for name in &bump.new_stdlib {
+                if sel.new_stdlib.contains(name) {
+                    packages.stdlib_removed.remove(name);
+                    packages.stdlib_installed.insert(name.clone());
+                } else {
+                    packages.stdlib_installed.remove(name);
+                    packages.stdlib_removed.insert(name.clone());
+                }
             }
+            bump.latest.clone()
         }
-    }
+        _ => current_shell.to_string(),
+    };
     for (name, _old, new) in &plan.external_updates {
         if sel.external.contains(name) {
             packages.external.insert(name.clone(), PackageEntry::Version(new.clone()));
@@ -1027,11 +1013,14 @@ impl Item {
 /// The 1-based position is the stable index used by the edit prompt.
 fn plan_items(plan: &UpdatePlan) -> Vec<Item> {
     let mut items = Vec::new();
-    if let Some((current, latest)) = &plan.shell {
-        items.push(Item::Shell { current: current.clone(), latest: latest.clone() });
-    }
-    for n in &plan.new_stdlib {
-        items.push(Item::NewStdlib(n.clone()));
+    if let Some(bump) = &plan.shell {
+        items.push(Item::Shell {
+            current: bump.current.clone(),
+            latest: bump.latest.clone(),
+        });
+        for n in &bump.new_stdlib {
+            items.push(Item::NewStdlib(n.clone()));
+        }
     }
     for (name, old, new) in &plan.external_updates {
         items.push(Item::External {
@@ -1810,8 +1799,7 @@ impl GraphixPM {
             }
             Outcome::Apply(sel) => sel,
         };
-        let build_version =
-            apply_selection(&current, &latest, &plan, &sel, &mut packages);
+        let build_version = apply_selection(&current, &plan, &sel, &mut packages);
         // Reuse the latest source if we're building against it; otherwise the
         // shell bump was declined and we must build against the current source.
         let build_src = match latest_src {
