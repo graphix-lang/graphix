@@ -2702,7 +2702,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
         Ok(Box::new(Dbg { spec, dest, typ, buf: buf_, out: TagValue::phantom() }))
     }
 
-    // CR claude for claude: [bug] dbg is an effect but is declared Stateless(None), as
+    // CR claude for eric: [bug] dbg is an effect but is declared Stateless(None), as
     // are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
     // arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
     // call skips sleep, and each re-selection enters it as a birth where the standing
@@ -2715,6 +2715,13 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     // CLAUDE.md's "`None` for effects" say the opposite and need the same correction.
     // probe: design/review-2026-10-05/repro/x-builtin-effects-05.gx
     // (x-builtin-effects-05)
+    // 2026-10-07 claude: re-addressed with core-lib-09, which asks the opposite (print
+    // and println Stateless(None)). One Effect variant serves two questions: is_pure
+    // (analysis.rs) decides both that an arm skips sleep and that a tail loop runs as one
+    // activation. An effect without a fast call wants "may skip a tail loop's
+    // activations" but "must sleep with its arm" (dbg, log, print, buffer::decode's
+    // writes, x-builtin-effects-02). A fourth class, or a second predicate for arm sleep,
+    // is the decision.
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_dbg";
 
@@ -2895,7 +2902,7 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            // CR claude for claude: [perf] print and println are declared Sync, while dbg
+            // CR claude for eric: [perf] print and println are declared Sync, while dbg
             // and log, which have the same shape (a #dest config, a scratch buffer,
             // emit_line), are Stateless(None), and design/strict_fusion.md lists print
             // among the effects kept Stateless(None) so a tail loop that prints stays
@@ -2907,6 +2914,8 @@ macro_rules! printfn {
             // their effects drifted apart; one shared body would also stop all four
             // imaging their scratch buffer. probe:
             // design/review-2026-10-05/repro/core-lib-09.gx (core-lib-09)
+            // 2026-10-07 claude: re-addressed with x-builtin-effects-05 (the same choice from the
+            // other side).
             const EFFECT: Effect = Effect::Sync;
             const NAME: &str = $name;
 

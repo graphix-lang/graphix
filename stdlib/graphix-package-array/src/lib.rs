@@ -144,16 +144,6 @@ graphix_package_core::fast_builtin!(Sort, SortEv, "array_sort", fc_sort);
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
-            // CR claude for claude: [bug] This set misses keys that == calls equal.
-            // netidx-value's Hash for F32/F64 (../netidx/netidx-value/src/op.rs:59-72)
-            // hashes -0.0 by its raw bits and keeps the sign bit in its NaN mask, while
-            // its PartialEq says -0.0 == 0.0 and every NaN is equal. So dedup keeps
-            // both zeros and both NaN signs (x86's 0.0 / 0.0 is a negative NaN), while
-            // == and map keys treat each pair as one value. Fix it in that Hash (one
-            // bit pattern for every NaN, -0.0 hashed as 0.0), since every hash
-            // container of Value depends on it. probe:
-            // design/review-2026-10-05/repro/x-engine-collections-06.gx
-            // (x-engine-collections-06)
             let mut seen: LPooled<AHashSet<Value>> = LPooled::take();
             let mut kept: LPooled<Vec<Value>> = LPooled::take();
             for v in a.iter() {

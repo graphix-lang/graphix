@@ -437,6 +437,8 @@ async fn program_image_restores_fork_control() -> Result<()> {
     // both runtimes as par_attrs.rs does, equal under Force for `#[serial]` and above
     // zero under Auto for `#[parallel]`, over such a nested let whose collection grows
     // after start. (t-image-04)
+    // 2026-10-07 claude: deferred to batch 9 with t-image-01: the nested-let pin
+    // fails until a run-time bind keeps its attribute.
     assert_eq!(cold_values, warm_values);
     Ok(())
 }

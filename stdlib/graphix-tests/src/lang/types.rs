@@ -208,6 +208,7 @@ run!(rectypes2, RECTYPES2, |v: Result<&Value>| matches!(v, Err(e) if format!("{e
 // JIT reads "s" as 0. Once deftype refuses the variable (see the CR at env.rs:1451),
 // make this a refusal pin and add a pin that uses such a type. probe:
 // design/review-2026-10-05/repro/tests-lang-b-01.gx (tests-lang-b-01)
+// 2026-10-07 claude: deferred to batch 9 with the deftype refusal it waits on.
 const TYPEDEF_TVAR_OK: &str = r#"
 {
   type T<'a, 'b> = { foo: 'a, bar: 'b, f: fn(a: 'a, b: 'b, c: 'c) -> 'a };
