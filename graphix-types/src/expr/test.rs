@@ -2489,17 +2489,60 @@ mod tree_sitter_compat {
         assert!(sexp.contains("attribute"), "no attribute node in {sexp}");
     }
 
-    // CR claude for claude: [test-gap] These proptests and assert_ts_parses only check
-    // that a printed expression has no ERROR or MISSING node, so a wrong tree passes:
-    // the generator emits `~!` through BinOp::ALL and tree-sitter reads `a ~! b` as `a
-    // ~ (!b)`. The type generator never builds Type::App and trait_method_sig always
-    // takes a bare `self`, so `self<'a>` is never tried, and no test parses the repo's
-    // own sources: at HEAD stdlib/graphix-package-core/src/graphix/mod.gxi has 18 ERROR
-    // nodes (the Collection trait's `self<'a>`), the only failure among the stdlib,
-    // book/src and bench files. A test over the directories
-    // graphix-compiler/tests/expr_spans.rs walks, plus tree-shape pins for `a ~! b`,
-    // `&|x| x + 1`, `` `A(x) `` and `t.0.1`, would make this the gate
-    // ide/README.md:142-145 says it is. (ide-tooling-07)
+    /// The tree, not only its absence of errors: forms the grammar once
+    /// read as another valid tree.
+    #[test]
+    fn ts_tree_shapes() {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
+        for (src, shape) in [
+            ("a ~! b", "(binary_expression (reference (module_path (identifier))) (reference (module_path (identifier))))"),
+            ("&|x| x + 1", "(by_ref (lambda (lambda_params (lambda_param (structure_pattern (pattern_bind name: (identifier))))) (binary_expression"),
+            ("`A(x)", "(variant (type_identifier) (reference"),
+            ("t.0.1", "(tuple_ref (tuple_ref (reference (module_path (identifier))) (number)) (number))"),
+            ("|a, x| a + x", "(lambda (lambda_params"),
+            ("i64:4/i64:2", "(binary_expression (type_ascription (primitive_type) (literal (number))) (type_ascription"),
+            ("bytes:AQID==", "(type_ascription (primitive_type))"),
+        ] {
+            let tree = parser.parse(src, None).unwrap();
+            let sexp = tree.root_node().to_sexp();
+            assert!(sexp.contains(shape), "{src}: expected {shape} in {sexp}");
+        }
+    }
+
+    /// Every program and interface the repo ships parses with no ERROR or
+    /// MISSING node.
+    #[test]
+    fn ts_repo_sources_parse() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out)
+                } else if path.extension().is_some_and(|e| e == "gx" || e == "gxi") {
+                    out.push(path)
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = Vec::new();
+        for dir in ["book/src/examples", "stdlib", "bench"] {
+            walk(&root.join(dir), &mut files);
+        }
+        assert!(files.len() > 100, "found only {} sources", files.len());
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
+        let mut failed = Vec::new();
+        for path in &files {
+            let src = std::fs::read_to_string(path).unwrap();
+            let tree = parser.parse(&src, None).unwrap();
+            if let Some(e) = find_tree_error(tree.root_node(), &src) {
+                failed.push(format!("{}: {e}", path.display()));
+            }
+        }
+        assert!(failed.is_empty(), "tree-sitter refuses:\n{}", failed.join("\n"));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1024))]
 
