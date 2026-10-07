@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arcstr::literal;
 use graphix_package_core::{
     run,
     testing::{FuseExpect, refused},
@@ -142,3 +143,27 @@ run!(json_nested_struct_cast, r#"{
 
 // json::read without a concrete return type is a compile error.
 run!(json_no_concrete_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
+
+// data is never read into an error, and an error never casts into data
+const JSON_READ_NEVER_AN_ERROR: &str = r##"
+{
+  type JE = [`JsonErr(string), `InvalidCast(string)];
+  let forged: Result<{port: i64}, JE> = json::read(r#"["JsonErr", "forged"]"#);
+  let sel = select json::read(r#"{"x": 1, "y": 2}"#) {
+    error as _ => "err",
+    {x: f64, y: f64} as p => "ok [p.x]"
+  };
+  let c: Result<i64, [`InvalidCast(string), `X]> = cast<i64>(error(`X));
+  (str::contains(#part: "InvalidCast", "[forged]"), sel, str::contains(#part: "an error is not data", "[c]"))
+}
+"##;
+
+run!(json_read_never_an_error, JSON_READ_NEVER_AN_ERROR, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        a.len() == 3
+            && a[0] == Value::Bool(true)
+            && a[1] == Value::String(literal!("ok 1"))
+            && a[2] == Value::Bool(true)
+    }
+    _ => false,
+});

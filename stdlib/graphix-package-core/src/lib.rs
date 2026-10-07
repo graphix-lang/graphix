@@ -40,20 +40,8 @@ pub(crate) mod queuefn;
 /// The success member `T` of a `Result<T, E>` return type, in either the
 /// named form or the expanded `[T, Error<E>]` form. Shape only; the
 /// typecheck-time validation is [`extract_cast_type`].
-// CR claude for claude: [bug] The checker can bind 'b to a union that holds an error
-// member: `[T, Error<E>]` under a `Result<T, E>` annotation, `[error, T]` under a
-// select with an `error as e` arm. This function returns that union whole, so the read
-// casts data into an error: `Error<E>` wraps any value E admits, and `error` takes any
-// string, or an array whose first element leads to one. So JSON `["JsonErr", "forged"]`
-// read as `Result<{port: i64}, JE>` returns the input's own JsonErr instead of
-// InvalidCast. `select json::read(r#"{"x": 1, "y": 2}"#) { error as e => .., {x: f64,
-// y: f64} as p => .. }` takes the error arm with error:"x", because the error member
-// sorts first and wins whenever T needs a conversion. json, toml, pack, sqlite and
-// sys::net (through extract_cast_type) and str::parse all take their target here, and
-// pack::read also returns an error decoded from the bytes whenever the target admits
-// one. probe: design/review-2026-10-05/repro/small-pkgs-04.gx (small-pkgs-04)
 pub fn cast_target(rtype: &Type) -> Option<Type> {
-    rtype.with_deref(|t| match t? {
+    let target = rtype.with_deref(|t| match t? {
         Type::Ref(TypeRef { name, params, .. })
             if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
         {
@@ -63,6 +51,37 @@ pub fn cast_target(rtype: &Type) -> Option<Type> {
             elements.iter().find(|elem| !matches!(elem, Type::Error(_))).cloned()
         }
         _ => None,
+    })?;
+    without_errors(&target)
+}
+
+/// `t` with its error members gone: data is never cast into an error (a
+/// checker may bind the success type to a union holding one), and a type
+/// that is only errors is no target.
+fn without_errors(t: &Type) -> Option<Type> {
+    fn member(t: &Type) -> Option<Type> {
+        t.with_deref(|d| match d? {
+            Type::Error(_) => None,
+            Type::Primitive(p) if p.contains(Typ::Error) => {
+                let mut p = *p;
+                p.remove(Typ::Error);
+                (!p.is_empty()).then(|| Type::Primitive(p))
+            }
+            _ => Some(t.clone()),
+        })
+    }
+    t.with_deref(|d| match d? {
+        Type::Set(els) => {
+            let mut kept = els.iter().filter_map(member);
+            match (kept.next(), kept.next()) {
+                (None, _) => None,
+                (Some(one), None) => Some(one),
+                (Some(a), Some(b)) => Some(Type::Set(triomphe::Arc::from_iter(
+                    [a, b].into_iter().chain(kept),
+                ))),
+            }
+        }
+        _ => member(t),
     })
 }
 

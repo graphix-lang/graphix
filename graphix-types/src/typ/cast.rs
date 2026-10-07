@@ -358,19 +358,6 @@ impl Type {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
-                // CR claude for claude: [bug] An error value that reaches this line
-                // converts through netidx Value::cast, which maps every Value::Error to
-                // Bool(false).cast(t). So cast<i64> of an error is 0, cast<bool> is
-                // false, cast<null> is null, and the Array arm's wrap gives [0], while
-                // a null or bytes value gets InvalidCast. Every type-directed read
-                // shares this path: a typed sys::net::subscribe reads 0 when its
-                // publisher goes away (the pump sends error("unsubscribed")), a typed
-                // sys::net::call reads 0 when the rpc fails, pack::read of a packed
-                // error reads 0, and the `?` after them never raises. Refuse a
-                // Value::Error here unless the set holds Typ::Error; str::parse already
-                // does this by hand, and a string target, which today prints the error,
-                // is the one case to decide. probe:
-                // design/review-2026-10-05/repro/gx-stdlib.r2-12.gx (gx-stdlib.r2-12)
                 // CR claude for eric: [bug] Every type-directed read (str::parse,
                 // json/toml/pack::read, sys::net subscribe/call, sqlite::query) and
                 // every cast from a string reaches this line, and netidx's Value::cast
@@ -390,6 +377,10 @@ impl Type {
                 // strings needs a ruling on that pin, and str::parse's signature must
                 // then admit the InvalidCast it can already return. probe:
                 // design/review-2026-10-05/repro/gx-stdlib-02.gx (gx-stdlib-02)
+                // netidx casts every error as false: an error is no data
+                if let Value::Error(_) = v {
+                    return Err(self.cast_fail("an error is not data", v));
+                }
                 match s.iter().find_map(|t| v.clone().cast(t)) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
