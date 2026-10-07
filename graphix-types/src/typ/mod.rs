@@ -13,10 +13,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::{
-    pack::{Pack as PackTrait, PackError, encode_varint},
-    utils::Either,
-};
+use netidx_core::pack::{Pack as PackTrait, PackError, encode_varint};
 use netidx_value::Typ;
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
@@ -136,7 +133,46 @@ struct RefHist<H: IsoPoolable> {
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
     content_ids: Lazy<AHashMap<NormKey, usize>>,
+    /// Structure → id for composite non-Ref types, open cells by their
+    /// cell: an expansion rebuilt at every visit meets its earlier self.
+    /// A hash bucket holds the types themselves, matched by
+    /// `union_identical`.
+    shape_ids: Lazy<IntMap<u64, SmallVec<[(Type, usize); 1]>>>,
     next_id: usize,
+}
+
+/// A hash of `t`'s structure consistent with `union_identical`: a bound
+/// cell is its binding, an open cell its cell, a union's members in any
+/// order, a function only its shape (its equality is loose).
+fn shape_hash(t: &Type) -> u64 {
+    ensure_sufficient(|| {
+        let mut h = ahash::AHasher::default();
+        match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => return shape_hash(&b),
+                None => (0u8, tv.cell_addr()).hash(&mut h),
+            },
+            Type::Set(ts) => {
+                let members = ts.iter().fold(0u64, |a, t| a.wrapping_add(shape_hash(t)));
+                (1u8, members).hash(&mut h)
+            }
+            Type::Fn(f) => (2u8, f.args.len(), f.vargs.is_some()).hash(&mut h),
+            Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
+            Type::Ref(tr) => (4u8, &tr.scope, &tr.name).hash(&mut h),
+            Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
+            Type::Struct(fs) => {
+                6u8.hash(&mut h);
+                fs.iter().for_each(|(n, _, _)| n.hash(&mut h))
+            }
+            Type::Abstract { id, .. } => (7u8, id).hash(&mut h),
+            Type::ByRef(m, _) => (8u8, m.tag()).hash(&mut h),
+            t => (9u8, mem::discriminant(t)).hash(&mut h),
+        }
+        if !matches!(t, Type::Set(_) | Type::Fn(_)) {
+            t.for_each_child(&mut |c| shape_hash(c).hash(&mut h));
+        }
+        h.finish()
+    })
 }
 
 impl<H: IsoPoolable> Deref for RefHist<H> {
@@ -159,6 +195,7 @@ impl<H: IsoPoolable> RefHist<H> {
             inner: LPooled::take(),
             ref_ids: Lazy::new(),
             content_ids: Lazy::new(),
+            shape_ids: Lazy::new(),
             next_id: 0,
         }
     }
@@ -213,7 +250,21 @@ impl<H: IsoPoolable> RefHist<H> {
                 (d, (**params).as_ptr().addr(), id.0 as usize)
             }
             Type::Any | Type::Bottom => (d, 0, 0),
-            t => probe_key(t)?,
+            Type::App(..) | Type::Hole => return None,
+            t => {
+                let h = shape_hash(t);
+                let found = self.shape_ids.get().and_then(|m| m.get(&h)).and_then(|b| {
+                    b.iter()
+                        .find(|(s, _)| setops::union_identical(s, t))
+                        .map(|(_, id)| *id)
+                });
+                if let Some(id) = found {
+                    return Some(id);
+                }
+                let id = self.next();
+                self.shape_ids.get_mut().entry(h).or_default().push((t.clone(), id));
+                return Some(id);
+            }
         };
         if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
             return Some(id);
@@ -1944,15 +1995,6 @@ impl Type {
                 Some((Type::Abstract { id: *id, params: ps }, params[n].clone()))
             }
             _ => None,
-        }
-    }
-
-    fn iter_prims(&self) -> impl Iterator<Item = Self> {
-        match self {
-            Self::Primitive(p) => {
-                Either::Left(p.iter().map(|t| Type::Primitive(t.into())))
-            }
-            t => Either::Right(iter::once(t.clone())),
         }
     }
 

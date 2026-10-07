@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
 use nohash::{IntMap, IntSet};
@@ -64,7 +64,14 @@ pub(super) struct ContainsHist {
     /// The shallowest in-progress pair the current verdict assumed.
     low_water: usize,
     epoch: u64,
+    /// Per definition, the expansions of it in progress on this path.
+    unfolding: Lazy<IntMap<usize, u32>>,
 }
+
+/// How many expansions of one typedef a containment path may hold. A
+/// pair met again ends a walk, so going deeper means the parameters grow
+/// at every level (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
+const MAX_UNFOLDING: u32 = 64;
 
 impl Deref for ContainsHist {
     type Target = RefHist<AHashMap<RefPair, usize>>;
@@ -91,6 +98,7 @@ impl ContainsHist {
             traits_in_progress: SmallVec::new(),
             low_water: usize::MAX,
             epoch: 0,
+            unfolding: Lazy::new(),
         }
     }
 
@@ -694,23 +702,33 @@ impl Type {
                 // in Env::deftype makes this memo sound but does not bound it, and
                 // nothing here plays the role of fusion's MAX_FREEZE_EXPANSIONS; probe:
                 // design/review-2026-10-05/repro/t-contains-09.gx (t-contains-09)
-                // CR claude for claude: [bug] This memo never ends a walk through a
-                // recursive typedef whose self-reference is a union member (`[T<'a>,
-                // null]`, ErrChain's `cause`) once the refs' params hold type
-                // variables. `[T<P>, null] ⊇ T<Q>` and `T<P> ⊇ {..}` are keyed by the
-                // non-Ref side's allocation, and expand_ref (line 148) rebuilds such a
-                // ref's expansion on every visit; set_covers_by_distribution's head()
-                // rebuilds every ref it expands. So no pair ever repeats, and the walk
-                // recurses until memory runs out. Both `let h = |s| { catch(e) null;
-                // error(`A(s))?; error(`B(s))?; null }` (the catch's union probes
-                // ErrChain<[`A('s), `B('s)]> ⊇ ErrChain<`A('s)>) and `type T<'a> = {n:
-                // [T<'a>, null], v: 'a}; let g = |t: T<'b>| -> T<['b, i64]> t;` take
-                // `graphix --check`, and every run, past 6 GB in about 6 s. The memo
-                // has to recognize a pair met again by its content, not by its
-                // allocation. probe: design/review-2026-10-05/repro/x-parallel-02.gx
-                // (x-parallel-02)
+                // 2026-10-07 claude: no longer hangs: past MAX_UNFOLDING expansions of
+                // one definition on a path the comparison is refused ("cannot compare
+                // two instances of N"). The valid widening N<[i64, string]> := N<i64>
+                // is refused that way too; deciding it needs the parameters' variance.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                hist.assuming(key, |hist| {
+                let defs = [t0, t1].map(|t| match t {
+                    Self::Ref(tr) => tr.def_key(),
+                    _ => None,
+                });
+                for d in defs.iter().flatten() {
+                    let n = hist.unfolding.get_mut().entry(*d).or_default();
+                    *n += 1;
+                    if *n > MAX_UNFOLDING {
+                        for d in defs.iter().flatten() {
+                            *hist.unfolding.get_mut().entry(*d).or_default() -= 1;
+                        }
+                        let name = match (t0, t1) {
+                            (Self::Ref(tr), _) | (_, Self::Ref(tr)) => tr.name.clone(),
+                            _ => unreachable!("a definition key is a reference's"),
+                        };
+                        bail!(
+                            "cannot compare two instances of {name}: its parameters \
+                             grow at every level of its recursion, so no comparison ends"
+                        )
+                    }
+                }
+                let r = hist.assuming(key, |hist| {
                     let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
                         return Ok(false);
                     };
@@ -718,7 +736,11 @@ impl Type {
                         return Ok(false);
                     };
                     e0.contains_int(flags, env, hist, &e1)
-                })
+                });
+                for d in defs.iter().flatten() {
+                    *hist.unfolding.get_mut().entry(*d).or_default() -= 1;
+                }
+                r
             }
             // ⊥ fits whatever the cell becomes; binding would only
             // foreclose its writers. The cell remembers it was fed ⊥.

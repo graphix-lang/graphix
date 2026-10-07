@@ -1904,3 +1904,33 @@ const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
 "#;
 
 run!(union_holds_its_own_cell, UNION_HOLDS_ITS_OWN_CELL, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+/// A recursive type under a union member with variables in its params
+/// ends its walk: the memo meets a rebuilt expansion by its structure.
+const RECURSIVE_UNION_MEMBER_ENDS: &str = r#"
+{
+    type T<'a> = { n: [T<'a>, null], v: 'a };
+    let g = |t: T<'b>| -> T<['b, i64]> t;
+    let h = |s| { catch(e) null; error(`A(s))?; error(`B(s))?; null };
+    0
+}
+"#;
+
+run!(
+    recursive_union_member_ends,
+    RECURSIVE_UNION_MEMBER_ENDS,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0)))
+);
+
+/// A typedef whose parameters grow at every level cannot be compared:
+/// refused, never a walk without end.
+const GROWING_TYPEDEF_REFUSED: &str = r#"
+{
+    type N<'a> = [null, ('a, N<Array<'a>>)];
+    let n1: N<i64> = null;
+    let n2: N<[i64, string]> = n1;
+    n2
+}
+"#;
+
+run!(growing_typedef_refused, GROWING_TYPEDEF_REFUSED, refused("its parameters grow"); FuseExpect::None);
