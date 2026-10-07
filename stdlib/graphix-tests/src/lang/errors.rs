@@ -17,7 +17,6 @@ const CHECKED0: &str = r#"
 2 +? 2
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(checked0, CHECKED0, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
@@ -102,7 +101,6 @@ const CHECKED_DOLLAR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(checked_dollar, CHECKED_DOLLAR, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
@@ -314,7 +312,6 @@ const CATCH_IN_LAMBDA_THROWS: &str = r#"
 }
 "#;
 
-// None: the catch is a fusion boundary at the lambda body's root.
 run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))

@@ -117,15 +117,6 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The ASPIRE comment above says the body does not fuse,
-// but this fixture asserts FuseExpect::Jit and its body fuses whole (graphix-fuzz run:
-// fused=1; the only failure is the harness's module statement). typed_arrays0 (line
-// 139) is the same. The same sentence sits above 76 FuseExpect::Jit fixtures across
-// graphix-tests, and each of those fixtures asserts that a kernel ran. traits.rs:459
-// also names the wrong blocker for poly_value_two_types; the real one is interpolating
-// an Array into a string. Delete these comments; where a remaining de-fuse matters,
-// name its real blocker or pin it with `shape:`. (tests-lang-b-08)
 run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
@@ -151,7 +142,6 @@ const TYPED_ARRAYS0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &**a {
         [Value::Array(a0), Value::Array(a1)] => match (&**a0, &**a1) {

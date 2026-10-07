@@ -179,7 +179,6 @@ const ANY0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(any0, ANY0, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
@@ -194,7 +193,6 @@ const ANY1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — array construction and builtin selection (any).
 run!(any1, ANY1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::String(s0), Value::String(s1)] => {
@@ -230,8 +228,7 @@ const WRAP_OVERFLOW: &str = r#"
 }
 "#;
 
-// Unchecked integer arith wraps on overflow in both modes; checked `+?`
-// keeps its catchable ArithError.
+// Unchecked integer arith wraps on overflow in both modes.
 run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,

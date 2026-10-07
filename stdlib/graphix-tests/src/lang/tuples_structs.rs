@@ -61,7 +61,6 @@ const TUPLES1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(tuples1, TUPLES1, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
@@ -77,7 +76,6 @@ const TUPLES2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(tuples2, TUPLES2, |v: Result<&Value>| match v {
     Ok(Value::F64(65.5)) => true,
     _ => false,
@@ -136,7 +134,6 @@ const BINDSTRUCT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(bindstruct, BINDSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
@@ -241,7 +238,6 @@ const STRUCTWITH4: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(structwith4, STRUCTWITH4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 4]>() {
         Ok(
@@ -274,7 +270,6 @@ const STRUCTWITH5: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(structwith5, STRUCTWITH5, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[[(ArcStr, i64); 2]; 1]>() {
         Ok([[(f00, 0), (f01, -1)]]) if f00 == "x" && f01 == "y" => true,
@@ -368,7 +363,6 @@ const CALL_NULLABLE_RETURN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(call_nullable_return, CALL_NULLABLE_RETURN, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,

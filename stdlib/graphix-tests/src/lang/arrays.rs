@@ -226,20 +226,6 @@ const ARRAY_INDEXING6: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The 'ASPIRE: Jit' comment above, like every one in
-// this unit's files, sits over a fixture that already asserts FuseExpect::Jit, and most
-// of them are wrong. Eight of these bodies fuse whole today (graphix-fuzz run shows
-// only the module statements failing): arrays.rs 292, 421, 453 and 459, errors.rs:20,
-// maps.rs:195, tuples_structs.rs:371 and variants.rs:39. So does list_pat_shapes, whose
-// comment at lists.rs:55 says the select de-fuses. The rest stop at iter, group, uniq,
-// any or a connect, which strict fusion never fuses (this one, arrays.rs:346, basics.rs
-// 174 and 189, errors.rs:105, tuples_structs.rs 244 and 277), or at a different blocker
-// from the one named: tuples_structs.rs 64 and 139 stop at a destructuring let and 80
-// at a string literal pattern, and none of them calls a lambda; maps.rs:177 stops at a
-// map literal with non-constant entries. Delete these comments and the `+?` clause of
-// basics.rs:225-226 (wrap_overflow has no checked operator); functions.rs, select.rs
-// and types.rs have the same stale lines. (tests-lang-d-12)
 run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
     Ok(Value::Array(a))
         if &a[..]
@@ -302,7 +288,6 @@ const ARRAY_MATCH0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_match0, ARRAY_MATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(6)) => true,
     _ => false,
@@ -356,7 +341,6 @@ const ARRAY_MATCH2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_match2, ARRAY_MATCH2, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[ArcStr; 2]>() {
         Ok([s0, s1]) if &*s0 == "Empty" && &*s1 == "Nonempty" => true,
@@ -438,7 +422,6 @@ const FOLD_TUPLE_ACC: &str = r#"
 array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
 "#;
 
-// ASPIRE: Jit — a destructured acc formal has no single BindId.
 run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(6), Value::I64(6)]),
     _ => false,
@@ -470,13 +453,11 @@ const FOLD_ARRAY_ACC: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — a non-tail Value producer in a callee body.
 run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(&a[..], [Value::I64(2), Value::I64(4)]),
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// ASPIRE: Jit — a string acc formal across the cross-kernel call.
 const FOLD_STRING_ACC: &str = r#"
 array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 "#;

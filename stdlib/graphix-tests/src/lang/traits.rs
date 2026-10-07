@@ -135,7 +135,6 @@ run!(
 
 // Dispatch over a union self type picks the member's implementation at
 // runtime.
-// ASPIRE: Jit — abstract patterns de-fuse the generated select.
 run!(
     trait_union_dispatch,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "int 5 Counter(6)"),
@@ -215,7 +214,6 @@ run!(
 
 // A parameterized head: the element bound discharges through the
 // implementation table.
-// ASPIRE: Jit — the impl body's map over `Show::show` does not lower.
 run!(
     trait_parameterized_head,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[int 1, int 2]"),
@@ -463,7 +461,6 @@ run!(
 );
 
 // A polymorphic binding used as a value is instantiated per occurrence.
-// ASPIRE: Jit — one lambda at two element types in one region.
 run!(
     poly_value_two_types,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "[1] [1.5]"),

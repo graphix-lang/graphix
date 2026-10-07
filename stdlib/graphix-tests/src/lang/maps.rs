@@ -174,7 +174,6 @@ const MAP_COMPLEX_KEYS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_complex_keys, MAP_COMPLEX_KEYS, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<(Value, Value)>() {
         Ok((Value::String(s1), Value::String(s2)))
@@ -192,8 +191,6 @@ const MAP_WITH_ARRAYS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — a heterogeneous union value type
-// `[Array<i64>, Array<string>]` (union-value lowering).
 run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
     Ok(Value::Array(arr)) => {
         arr.len() == 3

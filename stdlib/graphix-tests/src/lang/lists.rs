@@ -51,8 +51,7 @@ run!(list_pat_sum, LIST_PAT_SUM, |v: Result<&Value>| matches!(
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// Exact-length arms miss on other lengths; anonymous rest `..`. The
-// select de-fuses; the literal binds fuse as their own kernels.
+// Exact-length arms miss on other lengths; anonymous rest `..`.
 const LIST_PAT_SHAPES: &str = r#"
 {
   let l = [<1, 2, 3>];

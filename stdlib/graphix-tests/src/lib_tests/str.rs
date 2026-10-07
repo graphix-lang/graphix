@@ -313,7 +313,6 @@ const STR_SPLIT_ESCAPED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(str_split_escaped, STR_SPLIT_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -331,7 +330,6 @@ const STR_SPLITN_ESCAPED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(str_splitn_escaped, STR_SPLITN_ESCAPED, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {

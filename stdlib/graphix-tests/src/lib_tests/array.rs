@@ -41,7 +41,6 @@ const ARRAY_MAP1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — a nested `array::map` capturing the outer element.
 run!(array_map1, ARRAY_MAP1, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[[i64; 2]; 2]>() {
@@ -365,7 +364,6 @@ const ARRAY_ITER: &str = r#"
    filter(array::iter([1, 2, 3, 4]), |x| x == 4)
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_iter, ARRAY_ITER, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(4)) => true,
@@ -384,7 +382,6 @@ const ARRAY_ITERQ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_iterq, ARRAY_ITERQ, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
@@ -732,7 +729,6 @@ const CAST_CALLBACK_PER_SLOT: &str = r#"
   array::map([true, false, true], |b| cast<i64>(b))
 "#;
 
-// ASPIRE: Jit — a non-tail Value producer in a callee body.
 run!(cast_callback_per_slot, CAST_CALLBACK_PER_SLOT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => {
@@ -765,7 +761,6 @@ const ARRAY_GROUP0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(array_group0, ARRAY_GROUP0, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -1034,9 +1029,8 @@ run!(array_dedup2, ARRAY_DEDUP2, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// HOFs over String / Value-shape elements. interp==jit agreement is the
-// drop-exactly-once proof, so the no-match / found-at-last / used-twice
-// paths matter.
+// HOFs over String / Value-shape elements: the no-match, found-at-last
+// and used-twice paths.
 
 const HOF_STR_MAP_LEN: &str = r#"array::map(["a", "bb", "ccc"], |s| str::len(s))"#;
 run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
@@ -1046,7 +1040,6 @@ run!(hof_str_map_len, HOF_STR_MAP_LEN, |v: Result<&Value>| matches!(
 
 // A String element and String output.
 const HOF_STR_MAP_UPPER: &str = r#"array::map(["hi", "yo"], |s| str::to_upper(s))"#;
-// ASPIRE: Jit — a non-tail String producer in a loop body.
 run!(hof_str_map_upper, HOF_STR_MAP_UPPER, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<[ArcStr; 2]>()),
         Ok(Ok([a, b])) if &*a == "HI" && &*b == "YO")
@@ -1106,7 +1099,7 @@ run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
     Ok(Ok([1, 0]))
 ); graphix_package_core::testing::FuseExpect::Jit);
 
-// A Value-shape (variant) element in a filter whose predicate is `==`.
+// A Value-shape (variant) element in a filter whose predicate is a select.
 const HOF_VARIANT_FILTER: &str = r#"
 array::filter([`Red, `Green, `Red], |v| select v { `Red => true, _ => false })
 "#;
@@ -1306,11 +1299,11 @@ run!(hof_leaf_string_twice, HOF_LEAF_STRING_TWICE, |v: Result<&Value>| {
         Ok(Ok([a, b])) if &*a == "xx1" && &*b == "yy2")
 });
 
-// A nullable (value-shape) leaf compared with `==`.
+// A tuple element whose callback tests its i64 key and returns its value or
+// null.
 const HOF_LEAF_NULLABLE: &str = r#"
 array::filter_map([(1, 10), (2, 20)], |(k, v)| select k == 2 { true => v, false => null })
 "#;
-// ASPIRE: Jit — a non-tail Value producer in a loop body.
 run!(hof_leaf_nullable, HOF_LEAF_NULLABLE, |v: Result<&Value>| matches!(
     v.map(|v| v.clone().cast_to::<[i64; 1]>()),
     Ok(Ok([20]))

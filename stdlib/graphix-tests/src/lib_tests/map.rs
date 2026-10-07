@@ -70,16 +70,6 @@ const MAP_CHANGE_PRESENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The `ASPIRE: Jit — the body does not fuse into a
-// kernel yet` line above is false here: this body fuses whole today (it compiles under
-// `#[native]`), and so do map.rs:87, 101, 117 and str.rs:317, 335. In typecheck.rs (27,
-// 62, 75, 87, 139, 151, 243) the bodies call json::read or pack::read, which are async
-// and never fuse under strict fusion, so 'yet' promises something the design rules out.
-// FuseExpect::Jit itself means only that some kernel ran. The same line sits above
-// FuseExpect::Jit in 76 fixtures across stdlib/graphix-tests and above FuseExpect::None
-// in 15 more. Delete them; a fixture that must fuse whole says so with `#[native]` on
-// its body. (tests-lib-b2-09)
 run!(map_change_present, MAP_CHANGE_PRESENT, |v: Result<&Value>| match v {
     Ok(Value::I64(12)) => true,
     _ => false,
@@ -92,7 +82,6 @@ const MAP_CHANGE_ABSENT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_absent, MAP_CHANGE_ABSENT, |v: Result<&Value>| match v {
     Ok(Value::I64(110)) => true,
     _ => false,
@@ -106,7 +95,6 @@ const MAP_CHANGE_PRESERVES_OTHERS: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_preserves_others, MAP_CHANGE_PRESERVES_OTHERS, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -122,7 +110,6 @@ const MAP_CHANGE_CHAINED: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(map_change_chained, MAP_CHANGE_CHAINED, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,

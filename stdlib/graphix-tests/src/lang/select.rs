@@ -17,7 +17,6 @@ const SELECT0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — string interpolation in a select expression.
 run!(select0, SELECT0, |v: Result<&Value>| match v {
     Ok(Value::String(s)) => &**s == "first 1",
     _ => false,
@@ -51,7 +50,6 @@ const SELECTSTRUCT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — nested composite / variant payload composite.
 run!(selectstruct, SELECTSTRUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(126.0)) => true,
     _ => false,
@@ -89,7 +87,6 @@ const NESTEDMATCH0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — nested composite / variant payload composite.
 run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,
@@ -122,7 +119,6 @@ const NESTEDMATCH1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — nested composite / variant payload composite.
 run!(nestedmatch1, NESTEDMATCH1, |v: Result<&Value>| match v {
     Ok(Value::F64(47.0)) => true,
     _ => false,

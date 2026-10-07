@@ -18,13 +18,11 @@ run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, |v: Result<&Value>| 
 run!(str_parse_no_type, r#"str::parse("42")"#, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
 // json::read with a concrete type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; graphix_package_core::testing::FuseExpect::None);
 
 // json::read with a struct type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     json_typed_struct,
     r#"{
@@ -37,7 +35,6 @@ run!(
 // Late binding: deserializers passed through higher-order functions.
 
 // A deserializer stored in a variable, called with a concrete type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     late_bind_var,
     r#"{
@@ -48,7 +45,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // A function wrapping a deserializer with an explicit return type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     late_bind_wrap,
     r#"{
@@ -59,7 +55,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(99))) }; graphix_package_core::testing::FuseExpect::None);
 
 // Multiple calls to the same typed wrapper.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     late_bind_multi_json,
     r#"{
@@ -72,7 +67,6 @@ run!(
 
 // json + pack through one typed call site over bytes; the error types
 // unify to the superset.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     late_bind_mixed_deser,
     r#"{
@@ -84,7 +78,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(84))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // Struct types through a typed wrapper.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     late_bind_struct,
     r#"{
@@ -136,7 +129,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // array::init: json::read in an unannotated init closure.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     hof_init_json_read,
     r#"{
@@ -148,7 +140,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::Jit);
 
 // list::init: json::read in an unannotated init closure.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     hof_list_init_json_read,
     r#"{
@@ -188,7 +179,6 @@ run!(
 // Subscribe type-aware casting.
 
 // subscribe with a typed result.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     subscribe_typed_i64,
     r#"{
@@ -199,7 +189,6 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; graphix_package_core::testing::FuseExpect::None);
 
 // subscribe with Primitive (no cast).
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     subscribe_primitive,
     r#"{
@@ -222,7 +211,6 @@ run!(
 // RPC client type-aware casting.
 
 // call with a typed result.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     call_typed,
     r#"{
@@ -240,7 +228,6 @@ run!(
 // Publish on_write type-aware casting.
 
 // on_write callback with a typed arg.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     publish_typed_onwrite,
     r#"{
@@ -262,7 +249,6 @@ run!(
 // RPC with a typed spec and callback.
 
 // rpc with a typed struct callback arg.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     rpc_typed_struct,
     r#"{

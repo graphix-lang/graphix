@@ -12,7 +12,6 @@ const IS_ERR: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(is_err, IS_ERR, |v: Result<&Value>| match v {
     Ok(Value::Bool(b)) => *b,
     _ => false,
@@ -165,7 +164,6 @@ const ALL: &str = r#"
 }
 "#;
 
-// None: `all: fn(@args: Any) -> Any` is dynamic by signature.
 run!(all, ALL, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -178,8 +176,6 @@ const SUM: &str = r#"
 }
 "#;
 
-// None: `sum` over a heterogeneous `Array<Number>` has a dynamic result
-// type.
 run!(sum, SUM, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
@@ -206,7 +202,6 @@ const DIVIDE: &str = r#"
 }
 "#;
 
-// None: `divide` over a heterogeneous `Array<Number>`.
 run!(divide, DIVIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
@@ -295,7 +290,6 @@ const SLICE: &str = r#"
 }
 "#;
 
-// None: uses `sum` over `Array<Number>` slices.
 run!(slice, SLICE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -313,7 +307,6 @@ const FILTER0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(filter0, FILTER0, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(8)) => true,
@@ -519,8 +512,9 @@ run!(queuefn_feedback_drain, QUEUEFN_FEEDBACK_DRAIN, |v: Result<&Value>| {
 // calls dispatch immediately.
 const QUEUEFN_TRIGGER_BEFORE_FN: &str = r#"
 {
-  // Three triggers arrive on init via array::iter — they bank pop_count
-  // (queue is empty at each tick) so subsequent calls dispatch immediately.
+  // array::iter delivers the three triggers one a cycle beside xs's
+  // elements; each finds the queue empty and banks pop_count, so the calls
+  // dispatch at once.
   let trigs: Any = array::iter([null, null, null]);
   let qf = queuefn(#trigger: trigs, |x: i64| -> i64 x * 10);
   let xs = array::iter([1, 2, 3]);
@@ -810,8 +804,8 @@ const HOLD_MULTIPLE: &str = r#"
 }
 "#;
 
-// The hold call node-walks (hold is Async); Jit means the scalar
-// sub-regions around it fuse.
+// The hold call node-walks (hold is Sync, which strict fusion does not
+// fuse); Jit means the scalar sub-regions around it fuse.
 run!(hold_multiple, HOLD_MULTIPLE, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,

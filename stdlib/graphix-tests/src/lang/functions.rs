@@ -180,7 +180,6 @@ const LATE_BINDING0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(late_binding0, LATE_BINDING0, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -201,7 +200,6 @@ const LATE_BINDING1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(late_binding1, LATE_BINDING1, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => match &a[..] {
         [Value::I64(1), Value::I64(2)] => true,
@@ -218,7 +216,6 @@ const LATE_BINDING2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(late_binding2, LATE_BINDING2, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
@@ -233,7 +230,6 @@ const LATE_BINDING3: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(late_binding3, LATE_BINDING3, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
@@ -251,7 +247,6 @@ const LATE_BINDING4: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
     Ok(v) => match v.clone().cast_to::<[i64; 3]>() {
         Ok([0, 0, 55]) => true,
@@ -593,7 +588,6 @@ const LAMBDAMATCH0: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(lambdamatch0, LAMBDAMATCH0, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
@@ -618,7 +612,6 @@ const LAMBDAMATCH2: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(lambdamatch2, LAMBDAMATCH2, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
@@ -640,7 +633,6 @@ const LAMBDAMATCH4: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(lambdamatch4, LAMBDAMATCH4, |v: Result<&Value>| match v {
     Ok(Value::I64(84)) => true,
     _ => false,
@@ -691,7 +683,6 @@ const ARG_UPDATE_BEFORE_BIND: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(arg_update_before_bind, ARG_UPDATE_BEFORE_BIND, |v: Result<&Value>| match v {
     Ok(Value::I64(31)) => true,
     _ => false,

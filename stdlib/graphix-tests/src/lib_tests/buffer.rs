@@ -122,13 +122,6 @@ const ENCODE_FIXED_SIZES: &str = r#"{
   (buffer::len(b1), buffer::len(b2), buffer::len(b4), buffer::len(b8), buffer::len(bf))
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The ASPIRE comment above, and the 12 others in this
-// file, say the body does not fuse while the fixture asserts FuseExpect::Jit. The
-// encode-only bodies fuse whole, and the decode bodies fuse everything except
-// buffer::decode, which has no fast-call entry (graphix-fuzz run). Delete them; most of
-// the 120 ASPIRE lines in this crate sit beside a Jit expectation the same way.
-// (tests-lib-b1-08)
 run!(encode_fixed_sizes, ENCODE_FIXED_SIZES, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => matches!(
         &a[..],
@@ -142,7 +135,6 @@ const ENCODE_BYTES_PAD: &str = r#"{
   buffer::len(b)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(encode_bytes_pad, ENCODE_BYTES_PAD, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -152,7 +144,6 @@ const ENCODE_PAD_ZEROS: &str = r#"{
   buffer::to_array(b)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(encode_pad_zeros, ENCODE_PAD_ZEROS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) =>
         matches!(&a[..], [Value::U8(0), Value::U8(0), Value::U8(0), Value::U8(0)]),
@@ -165,7 +156,6 @@ const ENCODE_ENDIANNESS: &str = r#"{
   (le, be)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(encode_endianness, ENCODE_ENDIANNESS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if a.len() == 2 => {
         let le = match &a[0] {
@@ -218,7 +208,6 @@ const DECODE_LENGTH_PREFIXED: &str = r#"{
   decoded_name
 }"#;
 
-// ASPIRE: Jit — buffer::decode with mutable ref arguments.
 run!(decode_length_prefixed, DECODE_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello world")
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -235,7 +224,6 @@ const DECODE_BYTES_ROUND_TRIP: &str = r#"{
   buffer::to_string(decoded_data)?
 }"#;
 
-// ASPIRE: Jit — buffer::decode with mutable ref arguments.
 run!(decode_bytes_round_trip, DECODE_BYTES_ROUND_TRIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "abc")
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -258,7 +246,6 @@ const DECODE_INVALID_UTF8: &str = r#"{
   is_err(buffer::decode(bad, [`U64(&mut slen), `UTF8(&slen, &mut s)]))
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(decode_invalid_utf8, DECODE_INVALID_UTF8, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -271,7 +258,6 @@ const DECODE_SKIP: &str = r#"{
   x
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(decode_skip, DECODE_SKIP, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -283,7 +269,6 @@ const DECODE_REMAINING: &str = r#"{
   buffer::len(rest)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(decode_remaining, DECODE_REMAINING, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -304,7 +289,6 @@ const VARINT_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(varint_small, VARINT_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -314,7 +298,6 @@ const VARINT_LARGE: &str = r#"{
   buffer::len(b)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(varint_large, VARINT_LARGE, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(2)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -347,7 +330,6 @@ const ZIGZAG_SMALL: &str = r#"{
   buffer::len(b)
 }"#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(zigzag_small, ZIGZAG_SMALL, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -361,7 +343,6 @@ const VARINT_LENGTH_PREFIXED: &str = r#"{
   buffer::to_string(decoded)?
 }"#;
 
-// ASPIRE: Jit — buffer::decode with mutable ref arguments.
 run!(varint_length_prefixed, VARINT_LENGTH_PREFIXED, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if s.as_str() == "hello")
 }; graphix_package_core::testing::FuseExpect::Jit);

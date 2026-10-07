@@ -29,18 +29,6 @@ const LIST_SINGLETON: &str = r#"
   list::to_array(list::singleton(42))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for claude: [doc-drift] The 34 `// ASPIRE: Jit ..` and `// None: ..` lines in
-// list.rs, array.rs and core.rs sit on fixtures annotated FuseExpect::Jit, so each
-// comment contradicts its annotation. Some are also false: this body fuses whole (one
-// region, both fast calls), and `all` (core.rs:158) has a fast-call entry (fc_all),
-// with its fixture fusing whole. Other comments misdescribe their fixtures: core.rs:792
-// (hold is Effect::Sync, not Async), core.rs:171 ([1..6] is Array<i64>, not
-// heterogeneous), core.rs:501 (the triggers arrive one per cycle together with xs, not
-// on init), array.rs:1091 (the predicate is a select, not `==`), array.rs:1291 (the
-// leaves are i64, not nullable), array.rs:1019 (equal interp and jit values cannot
-// prove drop-exactly-once). Delete the ASPIRE/None lines, put #[native] where fusion is
-// the point, and correct or delete the others. (tests-lib-a-12)
 run!(list_singleton, LIST_SINGLETON, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -55,7 +43,6 @@ const LIST_HEAD_NONEMPTY: &str = r#"
   list::head(list::from_array([10, 20, 30]))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_head_nonempty, LIST_HEAD_NONEMPTY, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -72,7 +59,6 @@ const LIST_TAIL_NONEMPTY: &str = r#"
   list::tail(list::from_array([1, 2, 3]))
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 // CR claude for claude: [structure] list_tail_nonempty and list_uncons_nonempty (91)
 // match the cons-cell layout `[2, [3, []]]`, which design/list_native.md says is
 // private and free to change. A change of representation would break them even though
@@ -106,7 +92,6 @@ const LIST_UNCONS_NONEMPTY: &str = r#"
   list::uncons(list::from_array([10, 20, 30]))
 "#;
 
-// ASPIRE: Jit — composite/value cross-kernel call args.
 run!(list_uncons_nonempty, LIST_UNCONS_NONEMPTY, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(t)) => match &t[..] {
@@ -143,7 +128,6 @@ const LIST_IS_EMPTY_FALSE: &str = r#"
   list::is_empty(list::singleton(1))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_is_empty_false, LIST_IS_EMPTY_FALSE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(false)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -155,7 +139,6 @@ const LIST_NTH: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_nth, LIST_NTH, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(t)) => match &t[..] {
@@ -173,7 +156,6 @@ const LIST_NTH_OOB: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_nth_oob, LIST_NTH_OOB, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(t)) => match &t[..] {
@@ -188,7 +170,6 @@ const LIST_LEN: &str = r#"
   list::len(list::from_array([1, 2, 3, 4, 5]))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_len, LIST_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -205,7 +186,6 @@ const LIST_REVERSE: &str = r#"
   list::to_array(list::reverse(list::from_array([1, 2, 3])))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_reverse, LIST_REVERSE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -220,7 +200,6 @@ const LIST_TAKE: &str = r#"
   list::to_array(list::take(2, list::from_array([1, 2, 3, 4, 5])))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_take, LIST_TAKE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -235,7 +214,6 @@ const LIST_TAKE_MORE: &str = r#"
   list::to_array(list::take(10, list::from_array([1, 2, 3])))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_take_more, LIST_TAKE_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -250,7 +228,6 @@ const LIST_DROP: &str = r#"
   list::to_array(list::drop(2, list::from_array([1, 2, 3, 4, 5])))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_drop, LIST_DROP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -265,7 +242,6 @@ const LIST_DROP_MORE: &str = r#"
   list::to_array(list::drop(10, list::from_array([1, 2, 3])))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_drop_more, LIST_DROP_MORE, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => a.is_empty(),
@@ -277,7 +253,6 @@ const LIST_ROUNDTRIP: &str = r#"
   list::to_array(list::from_array([10, 20, 30]))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_roundtrip, LIST_ROUNDTRIP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -292,7 +267,6 @@ const LIST_FROM_ARRAY_LEN: &str = r#"
   list::len(list::from_array([1, 2, 3]))
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_from_array_len, LIST_FROM_ARRAY_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -306,7 +280,6 @@ const LIST_CONCAT: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_concat, LIST_CONCAT, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -329,7 +302,6 @@ const LIST_FLATTEN: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_flatten, LIST_FLATTEN, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -401,7 +373,6 @@ const LIST_FILTER_MAP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_filter_map, LIST_FILTER_MAP, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
@@ -592,7 +563,6 @@ const LIST_ENUMERATE: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_enumerate, LIST_ENUMERATE, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 3]>() {
@@ -611,7 +581,6 @@ const LIST_ZIP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_zip, LIST_ZIP, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 3]>() {
@@ -630,7 +599,6 @@ const LIST_ZIP_UNEQUAL: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_zip_unequal, LIST_ZIP_UNEQUAL, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<[(i64, i64); 2]>() {
@@ -649,7 +617,6 @@ const LIST_UNZIP: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_unzip, LIST_UNZIP, |v: Result<&Value>| {
     match v {
         Ok(v) => match v.clone().cast_to::<([i64; 3], [i64; 3])>() {
@@ -697,7 +664,6 @@ const LIST_ITER: &str = r#"
   filter(list::iter(list::from_array([1, 2, 3, 4])), |x| x == 4)
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_iter, LIST_ITER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
 }; graphix_package_core::testing::FuseExpect::None);
@@ -713,7 +679,6 @@ const LIST_ITERQ: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(list_iterq, LIST_ITERQ, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(8)))
 }; graphix_package_core::testing::FuseExpect::Jit);

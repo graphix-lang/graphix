@@ -26,7 +26,6 @@ run!(
     "#);
 
 // An abstract type implemented as a struct.
-// ASPIRE: Jit — cross-module struct-arg / string-return fn.
 run!(
     abstract_type_struct_impl,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "hello"),
@@ -136,7 +135,6 @@ run!(
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // An abstract type in a variant.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_in_variant,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -200,7 +198,6 @@ run!(
     "#);
 
 // An abstract type in a recursive type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_recursive,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
@@ -387,7 +384,6 @@ run!(
 
 // The constraint on `Box<'a: Number>` propagates to wrap/unwrap without
 // repeating it in the val declarations.
-// ASPIRE: Jit — constrained abstract-type fn.
 run!(
     abstract_type_constraint_auto_enforced,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -514,7 +510,6 @@ run!(
 ; graphix_package_core::testing::FuseExpect::None);
 
 // A parameterized abstract type.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_basic,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
@@ -535,7 +530,6 @@ run!(
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // A parameterized abstract type at different concrete types.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_multi_instantiation,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),
@@ -599,7 +593,6 @@ run!(
     "#; graphix_package_core::testing::FuseExpect::Jit);
 
 // Two type parameters.
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(
     abstract_type_parameterized_two_params,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(47))),

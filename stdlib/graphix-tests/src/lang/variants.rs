@@ -36,7 +36,6 @@ const VARIANTS1: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(variants1, VARIANTS1, |v: Result<&Value>| match v {
     Ok(Value::I64(0)) => true,
     _ => false,
