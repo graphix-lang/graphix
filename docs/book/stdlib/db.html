@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -176,7 +176,8 @@
                     <main>
                         <h1 id="db"><a class="header" href="#db">db</a></h1>
 <p>The <code>db</code> module provides an embedded key-value database (backed by sled)
-with ACID transactions, typed trees, cursors, and reactive subscriptions.</p>
+with ACID transactions, typed trees, cursors, and reactive subscriptions.
+A transaction’s commit is on disk when it answers.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
 <h2 id="interface"><a class="header" href="#interface">Interface</a></h2>
@@ -184,13 +185,43 @@ if a tree is reopened with different types, <code>db::tree</code> returns a <cod
 type Db;
 
 /// A typed view of a database tree (key-value namespace).
+///
+/// The type parameters 'k and 'v are tracked at compile time, but
+/// also stored as metadata in the database. If a tree is reopened
+/// with different key or value types, `tree` returns a `DbErr` at
+/// run time.
+///
+/// Keys are kept in the language's order (as `&lt;` orders them), which
+/// first, last, get_lt, get_gt and cursor::range follow.
 type Tree&lt;'k, 'v&gt;;
+
+mod cursor;
+mod txn;
+mod subscription;
+
+/// Get the stored type metadata for a tree, or null if none.
+/// Pass null for the default tree.
+val get_type: fn(db: Db, name: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
 
 /// Open or create an embedded database at the given path.
 val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
+/// Flush all pending writes to disk.
+val flush: fn(db: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Generate a monotonically increasing unique u64 ID.
+val generate_id: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+
+/// List the names of all trees in the database.
+val tree_names: fn(db: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+
+/// Drop a named tree from the database.
+val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
 /// Open or create a named tree with typed keys and values.
-/// Pass null for the default (unnamed) tree.
+/// Pass null for the default (unnamed) tree. The key and value
+/// types are recorded on first open; reopening the same tree with
+/// different types returns a `DbErr`.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
@@ -226,8 +257,8 @@ val get_lt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null],
 /// Get the entry with the smallest key strictly greater than the given key.
 val get_gt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
-/// Atomic compare-and-swap. Returns null on success, or `Mismatch(current_value)
-/// if the current value didn't match.
+/// Atomic compare-and-swap. Returns null on success,
+/// or `Mismatch(current_value) if the current value didn't match.
 val compare_and_swap: fn(t: Tree&lt;'k, 'v&gt;, key: 'k, old: ['v, null], new: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes.
@@ -238,21 +269,6 @@ val len: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the tree has no entries.
 val is_empty: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
-
-/// Get the stored type metadata for a tree, or null if none.
-val get_type: fn(db: Db, name: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
-
-/// List the names of all trees in the database.
-val tree_names: fn(db: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
-
-/// Drop a named tree from the database.
-val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
-
-/// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
-
-/// Flush all pending writes to disk.
-val flush: fn(db: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Total size of the database on disk in bytes.
 val size_on_disk: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
@@ -271,39 +287,41 @@ val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
 <p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
-<pre><code class="language-graphix">/// A cursor for iterating over tree entries one at a time.
+<pre><code class="language-graphix">use super::Tree;
+/// A cursor for iterating over tree entries one at a time.
 type Cursor&lt;'k, 'v&gt;;
 
 /// Create a new cursor, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
-val range: fn(
-    ?#start: [`Included('k), `Excluded('k), null],
-    ?#end: [`Included('k), `Excluded('k), null],
-    t: Tree&lt;'k, 'v&gt;
-) -&gt; Cursor&lt;'k, 'v&gt;;
+/// Use `Included(key) or `Excluded(key) to specify each bound.
+val range: fn(?#start: [`Included('k), `Excluded('k), null], ?#end: [`Included('k), `Excluded('k), null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
-/// Read the next entry. Advances on each trigger.
-/// Returns (key, value) or null when exhausted.
+/// Read the next entry from the cursor. Advances on each trigger.
+/// Returns a (key, value) tuple, or null when exhausted.
 val read: fn(c: Cursor&lt;'k, 'v&gt;, trigger: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
-/// Read up to N entries at once.
+/// Read up to N entries from the cursor. Returns a shorter array when exhausted.
 val read_many: fn(c: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
 <p>Multi-tree ACID transactions. All trees must be opened before any data
 operations.</p>
-<pre><code class="language-graphix">/// An open transaction handle.
+<pre><code class="language-graphix">use super::Db;
+/// An open transaction handle.
 type Txn;
 
 /// A tree view within a transaction.
+/// Types are checked against stored metadata, just like db::tree.
 type TxnTree&lt;'k, 'v&gt;;
 
-/// Begin a multi-tree transaction.
+/// Begin a multi-tree transaction on a database.
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
+/// All trees must be opened before any data operations on any tree in
+/// the transaction.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
@@ -318,24 +336,29 @@ val remove: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `D
 /// Atomically apply a batch of inserts and removes within the transaction.
 val batch: fn(t: TxnTree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Commit the transaction atomically.
+/// Commit the transaction. All writes become visible atomically.
+/// If you use any object created from this transaction after commit
+/// or rollback you will receive a runtime error
 val commit: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Abort the transaction.
+/// Abort the transaction. No changes are applied.
+/// If you use any object created from this transaction after commit
+/// or rollback you will receive a runtime error
 val rollback: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
 <p>Reactive subscriptions fire when entries are inserted or removed.</p>
-<pre><code class="language-graphix">/// A reactive subscription to changes on a tree.
+<pre><code class="language-graphix">use super::Tree;
+/// A reactive subscription to changes on a tree.
 type Subscription&lt;'k, 'v&gt;;
 
-/// Subscribe to changes, optionally filtering by key prefix.
+/// Subscribe to changes on a tree, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
-/// Fires reactively when inserts occur.
+/// Fires reactively when inserts occur on the subscription.
 val on_insert: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
-/// Fires reactively when removes occur.
+/// Fires reactively when removes occur on the subscription.
 val on_remove: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 

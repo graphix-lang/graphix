@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -191,19 +191,15 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
-// CR claude for claude: [doc-drift] "A failed upgrade leaves it untouched" holds only for
-// failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
-// handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
-// which drops it. The caller's TcpStream then reads IOError "stream unavailable". The
-// code is right, since a socket partway through a handshake cannot carry plaintext.
-// This doc and the comment at tls.rs:81-83 ("A failed upgrade puts the socket back")
-// are wrong. probe: design/review-2026-10-05/repro/sys-io-13.gx (sys-io-13)
 /// Upgrade a TCP stream to a TLS client connection.
 ///
 /// The upgrade CONSUMES the TCP stream: on success the session lives
 /// in the returned handle and the one passed in is empty, so a stray
 /// plaintext read on it is an error rather than a silent read of the
-/// encrypted session. A failed upgrade leaves it untouched.
+/// encrypted session. An upgrade refused before the handshake (a bad
+/// certificate or hostname) leaves it untouched; one that fails in the
+/// handshake has spent it, since a socket partway through a handshake
+/// cannot carry plaintext.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 
 /// Upgrade a TCP stream to a TLS server connection.

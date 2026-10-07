@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -184,7 +184,8 @@ values.</p>
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -&gt; Result&lt;Array&lt;string&gt;, `XlsErr(string)&gt;;
 
-/// Read a sheet by name as a 2D array of rows.
+/// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
+/// every row as wide as the last used column, an empty cell null.
 val read: fn(input: bytes, sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, `XlsErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>

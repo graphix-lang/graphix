@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -193,12 +193,15 @@ type BinResponse = {
     url: string
 };
 
+/// A request to a server: `body` is the body as text, null when it is
+/// empty or not UTF-8; `raw` is the body as sent.
 type Request = {
     body: [string, null],
     headers: Array&lt;(string, string)&gt;,
     method: string,
     path: string,
-    query: [string, null]
+    query: [string, null],
+    raw: bytes
 };
 
 type Client;
@@ -245,24 +248,34 @@ val get_bin: fn(client: Client, url: string) -&gt; Result&lt;BinResponse, `HTTPE
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -&gt; string;
 
-/// Start an HTTP server.
+/// Start an HTTP server. Each request goes to `#handler` in turn and is
+/// answered by its next value; one it raises on, or has no value for, is
+/// answered 500. A body over `#max_body` bytes (16 MiB by default) is
+/// answered 413 without reaching the handler.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
+    ?#max_body: i64,
     #handler: fn(req: Request) -&gt; Response throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
+
+mod rest;
 </code></pre>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
 <p>Convenience functions for JSON REST APIs with optional bearer token authentication.</p>
-<pre><code class="language-graphix">val get: fn(
+<pre><code class="language-graphix">use super::{Client, Method, Response, request};
+
+/// GET with JSON Accept header and optional bearer auth.
+val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     client: Client,
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// POST with JSON Content-Type/Accept headers and optional bearer auth.
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
@@ -271,14 +284,16 @@ val post: fn(
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// PUT with JSON Content-Type/Accept headers and optional bearer auth.
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
     client: Client,
-    url: string
+    url: string,
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// DELETE with JSON Accept header and optional bearer auth.
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
@@ -286,12 +301,13 @@ val delete: fn(
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// PATCH with JSON Content-Type/Accept headers and optional bearer auth.
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
     client: Client,
-    url: string
+    url: string,
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 

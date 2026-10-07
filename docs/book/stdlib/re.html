@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -183,17 +183,17 @@ val is_match: fn(#pat: string, s: string) -&gt; Result&lt;bool, `ReError(string)
 /// invalid.
 val find: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-/// return an array of captures matched by #pat. The array will have an element for each
-/// capture group, which will have an element for each capture, regardless of whether it
-/// matched or not. If it did not match the corresponding element will be null. Return an
-/// error if #pat is invalid.
+/// return an array with an element per match of #pat, each an array of the whole match
+/// followed by each capture group, null for a group that did not take part: re::captures(
+/// #pat: r"(\d)(x)?", "1 2x") is [["1", "1", null], ["2x", "2", "x"]]. Return an error if
+/// #pat is invalid.
 val captures: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
 
 /// return an array of strings split by #pat. return an error if #pat is invalid.
 val split: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-/// split the string by #pat at most #limit times and return an array of the parts.
-/// return an error if #pat is invalid
+/// split the string by #pat into at most #limit parts, the last holding the rest.
+/// return an error if #pat is invalid or #limit is not positive
 val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
 

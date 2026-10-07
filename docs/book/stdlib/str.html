@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -209,16 +209,16 @@ val trim_end: fn(s: string) -&gt; string;
 val replace: fn(#pat: string, #rep: string, s: string) -&gt; string;
 
 /// return the parent path of s, or null if s does not have a parent path
-val dirname: fn(s: string) -&gt; Option&lt;string&gt;;
+val dirname: fn(path: string) -&gt; Option&lt;string&gt;;
 
 /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
-val basename: fn(s: string) -&gt; Option&lt;string&gt;;
+val basename: fn(path: string) -&gt; Option&lt;string&gt;;
 
 /// given a path ending in .../row/col, return the tuple (row, col).
 /// equivalent to (basename(dirname(s)), basename(s)), but in a single
 /// builtin call. returns null if s has fewer than two path components.
 /// e.g. /foo/bar/baz -&gt; ("bar", "baz"), /foo -&gt; null
-val row_col: fn(s: string) -&gt; Option&lt;(string, string)&gt;;
+val row_col: fn(path: string) -&gt; Option&lt;(string, string)&gt;;
 
 /// return a single string with the arguments concatenated and separated by #sep
 val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
@@ -226,11 +226,11 @@ val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 /// concatenate the specified strings into a single string
 val concat: fn(@args: [string, Array&lt;string&gt;]) -&gt; string;
 
-/// escape all the characters in #to_escape in s with the escape character #escape.
-/// The escape character must appear in #to_escape
+/// escape every character of #esc.escape in s with #esc.escape_char, and translate the
+/// characters #esc.tr names; the escape char must appear in #esc.escape
 val escape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
-/// unescape all the characters in s escaped by the specified #escape character
+/// unescape every character in s escaped by #esc.escape_char, reversing #esc.tr
 val unescape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
 /// split the string by the specified #pat and return an array of each part
@@ -270,13 +270,13 @@ val to_lower: fn(s: string) -&gt; string;
 val to_upper: fn(s: string) -&gt; string;
 
 /// C style sprintf, implements most C standard format args
-val sprintf: fn(s: string, @args: Any) -&gt; Result&lt;string, `FormatError(string)&gt;;
+val sprintf: fn(fmt: string, @args: Any) -&gt; Result&lt;string, `FormatError(string)&gt;;
 
 /// return the length of the string in bytes
 val len: fn(s: string) -&gt; i64;
 
-/// extract a substring of s starting at #start with length #len.
-/// both #start and #len are Unicode character indexes,
+/// extract a substring of s starting at #start with lenth #len.
+/// both #start and #len are unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
 /// will return "💖💖"
 val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(string)&gt;;
@@ -284,7 +284,7 @@ val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(s
 /// parse the specified string as a value. return the value on success or an
 /// error on failure. Note, if you feed the parser a well formed error then
 /// parse will also return an error
-val parse: fn(s: string) -&gt; Result&lt;PrimNoErr, Any&gt;;
+val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
 </code></pre>
 
                     </main>

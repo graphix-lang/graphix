@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -340,15 +340,13 @@ one implementation. A builtin whose result is directed by its call
 site’s return type (<code>str::parse</code> casting to its target) declares
 <code>FastCall::Typed</code> instead: the same contract, plus the resolved type
 and the environment it resolves in.</p>
-<p>One correctness caveat: because the fast function only ever sees
-present values, an <code>eval</code> that deliberately <em>produces on partial
-delivery</em> — short-circuiting on its first argument while another is
-still undelivered, the way an option-<code>or</code> yields its left side without
-waiting for the right — must <strong>not</strong> convert. That short-circuit is
-observable interpreter semantics; routing it through <code>fast_eval</code> would
-make the builtin wait for every argument. Most of the standard
-library’s pure <code>Sync</code> builtins are fast calls; the handful that
-short-circuit stay on plain <code>eval</code> for exactly this reason.</p>
+<p>A <code>CachedArgs</code> builtin never sees a missing argument: an invocation
+with one undelivered or bottom is bottom before <code>eval</code> runs. So every
+pure one can take a fast function, and the standard library’s do,
+through <code>graphix_package_core::fast_builtin!</code>, which writes the whole
+shell from a name and the function. A builtin that must answer before
+all its arguments arrive is a raw <code>Apply</code> (below), not an
+<code>EvalCached</code>, and has no fast function.</p>
 <h3 id="the-full-control-path-builtin--apply"><a class="header" href="#the-full-control-path-builtin--apply">The Full-Control Path: <code>BuiltIn</code> + <code>Apply</code></a></h3>
 <p>For builtins that need to interact with the execution context, manage internal
 state across cycles, or work with higher-order functions, implement the

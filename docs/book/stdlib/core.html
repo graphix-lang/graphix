@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -188,10 +188,107 @@ type Real = [ Float, decimal ];
 type Number = [ Int, Real ];
 type NotNull = [Number, string, error, array, datetime, duration, bytes, bool];
 type Primitive = [NotNull, null];
-type PrimNoErr = [Number, string, array, datetime, duration, bytes, null];
+type PrimNoErr = [Number, string, bool, array, datetime, duration, bytes, null];
 type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
 type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;];
 type Option&lt;'a&gt; = ['a, null];
+
+/// The result of a three-way comparison.
+type Ordering = [`Less, `Equal, `Greater];
+
+/// Equality. `==` and `!=` consult the implementation of the operand
+/// type — and of every type nested inside it — falling back to the
+/// structural comparison of values where there is none. Outside core
+/// only an abstract type may implement it. The method is implicitly
+/// `#[sync]`: it runs inside the comparison.
+trait Eq {
+    /// true if the two values are equal
+    val eq: fn(self, other: self) -&gt; bool
+};
+
+/// Ordering. `&lt;`, `&gt;`, `&lt;=` and `&gt;=` consult the implementation the
+/// way `==` consults `Eq`, and so do `array::sort`, `min`/`max` and map
+/// keys. Implicitly `#[sync]`.
+trait Ord {
+    /// the order of `self` relative to `other`
+    val cmp: fn(self, other: self) -&gt; Ordering
+};
+
+/// Printing. String interpolation, `print`/`println`, `dbg` and `log`
+/// consult the implementation the way `==` consults `Eq`, everywhere
+/// in the printed type. Implicitly `#[sync]`.
+trait Display {
+    /// the printed form of `self`
+    val fmt: fn(self) -&gt; string
+};
+
+/// A collection: a type constructor whose values can be traversed and
+/// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
+/// program implements it for. `self&lt;'a&gt;` is the constructor applied to
+/// the element type. `fold`, `filter_map` and `flat_map` are required;
+/// the rest derive from them, and an implementation overrides what it
+/// can do better. Over an element type that holds null, the derived
+/// `map` and `filter` drop the null elements (they go through
+/// `filter_map`'s `Option`); the built-in collections override both.
+/// `use Collection::*` makes the methods callable bare, and `map(c, f)`
+/// then does the same thing whatever `c` is. A parameter typed
+/// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
+trait Collection {
+    /// fold the elements, front to back
+    val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+    /// the elements `f` maps to a value, in order
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    /// the concatenation of `f` over the elements
+    val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    /// `f` over every element
+    val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e
+        = |c, f| filter_map(c, |x| f(x));
+    /// the elements `f` accepts
+    val filter: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; self&lt;'a&gt; throws 'e
+        = |c, f| filter_map(c, |x| select f(x) { true =&gt; x, false =&gt; null });
+    /// the first element `f` accepts
+    val find: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e
+        = |c, f| {
+            let init: Option&lt;'a&gt; = null;
+                // CR claude for claude: [bug] The defaults use null to mean "no element".
+                // map and filter (lines 61, 64) go through filter_map, whose Option&lt;'b&gt;
+                // collapses when the element type holds null. This arm also can't tell
+                // a null match from "not found yet". So over nullable elements, map and
+                // filter drop elements and find returns a later one: for `m:
+                // Map&lt;string, [i64, null]&gt; = {"a" =&gt; null, "b" =&gt; 1}`, `len(filter(m,
+                // |v| opt::is_none(v)))` is 0 and `find(m, |v| true)` is 1, where
+                // Array's and List's intrinsics keep the null. Map's impl (mod.gx:51)
+                // overrides neither filter nor find, every user collection gets all
+                // three defaults, and line 48 ("the built-in collections override all
+                // of them") is false: Map lacks filter/find/find_map and List lacks
+                // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
+                // (gx-stdlib-04)
+                // 2026-10-07 claude: Map overrides filter (map_filter); List keeps the
+                // default len, a counting fold, as a cons list's length is a walk;
+                // find carries a found flag, so a null match ends the search; the
+                // trait doc no longer says the built-ins override everything and names
+                // the limit. What stands: a user collection's derived map and filter
+                // still drop null elements (the repro's `bag map 1`); keeping them needs
+                // a singleton constructor the trait does not have.
+            let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
+                true =&gt; (done, acc),
+                false =&gt; select f(x) { true =&gt; (true, x), false =&gt; (false, acc) }
+            });
+            found
+        };
+    /// the first value `f` maps an element to
+    val find_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e
+        = |c, f| {
+            let init: Option&lt;'b&gt; = null;
+            fold(c, init, |acc, x| select acc { null as _ =&gt; f(x), found =&gt; found })
+        };
+    /// the number of elements
+    val len: fn(self&lt;'a&gt;) -&gt; i64 = |c| fold(c, 0, |n, _| n + 1)
+};
+
+impl Collection for Array&lt;'_&gt;;
+impl&lt;'k&gt; Collection for Map&lt;'k, '_&gt;;
+impl Collection for List&lt;'_&gt;;
 
 type Pos = {
     line: i32,
@@ -218,54 +315,89 @@ type ErrChain&lt;'a&gt; = {
     pos: Pos
 };
 
+// CR claude for claude: [structure] Three signatures here are looser than their builtins.
+// `all` returns one of its equal arguments but is typed `fn(@args: Any) -&gt; Any`, so
+// `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -&gt; 'a`, as max/min have, gives it a
+// real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
+// - 1, e)` with count = 0 passes every event (-1 wraps to usize::MAX) and skip(-1)
+// passes none. A string count is parsed, and a non-number leaves the count unset (take
+// passes nothing, skip passes everything); `#n: i64` with a negative read as 0 fixes
+// that. sum/product/divide (123, 181, 184) return the union Number, so `sum(1, 2) + 1`
+// and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
+// would type the result, but it would also refuse the mixed-number array that
+// graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
+// 2026-10-07 claude: all is fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a, and take/skip take
+// #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
+// result needs the Singleton bound, which the mixed-number fixture refuses.
 /// return the first argument when all arguments are equal, otherwise return nothing
-val all: fn(@args: Any) -&gt; Any;
+val all: fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
 /// return true if all arguments are true, otherwise return false
 val and: fn(@args: bool) -&gt; bool;
 
 /// return the number of times x has updated
-val count: fn(v: Any) -&gt; i64;
+val count: fn(x: Any) -&gt; i64;
 
-/// return the first argument divided by all subsequent arguments
+/// return the first argument divided by all subsequent arguments; a
+/// failed division (by zero, an overflow) is logged and returns nothing
 val divide: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
 /// return e only if e is an error
-val filter_err: fn(r: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
+val filter_err: fn(e: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
 
 /// return v if f(v) is true, otherwise return nothing
-val filter: fn(x: 'a, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
+val filter: fn(v: 'a, f: fn(v: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
 
 /// return true if e is an error
-val is_err: fn(v: Any) -&gt; bool;
+val is_err: fn(e: Any) -&gt; bool;
 
-/// construct an error from the specified string
-val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
+/// construct an error carrying e
+val error: fn(e: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn&lt;'a: Ordered&gt;(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Ordered&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn&lt;'a: Ordered&gt;(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Ordered&gt;(a: 'a, @args:'a) -&gt; 'a;
 
-/// return v only once, subsequent updates to v will be ignored
+/// return v only once, subsuquent updates to v will be ignored
 /// and once will return nothing
-val once: fn(x: 'a) -&gt; 'a;
+val once: fn(v: 'a) -&gt; 'a;
 
-/// take n updates from e and drop the rest. The internal count is reset when n updates.
-val take: fn(#n:Any, x: 'a) -&gt; 'a;
+/// take n updates from e and drop the rest; a negative n takes none. The
+/// count restarts when n updates.
+val take: fn(#n: i64, e: 'a) -&gt; 'a;
 
-/// skip n updates from e and return the rest. The internal count is reset when n updates.
-val skip: fn(#n:Any, x: 'a) -&gt; 'a;
+/// skip n updates from e and return the rest; a negative n skips none.
+/// The count restarts when n updates.
+val skip: fn(#n: i64, e: 'a) -&gt; 'a;
 
 /// range will update j - i times, starting at i and ending at j - 1
 val range: fn(i: i64, j: i64) -&gt; Result&lt;i64, `RangeError(string)&gt;;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -&gt; bool;
+
+/// bitwise AND
+val bit_and: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise OR
+val bit_or: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise XOR
+val bit_xor: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise complement
+val bit_not: fn&lt;'a: Int&gt;(a: 'a) -&gt; 'a;
+
+/// shift left (wrapping)
+val shl: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// shift right (wrapping)
+val shr: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
 
 /// return the product of all arguments
 val product: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
@@ -275,37 +407,64 @@ val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; N
 
 /// when v updates return v if the new value is different from the previous value,
 /// otherwise return nothing.
-val uniq: fn&lt;'a: Discernible&gt;(x: 'a) -&gt; 'a;
+val uniq: fn&lt;'a: Discernible&gt;(v: 'a) -&gt; 'a;
 
 /// when v updates place it's value in an internal fifo queue. when clock updates
 /// return the oldest value from the fifo queue. If clock updates and the queue is
 /// empty, record the number of clock updates, and produce that number of
-/// values from the queue when they are available.
-val queue: fn(#clock:Any, x: 'a) -&gt; 'a;
+/// values from the queue when they are available. When flush updates
+/// discard every value waiting in the queue; recorded clock updates are kept.
+val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -&gt; 'a;
 
-/// hold the most recent value of v internally until clock updates. If v updates
+/// queuefn wraps a function f and returns a function with the same signature
+/// whose invocations are queued and released by an external trigger.
+///
+/// Each call site of queuefn creates a fresh queue. The wrapper has an
+/// internal pop_count initialized to 1, so the first invocation runs
+/// immediately. Subsequent invocations push their args onto the queue and
+/// emit nothing until #trigger fires; each #trigger update releases one
+/// queued invocation, or banks a pop slot if the queue is empty.
+///
+/// If #count is provided as a writable ref, the current queue depth is
+/// written through it whenever it changes, to a place (`&amp;mut s.depth`)
+/// as to a binding. If null (default), depth is not reported. f may not
+/// have a variadic argument or a defaulted label: wrap a lambda that
+/// calls it.
+///
+/// When f re-emits, the queue and pop_count are NOT reset. Subsequent
+/// pops process queued args with the new f, regardless of which f was
+/// current when those args were queued. If you need a fresh queue when f
+/// changes, build it explicitly using `queue` instead.
+///
+/// Concurrent in-flight invocations are possible if #trigger fires before
+/// f finishes emitting a previous invocation's output — the wrapper
+/// emits whatever any in-flight invocation produces.
+val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
+
+/// hold the most recent value of v interally until clock updates. If v updates
 /// more than once before clock updates, older values of v will be discarded,
 /// only the most recent value will be retained. If clock updates when no v is held
-/// internally, record the number of times it updated, and pass that many v updates
-/// through immediately when they happen.
-val hold: fn(#clock:Any, x: 'a) -&gt; 'a;
+/// internall, record the number of times it updated, and pass that many v updates
+/// through immediatly when they happen.
+val hold: fn(#clock:Any, v: 'a) -&gt; 'a;
+
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink
-val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -&gt; 'a;
+val dbg: fn(?#dest:[`Stdout, `Stderr, Log], v: 'a) -&gt; 'a;
 
 /// print a log message to stdout, stderr or the specified log level using the rust log
 /// crate. Returns null after processing each message.
-val log: fn(?#dest:Log, x: 'a) -&gt; null;
+val log: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate. Does not automatically insert a newline or add the source module/location.
 /// Returns null after processing each message.
-val print: fn(?#dest:Log, x: 'a) -&gt; null;
+val print: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate followed by a newline. Returns null after processing each message.
-val println: fn(?#dest:Log, x: 'a) -&gt; null;
+val println: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// Throttle v so it updates at most every #rate, where rate is a
 /// duration (default 0.5 seconds). Intermediate updates that push v
@@ -313,32 +472,20 @@ val println: fn(?#dest:Log, x: 'a) -&gt; null;
 /// be delivered. If the sequence, m0, m1, ..., mN, arrives simultaneously
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
-val throttle: fn(?#rate:duration, x: 'a) -&gt; 'a;
+val throttle: fn(?#rate:duration, v: 'a) -&gt; 'a;
 
-/// bitwise AND
-val bit_and: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
-/// bitwise OR
-val bit_or: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// bitwise XOR
-val bit_xor: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// bitwise complement
-val bit_not: fn&lt;'a: Int&gt;(x: 'a) -&gt; 'a;
-
-/// shift left (wrapping)
-val shl: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// shift right (wrapping)
-val shr: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
+mod buffer;
+mod math;
+mod opt;
 </code></pre>
 <h2 id="corebuffer"><a class="header" href="#corebuffer">core::buffer</a></h2>
 <p>The <code>buffer</code> submodule provides functions for working with raw bytes:
 conversion between bytes and strings/arrays, concatenation, and a
 flexible binary encode/decode system with control over endianness and
 variable-length encoding.</p>
-<pre><code class="language-graphix">/// Convert bytes to a UTF-8 string.
+<pre><code class="language-graphix">use super::Result;
+/// Convert bytes to a UTF-8 string.
 val to_string: fn(b: bytes) -&gt; Result&lt;string, `EncodingError(string)&gt;;
 
 /// Convert bytes to a UTF-8 string, replacing invalid sequences.
@@ -375,19 +522,20 @@ type Encode = [
 
 /// Spec for decoding bytes into refs. Bare tags are
 /// big-endian (network byte order), LE suffix for little-endian.
-/// Variable-length fields take a &amp;u64 for the length so that
+/// Each decoded field is written through its &amp;mut. Variable-length
+/// fields take a &amp;u64 for the length so that
 /// earlier decoded lengths can be resolved within the same call.
 type Decode = [
-  `I8(&amp;i8), `U8(&amp;u8),
-  `I16(&amp;i16), `I16LE(&amp;i16), `U16(&amp;u16), `U16LE(&amp;u16),
-  `I32(&amp;i32), `I32LE(&amp;i32), `U32(&amp;u32), `U32LE(&amp;u32),
-  `I64(&amp;i64), `I64LE(&amp;i64), `U64(&amp;u64), `U64LE(&amp;u64),
-  `F32(&amp;f32), `F32LE(&amp;f32), `F64(&amp;f64), `F64LE(&amp;f64),
-  `Bytes(&amp;u64, &amp;bytes),
-  `UTF8(&amp;u64, &amp;string),
+  `I8(&amp;mut i8), `U8(&amp;mut u8),
+  `I16(&amp;mut i16), `I16LE(&amp;mut i16), `U16(&amp;mut u16), `U16LE(&amp;mut u16),
+  `I32(&amp;mut i32), `I32LE(&amp;mut i32), `U32(&amp;mut u32), `U32LE(&amp;mut u32),
+  `I64(&amp;mut i64), `I64LE(&amp;mut i64), `U64(&amp;mut u64), `U64LE(&amp;mut u64),
+  `F32(&amp;mut f32), `F32LE(&amp;mut f32), `F64(&amp;mut f64), `F64LE(&amp;mut f64),
+  `Bytes(&amp;u64, &amp;mut bytes),
+  `UTF8(&amp;u64, &amp;mut string),
   `Skip(&amp;u64),
-  `Varint(&amp;u64),
-  `Zigzag(&amp;i64)
+  `Varint(&amp;mut u64),
+  `Zigzag(&amp;mut i64)
 ];
 
 /// Encode values into bytes according to the spec.
@@ -506,18 +654,18 @@ val signum: fn(x: f64) -&gt; f64;
 /// `x` with the sign of `y`.
 val copysign: fn(x: f64, y: f64) -&gt; f64;
 
-/// Smaller of two f64 values, returning the non-NaN operand if one is
-/// NaN. For n-ary polymorphic behaviour over `Number`, use the
-/// top-level `min` from core.
+/// Smaller of two f64 values, returning the non-NaN operand if one is NaN.
+/// For n-ary polymorphic behaviour over `Number`, use the top-level `min` from core.
 val min: fn(x: f64, y: f64) -&gt; f64;
 
-/// Larger of two f64 values, returning the non-NaN operand if one is
-/// NaN. For n-ary polymorphic behaviour over `Number`, use the
-/// top-level `max` from core.
+/// Larger of two f64 values, returning the non-NaN operand if one is NaN.
+/// For n-ary polymorphic behaviour over `Number`, use the top-level `max` from core.
 val max: fn(x: f64, y: f64) -&gt; f64;
 
-/// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(x: f64, lo: f64, hi: f64) -&gt; f64;
+/// Clamp `x` to the closed interval `[lo, hi]`. Returns a catchable
+/// `` `ClampError `` when the range is invalid (`lo &gt; hi`, or a NaN bound)
+/// — handle it with `?`/`$`/`select`.
+val clamp: fn(x: f64, lo: f64, hi: f64) -&gt; [f64, Error&lt;`ClampError(string)&gt;];
 
 /// True if `x` is NaN.
 val is_nan: fn(x: f64) -&gt; bool;
@@ -569,56 +717,67 @@ fire-and-forget: they never queue inputs. If a callback is slow or
 never produces a value, a new input simply supersedes the pending one
 (latest wins). Use the explicit <code>core::queue</code> / <code>core::hold</code> operators
 when you need ordered async behavior.</p>
-<pre><code class="language-graphix">/// true if v is not null
+<pre><code class="language-graphix">use super::Result;
+/// true if v is not null
 val is_some: fn(v: ['a, null]) -&gt; bool;
 
 /// true if v is null
 val is_none: fn(v: ['a, null]) -&gt; bool;
 
+// CR claude for eric: [doc-drift] These docs promise results that never come while an
+// argument is pending. `contains`, `or_default`, `or` and `and` (and `zip`, `ok_or`)
+// are CachedArgs builtins, which bottom the call while any argument is bottom or has
+// not produced yet (lib.rs:773). So `opt::or(c, b)` with c = 3 shows nothing until b
+// first produces, and `opt::and(null, b)` waits for b. The `_ =&gt; None` arms written for
+// a missing argument (opt.rs:74, 93, 112, 131, 180, 226) can never run. The six are
+// also Stateless(None), so a lambda that calls one never fuses ("builtin `opt::or` has
+// no fast-call entry"), even though eval only ever sees every argument present. Either
+// document them as strict, delete those arms and give each a FastCall::Plain fn like
+// fc_xor, or make them raw Apply builtins that decide from the arguments that are
+// present. book/src/stdlib/core.md:419-432 copies this text. probe: `let c: [i64, null]
+// = 3; let b: [i64, null] = never(); opt::or(c, b)` prints nothing (with b = null it
+// prints 3). (gx-stdlib-13)
 /// true if v is not null and equals x. Produces false when v is null
 /// regardless of x.
-val contains: fn(v: ['a, null], y: 'a) -&gt; bool;
+val contains: fn(v: ['a, null], x: 'a) -&gt; bool;
 
 /// or_default(v, d): if v is null return d, otherwise return v
-val or_default: fn(v: ['a, null], y: 'a) -&gt; 'a;
+val or_default: fn(v: ['a, null], d: 'a) -&gt; 'a;
 
-/// or(a, b): return a if non-null, otherwise return b (which may
-/// itself be null).
-val or: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
+/// or(a, b): return a if non-null, otherwise return b (which may itself
+/// be null).
+val or: fn(a: ['a, null], b: ['a, null]) -&gt; ['a, null];
 
 /// and(a, b): return b if a is non-null, otherwise return null. The
 /// value of b is not inspected when a is null.
-val and: fn(v: ['a, null], v2: ['b, null]) -&gt; ['b, null];
+val and: fn(a: ['a, null], b: ['b, null]) -&gt; ['b, null];
 
 /// xor(a, b): return whichever of a or b is non-null, or null if both
 /// or neither are non-null.
-val xor: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
-
-/// Collapse a nested option. Present for symmetry with Rust; at the
-/// value level this is the identity (graphix structural unions make
-/// [[T, null], null] equivalent to [T, null]).
-val flatten: fn(v: [['a, null], null]) -&gt; ['a, null];
+val xor: fn(a: ['a, null], b: ['a, null]) -&gt; ['a, null];
 
 /// ok_or(v, e): return v unchanged when non-null, otherwise return
 /// error(e).
-val ok_or: fn(v: ['a, null], y: 'e) -&gt; Result&lt;'a, 'e&gt;;
+val ok_or: fn(v: ['a, null], e: 'e) -&gt; Result&lt;'a, 'e&gt;;
 
 /// zip(a, b): if both are non-null return the tuple (a, b), otherwise
 /// return null.
-val zip: fn(v: ['a, null], v2: ['b, null]) -&gt; [('a, 'b), null];
+val zip: fn(a: ['a, null], b: ['b, null]) -&gt; [('a, 'b), null];
 
 /// unzip(p): given a tuple-valued option, return the pair of options.
 /// null input yields (null, null).
-val unzip: fn(v: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
+val unzip: fn(p: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
 
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
-/// return null.
-val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b) -&gt; ['b, null];
+/// return null. f is invoked at most once per update of v — fire-and-
+/// forget, no queueing. If v updates again before f produces a result,
+/// the new input supersedes the pending one.
+val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
-/// unchanged.
-val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null]) -&gt; ['b, null];
+/// unchanged. Same fire-and-forget semantics as map.
+val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
 /// Otherwise (v is null, or pred is false) emit null. Same fire-and-
@@ -631,29 +790,29 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null]) -&gt; ['b, null];
 /// gated on a verdict about the old one. Pure predicates (the
 /// expected case) are unaffected. Use `core::queue` if you need
 /// strict input-bool pairing.
-val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; ['a, null];
+val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; ['a, null] throws 'e;
 
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f is invoked eagerly and its latest value is cached so
 /// later updates to v can be resolved without re-invoking f. If v is
 /// null before f has produced its first value, no output is emitted
 /// until f fires.
-val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null]) -&gt; ['a, null];
+val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null] throws 'e) -&gt; ['a, null] throws 'e;
 
 /// ok_or_else(v, f): return v if non-null, otherwise return
 /// error(f()). Same eager-with-caching semantics as or_else; null v
 /// before f's first firing is silent until f produces.
-val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e) -&gt; Result&lt;'a, 'e&gt;;
+val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e throws 'x) -&gt; Result&lt;'a, 'e&gt; throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
 /// false when v is null or pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
+val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
 /// when v is non-null and pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
+val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e
 </code></pre>
 
                     </main>

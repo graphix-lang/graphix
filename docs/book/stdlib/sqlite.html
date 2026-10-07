@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-45c76654.js";
+            window.path_to_searchindex_js = "../searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -187,6 +187,9 @@ type Connection;
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
 val open: fn(path: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
 
+// SQL text is a Graphix string, so every [..] in it interpolates: values
+// go through the ? params, and SQL that holds a [ is written r"..." or
+// """...""".
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
 val exec: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
 
@@ -195,7 +198,7 @@ val exec_batch: fn(conn: Connection, sql: string) -&gt; Result&lt;null, `SqliteE
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
-val query: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+val query: fn&lt;'a: Concrete&gt;(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
 
 /// Begin a transaction.
 val begin: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
@@ -209,6 +212,12 @@ val rollback: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt
 /// Close the connection explicitly (optional — connections close on drop).
 val close: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 </code></pre>
+<p>SQL is written in an ordinary Graphix string, and an ordinary string
+interpolates every <code>[..]</code> in it. Pass values through the <code>?</code> params,
+never by splicing them into the text: <code>"... WHERE name = '[name]'"</code> is
+SQL injection. SQL that itself holds a <code>[</code> (a JSON path such as
+<code>'$.items[0]'</code>) is written as a raw string <code>r"..."</code> or a template
+<code>"""..."""</code>, where brackets are content.</p>
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
 Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>

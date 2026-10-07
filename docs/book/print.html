@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-45c76654.js";
+            window.path_to_searchindex_js = "searchindex-1e568722.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -4360,7 +4360,7 @@ type NumericBox&lt;'a: Number&gt; = Abstract&lt;{ value: 'a }&gt;;
 <p><code>Abstract&lt;..&gt;</code> is legal only as the whole body of a <code>type</code> definition —
 the name is what gives the type its identity. A type hidden by an
 interface must be defined this way (or be a Rust-backed type, declared
-<code>type T;</code> on both sides); hiding a transparent alias is an error.</p>
+<code>type T;</code> in the interface alone); hiding a transparent alias is an error.</p>
 <h3 id="the-three-faces"><a class="header" href="#the-three-faces">The Three Faces</a></h3>
 <p>Inside the module — wherever the definition is visible — the type’s
 name is its constructor, <code>.0</code> reads the payload, and <code>T(pattern)</code>
@@ -5001,10 +5001,107 @@ type Real = [ Float, decimal ];
 type Number = [ Int, Real ];
 type NotNull = [Number, string, error, array, datetime, duration, bytes, bool];
 type Primitive = [NotNull, null];
-type PrimNoErr = [Number, string, array, datetime, duration, bytes, null];
+type PrimNoErr = [Number, string, bool, array, datetime, duration, bytes, null];
 type Log = [`Trace, `Debug, `Info, `Warn, `Error, `Stdout, `Stderr];
 type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;];
 type Option&lt;'a&gt; = ['a, null];
+
+/// The result of a three-way comparison.
+type Ordering = [`Less, `Equal, `Greater];
+
+/// Equality. `==` and `!=` consult the implementation of the operand
+/// type — and of every type nested inside it — falling back to the
+/// structural comparison of values where there is none. Outside core
+/// only an abstract type may implement it. The method is implicitly
+/// `#[sync]`: it runs inside the comparison.
+trait Eq {
+    /// true if the two values are equal
+    val eq: fn(self, other: self) -&gt; bool
+};
+
+/// Ordering. `&lt;`, `&gt;`, `&lt;=` and `&gt;=` consult the implementation the
+/// way `==` consults `Eq`, and so do `array::sort`, `min`/`max` and map
+/// keys. Implicitly `#[sync]`.
+trait Ord {
+    /// the order of `self` relative to `other`
+    val cmp: fn(self, other: self) -&gt; Ordering
+};
+
+/// Printing. String interpolation, `print`/`println`, `dbg` and `log`
+/// consult the implementation the way `==` consults `Eq`, everywhere
+/// in the printed type. Implicitly `#[sync]`.
+trait Display {
+    /// the printed form of `self`
+    val fmt: fn(self) -&gt; string
+};
+
+/// A collection: a type constructor whose values can be traversed and
+/// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
+/// program implements it for. `self&lt;'a&gt;` is the constructor applied to
+/// the element type. `fold`, `filter_map` and `flat_map` are required;
+/// the rest derive from them, and an implementation overrides what it
+/// can do better. Over an element type that holds null, the derived
+/// `map` and `filter` drop the null elements (they go through
+/// `filter_map`'s `Option`); the built-in collections override both.
+/// `use Collection::*` makes the methods callable bare, and `map(c, f)`
+/// then does the same thing whatever `c` is. A parameter typed
+/// `Collection` accepts any collection: `|c: Collection| fold(c, ..)`.
+trait Collection {
+    /// fold the elements, front to back
+    val fold: fn(self&lt;'a&gt;, init: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e) -&gt; 'b throws 'e;
+    /// the elements `f` maps to a value, in order
+    val filter_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    /// the concatenation of `f` over the elements
+    val flat_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; self&lt;'b&gt; throws 'e) -&gt; self&lt;'b&gt; throws 'e;
+    /// `f` over every element
+    val map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; self&lt;'b&gt; throws 'e
+        = |c, f| filter_map(c, |x| f(x));
+    /// the elements `f` accepts
+    val filter: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; self&lt;'a&gt; throws 'e
+        = |c, f| filter_map(c, |x| select f(x) { true =&gt; x, false =&gt; null });
+    /// the first element `f` accepts
+    val find: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e
+        = |c, f| {
+            let init: Option&lt;'a&gt; = null;
+                // CR claude for claude: [bug] The defaults use null to mean "no element".
+                // map and filter (lines 61, 64) go through filter_map, whose Option&lt;'b&gt;
+                // collapses when the element type holds null. This arm also can't tell
+                // a null match from "not found yet". So over nullable elements, map and
+                // filter drop elements and find returns a later one: for `m:
+                // Map&lt;string, [i64, null]&gt; = {"a" =&gt; null, "b" =&gt; 1}`, `len(filter(m,
+                // |v| opt::is_none(v)))` is 0 and `find(m, |v| true)` is 1, where
+                // Array's and List's intrinsics keep the null. Map's impl (mod.gx:51)
+                // overrides neither filter nor find, every user collection gets all
+                // three defaults, and line 48 ("the built-in collections override all
+                // of them") is false: Map lacks filter/find/find_map and List lacks
+                // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
+                // (gx-stdlib-04)
+                // 2026-10-07 claude: Map overrides filter (map_filter); List keeps the
+                // default len, a counting fold, as a cons list's length is a walk;
+                // find carries a found flag, so a null match ends the search; the
+                // trait doc no longer says the built-ins override everything and names
+                // the limit. What stands: a user collection's derived map and filter
+                // still drop null elements (the repro's `bag map 1`); keeping them needs
+                // a singleton constructor the trait does not have.
+            let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
+                true =&gt; (done, acc),
+                false =&gt; select f(x) { true =&gt; (true, x), false =&gt; (false, acc) }
+            });
+            found
+        };
+    /// the first value `f` maps an element to
+    val find_map: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e) -&gt; Option&lt;'b&gt; throws 'e
+        = |c, f| {
+            let init: Option&lt;'b&gt; = null;
+            fold(c, init, |acc, x| select acc { null as _ =&gt; f(x), found =&gt; found })
+        };
+    /// the number of elements
+    val len: fn(self&lt;'a&gt;) -&gt; i64 = |c| fold(c, 0, |n, _| n + 1)
+};
+
+impl Collection for Array&lt;'_&gt;;
+impl&lt;'k&gt; Collection for Map&lt;'k, '_&gt;;
+impl Collection for List&lt;'_&gt;;
 
 type Pos = {
     line: i32,
@@ -5031,54 +5128,89 @@ type ErrChain&lt;'a&gt; = {
     pos: Pos
 };
 
+// CR claude for claude: [structure] Three signatures here are looser than their builtins.
+// `all` returns one of its equal arguments but is typed `fn(@args: Any) -&gt; Any`, so
+// `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -&gt; 'a`, as max/min have, gives it a
+// real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
+// - 1, e)` with count = 0 passes every event (-1 wraps to usize::MAX) and skip(-1)
+// passes none. A string count is parsed, and a non-number leaves the count unset (take
+// passes nothing, skip passes everything); `#n: i64` with a negative read as 0 fixes
+// that. sum/product/divide (123, 181, 184) return the union Number, so `sum(1, 2) + 1`
+// and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
+// would type the result, but it would also refuse the mixed-number array that
+// graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
+// 2026-10-07 claude: all is fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a, and take/skip take
+// #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
+// result needs the Singleton bound, which the mixed-number fixture refuses.
 /// return the first argument when all arguments are equal, otherwise return nothing
-val all: fn(@args: Any) -&gt; Any;
+val all: fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
 /// return true if all arguments are true, otherwise return false
 val and: fn(@args: bool) -&gt; bool;
 
 /// return the number of times x has updated
-val count: fn(v: Any) -&gt; i64;
+val count: fn(x: Any) -&gt; i64;
 
-/// return the first argument divided by all subsequent arguments
+/// return the first argument divided by all subsequent arguments; a
+/// failed division (by zero, an overflow) is logged and returns nothing
 val divide: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
 /// return e only if e is an error
-val filter_err: fn(r: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
+val filter_err: fn(e: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
 
 /// return v if f(v) is true, otherwise return nothing
-val filter: fn(x: 'a, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
+val filter: fn(v: 'a, f: fn(v: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
 
 /// return true if e is an error
-val is_err: fn(v: Any) -&gt; bool;
+val is_err: fn(e: Any) -&gt; bool;
 
-/// construct an error from the specified string
-val error: fn(x: 'a) -&gt; Error&lt;'a&gt;;
+/// construct an error carrying e
+val error: fn(e: 'a) -&gt; Error&lt;'a&gt;;
 
 /// return the maximum value of any argument
-val max: fn&lt;'a: Ordered&gt;(x: 'a, @args: 'a) -&gt; 'a;
+val max: fn&lt;'a: Ordered&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
 /// return the mean of the passed in arguments
 val mean: fn(v: [Number, Array&lt;Number&gt;], @args: [Number, Array&lt;Number&gt;]) -&gt; Result&lt;f64, `MeanError(string)&gt;;
 
 /// return the minimum value of any argument
-val min: fn&lt;'a: Ordered&gt;(x: 'a, @args:'a) -&gt; 'a;
+val min: fn&lt;'a: Ordered&gt;(a: 'a, @args:'a) -&gt; 'a;
 
-/// return v only once, subsequent updates to v will be ignored
+/// return v only once, subsuquent updates to v will be ignored
 /// and once will return nothing
-val once: fn(x: 'a) -&gt; 'a;
+val once: fn(v: 'a) -&gt; 'a;
 
-/// take n updates from e and drop the rest. The internal count is reset when n updates.
-val take: fn(#n:Any, x: 'a) -&gt; 'a;
+/// take n updates from e and drop the rest; a negative n takes none. The
+/// count restarts when n updates.
+val take: fn(#n: i64, e: 'a) -&gt; 'a;
 
-/// skip n updates from e and return the rest. The internal count is reset when n updates.
-val skip: fn(#n:Any, x: 'a) -&gt; 'a;
+/// skip n updates from e and return the rest; a negative n skips none.
+/// The count restarts when n updates.
+val skip: fn(#n: i64, e: 'a) -&gt; 'a;
 
 /// range will update j - i times, starting at i and ending at j - 1
 val range: fn(i: i64, j: i64) -&gt; Result&lt;i64, `RangeError(string)&gt;;
 
 /// return true if any argument is true
 val or: fn(@args: bool) -&gt; bool;
+
+/// bitwise AND
+val bit_and: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise OR
+val bit_or: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise XOR
+val bit_xor: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// bitwise complement
+val bit_not: fn&lt;'a: Int&gt;(a: 'a) -&gt; 'a;
+
+/// shift left (wrapping)
+val shl: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
+
+/// shift right (wrapping)
+val shr: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
 
 /// return the product of all arguments
 val product: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
@@ -5088,37 +5220,64 @@ val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; N
 
 /// when v updates return v if the new value is different from the previous value,
 /// otherwise return nothing.
-val uniq: fn&lt;'a: Discernible&gt;(x: 'a) -&gt; 'a;
+val uniq: fn&lt;'a: Discernible&gt;(v: 'a) -&gt; 'a;
 
 /// when v updates place it's value in an internal fifo queue. when clock updates
 /// return the oldest value from the fifo queue. If clock updates and the queue is
 /// empty, record the number of clock updates, and produce that number of
-/// values from the queue when they are available.
-val queue: fn(#clock:Any, x: 'a) -&gt; 'a;
+/// values from the queue when they are available. When flush updates
+/// discard every value waiting in the queue; recorded clock updates are kept.
+val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -&gt; 'a;
 
-/// hold the most recent value of v internally until clock updates. If v updates
+/// queuefn wraps a function f and returns a function with the same signature
+/// whose invocations are queued and released by an external trigger.
+///
+/// Each call site of queuefn creates a fresh queue. The wrapper has an
+/// internal pop_count initialized to 1, so the first invocation runs
+/// immediately. Subsequent invocations push their args onto the queue and
+/// emit nothing until #trigger fires; each #trigger update releases one
+/// queued invocation, or banks a pop slot if the queue is empty.
+///
+/// If #count is provided as a writable ref, the current queue depth is
+/// written through it whenever it changes, to a place (`&amp;mut s.depth`)
+/// as to a binding. If null (default), depth is not reported. f may not
+/// have a variadic argument or a defaulted label: wrap a lambda that
+/// calls it.
+///
+/// When f re-emits, the queue and pop_count are NOT reset. Subsequent
+/// pops process queued args with the new f, regardless of which f was
+/// current when those args were queued. If you need a fresh queue when f
+/// changes, build it explicitly using `queue` instead.
+///
+/// Concurrent in-flight invocations are possible if #trigger fires before
+/// f finishes emitting a previous invocation's output — the wrapper
+/// emits whatever any in-flight invocation produces.
+val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
+
+/// hold the most recent value of v interally until clock updates. If v updates
 /// more than once before clock updates, older values of v will be discarded,
 /// only the most recent value will be retained. If clock updates when no v is held
-/// internally, record the number of times it updated, and pass that many v updates
-/// through immediately when they happen.
-val hold: fn(#clock:Any, x: 'a) -&gt; 'a;
+/// internall, record the number of times it updated, and pass that many v updates
+/// through immediatly when they happen.
+val hold: fn(#clock:Any, v: 'a) -&gt; 'a;
+
 
 /// when v updates, return it, but also print it along
 /// with the position of the expression to the specified sink
-val dbg: fn(?#dest:[`Stdout, `Stderr, Log], x: 'a) -&gt; 'a;
+val dbg: fn(?#dest:[`Stdout, `Stderr, Log], v: 'a) -&gt; 'a;
 
 /// print a log message to stdout, stderr or the specified log level using the rust log
 /// crate. Returns null after processing each message.
-val log: fn(?#dest:Log, x: 'a) -&gt; null;
+val log: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate. Does not automatically insert a newline or add the source module/location.
 /// Returns null after processing each message.
-val print: fn(?#dest:Log, x: 'a) -&gt; null;
+val print: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// print a raw value to stdout, stderr or the specified log level using the rust log
 /// crate followed by a newline. Returns null after processing each message.
-val println: fn(?#dest:Log, x: 'a) -&gt; null;
+val println: fn(?#dest:Log, msg: 'a) -&gt; null;
 
 /// Throttle v so it updates at most every #rate, where rate is a
 /// duration (default 0.5 seconds). Intermediate updates that push v
@@ -5126,32 +5285,20 @@ val println: fn(?#dest:Log, x: 'a) -&gt; null;
 /// be delivered. If the sequence, m0, m1, ..., mN, arrives simultaneously
 /// after a period of silence, first m0 will be delivered, then after the rate
 /// timer expires mN will be delivered, m1, ..., m(N-1) will be discarded.
-val throttle: fn(?#rate:duration, x: 'a) -&gt; 'a;
+val throttle: fn(?#rate:duration, v: 'a) -&gt; 'a;
 
-/// bitwise AND
-val bit_and: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
 
-/// bitwise OR
-val bit_or: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// bitwise XOR
-val bit_xor: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// bitwise complement
-val bit_not: fn&lt;'a: Int&gt;(x: 'a) -&gt; 'a;
-
-/// shift left (wrapping)
-val shl: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
-
-/// shift right (wrapping)
-val shr: fn&lt;'a: Int&gt;(x: 'a, y: 'a) -&gt; 'a;
+mod buffer;
+mod math;
+mod opt;
 </code></pre>
 <h2 id="corebuffer"><a class="header" href="#corebuffer">core::buffer</a></h2>
 <p>The <code>buffer</code> submodule provides functions for working with raw bytes:
 conversion between bytes and strings/arrays, concatenation, and a
 flexible binary encode/decode system with control over endianness and
 variable-length encoding.</p>
-<pre><code class="language-graphix">/// Convert bytes to a UTF-8 string.
+<pre><code class="language-graphix">use super::Result;
+/// Convert bytes to a UTF-8 string.
 val to_string: fn(b: bytes) -&gt; Result&lt;string, `EncodingError(string)&gt;;
 
 /// Convert bytes to a UTF-8 string, replacing invalid sequences.
@@ -5188,19 +5335,20 @@ type Encode = [
 
 /// Spec for decoding bytes into refs. Bare tags are
 /// big-endian (network byte order), LE suffix for little-endian.
-/// Variable-length fields take a &amp;u64 for the length so that
+/// Each decoded field is written through its &amp;mut. Variable-length
+/// fields take a &amp;u64 for the length so that
 /// earlier decoded lengths can be resolved within the same call.
 type Decode = [
-  `I8(&amp;i8), `U8(&amp;u8),
-  `I16(&amp;i16), `I16LE(&amp;i16), `U16(&amp;u16), `U16LE(&amp;u16),
-  `I32(&amp;i32), `I32LE(&amp;i32), `U32(&amp;u32), `U32LE(&amp;u32),
-  `I64(&amp;i64), `I64LE(&amp;i64), `U64(&amp;u64), `U64LE(&amp;u64),
-  `F32(&amp;f32), `F32LE(&amp;f32), `F64(&amp;f64), `F64LE(&amp;f64),
-  `Bytes(&amp;u64, &amp;bytes),
-  `UTF8(&amp;u64, &amp;string),
+  `I8(&amp;mut i8), `U8(&amp;mut u8),
+  `I16(&amp;mut i16), `I16LE(&amp;mut i16), `U16(&amp;mut u16), `U16LE(&amp;mut u16),
+  `I32(&amp;mut i32), `I32LE(&amp;mut i32), `U32(&amp;mut u32), `U32LE(&amp;mut u32),
+  `I64(&amp;mut i64), `I64LE(&amp;mut i64), `U64(&amp;mut u64), `U64LE(&amp;mut u64),
+  `F32(&amp;mut f32), `F32LE(&amp;mut f32), `F64(&amp;mut f64), `F64LE(&amp;mut f64),
+  `Bytes(&amp;u64, &amp;mut bytes),
+  `UTF8(&amp;u64, &amp;mut string),
   `Skip(&amp;u64),
-  `Varint(&amp;u64),
-  `Zigzag(&amp;i64)
+  `Varint(&amp;mut u64),
+  `Zigzag(&amp;mut i64)
 ];
 
 /// Encode values into bytes according to the spec.
@@ -5319,18 +5467,18 @@ val signum: fn(x: f64) -&gt; f64;
 /// `x` with the sign of `y`.
 val copysign: fn(x: f64, y: f64) -&gt; f64;
 
-/// Smaller of two f64 values, returning the non-NaN operand if one is
-/// NaN. For n-ary polymorphic behaviour over `Number`, use the
-/// top-level `min` from core.
+/// Smaller of two f64 values, returning the non-NaN operand if one is NaN.
+/// For n-ary polymorphic behaviour over `Number`, use the top-level `min` from core.
 val min: fn(x: f64, y: f64) -&gt; f64;
 
-/// Larger of two f64 values, returning the non-NaN operand if one is
-/// NaN. For n-ary polymorphic behaviour over `Number`, use the
-/// top-level `max` from core.
+/// Larger of two f64 values, returning the non-NaN operand if one is NaN.
+/// For n-ary polymorphic behaviour over `Number`, use the top-level `max` from core.
 val max: fn(x: f64, y: f64) -&gt; f64;
 
-/// Clamp `x` to the closed interval `[lo, hi]`.
-val clamp: fn(x: f64, lo: f64, hi: f64) -&gt; f64;
+/// Clamp `x` to the closed interval `[lo, hi]`. Returns a catchable
+/// `` `ClampError `` when the range is invalid (`lo &gt; hi`, or a NaN bound)
+/// — handle it with `?`/`$`/`select`.
+val clamp: fn(x: f64, lo: f64, hi: f64) -&gt; [f64, Error&lt;`ClampError(string)&gt;];
 
 /// True if `x` is NaN.
 val is_nan: fn(x: f64) -&gt; bool;
@@ -5382,56 +5530,67 @@ fire-and-forget: they never queue inputs. If a callback is slow or
 never produces a value, a new input simply supersedes the pending one
 (latest wins). Use the explicit <code>core::queue</code> / <code>core::hold</code> operators
 when you need ordered async behavior.</p>
-<pre><code class="language-graphix">/// true if v is not null
+<pre><code class="language-graphix">use super::Result;
+/// true if v is not null
 val is_some: fn(v: ['a, null]) -&gt; bool;
 
 /// true if v is null
 val is_none: fn(v: ['a, null]) -&gt; bool;
 
+// CR claude for eric: [doc-drift] These docs promise results that never come while an
+// argument is pending. `contains`, `or_default`, `or` and `and` (and `zip`, `ok_or`)
+// are CachedArgs builtins, which bottom the call while any argument is bottom or has
+// not produced yet (lib.rs:773). So `opt::or(c, b)` with c = 3 shows nothing until b
+// first produces, and `opt::and(null, b)` waits for b. The `_ =&gt; None` arms written for
+// a missing argument (opt.rs:74, 93, 112, 131, 180, 226) can never run. The six are
+// also Stateless(None), so a lambda that calls one never fuses ("builtin `opt::or` has
+// no fast-call entry"), even though eval only ever sees every argument present. Either
+// document them as strict, delete those arms and give each a FastCall::Plain fn like
+// fc_xor, or make them raw Apply builtins that decide from the arguments that are
+// present. book/src/stdlib/core.md:419-432 copies this text. probe: `let c: [i64, null]
+// = 3; let b: [i64, null] = never(); opt::or(c, b)` prints nothing (with b = null it
+// prints 3). (gx-stdlib-13)
 /// true if v is not null and equals x. Produces false when v is null
 /// regardless of x.
-val contains: fn(v: ['a, null], y: 'a) -&gt; bool;
+val contains: fn(v: ['a, null], x: 'a) -&gt; bool;
 
 /// or_default(v, d): if v is null return d, otherwise return v
-val or_default: fn(v: ['a, null], y: 'a) -&gt; 'a;
+val or_default: fn(v: ['a, null], d: 'a) -&gt; 'a;
 
-/// or(a, b): return a if non-null, otherwise return b (which may
-/// itself be null).
-val or: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
+/// or(a, b): return a if non-null, otherwise return b (which may itself
+/// be null).
+val or: fn(a: ['a, null], b: ['a, null]) -&gt; ['a, null];
 
 /// and(a, b): return b if a is non-null, otherwise return null. The
 /// value of b is not inspected when a is null.
-val and: fn(v: ['a, null], v2: ['b, null]) -&gt; ['b, null];
+val and: fn(a: ['a, null], b: ['b, null]) -&gt; ['b, null];
 
 /// xor(a, b): return whichever of a or b is non-null, or null if both
 /// or neither are non-null.
-val xor: fn(v: ['a, null], v2: ['a, null]) -&gt; ['a, null];
-
-/// Collapse a nested option. Present for symmetry with Rust; at the
-/// value level this is the identity (graphix structural unions make
-/// [[T, null], null] equivalent to [T, null]).
-val flatten: fn(v: [['a, null], null]) -&gt; ['a, null];
+val xor: fn(a: ['a, null], b: ['a, null]) -&gt; ['a, null];
 
 /// ok_or(v, e): return v unchanged when non-null, otherwise return
 /// error(e).
-val ok_or: fn(v: ['a, null], y: 'e) -&gt; Result&lt;'a, 'e&gt;;
+val ok_or: fn(v: ['a, null], e: 'e) -&gt; Result&lt;'a, 'e&gt;;
 
 /// zip(a, b): if both are non-null return the tuple (a, b), otherwise
 /// return null.
-val zip: fn(v: ['a, null], v2: ['b, null]) -&gt; [('a, 'b), null];
+val zip: fn(a: ['a, null], b: ['b, null]) -&gt; [('a, 'b), null];
 
 /// unzip(p): given a tuple-valued option, return the pair of options.
 /// null input yields (null, null).
-val unzip: fn(v: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
+val unzip: fn(p: [('a, 'b), null]) -&gt; (['a, null], ['b, null]);
 
 /// map(v, f): apply f to the inner value if v is non-null, otherwise
-/// return null.
-val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b) -&gt; ['b, null];
+/// return null. f is invoked at most once per update of v — fire-and-
+/// forget, no queueing. If v updates again before f produces a result,
+/// the new input supersedes the pending one.
+val map: fn(v: ['a, null], f: fn(x: 'a) -&gt; 'b throws 'e) -&gt; ['b, null] throws 'e;
 
 /// flat_map(v, f): apply f to the inner value if v is non-null,
 /// otherwise return null. f's own optional result is forwarded
-/// unchanged.
-val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null]) -&gt; ['b, null];
+/// unchanged. Same fire-and-forget semantics as map.
+val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; ['b, null] throws 'e;
 
 /// filter(v, pred): if v is non-null and pred(v) is true, emit v.
 /// Otherwise (v is null, or pred is false) emit null. Same fire-and-
@@ -5444,29 +5603,29 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null]) -&gt; ['b, null];
 /// gated on a verdict about the old one. Pure predicates (the
 /// expected case) are unaffected. Use `core::queue` if you need
 /// strict input-bool pairing.
-val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; ['a, null];
+val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; ['a, null] throws 'e;
 
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f is invoked eagerly and its latest value is cached so
 /// later updates to v can be resolved without re-invoking f. If v is
 /// null before f has produced its first value, no output is emitted
 /// until f fires.
-val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null]) -&gt; ['a, null];
+val or_else: fn(v: ['a, null], f: fn() -&gt; ['a, null] throws 'e) -&gt; ['a, null] throws 'e;
 
 /// ok_or_else(v, f): return v if non-null, otherwise return
 /// error(f()). Same eager-with-caching semantics as or_else; null v
 /// before f's first firing is silent until f produces.
-val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e) -&gt; Result&lt;'a, 'e&gt;;
+val ok_or_else: fn(v: ['a, null], f: fn() -&gt; 'e throws 'x) -&gt; Result&lt;'a, 'e&gt; throws 'x;
 
 /// is_some_and(v, pred): true when v is non-null and pred(v) is true,
 /// false when v is null or pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
+val is_some_and: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e;
 
 /// is_none_or(v, pred): true when v is null or pred(v) is true, false
 /// when v is non-null and pred is false. Fire-and-forget like map —
 /// for non-null v, no output is produced until pred fires.
-val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool) -&gt; bool;
+val is_none_or: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; bool throws 'e
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="array-1"><a class="header" href="#array-1">Array</a></h1>
@@ -5665,16 +5824,16 @@ val trim_end: fn(s: string) -&gt; string;
 val replace: fn(#pat: string, #rep: string, s: string) -&gt; string;
 
 /// return the parent path of s, or null if s does not have a parent path
-val dirname: fn(s: string) -&gt; Option&lt;string&gt;;
+val dirname: fn(path: string) -&gt; Option&lt;string&gt;;
 
 /// return the leaf path of s, or null if s is not a path. e.g. /foo/bar -&gt; bar
-val basename: fn(s: string) -&gt; Option&lt;string&gt;;
+val basename: fn(path: string) -&gt; Option&lt;string&gt;;
 
 /// given a path ending in .../row/col, return the tuple (row, col).
 /// equivalent to (basename(dirname(s)), basename(s)), but in a single
 /// builtin call. returns null if s has fewer than two path components.
 /// e.g. /foo/bar/baz -&gt; ("bar", "baz"), /foo -&gt; null
-val row_col: fn(s: string) -&gt; Option&lt;(string, string)&gt;;
+val row_col: fn(path: string) -&gt; Option&lt;(string, string)&gt;;
 
 /// return a single string with the arguments concatenated and separated by #sep
 val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
@@ -5682,11 +5841,11 @@ val join: fn(#sep:string, @args: [string, Array&lt;string&gt;]) -&gt; string;
 /// concatenate the specified strings into a single string
 val concat: fn(@args: [string, Array&lt;string&gt;]) -&gt; string;
 
-/// escape all the characters in #to_escape in s with the escape character #escape.
-/// The escape character must appear in #to_escape
+/// escape every character of #esc.escape in s with #esc.escape_char, and translate the
+/// characters #esc.tr names; the escape char must appear in #esc.escape
 val escape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
-/// unescape all the characters in s escaped by the specified #escape character
+/// unescape every character in s escaped by #esc.escape_char, reversing #esc.tr
 val unescape: fn(?#esc:Escape, s: string) -&gt; Result&lt;string, `StringError(string)&gt;;
 
 /// split the string by the specified #pat and return an array of each part
@@ -5726,13 +5885,13 @@ val to_lower: fn(s: string) -&gt; string;
 val to_upper: fn(s: string) -&gt; string;
 
 /// C style sprintf, implements most C standard format args
-val sprintf: fn(s: string, @args: Any) -&gt; Result&lt;string, `FormatError(string)&gt;;
+val sprintf: fn(fmt: string, @args: Any) -&gt; Result&lt;string, `FormatError(string)&gt;;
 
 /// return the length of the string in bytes
 val len: fn(s: string) -&gt; i64;
 
-/// extract a substring of s starting at #start with length #len.
-/// both #start and #len are Unicode character indexes,
+/// extract a substring of s starting at #start with lenth #len.
+/// both #start and #len are unicode character indexes,
 /// not byte indexes. e.g. str::sub(#start:0, #len:2, "💖💖💖")
 /// will return "💖💖"
 val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(string)&gt;;
@@ -5740,7 +5899,7 @@ val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(s
 /// parse the specified string as a value. return the value on success or an
 /// error on failure. Note, if you feed the parser a well formed error then
 /// parse will also return an error
-val parse: fn(s: string) -&gt; Result&lt;PrimNoErr, Any&gt;;
+val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="re"><a class="header" href="#re">Re</a></h1>
@@ -5752,17 +5911,17 @@ val is_match: fn(#pat: string, s: string) -&gt; Result&lt;bool, `ReError(string)
 /// invalid.
 val find: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-/// return an array of captures matched by #pat. The array will have an element for each
-/// capture group, which will have an element for each capture, regardless of whether it
-/// matched or not. If it did not match the corresponding element will be null. Return an
-/// error if #pat is invalid.
+/// return an array with an element per match of #pat, each an array of the whole match
+/// followed by each capture group, null for a group that did not take part: re::captures(
+/// #pat: r"(\d)(x)?", "1 2x") is [["1", "1", null], ["2x", "2", "x"]]. Return an error if
+/// #pat is invalid.
 val captures: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;Array&lt;Option&lt;string&gt;&gt;&gt;, `ReError(string)&gt;;
 
 /// return an array of strings split by #pat. return an error if #pat is invalid.
 val split: fn(#pat: string, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 
-/// split the string by #pat at most #limit times and return an array of the parts.
-/// return an error if #pat is invalid
+/// split the string by #pat into at most #limit parts, the last holding the rest.
+/// return an error if #pat is invalid or #limit is not positive
 val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;string&gt;, `ReError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -5770,7 +5929,7 @@ val splitn: fn(#pat: string, #limit: i64, s: string) -&gt; Result&lt;Array&lt;st
 <pre><code class="language-graphix">/// generate a random number between #start and #end (exclusive)
 /// every time #clock updates. If start and end are not specified,
 /// they default to 0.0 and 1.0
-val rand: fn&lt;'a: [Int, Float]&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
+val rand: fn&lt;'a: [Int, Float] + Singleton&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
 
 /// pick a random element from the array and return it. Update
 /// each time the array updates. If the array is empty return
@@ -5848,27 +6007,16 @@ trait Read {
     /// Read exactly n bytes from the stream. Returns fewer bytes only
     /// if the stream ends before n bytes have been read.
     val read_exact: fn(self, n: u64) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s, n| {
-        let want: u64 = n;
-        let acc: bytes = buffer::from_string("");
+        // a new request, a new stream or a new n, starts over
+        let want: u64 = (s, n) ~ n;
+        let acc: bytes = (s, n) ~ buffer::from_string("");
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
-            // CR claude for claude: [bug] This completion test reads `acc`, so it fires
-            // again when the false arm's `acc &lt;-` lands. At that point the next read is
-            // still in flight and `b` still holds the previous chunk, so over an
-            // asynchronous `read` that returns 4 of 6 bytes, read_exact answers the
-            // first chunk twice (8 bytes) before the right 6. `write_exact` (line 114)
-            // has the same shape: `n &gt;= buffer::len(rest)` re-fires when `rest &lt;-`
-            // lands, so it answers `null` with bytes still unwritten and then the real
-            // result, which may be an error. A seq step takes the first answer, so it
-            // gets corrupt bytes or a false success; a Graphix stream that wraps a
-            // system stream reads and writes asynchronously, which is the case these
-            // defaults exist for. Testing completion only when the reply fires fixes
-            // both: `select b ~ (..)` and `select n ~ (n &gt;= buffer::len(rest))`. probe:
-            // design/review-2026-10-05/repro/gx-stdlib-05.gx (gx-stdlib-05)
-            bytes as b =&gt; select buffer::len(b) == u64:0
-                || buffer::len(acc) + buffer::len(b) &gt;= n {
-                true =&gt; buffer::concat(acc, b),
+            // done is decided when a chunk arrives, never when acc moves
+            bytes as b =&gt; select b ~ (buffer::len(b) == u64:0
+                || buffer::len(acc) + buffer::len(b) &gt;= n) {
+                true =&gt; b ~ buffer::concat(acc, b),
                 false =&gt; {
                     // `b ~` is load-bearing: a connect fires when its
                     // RHS fires, and an ungated `acc &lt;- f(acc, b)`
@@ -5888,35 +6036,14 @@ trait Read {
     /// produces.
     val read_all: fn(self) -&gt; Result&lt;bytes, `IOError(string)&gt; = |s| {
         let want: u64 = u64:65536;
-        // CR claude for claude: [bug] acc's initializer is a constant, so acc is set
-        // once, when the call site is built, and nothing clears it when `s` fires
-        // again. Any second request at the same site (a new file, the next accepted
-        // connection, a seq re-run, a file seeked back to 0) returns everything read
-        // before, with the new stream's bytes appended. A TCP server that reads each
-        // accepted connection here gives client 2's request with client 1's bytes in
-        // front of it. No system stream overrides read_all, so the documented
-        // `json::read(Read::read_all(f)?)` idiom hits this. read_exact's default (line
-        // 22) keeps acc the same way, and its `want` keeps the last remainder when only
-        // `s` fires, so all of a request's state must reset on every new request.
-        // probe: design/review-2026-10-05/repro/gx-stdlib-01.gx (gx-stdlib-01)
-        let acc: bytes = buffer::from_string("");
+        let acc: bytes = s ~ buffer::from_string("");
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
-            bytes as b =&gt; select buffer::len(b) == u64:0 {
-                true =&gt; acc,
+            bytes as b =&gt; select b ~ (buffer::len(b) == u64:0) {
+                true =&gt; b ~ acc,
                 false =&gt; {
                     // gated on the chunk: see `read_exact`
-                    // CR claude for claude: [perf] Each 64 KiB chunk copies the whole
-                    // accumulator (core_bytes_concat builds a fresh buffer), so
-                    // read_all is quadratic in the stream's length. No system stream
-                    // overrides it: io.gx, fs.gx, tcp.gx, tls.gx and process.gx bind
-                    // only read and read_exact. A 32 MiB file took 3.06 s (16 MiB 0.79
-                    // s, 8 MiB 0.26 s), where sys::fs::read_all_bin took 0.010 s. That
-                    // is the cost of every read_all the book shows, and of collecting a
-                    // child's stdout. Bind a native read_all (read_to_end into one
-                    // growing buffer) in each system stream's impl Read, as read_exact
-                    // is. (sys-io-11)
                     acc &lt;- b ~ buffer::concat(acc, b);
                     want &lt;- b ~ u64:65536;
                     never()
@@ -5934,8 +6061,8 @@ trait Read {
 /// its own, and nothing the caller does controls where those
 /// boundaries fall. Only complete lines are decoded, and lossily, so
 /// one line of invalid UTF-8 cannot take down the stream. A trailing
-/// `\r` is stripped, and the final line is dropped if the stream ends
-/// without a newline.
+/// `\r` is stripped, and a last line the stream ends without a newline
+/// is still a line. A line longer than 16 MiB is an error.
 ///
 /// Reads re-arm themselves, so either method is the whole "follow a
 /// stream" idiom in one call. Both stop at the end of the stream. A
@@ -5971,11 +6098,11 @@ trait Write {
 
     /// Write all the bytes, looping until complete.
     val write_exact: fn(self, data: bytes) -&gt; Result&lt;null, `IOError(string)&gt; = |s, data| {
-        let rest: bytes = data;
+        let rest: bytes = (s, data) ~ data;
         let written = write(s, rest);
         select written {
             error as _ =&gt; filter_err(written),
-            u64 as n =&gt; select n &gt;= buffer::len(rest) {
+            u64 as n =&gt; select n ~ (n &gt;= buffer::len(rest)) {
                 true =&gt; null,
                 false =&gt; { rest &lt;- n ~ rest[n..]$; never() }
             }
@@ -6491,19 +6618,15 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
-// CR claude for claude: [doc-drift] "A failed upgrade leaves it untouched" holds only for
-// failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
-// handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
-// which drops it. The caller's TcpStream then reads IOError "stream unavailable". The
-// code is right, since a socket partway through a handshake cannot carry plaintext.
-// This doc and the comment at tls.rs:81-83 ("A failed upgrade puts the socket back")
-// are wrong. probe: design/review-2026-10-05/repro/sys-io-13.gx (sys-io-13)
 /// Upgrade a TCP stream to a TLS client connection.
 ///
 /// The upgrade CONSUMES the TCP stream: on success the session lives
 /// in the returned handle and the one passed in is empty, so a stray
 /// plaintext read on it is an error rather than a silent read of the
-/// encrypted session. A failed upgrade leaves it untouched.
+/// encrypted session. An upgrade refused before the handshake (a bad
+/// certificate or hostname) leaves it untouched; one that fails in the
+/// handshake has spent it, since a socket partway through a handshake
+/// cannot carry plaintext.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 
 /// Upgrade a TCP stream to a TLS server connection.
@@ -6513,20 +6636,7 @@ val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsSt
 <h1 id="sysnet---netidx-operations"><a class="header" href="#sysnet---netidx-operations">sys::net - Netidx Operations</a></h1>
 <p>The <code>sys::net</code> module provides publish/subscribe and RPC operations via
 <a href="https://netidx.github.io/netidx-book">netidx</a>.</p>
-<pre><code class="language-graphix">// CR claude for claude: [dead] `use super::args;` is unused: `args` appears here and in
-// net.gx only as a parameter name. The pass that turned the globs into explicit names
-// counted parameter and field names, and left the same kind of import in db txn.gxi:1
-// (`txn`), gui clipboard.gxi (`image`, `text`), mouse_area.gxi (`button`),
-// keyboard_area.gxi and style.gxi (`text`), data_table.gxi (`column`), canvas.gxi
-// (`color`) and tui canvas.gxi (`line`); tui form.gxi's `Line` is unused as well.
-// Separately, db/mod.gx:1-2, http/mod.gx:1-2, fs/tempdir.gx:1 and fs/watch.gx:1-2
-// repeat their gxi's `mod` and bodyless `type` declarations, which
-// add_interface_modules already splices into the body (fs.gx uses `File` and db uses
-// `subscription` with no copy). book/src/modules/interfaces.md:289 ("declared `type T;`
-// on both sides") reads as asking for that copy, which contradicts lines 136-138 of the
-// same chapter. (gx-stdlib.r2-15)
-use super::args;
-type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
+<pre><code class="language-graphix">type Table = { rows: Array&lt;string&gt;, columns: Array&lt;string&gt; };
 type RpcArg&lt;'a&gt; = { default: 'a, doc: string };
 
 /// write the value to the specified path
@@ -6678,12 +6788,15 @@ type BinResponse = {
     url: string
 };
 
+/// A request to a server: `body` is the body as text, null when it is
+/// empty or not UTF-8; `raw` is the body as sent.
 type Request = {
     body: [string, null],
     headers: Array&lt;(string, string)&gt;,
     method: string,
     path: string,
-    query: [string, null]
+    query: [string, null],
+    raw: bytes
 };
 
 type Client;
@@ -6730,24 +6843,34 @@ val get_bin: fn(client: Client, url: string) -&gt; Result&lt;BinResponse, `HTTPE
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -&gt; string;
 
-/// Start an HTTP server.
+/// Start an HTTP server. Each request goes to `#handler` in turn and is
+/// answered by its next value; one it raises on, or has no value for, is
+/// answered 500. A body over `#max_body` bytes (16 MiB by default) is
+/// answered 413 without reaching the handler.
 val serve: fn(
     #addr: string,
     ?#cert: [bytes, null],
     ?#key: [bytes, null],
     ?#max_connections: i64,
+    ?#max_body: i64,
     #handler: fn(req: Request) -&gt; Response throws 'e
 ) -&gt; Result&lt;Server, `HTTPError(string)&gt; throws 'e;
+
+mod rest;
 </code></pre>
 <h2 id="httprest"><a class="header" href="#httprest">http::rest</a></h2>
 <p>Convenience functions for JSON REST APIs with optional bearer token authentication.</p>
-<pre><code class="language-graphix">val get: fn(
+<pre><code class="language-graphix">use super::{Client, Method, Response, request};
+
+/// GET with JSON Accept header and optional bearer auth.
+val get: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     client: Client,
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// POST with JSON Content-Type/Accept headers and optional bearer auth.
 val post: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
@@ -6756,14 +6879,16 @@ val post: fn(
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// PUT with JSON Content-Type/Accept headers and optional bearer auth.
 val put: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
     client: Client,
-    url: string
+    url: string,
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// DELETE with JSON Accept header and optional bearer auth.
 val delete: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
@@ -6771,12 +6896,13 @@ val delete: fn(
     url: string
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 
+/// PATCH with JSON Content-Type/Accept headers and optional bearer auth.
 val patch: fn(
     ?#bearer: [string, null],
     ?#headers: Array&lt;(string, string)&gt;,
     #body: string,
     client: Client,
-    url: string
+    url: string,
 ) -&gt; Result&lt;Response, `HTTPError(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -6875,7 +7001,8 @@ values.</p>
 /// `xls::sheets(Read::read_all(f)?)`.
 val sheets: fn(input: bytes) -&gt; Result&lt;Array&lt;string&gt;, `XlsErr(string)&gt;;
 
-/// Read a sheet by name as a 2D array of rows.
+/// Read a sheet by name as a 2D array of rows from A1: rows[0][0] is A1,
+/// every row as wide as the last used column, an empty cell null.
 val read: fn(input: bytes, sheet: string) -&gt; Result&lt;Array&lt;Array&lt;PrimNoErr&gt;&gt;, `XlsErr(string)&gt;;
 </code></pre>
 <h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
@@ -6898,6 +7025,9 @@ type Connection;
 /// Open (or create) a SQLite database. Use ":memory:" for in-memory.
 val open: fn(path: string) -&gt; Result&lt;Connection, `SqliteError(string)&gt;;
 
+// SQL text is a Graphix string, so every [..] in it interpolates: values
+// go through the ? params, and SQL that holds a [ is written r"..." or
+// """...""".
 /// Execute a non-returning statement (INSERT/UPDATE/DELETE/DDL) with params. Returns rows affected.
 val exec: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;u64, `SqliteError(string)&gt;;
 
@@ -6906,7 +7036,7 @@ val exec_batch: fn(conn: Connection, sql: string) -&gt; Result&lt;null, `SqliteE
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array&lt;{...}&gt; for typed structs, or Array&lt;Map&lt;string, SqlVal&gt;&gt; for raw maps.
-val query: fn(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
+val query: fn&lt;'a: Concrete&gt;(conn: Connection, sql: string, params: Array&lt;SqlVal&gt;) -&gt; Result&lt;Array&lt;'a&gt;, [`SqliteError(string), `InvalidCast(string)]&gt;;
 
 /// Begin a transaction.
 val begin: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
@@ -6920,6 +7050,12 @@ val rollback: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt
 /// Close the connection explicitly (optional — connections close on drop).
 val close: fn(conn: Connection) -&gt; Result&lt;null, `SqliteError(string)&gt;;
 </code></pre>
+<p>SQL is written in an ordinary Graphix string, and an ordinary string
+interpolates every <code>[..]</code> in it. Pass values through the <code>?</code> params,
+never by splicing them into the text: <code>"... WHERE name = '[name]'"</code> is
+SQL injection. SQL that itself holds a <code>[</code> (a JSON path such as
+<code>'$.items[0]'</code>) is written as a raw string <code>r"..."</code> or a template
+<code>"""..."""</code>, where brackets are content.</p>
 <h2 id="type-directed-queries"><a class="header" href="#type-directed-queries">Type-directed queries</a></h2>
 <p>The return type of <code>sqlite::query</code> determines how rows are deserialized.
 Use struct types for named columns, or <code>Map&lt;string, SqlVal&gt;</code> for raw access.</p>
@@ -6939,7 +7075,8 @@ let raw: Array&lt;Map&lt;string, SqlVal&gt;&gt; =
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="db"><a class="header" href="#db">db</a></h1>
 <p>The <code>db</code> module provides an embedded key-value database (backed by sled)
-with ACID transactions, typed trees, cursors, and reactive subscriptions.</p>
+with ACID transactions, typed trees, cursors, and reactive subscriptions.
+A transaction’s commit is on disk when it answers.</p>
 <p>Tree key and value types are tracked at both compile time and run time —
 if a tree is reopened with different types, <code>db::tree</code> returns a <code>DbErr</code>.</p>
 <h2 id="interface-2"><a class="header" href="#interface-2">Interface</a></h2>
@@ -6947,13 +7084,43 @@ if a tree is reopened with different types, <code>db::tree</code> returns a <cod
 type Db;
 
 /// A typed view of a database tree (key-value namespace).
+///
+/// The type parameters 'k and 'v are tracked at compile time, but
+/// also stored as metadata in the database. If a tree is reopened
+/// with different key or value types, `tree` returns a `DbErr` at
+/// run time.
+///
+/// Keys are kept in the language's order (as `&lt;` orders them), which
+/// first, last, get_lt, get_gt and cursor::range follow.
 type Tree&lt;'k, 'v&gt;;
+
+mod cursor;
+mod txn;
+mod subscription;
+
+/// Get the stored type metadata for a tree, or null if none.
+/// Pass null for the default tree.
+val get_type: fn(db: Db, name: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
 
 /// Open or create an embedded database at the given path.
 val open: fn(path: string) -&gt; Result&lt;Db, `DbErr(string)&gt;;
 
+/// Flush all pending writes to disk.
+val flush: fn(db: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
+
+/// Generate a monotonically increasing unique u64 ID.
+val generate_id: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
+
+/// List the names of all trees in the database.
+val tree_names: fn(db: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
+
+/// Drop a named tree from the database.
+val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
+
 /// Open or create a named tree with typed keys and values.
-/// Pass null for the default (unnamed) tree.
+/// Pass null for the default (unnamed) tree. The key and value
+/// types are recorded on first open; reopening the same tree with
+/// different types returns a `DbErr`.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(db: Db, name: [string, null]) -&gt; Result&lt;Tree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get the value for a key, or null if not found.
@@ -6989,8 +7156,8 @@ val get_lt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null],
 /// Get the entry with the smallest key strictly greater than the given key.
 val get_gt: fn(t: Tree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
-/// Atomic compare-and-swap. Returns null on success, or `Mismatch(current_value)
-/// if the current value didn't match.
+/// Atomic compare-and-swap. Returns null on success,
+/// or `Mismatch(current_value) if the current value didn't match.
 val compare_and_swap: fn(t: Tree&lt;'k, 'v&gt;, key: 'k, old: ['v, null], new: ['v, null]) -&gt; Result&lt;[null, `Mismatch(['v, null])], `DbErr(string)&gt;;
 
 /// Atomically apply a batch of inserts and removes.
@@ -7001,21 +7168,6 @@ val len: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;u64, `DbErr(string)&gt;;
 
 /// True if the tree has no entries.
 val is_empty: fn(t: Tree&lt;'k, 'v&gt;) -&gt; Result&lt;bool, `DbErr(string)&gt;;
-
-/// Get the stored type metadata for a tree, or null if none.
-val get_type: fn(db: Db, name: [string, null]) -&gt; Result&lt;[(string, string), null], `DbErr(string)&gt;;
-
-/// List the names of all trees in the database.
-val tree_names: fn(db: Db) -&gt; Result&lt;Array&lt;string&gt;, `DbErr(string)&gt;;
-
-/// Drop a named tree from the database.
-val drop_tree: fn(db: Db, name: string) -&gt; Result&lt;bool, `DbErr(string)&gt;;
-
-/// Generate a monotonically increasing unique u64 ID.
-val generate_id: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
-
-/// Flush all pending writes to disk.
-val flush: fn(db: Db) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
 /// Total size of the database on disk in bytes.
 val size_on_disk: fn(db: Db) -&gt; Result&lt;u64, `DbErr(string)&gt;;
@@ -7034,39 +7186,41 @@ val import: fn(db: Db, path: string) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbcursor"><a class="header" href="#dbcursor">db::cursor</a></h2>
 <p>Cursors iterate over tree entries reactively, advancing on each trigger.</p>
-<pre><code class="language-graphix">/// A cursor for iterating over tree entries one at a time.
+<pre><code class="language-graphix">use super::Tree;
+/// A cursor for iterating over tree entries one at a time.
 type Cursor&lt;'k, 'v&gt;;
 
 /// Create a new cursor, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
 /// Create a cursor over a key range. Both bounds are optional (null = unbounded).
-val range: fn(
-    ?#start: [`Included('k), `Excluded('k), null],
-    ?#end: [`Included('k), `Excluded('k), null],
-    t: Tree&lt;'k, 'v&gt;
-) -&gt; Cursor&lt;'k, 'v&gt;;
+/// Use `Included(key) or `Excluded(key) to specify each bound.
+val range: fn(?#start: [`Included('k), `Excluded('k), null], ?#end: [`Included('k), `Excluded('k), null], t: Tree&lt;'k, 'v&gt;) -&gt; Cursor&lt;'k, 'v&gt;;
 
-/// Read the next entry. Advances on each trigger.
-/// Returns (key, value) or null when exhausted.
+/// Read the next entry from the cursor. Advances on each trigger.
+/// Returns a (key, value) tuple, or null when exhausted.
 val read: fn(c: Cursor&lt;'k, 'v&gt;, trigger: Any) -&gt; Result&lt;[('k, 'v), null], `DbErr(string)&gt;;
 
-/// Read up to N entries at once.
+/// Read up to N entries from the cursor. Returns a shorter array when exhausted.
 val read_many: fn(c: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
 <p>Multi-tree ACID transactions. All trees must be opened before any data
 operations.</p>
-<pre><code class="language-graphix">/// An open transaction handle.
+<pre><code class="language-graphix">use super::Db;
+/// An open transaction handle.
 type Txn;
 
 /// A tree view within a transaction.
+/// Types are checked against stored metadata, just like db::tree.
 type TxnTree&lt;'k, 'v&gt;;
 
-/// Begin a multi-tree transaction.
+/// Begin a multi-tree transaction on a database.
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
+/// All trees must be opened before any data operations on any tree in
+/// the transaction.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
@@ -7081,24 +7235,29 @@ val remove: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `D
 /// Atomically apply a batch of inserts and removes within the transaction.
 val batch: fn(t: TxnTree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Commit the transaction atomically.
+/// Commit the transaction. All writes become visible atomically.
+/// If you use any object created from this transaction after commit
+/// or rollback you will receive a runtime error
 val commit: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Abort the transaction.
+/// Abort the transaction. No changes are applied.
+/// If you use any object created from this transaction after commit
+/// or rollback you will receive a runtime error
 val rollback: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
 <p>Reactive subscriptions fire when entries are inserted or removed.</p>
-<pre><code class="language-graphix">/// A reactive subscription to changes on a tree.
+<pre><code class="language-graphix">use super::Tree;
+/// A reactive subscription to changes on a tree.
 type Subscription&lt;'k, 'v&gt;;
 
-/// Subscribe to changes, optionally filtering by key prefix.
+/// Subscribe to changes on a tree, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
-/// Fires reactively when inserts occur.
+/// Fires reactively when inserts occur on the subscription.
 val on_insert: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
-/// Fires reactively when removes occur.
+/// Fires reactively when removes occur on the subscription.
 val on_remove: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -13699,7 +13858,7 @@ render as <em>virtual</em> rows. Columns whose <code>source</code> is a <code>st
 <code>Map&lt;string, Any&gt;</code> skip subscription entirely and read their values
 from the source ref.</p>
 <h2 id="interface-48"><a class="header" href="#interface-48">Interface</a></h2>
-<pre><code class="language-graphix">use super::{column, table, Widget};
+<pre><code class="language-graphix">use super::{table, Widget};
 type SortDirection = [`Ascending, `Descending];
 type SortBy = { column: string, direction: SortDirection };
 
@@ -15351,15 +15510,13 @@ one implementation. A builtin whose result is directed by its call
 site’s return type (<code>str::parse</code> casting to its target) declares
 <code>FastCall::Typed</code> instead: the same contract, plus the resolved type
 and the environment it resolves in.</p>
-<p>One correctness caveat: because the fast function only ever sees
-present values, an <code>eval</code> that deliberately <em>produces on partial
-delivery</em> — short-circuiting on its first argument while another is
-still undelivered, the way an option-<code>or</code> yields its left side without
-waiting for the right — must <strong>not</strong> convert. That short-circuit is
-observable interpreter semantics; routing it through <code>fast_eval</code> would
-make the builtin wait for every argument. Most of the standard
-library’s pure <code>Sync</code> builtins are fast calls; the handful that
-short-circuit stay on plain <code>eval</code> for exactly this reason.</p>
+<p>A <code>CachedArgs</code> builtin never sees a missing argument: an invocation
+with one undelivered or bottom is bottom before <code>eval</code> runs. So every
+pure one can take a fast function, and the standard library’s do,
+through <code>graphix_package_core::fast_builtin!</code>, which writes the whole
+shell from a name and the function. A builtin that must answer before
+all its arguments arrive is a raw <code>Apply</code> (below), not an
+<code>EvalCached</code>, and has no fast function.</p>
 <h3 id="the-full-control-path-builtin--apply"><a class="header" href="#the-full-control-path-builtin--apply">The Full-Control Path: <code>BuiltIn</code> + <code>Apply</code></a></h3>
 <p>For builtins that need to interact with the execution context, manage internal
 state across cycles, or work with higher-order functions, implement the
