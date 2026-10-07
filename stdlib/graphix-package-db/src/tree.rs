@@ -9,7 +9,7 @@ use graphix_compiler::{
     errf,
     expr::ExprId,
     image::ImageBuf,
-    typ::{FnType, Type, TypeRef},
+    typ::{FnType, Type},
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::{path::Path, publisher::Typ};
@@ -349,15 +349,13 @@ fn prim_typ(t: &Type) -> Option<Typ> {
 
 fn tree_params_of_result_type(t: &Type) -> Option<&[Type]> {
     match t {
-        Type::Ref(TypeRef { name, params, .. })
-            if Path::basename(&**name) == Some("Result") =>
-        {
-            params.iter().find_map(|p| match p {
-                Type::Ref(TypeRef { name, params, .. })
-                    if matches!(Path::basename(&**name), Some("Tree" | "TxnTree"))
-                        && params.len() == 2 =>
+        Type::Ref(r) if Path::basename(&*r.name) == Some("Result") => {
+            r.params.iter().find_map(|p| match p {
+                Type::Ref(t)
+                    if matches!(Path::basename(&*t.name), Some("Tree" | "TxnTree"))
+                        && t.params.len() == 2 =>
                 {
-                    Some(&**params)
+                    Some(&*t.params)
                 }
                 _ => None,
             })

@@ -448,11 +448,11 @@ fn typexp() -> impl Strategy<Value = Type> {
             (mutability(), inner.clone()).prop_map(|(m, t)| Type::ByRef(m, Arc::new(t))),
             (typath(), collection::vec(inner.clone(), (0, 8))).prop_map(
                 |(name, params)| {
-                    Type::Ref(TypeRef::synthetic(
+                    Type::Ref(Arc::new(TypeRef::synthetic(
                         ModPath::root(),
                         name,
                         Arc::from(params),
-                    ))
+                    )))
                 }
             ),
             (
@@ -779,11 +779,11 @@ macro_rules! impl_decl {
                 3 => typexp(),
                 1 => Just(Type::Array(Arc::new(Type::Hole))),
                 1 => typath().prop_map(|name| {
-                    Type::Ref(TypeRef::synthetic(
+                    Type::Ref(Arc::new(TypeRef::synthetic(
                         ModPath::root(),
                         name,
                         Arc::from_iter([Type::Hole]),
-                    ))
+                    )))
                 }),
             ],
             collection::vec(

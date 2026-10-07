@@ -1,7 +1,7 @@
 use crate::{
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{Mutability, TVar, Type, TypeRef, setops::union_identical},
+    typ::{Mutability, TVar, Type, setops::union_identical},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
@@ -274,7 +274,7 @@ impl Type {
             }
             Type::Ref(tr) => {
                 Self::cow_slice(&tr.params, |t| t.resolve_tvars_seen_int(cx))
-                    .map(|params| Type::Ref(tr.with_params(params)))
+                    .map(|params| Type::Ref(Arc::new(tr.with_params(params))))
             }
             Type::TVar(tv) => Some({
                 let addr = tv.cell_addr();
@@ -404,7 +404,7 @@ impl Type {
                 )),
             },
             Type::Ref(tr) => Self::cow_slice(&tr.params, |t| t.normalize_int(cx))
-                .map(|params| Type::Ref(tr.with_params(params))),
+                .map(|params| Type::Ref(Arc::new(tr.with_params(params)))),
             Type::TVar(tv) => {
                 tv.normalize_int(cx);
                 None
@@ -526,7 +526,7 @@ impl Type {
                     None
                 }
             }
-            (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
+            (Type::Ref(_), _) | (_, Type::Ref(_)) => None,
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)

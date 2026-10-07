@@ -799,16 +799,9 @@ pub enum Type {
     Bottom,
     Any,
     Primitive(BitFlags<Typ>),
-    // CR claude for claude: [perf] TypeRef sits inline here and is 60 bytes: two
-    // ModPaths, a fat params Arc, an Option<SourcePosition>, the origin and the
-    // resolution cell. So every Type is 64 bytes where every other variant fits in 40.
-    // FnType, which holds three Types, is 240 bytes instead of 168, and a struct field
-    // entry is 80 instead of 56. Every node's type, every cell's binding and
-    // constraints, and each CallSite's two FnTypes pay for it, and cloning a Ref bumps
-    // up to five refcounts. `Ref(Arc<TypeRef>)` makes Type 40 bytes and a clone one
-    // refcount bump; the 21 `Ref(TypeRef { .. })` patterns then destructure through the
-    // Arc. (x-alloc-03)
-    Ref(TypeRef),
+    /// Boxed: inline, a ref (two paths, params, position, origin and
+    /// cell) would make every type half again as large.
+    Ref(Arc<TypeRef>),
     Fn(Arc<FnType>),
     Set(Arc<[Type]>),
     TVar(TVar),
@@ -1731,7 +1724,7 @@ impl Type {
                 )),
             },
             Type::Ref(tr) => Type::cow_slice(&tr.params, |t| f(t))
-                .map(|params| Type::Ref(tr.with_params(params))),
+                .map(|params| Type::Ref(Arc::new(tr.with_params(params)))),
             Type::Abstract { id, params } => Type::cow_slice(params, |t| f(t))
                 .map(|params| Type::Abstract { id: *id, params }),
             Type::Error(t) => f(t).map(|t| Type::Error(Arc::new(t))),
@@ -2002,7 +1995,7 @@ impl Type {
                 let params = Arc::from_iter(
                     tr.params.iter().take(n).cloned().chain(iter::once(Type::Hole)),
                 );
-                Some((Type::Ref(tr.with_params(params)), tr.params[n].clone()))
+                Some((Type::Ref(Arc::new(tr.with_params(params))), tr.params[n].clone()))
             }
             Type::Abstract { id, params } if !params.is_empty() => {
                 let n = params.len() - 1;
@@ -2042,7 +2035,7 @@ impl Type {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
                     if !tr.names_something(env) {
-                        out.push(tr.clone())
+                        out.push((**tr).clone())
                     }
                     tr.params.iter().for_each(|p| go(p, env, seen, out))
                 }
@@ -2177,7 +2170,7 @@ impl Type {
     pub fn lookup_ref_with(&self, env: &Env, commit: bool) -> Result<Option<Type>> {
         match self {
             Self::Ref(tr) => {
-                let TypeRef { scope, name, params, pos, ori, resolved: _ } = tr;
+                let TypeRef { scope, name, params, pos, ori, resolved: _ } = &**tr;
                 let resolved = tr.resolve_in(env).ok_or_else(|| {
                     if gxdbg_typeref() {
                         eprintln!(
@@ -2351,7 +2344,7 @@ impl Type {
             | Self::Tuple(_)
             | Self::Struct(_)
             | Self::Variant(_, _, _)
-            | Self::Ref(TypeRef { .. })
+            | Self::Ref(_)
             | Self::Map { .. } => f(Some(self)),
             Self::TVar(tv) => match tv.read().cell.read().binding.as_ref() {
                 Some(t) => ensure_sufficient(|| t.with_deref(f)),
@@ -2550,7 +2543,7 @@ impl Type {
                 let params = Arc::from_iter(tr.params.iter().map(|t| {
                     t.scope_refs_int(scope, copies).unwrap_or_else(|| t.clone())
                 }));
-                Some(Type::Ref(tr.with_scope(scope.clone(), params)))
+                Some(Type::Ref(Arc::new(tr.with_scope(scope.clone(), params))))
             }
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }

@@ -168,7 +168,8 @@ impl Type {
             Self::Ordered => write!(f, "Ordered"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
-            Self::Ref(TypeRef { scope: _, name, params, .. }) => {
+            Self::Ref(tr) => {
+                let TypeRef { name, params, .. } = &**tr;
                 write!(f, "{name}")?;
                 if !params.is_empty() {
                     write!(f, "<")?;
@@ -234,7 +235,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Map { .. }
         | Type::Fn(_) => true,
         Type::Variant(_, args, _) => !args.is_empty(),
-        Type::Ref(TypeRef { params, .. }) => !params.is_empty(),
+        Type::Ref(tr) => !tr.params.is_empty(),
         Type::ByRef(Mutability::Shared, t) => opens_with_bracket(t),
         Type::ByRef(Mutability::Mut, _) => false,
         Type::Bottom
@@ -289,7 +290,8 @@ impl PrettyDisplay for Type {
             }
             Self::Bottom => writeln!(buf, "_"),
             Self::Any => writeln!(buf, "Any"),
-            Self::Ref(TypeRef { scope: _, name, params, .. }) => {
+            Self::Ref(tr) => {
+                let TypeRef { name, params, .. } = &**tr;
                 if params.is_empty() {
                     writeln!(buf, "{name}")
                 } else {

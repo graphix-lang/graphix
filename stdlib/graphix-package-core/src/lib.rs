@@ -14,7 +14,7 @@ use graphix_compiler::{
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
     node::{coretraits, genn},
-    typ::{FnType, TVal, Type, TypeRef},
+    typ::{FnType, TVal, Type},
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
@@ -44,10 +44,10 @@ pub(crate) mod queuefn;
 /// typecheck-time validation is [`extract_cast_type`].
 pub fn cast_target(rtype: &Type) -> Option<Type> {
     let target = rtype.with_deref(|t| match t? {
-        Type::Ref(TypeRef { name, params, .. })
-            if Path::basename(&**name) == Some("Result") && params.len() == 2 =>
+        Type::Ref(tr)
+            if Path::basename(&*tr.name) == Some("Result") && tr.params.len() == 2 =>
         {
-            Some(params[0].clone())
+            Some(tr.params[0].clone())
         }
         Type::Set(elements) if elements.len() == 2 => {
             elements.iter().find(|elem| !matches!(elem, Type::Error(_))).cloned()

@@ -33,11 +33,11 @@ pub(super) static ECHAIN: LazyLock<ModPath> =
     LazyLock::new(|| ModPath::from(["ErrChain"]));
 
 fn typ_echain(param: Type) -> Type {
-    Type::Ref(TypeRef::synthetic(
+    Type::Ref(Arc::new(TypeRef::synthetic(
         ModPath::root(),
         ECHAIN.clone(),
         Arc::from_iter([param]),
-    ))
+    )))
 }
 
 /// The fields of `ErrChain<'a>` in a structurally typed world: a struct
@@ -765,8 +765,7 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             // annotate. probe: design/review-2026-10-05/repro/c-error-op-05.gx
             // (c-error-op-05)
             None => bail!("type must be known"),
-            Some(Type::Ref (TypeRef { scope, name, .. }))
-                if scope == &ModPath::root() && name == &*ECHAIN =>
+            Some(Type::Ref(tr)) if tr.scope == ModPath::root() && tr.name == *ECHAIN =>
             {
                 Ok(etyp.clone())
             }

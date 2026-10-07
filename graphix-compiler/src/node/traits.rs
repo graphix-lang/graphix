@@ -132,13 +132,13 @@ pub(crate) fn trait_ref(
     pos: SourcePosition,
     ori: &Arc<Origin>,
 ) -> Type {
-    Type::Ref(TypeRef::new(
+    Type::Ref(Arc::new(TypeRef::new(
         scope.clone(),
         ModPath::from([name.clone()]),
         Arc::from_iter([]),
         Some(pos),
         Some(ori.clone()),
-    ))
+    )))
 }
 
 #[derive(Debug)]

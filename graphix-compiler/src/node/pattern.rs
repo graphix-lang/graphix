@@ -7,7 +7,7 @@ use crate::{
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
     node::{Held, compiler, list},
-    typ::{AbstractId, IsAFlags, Type, TypeRef},
+    typ::{AbstractId, IsAFlags, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -484,7 +484,7 @@ impl StructPatternNode {
         // g.env), fills cells in the same way. probe:
         // design/review-2026-10-05/repro/t-typ-mod-02.gx prints ("not A1", "A2"),
         // expected ("A1", "A2"). (t-typ-mod-02)
-        while let Type::Ref(TypeRef { .. }) = type_predicate {
+        while let Type::Ref(_) = type_predicate {
             type_predicate = type_predicate.lookup_ref(&ctx.env)?;
         }
         let type_predicate = &type_predicate;
@@ -1362,7 +1362,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Tuple(_)
             | Type::Variant(_, _, _)
             | Type::Struct(_)
-            | Type::Ref(TypeRef { .. }) => (),
+            | Type::Ref(_) => (),
         }
         let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
         let structure_predicate = StructPatternNode::compile_with(

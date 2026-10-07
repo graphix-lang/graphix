@@ -440,11 +440,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let nb = ExprKind::Bind(Arc::new(BindExpr {
                 rec: b.rec,
                 pattern: b.pattern.clone(),
-                typ: Some(Type::Ref(TypeRef::synthetic(
+                typ: Some(Type::Ref(Arc::new(TypeRef::synthetic(
                     ModPath::root(),
                     mp(TYP),
                     Arc::from_iter(std::iter::empty::<Type>()),
-                ))),
+                )))),
                 value: b.value.clone(),
             }))
             .to_expr_nopos();

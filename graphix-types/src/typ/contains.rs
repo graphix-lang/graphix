@@ -6,7 +6,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
-        TraitId, Type, TypeRef, node_addr, probe_key, setops::union_identical,
+        TraitId, Type, node_addr, probe_key, setops::union_identical,
         tvar::would_cycle_inner,
     },
 };
@@ -761,8 +761,7 @@ impl Type {
             {
                 Ok(true)
             }
-            (t0 @ Self::Ref(TypeRef { .. }), t1)
-            | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
+            (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 // CR claude for claude: [bug] This memo keys a reference on its
                 // definition and its params. A typedef whose params grow as it recurses
                 // never meets a repeated pair, so comparing two different

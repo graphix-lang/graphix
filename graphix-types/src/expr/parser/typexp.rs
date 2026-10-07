@@ -391,13 +391,13 @@ where
                 let params = params
                     .map(|mut a| Arc::from_iter(a.drain(..)))
                     .unwrap_or_else(|| Arc::from_iter([]));
-                Type::Ref(TypeRef::new(
+                Type::Ref(Arc::new(TypeRef::new(
                     ModPath::root(),
                     n,
                     params,
                     Some(pos),
                     Some(get_origin()),
-                ))
+                )))
             },
         )
 }

@@ -164,7 +164,8 @@ impl Type {
         };
         let mut params: LPooled<Vec<Type>> = t0.params.iter().cloned().collect();
         params[i] = p0.union_int(env, hist, p1)?;
-        let merged = Type::Ref(t0.with_params(Arc::from_iter(params.drain(..))));
+        let merged =
+            Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
         let probe = BitFlags::empty();
         // CR claude for claude: [bug] Holding both inputs does not make the merge exact.
         // A parameter that recurses, sits under a collection or occurs twice in the
@@ -212,7 +213,7 @@ impl Type {
             {
                 self.union_ref_params(env, hist, t0, t1, t)
             }
-            (tr @ Type::Ref(TypeRef { .. }), t) | (t, tr @ Type::Ref(TypeRef { .. })) => {
+            (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
                     (hist.ref_id(tr, env), hist.ref_id(t, env))
                 } else {
@@ -378,8 +379,7 @@ impl Type {
             (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
                 Ok(Type::Primitive(BitFlags::empty()))
             }
-            (t0 @ Type::Ref(TypeRef { .. }), t1)
-            | (t0, t1 @ Type::Ref(TypeRef { .. })) => {
+            (t0 @ Type::Ref(_), t1) | (t0, t1 @ Type::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 if let Some(r) = hist.get(&key) {
                     return Ok(r.clone());

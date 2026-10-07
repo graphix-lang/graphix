@@ -3,7 +3,7 @@ use crate::{
     env::Env,
     format_with_flags,
     stack::ensure_sufficient,
-    typ::{AndAc, RefHist, RefPair, Type, TypeRef, contains::ContainsHist},
+    typ::{AndAc, RefHist, RefPair, Type, contains::ContainsHist},
 };
 use ahash::AHashSet;
 use anyhow::{Result, bail};
@@ -82,8 +82,7 @@ impl Type {
                         .collect::<Result<AndAc>>()?
                         .0)
             }
-            (t0 @ Self::Ref(TypeRef { .. }), t1)
-            | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
+            (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 if hist.contains(&key) {
                     return Ok(true);
@@ -261,17 +260,17 @@ impl Type {
             (Self::Bottom, Self::Bottom) => Ok(()),
             (Self::Any, Self::Any) => Ok(()),
             (Self::Primitive(p0), Self::Primitive(p1)) if p0 == p1 => Ok(()),
-            (
-                Self::Ref(TypeRef { scope: s0, name: n0, params: p0, .. }),
-                Self::Ref(TypeRef { scope: s1, name: n1, params: p1, .. }),
-            ) if s0 == s1 && n0 == n1 && p0.len() == p1.len() => {
-                for (t0, t1) in p0.iter().zip(p1.iter()) {
+            (Self::Ref(r0), Self::Ref(r1))
+                if r0.scope == r1.scope
+                    && r0.name == r1.name
+                    && r0.params.len() == r1.params.len() =>
+            {
+                for (t0, t1) in r0.params.iter().zip(r1.params.iter()) {
                     t0.sig_matches_int(env, t1, tvar_map, hist)?;
                 }
                 Ok(())
             }
-            (t0 @ Self::Ref(TypeRef { .. }), t1)
-            | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
+            (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 if hist.contains(&key) {
                     return Ok(());

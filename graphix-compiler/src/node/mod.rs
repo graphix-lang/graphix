@@ -125,7 +125,7 @@ macro_rules! deref_typ {
                 match &typ {
                     $($pat => break $body),+,
                     // an alias chain ends: Env::deftype refuses a cycle
-                    Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
+                    Some(rt @ $crate::typ::Type::Ref(_)) => {
                         typ = Some(rt.lookup_ref(&$ctx.env)?);
                     }
                     // a Set built while a member still held unbound TVars

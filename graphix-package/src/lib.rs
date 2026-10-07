@@ -91,11 +91,11 @@ pub fn shows_as<X: GXExt>(
     if typ.all_bottom() || typ == Type::Any || typ.has_unbound() {
         return false;
     }
-    let display = wrap(Type::Ref(TypeRef::synthetic(
+    let display = wrap(Type::Ref(triomphe::Arc::new(TypeRef::synthetic(
         ModPath::root(),
         ModPath::from_iter(path.iter().copied()),
         triomphe::Arc::from_iter([]),
-    )));
+    ))));
     display.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
 }
 

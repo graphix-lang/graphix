@@ -25,6 +25,7 @@ use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::{Cell, RefCell};
+use triomphe::Arc;
 
 pub use kernel_abi::PrimType;
 
@@ -33,7 +34,7 @@ pub use kernel_abi::PrimType;
 #[derive(Debug)]
 pub struct CachedKernel {
     /// The kernel; calls resolve by its identity ([`kernel_abi::kernel_key`]).
-    pub kernel: triomphe::Arc<KernelSig>,
+    pub kernel: Arc<KernelSig>,
     /// The callee's input types in signature order, formals then
     /// captures, frozen at build time: the caller's type authority for
     /// arg classification (env is unavailable at emit time).
@@ -529,7 +530,7 @@ struct FrameResult {
 }
 
 struct MemoEntry {
-    key: TypeRef,
+    key: Arc<TypeRef>,
     deps: Vec<(u64, TypeRef)>,
     /// `None` when nothing beneath the ref resolved: the ref stays opaque.
     resolved: Option<Type>,
@@ -560,7 +561,7 @@ impl ResolveCx {
     fn lookup(&self, key: &TypeRef, seen: Option<&Seen>) -> Option<Option<Type>> {
         let memo = self.memo.borrow();
         let e = memo.get(&expand_key_fp(key))?.iter().find(|e| {
-            &e.key == key
+            &*e.key == key
                 && e.deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some())
         })?;
         self.count_nodes(e.size);
@@ -648,7 +649,7 @@ impl ResolveCx {
     /// against the keys it consulted when `memoize`.
     fn expand(
         &self,
-        key: TypeRef,
+        key: Arc<TypeRef>,
         memoize: bool,
         f: impl FnOnce() -> Option<Type>,
     ) -> Option<Type> {
@@ -660,7 +661,7 @@ impl ResolveCx {
         let mut deps =
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
         let poisoned = self.poisoned.get();
-        deps.retain(|k| k != &key);
+        deps.retain(|k| *k != *key);
         // An unbound tvar param compares equal to any other unbound
         // cell, so an open key would hand one site's cells to another.
         if memoize && !poisoned && key_closed(&key) {

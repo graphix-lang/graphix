@@ -284,7 +284,7 @@ pub fn nullable_error_marked(t: &Type) -> Option<bool> {
 /// a type. Only following a `Ref` to its definition extends it, so a
 /// recurring key means true type recursion, not structural depth.
 pub(crate) struct Seen<'a> {
-    key: TypeRef,
+    key: Arc<TypeRef>,
     /// [`expand_key_fp`] of `key`; membership compares it before full equality.
     fp: u64,
     len: usize,
@@ -303,7 +303,7 @@ pub(crate) fn expand_key_fp(key: &TypeRef) -> u64 {
 }
 
 impl<'a> Seen<'a> {
-    pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: TypeRef) -> Self {
+    pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: Arc<TypeRef>) -> Self {
         let fp = expand_key_fp(&key);
         Self { key, fp, len: Self::len(prev) + 1, prev }
     }
@@ -322,7 +322,7 @@ impl<'a> Seen<'a> {
         key: &TypeRef,
     ) -> Option<&'b TypeRef> {
         while let Some(s) = cur {
-            if s.fp == fp && &s.key == key {
+            if s.fp == fp && &*s.key == key {
                 return Some(&s.key);
             }
             cur = s.prev;
@@ -513,9 +513,9 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                         tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                     let mut frozen = frozen?;
-                    return Ok(Type::Ref(
+                    return Ok(Type::Ref(Arc::new(
                         outer.with_params(Arc::from_iter(frozen.drain(..))),
-                    ));
+                    )));
                 }
                 if Seen::len(seen) > MAX_FREEZE_EXPANSIONS {
                     return Err(NonCanonical);
@@ -938,7 +938,11 @@ mod tests {
     }
 
     fn unresolved_ref(params: Arc<[Type]>) -> Type {
-        Type::Ref(TypeRef::synthetic(ModPath::root(), ModPath::from(["T"]), params))
+        Type::Ref(Arc::new(TypeRef::synthetic(
+            ModPath::root(),
+            ModPath::from(["T"]),
+            params,
+        )))
     }
 
     fn abstract_type(params: Arc<[Type]>) -> Type {
