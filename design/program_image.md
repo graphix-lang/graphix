@@ -351,8 +351,9 @@ shared leaf (a type variable, a resolution cell, an origin, a lambda
 ids cell) written by identity, so two types are one object exactly
 when they are interchangeable; equal types decode to one shared
 value, and a top-level hit skips the whole subtree (the key walk
-memoizes per shared subtree, `image::shared_key`, so the writer's
-walk is linear; the memo holds each node it keyed, so an address names
+memoizes per shared subtree, `image::shared_key`, and a shared node's
+key holds its shared children by their interned keys, so the writer's
+walk and the memo are linear; the memo holds each node it keyed, so an address names
 one node for the session even when the writer measures a node built on
 the fly, as a function type's normalized constraint view is). A type can reach itself through a resolution cell it
 contains; the nested occurrence is a reference like any other. And an

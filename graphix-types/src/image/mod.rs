@@ -204,9 +204,13 @@ pub struct ImageEncoder {
     /// equal types decode to one shared value.
     pub(crate) types: ContentTable,
     pub(crate) fntypes: ContentTable,
-    /// The canonical bytes of every shared type node met so far, by
-    /// the address of its `Arc`, so a key walk stops at shared subtrees.
-    type_keys: AHashMap<usize, (KeyedNode, Box<[u8]>)>,
+    /// The interned key of every shared type node met so far, by the
+    /// address of its `Arc`, so a key walk stops at shared subtrees.
+    type_keys: AHashMap<usize, (KeyedNode, u64)>,
+    /// A shared node's own key, its shared children by their interned
+    /// keys, to its interned key: equal contents intern alike, and each
+    /// node's entry is the size of the node, not of its subtree.
+    key_ids: AHashMap<Box<[u8]>, u64>,
     /// Key buffers free for the next key walk, one per nesting level.
     key_scratch: Vec<Vec<u8>>,
     /// What the session's user keeps beside the core's tables.
@@ -1238,7 +1242,7 @@ pub(crate) enum KeyedNode {
     Fields(Arc<[(ArcStr, Type, WrittenAt)]>),
 }
 
-/// Append the canonical bytes of the shared type node at `ptr`, walking
+/// Append the interned key of the shared type node at `ptr`, walking
 /// it once per session; `keep` is the node, held with its key.
 pub(crate) fn shared_key(
     ptr: usize,
@@ -1246,35 +1250,32 @@ pub(crate) fn shared_key(
     out: &mut Vec<u8>,
     walk: impl FnOnce(&mut Vec<u8>),
 ) {
-    let hit = encoding(|e| match e.type_keys.get(&ptr) {
-        Some((_, k)) => {
-            out.extend_from_slice(k);
-            true
+    let known = encoding(|e| e.type_keys.get(&ptr).map(|(_, id)| *id)).flatten();
+    let id = match known {
+        Some(id) => id,
+        None => {
+            let start = out.len();
+            crate::stack::ensure_sufficient(|| walk(out));
+            // outside a session the node's key stays written out whole
+            let Some(id) = encoding(|e| {
+                let next = e.key_ids.len() as u64;
+                let id = match e.key_ids.get(&out[start..]) {
+                    Some(id) => *id,
+                    None => {
+                        e.key_ids.insert(out[start..].into(), next);
+                        next
+                    }
+                };
+                e.type_keys.insert(ptr, (keep(), id));
+                id
+            }) else {
+                return;
+            };
+            out.truncate(start);
+            id
         }
-        None => false,
-    })
-    .unwrap_or(false);
-    if hit {
-        return;
-    }
-    let start = out.len();
-    crate::stack::ensure_sufficient(|| walk(out));
-    // CR claude for claude: [bug] Each memo entry keeps the node's whole key, its
-    // children's bytes included, and a hit copies that whole key into the parent. So a
-    // chain of depth d costs d^2/2 bytes and time, and the "linear" claim in
-    // design/program_image.md does not hold. Fusion freezes a fresh deep copy of each
-    // kernel's param type and return type (kernel_abi::freeze_for_abi_d_inner), so N
-    // chained `let x_i = [x_{i-1}]` lets cost about N^3/3 bytes here. Measured peaks:
-    // 0.6 / 1.6 / 3.4 GB at N = 1000 / 1500 / 2000, against 0.2 / 0.35 / 0.56 GB with
-    // --no-cache. At deep_nesting.rs's FLAT_DEPTH of 3000, the flattype pin shape is
-    // OOM-killed past 6 GB under the default image cache, while it runs in 1.1 GB with
-    // --no-cache. A fixed-size entry per node (an interned ordinal of its content, with
-    // the parent keyed by its children's ordinals) would make the memo linear. probe:
-    // design/review-2026-10-05/repro/t-misc-02.sh (t-misc-02)
-    let key: Box<[u8]> = out[start..].into();
-    encoding(|e| {
-        e.type_keys.insert(ptr, (keep(), key));
-    });
+    };
+    encode_varint(id, out);
 }
 
 /// Build a key in a buffer the session keeps for reuse and run `f`
