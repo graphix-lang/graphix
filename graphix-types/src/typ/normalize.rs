@@ -300,15 +300,7 @@ impl Type {
                         let fresh = tv.fresh_copy();
                         if cx.predicates {
                             for c in tv.cell_constraints() {
-                                if matches!(
-                                    c,
-                                    Type::Concrete
-                                        | Type::Function
-                                        | Type::Singleton
-                                        | Type::OneNumber
-                                        | Type::Discernible
-                                        | Type::Ordered
-                                ) {
+                                if c.is_predicate() {
                                     fresh.add_cell_constraint(c);
                                 }
                             }

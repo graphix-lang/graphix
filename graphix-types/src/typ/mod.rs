@@ -2375,18 +2375,44 @@ impl Type {
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
     /// trait anywhere else is an error. Returns the rewritten type.
+    /// A predicate conjunct: a bound a type passes or fails, never a type
+    /// a cell binds to. Exhaustive, so a new variant is decided here.
+    pub fn is_predicate(&self) -> bool {
+        match self {
+            Type::Concrete
+            | Type::Function
+            | Type::Singleton
+            | Type::OneNumber
+            | Type::Discernible
+            | Type::Ordered => true,
+            Type::Bottom
+            | Type::Any
+            | Type::Hole
+            | Type::Primitive(_)
+            | Type::Ref(_)
+            | Type::Fn(_)
+            | Type::Set(_)
+            | Type::TVar(_)
+            | Type::Error(_)
+            | Type::Array(_)
+            | Type::List(_)
+            | Type::ByRef(..)
+            | Type::Tuple(_)
+            | Type::Struct(_)
+            | Type::Variant(..)
+            | Type::Map { .. }
+            | Type::Abstract { .. }
+            | Type::App(..) => false,
+        }
+    }
+
     /// A bound's conjunct: a trait or a predicate itself, or a type
     /// holding neither a hole nor a trait, which only a parameter's type
     /// may be.
     pub fn check_bound(&self, env: &Env) -> Result<()> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => Ok(()),
-            Type::Concrete
-            | Type::Function
-            | Type::Singleton
-            | Type::OneNumber
-            | Type::Discernible
-            | Type::Ordered => Ok(()),
+            t if t.is_predicate() => Ok(()),
             t => t.rewrite_trait_args(env).map(|_| ()),
         }
     }

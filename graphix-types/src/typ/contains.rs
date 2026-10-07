@@ -265,15 +265,7 @@ fn commit_cell_constraints(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
-        let predicate = matches!(
-            c,
-            Type::Concrete
-                | Type::Function
-                | Type::Singleton
-                | Type::OneNumber
-                | Type::Discernible
-                | Type::Ordered
-        );
+        let predicate = c.is_predicate();
         if !predicate
             && !c.is_trait_ref(env)
             && exact(c)

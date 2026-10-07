@@ -782,21 +782,6 @@ impl TVar {
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
-        // CR claude for claude: [structure] The four predicate conjuncts (Concrete,
-        // Function, Singleton, OneNumber) are tested one by one at each site that needs
-        // them: the four requires_* getters (900-919), this sequence, copy's own list
-        // of the same three (960-982), settle.rs:45-48, 120-125, 154-161 and 296,
-        // contains.rs:527-534 and graphix-compiler/src/node/lambda.rs:118. These
-        // matches! lists are not checked for exhaustiveness, so if a fifth predicate is
-        // missed at one of them, it is silently not enforced there. In this function
-        // each getter clones the cell Arc and takes its lock: five cell() reads per
-        // bind where one would do. Read the cell's predicates once as a set, and give
-        // bind and copy one shared routine that applies them to the binding.
-        // (t-tvar-10)
-        // 2026-10-06 claude: bind and copy now read the cell's conjuncts once and
-        // apply them through one routine, `require_bounds`; the Discernible bound
-        // joined there. The other lists this CR names (settle.rs, contains.rs,
-        // lambda.rs, normalize.rs) are still `matches!` lists.
         require_bounds(&self.cell_constraints(), &t);
         lower(&t, self.level());
         let cell = self.cell();
