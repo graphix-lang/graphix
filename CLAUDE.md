@@ -257,7 +257,8 @@ is incidental. A tree holding a comment,
 an attribute or a doc has no single-line form. What the formatter
 does normalize: `i64`/`f64` literals print bare; a run of adjacent
 undecorated `use` statements merges into one per root and visibility, a
-sorted tree with every shared prefix written once; a blank line stands
+sorted tree with every shared prefix written once, where no item reads or
+binds what another binds or reads (a glob merges with nothing); a blank line stands
 around every file-level item that spans lines; primitives in a union
 print first, in canonical order. Layout: a value follows its head
 (`let x =`, `<-`, `name:`, `=>`) on the head's line when it fits or

@@ -153,32 +153,24 @@ fn merge_uses<T: Clone>(
             .map(|n| n.as_str())
             .or_else(|| netidx_core::path::Path::basename(&n.path.0))
     }
-    /// The name a use item's path starts from, when it is not a keyword.
+    /// The name a use item's path resolves through the imports of a
+    /// level by: its first segment, or the one after a `self::` or
+    /// `package::` anchor; a `super::` path reads another level's.
     fn reads(n: &UseItem) -> Option<&str> {
-        use_seg(n, 0).filter(|r| !matches!(*r, "self" | "super" | "package"))
+        match use_seg(n, 0) {
+            Some("self" | "package") => use_seg(n, 1),
+            Some("super") => None,
+            r => r,
+        }
     }
     /// Would `names`, merged after `run`, read or shadow what `run` binds,
     /// or bind what `run` reads? The sort could reorder them. A glob binds
-    /// names unknown here, so it joins only items of its own root.
+    /// names unknown here, so it merges with nothing.
     fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
         names.iter().any(|n| {
             run.iter().any(|(_, m)| {
-                // CR claude for claude: [bug] A glob is treated as independent of every
-                // item with its own root. But compile_use_item resolves each item's
-                // prefix through the imports and globs made before it, and the merged
-                // statement's sort reorders the two: when module a holds a module a, `{
-                // use a::*; use a::w; w }` prints 2 and its formatted `{ use a::{w, *};
-                // w }` prints 1. It also happens the other way round: `use a::z; use
-                // a::b::*` becomes `use a::{b::*, z}`, and a::z then resolves through
-                // b's glob. reads() also skips the second segment of a self::/package::
-                // path, which reads the imports of the level it anchors at, so at a
-                // module's root `use self::q as m; use self::m::x` formats to `use
-                // self::{m::x, q as m}`, which no longer compiles. The reparse guard
-                // compares merged with merged, so each of these is written with exit 0.
-                // probe: design/review-2026-10-05/repro/t-format-resolver-02.sh (seven
-                // cases, before and after `graphix fmt`). (t-format-resolver-02)
                 if m.is_glob() || n.is_glob() {
-                    return root(m) != root(n);
+                    return true;
                 }
                 let same = m.path == n.path && m.rename == n.rename;
                 binds(m) == reads(n)
@@ -616,7 +608,7 @@ mod tests {
         formats_to(
             Program,
             "use a::*; use a::*; use a::b; use a::b; use a::b::c",
-            "use a::{b, b::{self, c}, *, *}\n",
+            "use a::*;\nuse a::*;\nuse a::{b, b::{self, c}}\n",
         );
         formats_to(
             Program,

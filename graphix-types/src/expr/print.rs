@@ -227,6 +227,41 @@ fn flat_width(x: &impl fmt::Display) -> usize {
 
 /// The least the first line of `e`'s multi-line layout can take: the text
 /// in front of its bracket that no layout breaks.
+/// Whether the first line of `e`'s head fits on the current line: laid
+/// out alone where its width depends on a subexpression (a scrutinee, a
+/// source, a callee), else by its fixed width.
+fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
+    use ExprKind::*;
+    let col = buf.col();
+    let start = buf.mark();
+    match e {
+        Select(se) => {
+            write!(buf, "select ")?;
+            se.arg.fmt_pretty(buf)?;
+            buf.kill_newline();
+            write!(buf, " {{")?;
+        }
+        StructWith(sw) => sw.write_head(buf)?,
+        Apply(a) if !matches!(a.function.kind, Ref { .. }) => {
+            if prints_as_bare_postfix(&a.function) {
+                a.function.fmt_pretty(buf)?
+            } else {
+                pretty_parens(buf, &a.function)?
+            }
+            buf.kill_newline();
+            write!(buf, "(")?;
+        }
+        Lambda(l) => {
+            l.write_constraints(buf)?;
+            write!(buf, "|")?;
+        }
+        k => return Ok(col + head_min(k) <= buf.limit),
+    }
+    let fits = col + buf.first_line_width(start) <= buf.limit;
+    buf.rollback(start);
+    Ok(fits)
+}
+
 fn head_min(e: &ExprKind) -> usize {
     use ExprKind::*;
     match e {
@@ -281,19 +316,7 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     }
     // the first line is measured by laying it out, so a head that cannot
     // fit is not tried: that would lay out the body twice at every level
-    // CR claude for claude: [perf] head_min is only a lower bound for a select (`select _
-    // {`), a struct-with (`{ _ with`), a lambda and a call on a non-name callee (1). A
-    // head whose real first line overflows therefore passes this guard: the body is
-    // laid out here, measured, rolled back and laid out again under the head. Nested,
-    // that close to doubles the work per level until indentation alone fills the line.
-    // `graphix fmt --width 160` on 16/18/20/22 nested selects with a 140-char scrutinee
-    // takes 0.14/0.44/1.6/6.1 s (debug build), nested struct-withs on a long name grow
-    // the same way, at the default width 30 levels take 2.3 s, and LSP formatting goes
-    // through this path. The guard needs the head's exact first-line width (for a
-    // select, the scrutinee's flat width) before the body is laid out, or the body must
-    // be laid out once. Probe: design/review-2026-10-05/repro/t-print-03.gx.
-    // (t-print-03)
-    if opens_with_bracket(&e.kind) && buf.col() + head_min(&e.kind) <= buf.limit {
+    if opens_with_bracket(&e.kind) && head_fits(buf, &e.kind)? {
         let start = buf.mark();
         let col = buf.col();
         Bare(e).fmt_pretty_inner(buf)?;
