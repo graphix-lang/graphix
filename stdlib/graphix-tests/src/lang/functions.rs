@@ -1157,7 +1157,9 @@ run!(
     "#
 );
 
-const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
+// Arithmetic takes one numeric type: a nullable element, or a union of
+// two numeric types, is refused at the operator.
+const OPERAND_REFUSES_NULLABLE_ELEMENT: &str = r#"
 {
   let a = array::init(i64:3, |i| {
     let l = list::from_array([i64:0, i64:2, i64:3]);
@@ -1168,33 +1170,20 @@ const CALLSITE_REJECTS_NULLABLE_RETURN: &str = r#"
 "#;
 
 run!(
-    callsite_rejects_nullable_return,
-    CALLSITE_REJECTS_NULLABLE_RETURN,
-    |v: Result<&Value>| matches!(v, Err(_));
+    operand_refuses_nullable_element,
+    OPERAND_REFUSES_NULLABLE_ELEMENT,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
     graphix_package_core::testing::FuseExpect::None
 );
 
-// CR claude for claude: [test-gap] This fixture is not Graphix: `sync`, `let mut`, `for`
-// and `=` assignment do not parse. The program fails at the parser, `matches!(v,
-// Err(_))` accepts that, and so the test cannot fail whatever the checker does. Use the
-// corpus form, `array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0,
-// |res, v| res / v)`, and match "both operands must be one numeric type". Both
-// callsite_rejects_* tests are now refused by the operand rule, not by a call-site
-// check, so name them after that rule. (tests-lang-a-01)
-const CALLSITE_REJECTS_HETEROGENEOUS_RETURN: &str = r#"
-sync {
-  let mut res = i64:0;
-  for v in array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2) {
-    res = res / v
-  };
-  res
-}
+const OPERAND_REFUSES_MIXED_NUMERIC_ELEMENT: &str = r#"
+array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0, |res, v| res / v)
 "#;
 
 run!(
-    callsite_rejects_heterogeneous_return,
-    CALLSITE_REJECTS_HETEROGENEOUS_RETURN,
-    |v: Result<&Value>| matches!(v, Err(_));
+    operand_refuses_mixed_numeric_element,
+    OPERAND_REFUSES_MIXED_NUMERIC_ELEMENT,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("both operands must be one numeric type"));
     graphix_package_core::testing::FuseExpect::None
 );
 
@@ -1468,16 +1457,9 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// A tail-jump arg that bottoms every pass rides its previous value: the
-// loop keeps acc=0 and reaches the base.
-// CR claude for claude: [doc-drift] The comment and the test name say a bottomed tail
-// argument rides its previous value, but CLAUDE.md says a bottom input never rides. The
-// 0.0 comes from the base arm `0 => 0.0`, which never reads acc, so this test cannot
-// tell riding from not consuming. Rename it (e.g. tail_arg_bottom_unread_by_base) and
-// say what it pins: a bottomed argument the base never reads does not bottom the
-// result. The consuming form, `0 => acc`, is bottom in both engines today (`any(f(3,
-// 0), -1)` gives -1). (tests-lang-a-04)
-const TAIL_ARG_BOTTOM_RIDES_CACHE: &str = r#"
+// A tail-call argument that is bottom on every pass does not bottom a
+// base arm that never reads it: the result is the base's 0.0.
+const TAIL_ARG_BOTTOM_UNREAD_BY_BASE: &str = r#"
 {
     let rec f = |n: i64, acc: i64| -> f64
         select n {
@@ -1489,9 +1471,29 @@ const TAIL_ARG_BOTTOM_RIDES_CACHE: &str = r#"
 "#;
 
 run!(
-    tail_arg_bottom_rides_cache,
-    TAIL_ARG_BOTTOM_RIDES_CACHE,
+    tail_arg_bottom_unread_by_base,
+    TAIL_ARG_BOTTOM_UNREAD_BY_BASE,
     |v: Result<&Value>| { matches!(v, Ok(Value::F64(x)) if *x == 0.0) };
+    graphix_package_core::testing::FuseExpect::Jit
+);
+
+// The consuming twin: a base arm that reads the bottomed argument is
+// bottom, it does not ride an earlier value.
+const TAIL_ARG_BOTTOM_READ_BY_BASE: &str = r#"
+{
+    let rec f = |n: i64, acc: i64| -> i64
+        select n {
+            0 => acc,
+            _ => f(n - 1, (i64:1 / i64:0) + n)
+        };
+    any(f(3, 0), i64:-1)
+}
+"#;
+
+run!(
+    tail_arg_bottom_read_by_base,
+    TAIL_ARG_BOTTOM_READ_BY_BASE,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(-1))) };
     graphix_package_core::testing::FuseExpect::Jit
 );
 
