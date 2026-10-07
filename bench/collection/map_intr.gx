@@ -1,4 +1,4 @@
-// P2b: array map — the intrinsic, consumed by an intrinsic fold.
+// array map — the intrinsic, consumed by an intrinsic fold.
 let n = 100000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(0);

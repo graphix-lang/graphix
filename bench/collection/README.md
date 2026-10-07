@@ -132,7 +132,7 @@ intrinsic row's jit time.
   31.5 s, unfused): 5.2 ms vs 1.9 ms — the remaining 2.4x is the
   Option-carrying fold visiting every element; a fold cannot
   early-exit, so the derivation is inherently a full scan.
-- **`flatmap_fold`** pays O(n^2) concat copies AND doesn't fuse.
+- **`flatmap_fold`** pays O(n^2) concat copies (its loop fuses).
 - **`flatmap_cons` is the right derivation (Eric, 2026-08-30)**: cons
   every produced element onto a List (O(1)) and finish with one
   `list::to_array_rev` — linear, fuses, 5.8 ms vs the intrinsic's

@@ -1,4 +1,4 @@
-// P2b: array find written in Graphix — tail recursion over indexes
+// array find written in Graphix — tail recursion over indexes
 // that STOPS at the match: the early exit the fold derivation cannot
 // express (the intrinsic scans all slots by rule). The target is
 // pinned worst-case via the seed's parity — last slot (even) or

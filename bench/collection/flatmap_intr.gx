@@ -1,4 +1,4 @@
-// P2b: array flat_map — the intrinsic, two elements out per element in.
+// array flat_map — the intrinsic, two elements out per element in.
 let n = 10000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(0);

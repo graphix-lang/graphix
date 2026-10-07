@@ -1,8 +1,6 @@
-// Composite-currency seams, hot: tuple ELEMENTS through a map loop
-// (per-element producer + field reads) and a composite-arg
-// CROSS-KERNEL call per iteration (entry clone + arg drop each call —
-// the seams the unified-Value ABI changeover targets; box allocs
-// pre-changeover, refcount bumps post).
+// Composite values on hot paths: tuple ELEMENTS through a map loop
+// (per-element producer + field reads) and a composite-arg CROSS-KERNEL
+// call per iteration (entry clone + arg drop each call).
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;

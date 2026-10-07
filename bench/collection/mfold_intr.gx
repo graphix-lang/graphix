@@ -1,4 +1,4 @@
-// P2b: map fold — the pairs intrinsic directly.
+// map fold — the pairs intrinsic directly.
 let n = 100000;
 let empty: Map<i64, i64> = {};
 let src = array::fold(array::init(n, |i| i), empty, |m, i| map::insert(m, i, i));

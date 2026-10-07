@@ -1,4 +1,4 @@
-// P2b: array flat_map derived in Graphix — fold consing every produced
+// array flat_map derived in Graphix — fold consing every produced
 // element onto a List (O(1) each), then ONE list::to_array_rev pass.
 // O(n) total, against flatmap_fold's O(n^2) concat copies.
 let n = 10000;

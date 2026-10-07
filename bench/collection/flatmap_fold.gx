@@ -1,4 +1,4 @@
-// P2b: array flat_map derived in Graphix — fold + concat (Array has
+// array flat_map derived in Graphix — fold + concat (Array has
 // the empty [] the generic derivation lacks). O(n^2) by copying.
 let n = 10000;
 let src = array::init(n, |i| i);

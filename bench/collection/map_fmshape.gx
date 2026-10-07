@@ -1,4 +1,4 @@
-// P2b: array map as the trait DEFAULT body — filter_map with a total
+// array map as the trait DEFAULT body — filter_map with a total
 // callback (map = |c, f| filter_map(c, |x| f(x))).
 let n = 100000;
 let src = array::init(n, |i| i);

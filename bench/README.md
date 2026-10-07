@@ -38,21 +38,6 @@ Notes / gotchas baked into the structure (each cost real debugging):
   constant-folding. The seed is the epoch *second*, constant within a
   run, so re-runs differ only by whole seconds (you'll see the result
   drift by ~1 between runs).
-<!-- CR claude for claude: [doc-drift] Both gotchas are false at HEAD.
-`sys::time::now(once(null))` fires (gui/mandelbrot.gx:8 relies on it), and
-`sys::exit(printed ~ 0)` after `let printed = println(..)` exits normally (12 of 12
-runs, JIT and --no-fusion). Delete these two bullets and the cast-fix history at lines
-48-50, and keep the seed rationale. (examples-09) -->
-- **Trigger `now` with a constant (`0`), not `once(null)`.**
-  `once(null)` does not fire `now`'s trigger, so the whole timing chain
-  goes dead and the program hangs.
-- **Gate `sys::exit` on `elapsed`, not on `println`'s return.**
-  `println`'s return value does not reliably propagate as an event, so
-  `exit(printed ~ 0)` can hang; `exit(elapsed ~ 0)` is robust.
-
-Sub-second `cast<f64>(datetime)` precision depends on the fix to the
-`datetime -> f64` cast in `netidx-value` (it previously returned
-`2 * whole_seconds` with the sub-second part discarded).
 
 ## Running
 

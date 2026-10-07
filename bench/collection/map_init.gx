@@ -1,4 +1,4 @@
-// P2b: array map as a Graphix body over the init intrinsic:
+// array map as a Graphix body over the init intrinsic:
 // map = |a, f| init(len(a), |i| f(a[i])).
 let n = 100000;
 let src = array::init(n, |i| i);

@@ -1,4 +1,4 @@
-// P2b: map fold through Collection — the impl is a Graphix body over
+// map fold through Collection — the impl is a Graphix body over
 // the pairs intrinsic (values-fold wrapper + dispatch).
 let n = 100000;
 let empty: Map<i64, i64> = {};

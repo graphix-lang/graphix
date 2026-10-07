@@ -1,4 +1,4 @@
-// P2b: array map written in Graphix — tail recursion + array::push.
+// array map written in Graphix — tail recursion + array::push.
 // n=10k: each push copies the array, so this is O(n^2) by
 // representation; compare against map_intr_10k.
 let n = 10000;

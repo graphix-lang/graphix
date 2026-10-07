@@ -1,4 +1,4 @@
-// P2b: array fold through Collection trait dispatch — same intrinsic
+// array fold through Collection trait dispatch — same intrinsic
 // body; measures dispatch + trait-call fusion coverage.
 let n = 100000;
 let src = array::init(n, |i| i);

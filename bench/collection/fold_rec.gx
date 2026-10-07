@@ -1,4 +1,4 @@
-// P2b: array fold written in Graphix — tail recursion over indexes,
+// array fold written in Graphix — tail recursion over indexes,
 // callback threaded as a parameter (the stdlib-body shape).
 let n = 100000;
 let src = array::init(n, |i| i);

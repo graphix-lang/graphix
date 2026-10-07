@@ -1,4 +1,4 @@
-// P2b: array map intrinsic at n=10k — the fair twin for map_push.
+// array map intrinsic at n=10k — the fair twin for map_push.
 let n = 10000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(0);

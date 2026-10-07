@@ -1,8 +1,7 @@
-// P2b: array flat_map derived in Graphix — cons every produced element
+// array flat_map derived in Graphix — cons every produced element
 // onto a List (O(1) each) and finish with ONE list::to_array_rev pass.
 // O(n) total, against flatmap_fold's O(n^2) concat copies. The chunk
-// is consed directly; see flatmap_list for the same thing through a
-// nested fold, which is the nested-HOF quadratic witness.
+// is consed directly; flatmap_list does the same through a nested fold.
 let n = 10000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(0);

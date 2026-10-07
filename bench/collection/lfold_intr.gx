@@ -1,4 +1,4 @@
-// P2b: list fold — the intrinsic (flatten boundary, list_fold_sum's shape).
+// list fold — the intrinsic (flatten boundary, list_fold_sum's shape).
 let n = 100000;
 let src = list::init(n, |i| i);
 let t0 = sys::time::now(0);

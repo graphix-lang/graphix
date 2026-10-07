@@ -1,4 +1,4 @@
-// P2b: array find as the trait DEFAULT body — fold carrying an
+// array find as the trait DEFAULT body — fold carrying an
 // Option accumulator.
 let n = 500000;
 let src = array::init(n, |i| i);

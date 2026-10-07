@@ -1,4 +1,4 @@
-// P2b: array fold — the intrinsic (baseline, fold_sum's shape).
+// array fold — the intrinsic (baseline, fold_sum's shape).
 let n = 100000;
 let src = array::init(n, |i| i);
 let t0 = sys::time::now(0);

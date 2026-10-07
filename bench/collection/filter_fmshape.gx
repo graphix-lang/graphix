@@ -1,4 +1,4 @@
-// P2b: array filter as the trait DEFAULT body — filter_map with a
+// array filter as the trait DEFAULT body — filter_map with a
 // select on the predicate.
 let n = 100000;
 let src = array::init(n, |i| i);

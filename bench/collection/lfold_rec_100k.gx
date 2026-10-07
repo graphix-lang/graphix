@@ -1,6 +1,4 @@
-// P2b: lfold_rec at the linear-row size — the List pair fused
-// (2026-08-30), so the hand recursion benches at the same n as the
-// intrinsic row (lfold_intr).
+// lfold_rec at lfold_intr's size, its twin.
 let n = 100000;
 let src = list::init(n, |i| i);
 let rec lfold_go = |l: List<i64>, f: fn(acc: i64, x: i64) -> i64, acc: i64| -> i64
