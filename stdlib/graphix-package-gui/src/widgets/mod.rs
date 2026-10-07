@@ -12,55 +12,6 @@ use std::{future::Future, pin::Pin};
 
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
-/// Compile an optional callable ref during widget construction.
-// CR claude for claude: [structure] Every gui and tui widget names each property six or
-// more times: its field, the FromValue Fields struct, the destructure, the try_join! of
-// compile_ref, TRef::new(..).context(..), and the .update(id, v).context(..) chain in
-// handle_update. Across the two crates that is about 260 TRef constructions, 335
-// compile_ref calls and 257 update calls. A property that is compiled but left out of
-// handle_update never changes after startup, and nothing catches it. A declarative
-// macro beside this family would make that omission impossible: it takes one `name:
-// Type` list per widget and generates the decode, the joined compile_refs, the TRefs
-// and the update chain. context_menu.rs:84-118 and menu_bar.rs:195-230 also repeat one
-// menu-item update loop, which should be a single shared function. (x-dup-14)
-// CR claude for claude: [structure] These four macros each pair a Ref with state derived
-// from it, and the pairing is still copied by hand. menu_bar.rs:62-69 repeats
-// compile_callable!, data_table/mod.rs:133-140 repeats it with null meaning no handler,
-// data_table's update_cb! (mod.rs:347-355) skips update_callable's is_for check and so
-// recompiles a handler on every fire, and children have no helper (flex_widget! below,
-// grid.rs:40-45 and 78-87, stack.rs:34-39 and 68-74). Each of those sites also writes
-// out Ref::update by hand as `if id == r.id { r.last = Some(v.clone()); .. }`. Small
-// owning types (a handler: Ref + Option<Callable>, a child: Ref + GuiW, children: Ref +
-// Vec<GuiW>) with compile and update methods built on Ref::update would replace the
-// macros and the copies, so a fix such as a same-value check is made once.
-// flex_widget!'s spacing, padding, width and height idents are the same in both
-// expansions and can be fixed field names. (gui-widgets-a-09)
-macro_rules! compile_callable {
-    ($gx:expr, $ref:ident, $label:expr) => {{
-        let mut c = None;
-        if let Some(v) = $ref.last.as_ref() {
-            $crate::widgets::set_callable(&$gx, &mut c, v).await.context($label)?;
-        }
-        c
-    }};
-}
-
-/// Recompile a callable ref inside `handle_update`.
-macro_rules! update_callable {
-    ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:expr) => {
-        if $id == $self.$field.id {
-            $self.$field.last = Some($v.clone());
-            $crate::widgets::update_callable_blocking(
-                $rt,
-                &$self.gx,
-                &mut $self.$callable,
-                $v,
-            )
-            .context($label)?;
-        }
-    };
-}
-
 pub mod button;
 pub mod canvas;
 pub mod chart;
@@ -283,6 +234,19 @@ pub(crate) fn update_callable_blocking<X: GXExt>(
     }
 }
 
+// CR claude for claude: [structure] Every gui and tui widget names each property six or
+// more times: its field, the FromValue Fields struct, the destructure, the try_join! of
+// compile_ref, TRef::new(..).context(..), and the .update(id, v).context(..) chain in
+// handle_update. Across the two crates that is about 260 TRef constructions, 335
+// compile_ref calls and 257 update calls. A property that is compiled but left out of
+// handle_update never changes after startup, and nothing catches it. A declarative
+// macro beside this family would make that omission impossible: it takes one `name:
+// Type` list per widget and generates the decode, the joined compile_refs, the TRefs
+// and the update chain. context_menu.rs:84-118 and menu_bar.rs:195-230 also repeat one
+// menu-item update loop, which should be a single shared function. (x-dup-14)
+// 2026-10-07 claude: Handler, Child and Children below own the callback and child
+// properties, and MenuItemKind::update is the one menu-item loop. The property-list
+// macro for the gui and tui widgets is still open, for the TUI batch.
 /// A child widget property: its ref and the widget its value compiled
 /// to.
 pub struct Child<X: GXExt> {
@@ -433,6 +397,57 @@ pub(crate) fn measure_text(text: &str, size: f32, font: iced_core::Font) -> f32 
     })
     .min_bounds()
     .width
+}
+
+/// What a control sent through its handler and the runtime has not echoed
+/// yet. The control shows its newest send, so input that comes before an
+/// echo builds on what the user did, not on the stale value.
+pub(crate) struct Echoes<T>(std::collections::VecDeque<T>);
+
+impl<T: PartialEq> Echoes<T> {
+    pub(crate) fn new() -> Self {
+        Self(std::collections::VecDeque::new())
+    }
+
+    pub(crate) fn sent(&mut self, v: T) {
+        self.0.push_back(v)
+    }
+
+    /// The runtime delivered `v`: an echo retires itself and every earlier
+    /// send; any other value is the program's own and drops them all.
+    pub(crate) fn delivered(&mut self, v: &T) {
+        match self.0.iter().position(|p| p == v) {
+            Some(i) => drop(self.0.drain(..=i)),
+            None => self.0.clear(),
+        }
+    }
+
+    /// What the control shows: its newest send, else the runtime's value.
+    pub(crate) fn shown<'a>(&'a self, runtime: Option<&'a T>) -> Option<&'a T> {
+        self.0.back().or(runtime)
+    }
+}
+
+/// A disabled choice widget: its selection in a text input that takes
+/// no input, which iced draws as disabled.
+pub(crate) fn disabled_choice<'a>(
+    placeholder: &'a str,
+    selected: &'a str,
+    width: Option<&crate::types::LengthV>,
+) -> IcedElement<'a> {
+    let mut ti = iced_widget::TextInput::new(placeholder, selected);
+    if let Some(w) = width {
+        ti = ti.width(w.0);
+    }
+    ti.into()
+}
+
+/// The first argument of a call `msg` makes to `id`, if it makes one.
+pub(crate) fn call_arg(msg: &Message, id: Option<CallableId>) -> Option<&Value> {
+    match msg {
+        Message::Call(cid, args) if Some(*cid) == id => args.first(),
+        _ => None,
+    }
 }
 
 /// A callback property: its ref and what it compiled to; null is no

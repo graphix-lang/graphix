@@ -7,7 +7,7 @@ A dropdown menu that lets the user select one option from a list of strings. Cli
 ```graphix
 val pick_list: fn(
   ?#selected: &[string, null],
-  ?#on_select: fn(s: string) -> Any,
+  ?#on_select: [fn(s: string) -> Any, null],
   ?#placeholder: &string,
   ?#width: &Length,
   ?#padding: &Padding,

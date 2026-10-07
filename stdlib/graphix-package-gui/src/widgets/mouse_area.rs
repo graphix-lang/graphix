@@ -1,7 +1,7 @@
-use super::{Child, GuiW, GuiWidget, IcedElement, Message};
+use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref};
+use graphix_rt::{GXExt, GXHandle};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,16 +14,11 @@ fn mouse_button_value(button: &str) -> Value {
 pub(crate) struct MouseAreaW<X: GXExt> {
     gx: GXHandle<X>,
     child: Child<X>,
-    on_press: Ref<X>,
-    on_press_callable: Option<Callable<X>>,
-    on_release: Ref<X>,
-    on_release_callable: Option<Callable<X>>,
-    on_enter: Ref<X>,
-    on_enter_callable: Option<Callable<X>>,
-    on_exit: Ref<X>,
-    on_exit_callable: Option<Callable<X>>,
-    on_move: Ref<X>,
-    on_move_callable: Option<Callable<X>>,
+    on_press: Handler<X>,
+    on_release: Handler<X>,
+    on_enter: Handler<X>,
+    on_exit: Handler<X>,
+    on_move: Handler<X>,
 }
 
 impl<X: GXExt> MouseAreaW<X> {
@@ -48,25 +43,24 @@ impl<X: GXExt> MouseAreaW<X> {
             gx.compile_ref(on_release),
         }?;
         let child = Child::compile(&gx, child_ref).await.context("mouse_area child")?;
-        let on_press_callable = compile_callable!(gx, on_press, "mouse_area on_press");
-        let on_release_callable =
-            compile_callable!(gx, on_release, "mouse_area on_release");
-        let on_enter_callable = compile_callable!(gx, on_enter, "mouse_area on_enter");
-        let on_exit_callable = compile_callable!(gx, on_exit, "mouse_area on_exit");
-        let on_move_callable = compile_callable!(gx, on_move, "mouse_area on_move");
+        let on_press =
+            Handler::compile(&gx, on_press).await.context("mouse_area on_press")?;
+        let on_release =
+            Handler::compile(&gx, on_release).await.context("mouse_area on_release")?;
+        let on_enter =
+            Handler::compile(&gx, on_enter).await.context("mouse_area on_enter")?;
+        let on_exit =
+            Handler::compile(&gx, on_exit).await.context("mouse_area on_exit")?;
+        let on_move =
+            Handler::compile(&gx, on_move).await.context("mouse_area on_move")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             child,
             on_press,
-            on_press_callable,
             on_release,
-            on_release_callable,
             on_enter,
-            on_enter_callable,
             on_exit,
-            on_exit_callable,
             on_move,
-            on_move_callable,
         }))
     }
 }
@@ -91,67 +85,27 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
             .child
             .update(rt, &self.gx, id, v)
             .context("mouse_area child recompile")?;
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_press,
-            on_press_callable,
-            "mouse_area on_press recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_release,
-            on_release_callable,
-            "mouse_area on_release recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_enter,
-            on_enter_callable,
-            "mouse_area on_enter recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_exit,
-            on_exit_callable,
-            "mouse_area on_exit recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_move,
-            on_move_callable,
-            "mouse_area on_move recompile"
-        );
+        self.on_press
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area on_press recompile")?;
+        self.on_release
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area on_release recompile")?;
+        self.on_enter
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area on_enter recompile")?;
+        self.on_exit
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area on_exit recompile")?;
+        self.on_move
+            .update(rt, &self.gx, id, v)
+            .context("mouse_area on_move recompile")?;
         Ok(changed)
     }
 
-    // CR claude for claude: [bug] mouse_area.gx defaults all five handlers to `|_| null`,
-    // so view installs every one of them whatever the program asked for. Each cursor
-    // move over the area then sends a `Message::Call` carrying a fresh {x, y} struct
-    // and runs a runtime cycle for a no-op: ten moves over an on_press-only area made
-    // ten calls. Every left, right or middle press is also captured, so a hover-only
-    // mouse_area stacked above a button swallows the button's clicks. The other
-    // widgets' `|_| null` defaults install their handlers the same way; scrollable's
-    // on_scroll calls the runtime on every scroll step. Make the handler types nullable
-    // with a null default and install only the handlers given. probe:
-    // design/review-2026-10-05/repro/gui-widgets-b-09.rs (gui-widgets-b-09)
     fn view(&self) -> IcedElement<'_> {
         let mut ma = widget::MouseArea::new(self.child.w.view());
-        if let Some(c) = &self.on_press_callable {
+        if let Some(c) = &self.on_press.f {
             let id = c.id();
             ma = ma.on_press(Message::Call(
                 id,
@@ -166,7 +120,7 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
                 ValArray::from_iter([mouse_button_value("Middle")]),
             ));
         }
-        if let Some(c) = &self.on_release_callable {
+        if let Some(c) = &self.on_release.f {
             let id = c.id();
             ma = ma.on_release(Message::Call(
                 id,
@@ -181,13 +135,13 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
                 ValArray::from_iter([mouse_button_value("Middle")]),
             ));
         }
-        if let Some(c) = &self.on_enter_callable {
+        if let Some(c) = &self.on_enter.f {
             ma = ma.on_enter(Message::Call(c.id(), ValArray::from_iter([Value::Null])));
         }
-        if let Some(c) = &self.on_exit_callable {
+        if let Some(c) = &self.on_exit.f {
             ma = ma.on_exit(Message::Call(c.id(), ValArray::from_iter([Value::Null])));
         }
-        if let Some(c) = &self.on_move_callable {
+        if let Some(c) = &self.on_move.f {
             let id = c.id();
             ma = ma.on_move(move |point| {
                 let point_val: Value = [

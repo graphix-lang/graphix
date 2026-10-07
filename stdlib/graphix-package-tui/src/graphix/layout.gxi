@@ -1,4 +1,4 @@
-use super::{Constraint, Direction, Flex, size, Size, Tui};
+use super::{Constraint, Direction, Flex, Size, Tui};
 type Spacing = [
   `Space(i64),
   `Overlap(i64)

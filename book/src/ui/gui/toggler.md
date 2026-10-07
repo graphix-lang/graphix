@@ -7,7 +7,7 @@ A toggle switch with an optional text label. Functionally identical to a checkbo
 ```graphix
 val toggler: fn(
   ?#label: &string,
-  ?#on_toggle: fn(flag: bool) -> Any,
+  ?#on_toggle: [fn(flag: bool) -> Any, null],
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],

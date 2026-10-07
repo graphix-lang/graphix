@@ -1,4 +1,4 @@
-use super::{Style, style, Tui};
+use super::{Style, Tui};
 type Date = {
   year: i64,
   month: i64,

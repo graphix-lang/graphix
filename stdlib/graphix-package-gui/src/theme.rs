@@ -22,6 +22,28 @@ impl GraphixTheme {
     }
 }
 
+thread_local! {
+    static VIEW_THEME: std::cell::RefCell<Option<GraphixTheme>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, which builds and lays out a window's widgets, with `theme` as
+/// `view_theme`.
+pub(crate) fn with_view_theme<R>(theme: &GraphixTheme, f: impl FnOnce() -> R) -> R {
+    let prev = VIEW_THEME.with(|t| t.borrow_mut().replace(theme.clone()));
+    let r = f();
+    VIEW_THEME.with(|t| *t.borrow_mut() = prev);
+    r
+}
+
+/// The theme of the window whose widgets are being built: for a widget
+/// whose element bakes colors in when it is built. Dark outside a window.
+pub(crate) fn view_theme() -> GraphixTheme {
+    VIEW_THEME
+        .with(|t| t.borrow().clone())
+        .unwrap_or(GraphixTheme { inner: iced_core::Theme::Dark, overrides: None })
+}
+
 #[derive(Clone, Debug, FromValue)]
 pub struct StyleOverrides {
     pub button: Option<ButtonSpec>,

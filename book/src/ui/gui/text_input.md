@@ -7,8 +7,8 @@ A single-line text field for user input. The widget displays the current value v
 ```graphix
 val text_input: fn(
   ?#placeholder: &string,
-  ?#on_input: fn(s: string) -> Any,
-  ?#on_submit: fn(a: null) -> Any,
+  ?#on_input: [fn(s: string) -> Any, null],
+  ?#on_submit: [fn(a: null) -> Any, null],
   ?#is_secure: &bool,
   ?#width: &Length,
   ?#padding: &Padding,

@@ -2,7 +2,7 @@ use super::{Font, Padding, Widget};
 type TextEditor = {
   content: &string,
   disabled: &bool,
-  on_edit: &fn(s: string) -> Any,
+  on_edit: &[fn(s: string) -> Any, null],
   placeholder: &string,
   width: &[f64, null],
   height: &[f64, null],
@@ -13,7 +13,7 @@ type TextEditor = {
 
 val text_editor: fn(
   ?#placeholder: &string,
-  ?#on_edit: fn(s: string) -> Any,
+  ?#on_edit: [fn(s: string) -> Any, null],
   ?#width: &[f64, null],
   ?#height: &[f64, null],
   ?#padding: &Padding,

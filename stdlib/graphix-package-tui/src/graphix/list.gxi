@@ -1,4 +1,4 @@
-use super::{HighlightSpacing, Line, Style, style, Tui};
+use super::{HighlightSpacing, Line, Style, Tui};
 type ListBox = {
   highlight_spacing: &[HighlightSpacing, null],
   highlight_style: &[Style, null],

@@ -1,8 +1,8 @@
-use super::{GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -41,10 +41,8 @@ macro_rules! slider_widget {
             min: TRef<X, f64>,
             max: TRef<X, f64>,
             step: TRef<X, Option<f64>>,
-            on_change: Ref<X>,
-            on_change_callable: Option<Callable<X>>,
-            on_release: Ref<X>,
-            on_release_callable: Option<Callable<X>>,
+            on_change: Handler<X>,
+            on_release: Handler<X>,
             $dim1: TRef<X, slider_dim_type!($kind1)>,
             $dim2: TRef<X, slider_dim_type!($kind2)>,
         }
@@ -98,10 +96,12 @@ macro_rules! slider_widget {
                     gx.compile_ref(value),
                     gx.compile_ref($dim2),
                 }?;
-                let on_change_callable =
-                    compile_callable!(gx, on_change, concat!($label, " on_change"));
-                let on_release_callable =
-                    compile_callable!(gx, on_release, concat!($label, " on_release"));
+                let on_change = Handler::compile(&gx, on_change)
+                    .await
+                    .context(concat!($label, " on_change"))?;
+                let on_release = Handler::compile(&gx, on_release)
+                    .await
+                    .context(concat!($label, " on_release"))?;
                 Ok(Box::new(Self {
                     gx: gx.clone(),
                     disabled: TRef::new(disabled)
@@ -111,9 +111,7 @@ macro_rules! slider_widget {
                     max: TRef::new(max).context(concat!($label, " tref max"))?,
                     step: TRef::new(step).context(concat!($label, " tref step"))?,
                     on_change,
-                    on_change_callable,
                     on_release,
-                    on_release_callable,
                     $dim1: TRef::new($dim1).context(concat!(
                         $label,
                         " tref ",
@@ -171,77 +169,39 @@ macro_rules! slider_widget {
                     .update(id, v)
                     .context(concat!($label, " update ", stringify!($dim2)))?
                     .is_some();
-                update_callable!(
-                    self,
-                    rt,
-                    id,
-                    v,
-                    on_change,
-                    on_change_callable,
-                    concat!($label, " on_change recompile")
-                );
-                update_callable!(
-                    self,
-                    rt,
-                    id,
-                    v,
-                    on_release,
-                    on_release_callable,
-                    concat!($label, " on_release recompile")
-                );
+                self.on_change
+                    .update(rt, &self.gx, id, v)
+                    .context(concat!($label, " on_change"))?;
+                self.on_release
+                    .update(rt, &self.gx, id, v)
+                    .context(concat!($label, " on_release"))?;
                 Ok(changed)
             }
 
             fn view(&self) -> IcedElement<'_> {
-                // CR claude for claude: [bug] value, min and max here, and the step at
-                // line 214, are cast to f32. So iced's Slider and VerticalSlider run
-                // over f32 even though they accept f64, and every value on_change
-                // delivers is rounded to f32. A 0.05 step from 0 reaches the program as
-                // 0.05000000074505806, and book/src/examples/gui/custom_palette.gx then
-                // shows "Brightness: 0.05000000074505806". With step 1, ArrowUp past
-                // 16777216 rounds back to the current value, iced does not publish an
-                // unchanged value, and the slider sticks. Fix: build the sliders over
-                // f64 by dropping the four `as f32` casts and sending `Value::F64(v)`.
-                // probe: design/review-2026-10-05/repro/gui-widgets-b-06.rs (copy it
-                // into stdlib/graphix-package-gui/tests/; its iced_f64_control case
-                // shows f64 sliders deliver 0.05 and step past 2^24).
-                // (gui-widgets-b-06)
-                let val = self.value.t.unwrap_or(0.0) as f32;
-                let min = self.min.t.unwrap_or(0.0) as f32;
-                let max = self.max.t.unwrap_or(100.0) as f32;
-                let range = min..=max;
+                let val = self.value.t.unwrap_or(0.0);
+                let min = self.min.t.unwrap_or(0.0);
+                let max = self.max.t.unwrap_or(100.0);
                 let disabled = self.disabled.t.unwrap_or(false);
-                let on_change_id = if disabled {
-                    None
-                } else {
-                    self.on_change_callable.as_ref().map(|c| c.id())
-                };
+                let on_change_id = if disabled { None } else { self.on_change.id() };
                 let mut sl =
-                    widget::$Widget::new(range, val, move |v| match on_change_id {
+                    widget::$Widget::new(min..=max, val, move |v| match on_change_id {
                         Some(id) => {
-                            Message::Call(id, ValArray::from_iter([Value::F64(v as f64)]))
+                            Message::Call(id, ValArray::from_iter([Value::F64(v)]))
                         }
                         None => Message::Nop,
                     });
-                // CR claude for claude: [bug] A null `#step` sets no step, so iced's
-                // default step of 1.0 applies: a slider over 0..1 without `#step` can
-                // only send 0 or 1, but book/src/ui/gui/slider.md says null means
-                // continuous. A step of 0 or NaN reaches iced unchecked and makes every
-                // click inside the track send the max. A range whose min is above its
-                // max leaves the slider inert. Give null a step fine enough to be
-                // continuous (or change the book), and ignore a step that is not finite
-                // and positive; vertical_slider shares this code. probe:
-                // design/review-2026-10-05/repro/gui-widgets-b-10.rs (gui-widgets-b-10)
-                if let Some(Some(step)) = self.step.t {
-                    sl = sl.step(step as f32);
-                }
-                if !disabled {
-                    if let Some(callable) = &self.on_release_callable {
-                        sl = sl.on_release(Message::Call(
-                            callable.id(),
-                            ValArray::from_iter([Value::Null]),
-                        ));
-                    }
+                // no usable step is continuous: a millionth of the range
+                let step = match self.step.t {
+                    Some(Some(s)) if s.is_finite() && s > 0.0 => s,
+                    _ => ((max - min) / 1e6).abs().max(f64::MIN_POSITIVE),
+                };
+                sl = sl.step(step);
+                if let Some(id) = self.on_release.id().filter(|_| !disabled) {
+                    sl = sl.on_release(Message::Call(
+                        id,
+                        ValArray::from_iter([Value::Null]),
+                    ));
                 }
                 slider_dim_set!($kind1, self, sl, $dim1);
                 slider_dim_set!($kind2, self, sl, $dim2);

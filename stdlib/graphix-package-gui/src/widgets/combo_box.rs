@@ -1,9 +1,9 @@
-use super::{GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, Handler, IcedElement, Message, disabled_choice};
 use crate::types::{LengthV, StringVec};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget::{self as widget, combo_box};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -15,8 +15,7 @@ pub(crate) struct ComboBoxW<X: GXExt> {
     options: TRef<X, StringVec>,
     state: combo_box::State<String>,
     selected: TRef<X, Option<String>>,
-    on_select: Ref<X>,
-    on_select_callable: Option<Callable<X>>,
+    on_select: Handler<X>,
     placeholder: TRef<X, ArcStr>,
     width: TRef<X, LengthV>,
 }
@@ -42,7 +41,8 @@ impl<X: GXExt> ComboBoxW<X> {
             gx.compile_ref(selected),
             gx.compile_ref(width),
         }?;
-        let callable = compile_callable!(gx, on_select, "combo_box on_select");
+        let on_select =
+            Handler::compile(&gx, on_select).await.context("combo_box on_select")?;
         let options_tref: TRef<X, StringVec> =
             TRef::new(options).context("combo_box tref options")?;
         let state = combo_box::State::new(
@@ -55,7 +55,6 @@ impl<X: GXExt> ComboBoxW<X> {
             state,
             selected: TRef::new(selected).context("combo_box tref selected")?,
             on_select,
-            on_select_callable: callable,
             placeholder: TRef::new(placeholder).context("combo_box tref placeholder")?,
             width: TRef::new(width).context("combo_box tref width")?,
         }))
@@ -75,18 +74,10 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         if let Some(opts) =
             self.options.update(id, v).context("combo_box update options")?
         {
-            // CR claude for claude: [bug] Every fire of `options` replaces the iced
-            // State, which holds the text being typed and the filtered list. A re-fire
-            // with unchanged contents (from a timer, a recomputed array or a struct
-            // field that re-fires) therefore erases what the user is typing and resets
-            // the dropdown. Rebuild only when the new options differ from
-            // self.state.options(). The TRef's copy of the Vec is then never read
-            // (view() uses only the State), so a plain Ref will do. probe:
-            // design/review-2026-10-05/repro/gui-widgets-a-11.rs (after typing "ban"
-            // and three same-value fires of options, Enter selects "apple" instead of
-            // "banana"). (gui-widgets-a-11)
-            self.state = combo_box::State::new(opts.0.clone());
-            changed = true;
+            if self.state.options() != opts.0.as_slice() {
+                self.state = combo_box::State::new(opts.0.clone());
+                changed = true;
+            }
         }
         changed |=
             self.selected.update(id, v).context("combo_box update selected")?.is_some();
@@ -96,35 +87,23 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
             .context("combo_box update placeholder")?
             .is_some();
         changed |= self.width.update(id, v).context("combo_box update width")?.is_some();
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_select,
-            on_select_callable,
-            "combo_box on_select recompile"
-        );
+        self.on_select
+            .update(rt, &self.gx, id, v)
+            .context("combo_box on_select recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let selected = self.selected.t.as_ref().and_then(|o| o.as_ref());
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
-        // CR claude for claude: [doc-drift] combo_box.md says a disabled combo box cannot
-        // be interacted with, but this code only turns the selection into Message::Nop.
-        // iced's ComboBox always wires on_input, so a disabled box still takes focus
-        // and typing, opens its list and silently drops the pick, with no disabled
-        // styling. When disabled, either render a text_input without on_input (iced
-        // draws it as disabled) showing the selection, or correct the book.
-        // pick_list.rs:105 has the same pattern, against pick_list.md's "the dropdown
-        // cannot be opened". probe: design/review-2026-10-05/repro/gui-widgets-a-11.rs
-        // (disabled case: all 3 keys captured, Enter publishes Nop). (gui-widgets-a-13)
-        let on_select_id = if self.disabled.t.unwrap_or(false) {
-            None
-        } else {
-            self.on_select_callable.as_ref().map(|c| c.id())
-        };
+        if self.disabled.t.unwrap_or(false) {
+            return disabled_choice(
+                placeholder,
+                selected.map_or("", |s| s.as_str()),
+                self.width.t.as_ref(),
+            );
+        }
+        let on_select_id = self.on_select.id();
         let mut cb = widget::ComboBox::new(
             &self.state,
             placeholder,

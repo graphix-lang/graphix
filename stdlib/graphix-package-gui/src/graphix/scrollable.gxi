@@ -2,14 +2,14 @@ use super::{Length, ScrollDirection, Widget};
 type Scrollable = {
   child: &Widget,
   direction: &ScrollDirection,
-  on_scroll: &fn(pos: {x: f64, y: f64}) -> Any,
+  on_scroll: &[fn(pos: {x: f64, y: f64}) -> Any, null],
   width: &Length,
   height: &Length
 };
 
 val scrollable: fn(
   ?#direction: &ScrollDirection,
-  ?#on_scroll: fn(pos: {x: f64, y: f64}) -> Any,
+  ?#on_scroll: [fn(pos: {x: f64, y: f64}) -> Any, null],
   ?#width: &Length,
   ?#height: &Length,
   child: &Widget

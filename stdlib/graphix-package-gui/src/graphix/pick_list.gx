@@ -1,6 +1,6 @@
 let pick_list = |
   #selected: &[string, null] = &null,
-  #on_select: fn(s: string) -> Any = |_| null,
+  #on_select: [fn(s: string) -> Any, null] = null,
   #placeholder: &string = &"Choose...",
   #width: &Length = &`Shrink,
   #padding: &Padding = &`All(5.0),

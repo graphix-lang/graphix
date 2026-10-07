@@ -32,7 +32,7 @@ type MenuGroup = {
 type ContextMenu = { child: &Widget, items: &Array<MenuItem> };
 
 val action: fn(
-  ?#on_click: fn(a: null) -> Any,
+  ?#on_click: [fn(a: null) -> Any, null],
   ?#shortcut: &[Shortcut, null],
   ?#disabled: &bool,
   s: &string
@@ -49,7 +49,7 @@ val context_menu: fn(a: &Array<MenuItem>, a2: &Widget) -> Widget
 
 ## `menu::shortcut`
 
-Creates a keyboard shortcut from modifier flags and a single character key.
+Creates a keyboard shortcut from modifier flags and a single character key; any one character, `é` or `€` included.
 
 - **`#ctrl`** -- Hold Ctrl. Defaults to `false`.
 - **`#shift`** -- Hold Shift. Defaults to `false`.
@@ -57,7 +57,7 @@ Creates a keyboard shortcut from modifier flags and a single character key.
 - **`#logo`** -- Hold the logo/super key. Defaults to `false`.
 - **positional `string`** -- A single character (e.g. `"N"`, `"Z"`). Returns an error if the key is not exactly one character.
 
-The shortcut text (e.g. "Ctrl+N") is displayed right-aligned in dimmed text next to the menu item label. Pressing the key combination triggers the action globally within the window.
+The shortcut text (e.g. "Ctrl+N") is displayed right-aligned in dimmed text next to the menu item label. In a menu bar, pressing the key combination triggers the action anywhere in the window. In a context menu it triggers the action while that menu is open: several rows may carry the same context menu, and a closed one has no row to act on.
 
 ## `menu::action` Parameters
 

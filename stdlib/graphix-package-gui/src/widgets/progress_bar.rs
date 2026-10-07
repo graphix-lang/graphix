@@ -68,17 +68,11 @@ impl<X: GXExt> GuiWidget<X> for ProgressBarW<X> {
         let val = self.value.t.unwrap_or(0.0) as f32;
         let min = self.min.t.unwrap_or(0.0) as f32;
         let max = self.max.t.unwrap_or(100.0) as f32;
-        // CR claude for claude: [bug] iced's ProgressBar::new clamps the value with
-        // f32::clamp, which panics when min > max or when either bound is NaN. Nothing
-        // checks the range before this call. iced's Slider clamps by hand, so slider
-        // survives the same range. The panic happens in view() on the main thread and
-        // takes the whole GUI process down. Ordinary data reaches it: an index bar
-        // `#max: &(cast<f64>(array::len(items))$ - 1.0)` over a list that becomes
-        // empty, or a bound computed as 0.0/0.0. Check `min <= max` here (false for NaN
-        // too) and draw an empty bar otherwise. probe:
-        // design/review-2026-10-05/repro/gui-widgets-b-03.rs (copy to
-        // tests/review_gui_widgets_b_03.rs, cargo test -p graphix-package-gui --test
-        // review_gui_widgets_b_03). (gui-widgets-b-03)
+        // iced clamps with f32::clamp, which panics on an empty or NaN range
+        let (min, max, val) = match min <= max {
+            true => (min, max, val),
+            false => (0.0, 1.0, 0.0),
+        };
         let mut pb = widget::ProgressBar::new(min..=max, val);
         if let Some(w) = self.width.t.as_ref() {
             pb = pb.length(w.0);

@@ -15,7 +15,7 @@ val shortcut: fn(
 type MenuAction = {
   label: &string,
   shortcut: &[Shortcut, null],
-  on_click: &fn(e: null) -> Any,
+  on_click: &[fn(e: null) -> Any, null],
   disabled: &bool
 };
 
@@ -32,7 +32,7 @@ type MenuBar = {
 };
 
 val action: fn(
-  ?#on_click: fn(e: null) -> Any,
+  ?#on_click: [fn(e: null) -> Any, null],
   ?#shortcut: &[Shortcut, null],
   ?#disabled: &bool,
   label: &string

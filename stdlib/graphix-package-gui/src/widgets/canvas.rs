@@ -1,5 +1,5 @@
 use super::{GuiW, GuiWidget, IcedElement, Renderer};
-use crate::types::{ColorV, LengthV, SizeV};
+use crate::types::{ColorV, Finite, LengthV, SizeV, TextSizeV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
@@ -17,31 +17,18 @@ impl FromValue for PointV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
         struct Fields {
-            x: f32,
-            y: f32,
+            x: Finite,
+            y: Finite,
         }
         let Fields { x, y } = v.cast_to()?;
-        // CR claude for claude: [bug] PointV accepts NaN and infinite coordinates. So do
-        // the other f32 fields of CanvasShape, PathSegment and StrokeV (radius, width,
-        // angles), and draw_shape passes them to iced unchecked. A shape such as `x: v
-        // / total * 300.0` while `total` is 0.0 panics when the canvas draws: in a
-        // debug build lyon's path builder asserts `p.x.is_finite()` on every point, and
-        // in a release build a filled path fails tessellation and iced_wgpu's
-        // Frame::fill panics on `.expect("Tessellate path.")`. The draw runs inside
-        // winit's run_app on the shell's main thread and nothing catches the panic, so
-        // the whole graphix process exits. Refusing non-finite numbers in these
-        // conversions would let TRef::update log the error and keep the last good
-        // shapes. probe: design/review-2026-10-05/repro/gui-widgets-a-01.rs (copy to
-        // stdlib/graphix-package-gui/tests/review_gui_widgets_a_01.rs; nan_circle_draws
-        // panics, finite_circle_draws passes). (gui-widgets-a-01)
-        Ok(Self(Point::new(x, y)))
+        Ok(Self(Point::new(x.0, y.0)))
     }
 }
 
 #[derive(Clone, Copy, Debug, FromValue)]
 pub(crate) struct StrokeV {
     color: ColorV,
-    width: f32,
+    width: Finite,
 }
 
 #[derive(Clone, Debug, FromValue)]
@@ -50,11 +37,11 @@ pub(crate) enum CanvasShape {
         from: PointV,
         to: PointV,
         color: ColorV,
-        width: f32,
+        width: Finite,
     },
     Circle {
         center: PointV,
-        radius: f32,
+        radius: Finite,
         fill: Option<ColorV>,
         stroke: Option<StrokeV>,
     },
@@ -67,23 +54,23 @@ pub(crate) enum CanvasShape {
     RoundedRect {
         top_left: PointV,
         size: SizeV,
-        radius: f32,
+        radius: Finite,
         fill: Option<ColorV>,
         stroke: Option<StrokeV>,
     },
     Arc {
         center: PointV,
-        radius: f32,
-        start_angle: f32,
-        end_angle: f32,
+        radius: Finite,
+        start_angle: Finite,
+        end_angle: Finite,
         stroke: StrokeV,
     },
     Ellipse {
         center: PointV,
         radii: PointV,
-        rotation: f32,
-        start_angle: f32,
-        end_angle: f32,
+        rotation: Finite,
+        start_angle: Finite,
+        end_angle: Finite,
         fill: Option<ColorV>,
         stroke: Option<StrokeV>,
     },
@@ -93,20 +80,20 @@ pub(crate) enum CanvasShape {
         control_b: PointV,
         to: PointV,
         color: ColorV,
-        width: f32,
+        width: Finite,
     },
     QuadraticCurve {
         from: PointV,
         control: PointV,
         to: PointV,
         color: ColorV,
-        width: f32,
+        width: Finite,
     },
     Text {
         content: String,
         position: PointV,
         color: ColorV,
-        size: f32,
+        size: TextSizeV,
     },
     Path {
         segments: Vec<PathSegment>,
@@ -121,7 +108,7 @@ pub(crate) enum PathSegment {
     LineTo(PointV),
     BezierTo { control_a: PointV, control_b: PointV, to: PointV },
     QuadraticTo { control: PointV, to: PointV },
-    ArcTo { a: PointV, b: PointV, radius: f32 },
+    ArcTo { a: PointV, b: PointV, radius: Finite },
     Close,
 }
 
@@ -227,15 +214,16 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
     use iced_widget::canvas::{Path, Stroke};
 
     fn stroke(s: &StrokeV) -> Stroke<'static> {
-        Stroke::default().with_color(s.color.0).with_width(s.width)
+        Stroke::default().with_color(s.color.0).with_width(s.width.0)
     }
     match shape {
         CanvasShape::Line { from, to, color, width } => {
             let path = Path::line(from.0, to.0);
-            frame.stroke(&path, Stroke::default().with_color(color.0).with_width(*width));
+            frame
+                .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
         CanvasShape::Circle { center, radius, fill, stroke: s } => {
-            let path = Path::circle(center.0, *radius);
+            let path = Path::circle(center.0, radius.0);
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
             }
@@ -253,7 +241,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             }
         }
         CanvasShape::RoundedRect { top_left, size, radius, fill, stroke: s } => {
-            let border_radius = iced_core::border::Radius::from(*radius);
+            let border_radius = iced_core::border::Radius::from(radius.0);
             let path = Path::rounded_rectangle(top_left.0, size.0, border_radius);
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
@@ -266,9 +254,9 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             let path = Path::new(|b| {
                 b.arc(iced_widget::canvas::path::Arc {
                     center: center.0,
-                    radius: *radius,
-                    start_angle: iced_core::Radians(*start_angle),
-                    end_angle: iced_core::Radians(*end_angle),
+                    radius: radius.0,
+                    start_angle: iced_core::Radians(start_angle.0),
+                    end_angle: iced_core::Radians(end_angle.0),
                 });
             });
             frame.stroke(&path, stroke(s));
@@ -286,9 +274,9 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                 b.ellipse(iced_widget::canvas::path::arc::Elliptical {
                     center: center.0,
                     radii: iced_core::Vector::new(radii.0.x, radii.0.y),
-                    rotation: iced_core::Radians(*rotation),
-                    start_angle: iced_core::Radians(*start_angle),
-                    end_angle: iced_core::Radians(*end_angle),
+                    rotation: iced_core::Radians(rotation.0),
+                    start_angle: iced_core::Radians(start_angle.0),
+                    end_angle: iced_core::Radians(end_angle.0),
                 });
             });
             if let Some(c) = fill {
@@ -303,21 +291,23 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                 b.move_to(from.0);
                 b.bezier_curve_to(control_a.0, control_b.0, to.0);
             });
-            frame.stroke(&path, Stroke::default().with_color(color.0).with_width(*width));
+            frame
+                .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
         CanvasShape::QuadraticCurve { from, control, to, color, width } => {
             let path = Path::new(|b| {
                 b.move_to(from.0);
                 b.quadratic_curve_to(control.0, to.0);
             });
-            frame.stroke(&path, Stroke::default().with_color(color.0).with_width(*width));
+            frame
+                .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
         CanvasShape::Text { content, position, color, size } => {
             frame.fill_text(iced_widget::canvas::Text {
                 content: content.clone(),
                 position: position.0,
                 color: color.0,
-                size: (*size).into(),
+                size: size.0.into(),
                 ..iced_widget::canvas::Text::default()
             });
         }
@@ -334,7 +324,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                             b.quadratic_curve_to(control.0, to.0);
                         }
                         PathSegment::ArcTo { a, b: bp, radius } => {
-                            b.arc_to(a.0, bp.0, *radius);
+                            b.arc_to(a.0, bp.0, radius.0);
                         }
                         PathSegment::Close => b.close(),
                     }

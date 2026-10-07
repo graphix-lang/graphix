@@ -1,8 +1,8 @@
-use super::{Child, GuiW, GuiWidget, IcedElement, Message};
+use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::{LengthV, ScrollDirectionV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,8 +14,7 @@ pub(crate) struct ScrollableW<X: GXExt> {
     direction: TRef<X, ScrollDirectionV>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
-    on_scroll: Ref<X>,
-    on_scroll_callable: Option<Callable<X>>,
+    on_scroll: Handler<X>,
 }
 
 impl<X: GXExt> ScrollableW<X> {
@@ -38,7 +37,8 @@ impl<X: GXExt> ScrollableW<X> {
             gx.compile_ref(width),
         }?;
         let child = Child::compile(&gx, child_ref).await.context("scrollable child")?;
-        let on_scroll_callable = compile_callable!(gx, on_scroll, "scrollable on_scroll");
+        let on_scroll =
+            Handler::compile(&gx, on_scroll).await.context("scrollable on_scroll")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             child,
@@ -46,7 +46,6 @@ impl<X: GXExt> ScrollableW<X> {
             width: TRef::new(width).context("scrollable tref width")?,
             height: TRef::new(height).context("scrollable tref height")?,
             on_scroll,
-            on_scroll_callable,
         }))
     }
 }
@@ -79,15 +78,9 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
             .child
             .update(rt, &self.gx, id, v)
             .context("scrollable child recompile")?;
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_scroll,
-            on_scroll_callable,
-            "scrollable on_scroll recompile"
-        );
+        self.on_scroll
+            .update(rt, &self.gx, id, v)
+            .context("scrollable on_scroll recompile")?;
         Ok(changed)
     }
 
@@ -102,7 +95,7 @@ impl<X: GXExt> GuiWidget<X> for ScrollableW<X> {
         if let Some(h) = self.height.t.as_ref() {
             sc = sc.height(h.0);
         }
-        if let Some(c) = &self.on_scroll_callable {
+        if let Some(c) = &self.on_scroll.f {
             let id = c.id();
             sc = sc.on_scroll(move |viewport| {
                 let off = viewport.absolute_offset();

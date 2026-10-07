@@ -8,11 +8,11 @@ The `mouse_area` widget wraps a child and captures mouse events within its bound
 type MouseButton = [`Left, `Right, `Middle];
 
 val mouse_area: fn(
-  ?#on_press: fn(a: MouseButton) -> Any,
-  ?#on_release: fn(a: MouseButton) -> Any,
-  ?#on_enter: fn(a: null) -> Any,
-  ?#on_exit: fn(a: null) -> Any,
-  ?#on_move: fn(a: {x: f64, y: f64}) -> Any,
+  ?#on_press: [fn(a: MouseButton) -> Any, null],
+  ?#on_release: [fn(a: MouseButton) -> Any, null],
+  ?#on_enter: [fn(a: null) -> Any, null],
+  ?#on_exit: [fn(a: null) -> Any, null],
+  ?#on_move: [fn(a: {x: f64, y: f64}) -> Any, null],
   a: &Widget
 ) -> Widget
 ```

@@ -1,4 +1,4 @@
-use super::{Constraint, Flex, line, Size, size, Style, style, Tui};
+use super::{Constraint, Flex, line, Size, Style, style, Tui};
 use sys::net;
 use tui::table::{cell, row, table};
 

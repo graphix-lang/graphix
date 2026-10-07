@@ -1,4 +1,4 @@
-use super::{Alignment, Constraint, Line, Marker, Style, style, Tui};
+use super::{Alignment, Constraint, Line, Marker, Style, Tui};
 type GraphType = [
   `Scatter,
   `Line,

@@ -1,4 +1,4 @@
-use super::{Direction, Line, Style, style, Tui};
+use super::{Direction, Line, Style, Tui};
 type Bar = {
   label: &[Line, null],
   style: &[Style, null],

@@ -1,30 +1,32 @@
-use super::{GuiW, GuiWidget, IcedElement, Message, MessageShell};
-use crate::types::{FontV, PaddingV};
+use super::{GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell};
+use crate::types::{FontV, PaddingV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget::{self as widget, text_editor};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
+use std::collections::VecDeque;
 use tokio::try_join;
 
-/// Multi-line text editor widget. Editable when on_edit callback is provided.
+/// Multi-line text editor widget, editable when it has an on_edit and is not
+/// disabled; otherwise it still scrolls, selects and copies.
 pub(crate) struct TextEditorW<X: GXExt> {
     gx: GXHandle<X>,
     disabled: TRef<X, bool>,
     content: text_editor::Content,
-    content_ref: TRef<X, String>,
-    on_edit: Ref<X>,
-    on_edit_callable: Option<Callable<X>>,
-    /// Last text pushed via callback; its echo must not rebuild `Content`.
-    last_set_text: Option<String>,
+    content_ref: TRef<X, ArcStr>,
+    on_edit: Handler<X>,
+    /// The texts sent through on_edit whose echoes have not come back, in
+    /// order: an echo is the editor's own text and rebuilds nothing.
+    pending: VecDeque<ArcStr>,
     placeholder: TRef<X, ArcStr>,
     width: TRef<X, Option<f64>>,
     height: TRef<X, Option<f64>>,
     padding: TRef<X, PaddingV>,
     font: TRef<X, Option<FontV>>,
-    size: TRef<X, Option<f64>>,
+    size: TRef<X, Option<TextSizeV>>,
 }
 
 impl<X: GXExt> TextEditorW<X> {
@@ -64,8 +66,9 @@ impl<X: GXExt> TextEditorW<X> {
                 gx.compile_ref(size),
                 gx.compile_ref(width),
             }?;
-        let on_edit_callable = compile_callable!(gx, on_edit, "text_editor on_edit");
-        let content_tref: TRef<X, String> =
+        let on_edit =
+            Handler::compile(&gx, on_edit).await.context("text_editor on_edit")?;
+        let content_tref: TRef<X, ArcStr> =
             TRef::new(content).context("text_editor tref content")?;
         let initial_text = content_tref.t.as_deref().unwrap_or("");
         let editor_content = text_editor::Content::with_text(initial_text);
@@ -75,8 +78,7 @@ impl<X: GXExt> TextEditorW<X> {
             content: editor_content,
             content_ref: content_tref,
             on_edit,
-            on_edit_callable,
-            last_set_text: None,
+            pending: VecDeque::new(),
             placeholder: TRef::new(placeholder)
                 .context("text_editor tref placeholder")?,
             width: TRef::new(width).context("text_editor tref width")?,
@@ -98,28 +100,20 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         let mut changed = false;
         changed |=
             self.disabled.update(id, v).context("text_editor update disabled")?.is_some();
-        if let Some(new_text) =
+        if let Some(text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {
-            // CR claude for claude: [bug] `last_set_text` holds only the last text pushed
-            // through on_edit, and the next content update of any kind takes it, so
-            // every other update rebuilds `Content` with the cursor at (0,0). With
-            // `#on_edit: |s| c <- s`, two keys handled before the first echo arrives
-            // (one event-loop batch, or an echo slower than the next key) make that
-            // echo rebuild the editor: typing "ab" then "c" gives "cab", and a "c"
-            // typed between the two echoes gives "ca", losing the "b". Delivering the
-            // unchanged text again also rebuilds: `&doc.text` re-fires on every write
-            // to `doc`, so writing another field of `doc` sends the cursor to the
-            // start. An on_edit that rewrites the text (`str::to_upper`) types
-            // backwards: "abc" becomes "CBA". An update equal to `self.content.text()`,
-            // or to a push not yet echoed, should not rebuild, and a real change can
-            // keep the cursor with `move_to`. probe:
-            // design/review-2026-10-05/repro/gui-widgets-b-04.rs (copy into
-            // stdlib/graphix-package-gui/tests/ and run `cargo test -p
-            // graphix-package-gui --test review_gui_widgets_b_04`). (gui-widgets-b-04)
-            if self.last_set_text.take().as_ref() != Some(new_text) {
-                self.content = text_editor::Content::with_text(new_text.as_str());
-                changed = true;
+            match self.pending.iter().position(|p| p == text) {
+                // an echo: what it answered and every earlier send are done
+                Some(i) => drop(self.pending.drain(..=i)),
+                None if *text == *self.content.text() => (),
+                None => {
+                    let cursor = self.content.cursor();
+                    self.content = text_editor::Content::with_text(text);
+                    self.content.move_to(cursor);
+                    self.pending.clear();
+                    changed = true;
+                }
             }
         }
         changed |= self
@@ -135,35 +129,16 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
             self.padding.update(id, v).context("text_editor update padding")?.is_some();
         changed |= self.font.update(id, v).context("text_editor update font")?.is_some();
         changed |= self.size.update(id, v).context("text_editor update size")?.is_some();
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_edit,
-            on_edit_callable,
-            "text_editor on_edit recompile"
-        );
+        self.on_edit
+            .update(rt, &self.gx, id, v)
+            .context("text_editor on_edit recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut te = widget::TextEditor::new(&self.content);
-        // CR claude for claude: [bug] `on_edit_callable` is always Some because
-        // text_editor.gx defaults #on_edit to `|_| null`, so every enabled editor is
-        // editable, against the doc on line 11. Without #on_edit, what the user types
-        // changes the local Content but never `content`, and the next `content` update
-        // throws it away. A disabled editor gets no on_action, and iced's
-        // TextEditor::update returns at once without one (iced_widget 0.14.2
-        // text_editor.rs:689). So it cannot scroll, select or copy: in
-        // `text_editor(#disabled: &true, #height: &200.0, &long_log)` the text below
-        // 200 px is unreachable. A scrollable read-only editor needs on_action
-        // installed, with `action.is_edit()` actions dropped in on_message; iced then
-        // no longer draws it as disabled. (gui-widgets-b-11)
-        if !self.disabled.t.unwrap_or(false) && self.on_edit_callable.is_some() {
-            let content_id = self.content_ref.r.id;
-            te = te.on_action(move |a| Message::EditorAction(content_id, a));
-        }
+        let content_id = self.content_ref.r.id;
+        te = te.on_action(move |a| Message::EditorAction(content_id, a));
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
         if !placeholder.is_empty() {
             te = te.placeholder(placeholder);
@@ -180,8 +155,8 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         if let Some(Some(f)) = self.font.t.as_ref() {
             te = te.font(f.0);
         }
-        if let Some(Some(sz)) = self.size.t {
-            te = te.size(sz as f32);
+        if let Some(Some(TextSizeV(sz))) = self.size.t {
+            te = te.size(sz);
         }
         te.into()
     }
@@ -192,18 +167,24 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                 if *id != self.content_ref.r.id {
                     return false;
                 }
-                self.content.perform(action.clone());
-                if action.is_edit() {
-                    if let Some(callable) = &self.on_edit_callable {
-                        let text = self.content.text();
-                        self.last_set_text = Some(text.clone());
+                if !action.is_edit() {
+                    self.content.perform(action.clone());
+                    return true;
+                }
+                let editable = !self.disabled.t.unwrap_or(false);
+                match self.on_edit.id().filter(|_| editable) {
+                    None => false,
+                    Some(cid) => {
+                        self.content.perform(action.clone());
+                        let text = ArcStr::from(self.content.text());
+                        self.pending.push_back(text.clone());
                         shell.publish(Message::Call(
-                            callable.id(),
-                            ValArray::from_iter([Value::String(text.into())]),
+                            cid,
+                            ValArray::from_iter([Value::String(text)]),
                         ));
+                        true
                     }
                 }
-                true
             }
             Message::Nop | Message::Call(..) | Message::Table(..) => false,
         }

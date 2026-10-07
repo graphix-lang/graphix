@@ -7,7 +7,7 @@ A multi-line text editing area for longer-form content. Unlike `text_input`, whi
 ```graphix
 val text_editor: fn(
   ?#placeholder: &string,
-  ?#on_edit: fn(s: string) -> Any,
+  ?#on_edit: [fn(s: string) -> Any, null],
   ?#width: &[f64, null],
   ?#height: &[f64, null],
   ?#padding: &Padding,

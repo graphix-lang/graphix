@@ -1,11 +1,12 @@
 use super::{
-    Child, GuiW, GuiWidget, IcedElement, Message, iced_keyboard_area::KeyboardArea,
+    Child, GuiW, GuiWidget, Handler, IcedElement, Message,
+    iced_keyboard_area::KeyboardArea,
 };
 use anyhow::{Context, Result};
 use arcstr::literal;
 use compact_str::format_compact;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref};
+use graphix_rt::{GXExt, GXHandle};
 use iced_core::keyboard;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,10 +15,8 @@ use tokio::try_join;
 pub(crate) struct KeyboardAreaW<X: GXExt> {
     gx: GXHandle<X>,
     child: Child<X>,
-    on_key_press: Ref<X>,
-    on_key_press_callable: Option<Callable<X>>,
-    on_key_release: Ref<X>,
-    on_key_release_callable: Option<Callable<X>>,
+    on_key_press: Handler<X>,
+    on_key_release: Handler<X>,
 }
 
 impl<X: GXExt> KeyboardAreaW<X> {
@@ -37,18 +36,13 @@ impl<X: GXExt> KeyboardAreaW<X> {
         }?;
         let child =
             Child::compile(&gx, child_ref).await.context("keyboard_area child")?;
-        let on_key_press_callable =
-            compile_callable!(gx, on_key_press, "keyboard_area on_key_press");
-        let on_key_release_callable =
-            compile_callable!(gx, on_key_release, "keyboard_area on_key_release");
-        Ok(Box::new(Self {
-            gx: gx.clone(),
-            child,
-            on_key_press,
-            on_key_press_callable,
-            on_key_release,
-            on_key_release_callable,
-        }))
+        let on_key_press = Handler::compile(&gx, on_key_press)
+            .await
+            .context("keyboard_area on_key_press")?;
+        let on_key_release = Handler::compile(&gx, on_key_release)
+            .await
+            .context("keyboard_area on_key_release")?;
+        Ok(Box::new(Self { gx: gx.clone(), child, on_key_press, on_key_release }))
     }
 }
 
@@ -103,37 +97,25 @@ impl<X: GXExt> GuiWidget<X> for KeyboardAreaW<X> {
             .child
             .update(rt, &self.gx, id, v)
             .context("keyboard_area child recompile")?;
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_key_press,
-            on_key_press_callable,
-            "keyboard_area on_key_press recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_key_release,
-            on_key_release_callable,
-            "keyboard_area on_key_release recompile"
-        );
+        self.on_key_press
+            .update(rt, &self.gx, id, v)
+            .context("keyboard_area on_key_press recompile")?;
+        self.on_key_release
+            .update(rt, &self.gx, id, v)
+            .context("keyboard_area on_key_release recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let mut ka = KeyboardArea::new(self.child.w.view());
-        if let Some(c) = &self.on_key_press_callable {
+        if let Some(c) = &self.on_key_press.f {
             let id = c.id();
             ka = ka.on_key_press(move |key, mods, text, repeat| {
                 let ev = key_event_to_value(key, mods, text, repeat);
                 Some(Message::Call(id, ValArray::from_iter([ev])))
             });
         }
-        if let Some(c) = &self.on_key_release_callable {
+        if let Some(c) = &self.on_key_release.f {
             let id = c.id();
             ka = ka.on_key_release(move |key, mods, text, repeat| {
                 let ev = key_event_to_value(key, mods, text, repeat);

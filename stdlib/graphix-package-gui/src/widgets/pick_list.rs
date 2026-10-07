@@ -1,9 +1,9 @@
-use super::{GuiW, GuiWidget, IcedElement, Message};
+use super::{GuiW, GuiWidget, Handler, IcedElement, Message, disabled_choice};
 use crate::types::{LengthV, PaddingV, StringVec};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,8 +14,7 @@ pub(crate) struct PickListW<X: GXExt> {
     disabled: TRef<X, bool>,
     options: TRef<X, StringVec>,
     selected: TRef<X, Option<String>>,
-    on_select: Ref<X>,
-    on_select_callable: Option<Callable<X>>,
+    on_select: Handler<X>,
     placeholder: TRef<X, ArcStr>,
     width: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
@@ -51,14 +50,14 @@ impl<X: GXExt> PickListW<X> {
             gx.compile_ref(selected),
             gx.compile_ref(width),
         }?;
-        let callable = compile_callable!(gx, on_select, "pick_list on_select");
+        let on_select =
+            Handler::compile(&gx, on_select).await.context("pick_list on_select")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("pick_list tref disabled")?,
             options: TRef::new(options).context("pick_list tref options")?,
             selected: TRef::new(selected).context("pick_list tref selected")?,
             on_select,
-            on_select_callable: callable,
             placeholder: TRef::new(placeholder).context("pick_list tref placeholder")?,
             width: TRef::new(width).context("pick_list tref width")?,
             padding: TRef::new(padding).context("pick_list tref padding")?,
@@ -88,26 +87,21 @@ impl<X: GXExt> GuiWidget<X> for PickListW<X> {
         changed |= self.width.update(id, v).context("pick_list update width")?.is_some();
         changed |=
             self.padding.update(id, v).context("pick_list update padding")?.is_some();
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_select,
-            on_select_callable,
-            "pick_list on_select recompile"
-        );
+        self.on_select
+            .update(rt, &self.gx, id, v)
+            .context("pick_list on_select recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
         let options = self.options.t.as_ref().map(|v| v.0.as_slice()).unwrap_or(&[]);
         let selected = self.selected.t.as_ref().and_then(|o| o.clone());
-        let on_select_id = if self.disabled.t.unwrap_or(false) {
-            None
-        } else {
-            self.on_select_callable.as_ref().map(|c| c.id())
-        };
+        if self.disabled.t.unwrap_or(false) {
+            let placeholder = self.placeholder.t.as_deref().unwrap_or("");
+            let shown = self.selected.t.as_ref().and_then(|o| o.as_deref()).unwrap_or("");
+            return disabled_choice(placeholder, shown, self.width.t.as_ref());
+        }
+        let on_select_id = self.on_select.id();
         let mut pl =
             widget::PickList::new(
                 options,

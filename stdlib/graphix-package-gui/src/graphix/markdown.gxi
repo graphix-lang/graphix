@@ -1,14 +1,14 @@
 use super::{Length, Widget};
 type Markdown = {
   content: &string,
-  on_link: &fn(url: string) -> Any,
+  on_link: &[fn(url: string) -> Any, null],
   spacing: &[f64, null],
   text_size: &[f64, null],
   width: &Length
 };
 
 val markdown: fn(
-  ?#on_link: fn(url: string) -> Any,
+  ?#on_link: [fn(url: string) -> Any, null],
   ?#spacing: &[f64, null],
   ?#text_size: &[f64, null],
   ?#width: &Length,

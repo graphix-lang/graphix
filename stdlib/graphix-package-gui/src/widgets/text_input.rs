@@ -1,9 +1,11 @@
-use super::{GuiW, GuiWidget, IcedElement, Message};
-use crate::types::{FontV, LengthV, PaddingV};
+use super::{
+    Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell, call_arg,
+};
+use crate::types::{FontV, LengthV, PaddingV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,14 +16,14 @@ pub(crate) struct TextInputW<X: GXExt> {
     disabled: TRef<X, bool>,
     value: TRef<X, ArcStr>,
     placeholder: TRef<X, ArcStr>,
-    on_input: Ref<X>,
-    on_input_callable: Option<Callable<X>>,
-    on_submit: Ref<X>,
-    on_submit_callable: Option<Callable<X>>,
+    on_input: Handler<X>,
+    on_submit: Handler<X>,
+    /// What on_input sent that the value has not echoed yet.
+    echoes: Echoes<ArcStr>,
     is_secure: TRef<X, bool>,
     width: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
-    size: TRef<X, Option<f64>>,
+    size: TRef<X, Option<TextSizeV>>,
     font: TRef<X, Option<FontV>>,
 }
 
@@ -75,17 +77,18 @@ impl<X: GXExt> TextInputW<X> {
             gx.compile_ref(value),
             gx.compile_ref(width),
         }?;
-        let on_input_callable = compile_callable!(gx, on_input, "text_input on_input");
-        let on_submit_callable = compile_callable!(gx, on_submit, "text_input on_submit");
+        let on_input =
+            Handler::compile(&gx, on_input).await.context("text_input on_input")?;
+        let on_submit =
+            Handler::compile(&gx, on_submit).await.context("text_input on_submit")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("text_input tref disabled")?,
             value: TRef::new(value).context("text_input tref value")?,
             placeholder: TRef::new(placeholder).context("text_input tref placeholder")?,
             on_input,
-            on_input_callable,
             on_submit,
-            on_submit_callable,
+            echoes: Echoes::new(),
             is_secure: TRef::new(is_secure).context("text_input tref is_secure")?,
             width: TRef::new(width).context("text_input tref width")?,
             padding: TRef::new(padding).context("text_input tref padding")?,
@@ -105,7 +108,12 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         let mut changed = false;
         changed |=
             self.disabled.update(id, v).context("text_input update disabled")?.is_some();
-        changed |= self.value.update(id, v).context("text_input update value")?.is_some();
+        if let Some(value) =
+            self.value.update(id, v).context("text_input update value")?
+        {
+            self.echoes.delivered(value);
+            changed = true;
+        }
         changed |= self
             .placeholder
             .update(id, v)
@@ -121,53 +129,27 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
             self.padding.update(id, v).context("text_input update padding")?.is_some();
         changed |= self.size.update(id, v).context("text_input update size")?.is_some();
         changed |= self.font.update(id, v).context("text_input update font")?.is_some();
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_input,
-            on_input_callable,
-            "text_input on_input recompile"
-        );
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_submit,
-            on_submit_callable,
-            "text_input on_submit recompile"
-        );
+        self.on_input
+            .update(rt, &self.gx, id, v)
+            .context("text_input on_input recompile")?;
+        self.on_submit
+            .update(rt, &self.gx, id, v)
+            .context("text_input on_submit recompile")?;
         Ok(changed)
     }
 
     fn view(&self) -> IcedElement<'_> {
-        // CR claude for claude: [bug] view gives iced the last value the runtime
-        // delivered, and the event loop rebuilds the UI from it for every batch of
-        // window events while on_input goes to the runtime without waiting. So a key
-        // pressed before the echo of the previous on_input arrives edits the old
-        // string, and its on_input overwrites the earlier keystroke. With `#on_input:
-        // |s| v <- s, &v`, a second key in the next batch turns "ab" into v = "b", and
-        // a search over 200k strings (about 60 ms per keystroke) typed 30 ms per key
-        // turns "item1" into "t1". checkbox and toggler have the same race: two quick
-        // clicks both send the negation of the stale value. Keep the edited text in the
-        // widget and take a runtime value only when it is not the echo of a string this
-        // widget sent (a FIFO of pending sends). probe:
-        // design/review-2026-10-05/repro/gui-widgets-b-07.rs (copy it to
-        // stdlib/graphix-package-gui/tests/review_gui_widgets_b_07.rs and run cargo
-        // test --test review_gui_widgets_b_07) (gui-widgets-b-07)
-        let val = self.value.t.as_deref().unwrap_or("");
+        let val = self.echoes.shown(self.value.t.as_ref()).map_or("", |v| v.as_str());
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
         let mut ti = widget::TextInput::new(placeholder, val);
         if !self.disabled.t.unwrap_or(false) {
-            if let Some(callable) = &self.on_input_callable {
+            if let Some(callable) = &self.on_input.f {
                 let id = callable.id();
                 ti = ti.on_input(move |s| {
                     Message::Call(id, ValArray::from_iter([Value::String(s.into())]))
                 });
             }
-            if let Some(callable) = &self.on_submit_callable {
+            if let Some(callable) = &self.on_submit.f {
                 ti = ti.on_submit(Message::Call(
                     callable.id(),
                     ValArray::from_iter([Value::Null]),
@@ -183,12 +165,22 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         if let Some(p) = self.padding.t.as_ref() {
             ti = ti.padding(p.0);
         }
-        if let Some(Some(sz)) = self.size.t {
-            ti = ti.size(sz as f32);
+        if let Some(Some(TextSizeV(sz))) = self.size.t {
+            ti = ti.size(sz);
         }
         if let Some(Some(f)) = self.font.t.as_ref() {
             ti = ti.font(f.0);
         }
         ti.into()
+    }
+
+    fn on_message(&mut self, msg: &Message, _shell: &mut MessageShell) -> bool {
+        match call_arg(msg, self.on_input.id()) {
+            Some(Value::String(s)) => {
+                self.echoes.sent(s.clone());
+                true
+            }
+            _ => false,
+        }
     }
 }

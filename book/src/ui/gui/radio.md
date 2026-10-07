@@ -8,7 +8,7 @@ A radio button for single-select choices within a group. Each `radio` widget rep
 val radio: fn(
   #label: &string,
   ?#selected: &'a,
-  ?#on_select: fn(x: 'a) -> Any,
+  ?#on_select: [fn(x: 'a) -> Any, null],
   ?#width: &Length,
   ?#size: &[f64, null],
   ?#spacing: &[f64, null],

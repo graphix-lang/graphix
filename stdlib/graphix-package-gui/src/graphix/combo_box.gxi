@@ -1,7 +1,7 @@
 use super::{Length, Widget};
 type ComboBox = {
   disabled: &bool,
-  on_select: &fn(s: string) -> Any,
+  on_select: &[fn(s: string) -> Any, null],
   options: &Array<string>,
   selected: &[string, null],
   placeholder: &string,
@@ -10,7 +10,7 @@ type ComboBox = {
 
 val combo_box: fn(
   ?#selected: &[string, null],
-  ?#on_select: fn(s: string) -> Any,
+  ?#on_select: [fn(s: string) -> Any, null],
   ?#placeholder: &string,
   ?#width: &Length,
   ?#disabled: &bool,

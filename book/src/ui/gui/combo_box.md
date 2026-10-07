@@ -7,7 +7,7 @@ A searchable dropdown that combines a text input with a dropdown list. As the us
 ```graphix
 val combo_box: fn(
   ?#selected: &[string, null],
-  ?#on_select: fn(s: string) -> Any,
+  ?#on_select: [fn(s: string) -> Any, null],
   ?#placeholder: &string,
   ?#width: &Length,
   ?#disabled: &bool,

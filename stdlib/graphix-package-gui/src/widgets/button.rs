@@ -1,8 +1,8 @@
-use super::{Child, GuiW, GuiWidget, IcedElement, Message};
+use super::{Child, GuiW, GuiWidget, Handler, IcedElement, Message};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
-use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
+use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
@@ -14,8 +14,7 @@ pub(crate) struct ButtonW<X: GXExt> {
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     padding: TRef<X, PaddingV>,
-    on_press: Ref<X>,
-    on_press_callable: Option<Callable<X>>,
+    on_press: Handler<X>,
     child: Child<X>,
 }
 
@@ -41,7 +40,8 @@ impl<X: GXExt> ButtonW<X> {
             gx.compile_ref(width),
         }?;
         let child = Child::compile(&gx, child_ref).await.context("button child")?;
-        let callable = compile_callable!(gx, on_press, "button on_press");
+        let on_press =
+            Handler::compile(&gx, on_press).await.context("button on_press")?;
         Ok(Box::new(Self {
             gx: gx.clone(),
             disabled: TRef::new(disabled).context("button tref disabled")?,
@@ -49,7 +49,6 @@ impl<X: GXExt> ButtonW<X> {
             height: TRef::new(height).context("button tref height")?,
             padding: TRef::new(padding).context("button tref padding")?,
             on_press,
-            on_press_callable: callable,
             child,
         }))
     }
@@ -76,15 +75,7 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
         changed |= self.width.update(id, v).context("button update width")?.is_some();
         changed |= self.height.update(id, v).context("button update height")?.is_some();
         changed |= self.padding.update(id, v).context("button update padding")?.is_some();
-        update_callable!(
-            self,
-            rt,
-            id,
-            v,
-            on_press,
-            on_press_callable,
-            "button on_press recompile"
-        );
+        self.on_press.update(rt, &self.gx, id, v).context("button on_press recompile")?;
         changed |=
             self.child.update(rt, &self.gx, id, v).context("button child recompile")?;
         Ok(changed)
@@ -93,7 +84,7 @@ impl<X: GXExt> GuiWidget<X> for ButtonW<X> {
     fn view(&self) -> IcedElement<'_> {
         let mut btn = widget::Button::new(self.child.w.view());
         if !self.disabled.t.unwrap_or(false) {
-            if let Some(callable) = &self.on_press_callable {
+            if let Some(callable) = &self.on_press.f {
                 btn = btn.on_press(Message::Call(
                     callable.id(),
                     ValArray::from_iter([Value::Null]),

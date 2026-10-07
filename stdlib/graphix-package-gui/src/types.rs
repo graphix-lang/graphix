@@ -41,6 +41,23 @@ impl FromValue for LengthV {
     }
 }
 
+/// A size in pixels that text can be laid out at: finite and positive
+/// as an f32. Zero, negative and non-finite sizes are refused, which
+/// cosmic-text would otherwise assert on or hang over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextSizeV(pub f32);
+
+impl FromValue for TextSizeV {
+    fn from_value(v: Value) -> Result<Self> {
+        let f = v.cast_to::<f64>()? as f32;
+        if f.is_finite() && f > 0.0 {
+            Ok(Self(f))
+        } else {
+            bail!("a text size must be finite and positive, got {f}")
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PaddingV(pub Padding);
 
@@ -69,11 +86,27 @@ impl FromValue for SizeV {
     fn from_value(v: Value) -> Result<Self> {
         #[derive(FromValue)]
         struct Fields {
-            width: f32,
-            height: f32,
+            width: Finite,
+            height: Finite,
         }
         let Fields { width, height } = v.cast_to()?;
-        Ok(Self(Size::new(width, height)))
+        Ok(Self(Size::new(width.0, height.0)))
+    }
+}
+
+/// An f32 that is a number: NaN and the infinities are refused, which
+/// geometry would otherwise carry to an assert or a failed tessellation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Finite(pub f32);
+
+impl FromValue for Finite {
+    fn from_value(v: Value) -> Result<Self> {
+        let f = v.cast_to::<f64>()? as f32;
+        if f.is_finite() {
+            Ok(Self(f))
+        } else {
+            bail!("expected a finite number, got {f}")
+        }
     }
 }
 
@@ -361,23 +394,20 @@ impl ImageSourceV {
         }
     }
 
-    pub fn to_handle(&self) -> iced_core::image::Handle {
-        match self {
-            Self::Path(p) => iced_core::image::Handle::from_path(p),
-            Self::Bytes(b) => iced_core::image::Handle::from_bytes(b.clone()),
-            Self::Svg(_) => iced_core::image::Handle::from_path(""),
-            Self::Rgba { width, height, pixels } => {
-                iced_core::image::Handle::from_rgba(*width, *height, pixels.clone())
-            }
-        }
-    }
-
-    pub fn to_svg_handle(&self) -> iced_core::svg::Handle {
-        match self {
-            Self::Path(p) => iced_core::svg::Handle::from_path(p),
-            Self::Bytes(b) => iced_core::svg::Handle::from_memory(b.to_vec()),
-            Self::Svg(s) => iced_core::svg::Handle::from_memory(s.as_bytes().to_vec()),
-            Self::Rgba { .. } => iced_core::svg::Handle::from_path(""),
+    /// Whether `other` is the same image: the same path or text, or
+    /// bytes at the same place, else equal bytes.
+    pub fn same_as(&self, other: &Self) -> bool {
+        let bytes = |a: &iced_core::Bytes, b: &iced_core::Bytes| {
+            (a.as_ptr() == b.as_ptr() && a.len() == b.len()) || a == b
+        };
+        match (self, other) {
+            (Self::Path(a), Self::Path(b)) | (Self::Svg(a), Self::Svg(b)) => a == b,
+            (Self::Bytes(a), Self::Bytes(b)) => bytes(a, b),
+            (
+                Self::Rgba { width: w0, height: h0, pixels: a },
+                Self::Rgba { width: w1, height: h1, pixels: b },
+            ) => w0 == w1 && h0 == h1 && bytes(a, b),
+            _ => false,
         }
     }
 

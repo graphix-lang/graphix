@@ -7,7 +7,7 @@ The `scrollable` widget wraps content that may exceed the available space, provi
 ```graphix
 val scrollable: fn(
   ?#direction: &ScrollDirection,
-  ?#on_scroll: fn(a: {x: f64, y: f64}) -> Any,
+  ?#on_scroll: [fn(a: {x: f64, y: f64}) -> Any, null],
   ?#width: &Length,
   ?#height: &Length,
   a: &Widget
