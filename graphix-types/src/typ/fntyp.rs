@@ -1094,27 +1094,22 @@ impl FnType {
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
-        // CR claude for claude: [bug] impl_tvs holds only the tvars written at the top of
-        // the implementation's type: sig_tvars collects by name and never enters a
-        // binding. An unannotated parameter's cell is bound (`x: '_1 := Array<'_3>`)
-        // and tvar_map keys '_3, so neither loop below sees the Number + Singleton
-        // conjuncts on '_3. `val f: fn(x: Array<'a>) -> Array<'a>` over `|x| { let y =
-        // x[0]$; [y + y] }` passes --check, and then the build refuses `f(["a", "b"])`
-        // at elaboration; a dynamic module loads it and adds the strings at run time.
-        // The correct `fn<'a: Number + Singleton>(..)` is refused with "missing
-        // constraint 'a: Number in implementation". Both loops need the cells the walk
-        // mapped, reached through bindings and keyed by cell (as settle::position_cells
-        // collects them). probe: design/review-2026-10-05/repro/t-fntyp-05.gx
-        // (t-fntyp-05)
         let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
+        // every cell the walk may have mapped: an unannotated parameter's
+        // is bound, and the cells its binding holds carry the conjuncts
+        let impl_cells = {
+            let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            impl_fn.for_each_type(&mut |t| super::settle::position_cells(t, &mut cells));
+            sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
+        };
         let probe = BitFlags::empty();
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
             let mut found = false;
-            // the impl variable the signature's was matched with, else the
-            // same-named one: either form of a bound (`'c: C`, `c: C`)
+            // the impl cell the signature's was matched with, else the
+            // same-named variable: either form of a bound (`'c: C`, `c: C`)
             // names its variable its own way
             let sig_addr = sig_tv.cell_addr();
-            let matched = impl_tvs
+            let matched = impl_cells
                 .iter()
                 .find(|(_, tv)| {
                     matches!(tvar_map.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
@@ -1146,7 +1141,7 @@ impl FnType {
         // every conjunct of every impl cell must admit the signature's
         // concrete choice, or follow from the conjuncts of the signature
         // variable it stands for.
-        for (_, tv) in impl_tvs.iter() {
+        for (_, tv) in impl_cells.iter() {
             match tvar_map.get(&tv.cell_addr()) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {

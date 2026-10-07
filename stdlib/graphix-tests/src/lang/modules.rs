@@ -779,3 +779,28 @@ run!(
     "/test/m.gxi" => "val f: fn(#a: i64, #b: string) -> i64",
     "/test/m.gx" => "let f = |#b: string, #a: i64| -> i64 a"
 );
+
+// An implementation's bounds on cells its inferred parameters hold are
+// checked against the interface: declared, they pass; omitted, refused.
+run!(
+    interface_declares_inferred_bounds,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f([1])[0]$
+    "#,
+    "/test/m.gxi" => "val f: fn<'a: Number + Singleton>(x: Array<'a>) -> Array<'a>",
+    "/test/m.gx" => "let f = |x| { let y = x[0]$; [y + y] }"
+);
+
+run!(
+    interface_omits_inferred_bounds,
+    graphix_package_core::testing::refused("the implementation requires 'a: Number"),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f([1])
+    "#,
+    "/test/m.gxi" => "val f: fn(x: Array<'a>) -> Array<'a>",
+    "/test/m.gx" => "let f = |x| { let y = x[0]$; [y + y] }";
+    FuseExpect::None
+);
