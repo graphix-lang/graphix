@@ -1,15 +1,21 @@
 //! `file://` URI ↔ filesystem path conversion, with percent-encoding
-//! so paths containing spaces, `#`, `%`, `?` round-trip.
+//! so any absolute path round-trips, spelled as VS Code spells it.
 
 use lsp_types::Uri;
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+#[cfg(unix)]
+use percent_encoding::percent_encode;
+#[cfg(not(unix))]
+use percent_encoding::utf8_percent_encode;
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str};
 use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 /// Characters percent-encoded inside a URI path segment: the WHATWG
-/// path percent-encode set plus `%`, with `/` left readable.
+/// path percent-encode set plus `%`, what the URI type refuses in a path
+/// (`[ ] ^ | \`), and what VS Code encodes besides (`( ) ! $ & ' + , ; = @`),
+/// with `/` left readable.
 const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -20,11 +26,27 @@ const PATH_ENCODE: &AsciiSet = &CONTROLS
     .add(b'`')
     .add(b'{')
     .add(b'}')
-    .add(b'%');
+    .add(b'%')
+    .add(b'[')
+    .add(b']')
+    .add(b'^')
+    .add(b'|')
+    .add(b'\\')
+    .add(b'(')
+    .add(b')')
+    .add(b'!')
+    .add(b'$')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'+')
+    .add(b',')
+    .add(b';')
+    .add(b'=')
+    .add(b'@');
 
 /// Convert a `file://` URI to a filesystem path. Returns `None` for
-/// non-`file` schemes, remote hosts (anything other than empty or
-/// `localhost`), or URIs that don't decode to valid UTF-8.
+/// non-`file` schemes and remote hosts (anything other than empty or
+/// `localhost`).
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let s = uri.as_str();
     let rest = s.strip_prefix("file://")?;
@@ -37,19 +59,33 @@ pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     } else {
         return None;
     };
-    let decoded = percent_decode_str(&raw).decode_utf8().ok()?;
-    Some(PathBuf::from(decoded.as_ref()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bytes: Vec<u8> = percent_decode_str(&raw).collect();
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        let decoded = percent_decode_str(&raw).decode_utf8().ok()?;
+        Some(PathBuf::from(decoded.as_ref()))
+    }
 }
 
-/// Convert an absolute filesystem path to a `file://` URI. Returns
-/// `None` for non-UTF-8 paths, non-absolute paths, or if URI parsing
-/// rejects the result.
+/// Convert an absolute filesystem path to a `file://` URI; `None` for a
+/// relative one. On Unix a path's bytes are encoded, so one that is not
+/// UTF-8 has a URI too.
 pub fn path_to_uri(path: &Path) -> Option<Uri> {
-    let s = path.to_str()?;
-    if !s.starts_with('/') {
+    if !path.has_root() {
         return None;
     }
-    let encoded = utf8_percent_encode(s, PATH_ENCODE).to_string();
+    #[cfg(unix)]
+    let encoded = {
+        use std::os::unix::ffi::OsStrExt;
+        percent_encode(path.as_os_str().as_bytes(), PATH_ENCODE).to_string()
+    };
+    #[cfg(not(unix))]
+    let encoded = utf8_percent_encode(path.to_str()?, PATH_ENCODE).to_string();
     let uri_str = format!("file://{encoded}");
     Uri::from_str(&uri_str).ok()
 }
@@ -84,6 +120,23 @@ mod tests {
         roundtrip("/tmp/a%b.gx");
         roundtrip("/tmp/a?b.gx");
         roundtrip("/tmp/a b#c%d?e.gx");
+    }
+
+    #[test]
+    fn path_with_brackets_and_vscode_specials_roundtrip() {
+        roundtrip("/tmp/[x]/a^b|c\\d.gx");
+        roundtrip("/tmp/proj (copy)/a!$&'+,;=@.gx");
+        let uri = path_to_uri(Path::new("/tmp/proj (copy)/main.gx")).unwrap();
+        assert_eq!(uri.as_str(), "file:///tmp/proj%20%28copy%29/main.gx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_path_roundtrip() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/a \xff.gx"));
+        let uri = path_to_uri(path).expect("encode");
+        assert_eq!(uri_to_path(&uri).expect("decode"), path);
     }
 
     #[test]

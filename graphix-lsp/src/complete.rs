@@ -304,7 +304,7 @@ impl<'a> Completer<'a> {
 
 impl ServerState {
     pub fn completions(&self, uri: &Uri, position: Position) -> Vec<CompletionItem> {
-        let (Some(doc), Some(file)) = (self.documents.get(uri), uri_to_path(uri)) else {
+        let (Some(doc), Some(file)) = (self.document(uri), uri_to_path(uri)) else {
             return vec![];
         };
         let cursor = self.decode(uri, position);

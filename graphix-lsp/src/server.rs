@@ -2,20 +2,22 @@
 //! what changed whenever the client has nothing more queued.
 
 use crate::{
-    handlers,
+    formatting,
     position::PositionEncoding,
-    state::{Diagnostics, LspBackend, ServerState},
+    state::{Diagnostics, LspBackend, Publish, ServerState},
     uri::uri_to_path,
 };
 use anyhow::Result;
 use log::info;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
-    CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions,
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
+    PositionEncodingKind, PublishDiagnosticsParams, ReferenceParams, SaveOptions,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions,
+    TextDocumentSyncOptions, WorkspaceSymbolParams,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{path::PathBuf, sync::Arc};
@@ -124,17 +126,17 @@ where
                 }
                 if idle {
                     let checked = state.flush();
-                    publish(&connection, &state, checked)?;
+                    publish(&connection, checked)?;
                 }
                 let response = handle_request(&state, req);
                 connection.sender.send(Message::Response(response))?;
             }
             Message::Notification(not) => {
                 let cleared = handle_notification(&mut state, not);
-                publish(&connection, &state, cleared)?;
+                publish(&connection, cleared)?;
                 if idle {
                     let checked = state.flush();
-                    publish(&connection, &state, checked)?;
+                    publish(&connection, checked)?;
                 }
             }
             Message::Response(_) => {}
@@ -143,13 +145,8 @@ where
     Ok(())
 }
 
-fn publish(
-    connection: &Connection,
-    state: &ServerState,
-    diags: Diagnostics,
-) -> Result<()> {
-    for (uri, diagnostics) in diags {
-        let version = state.documents.get(&uri).map(|d| d.version);
+fn publish(connection: &Connection, diags: Diagnostics) -> Result<()> {
+    for Publish { uri, version, diagnostics } in diags {
         let params = PublishDiagnosticsParams { uri, diagnostics, version };
         let not = Notification::new("textDocument/publishDiagnostics".into(), params);
         connection.sender.send(Message::Notification(not))?;
@@ -178,24 +175,38 @@ fn respond<P: DeserializeOwned, R: Serialize>(
     }
 }
 
-// CR claude for claude: [structure] Six of the seven handlers (completion, definition,
-// document_symbol, hover, references, workspace_symbol) only unpack the lsp-types
-// params and call a ServerState method, four of them also turning an empty Vec into
-// None, so each request is spread over this route, a handler file and the method. Let
-// those methods take the params and route to them here: the six files, handlers/mod.rs
-// and the glob `use handlers::*` go, and formatting.rs, the one with logic, stays a
-// module. (lsp-13)
 fn handle_request(state: &ServerState, req: Request) -> Response {
-    use handlers::*;
+    // an empty answer is no answer
+    fn some<T>(v: Vec<T>) -> Option<Vec<T>> {
+        (!v.is_empty()).then_some(v)
+    }
     match req.method.as_str() {
-        "textDocument/completion" => respond(req, |p| Ok(completion::handle(state, p))),
-        "textDocument/hover" => respond(req, |p| Ok(hover::handle(state, p))),
-        "textDocument/definition" => respond(req, |p| Ok(definition::handle(state, p))),
-        "textDocument/references" => respond(req, |p| Ok(references::handle(state, p))),
-        "textDocument/documentSymbol" => {
-            respond(req, |p| Ok(document_symbol::handle(state, p)))
-        }
-        "workspace/symbol" => respond(req, |p| Ok(workspace_symbol::handle(state, p))),
+        "textDocument/completion" => respond(req, |p: CompletionParams| {
+            let at = p.text_document_position;
+            let items = state.completions(&at.text_document.uri, at.position);
+            Ok(some(items).map(CompletionResponse::Array))
+        }),
+        "textDocument/hover" => respond(req, |p: HoverParams| {
+            let at = p.text_document_position_params;
+            Ok(state.hover(&at.text_document.uri, at.position))
+        }),
+        "textDocument/definition" => respond(req, |p: GotoDefinitionParams| {
+            let at = p.text_document_position_params;
+            let def = state.definition(&at.text_document.uri, at.position);
+            Ok(def.map(GotoDefinitionResponse::Scalar))
+        }),
+        "textDocument/references" => respond(req, |p: ReferenceParams| {
+            let at = p.text_document_position;
+            let decl = p.context.include_declaration;
+            Ok(some(state.references(&at.text_document.uri, at.position, decl)))
+        }),
+        "textDocument/documentSymbol" => respond(req, |p: DocumentSymbolParams| {
+            let symbols = state.document_symbols(&p.text_document.uri);
+            Ok(some(symbols).map(DocumentSymbolResponse::Nested))
+        }),
+        "workspace/symbol" => respond(req, |p: WorkspaceSymbolParams| {
+            Ok(some(state.workspace_symbols(&p.query)))
+        }),
         "textDocument/formatting" => respond(req, |p| formatting::handle(state, p)),
         method => {
             info!("unhandled request: {method}");
@@ -235,15 +246,10 @@ fn handle_notification(state: &mut ServerState, not: Notification) -> Diagnostic
                 return state.close_document(&p.text_document.uri);
             }
         }
-        // CR claude for claude: [risk] workspace/didChangeWatchedFiles, which the VS Code
-        // client sends for every **/*.gx change
-        // (ide/editors/vscode/src/extension.ts:22), falls to the unhandled arm below,
-        // so the project graph is rescanned only on a didSave. A `mod` line that a git
-        // checkout or a generator writes to disk leaves the file it names checked as a
-        // standalone root (where its `super::` names are errors) until some document is
-        // saved. Handle it with `state.saved()`, and watch **/*.gxi as well. probe:
-        // design/review-2026-10-05/repro/lsp-12.py (lsp-12)
-        "textDocument/didSave" => state.saved(),
+        // the disk changed, through the editor or anything else
+        "textDocument/didSave" | "workspace/didChangeWatchedFiles" => {
+            return state.saved();
+        }
         method => info!("unhandled notification: {method}"),
     }
     vec![]

@@ -34,7 +34,7 @@ pub fn handle(
     params: DocumentFormattingParams,
 ) -> Result<Option<Vec<TextEdit>>> {
     let uri = &params.text_document.uri;
-    let Some(doc) = state.documents.get(uri) else {
+    let Some(doc) = state.document(uri) else {
         return Ok(None);
     };
     let path = uri_to_path(uri);
@@ -68,14 +68,6 @@ mod tests {
         assert_eq!(got[0].new_text, "let x = 1;\nlet s = \"é\"\n");
         assert_eq!(got[0].range.start, Position { line: 0, character: 0 });
         assert_eq!(got[0].range.end, Position { line: 1, character: 11 });
-        let utf8 = edits(
-            SourceKind::Program,
-            text,
-            &FormatConfig::default(),
-            PositionEncoding::Utf8,
-        )
-        .unwrap();
-        assert_eq!(utf8[0].range.end, Position { line: 1, character: 12 });
     }
 
     #[test]

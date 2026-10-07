@@ -5,7 +5,7 @@
 
 mod complete;
 mod diagnostics;
-mod handlers;
+mod formatting;
 pub mod position;
 mod query;
 mod server;

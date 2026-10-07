@@ -1,7 +1,0 @@
-pub mod completion;
-pub mod definition;
-pub mod document_symbol;
-pub mod formatting;
-pub mod hover;
-pub mod references;
-pub mod workspace_symbol;

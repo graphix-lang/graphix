@@ -90,14 +90,35 @@ impl<'a> Query<'a> {
     ) -> Option<Self> {
         let checked = state.checked_for(file)?;
         let cursor = state.decode(uri, position);
-        let ident = ident_at(&state.documents.get(uri)?.text, cursor)?;
+        let ident = ident_at(&state.document(uri)?.text, cursor)?;
         Some(Self { state, checked, file, cursor, ident })
     }
 
-    fn location(&self, ori: &Origin, at: Position) -> Option<Location> {
+    /// The `len` characters written at `at`.
+    fn location(&self, ori: &Origin, at: Position, len: usize) -> Option<Location> {
         let Source::File(path) = &ori.source else { return None };
-        let at = self.state.encode(&ori.text, at);
-        Some(Location { uri: path_to_uri(path)?, range: Range { start: at, end: at } })
+        let end = Position { line: at.line, character: at.character + len as u32 };
+        let range = Range {
+            start: self.state.encode(&ori.text, at),
+            end: self.state.encode(&ori.text, end),
+        };
+        Some(Location { uri: path_to_uri(path)?, range })
+    }
+
+    /// Each segment of the path `name` written at `pos`: where it stands,
+    /// and its length.
+    fn segments(pos: SourcePosition, name: &ModPath) -> Vec<(Position, usize)> {
+        let start = zero_based(pos);
+        let mut col = start.character;
+        format_compact!("{name}")
+            .split("::")
+            .map(|seg| {
+                let len = seg.chars().count();
+                let at = Position { line: start.line, character: col };
+                col += len as u32 + 2;
+                (at, len)
+            })
+            .collect()
     }
 
     /// Each segment of a `use` item that stands in this statement,
@@ -142,30 +163,53 @@ impl<'a> Query<'a> {
     /// The target under the cursor and the name it is written by.
     fn target(&self) -> Option<(Target, CompactString)> {
         let Checked { env, ide } = self.checked;
-        // CR claude for claude: [bug] `on` takes a reference or a type reference when the
-        // cursor is on any segment of its written path, and the caller answers with the
-        // item, so on `util` in `util::bump` hover shows `util::bump: fn(n: i64) ->
-        // i64`, definition goes to `let bump` and references lists bump's uses; a type
-        // path does the same. A non-final segment should answer `Target::Module` for
-        // its prefix, as use_segments does for a `use` item, and references on `mod
-        // util` miss these segments today. probe:
-        // design/review-2026-10-05/repro/lsp-11.py (lsp-11)
+        // The path `name`, written at `pos`, when the cursor is on one of its
+        // segments: the written path, and how many segments follow the one
+        // under the cursor.
         let on = |ori: &Origin, pos: SourcePosition, name: &ModPath| {
             let written = format_compact!("{name}");
-            let hit = in_file(ori, self.file)
-                && covers(zero_based(pos), written.chars().count(), self.cursor)
-                && written.split("::").any(|seg| seg == self.ident);
-            hit.then_some(written)
+            let start = zero_based(pos);
+            if !in_file(ori, self.file)
+                || !covers(start, written.chars().count(), self.cursor)
+            {
+                return None;
+            }
+            let off = (self.cursor.character - start.character) as usize;
+            let segs: Vec<&str> = written.split("::").collect();
+            let mut at = 0;
+            for (i, seg) in segs.iter().enumerate() {
+                let len = seg.chars().count();
+                if (at..=at + len).contains(&off) {
+                    let after = segs.len() - 1 - i;
+                    return (*seg == self.ident).then(|| (written.clone(), after));
+                }
+                at += len + 2;
+            }
+            None
         };
+        // a segment before the last names the module of its prefix: the
+        // item's scope less the segments after it
+        let module =
+            |scope: &ModPath, after: usize| Target::Module(truncated(scope, after - 1));
         for r in ide.references.iter() {
-            if let Some(written) = on(&r.ori, r.pos, &r.name) {
-                return Some((Target::Bind(r.bind_id), written));
+            if let Some((written, after)) = on(&r.ori, r.pos, &r.name) {
+                if after == 0 {
+                    return Some((Target::Bind(r.bind_id), written));
+                }
+                let scope = &self.bind(r.bind_id)?.scope;
+                return Some((module(scope, after), (&*self.ident).into()));
             }
         }
         for t in ide.type_refs.iter() {
-            if let Some(written) = on(&t.ori, t.pos, &t.name) {
-                let name = basename(&t.name).into();
-                return Some((Target::Type(t.canonical_scope.clone(), name), written));
+            if let Some((written, after)) = on(&t.ori, t.pos, &t.name) {
+                if after == 0 {
+                    let name = basename(&t.name).into();
+                    return Some((
+                        Target::Type(t.canonical_scope.clone(), name),
+                        written,
+                    ));
+                }
+                return Some((module(&t.canonical_scope, after), (&*self.ident).into()));
             }
         }
         let here = |at: Position| covers(at, self.ident.chars().count(), self.cursor);
@@ -254,12 +298,12 @@ impl<'a> Query<'a> {
 
     fn bind_location(&self, id: BindId) -> Option<Location> {
         let b = self.bind(id)?;
-        self.location(&b.ori, zero_based(b.pos))
+        self.location(&b.ori, zero_based(b.pos), b.name.chars().count())
     }
 
     fn type_location(&self, scope: &ModPath, name: &str) -> Option<Location> {
         let td = self.typedef(scope, name)?;
-        self.location(td.ori(), zero_based(td.pos()))
+        self.location(td.ori(), zero_based(td.pos()), name.chars().count())
     }
 
     /// A reference goes to its declaration; an interface `val` goes to
@@ -283,7 +327,7 @@ impl<'a> Query<'a> {
                 let ori = ide.module_references.iter().find_map(|m| {
                     (m.canonical == canonical).then_some(m.def_ori.as_ref()).flatten()
                 })?;
-                self.location(ori, Position::default())
+                self.location(ori, Position::default(), 0)
             }
         }
     }
@@ -296,27 +340,41 @@ impl<'a> Query<'a> {
         if let Target::Bind(id) = target {
             targets.extend(self.sig_partner(id).map(Target::Bind));
         }
+        // a path's last segment names its item, each segment before it the
+        // module of its prefix: the item's scope less the segments after it
+        let mut path =
+            |ori: &Origin, pos, name: &ModPath, item: Target, scope: &ModPath| {
+                let segs = Self::segments(pos, name);
+                let n = segs.len();
+                for (i, (at, len)) in segs.into_iter().enumerate() {
+                    let t = match n - 1 - i {
+                        0 => item.clone(),
+                        after => Target::Module(truncated(scope, after - 1)),
+                    };
+                    if targets.contains(&t) {
+                        out.extend(self.location(ori, at, len));
+                    }
+                }
+            };
         for r in ide.references.iter() {
-            if targets.contains(&Target::Bind(r.bind_id)) {
-                out.extend(self.location(&r.ori, zero_based(r.pos)));
-            }
+            let Some(b) = self.bind(r.bind_id) else { continue };
+            path(&r.ori, r.pos, &r.name, Target::Bind(r.bind_id), &b.scope);
         }
         for t in ide.type_refs.iter() {
-            let name = basename(&t.name).into();
-            if targets.contains(&Target::Type(t.canonical_scope.clone(), name)) {
-                out.extend(self.location(&t.ori, zero_based(t.pos)));
-            }
+            let item = Target::Type(t.canonical_scope.clone(), basename(&t.name).into());
+            path(&t.ori, t.pos, &t.name, item, &t.canonical_scope);
         }
         for m in ide.module_references.iter() {
             if m.segments.is_none() {
                 if targets.contains(&Target::Module(m.canonical.clone())) {
-                    out.extend(self.location(&m.ori, zero_based(m.pos)));
+                    let len = basename(&m.name).chars().count();
+                    out.extend(self.location(&m.ori, zero_based(m.pos), len));
                 }
                 continue;
             }
-            for (_, at, canonical) in Self::use_segments(m) {
+            for (seg, at, canonical) in Self::use_segments(m) {
                 if self.named(&canonical).is_some_and(|t| targets.contains(&t)) {
-                    out.extend(self.location(&m.ori, at));
+                    out.extend(self.location(&m.ori, at, seg.chars().count()));
                 }
             }
         }

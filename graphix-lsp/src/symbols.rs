@@ -18,55 +18,79 @@ use lsp_types::{
 };
 use std::path::{Path, PathBuf};
 
-struct Symbol {
+#[derive(Debug)]
+pub(crate) struct Symbol {
     name: ArcStr,
     kind: SymbolKind,
-    /// Where the declaration starts, and where its name stands.
+    /// Where the declaration starts, where its name stands, and where it
+    /// ends when that was written down (a .gxi item's is not).
     pos: SourcePosition,
     at: SourcePosition,
+    end: Option<SourcePosition>,
+}
+
+fn sym(
+    name: &Name,
+    kind: SymbolKind,
+    pos: SourcePosition,
+    end: Option<SourcePosition>,
+) -> Symbol {
+    Symbol { name: name.name.clone(), kind, pos, at: name.pos_or(pos), end }
+}
+
+/// The top-level declarations of a parsed `.gxi`.
+pub(crate) fn of_sig(sig: &graphix_compiler::expr::Sig) -> Vec<Symbol> {
+    let item = |si: &graphix_compiler::expr::SigItem| match &si.kind {
+        SigKind::Bind(b) if matches!(b.typ, Type::Fn(_)) => {
+            Some(sym(&b.name, SymbolKind::FUNCTION, si.pos, None))
+        }
+        SigKind::Bind(b) => Some(sym(&b.name, SymbolKind::VARIABLE, si.pos, None)),
+        SigKind::TypeDef(t) => {
+            Some(sym(&t.name, SymbolKind::TYPE_PARAMETER, si.pos, None))
+        }
+        SigKind::Module(name) => Some(sym(name, SymbolKind::MODULE, si.pos, None)),
+        SigKind::Trait(t) => Some(sym(&t.name, SymbolKind::INTERFACE, si.pos, None)),
+        SigKind::Use { .. } | SigKind::Impl(_) => None,
+    };
+    sig.items.iter().filter_map(item).collect()
+}
+
+/// The top-level declarations of a parsed `.gx`.
+pub(crate) fn of_exprs(exprs: &[graphix_compiler::expr::Expr]) -> Vec<Symbol> {
+    let item = |e: &graphix_compiler::expr::Expr| {
+        let end = e.end.get();
+        match &e.kind {
+            ExprKind::Bind(b) => match (&b.pattern, &b.value.kind) {
+                (StructurePattern::Bind(name), ExprKind::Lambda(_)) => {
+                    Some(sym(name, SymbolKind::FUNCTION, e.pos, end))
+                }
+                (StructurePattern::Bind(name), _) => {
+                    Some(sym(name, SymbolKind::VARIABLE, e.pos, end))
+                }
+                (_, _) => None,
+            },
+            ExprKind::TypeDef(td) => {
+                Some(sym(&td.name, SymbolKind::TYPE_PARAMETER, e.pos, end))
+            }
+            ExprKind::Module { name, .. } => {
+                Some(sym(name, SymbolKind::MODULE, e.pos, end))
+            }
+            ExprKind::Trait(t) => Some(sym(&t.name, SymbolKind::INTERFACE, e.pos, end)),
+            _ => None,
+        }
+    };
+    exprs.iter().filter_map(item).collect()
 }
 
 /// The top-level declarations of a `.gx` or `.gxi` text; none when it
 /// does not parse.
 fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
-    let sym = |name: &Name, kind, pos| Symbol {
-        name: name.name.clone(),
-        kind,
-        pos,
-        at: name.pos_or(pos),
-    };
     if path.extension().is_some_and(|e| e == "gxi") {
-        let Ok(sig) = parser::parse_sig(ori) else { return vec![] };
-        let item = |si: &graphix_compiler::expr::SigItem| match &si.kind {
-            SigKind::Bind(b) if matches!(b.typ, Type::Fn(_)) => {
-                Some(sym(&b.name, SymbolKind::FUNCTION, si.pos))
-            }
-            SigKind::Bind(b) => Some(sym(&b.name, SymbolKind::VARIABLE, si.pos)),
-            SigKind::TypeDef(t) => Some(sym(&t.name, SymbolKind::TYPE_PARAMETER, si.pos)),
-            SigKind::Module(name) => Some(sym(name, SymbolKind::MODULE, si.pos)),
-            SigKind::Trait(t) => Some(sym(&t.name, SymbolKind::INTERFACE, si.pos)),
-            SigKind::Use { .. } | SigKind::Impl(_) => None,
-        };
-        return sig.items.iter().filter_map(item).collect();
+        parser::parse_sig(ori).map(|sig| of_sig(&sig)).unwrap_or_default()
+    } else {
+        parser::parse(ori).map(|exprs| of_exprs(&exprs)).unwrap_or_default()
     }
-    let Ok(exprs) = parser::parse(ori) else { return vec![] };
-    let item = |e: &graphix_compiler::expr::Expr| match &e.kind {
-        ExprKind::Bind(b) => match (&b.pattern, &b.value.kind) {
-            (StructurePattern::Bind(name), ExprKind::Lambda(_)) => {
-                Some(sym(name, SymbolKind::FUNCTION, e.pos))
-            }
-            (StructurePattern::Bind(name), _) => {
-                Some(sym(name, SymbolKind::VARIABLE, e.pos))
-            }
-            (_, _) => None,
-        },
-        ExprKind::TypeDef(td) => Some(sym(&td.name, SymbolKind::TYPE_PARAMETER, e.pos)),
-        ExprKind::Module { name, .. } => Some(sym(name, SymbolKind::MODULE, e.pos)),
-        ExprKind::Trait(t) => Some(sym(&t.name, SymbolKind::INTERFACE, e.pos)),
-        _ => None,
-    };
-    exprs.iter().filter_map(item).collect()
 }
 
 impl ServerState {
@@ -79,7 +103,7 @@ impl ServerState {
     }
 
     pub fn document_symbols(&self, uri: &Uri) -> Vec<DocumentSymbol> {
-        let (Some(doc), Some(file)) = (self.documents.get(uri), uri_to_path(uri)) else {
+        let (Some(doc), Some(file)) = (self.document(uri), uri_to_path(uri)) else {
             return vec![];
         };
         let text = ArcStr::from(doc.text.as_str());
@@ -104,16 +128,15 @@ impl ServerState {
                     kind: s.kind,
                     tags: None,
                     deprecated: None,
-                    // CR claude for claude: [bug] `range` ends where the name ends, but
-                    // LSP's `range` encloses the whole declaration and clients use it
-                    // to find the symbol the cursor is in, so outline follow,
-                    // breadcrumbs and sticky scroll never place a cursor inside a
-                    // function body; a .gx declaration's Expr `end` is at hand (a .gxi
-                    // SigItem has none). Query::location likewise answers zero-width
-                    // ranges, so a references list highlights no name although each
-                    // site's written length is known. probe:
-                    // design/review-2026-10-05/repro/lsp-16.py (lsp-16)
-                    range: Range { start, end: selection_range.end },
+                    // the whole declaration, where its end was written down
+                    range: Range {
+                        start,
+                        end: s
+                            .end
+                            .map(|e| self.encode(&text, zero_based(e)))
+                            .unwrap_or(selection_range.end)
+                            .max(selection_range.end),
+                    },
                     selection_range,
                     children: None,
                 }
@@ -136,25 +159,22 @@ impl ServerState {
         files.sort();
         let mut out = vec![];
         for path in files {
-            let Some(uri) = path_to_uri(path) else { continue };
-            let text = match self.documents.get(&uri) {
-                Some(doc) => ArcStr::from(doc.text.as_str()),
-                None => match std::fs::read_to_string(path) {
-                    Ok(text) => ArcStr::from(text),
-                    Err(_) => continue,
-                },
+            // an open buffer is parsed; every other file's symbols are the
+            // scan's
+            let (uri, text, symbols) = match self.documents.get(path) {
+                Some(doc) => {
+                    let text = ArcStr::from(doc.text.as_str());
+                    let symbols: std::sync::Arc<[Symbol]> =
+                        declared(path, text.clone()).into();
+                    (doc.uri.clone(), text, symbols)
+                }
+                None => {
+                    let Some(wf) = self.workspace.files.get(path) else { continue };
+                    let Some(uri) = path_to_uri(path) else { continue };
+                    (uri, wf.text.clone(), wf.symbols.clone())
+                }
             };
-            // CR claude for claude: [perf] Every workspace/symbol request reads and
-            // parses each file it searches and filters by the query only afterwards,
-            // though scan has already parsed every file, keyed by mtime, for its
-            // mod_decls. Over netidx-admin's 36 files that is ~0.27 s a request with
-            // the debug build, and when the active document is in no scanned project
-            // (outside the workspace folders, or under a skipped dir) the `None` arm
-            // above searches every .gx/.gxi under the folders: 2.6-7.4 s a request on
-            // this repo. The server is single-threaded and the symbol picker sends a
-            // request per keystroke. Record each file's symbols where scan parses it
-            // and parse only open buffers here. (lsp-10)
-            for s in declared(path, text.clone()) {
+            for s in symbols.iter() {
                 if !s.name.to_ascii_lowercase().contains(&needle) {
                     continue;
                 }

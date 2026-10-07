@@ -8,7 +8,9 @@
 
 use crate::{
     diagnostics::{error_leaf_message, error_location},
-    position::{PositionEncoding, char_col_to_position_in_text, position_to_char_col},
+    position::{
+        PositionEncoding, char_col_to_position_in_text, position_to_char_col_in_text,
+    },
     text::{extent, zero_based},
     uri::{path_to_uri, uri_to_path},
     workspace::{WorkspaceModel, detect_package_scope, scan},
@@ -27,6 +29,9 @@ use std::{
 };
 
 pub struct Document {
+    /// The URI the client names the document by: its diagnostics publish
+    /// under it.
+    pub uri: Uri,
     pub version: i32,
     pub text: String,
 }
@@ -57,23 +62,44 @@ pub trait LspBackend: Send + Sync + 'static {
     fn buffer_overrides(&self) -> BufferOverrides;
 }
 
-/// Diagnostics to publish, per file; an empty list clears the file.
-pub type Diagnostics = Vec<(Uri, Vec<Diagnostic>)>;
+/// One file's diagnostics to publish; an empty list clears the file.
+pub struct Publish {
+    pub uri: Uri,
+    pub version: Option<i32>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+pub type Diagnostics = Vec<Publish>;
+
+/// What one root's checks left.
+#[derive(Default)]
+struct Root {
+    /// The last successful check. A failed check leaves it standing:
+    /// queries over a buffer that does not compile answer from it.
+    checked: Option<Checked>,
+    /// The warnings of the last successful check, by file.
+    warnings: AHashMap<PathBuf, Vec<Diagnostic>>,
+    /// The last check's error, when it failed.
+    error: Option<(PathBuf, Diagnostic)>,
+}
+
+impl Root {
+    fn files(&self) -> impl Iterator<Item = &PathBuf> {
+        self.warnings.keys().chain(self.error.iter().map(|(f, _)| f))
+    }
+}
 
 pub struct ServerState {
     pub(crate) base_env: Env,
-    pub(crate) documents: AHashMap<Uri, Document>,
+    /// The open documents, by path.
+    pub(crate) documents: AHashMap<PathBuf, Document>,
     backend: Arc<dyn LspBackend>,
     workspace_roots: Vec<PathBuf>,
     pub(crate) workspace: WorkspaceModel,
-    /// The last successful check of each root. A failed check leaves
-    /// the previous one standing: queries over a buffer that does not
-    /// compile answer from it.
-    checked: AHashMap<PathBuf, Checked>,
-    /// The warnings of each root's last successful check, by file.
-    warnings: AHashMap<PathBuf, AHashMap<Uri, Vec<Diagnostic>>>,
-    /// The files the last check of each root left diagnostics on.
-    diagnosed: AHashMap<PathBuf, AHashSet<Uri>>,
+    /// Every root an open document is checked under.
+    roots: AHashMap<PathBuf, Root>,
+    /// The files whose published list is not empty.
+    published: AHashSet<PathBuf>,
     dirty: AHashSet<PathBuf>,
     /// `workspace/symbol` searches this document's project.
     pub(crate) last_active: Option<Uri>,
@@ -94,9 +120,8 @@ impl ServerState {
             backend,
             workspace: scan(&workspace_roots, &WorkspaceModel::default()),
             workspace_roots,
-            checked: AHashMap::default(),
-            warnings: AHashMap::default(),
-            diagnosed: AHashMap::default(),
+            roots: AHashMap::default(),
+            published: AHashSet::default(),
             dirty: AHashSet::default(),
             last_active: None,
             snippet_support,
@@ -104,146 +129,167 @@ impl ServerState {
         }
     }
 
+    /// The open document `uri` names.
+    pub(crate) fn document(&self, uri: &Uri) -> Option<&Document> {
+        self.documents.get(&uri_to_path(uri)?)
+    }
+
     /// The roots a file is checked under: every project containing it,
-    /// else the file itself.
+    /// else the file itself. An interface is checked with its
+    /// implementation, and is never a root of its own.
     fn roots_of(&self, path: &Path) -> Vec<PathBuf> {
+        if path.extension().is_some_and(|e| e == "gxi") {
+            let gx = path.with_extension("gx");
+            let known = self.documents.contains_key(&gx)
+                || self.workspace.file_to_projects.contains_key(&gx)
+                || gx.exists();
+            return if known { self.roots_of(&gx) } else { vec![] };
+        }
         match self.workspace.file_to_projects.get(path) {
             Some(idxs) if !idxs.is_empty() => {
                 idxs.iter().map(|i| self.workspace.projects[*i].root.clone()).collect()
             }
-            // CR claude for claude: [bug] A `.gxi` that no project contains becomes its
-            // own root here, and `check` hands it to `RootFile::load`, which parses the
-            // interface as a program. A valid interface then gets a parse error ("`///`
-            // is a doc comment, legal only in a .gxi interface file"), and hover and
-            // definition in it return nothing. Every interface is outside every project
-            // when the client names no workspace (single-file mode), and a new
-            // interface is outside until a save rescans the disk; after that save the
-            // error never clears, because nothing retires the old root.
-            // `detect_package_scope` (workspace.rs:229) tests only the `mod` stem, so a
-            // package's `mod.gxi` fails the same way. A `.gxi` should be checked under
-            // the roots of its `.gx` sibling (the sibling itself when it stands alone)
-            // and never be a root of its own. probe:
-            // design/review-2026-10-05/repro/lsp-05.py (lsp-05)
             Some(_) | None => vec![path.to_path_buf()],
         }
     }
 
-    /// True when an open document is checked under `root`.
-    fn is_edited(&self, root: &Path) -> bool {
-        self.documents.keys().filter_map(uri_to_path).any(|p| {
-            p == root
-                || self
-                    .workspace
-                    .projects
-                    .iter()
-                    .any(|proj| proj.root == root && proj.files.contains(&p))
-        })
+    /// Every root an open document is checked under.
+    fn live(&self) -> AHashSet<PathBuf> {
+        self.documents.keys().flat_map(|p| self.roots_of(p)).collect()
     }
 
     pub fn set_document(&mut self, uri: Uri, text: String, version: i32) {
         self.last_active = Some(uri.clone());
-        if let Some(path) = uri_to_path(&uri) {
-            let buffer = ArcStr::from(text.as_str());
-            self.backend.buffer_overrides().lock().insert(path.clone(), buffer);
-            self.dirty.extend(self.roots_of(&path));
-        }
-        self.documents.insert(uri, Document { version, text });
+        let Some(path) = uri_to_path(&uri) else { return };
+        let buffer = ArcStr::from(text.as_str());
+        self.backend.buffer_overrides().lock().insert(path.clone(), buffer);
+        self.dirty.extend(self.roots_of(&path));
+        self.documents.insert(path, Document { uri, version, text });
     }
 
-    /// Stop tracking a document; a root nothing edits any more is
-    /// forgotten and its diagnostics cleared.
+    /// Stop tracking a document: the roots it kept are checked again or,
+    /// when nothing open needs them, retired.
     pub fn close_document(&mut self, uri: &Uri) -> Diagnostics {
-        self.documents.remove(uri);
         let Some(path) = uri_to_path(uri) else { return vec![] };
+        self.documents.remove(&path);
         self.backend.buffer_overrides().lock().remove(&path);
-        let mut cleared = vec![];
+        let live = self.live();
         for root in self.roots_of(&path) {
-            if self.is_edited(&root) {
+            if live.contains(&root) {
                 self.dirty.insert(root);
-            } else {
-                self.dirty.remove(&root);
-                self.checked.remove(&root);
-                self.warnings.remove(&root);
-                let files = self.diagnosed.remove(&root).unwrap_or_default();
-                cleared.extend(files.into_iter().map(|uri| (uri, vec![])));
             }
         }
-        cleared
+        self.retire()
     }
 
     /// Disk changed: the project graph may have, and every edited root
-    /// may read the file.
-    pub fn saved(&mut self) {
-        // CR claude for claude: [bug] This rescan can turn a root into a module, for
-        // example when a save adds `mod helper;` to main.gx. Nothing then drops the old
-        // root's `checked`, `warnings` and `diagnosed` entries, because
-        // `close_document` only visits the roots `roots_of` names now. So the
-        // diagnostics its last check published stay on its files for the life of the
-        // server, through edits and after every file is closed, and its Env and Ide
-        // stay in memory. After a rescan and on close, retire every root that is no
-        // longer a root of an open document: publish empty lists for its diagnosed
-        // files (`saved` has to return them) and drop its entries. Keeping all per-root
-        // state in one map would make that a single remove. probe:
-        // design/review-2026-10-05/repro/lsp-04.py (helper.gx keeps "`super` goes above
-        // the package root" after main.gx gains `mod helper;` and checks clean).
-        // (lsp-04)
+    /// may read the file. A root that stopped being one is retired.
+    pub fn saved(&mut self) -> Diagnostics {
         self.workspace = scan(&self.workspace_roots, &self.workspace);
-        let open: Vec<PathBuf> = self.documents.keys().filter_map(uri_to_path).collect();
-        for path in open {
-            self.dirty.extend(self.roots_of(&path));
+        self.dirty.extend(self.live());
+        self.retire()
+    }
+
+    /// Forget every root no open document is checked under, and publish
+    /// what that leaves on its files.
+    fn retire(&mut self) -> Diagnostics {
+        let live = self.live();
+        self.dirty.retain(|r| live.contains(r));
+        let gone: Vec<PathBuf> =
+            self.roots.keys().filter(|r| !live.contains(*r)).cloned().collect();
+        let mut files = AHashSet::default();
+        for root in gone {
+            if let Some(r) = self.roots.remove(&root) {
+                files.extend(r.files().cloned());
+            }
         }
+        self.publish_files(files)
     }
 
     /// Check every dirty root.
     pub fn flush(&mut self) -> Diagnostics {
         let mut roots: Vec<PathBuf> = self.dirty.drain().collect();
         roots.sort();
-        roots.iter().flat_map(|root| self.check(root)).collect()
+        let mut files = AHashSet::default();
+        for root in roots {
+            files.extend(self.check(&root));
+        }
+        self.publish_files(files)
     }
 
-    /// Check `root`. What stands on its files afterwards is the warnings
-    /// of its last successful check and, when this one failed, the
-    /// error: a buffer that stops compiling keeps its warnings.
-    fn check(&mut self, root: &Path) -> Diagnostics {
+    /// Check `root`, and the files its diagnostics change on. What stands
+    /// on its files afterwards is the warnings of its last successful
+    /// check and, when this one failed, the error: a buffer that stops
+    /// compiling keeps its warnings.
+    fn check(&mut self, root: &Path) -> AHashSet<PathBuf> {
         let package = detect_package_scope(root);
-        let error = match self.backend.typecheck_project(root, package) {
-            Ok(checked) => {
-                self.warnings.insert(root.to_path_buf(), self.warned(&checked));
-                self.checked.insert(root.to_path_buf(), checked);
-                None
-            }
-            Err(e) => Some(self.diagnostic(&e, root)),
-        };
-        // CR claude for claude: [bug] A publish replaces the client's whole list for a
-        // file, but `now` holds only this root's diagnostics. A file two projects share
-        // (gui/icon.gx is in 51) therefore shows whichever root published last.
-        // `cleared`, here and in close_document (line 155), empties a file another root
-        // still fails on. Observed: tool_b's warning on util.gx replaces tool_a's
-        // error. A parse error typed into tool_a.gx, or closing tool_b.gx, leaves
-        // util.gx clean while the other project still does not compile. Publish, per
-        // file, the union over every root that covers it, and clear a file only when no
-        // root has anything on it. probe: design/review-2026-10-05/repro/lsp-03.py
-        // (`python3 design/review-2026-10-05/repro/lsp-03.py <graphix>`) (lsp-03)
-        let mut now = self.warnings.get(root).cloned().unwrap_or_default();
-        if let Some((uri, error)) = error {
-            now.entry(uri).or_default().insert(0, error);
+        let result = self.backend.typecheck_project(root, package);
+        let mut files: AHashSet<PathBuf> = AHashSet::default();
+        if let Some(r) = self.roots.get(root) {
+            files.extend(r.files().cloned());
         }
-        let files = now.keys().cloned().collect();
-        let before = self.diagnosed.insert(root.to_path_buf(), files).unwrap_or_default();
-        let cleared = before.into_iter().filter(|uri| !now.contains_key(uri));
-        let cleared: Diagnostics = cleared.map(|uri| (uri, vec![])).collect();
-        now.into_iter().chain(cleared).collect()
+        let error = result.as_ref().err().map(|e| self.diagnostic(e, root));
+        let warnings = result.as_ref().ok().map(|c| self.warned(c));
+        let r = self.roots.entry(root.to_path_buf()).or_default();
+        if let (Ok(checked), Some(warnings)) = (result, warnings) {
+            r.checked = Some(checked);
+            r.warnings = warnings;
+        }
+        r.error = error;
+        files.extend(r.files().cloned());
+        files
+    }
+
+    /// Publish each of `files`: every root's diagnostics on it, errors
+    /// first; a file nothing has anything on is cleared once.
+    fn publish_files(&mut self, files: AHashSet<PathBuf>) -> Diagnostics {
+        let mut roots: Vec<&PathBuf> = self.roots.keys().collect();
+        roots.sort();
+        let mut out = Vec::new();
+        let mut files: Vec<PathBuf> = files.into_iter().collect();
+        files.sort();
+        for file in files {
+            let mut diagnostics = Vec::new();
+            for root in &roots {
+                let r = &self.roots[*root];
+                let error = r.error.iter().filter(|(f, _)| *f == file).map(|(_, e)| e);
+                let warnings = r.warnings.get(&file).into_iter().flatten();
+                // roots that share the file find the same things on it
+                for d in error.chain(warnings) {
+                    if !diagnostics.contains(d) {
+                        diagnostics.push(d.clone());
+                    }
+                }
+            }
+            if diagnostics.is_empty() && !self.published.contains(&file) {
+                continue;
+            }
+            let doc = self.documents.get(&file);
+            let Some(uri) = doc.map(|d| d.uri.clone()).or_else(|| path_to_uri(&file))
+            else {
+                log::info!(
+                    "no URI for {}: its diagnostics are not published",
+                    file.display()
+                );
+                continue;
+            };
+            match diagnostics.is_empty() {
+                true => self.published.remove(&file),
+                false => self.published.insert(file.clone()),
+            };
+            out.push(Publish { uri, version: doc.map(|d| d.version), diagnostics });
+        }
+        out
     }
 
     /// The warnings of a check, by file.
-    fn warned(&self, checked: &Checked) -> AHashMap<Uri, Vec<Diagnostic>> {
-        let mut out: AHashMap<Uri, Vec<Diagnostic>> = AHashMap::default();
+    fn warned(&self, checked: &Checked) -> AHashMap<PathBuf, Vec<Diagnostic>> {
+        let mut out: AHashMap<PathBuf, Vec<Diagnostic>> = AHashMap::default();
         for w in checked.ide.warnings.iter() {
             let Source::File(path) = &w.ori.source else { continue };
-            let Some(uri) = path_to_uri(path) else { continue };
             let (start, end) = (zero_based(w.pos), zero_based(w.end));
             let end = if end > start { end } else { extent(&w.ori.text, start) };
-            out.entry(uri).or_default().push(Diagnostic {
+            out.entry(path.clone()).or_default().push(Diagnostic {
                 range: Range {
                     start: self.encode(&w.ori.text, start),
                     end: self.encode(&w.ori.text, end),
@@ -258,41 +304,17 @@ impl ServerState {
     }
 
     /// The diagnostic for a failed check, on the file the error names,
-    /// else on the root.
-    fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (Uri, Diagnostic) {
+    /// else on the root, its range measured on the text the check read
+    /// (the open buffer, else the disk).
+    fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (PathBuf, Diagnostic) {
         let loc = error_location(err);
         let path = loc.file.unwrap_or_else(|| root.to_path_buf());
-        // CR claude for claude: [bug] path_to_uri also returns None for absolute paths.
-        // So this expect kills the server (main-thread panic, exit 101) on the first
-        // failed check whose error file or root path holds [ ] ^ | \ or is not UTF-8.
-        // PATH_ENCODE (uri.rs:13) is the WHATWG path set, but lsp_types 0.97's Uri is
-        // fluent-uri, which refuses those characters in a path, and a non-UTF-8 path
-        // has no URI at all. The same None makes warned (line 207) drop such a file's
-        // warnings without a word. probe: design/review-2026-10-05/repro/x-panics-03.py
-        // (a type error in <ws>/[x]/main.gx; a^b, a|b, a\b and a \xff.gx root the
-        // same). (x-panics-03)
-        let uri = path_to_uri(&path)
-            .or_else(|| path_to_uri(root))
-            .expect("a checked root is an absolute path");
         let at = loc.position.unwrap_or_default();
         let range = |text: &str| Range {
             start: self.encode(text, at),
             end: self.encode(text, loc.end.unwrap_or_else(|| extent(text, at))),
         };
-        // CR claude for claude: [bug] `documents` is keyed by the URI string the client
-        // sent, but this `uri` is rebuilt by `path_to_uri`. That function leaves `( ) !
-        // $ & ' * + , ; = : @` unencoded, while VS Code (ide/editors/vscode)
-        // percent-encodes them. For a file under e.g. `proj (copy)/` the lookup misses,
-        // so the error range is encoded against the file on disk rather than the
-        // unsaved buffer the check read. An error on a line the disk lacks lands at
-        // (3,0)-(3,0), a parse error's underline is measured on the disk line, and
-        // UTF-16 columns are counted over the disk's characters. The same miss drops
-        // the version in `publish` (server.rs:141), makes `workspace_symbols` parse the
-        // disk (symbols.rs:131), and puts every diagnostic under a URI the client never
-        // sent; encode against the erring expression's `ori.text` as `warned` does, key
-        // documents by path and publish under the client's URI. probe:
-        // design/review-2026-10-05/repro/lsp-06.py (lsp-06)
-        let range = match self.documents.get(&uri) {
+        let range = match self.documents.get(&path) {
             Some(doc) => range(&doc.text),
             None => match std::fs::read_to_string(&path) {
                 Ok(text) => range(&text),
@@ -306,28 +328,23 @@ impl ServerState {
             message: error_leaf_message(err),
             ..Default::default()
         };
-        (uri, diag)
+        (path, diag)
     }
 
     /// The check that answers queries about `path`.
     pub(crate) fn checked_for(&self, path: &Path) -> Option<&Checked> {
-        self.roots_of(path).iter().find_map(|root| self.checked.get(root))
+        self.roots_of(path).iter().find_map(|root| self.roots.get(root)?.checked.as_ref())
     }
 
     /// An LSP position as (line, char column); unchanged when the
     /// document or the line is unknown.
     pub(crate) fn decode(&self, uri: &Uri, position: Position) -> Position {
-        let line = self
-            .documents
-            .get(uri)
-            .and_then(|doc| doc.text.lines().nth(position.line as usize));
-        match line {
+        let col = self.document(uri).and_then(|doc| {
+            position_to_char_col_in_text(&doc.text, position, self.position_encoding)
+        });
+        match col {
             None => position,
-            Some(line) => Position {
-                line: position.line,
-                character: position_to_char_col(line, position, self.position_encoding)
-                    as u32,
-            },
+            Some(c) => Position { line: position.line, character: c as u32 },
         }
     }
 

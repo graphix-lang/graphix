@@ -1,15 +1,13 @@
 //! LSP `Position` ↔ char-column conversion under the negotiated
-//! position encoding (UTF-16 code units, UTF-32 scalars, or UTF-8
-//! bytes). The compiler and the cursor helpers speak char columns, so
+//! position encoding (UTF-16 code units or UTF-32 scalars). The compiler and the cursor helpers speak char columns, so
 //! these translate at the LSP boundary; ASCII lines are a no-op.
 
 use lsp_types::{Position, PositionEncodingKind};
 
-/// Position encoding negotiated with the client, narrowed to the three
-/// variants the spec defines.
+/// Position encoding negotiated with the client: the UTF-16 default, or
+/// UTF-32 when the client offers it (the server never picks UTF-8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionEncoding {
-    Utf8,
     Utf16,
     Utf32,
 }
@@ -19,7 +17,6 @@ impl PositionEncoding {
     /// means the UTF-16 default) into our enum.
     pub fn from_kind(kind: Option<&PositionEncodingKind>) -> Self {
         match kind {
-            Some(k) if *k == PositionEncodingKind::UTF8 => Self::Utf8,
             Some(k) if *k == PositionEncodingKind::UTF32 => Self::Utf32,
             _ => Self::Utf16,
         }
@@ -59,22 +56,6 @@ pub fn position_to_char_col(
             }
             chars
         }
-        PositionEncoding::Utf8 => {
-            let mut bytes = 0u32;
-            let mut chars = 0usize;
-            for c in line_text.chars() {
-                let next = bytes + c.len_utf8() as u32;
-                if next > target {
-                    break;
-                }
-                bytes = next;
-                chars += 1;
-                if bytes == target {
-                    break;
-                }
-            }
-            chars
-        }
     }
 }
 
@@ -91,19 +72,12 @@ pub fn char_col_to_position(
         PositionEncoding::Utf16 => {
             line_text.chars().take(char_col).map(|c| c.len_utf16() as u32).sum()
         }
-        PositionEncoding::Utf8 => {
-            line_text.chars().take(char_col).map(|c| c.len_utf8() as u32).sum()
-        }
     };
     Position { line, character }
 }
 
 /// `position_to_char_col` over the full document text; `None` if the
 /// line index is out of range.
-// CR claude for claude: [dead] position_to_char_col_in_text has no caller in this repo or
-// ../netidx, while ServerState::decode repeats its body; decode should call it. The
-// Utf8 variant and its arms are reachable only from tests: select_position_encoding
-// picks UTF-32 or the UTF-16 default, never UTF-8. (lsp-14)
 pub fn position_to_char_col_in_text(
     text: &str,
     position: Position,
@@ -136,9 +110,7 @@ mod tests {
     #[test]
     fn ascii_all_encodings_equivalent() {
         let line = "let x = 1";
-        for enc in
-            [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32]
-        {
+        for enc in [PositionEncoding::Utf16, PositionEncoding::Utf32] {
             for col in 0..=line.len() {
                 assert_eq!(
                     position_to_char_col(line, at(0, col as u32), enc),
@@ -160,16 +132,14 @@ mod tests {
 
     #[test]
     fn utf16_supplementary_plane() {
-        // 𝒜 (U+1D49C) is 2 UTF-16 units, 4 UTF-8 bytes, 1 char.
+        // 𝒜 (U+1D49C) is 2 UTF-16 units, 1 char.
         let line = "a𝒜b";
-        // Cursor right after 𝒜: utf16 3, utf8 5, utf32 2 → char col 2.
+        // Cursor right after 𝒜: utf16 3, utf32 2 → char col 2.
         assert_eq!(position_to_char_col(line, at(0, 3), PositionEncoding::Utf16), 2);
-        assert_eq!(position_to_char_col(line, at(0, 5), PositionEncoding::Utf8), 2);
         assert_eq!(position_to_char_col(line, at(0, 2), PositionEncoding::Utf32), 2);
 
         // Reverse direction.
         assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf16), at(0, 3));
-        assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf8), at(0, 5));
         assert_eq!(char_col_to_position(line, 0, 2, PositionEncoding::Utf32), at(0, 2));
     }
 
@@ -182,13 +152,11 @@ mod tests {
 
     #[test]
     fn utf16_bmp_non_ascii() {
-        // ñ (U+00F1) is BMP — 1 utf16 unit, 2 utf8 bytes, 1 char.
+        // ñ (U+00F1) is BMP — 1 utf16 unit, 1 char.
         let line = "señor";
         // utf16 col 4 → after "seño" → char col 4
-        // utf8 col 5 → after "seño" → char col 4
         // utf32 col 4 → char col 4
         assert_eq!(position_to_char_col(line, at(0, 4), PositionEncoding::Utf16), 4);
-        assert_eq!(position_to_char_col(line, at(0, 5), PositionEncoding::Utf8), 4);
         assert_eq!(position_to_char_col(line, at(0, 4), PositionEncoding::Utf32), 4);
     }
 
@@ -210,7 +178,7 @@ mod tests {
         assert_eq!(PositionEncoding::from_kind(None), PositionEncoding::Utf16);
         assert_eq!(
             PositionEncoding::from_kind(Some(&PositionEncodingKind::UTF8)),
-            PositionEncoding::Utf8
+            PositionEncoding::Utf16
         );
         assert_eq!(
             PositionEncoding::from_kind(Some(&PositionEncodingKind::UTF32)),

@@ -3,12 +3,15 @@
 //! resolved as the module resolver would; files with no incoming edges
 //! are project roots and everything reachable from a root is its project.
 
+use crate::symbols::{self, Symbol};
 use ahash::{AHashMap, AHashSet};
-use anyhow::Result;
 use arcstr::ArcStr;
-use graphix_compiler::expr::{ExprKind, ModuleKind, Origin, SigKind, Source, parser};
+use graphix_compiler::expr::{
+    Expr, ExprKind, ModuleKind, Origin, SigKind, Source, parser,
+};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 use walkdir::WalkDir;
@@ -27,6 +30,9 @@ pub struct WorkspaceFile {
     pub path: PathBuf,
     pub kind: FileKind,
     pub mod_decls: Vec<ArcStr>,
+    /// The text the scan read, and its top-level declarations.
+    pub text: ArcStr,
+    pub(crate) symbols: Arc<[Symbol]>,
     /// When the file was last written, as of the parse `mod_decls` came
     /// from.
     pub modified: Option<SystemTime>,
@@ -76,9 +82,18 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
             let file = match known.files.get(&path) {
                 Some(f) if modified.is_some() && f.modified == modified => f.clone(),
                 Some(_) | None => {
-                    let mod_decls =
-                        read_and_extract_mods(&path, kind).unwrap_or_default();
-                    WorkspaceFile { path: path.clone(), kind, mod_decls, modified }
+                    let text = std::fs::read_to_string(&path)
+                        .map(ArcStr::from)
+                        .unwrap_or_default();
+                    let (mod_decls, symbols) = summarize(&path, kind, text.clone());
+                    WorkspaceFile {
+                        path: path.clone(),
+                        kind,
+                        mod_decls,
+                        text,
+                        symbols,
+                        modified,
+                    }
                 }
             };
             files.insert(path, file);
@@ -87,80 +102,44 @@ pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
     build_projects(files)
 }
 
-fn read_and_extract_mods(path: &Path, kind: FileKind) -> Result<Vec<ArcStr>> {
-    let text = std::fs::read_to_string(path)?;
-    extract_mod_decls(&text, kind, path.to_path_buf())
-}
-
-/// Parse `text` and return every `mod foo` declaration's name.
-pub fn extract_mod_decls(
-    text: &str,
-    kind: FileKind,
-    path: PathBuf,
-) -> Result<Vec<ArcStr>> {
-    let ori =
-        Origin { parent: None, source: Source::File(path), text: ArcStr::from(text) };
-    let mut out = Vec::new();
-    match kind {
-        FileKind::Gx => {
-            let exprs = parser::parse(ori)?;
-            for e in exprs.iter() {
-                walk_expr_for_mods(&e.kind, &mut out);
-            }
-        }
-        FileKind::Gxi => {
-            let sig = parser::parse_sig(ori)?;
-            for item in sig.items.iter() {
-                if let SigKind::Module(name) = &item.kind {
-                    out.push(name.name.clone());
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Collect external module declarations from an `ExprKind` tree,
-/// descending into nested `Resolved` modules.
-// CR claude for claude: [bug] This walk sees only the file's top-level `mod` statements,
-// but the resolver (`resolve_modules_int`, resolver.rs:681) loads a `mod foo;` at any
-// depth, for example in a block or a lambda body. A file reached that way becomes a
-// project root of its own: the server checks it standalone (a `super::` in it reports
-// "`super` goes above the package root"), and an edit to it never re-checks the file
-// that loads it, so that file's diagnostics go stale. The `Dynamic` arm records a
-// module that loads no file, so a sibling `m.gx` joins the declaring file's project and
-// is never checked. The `Resolved` arm is dead because the parser builds only
-// `Unresolved` and `Dynamic`, and the comment below it is false. Collect
-// `ModuleKind::Unresolved` at any depth through `for_each_child`, as the resolver does.
-// probe: design/review-2026-10-05/repro/x-expr-walks-03.py (x-expr-walks-03)
-fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
-    if let ExprKind::Module { name, value } = kind {
-        match value {
-            // CR claude for claude: [bug] A bare top-level `mod foo dynamic { .. }` is
-            // recorded like `mod foo;`, so bfs_from_root links an unrelated foo.gx
-            // beside the script into its project: foo.gx is then no root and its own
-            // errors never show, since the script's check never loads it. The walk also
-            // reads only top-level statements though a `mod util;` inside a block
-            // checks (the closing comment is wrong), so util.gx stays a root of its own
-            // and an edit to it that breaks the script re-checks nothing. The
-            // `Resolved` arm is dead, as parser::parse never yields one: record
-            // `Unresolved` names wherever a statement stands (Expr::for_each_child). In
-            // detect_package_scope, `started_section` changes nothing (`in_package` is
-            // false before the first header) and its comment is wrong, and
-            // toml::from_str, which graphix-package's read_package_version already
-            // uses, would replace the hand scan that misses `name = '..'`. probe:
-            // design/review-2026-10-05/repro/lsp-15.py (lsp-15)
-            ModuleKind::Unresolved { .. } | ModuleKind::Dynamic { .. } => {
-                out.push(name.name.clone());
-            }
-            ModuleKind::Resolved { exprs, .. } => {
+/// A file's `mod` declarations and top-level symbols, from one parse;
+/// none of either when it does not parse.
+fn summarize(path: &Path, kind: FileKind, text: ArcStr) -> (Vec<ArcStr>, Arc<[Symbol]>) {
+    let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
+    let mut mods = Vec::new();
+    let symbols = match kind {
+        FileKind::Gx => match parser::parse(ori) {
+            Err(_) => Vec::new(),
+            Ok(exprs) => {
                 for e in exprs.iter() {
-                    walk_expr_for_mods(&e.kind, out);
+                    file_mods(e, &mut mods);
                 }
+                symbols::of_exprs(&exprs)
             }
-        }
+        },
+        FileKind::Gxi => match parser::parse_sig(ori) {
+            Err(_) => Vec::new(),
+            Ok(sig) => {
+                for item in sig.items.iter() {
+                    if let SigKind::Module(name) = &item.kind {
+                        mods.push(name.name.clone());
+                    }
+                }
+                symbols::of_sig(&sig)
+            }
+        },
+    };
+    (mods, symbols.into())
+}
+
+/// Every `mod name;` that loads a file, wherever it stands: the resolver
+/// loads one in a block or a lambda as at the top; a `dynamic` module
+/// loads none.
+fn file_mods(e: &Expr, out: &mut Vec<ArcStr>) {
+    if let ExprKind::Module { name, value: ModuleKind::Unresolved { .. } } = &e.kind {
+        out.push(name.name.clone());
     }
-    // mods only appear at top-level positions
+    e.for_each_child(&mut |c| file_mods(c, out));
 }
 
 /// Compute the reachable file set for every potential project root
@@ -267,39 +246,8 @@ pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
     let crate_dir = src_dir.parent()?; // crate root
     let manifest = crate_dir.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).ok()?;
-    // Finds `name = "..."` inside `[package]` without a TOML parser;
-    // cargo package names use no escapes.
-    let mut in_package = false;
-    let mut started_section = false;
-    let mut pkg_name: Option<&str> = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix('[') {
-            let header = rest.split(']').next().unwrap_or("").trim();
-            in_package = header == "package";
-            started_section = true;
-            continue;
-        }
-        if !started_section {
-            // cargo manifests always put `[package]` first
-            continue;
-        }
-        if in_package {
-            if let Some(rest) = line.strip_prefix("name") {
-                let rest = rest.trim_start();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let rest = rest.trim();
-                    if let Some(rest) = rest.strip_prefix('"') {
-                        if let Some(end) = rest.find('"') {
-                            pkg_name = Some(&rest[..end]);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let name = pkg_name?;
+    let manifest: toml::Table = toml::from_str(&text).ok()?;
+    let name = manifest.get("package")?.get("name")?.as_str()?;
     let suffix = name.strip_prefix("graphix-package-")?;
     if suffix.is_empty() {
         return None;
