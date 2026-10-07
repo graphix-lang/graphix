@@ -138,7 +138,6 @@ val line: fn(
 val scatter: fn(
   ?#color: [Color, null],
   ?#label: [string, null],
-  ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
   data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
 ) -> Dataset;
@@ -214,7 +213,6 @@ val pie: fn(
 val scatter3d: fn(
   ?#color: [Color, null],
   ?#label: [string, null],
-  ?#stroke_width: [f64, null],
   ?#point_size: [f64, null],
   data: &Array<(f64, f64, f64)>
 ) -> Dataset;

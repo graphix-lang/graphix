@@ -27,10 +27,9 @@ let line = |
 let scatter = |
   #color: [Color, null] = null,
   #label: [string, null] = null,
-  #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
   data: &[Array<(f64, f64)>, Array<(datetime, f64)>]
-| -> Dataset `Scatter({data, style: {color, label, stroke_width, point_size}});
+| -> Dataset `Scatter({data, style: {color, label, stroke_width: null, point_size}});
 
 let bar = |
   #color: [Color, null] = null,
@@ -85,10 +84,9 @@ let pie = |
 let scatter3d = |
   #color: [Color, null] = null,
   #label: [string, null] = null,
-  #stroke_width: [f64, null] = null,
   #point_size: [f64, null] = null,
   data: &Array<(f64, f64, f64)>
-| -> Dataset `Scatter3D({data, style: {color, label, stroke_width, point_size}});
+| -> Dataset `Scatter3D({data, style: {color, label, stroke_width: null, point_size}});
 
 let line3d = |
   #color: [Color, null] = null,

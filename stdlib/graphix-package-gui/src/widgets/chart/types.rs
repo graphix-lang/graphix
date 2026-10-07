@@ -12,21 +12,13 @@ use poolshark::local::LPooled;
 pub struct ChartColor(pub f32, pub f32, pub f32, pub f32);
 
 impl ChartColor {
-    // CR claude for claude: [bug] to_plotters_rgb drops the alpha channel, and every
-    // chart colour goes through it. So color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 0.3) draws
-    // an opaque (255, 0, 0) line even though IcedBackend honours alpha (an area fill
-    // made with mix(0.3) comes out pale); return plotters' RGBAColor instead. The
-    // From<ChartColor> for iced_core::Color impl below has no users. chart.gxi and the
-    // book give scatter and scatter3d a #stroke_width and error_bar a #point_size that
-    // draw.rs never reads: scatter draws filled circles, and error_bar sizes its
-    // average marker from stroke_width, so changing either draws the same pixels. Wire
-    // them up or drop them from the API. probe:
-    // design/review-2026-10-05/repro/gui-chart-20.rs (gui-chart-20)
-    pub fn to_plotters_rgb(self) -> plotters::style::RGBColor {
-        plotters::style::RGBColor(
-            (self.0 * 255.0) as u8,
-            (self.1 * 255.0) as u8,
-            (self.2 * 255.0) as u8,
+    pub fn to_plotters(self) -> plotters::style::RGBAColor {
+        let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        plotters::style::RGBAColor(
+            c(self.0),
+            c(self.1),
+            c(self.2),
+            self.3.clamp(0.0, 1.0) as f64,
         )
     }
 }
@@ -43,42 +35,56 @@ impl FromValue for ChartColor {
     }
 }
 
-impl From<ChartColor> for iced_core::Color {
-    fn from(c: ChartColor) -> Self {
-        iced_core::Color::from_rgba(c.0, c.1, c.2, c.3)
+/// A datetime as a time series' x: ms since the epoch.
+pub fn datetime_ms(d: &DateTime<Utc>) -> f64 {
+    d.timestamp_micros() as f64 / 1000.0
+}
+
+/// The datetime a time series' x stands for, clamped to chrono's range.
+pub fn ms_datetime(ms: f64) -> DateTime<Utc> {
+    let lo = DateTime::<Utc>::MIN_UTC.timestamp_micros();
+    let hi = DateTime::<Utc>::MAX_UTC.timestamp_micros();
+    let us = if ms.is_nan() { 0 } else { ((ms * 1000.0) as i64).clamp(lo, hi) };
+    DateTime::from_timestamp_micros(us).unwrap_or_default()
+}
+
+/// Whether an array of points is a time series: its first point's x is a
+/// datetime. Not a cast: netidx casts any number to a datetime.
+fn is_time_series(a: &[Value], x_of: impl Fn(&Value) -> Option<&Value>) -> bool {
+    a.first().and_then(x_of).is_some_and(|x| matches!(x, Value::DateTime(_)))
+}
+
+fn array(v: Value, what: &str) -> Result<netidx::protocol::valarray::ValArray> {
+    match v {
+        Value::Array(a) => Ok(a),
+        _ => bail!("chart {what} data: expected array"),
     }
 }
 
-/// XY data: either numeric (f64, f64) or time-series (DateTime<Utc>, f64).
-pub enum XYData {
-    Numeric(LPooled<Vec<(f64, f64)>>),
-    DateTime(LPooled<Vec<(DateTime<Utc>, f64)>>),
+/// XY data; x is in ms since the epoch when `time`.
+pub struct XYData {
+    pub time: bool,
+    pub pts: LPooled<Vec<(f64, f64)>>,
 }
 
 impl FromValue for XYData {
     fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart dataset data: expected array"),
-        };
-        if a.is_empty() {
-            return Ok(Self::Numeric(LPooled::take()));
-        }
-        // Not cast_to: netidx casts any number to DateTime.
-        let is_datetime = matches!(&a[0], Value::Array(tup) if !tup.is_empty() && matches!(&tup[0], Value::DateTime(_)));
-        if is_datetime {
-            Ok(Self::DateTime(
-                a.iter()
-                    .map(|v| v.clone().cast_to::<(DateTime<Utc>, f64)>())
-                    .collect::<Result<_>>()?,
-            ))
-        } else {
-            Ok(Self::Numeric(
-                a.iter()
-                    .map(|v| v.clone().cast_to::<(f64, f64)>())
-                    .collect::<Result<_>>()?,
-            ))
-        }
+        let a = array(v, "xy")?;
+        let time = is_time_series(&a, |p| match p {
+            Value::Array(t) => t.first(),
+            _ => None,
+        });
+        let pts = a
+            .iter()
+            .map(|v| match time {
+                true => v
+                    .clone()
+                    .cast_to::<(DateTime<Utc>, f64)>()
+                    .map(|(x, y)| (datetime_ms(&x), y)),
+                false => v.clone().cast_to::<(f64, f64)>(),
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { time, pts })
     }
 }
 
@@ -99,7 +105,8 @@ impl FromValue for BarData {
     }
 }
 
-#[derive(Clone, Copy, Debug, FromValue)]
+/// One candle; x is in ms since the epoch in a time series.
+#[derive(Clone, Copy, Debug)]
 pub struct OHLCPoint {
     pub x: f64,
     pub open: f64,
@@ -108,56 +115,8 @@ pub struct OHLCPoint {
     pub close: f64,
 }
 
-#[derive(Clone, Copy, Debug, FromValue)]
-pub struct TimeOHLCPoint {
-    pub x: DateTime<Utc>,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-}
-
-fn datetime_x(point: &Value) -> Result<bool> {
-    #[derive(FromValue)]
-    struct Fields {
-        x: Value,
-    }
-    let Fields { x } = point.clone().cast_to()?;
-    Ok(matches!(x, Value::DateTime(_)))
-}
-
-/// OHLC data: either numeric or time-series x-axis.
-pub enum OHLCData {
-    Numeric(LPooled<Vec<OHLCPoint>>),
-    DateTime(LPooled<Vec<TimeOHLCPoint>>),
-}
-
-impl FromValue for OHLCData {
-    fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart ohlc data: expected array"),
-        };
-        if a.is_empty() {
-            return Ok(Self::Numeric(LPooled::take()));
-        }
-        if datetime_x(&a[0])? {
-            Ok(Self::DateTime(
-                a.iter()
-                    .map(|v| TimeOHLCPoint::from_value(v.clone()))
-                    .collect::<Result<_>>()?,
-            ))
-        } else {
-            Ok(Self::Numeric(
-                a.iter()
-                    .map(|v| OHLCPoint::from_value(v.clone()))
-                    .collect::<Result<_>>()?,
-            ))
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, FromValue)]
+/// One error bar; x is in ms since the epoch in a time series.
+#[derive(Clone, Copy, Debug)]
 pub struct EBPoint {
     pub x: f64,
     pub min: f64,
@@ -165,42 +124,77 @@ pub struct EBPoint {
     pub max: f64,
 }
 
-#[derive(Clone, Copy, Debug, FromValue)]
-pub struct TimeEBPoint {
-    pub x: DateTime<Utc>,
-    pub min: f64,
-    pub avg: f64,
-    pub max: f64,
+/// Points whose x is a number or, in a time series, a datetime.
+pub struct Series<P> {
+    pub time: bool,
+    pub pts: LPooled<Vec<P>>,
 }
 
-/// Error bar data: either numeric or time-series x-axis.
-pub enum EBData {
-    Numeric(LPooled<Vec<EBPoint>>),
-    DateTime(LPooled<Vec<TimeEBPoint>>),
+pub type OHLCData = Series<OHLCPoint>;
+pub type EBData = Series<EBPoint>;
+
+/// A struct point's x as a time series' or a number's.
+fn point_x(time: bool, x: Value) -> Result<f64> {
+    match time {
+        true => Ok(datetime_ms(&x.cast_to::<DateTime<Utc>>()?)),
+        false => x.cast_to::<f64>(),
+    }
+}
+
+fn struct_x(p: &Value) -> Option<&Value> {
+    match p {
+        Value::Array(fields) => fields.iter().find_map(|f| match f {
+            Value::Array(kv) if kv.len() == 2 && kv[0] == Value::from("x") => {
+                Some(&kv[1])
+            }
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+impl FromValue for OHLCData {
+    fn from_value(v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        struct P {
+            x: Value,
+            open: f64,
+            high: f64,
+            low: f64,
+            close: f64,
+        }
+        let a = array(v, "ohlc")?;
+        let time = is_time_series(&a, struct_x);
+        let pts = a
+            .iter()
+            .map(|v| {
+                let P { x, open, high, low, close } = v.clone().cast_to()?;
+                Ok(OHLCPoint { x: point_x(time, x)?, open, high, low, close })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { time, pts })
+    }
 }
 
 impl FromValue for EBData {
     fn from_value(v: Value) -> Result<Self> {
-        let a = match v {
-            Value::Array(a) => a,
-            _ => bail!("chart error bar data: expected array"),
-        };
-        if a.is_empty() {
-            return Ok(Self::Numeric(LPooled::take()));
+        #[derive(FromValue)]
+        struct P {
+            x: Value,
+            min: f64,
+            avg: f64,
+            max: f64,
         }
-        if datetime_x(&a[0])? {
-            Ok(Self::DateTime(
-                a.iter()
-                    .map(|v| TimeEBPoint::from_value(v.clone()))
-                    .collect::<Result<_>>()?,
-            ))
-        } else {
-            Ok(Self::Numeric(
-                a.iter()
-                    .map(|v| EBPoint::from_value(v.clone()))
-                    .collect::<Result<_>>()?,
-            ))
-        }
+        let a = array(v, "error bar")?;
+        let time = is_time_series(&a, struct_x);
+        let pts = a
+            .iter()
+            .map(|v| {
+                let P { x, min, avg, max } = v.clone().cast_to()?;
+                Ok(EBPoint { x: point_x(time, x)?, min, avg, max })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { time, pts })
     }
 }
 
@@ -367,10 +361,11 @@ pub struct AxisRange {
 #[derive(Clone, Debug, FromValue)]
 pub struct OptAxisRange(pub Option<AxisRange>);
 
-/// Parsed x-axis range: either numeric or datetime.
-pub enum XAxisRange {
-    Numeric { min: f64, max: f64 },
-    DateTime { min: DateTime<Utc>, max: DateTime<Utc> },
+/// The x-axis range; in ms since the epoch when `time`.
+pub struct XAxisRange {
+    pub time: bool,
+    pub min: f64,
+    pub max: f64,
 }
 
 /// Optional x-axis range from graphix value.
@@ -378,30 +373,20 @@ pub struct OptXAxisRange(pub Option<XAxisRange>);
 
 impl FromValue for OptXAxisRange {
     fn from_value(v: Value) -> Result<Self> {
+        #[derive(FromValue)]
+        struct Fields {
+            min: Value,
+            max: Value,
+        }
         if v == Value::Null {
             return Ok(Self(None));
         }
-        // CR claude for claude: [bug] A datetime range never reaches the DateTime branch
-        // below. f64::from_value casts a DateTime to epoch seconds, so `{min: datetime,
-        // max: datetime}` decodes here as XAxisRange::Numeric. The TimeSeries draw
-        // (draw.rs:534-537) honours only XAxisRange::DateTime, so it silently falls
-        // back to the data's automatic range. Trying the DateTime decode first does not
-        // help, because netidx also casts any number to a DateTime. Decide by the
-        // variant of the min field's Value instead, as datetime_x (line 110) does for
-        // OHLC points; chart_test.rs pins only a numeric x_range. probe:
-        // design/review-2026-10-05/repro/gx-ui-05.rs (copy to
-        // stdlib/graphix-package-gui/tests/review_gx_ui_05.rs): the range decodes as
-        // Numeric { min: 1704412800, max: 1704499200 }, and a time series with #x_range
-        // 2024-01-05..06 is drawn over the same range as one with no range. (gx-ui-05)
-        if let Ok(AxisRange { min, max }) = v.clone().cast_to() {
-            return Ok(Self(Some(XAxisRange::Numeric { min, max })));
-        }
-        #[derive(FromValue)]
-        struct Fields {
-            min: DateTime<Utc>,
-            max: DateTime<Utc>,
-        }
         let Fields { min, max } = v.cast_to()?;
-        Ok(Self(Some(XAxisRange::DateTime { min, max })))
+        let time = matches!(min, Value::DateTime(_));
+        Ok(Self(Some(XAxisRange {
+            time,
+            min: point_x(time, min)?,
+            max: point_x(time, max)?,
+        })))
     }
 }

@@ -1,3 +1,4 @@
+mod clip;
 pub mod dataset;
 mod draw;
 pub mod interact;
@@ -7,12 +8,13 @@ pub mod types;
 
 use crate::{
     types::LengthV,
-    widgets::{GuiW, GuiWidget, IcedElement},
+    widgets::{ChartId, GuiW, GuiWidget, IcedElement},
 };
 use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget::canvas as iced_canvas;
+use log::error;
 use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use poolshark::local::LPooled;
@@ -41,20 +43,13 @@ pub(crate) struct ChartW<X: GXExt> {
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
     style: TRef<X, OptChartStyle>,
+    /// Which chart a `ChartState`'s view was taken on.
+    id: ChartId,
+    /// The mode the data asks for, `Empty` when datasets disagree.
+    mode: ChartMode,
+    /// The disagreement last reported, so it is reported once.
+    conflict: Option<(ChartMode, ChartMode)>,
     /// Set to true when data changes; draw() clears the cache and resets.
-    // CR claude for claude: [bug] `dirty` resets only the geometry cache. The rest of
-    // `ChartState` is iced tree state that iced keeps by position: x_view/y_view, the
-    // 3D yaw/pitch/scale offsets, the snap point and the drag. So a chart compiled into
-    // the slot of a panned chart is drawn through the old chart's view
-    // (draw.rs:477-478, 548-549), and so is a chart whose datasets switch between
-    // numeric and datetime. On a time-series chart a numeric view is read as ms since
-    // 1970, which puts 2026 data about 1e12 px off the plot. A debug build then panics
-    // with "attempt to add with overflow" in plotters (datetime.rs:38), a release build
-    // clamps every point onto the plot's left edge, and only a double-click clears it.
-    // Drop the view state when the chart it was taken on, or that chart's mode,
-    // changes. probe: design/review-2026-10-05/repro/gui-chart-05.rs (pan, then a
-    // select swaps in a time-series chart; the same swap without the pan draws fine).
-    // (gui-chart-05)
     dirty: Cell<bool>,
 }
 
@@ -120,7 +115,7 @@ impl<X: GXExt> ChartW<X> {
             Some(v) => compile_datasets(&gx, v.clone()).await?,
             None => LPooled::take(),
         };
-        Ok(Box::new(Self {
+        let mut chart = Self {
             gx: gx.clone(),
             datasets_ref,
             datasets: entries,
@@ -135,8 +130,40 @@ impl<X: GXExt> ChartW<X> {
             width: TRef::new(width_ref).context("chart tref width")?,
             height: TRef::new(height_ref).context("chart tref height")?,
             style: TRef::new(style_ref).context("chart tref style")?,
+            id: ChartId::new(),
+            mode: ChartMode::Empty,
+            conflict: None,
             dirty: Cell::new(true),
-        }))
+        };
+        chart.refresh_mode();
+        Ok(Box::new(chart))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn datasets(&self) -> &[DatasetEntry<X>] {
+        &self.datasets
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mode(&self) -> ChartMode {
+        self.mode
+    }
+
+    /// Recompute the mode from the data, reporting a new disagreement.
+    fn refresh_mode(&mut self) {
+        match ChartMode::of(&self.datasets) {
+            Ok(mode) => {
+                self.mode = mode;
+                self.conflict = None;
+            }
+            Err(pair) => {
+                if self.conflict != Some(pair) {
+                    error!("chart: cannot mix {:?} and {:?} datasets", pair.0, pair.1);
+                }
+                self.mode = ChartMode::Empty;
+                self.conflict = Some(pair);
+            }
+        }
     }
 }
 
@@ -163,33 +190,23 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         }
         for ds in self.datasets.iter_mut() {
             let updated = match ds {
-                DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
-                    data.update(id, v).context("chart update xy data")?.is_some()
+                DatasetEntry::XY { data, .. } => data.update(id, v)?.is_some(),
+                DatasetEntry::Bar { data, .. } | DatasetEntry::Pie { data, .. } => {
+                    data.update(id, v)?.is_some()
                 }
-                DatasetEntry::Bar { data, .. } => {
-                    data.update(id, v).context("chart update bar data")?.is_some()
-                }
-                DatasetEntry::Candlestick { data, .. } => {
-                    data.update(id, v).context("chart update ohlc data")?.is_some()
-                }
-                DatasetEntry::ErrorBar { data, .. } => {
-                    data.update(id, v).context("chart update errorbar data")?.is_some()
-                }
-                DatasetEntry::Pie { data, .. } => {
-                    data.update(id, v).context("chart update pie data")?.is_some()
-                }
+                DatasetEntry::Candlestick { data, .. } => data.update(id, v)?.is_some(),
+                DatasetEntry::ErrorBar { data, .. } => data.update(id, v)?.is_some(),
                 DatasetEntry::Scatter3D { data, .. }
-                | DatasetEntry::Line3D { data, .. } => {
-                    data.update(id, v).context("chart update 3d data")?.is_some()
-                }
-                DatasetEntry::Surface { data, .. } => {
-                    data.update(id, v).context("chart update surface data")?.is_some()
-                }
+                | DatasetEntry::Line3D { data, .. } => data.update(id, v)?.is_some(),
+                DatasetEntry::Surface { data, .. } => data.update(id, v)?.is_some(),
             };
             if updated {
                 self.dirty.set(true);
                 changed = true;
             }
+        }
+        if changed {
+            self.refresh_mode();
         }
         macro_rules! up {
             ($f:ident) => {

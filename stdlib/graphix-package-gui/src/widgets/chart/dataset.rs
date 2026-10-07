@@ -1,8 +1,7 @@
 use super::types::*;
 use anyhow::{Context, Result};
 use graphix_rt::{GXExt, GXHandle, TRef};
-use log::error;
-use netidx::publisher::Value;
+use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 
@@ -11,12 +10,12 @@ pub enum XYKind {
     Line,
     Scatter,
     Area,
+    Dashed { dash: f64, gap: f64 },
 }
 
 /// A compiled dataset with live reactive data refs.
 pub enum DatasetEntry<X: GXExt> {
     XY { kind: XYKind, data: TRef<X, XYData>, style: SeriesStyleV },
-    DashedLine { data: TRef<X, XYData>, dash: f64, gap: f64, style: SeriesStyleV },
     Bar { data: TRef<X, BarData>, style: BarStyleV },
     Candlestick { data: TRef<X, OHLCData>, style: CandlestickStyleV },
     ErrorBar { data: TRef<X, EBData>, style: SeriesStyleV },
@@ -30,7 +29,6 @@ impl<X: GXExt> DatasetEntry<X> {
     pub fn label(&self) -> Option<&str> {
         match self {
             Self::XY { style, .. }
-            | Self::DashedLine { style, .. }
             | Self::ErrorBar { style, .. }
             | Self::Scatter3D { style, .. }
             | Self::Line3D { style, .. } => style.label.as_deref(),
@@ -38,6 +36,37 @@ impl<X: GXExt> DatasetEntry<X> {
             Self::Candlestick { style, .. } => style.label.as_deref(),
             Self::Pie { .. } => None,
             Self::Surface { style, .. } => style.label.as_deref(),
+        }
+    }
+
+    /// The chart mode this dataset's data asks for; `None` while it has
+    /// none.
+    pub fn mode(&self) -> Option<ChartMode> {
+        fn xy(time: bool) -> ChartMode {
+            if time { ChartMode::TimeSeries } else { ChartMode::Numeric }
+        }
+        match self {
+            Self::XY { data, .. } => {
+                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
+            }
+            Self::Candlestick { data, .. } => {
+                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
+            }
+            Self::ErrorBar { data, .. } => {
+                data.t.as_ref().filter(|d| !d.pts.is_empty()).map(|d| xy(d.time))
+            }
+            Self::Bar { data, .. } => {
+                data.t.as_ref().filter(|d| !d.0.is_empty()).map(|_| ChartMode::Bar)
+            }
+            Self::Pie { data, .. } => {
+                data.t.as_ref().filter(|d| !d.0.is_empty()).map(|_| ChartMode::Pie)
+            }
+            Self::Scatter3D { data, .. } | Self::Line3D { data, .. } => {
+                data.t.as_ref().filter(|d| !d.0.is_empty()).map(|_| ChartMode::ThreeD)
+            }
+            Self::Surface { data, .. } => {
+                data.t.as_ref().filter(|d| !d.0.is_empty()).map(|_| ChartMode::ThreeD)
+            }
         }
     }
 }
@@ -63,73 +92,64 @@ pub async fn compile_datasets<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<LPooled<Vec<DatasetEntry<X>>>> {
+    async fn data<X: GXExt, T: FromValue>(
+        gx: &GXHandle<X>,
+        id: u64,
+        what: &'static str,
+    ) -> Result<TRef<X, T>> {
+        TRef::new(gx.compile_ref(id).await?).context(what)
+    }
     let mut metas = v.cast_to::<LPooled<Vec<DatasetMeta>>>()?;
     let mut entries: LPooled<Vec<DatasetEntry<X>>> = LPooled::take();
-    entries.reserve(metas.len());
     for meta in metas.drain(..) {
-        let entry = match meta {
-            DatasetMeta::Line { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
-                DatasetEntry::XY { kind: XYKind::Line, data, style }
+        let xy = |kind, data, style| DatasetEntry::XY { kind, data, style };
+        entries.push(match meta {
+            DatasetMeta::Line { data: d, style } => {
+                xy(XYKind::Line, data(gx, d, "chart line data").await?, style)
             }
-            DatasetMeta::Scatter { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
-                DatasetEntry::XY { kind: XYKind::Scatter, data, style }
+            DatasetMeta::Scatter { data: d, style } => {
+                xy(XYKind::Scatter, data(gx, d, "chart scatter data").await?, style)
             }
-            DatasetMeta::Area { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
-                DatasetEntry::XY { kind: XYKind::Area, data, style }
+            DatasetMeta::Area { data: d, style } => {
+                xy(XYKind::Area, data(gx, d, "chart area data").await?, style)
             }
-            DatasetMeta::DashedLine { data, dash, gap, style } => {
-                let data = TRef::new(gx.compile_ref(data).await?)
-                    .context("chart dashed data")?;
-                DatasetEntry::DashedLine { data, dash, gap, style }
+            DatasetMeta::DashedLine { data: d, dash, gap, style } => xy(
+                XYKind::Dashed { dash, gap },
+                data(gx, d, "chart dashed data").await?,
+                style,
+            ),
+            DatasetMeta::Bar { data: d, style } => {
+                DatasetEntry::Bar { data: data(gx, d, "chart bar data").await?, style }
             }
-            DatasetMeta::Bar { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart bar data")?;
-                DatasetEntry::Bar { data, style }
+            DatasetMeta::Candlestick { data: d, style } => DatasetEntry::Candlestick {
+                data: data(gx, d, "chart ohlc data").await?,
+                style,
+            },
+            DatasetMeta::ErrorBar { data: d, style } => DatasetEntry::ErrorBar {
+                data: data(gx, d, "chart errorbar data").await?,
+                style,
+            },
+            DatasetMeta::Pie { data: d, style } => {
+                DatasetEntry::Pie { data: data(gx, d, "chart pie data").await?, style }
             }
-            DatasetMeta::Candlestick { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart ohlc data")?;
-                DatasetEntry::Candlestick { data, style }
-            }
-            DatasetMeta::ErrorBar { data, style } => {
-                let data = TRef::new(gx.compile_ref(data).await?)
-                    .context("chart errorbar data")?;
-                DatasetEntry::ErrorBar { data, style }
-            }
-            DatasetMeta::Pie { data, style } => {
-                let data =
-                    TRef::new(gx.compile_ref(data).await?).context("chart pie data")?;
-                DatasetEntry::Pie { data, style }
-            }
-            DatasetMeta::Scatter3D { data, style } => {
-                let data = TRef::new(gx.compile_ref(data).await?)
-                    .context("chart scatter3d data")?;
-                DatasetEntry::Scatter3D { data, style }
-            }
-            DatasetMeta::Line3D { data, style } => {
-                let data = TRef::new(gx.compile_ref(data).await?)
-                    .context("chart line3d data")?;
-                DatasetEntry::Line3D { data, style }
-            }
-            DatasetMeta::Surface { data, style } => {
-                let data = TRef::new(gx.compile_ref(data).await?)
-                    .context("chart surface data")?;
-                DatasetEntry::Surface { data, style }
-            }
-        };
-        entries.push(entry);
+            DatasetMeta::Scatter3D { data: d, style } => DatasetEntry::Scatter3D {
+                data: data(gx, d, "chart scatter3d data").await?,
+                style,
+            },
+            DatasetMeta::Line3D { data: d, style } => DatasetEntry::Line3D {
+                data: data(gx, d, "chart line3d data").await?,
+                style,
+            },
+            DatasetMeta::Surface { data: d, style } => DatasetEntry::Surface {
+                data: data(gx, d, "chart surface data").await?,
+                style,
+            },
+        });
     }
     Ok(entries)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChartMode {
     Numeric,
     TimeSeries,
@@ -139,139 +159,51 @@ pub enum ChartMode {
     Empty,
 }
 
-pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
-    let mut has_bar = false;
-    let mut has_pie = false;
-    let mut has_3d = false;
-    let mut has_other = false;
+impl ChartMode {
+    /// The one mode every dataset with data asks for: `Empty` when none
+    /// has data, and `Err` naming two that disagree.
+    pub fn of<X: GXExt>(
+        datasets: &[DatasetEntry<X>],
+    ) -> std::result::Result<ChartMode, (ChartMode, ChartMode)> {
+        let mut modes = datasets.iter().filter_map(|ds| ds.mode());
+        let Some(first) = modes.next() else { return Ok(ChartMode::Empty) };
+        match modes.find(|m| *m != first) {
+            None => Ok(first),
+            Some(other) => Err((first, other)),
+        }
+    }
+}
+
+/// The bar chart's category slots: every bar series' categories in
+/// first-seen order, each once.
+pub fn bar_categories<X: GXExt>(datasets: &[DatasetEntry<X>]) -> LPooled<Vec<String>> {
+    let mut cats: LPooled<Vec<String>> = LPooled::take();
     for ds in datasets {
-        match ds {
-            DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        XYData::DateTime(v) if !v.is_empty() => has_other = true,
-                        XYData::Numeric(v) if !v.is_empty() => has_other = true,
-                        _ => {}
-                    }
-                }
-            }
-            DatasetEntry::Bar { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    if !d.0.is_empty() {
-                        has_bar = true;
-                    }
-                }
-            }
-            DatasetEntry::Candlestick { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        OHLCData::DateTime(v) if !v.is_empty() => has_other = true,
-                        OHLCData::Numeric(v) if !v.is_empty() => has_other = true,
-                        _ => {}
-                    }
-                }
-            }
-            DatasetEntry::ErrorBar { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        EBData::DateTime(v) if !v.is_empty() => has_other = true,
-                        EBData::Numeric(v) if !v.is_empty() => has_other = true,
-                        _ => {}
-                    }
-                }
-            }
-            DatasetEntry::Pie { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    if !d.0.is_empty() {
-                        has_pie = true;
-                    }
-                }
-            }
-            DatasetEntry::Scatter3D { data, .. } | DatasetEntry::Line3D { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    if !d.0.is_empty() {
-                        has_3d = true;
-                    }
-                }
-            }
-            DatasetEntry::Surface { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    if !d.0.is_empty() {
-                        has_3d = true;
-                    }
+        if let DatasetEntry::Bar { data, .. } = ds
+            && let Some(bd) = data.t.as_ref()
+        {
+            for (cat, _) in bd.0.iter() {
+                if !cats.contains(cat) {
+                    cats.push(cat.clone());
                 }
             }
         }
     }
-    // CR claude for claude: [bug] Numeric and datetime XY, candlestick and error-bar data
-    // all set has_other, so mixing them is never reported. The first non-empty dataset
-    // picks Numeric or TimeSeries and draw_chart_body silently skips the rest: a
-    // numeric line next to a datetime line draws one series and logs nothing. A real
-    // conflict logs error! here, and chart_mode runs in every handle_event and
-    // mouse_interaction and in each uncached draw, so a bar mixed with a line logs on
-    // every mouse move (50 errors for 50 cursor moves). In Empty mode, draw returns
-    // before resetting plot_info, and the candlestick, error-bar, bar and pie snaps in
-    // find_nearest_point check no mode, so a stale plot area can show tooltips for data
-    // that is not drawn. Compute the mode once per data change in handle_update, report
-    // numeric/datetime mixing, and log a conflict once. probe:
-    // design/review-2026-10-05/repro/gui-chart-18.rs (gui-chart-18)
-    let mode_count = has_bar as u8 + has_pie as u8 + has_3d as u8 + has_other as u8;
-    if mode_count > 1 {
-        error!("chart: cannot mix bar, pie, 3D, and XY/timeseries datasets");
-        return ChartMode::Empty;
-    }
-    if has_pie {
-        return ChartMode::Pie;
-    }
-    if has_bar {
-        return ChartMode::Bar;
-    }
-    if has_3d {
-        return ChartMode::ThreeD;
-    }
-    for ds in datasets {
-        match ds {
-            DatasetEntry::XY { data, .. } | DatasetEntry::DashedLine { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        XYData::DateTime(v) if !v.is_empty() => {
-                            return ChartMode::TimeSeries;
-                        }
-                        XYData::Numeric(v) if !v.is_empty() => return ChartMode::Numeric,
-                        _ => {}
-                    }
-                }
-            }
-            DatasetEntry::Bar { .. }
-            | DatasetEntry::Pie { .. }
-            | DatasetEntry::Scatter3D { .. }
-            | DatasetEntry::Line3D { .. }
-            | DatasetEntry::Surface { .. } => {}
-            DatasetEntry::Candlestick { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        OHLCData::DateTime(v) if !v.is_empty() => {
-                            return ChartMode::TimeSeries;
-                        }
-                        OHLCData::Numeric(v) if !v.is_empty() => {
-                            return ChartMode::Numeric;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            DatasetEntry::ErrorBar { data, .. } => {
-                if let Some(d) = data.t.as_ref() {
-                    match d {
-                        EBData::DateTime(v) if !v.is_empty() => {
-                            return ChartMode::TimeSeries;
-                        }
-                        EBData::Numeric(v) if !v.is_empty() => return ChartMode::Numeric,
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    ChartMode::Empty
+    cats
+}
+
+/// A bar series' height at `cat`: the sum of its entries there, as the
+/// histogram draws it; `None` where it has none.
+pub fn bar_value(bd: &BarData, cat: &str) -> Option<f64> {
+    bd.0.iter().filter(|(c, _)| c == cat).map(|(_, v)| *v).reduce(|a, b| a + b)
+}
+
+/// The slices a pie draws: finite and positive.
+pub fn pie_slices(bd: &BarData) -> impl Iterator<Item = (&str, f64)> {
+    bd.0.iter().filter(|(_, v)| v.is_finite() && *v > 0.0).map(|(l, v)| (l.as_str(), *v))
+}
+
+/// A pie's start angle in degrees, in [0, 360); a non-finite one is 0.
+pub fn pie_start_angle(style: &PieStyleV) -> f64 {
+    style.start_angle.filter(|a| a.is_finite()).map_or(0.0, |a| a.rem_euclid(360.0))
 }

@@ -1,103 +1,46 @@
 use super::GuiTestHarness;
-use crate::widgets::chart::pad_range;
 use anyhow::Result;
 
-// CR claude for claude: [test-gap] auto_range is a copy of compute_ranges' min/max fold,
-// so the six auto_range_* tests check this copy and pad_range, not the code that draws.
-// No test reaches compute_time_ranges or compute_3d_ranges, and compute_ranges is
-// reached only through the two tests that call Program::draw on numeric lines. The
-// thirteen tests from axis_range_renders to mesh_style_3d only call h.view(), which
-// builds the Canvas without running Program::draw, so a panic or a wrong range while
-// drawing still passes them. Test the compute_* functions on harness datasets, and draw
-// every fixture through Program::draw as fresh_chart_redraws_an_inherited_cache does.
-// (gui-chart-12)
-fn auto_range<'a>(
-    data: impl IntoIterator<Item = &'a [(f64, f64)]>,
-    f: impl Fn(&(f64, f64)) -> f64,
-) -> (f64, f64) {
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    for slice in data {
-        for pt in slice {
-            let v = f(pt);
-            if v < min {
-                min = v;
-            }
-            if v > max {
-                max = v;
-            }
-        }
-    }
-    pad_range(min, max)
+use crate::{
+    theme::GraphixTheme,
+    widgets::chart::{ChartMode, ChartState, ChartW, PlotInfo},
+};
+use graphix_rt::NoExt;
+use iced_core::{Point, Rectangle, Size, mouse};
+use iced_widget::canvas::Program;
+
+fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
+    h.widget.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart")
+}
+
+/// Draw the chart through its program into `state` at `size`, returning
+/// the plot area the draw recorded.
+async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<PlotInfo> {
+    let renderer = super::headless_gpu().await.create_renderer();
+    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+    let bounds = Rectangle::new(Point::ORIGIN, size);
+    let _ = Program::draw(
+        chart(h),
+        state,
+        &renderer,
+        &theme,
+        bounds,
+        mouse::Cursor::Unavailable,
+    );
+    state.plot_info.get()
+}
+
+async fn draw(h: &GuiTestHarness) -> Option<PlotInfo> {
+    draw_in(h, &ChartState::default(), Size::new(400.0, 300.0)).await
 }
 
 async fn chart_harness(args: &str) -> Result<GuiTestHarness> {
     let code = format!(
         "use gui::*;\nuse gui::chart::{{self, *}};\n\
+         let day1 = [(datetime:\"2024-01-01T00:00:00Z\", 1.0), (datetime:\"2024-01-02T00:00:00Z\", 2.0)];\n\
          let result = chart({args})"
     );
     GuiTestHarness::new(&code).await
-}
-
-#[test]
-fn auto_range_normal() {
-    let data: &[(f64, f64)] = &[(0.0, 1.0), (5.0, 10.0), (10.0, 3.0)];
-    let (xmin, xmax) = auto_range([data], |p| p.0);
-    assert!(xmin < 0.0);
-    assert!(xmax > 10.0);
-
-    let (ymin, ymax) = auto_range([data], |p| p.1);
-    assert!(ymin < 1.0);
-    assert!(ymax > 10.0);
-}
-
-#[test]
-fn auto_range_single_point() {
-    let data: &[(f64, f64)] = &[(5.0, 5.0)];
-    let (xmin, xmax) = auto_range([data], |p| p.0);
-    // A single point expands to (4, 6) before padding.
-    assert!(xmin < 4.0);
-    assert!(xmax > 6.0);
-}
-
-#[test]
-fn auto_range_identical_values() {
-    let data: &[(f64, f64)] = &[(3.0, 7.0), (3.0, 7.0), (3.0, 7.0)];
-    let (xmin, xmax) = auto_range([data], |p| p.0);
-    // Identical values expand to (2, 4) before padding.
-    assert!(xmin < 2.0);
-    assert!(xmax > 4.0);
-}
-
-#[test]
-fn auto_range_empty() {
-    let empty: &[(f64, f64)] = &[];
-    let (xmin, xmax) = auto_range([empty], |p| p.0);
-    assert!(xmin.is_finite());
-    assert!(xmax.is_finite());
-    assert!(xmin < xmax);
-
-    let (xmin, xmax) = auto_range(std::iter::empty::<&[(f64, f64)]>(), |p| p.0);
-    assert!(xmin.is_finite());
-    assert!(xmax.is_finite());
-    assert!(xmin < xmax);
-}
-
-#[test]
-fn auto_range_negative() {
-    let data: &[(f64, f64)] = &[(-10.0, -5.0), (-3.0, 2.0)];
-    let (xmin, xmax) = auto_range([data], |p| p.0);
-    assert!(xmin < -10.0);
-    assert!(xmax > -3.0);
-}
-
-#[test]
-fn auto_range_multiple_datasets() {
-    let d1: &[(f64, f64)] = &[(0.0, 0.0), (5.0, 5.0)];
-    let d2: &[(f64, f64)] = &[(10.0, 10.0), (20.0, 20.0)];
-    let (xmin, xmax) = auto_range([d1, d2], |p| p.0);
-    assert!(xmin < 0.0);
-    assert!(xmax > 20.0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -109,7 +52,7 @@ async fn axis_range_renders() -> Result<()> {
          &[chart::line(#label: \"test\", &[(0.0, 1.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -120,7 +63,8 @@ async fn dataset_meta_renders() -> Result<()> {
         r#"&[chart::line(#label: "test", &[])]"#,
     ))
     .await?;
-    let _ = h.view();
+    assert_eq!(chart(&h).mode(), ChartMode::Empty);
+    assert!(draw(&h).await.is_none());
     Ok(())
 }
 
@@ -131,7 +75,8 @@ async fn dataset_meta_with_color() -> Result<()> {
          &[chart::scatter(#color: color(#r: 0.0, #g: 1.0, #b: 0.0, #a: 1.0)$, &[])]",
     )
     .await?;
-    let _ = h.view();
+    assert_eq!(chart(&h).mode(), ChartMode::Empty);
+    assert!(draw(&h).await.is_none());
     Ok(())
 }
 
@@ -144,7 +89,7 @@ async fn candlestick_renders() -> Result<()> {
              {x: 2.0, open: 12.0, high: 14.0, low: 9.0, close: 11.0}])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -157,7 +102,7 @@ async fn error_bar_renders() -> Result<()> {
              {x: 2.0, min: 4.0, avg: 6.0, max: 8.0}])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -169,7 +114,7 @@ async fn dashed_line_renders() -> Result<()> {
            &[(0.0, 0.0), (5.0, 5.0), (10.0, 2.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -181,7 +126,7 @@ async fn series_style_stroke_width() -> Result<()> {
            &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -193,7 +138,7 @@ async fn background_color() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -211,7 +156,7 @@ async fn mesh_style() -> Result<()> {
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -234,7 +179,7 @@ async fn dark_background_label_colors() -> Result<()> {
          &[chart::line(#label: \"Series\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -250,7 +195,7 @@ async fn legend_style() -> Result<()> {
          &[chart::line(#label: \"Test\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert!(draw(&h).await.is_some());
     Ok(())
 }
 
@@ -279,7 +224,8 @@ async fn mesh_style_3d() -> Result<()> {
          &[chart::scatter3d(&[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)])]",
     )
     .await?;
-    let _ = h.view();
+    assert_eq!(chart(&h).mode(), ChartMode::ThreeD);
+    let _ = draw(&h).await;
     Ok(())
 }
 
@@ -357,4 +303,233 @@ async fn markers_draw_on_every_series_kind() -> Result<()> {
         Program::draw(c, &state, &renderer, &theme, bounds, mouse::Cursor::Unavailable);
     assert!(state.plot_info.get().is_some());
     Ok(())
+}
+
+/// The ranges the draw takes come from the datasets: x and y of a
+/// numeric series, x in ms of a time series, and all three of a 3D one.
+#[tokio::test(flavor = "current_thread")]
+async fn ranges_cover_the_data() -> Result<()> {
+    use crate::widgets::chart::{compute_3d_ranges, compute_ranges, datetime_ms};
+    let h = chart_harness("&[line(&[(-3.0, 1.0), (7.0, 20.0)])]").await?;
+    let ((x0, x1), (y0, y1)) = compute_ranges(chart(&h).datasets(), false);
+    assert!(x0 < -3.0 && x1 > 7.0 && y0 < 1.0 && y1 > 20.0);
+    let h = chart_harness(r#"&[line(&day1)]"#).await?;
+    let ((x0, x1), _) = compute_ranges(chart(&h).datasets(), true);
+    let day = |d: &str| datetime_ms(&d.parse().unwrap());
+    assert!(x0 < day("2024-01-01T00:00:00Z") && x1 > day("2024-01-02T00:00:00Z"));
+    let h = chart_harness("&[scatter3d(&[(0.0, 1.0, 2.0), (3.0, 4.0, 5.0)])]").await?;
+    let ((x0, x1), (y0, y1), (z0, z1)) = compute_3d_ranges(chart(&h).datasets());
+    assert!(x0 < 0.0 && x1 > 3.0 && y0 < 1.0 && y1 > 4.0 && z0 < 2.0 && z1 > 5.0);
+    Ok(())
+}
+
+/// Infinite and NaN samples and ranges draw over finite ranges, without
+/// hanging the tick loop or tripping plotters' NaN assert.
+#[tokio::test(flavor = "current_thread")]
+async fn non_finite_data_draws() -> Result<()> {
+    let h = chart_harness(
+        "#y_range: &{min: 0.0 / 0.0, max: 1.0}, \
+         &[line(&[(0.0, 1.0), (1.0, 1.0 / 0.0), (2.0, 0.0 / 0.0), (3.0, 2.0)])]",
+    )
+    .await?;
+    let info = draw(&h).await.expect("drawn");
+    let finite = |r: (f64, f64)| r.0.is_finite() && r.1.is_finite() && r.0 < r.1;
+    assert!(finite(info.x_range) && finite(info.y_range), "{info:?}");
+    let h = chart_harness("&[bar(&[(\"a\", 1.0 / 0.0), (\"b\", 2.0)])]").await?;
+    assert!(draw(&h).await.is_some_and(|i| finite(i.y_range)));
+    Ok(())
+}
+
+/// Points far outside a narrow view are cut away in data space instead
+/// of mapped to pixels, where they overflowed plotters' arithmetic.
+#[tokio::test(flavor = "current_thread")]
+async fn far_points_outside_the_view_draw() -> Result<()> {
+    let h = chart_harness(
+        "#y_range: &{min: 0.0, max: 1.0}, &[\
+         line(&[(0.0, 0.5), (1.0, -1e7), (2.0, 0.5)]), \
+         area(&[(0.0, 0.5), (1.0, 1e12), (2.0, 0.5)]), \
+         scatter(&[(1.0, -1e300)]), \
+         error_bar(&[{x: 1.0, min: -1e300, avg: 0.5, max: 1e300}])]",
+    )
+    .await?;
+    assert_eq!(draw(&h).await.map(|i| i.y_range), Some((0.0, 1.0)));
+    Ok(())
+}
+
+/// A pie whose slices sum to nothing, or with a non-finite start angle,
+/// draws nothing rather than looping forever.
+#[tokio::test(flavor = "current_thread")]
+async fn degenerate_pies_draw_nothing() -> Result<()> {
+    let h = chart_harness(r#"&[pie(&[("in", 100.0), ("out", -100.0)])]"#).await?;
+    let _ = draw(&h).await;
+    let h =
+        chart_harness(r#"&[pie(#start_angle: 1.0 / 0.0, &[("a", 1.0), ("b", 2.0)])]"#)
+            .await?;
+    assert!(draw(&h).await.is_some());
+    let h = chart_harness(r#"#title: &"pie", &[pie(&[("a", 1.0)])]"#).await?;
+    let _ = draw_in(&h, &ChartState::default(), Size::new(400.0, 20.0)).await;
+    Ok(())
+}
+
+/// Mesh counts of zero or less draw on every axis kind.
+#[tokio::test(flavor = "current_thread")]
+async fn zero_and_negative_mesh_counts_draw() -> Result<()> {
+    let style = "#style: &chart_style(#mesh: mesh_style(\
+                 #x_labels: 0, #x_light_lines: 0, #y_labels: -3, #y_light_lines: -1, \
+                 #z_labels: -2, #z_light_lines: 0))";
+    for data in
+        [r#"line(&day1)"#, r#"bar(&[("only", 1.0)])"#, "line(&[(0.0, 1.0), (1.0, 2.0)])"]
+    {
+        let h = chart_harness(&format!("{style}, &[{data}]")).await?;
+        assert!(draw(&h).await.is_some(), "{data}");
+    }
+    let h = chart_harness(&format!(
+        "{style}, &[scatter3d(&[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)])]"
+    ))
+    .await?;
+    let _ = draw(&h).await;
+    Ok(())
+}
+
+/// A time series at the end of chrono's range pads inside it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_time_series_at_the_end_of_time_draws() -> Result<()> {
+    let h = GuiTestHarness::new(
+        r#"use gui::*; use gui::chart::{self, *};
+let d = [(datetime:"2026-01-01T00:00:00Z", 1.0), (datetime:"+262142-12-31T23:59:59Z", 2.0)];
+let result = chart(&[line(&d)])"#,
+    )
+    .await?;
+    assert!(draw(&h).await.is_some());
+    Ok(())
+}
+
+/// A datetime `x_range` sets a time series' x range.
+#[tokio::test(flavor = "current_thread")]
+async fn a_datetime_x_range_is_honoured() -> Result<()> {
+    use crate::widgets::chart::datetime_ms;
+    let h = GuiTestHarness::new(
+        r#"use gui::*; use gui::chart::{self, *};
+let d = [(datetime:"2024-01-01T00:00:00Z", 1.0), (datetime:"2024-01-09T00:00:00Z", 2.0)];
+let result = chart(
+    #x_range: &{min: datetime:"2024-01-05T00:00:00Z", max: datetime:"2024-01-06T00:00:00Z"},
+    &[line(&d)]
+)"#,
+    )
+    .await?;
+    let ms = |d: &str| datetime_ms(&d.parse().unwrap());
+    let x = draw(&h).await.expect("drawn").x_range;
+    assert_eq!(x, (ms("2024-01-05T00:00:00Z"), ms("2024-01-06T00:00:00Z")));
+    Ok(())
+}
+
+/// A view panned on one chart is not the view of a chart drawn after it
+/// from the same state, nor of the same chart once its mode changes.
+#[tokio::test(flavor = "current_thread")]
+async fn a_view_belongs_to_its_chart() -> Result<()> {
+    use iced_core::{event::Event, mouse::Event as ME};
+    let numeric = chart_harness("&[line(&[(0.0, 0.0), (10.0, 10.0)])]").await?;
+    let time = chart_harness(r#"&[line(&day1)]"#).await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let bounds = Rectangle::new(Point::ORIGIN, size);
+    let base = draw_in(&time, &ChartState::default(), size).await.expect("drawn").x_range;
+    let _ = draw_in(&numeric, &state, size).await;
+    let at = mouse::Cursor::Available(Point::new(200.0, 150.0));
+    let c = chart(&numeric);
+    let _ = state.handle_event(
+        c,
+        &Event::Mouse(ME::ButtonPressed(mouse::Button::Left)),
+        bounds,
+        at,
+    );
+    let moved = Event::Mouse(ME::CursorMoved { position: Point::new(300.0, 150.0) });
+    let _ = state.handle_event(c, &moved, bounds, at);
+    assert!(state.x_view.is_some(), "the drag panned");
+    assert_eq!(draw_in(&time, &state, size).await.map(|i| i.x_range), Some(base));
+    Ok(())
+}
+
+/// A press that moves is a drag, two quick clicks in one place reset the
+/// view, and two quick clicks apart do not.
+#[tokio::test(flavor = "current_thread")]
+async fn double_clicks_are_clicks_in_one_place() -> Result<()> {
+    use iced_core::{event::Event, mouse::Event as ME};
+    let h = chart_harness("&[line(&[(0.0, 0.0), (10.0, 10.0)])]").await?;
+    let c = chart(&h);
+    let size = Size::new(400.0, 300.0);
+    let bounds = Rectangle::new(Point::ORIGIN, size);
+    let mut state = ChartState::default();
+    let _ = draw_in(&h, &state, size).await;
+    let away = Event::Mouse(ME::CursorMoved { position: Point::new(1.0, 1.0) });
+    let _ = state.handle_event(c, &away, bounds, mouse::Cursor::Unavailable);
+    let click = |state: &mut ChartState, p: Point| {
+        let at = mouse::Cursor::Available(p);
+        for ev in [
+            ME::ButtonPressed(mouse::Button::Left),
+            ME::ButtonReleased(mouse::Button::Left),
+        ] {
+            let _ = state.handle_event(c, &Event::Mouse(ev), bounds, at);
+        }
+    };
+    state.x_view = Some((1.0, 2.0));
+    click(&mut state, Point::new(100.0, 100.0));
+    click(&mut state, Point::new(250.0, 100.0));
+    assert_eq!(state.x_view, Some((1.0, 2.0)), "clicks apart keep the view");
+    click(&mut state, Point::new(250.0, 100.0));
+    assert_eq!(state.x_view, None, "a double-click resets it");
+    Ok(())
+}
+
+/// The bar tooltip reads the hovered slot's category from each series.
+#[tokio::test(flavor = "current_thread")]
+async fn the_bar_tooltip_reads_its_slot() -> Result<()> {
+    use iced_core::{event::Event, mouse::Event as ME};
+    let h = chart_harness(
+        r#"&[bar(#label: "A", &[("a", 4.0)]), bar(#label: "B", &[("b", 2.0), ("a", 3.0)])]"#,
+    )
+    .await?;
+    let size = Size::new(400.0, 300.0);
+    let mut state = ChartState::default();
+    let info = draw_in(&h, &state, size).await.expect("drawn");
+    let x = info.rect.x + info.rect.width * 0.75;
+    let p = Point::new(x, info.rect.y + info.rect.height / 2.0);
+    let moved = Event::Mouse(ME::CursorMoved { position: p });
+    let bounds = Rectangle::new(Point::ORIGIN, size);
+    let _ = state.handle_event(chart(&h), &moved, bounds, mouse::Cursor::Available(p));
+    let snap = state.snap_point.expect("a bar under the cursor");
+    assert_eq!((snap.label.as_str(), snap.value.as_str()), ("B", "b: 2.00"));
+    Ok(())
+}
+
+/// Numeric and datetime series cannot share an axis: the chart draws
+/// nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn numeric_and_datetime_series_do_not_mix() -> Result<()> {
+    let h = chart_harness(r#"&[line(&[(0.0, 1.0)]), line(&day1)]"#).await?;
+    assert_eq!(chart(&h).mode(), ChartMode::Empty);
+    assert!(draw(&h).await.is_none());
+    Ok(())
+}
+
+/// A surface draws from its grid whatever order its axes run in.
+#[tokio::test(flavor = "current_thread")]
+async fn a_descending_surface_draws() -> Result<()> {
+    let h = chart_harness(
+        "&[surface(#color_by_z: true, &[\
+           [(2.0, 2.0, 5.0), (2.0, 1.0, 5.0), (2.0, 0.0, 5.0)], \
+           [(1.0, 2.0, 9.0), (1.0, 1.0, 9.0)], \
+           [(0.0, 2.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 1.0)]])]",
+    )
+    .await?;
+    let _ = draw(&h).await;
+    Ok(())
+}
+
+#[test]
+fn colors_keep_their_alpha() {
+    use crate::widgets::chart::ChartColor;
+    let c = ChartColor(1.0, 0.0, 0.0, 0.3).to_plotters();
+    assert_eq!((c.0, c.1, c.2), (255, 0, 0));
+    assert!((c.3 - 0.3).abs() < 1e-6);
 }

@@ -1,122 +1,11 @@
 # The Chart Widget
 
-The `chart` widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart (within the same mode — you cannot mix e.g. bar and pie).
+The `chart` widget renders data visualizations with multiple datasets, axis labels, and automatic or manual axis scaling. It supports line charts, scatter plots, bar charts, area charts, dashed lines, candlestick charts, error bars, pie charts, and 3D plots (scatter, line, surface). Multiple series types can be mixed on the same chart within one mode: a chart cannot mix bar, pie, 3D and XY series, nor XY series over numbers with ones over datetimes. A chart that mixes them draws nothing and logs the conflict once.
 
 ## Interface
 
 ```graphix
-type SeriesStyle = {
-  color: [Color, null],
-  label: [string, null],
-  stroke_width: [f64, null],
-  point_size: [f64, null]
-};
-
-type BarStyle = {
-  color: [Color, null],
-  label: [string, null],
-  margin: [f64, null]
-};
-
-type CandlestickStyle = {
-  gain_color: [Color, null],
-  loss_color: [Color, null],
-  bar_width: [f64, null],
-  label: [string, null]
-};
-
-type PieStyle = {
-  colors: [Array<Color>, null],
-  donut: [f64, null],
-  label_offset: [f64, null],
-  show_percentages: [bool, null],
-  start_angle: [f64, null]
-};
-
-type SurfaceStyle = {
-  color: [Color, null],
-  color_by_z: [bool, null],
-  label: [string, null]
-};
-
-type Projection3D = {
-  pitch: [f64, null],
-  scale: [f64, null],
-  yaw: [f64, null]
-};
-
-type OhlcPoint<'a: [f64, datetime]> = {x: 'a, open: f64, high: f64, low: f64, close: f64};
-type ErrorBarPoint<'a: [f64, datetime]> = {x: 'a, min: f64, avg: f64, max: f64};
-
-type MeshStyle = {
-  show_x_grid: [bool, null],
-  show_y_grid: [bool, null],
-  grid_color: [Color, null],
-  bold_line_color: [Color, null],
-  axis_color: [Color, null],
-  label_color: [Color, null],
-  label_size: [f64, null],
-  x_label_area_size: [f64, null],
-  x_labels: [i64, null],
-  x_light_lines: [i64, null],
-  y_label_area_size: [f64, null],
-  y_labels: [i64, null],
-  y_light_lines: [i64, null],
-  z_labels: [i64, null],
-  z_light_lines: [i64, null]
-};
-
-type LegendStyle = {
-  background: [Color, null],
-  border: [Color, null],
-  label_color: [Color, null],
-  label_size: [f64, null]
-};
-
-type LegendPosition = [
-  `UpperLeft, `UpperRight, `LowerLeft, `LowerRight,
-  `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
-];
-
-type ChartStyle = {
-  background: [Color, null],
-  margin: [f64, null],
-  title_size: [f64, null],
-  title_color: [Color, null],
-  palette: [Array<Color>, null],
-  legend_position: [LegendPosition, null],
-  legend: [LegendStyle, null],
-  mesh: [MeshStyle, null]
-};
-
-type Dataset = [
-  `Line({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
-  `Scatter({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
-  `Bar({data: &Array<(string, f64)>, style: BarStyle}),
-  `Area({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
-  `DashedLine({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], dash: f64, gap: f64, style: SeriesStyle}),
-  `Candlestick({data: &[Array<OhlcPoint<f64>>, Array<OhlcPoint<datetime>>], style: CandlestickStyle}),
-  `ErrorBar({data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>], style: SeriesStyle}),
-  `Pie({data: &Array<(string, f64)>, style: PieStyle}),
-  `Scatter3D({data: &Array<(f64, f64, f64)>, style: SeriesStyle}),
-  `Line3D({data: &Array<(f64, f64, f64)>, style: SeriesStyle}),
-  `Surface({data: &Array<Array<(f64, f64, f64)>>, style: SurfaceStyle})
-];
-
-val chart: fn(
-  ?#title: &[string, null],
-  ?#x_label: &[string, null],
-  ?#y_label: &[string, null],
-  ?#x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
-  ?#y_range: &[{min: f64, max: f64}, null],
-  ?#z_label: &[string, null],
-  ?#z_range: &[{min: f64, max: f64}, null],
-  ?#projection: &[Projection3D, null],
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#style: &[ChartStyle, null],
-  a: &Array<Dataset>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/chart.gxi}}
 ```
 
 ## Chart Parameters
@@ -278,8 +167,8 @@ Used by line, scatter, area, dashed_line, error_bar, scatter3d, and line3d:
 
 - **color** — Series color. When null, a color is assigned from a default palette.
 - **label** — Display name shown in the legend. When null, no legend entry is created.
-- **stroke_width** — Line/stroke width in pixels. Defaults to 2.
-- **point_size** — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.
+- **stroke_width** — Line/stroke width in pixels. Defaults to 2. Scatter and scatter3d draw filled dots and take none.
+- **point_size** — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible. For error_bar it is the width of the whisker caps, `stroke_width` by default.
 
 ### BarStyle
 
@@ -304,7 +193,7 @@ Used by pie:
 
 - **colors** — Array of colors for pie slices. When null, default palette is used.
 - **donut** — Inner radius as a fraction of the outer radius (0.0–1.0). When null or 0, draws a full pie.
-- **label_offset** — Distance of labels from the pie center as a percentage. Defaults to plotters default.
+- **label_offset** — Distance of the labels outside the pie's edge, as a percentage of its radius. Defaults to 5.
 - **show_percentages** — Whether to display percentage values on labels. Defaults to false.
 - **start_angle** — Starting angle in degrees. Defaults to 0 (3 o'clock position). Use -90.0 to start at 12 o'clock.
 

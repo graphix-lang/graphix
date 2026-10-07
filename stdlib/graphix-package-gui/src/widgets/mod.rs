@@ -136,6 +136,7 @@ pub enum Message {
 }
 
 netidx_core::atomic_id!(TableId);
+netidx_core::atomic_id!(ChartId);
 
 /// A data table's input.
 #[derive(Debug, Clone)]
