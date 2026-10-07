@@ -2318,3 +2318,33 @@ const COLLECTION_APPLICATIONS_DO_NOT_MERGE: &str = r#"
 run!(collection_applications_do_not_merge, COLLECTION_APPLICATIONS_DO_NOT_MERGE, |v: Result<&Value>| {
     refused("missing match cases")(v)
 }; FuseExpect::None);
+
+/// A union keeps two distinct cells apart: `[a]` and `[b]` are not one
+/// array type.
+const UNION_KEEPS_DISTINCT_CELLS: &str = r#"
+{
+    let pick = |c: bool, a, b| select c { true => [a], false => [b] };
+    pick(true, "x", 41)[0]$ + 1
+}
+"#;
+
+run!(union_keeps_distinct_cells, UNION_KEEPS_DISTINCT_CELLS, |v: Result<&Value>| {
+    refused("does not contain")(v)
+}; FuseExpect::None);
+
+/// Two fn types that differ only in which annotations were written are
+/// one member: a select of them is callable.
+const FN_MEMBERS_MERGE_THROUGH_BINDINGS: &str = r#"
+{
+    let g = |x: i64| x * 2;
+    let h = |x: i64| -> i64 x + 1;
+    let f = select true { true => g, false => h };
+    f(1)
+}
+"#;
+
+run!(
+    fn_members_merge_through_bindings,
+    FN_MEMBERS_MERGE_THROUGH_BINDINGS,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) }
+);

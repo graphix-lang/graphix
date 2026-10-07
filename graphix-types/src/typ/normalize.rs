@@ -454,19 +454,6 @@ impl Type {
 
     fn merge_inner(&self, t: &Self) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
-        // CR claude for claude: [bug] flat_eq compares with `==`, and TVar equality
-        // treats two distinct unbound cells as equal. So merge_one_differing and the
-        // Array/List/Map/Error arms fold `Array<'a> ∪ Array<'b>` into `Array<'b>` and
-        // `(i64, 'a) ∪ (string, 'b)` into `([i64, string], 'b)`, dropping a cell that
-        // union_inner had kept apart. The Ref, Abstract and Fn arms below, and
-        // union_identical's own Fn arm in setops.rs, have the same hole. As a result
-        // `|a, b| [(1, a), (2, b)]` is typed `-> Array<(i64, 'b)>`, and `pick(true,
-        // "x", 41)[0]$ + 1` over `|c: bool, a, b| select c { true => [a], false => [b]
-        // }` passes --check and then panics the JIT at kernel.rs:243 (the struct twin
-        // is a silent interp/JIT divergence). A written `[(i64, 'a), (string, 'b)]`
-        // also parses as `([i64, string], 'b)`, so valid calls are refused and invalid
-        // ones accepted. Compare with union_identical here and in those arms. probe:
-        // design/review-2026-10-05/repro/t-fntyp-02.gx (t-fntyp-02)
         fn flat_eq(t0: &Type, t1: &Type) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
@@ -474,9 +461,9 @@ impl Type {
                         Type::Set(s) => Type::flatten_set(s.iter().cloned()),
                         t => t.clone(),
                     };
-                    f(t0) == f(t1)
+                    union_identical(&f(t0), &f(t1))
                 }
-                (t0, t1) => t0 == t1,
+                (t0, t1) => union_identical(t0, t1),
             }
         }
         // Products merge component-wise only when at most one component
@@ -511,9 +498,9 @@ impl Type {
             return self.merge(&filled);
         }
         match (self, t) {
-            (Type::Ref(t0), Type::Ref(t1)) => {
-                if t0 == t1 {
-                    Some(Type::Ref(t0.clone()))
+            (Type::Ref(_), Type::Ref(_)) => {
+                if union_identical(self, t) {
+                    Some(self.clone())
                 } else {
                     None
                 }
@@ -535,7 +522,7 @@ impl Type {
             | (_, Type::Discernible)
             | (_, Type::Ordered)
             | (_, Type::Concrete) => {
-                if self == t {
+                if union_identical(self, t) {
                     Some(self.clone())
                 } else {
                     None
@@ -549,15 +536,8 @@ impl Type {
             (Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty() => {
                 Some(t.clone())
             }
-            (
-                Type::Abstract { id: id0, params: p0 },
-                Type::Abstract { id: id1, params: p1 },
-            ) => {
-                if id0 == id1 && p0 == p1 {
-                    Some(self.clone())
-                } else {
-                    None
-                }
+            (Type::Abstract { .. }, Type::Abstract { .. }) => {
+                if union_identical(self, t) { Some(self.clone()) } else { None }
             }
             // CR claude for claude: [bug] Two fn types merge only when `==`, and `==`
             // never equates a bound cell with its binding, though the TVar arms below
@@ -572,9 +552,13 @@ impl Type {
             // `let f: fn(x: i64) -> i64 = select ..` is accepted. probe:
             // design/review-2026-10-05/repro/x-typecheck-generics-F12.gx
             // (x-typecheck-generics-F12)
-            (Type::Fn(f0), Type::Fn(f1)) => {
-                if f0 == f1 {
-                    Some(Type::Fn(f0.clone()))
+            // 2026-10-07 claude: the annotation half is fixed: union_identical
+            // looks through a bound cell, so g and h are one member (pin
+            // lang::types::fn_members_merge_through_bindings). Still open: `|x| x`
+            // beside `|x: i64| x + 1` stays two members and the call is refused.
+            (Type::Fn(_), Type::Fn(_)) => {
+                if union_identical(self, t) {
+                    Some(self.clone())
                 } else {
                     None
                 }

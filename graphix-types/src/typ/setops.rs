@@ -1,13 +1,14 @@
 use crate::{
     env::Env,
     stack::ensure_sufficient,
-    typ::{RefHist, RefPair, Type, TypeRef},
+    typ::{RefHist, RefPair, TVar, Type, TypeRef},
 };
 use ahash::AHashMap;
 use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::iter;
 use triomphe::Arc;
 
@@ -55,72 +56,123 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
     }
 }
 
-/// Structural identity for union-collapse decisions: `Type::eq`,
-/// except that two unbound TVars are identical only when they share a
-/// cell (a collapse must not discard a cell whose future binding may
-/// diverge). `Fn` keeps plain equality.
+/// Structural identity for union-collapse decisions: two unbound
+/// cells are identical only when they are one cell (a collapse must not
+/// discard a cell whose future binding may diverge), a bound cell is its
+/// binding, and inside a function type the cells pair consistently
+/// (`fn('a) -> 'a` is `fn('b) -> 'b`, not `fn('a) -> 'b`).
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
-    ensure_sufficient(|| union_identical_inner(t0, t1))
+    Identity::default().same(t0, t1)
 }
 
-fn union_identical_inner(t0: &Type, t1: &Type) -> bool {
-    let all = |a: &[Type], b: &[Type]| {
-        a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| union_identical(a, b))
-    };
-    match (t0, t1) {
-        (Type::TVar(a), Type::TVar(b)) => {
-            a.same_cell(b)
-                || match (a.binding(), b.binding()) {
-                    (Some(x), Some(y)) => union_identical(&x, &y),
-                    _ => false,
+#[derive(Default)]
+struct Identity {
+    /// Inside a function type: the cells paired so far, by address.
+    pairs: Option<SmallVec<[(usize, usize); 4]>>,
+}
+
+impl Identity {
+    fn same(&mut self, t0: &Type, t1: &Type) -> bool {
+        ensure_sufficient(|| self.same_inner(t0, t1))
+    }
+
+    fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
+        a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
+    }
+
+    fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
+        if a.same_cell(b) {
+            return true;
+        }
+        let (x, y) = (a.cell_addr(), b.cell_addr());
+        let Some(pairs) = &mut self.pairs else { return false };
+        match pairs.iter().find(|(p, q)| *p == x || *q == y) {
+            Some(&(p, q)) => p == x && q == y,
+            None => {
+                pairs.push((x, y));
+                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                self.all(&ca, &cb)
+            }
+        }
+    }
+
+    fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
+        match (t0, t1) {
+            (Type::TVar(a), Type::TVar(b)) => match (a.binding(), b.binding()) {
+                (Some(x), Some(y)) => a.same_cell(b) || self.same(&x, &y),
+                (None, None) => self.cells(a, b),
+                _ => false,
+            },
+            (Type::TVar(a), t) | (t, Type::TVar(a)) => {
+                a.binding().is_some_and(|x| self.same(&x, t))
+            }
+            (Type::Bottom, Type::Bottom)
+            | (Type::Any, Type::Any)
+            | (Type::Hole, Type::Hole)
+            | (Type::Concrete, Type::Concrete)
+            | (Type::Function, Type::Function)
+            | (Type::OneNumber, Type::OneNumber)
+            | (Type::Discernible, Type::Discernible)
+            | (Type::Ordered, Type::Ordered)
+            | (Type::Singleton, Type::Singleton) => true,
+            (Type::App(c0, a0), Type::App(c1, a1)) => {
+                self.same(c0, c1) && self.same(a0, a1)
+            }
+            (Type::Primitive(a), Type::Primitive(b)) => a == b,
+            (
+                Type::Abstract { id: i0, params: p0 },
+                Type::Abstract { id: i1, params: p1 },
+            ) => i0 == i1 && self.all(p0, p1),
+            (Type::Ref(r0), Type::Ref(r1)) => {
+                r0.scope == r1.scope
+                    && r0.name == r1.name
+                    && r0.cells_agree(r1)
+                    && self.all(&r0.params, &r1.params)
+            }
+            (Type::Set(s0), Type::Set(s1)) => self.all(s0, s1),
+            (Type::Error(a), Type::Error(b))
+            | (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b)) => self.same(a, b),
+            (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.same(a, b),
+            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                self.same(k0, k1) && self.same(v0, v1)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) => self.all(a, b),
+            (Type::Struct(a), Type::Struct(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|((n0, x, _), (n1, y, _))| n0 == n1 && self.same(x, y))
+            }
+            (Type::Variant(tg0, a, _), Type::Variant(tg1, b, _)) => {
+                tg0 == tg1 && self.all(a, b)
+            }
+            (Type::Fn(f0), Type::Fn(f1)) => {
+                let outer = self.pairs.is_none();
+                if outer {
+                    self.pairs = Some(SmallVec::new());
                 }
+                let r = f0.args.len() == f1.args.len()
+                    && f0.quantifiers.len() == f1.quantifiers.len()
+                    && f0
+                        .args
+                        .iter()
+                        .zip(f1.args.iter())
+                        .all(|(a, b)| a.kind == b.kind && self.same(&a.typ, &b.typ))
+                    && match (&f0.vargs, &f1.vargs) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => self.same(a, b),
+                        _ => false,
+                    }
+                    && self.same(&f0.rtype, &f1.rtype)
+                    && self.same(&f0.throws, &f1.throws);
+                if outer {
+                    self.pairs = None;
+                }
+                r
+            }
+            _ => false,
         }
-        // A bound tvar compares through its binding; an unbound one
-        // is identical only to its own cell.
-        (Type::TVar(a), t) | (t, Type::TVar(a)) => {
-            a.binding().is_some_and(|x| union_identical(&x, t))
-        }
-        (Type::Bottom, Type::Bottom)
-        | (Type::Any, Type::Any)
-        | (Type::Hole, Type::Hole)
-        | (Type::Concrete, Type::Concrete)
-        | (Type::Function, Type::Function)
-        | (Type::OneNumber, Type::OneNumber)
-        | (Type::Discernible, Type::Discernible)
-        | (Type::Ordered, Type::Ordered)
-        | (Type::Singleton, Type::Singleton) => true,
-        (Type::App(c0, a0), Type::App(c1, a1)) => {
-            union_identical(c0, c1) && union_identical(a0, a1)
-        }
-        (Type::Primitive(a), Type::Primitive(b)) => a == b,
-        (
-            Type::Abstract { id: i0, params: p0 },
-            Type::Abstract { id: i1, params: p1 },
-        ) => i0 == i1 && all(p0, p1),
-        (Type::Ref(r0), Type::Ref(r1)) => {
-            r0.scope == r1.scope
-                && r0.name == r1.name
-                && r0.cells_agree(r1)
-                && all(&r0.params, &r1.params)
-        }
-        (Type::Set(s0), Type::Set(s1)) => all(s0, s1),
-        (Type::Error(a), Type::Error(b))
-        | (Type::Array(a), Type::Array(b))
-        | (Type::List(a), Type::List(b)) => union_identical(a, b),
-        (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && union_identical(a, b),
-        (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            union_identical(k0, k1) && union_identical(v0, v1)
-        }
-        (Type::Tuple(a), Type::Tuple(b)) => all(a, b),
-        (Type::Struct(a), Type::Struct(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b.iter())
-                    .all(|((n0, x, _), (n1, y, _))| n0 == n1 && union_identical(x, y))
-        }
-        (Type::Variant(tg0, a, _), Type::Variant(tg1, b, _)) => tg0 == tg1 && all(a, b),
-        (Type::Fn(f0), Type::Fn(f1)) => f0 == f1,
-        _ => false,
     }
 }
 
