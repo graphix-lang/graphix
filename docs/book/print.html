@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2ab81abc.js";
+            window.path_to_searchindex_js = "searchindex-45c76654.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -4797,14 +4797,16 @@ utils::helper()
 <pre><code class="language-bash">export GRAPHIX_MODPATH=netidx:/shared/modules,file:/home/user/graphix-lib
 graphix myprogram.gx
 </code></pre>
-<p>The syntax is a comma-separated list of <code>scheme:</code> entries:</p>
+<p>The syntax is a comma-separated list of entries:</p>
 <ul>
-<li><code>file:</code> entries are filesystem paths (on Windows, the prefix also
-keeps drive letters unambiguous: <code>file:C:\graphix\lib</code>)</li>
+<li><code>file:</code> entries, and entries with no registered scheme, are
+filesystem paths (on Windows, the prefix keeps drive letters
+unambiguous: <code>file:C:\graphix\lib</code>)</li>
 <li><code>netidx:</code> entries are netidx paths (available when netidx is
 enabled)</li>
 <li>Other schemes can be registered by embedders</li>
 <li>Escape literal commas in paths with <code>\</code></li>
+<li>An entry a resolver refuses stops the shell at startup, naming it</li>
 </ul>
 <p>Example:</p>
 <pre><code class="language-bash">GRAPHIX_MODPATH=netidx:/foo,file:/home/user/lib,file:/path/with\,comma
@@ -15326,8 +15328,8 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyLenEv {
     const NAME: &amp;str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
-        fast_eval(my_len, from)
+    fn eval(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+        fast_eval(ctx, my_len, from)
     }
 }
 
