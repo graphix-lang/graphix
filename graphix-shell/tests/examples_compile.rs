@@ -9,7 +9,7 @@ use graphix_compiler::{
     expr::{FilesResolver, Source},
 };
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{
     collections::HashSet,
     fs,
@@ -58,7 +58,7 @@ async fn examples_compile() -> Result<()> {
         .map(|f| async move {
             let base = f.parent().expect("example has a parent dir").to_path_buf();
             let r = ShellBuilder::<NoExt>::default()
-                .no_cache(true)
+                .cache(CacheMode::Off)
                 .module_resolvers(vec![FilesResolver::new(base, None)])
                 .enable_flags(CFlag::ExpandSeq.into())
                 .mode(Mode::Check(Source::File(f.clone())))

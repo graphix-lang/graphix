@@ -4,7 +4,7 @@
 use anyhow::Result;
 use graphix_compiler::expr::Source;
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 
 const WRITERS_BELOW: &str = r#"
 let x = never();
@@ -16,7 +16,7 @@ y
 #[tokio::test(flavor = "multi_thread")]
 async fn check_types_a_top_level_let_by_its_writers() -> Result<()> {
     ShellBuilder::<NoExt>::default()
-        .no_cache(true)
+        .cache(CacheMode::Off)
         .mode(Mode::Check(Source::Internal(WRITERS_BELOW.into())))
         .build()?
         .check()

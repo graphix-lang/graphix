@@ -9,7 +9,7 @@
 
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{
     collections::HashMap,
     env, fs,
@@ -189,7 +189,7 @@ fn run_child(shape: &str, depth: usize) {
         .expect("runtime");
     let r = rt.block_on(async {
         ShellBuilder::<NoExt>::default()
-            .no_cache(true)
+            .cache(CacheMode::Off)
             .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
             // CR claude for claude: [test-gap] Every shape runs through Mode::Check. That
             // is the check alone (CFlag::CheckOnly: no instance typing, elaboration,

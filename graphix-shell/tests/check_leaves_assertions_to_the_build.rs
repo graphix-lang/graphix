@@ -7,7 +7,7 @@ use anyhow::Result;
 use enumflags2::BitFlags;
 use graphix_compiler::{CFlag, expr::Source};
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 
 const FALSE_ASSERTION: &str = r#"
 #[tail_recursive]
@@ -24,7 +24,7 @@ r
 
 async fn check(program: &'static str, flags: BitFlags<CFlag>) -> Result<()> {
     ShellBuilder::<NoExt>::default()
-        .no_cache(true)
+        .cache(CacheMode::Off)
         .mode(Mode::Check(Source::Internal(program.into())))
         .enable_flags(flags)
         .build()?

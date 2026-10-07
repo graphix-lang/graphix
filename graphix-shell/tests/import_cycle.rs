@@ -3,7 +3,7 @@
 
 use graphix_compiler::expr::{FilesResolver, Source};
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use std::{fs, sync::Arc};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -20,7 +20,7 @@ async fn two_files_importing_each_other() {
             base: dir.clone(),
             overrides: None,
         })])
-        .no_cache(true)
+        .cache(CacheMode::Off)
         .build()
         .expect("building shell")
         .check()

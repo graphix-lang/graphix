@@ -153,28 +153,28 @@ impl Mode {
 pub type SetupContext<X> =
     Box<dyn FnOnce(&mut ExecState<GXRt<X>, <X as GXExt>::UserEvent>) + Send + 'static>;
 
+/// What a run does with the session image cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CacheMode {
+    /// neither read nor write it
+    Off,
+    /// start from it, and write the entries it lacks
+    #[default]
+    On,
+    /// write it and exit, for an installer that wants the first real
+    /// run to be warm: an entry that cannot be written fails the run
+    Warm,
+}
+
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 pub struct Shell<X: GXExt> {
     /// do not run the users init module
     #[builder(default = "false")]
     no_init: bool,
-    /// Neither read nor write the registration image cache.
-    #[builder(default = "false")]
-    // CR claude for claude: [structure] `no_cache` and `warm` are independent bools, so
-    // `--warm --no-cache` is accepted: init builds no cache and run returns Ok at line
-    // 444, exiting 0 with nothing written (probe: `XDG_CACHE_HOME=$tmp graphix --warm
-    // --no-cache warm.gx; find $tmp -type f` prints nothing, while `--warm` alone
-    // writes two .img files). One cache mode (off, on, warm-and-exit) makes the pair
-    // unrepresentable, and clap's `conflicts_with` refuses the flags together. Under
-    // warm-and-exit an image that cannot be written should fail the run too; today that
-    // is only a log warning and the exit is 0 (XDG_CACHE_HOME pointing at a file).
-    // (x-invalid-states-10)
-    no_cache: bool,
-    /// Write the registration image and exit, for an installer that
-    /// wants the first real run to be warm.
-    #[builder(default = "false")]
-    warm: bool,
+    /// What the run does with the image cache.
+    #[builder(default)]
+    cache: CacheMode,
     /// define module resolvers to append to the default list
     #[builder(default)]
     module_resolvers: Vec<ResolverRef>,
@@ -276,20 +276,22 @@ impl<X: GXExt> Shell<X> {
         flags.insert(self.enable_flags);
         flags.remove(self.disable_flags);
         // The compile flags shape the program's graph (fusion on or off).
-        let cache = if self.no_cache {
-            None
-        } else {
-            match cache::RegistrationCache::new(
+        let cache = match self.cache {
+            CacheMode::Off => None,
+            CacheMode::On | CacheMode::Warm => match cache::RegistrationCache::new(
                 &root,
                 program_text.as_deref(),
                 flags.bits() as u64,
             ) {
                 Ok(c) => Some(c),
+                Err(e) if self.cache == CacheMode::Warm => {
+                    return Err(e.context("image cache unavailable"));
+                }
                 Err(e) => {
                     log::warn!("image cache unavailable: {e}");
                     None
                 }
-            }
+            },
         };
         let mut pending_registration = None;
         let mut pending_program = None;
@@ -369,14 +371,24 @@ impl<X: GXExt> Shell<X> {
                 (Entry::Program, pending_program),
             ] {
                 let Some(rx) = rx else { continue };
-                match rx.await {
-                    Ok(Ok(image)) => {
-                        if let Err(e) = cache.store(entry, &image) {
-                            log::warn!("{entry:?} image not written: {e:#}");
-                        }
+                let stored = match rx.await {
+                    Ok(Ok(image)) => cache
+                        .store(entry, &image)
+                        .with_context(|| format!("{entry:?} image not written")),
+                    Ok(Err(e)) => Err(e.context(format!("{entry:?} image not taken"))),
+                    // the program failed to compile, which the run reports
+                    Err(_)
+                        if self.cache == CacheMode::Warm
+                            && matches!(entry, Entry::Program) =>
+                    {
+                        Ok(())
                     }
-                    Ok(Err(e)) => log::warn!("{entry:?} image not taken: {e:#}"),
-                    Err(_) => log::warn!("{entry:?} image not taken: runtime exited"),
+                    Err(_) => Err(anyhow!("{entry:?} image not taken: none was built")),
+                };
+                match stored {
+                    Ok(()) => (),
+                    Err(e) if self.cache == CacheMode::Warm => return Err(e),
+                    Err(e) => log::warn!("{e:#}"),
                 }
             }
         }
@@ -478,17 +490,10 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
-        // CR claude for claude: [bug] --warm returns here without asking for the
-        // program's result. GX::new keeps a program compile error in `program`, and
-        // only load_env's gx.program() reports it. So `graphix --warm broken.gx` writes
-        // only the registration entry, prints nothing and exits 0. With --log-dir the
-        // log says only "Program image not taken: runtime exited". Check mode compiles
-        // no program in init, so `--warm --check` and `--warm --expand` exit 0 without
-        // checking, and `--warm --no-cache` does nothing; await gx.program() under
-        // --warm and return its error, and refuse --warm together with --check,
-        // --expand or --no-cache in main.rs. probe: GRAPHIX=<bin> bash
-        // design/review-2026-10-05/repro/shell-07.sh (shell-07)
-        if self.warm {
+        if self.cache == CacheMode::Warm {
+            if let Mode::Script(_) = &self.mode {
+                gx.program().await?;
+            }
             return Ok(());
         }
         // Armed before the first cycle: a program may wedge inside

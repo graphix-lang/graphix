@@ -10,7 +10,7 @@ use graphix_compiler::{
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
-use graphix_shell::{Mode, ShellBuilder};
+use graphix_shell::{CacheMode, Mode, ShellBuilder};
 use log::info;
 use netidx::{
     InternalOnly,
@@ -202,11 +202,11 @@ struct Params {
     /// do not attempt to run the init module
     #[arg(short = 'i', long)]
     no_init: bool,
-    /// neither read nor write the registration image cache
+    /// neither read nor write the image cache
     #[arg(long = "no-cache")]
     no_cache: bool,
-    /// write the registration image cache and exit
-    #[arg(long)]
+    /// write the image cache and exit
+    #[arg(long, conflicts_with_all = ["no_cache", "check", "expand"])]
     warm: bool,
     /// disable JIT fusion and run the node-walk interpreter only
     #[arg(long = "no-fusion")]
@@ -383,8 +383,11 @@ fn tokio_main(
             p.program_args.iter().map(|s| ArcStr::from(s.as_str())).collect();
         shell = shell.program_args(program_args);
         shell = shell.no_init(p.no_init);
-        shell = shell.no_cache(p.no_cache);
-        shell = shell.warm(p.warm);
+        shell = shell.cache(match (p.no_cache, p.warm) {
+            (true, _) => CacheMode::Off,
+            (false, true) => CacheMode::Warm,
+            (false, false) => CacheMode::On,
+        });
         shell = shell.fusion_stats(p.fusion_stats);
         {
             let net_config = net_config.clone();
