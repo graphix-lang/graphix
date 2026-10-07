@@ -796,9 +796,13 @@ cycle, across workers; the compiler never pins threads.
 ## Testing is differential
 
 - `run!` (`graphix-package-core/src/testing.rs`) runs a fixture in
-  `interp` and `jit` modes asserting equal values, and each again with
-  every fork point forked (`par`, `jit_par`); `FuseExpect::{Jit,
-  None}` asserts WHETHER it fuses, bidirectionally.
+  each `testing::Mode`: `interp` and `jit` (serial unless `GRAPHIX_PAR`
+  is set), and each again with every fork point forked (`par`,
+  `jit_par`), asserting its predicate in each; nothing compares the
+  modes, so a predicate pins the value exactly and a refusal names its
+  message (`testing::refused`). `FuseExpect::{Jit, None}` asserts
+  WHETHER anything fuses, bidirectionally; `#[native]` asserts that an
+  expression does.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs

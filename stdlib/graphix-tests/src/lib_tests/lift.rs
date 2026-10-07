@@ -4,59 +4,51 @@
 //! self-feeding cycles and compare the value stream across engines.
 
 use anyhow::{Result, anyhow, bail};
-use arcstr::ArcStr;
-use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, expr::VfsResolver};
-use graphix_package_core::{run, testing::FuseExpect};
-use graphix_rt::GXEvent;
+use graphix_package_core::{
+    run,
+    testing::{
+        FuseExpect, Mode, compile_result, fixture_runtime, next_update, result_source,
+        updates_until_quiet,
+    },
+};
 use netidx_value::Value;
 use std::time::Duration;
+use tokio::time::Instant;
 
-/// Drive `code` until `n` published values of the result are collected.
-/// A connect that goes quiescent produces fewer — pass exactly the
-/// number it emits.
-async fn collect_n(code: &str, flags: BitFlags<CFlag>, n: usize) -> Result<Vec<Value>> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    let gx = format!("let result = {code}");
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(ArcStr::from(gx)),
-    )]);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
+/// The first `n` values of the result of `code` run in `mode`.
+async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
-        vec![VfsResolver::new(tbl)],
-        flags,
+        mode,
         |_| {},
     )
     .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
+    let res = compile_result(&ctx).await?;
+    let id = res.exprs[0].id;
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut out = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    // CR claude for claude: [test-gap] collect_n stops reading at the n-th value. So the
-    // tests named for quiescence (connect_const_then_quiesces,
-    // fold_into_connect_quiesces, array_connect_const_quiesces,
-    // fold_captured_{init,body}_fires_then_quiesces) pin only a prefix. A regression
-    // that makes `x <- 5` fire every cycle gives [0, 5, 5, ...] and a spinning runtime,
-    // and assert_stream(.., &[0, 5]) still passes. The fuzzer cannot catch it either,
-    // because both engines would re-fire and agree. After the n-th value, wait_idle
-    // under the deadline and fail on any further update of eid; a connect that keeps
-    // firing never goes idle, so the deadline fails it. Or collect to quiescence the
-    // way lang/dense_deltas.rs run_delta does. (tests-lib-b2-06)
     while out.len() < n {
-        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
-            .await
-            .map_err(|_| anyhow!("timeout: collected {}/{n} → {out:?}", out.len()))?
-            .ok_or_else(|| anyhow!("runtime died"))?;
-        for e in batch.drain(..) {
-            if let GXEvent::Updated(id, v) = e {
-                if id == eid {
-                    out.push(v);
-                }
-            }
-        }
+        out.push(next_update(&mut rx, id, deadline).await?);
     }
+    ctx.shutdown().await;
+    Ok(out)
+}
+
+/// Every value of the result of `code` run in `mode`, to quiescence.
+async fn collect_settled(code: &str, mode: Mode) -> Result<Vec<Value>> {
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
+        &crate::TEST_REGISTER,
+        mode,
+        |_| {},
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let id = res.exprs[0].id;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let out =
+        updates_until_quiet(&mut rx, id, Duration::from_millis(300), deadline).await?;
     ctx.shutdown().await;
     Ok(out)
 }
@@ -70,47 +62,23 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
         .collect()
 }
 
-/// Like [`collect_n`] but samples the live per-activation `SelfBlock`
-/// count after each collected cycle; the caller runs on a current-thread
-/// runtime, so the runtime's kernels count on this thread.
-// CR claude for claude: [structure] collect_n_blocks is collect_n (line 18) with one line
-// changed: the item it pushes. The same VFS table, init, `{ mod test; test::result }`
-// compile and deadline loop appear again in module_stmt.rs first_value, in testing.rs's
-// eval_with_setup, eval_converged and eval_packed, and in lang/dense_deltas.rs
-// run_delta. One driver that returns the context, the result's ExprId and the receiver,
-// plus a next-update helper, would serve all of them, so a change like the quiescence
-// check at line 37 is made once. (tests-lib-b2-12)
+/// Like [`collect_n`] in `jit` mode, but samples the runtime's live
+/// per-activation `SelfBlock` count after each value.
 async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    let gx = format!("let result = {code}");
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(ArcStr::from(gx)),
-    )]);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
-        vec![VfsResolver::new(tbl)],
-        BitFlags::empty(),
+        Mode::Jit,
         |_| {},
     )
     .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
+    let res = compile_result(&ctx).await?;
+    let id = res.exprs[0].id;
+    let deadline = Instant::now() + Duration::from_secs(10);
     let mut blocks = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while blocks.len() < n {
-        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
-            .await
-            .map_err(|_| anyhow!("timeout: collected {}/{n}", blocks.len()))?
-            .ok_or_else(|| anyhow!("runtime died"))?;
-        for e in batch.drain(..) {
-            if let GXEvent::Updated(id, _) = e
-                && id == eid
-            {
-                blocks.push(ctx.rt.control().live_self_blocks());
-            }
-        }
+        next_update(&mut rx, id, deadline).await?;
+        blocks.push(ctx.rt.control().live_self_blocks());
     }
     ctx.shutdown().await;
     Ok(blocks)
@@ -148,26 +116,37 @@ async fn fused_recursion_sheds_unreached_blocks() -> Result<()> {
     Ok(())
 }
 
-/// The node-walk and jit produce the same first `n` values.
+/// Every mode produces the same first `n` values.
 async fn assert_agree(code: &str, n: usize) -> Result<()> {
-    let interp = as_i64(&collect_n(code, CFlag::FusionDisabled.into(), n).await?)?;
-    let jit = as_i64(&collect_n(code, BitFlags::empty(), n).await?)?;
-    if interp != jit {
-        bail!("interp {interp:?} != jit {jit:?}");
+    let interp = as_i64(&collect_n(code, Mode::Interp, n).await?)?;
+    for mode in &Mode::ALL[1..] {
+        let got = as_i64(&collect_n(code, *mode, n).await?)?;
+        if got != interp {
+            bail!("{mode:?} {got:?} != Interp {interp:?}");
+        }
     }
     Ok(())
 }
 
-/// Both modes agree, and the i64 stream equals `expected`.
+/// In every mode the i64 stream starts with `expected`.
 async fn assert_stream(code: &str, expected: &[i64]) -> Result<()> {
-    let interp =
-        as_i64(&collect_n(code, CFlag::FusionDisabled.into(), expected.len()).await?)?;
-    if interp != expected {
-        bail!("interp (node-walk) stream {interp:?} != expected {expected:?}");
+    for mode in Mode::ALL {
+        let got = as_i64(&collect_n(code, mode, expected.len()).await?)?;
+        if got != expected {
+            bail!("{mode:?} stream {got:?} != expected {expected:?}");
+        }
     }
-    let jit = as_i64(&collect_n(code, BitFlags::empty(), expected.len()).await?)?;
-    if jit != expected {
-        bail!("jit stream {jit:?} != expected {expected:?} (interp matched)");
+    Ok(())
+}
+
+/// In every mode the i64 stream is exactly `expected`, and then the
+/// program quiesces.
+async fn assert_settles(code: &str, expected: &[i64]) -> Result<()> {
+    for mode in Mode::ALL {
+        let got = as_i64(&collect_settled(code, mode).await?)?;
+        if got != expected {
+            bail!("{mode:?} settled at {got:?} != expected {expected:?}");
+        }
     }
     Ok(())
 }
@@ -218,7 +197,7 @@ async fn counter_times_two_return() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connect_const_then_quiesces() -> Result<()> {
     // A constant RHS fires only at init, so the stream is exactly [0, 5].
-    assert_stream("{ let x = 0; x <- 5; x }", &[0, 5]).await
+    assert_settles("{ let x = 0; x <- 5; x }", &[0, 5]).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -270,7 +249,7 @@ run!(
 async fn fold_into_connect_quiesces() -> Result<()> {
     // A fold result wired into a self-connect over a constant source
     // fires once: 0 -> 6, then quiesces.
-    assert_stream(
+    assert_settles(
         "{ let a = [1, 2, 3]; let s = 0; s <- array::fold(a, 0, |acc, e| acc + e); s }",
         &[0, 6],
     )
@@ -281,7 +260,7 @@ async fn fold_into_connect_quiesces() -> Result<()> {
 async fn fold_captured_init_fires_then_quiesces() -> Result<()> {
     // The fold's init is a feeder, so the fold re-fires when s lands:
     // [6, 11].
-    assert_stream(
+    assert_settles(
         "{ let a = [1, 2, 3]; let s = 0; s <- 5; array::fold(a, s, |acc, e| acc + e) }",
         &[6, 11],
     )
@@ -291,7 +270,7 @@ async fn fold_captured_init_fires_then_quiesces() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fold_captured_body_fires_then_quiesces() -> Result<()> {
     // The feeder `k` is captured in the body: [6, 21].
-    assert_stream(
+    assert_settles(
         "{ let a = [1, 2, 3]; let k = 0; k <- 5; array::fold(a, 0, |acc, e| acc + e + k) }",
         &[6, 21],
     )
@@ -369,7 +348,7 @@ async fn array_accumulator_grows() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn array_connect_const_quiesces() -> Result<()> {
     // A constant composite RHS fires only at init: [0, 2].
-    assert_stream(
+    assert_settles(
         "{ let data: Array<i64> = []; data <- [1, 2]; array::len(data) }",
         &[0, 2],
     )

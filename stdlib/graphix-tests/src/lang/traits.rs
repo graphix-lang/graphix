@@ -99,7 +99,7 @@ run!(
 // Calling with a type that has no implementation is a compile error.
 run!(
     trait_no_impl_refused,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Show does not contain string")),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -111,7 +111,7 @@ run!(
 // A required method missing from an implementation is a compile error.
 run!(
     trait_missing_method_refused,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("is missing the required method other")),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string; val other: fn(self) -> i64 };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -123,7 +123,7 @@ run!(
 // Two implementations for one type conflict.
 run!(
     trait_duplicate_impl_refused,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("conflicting implementation: Show is already implemented for i64")),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -152,7 +152,7 @@ run!(
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Show does not contain [i64, string]")),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -162,9 +162,8 @@ run!(
     ; FuseExpect::None
 );
 
-// A `never()` arm is the identity of the dispatch union: `[⊥, Counter]`
-// dispatches on Counter. An interface-declared `fn(c: Collection)`
-// exports and dispatches on both an Array and a Map.
+// An interface-declared `fn(c: Collection)` exports and dispatches on
+// both an Array and a Map.
 run!(
     collection_generic_interface_declared,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
@@ -180,6 +179,8 @@ let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
 
+// A `never()` arm is the identity of the dispatch union: `[⊥, Counter]`
+// dispatches on Counter.
 run!(
     trait_dispatch_never_arm_union,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(3)"),
@@ -197,14 +198,9 @@ run!(
 // resolve by the element type.
 run!(
     trait_method_as_callback,
-    // CR claude for claude: [test-gap] This predicate checks only the length, so dispatch
-    // to the wrong impl, or the wrong strings, passes in every mode, and run! never
-    // compares the modes. Every engine produces ["int 1", "int 2"] (graphix-fuzz run),
-    // so assert that. Separately, the comment at 166 opens with the `[⊥, Counter]`
-    // never-arm rule, which describes trait_dispatch_never_arm_union (184), but it sits
-    // above collection_generic_interface_declared; move that sentence.
-    // (tests-lang-b-13)
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2),
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::from("int 1"), Value::from("int 2")])
+    },
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -452,7 +448,7 @@ run!(
 // A quantifier bound written in a `let` annotation is enforced.
 run!(
     annotation_bound_enforced,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("within Number does not contain string")),
     "/test.gx" => r#"
         let f: fn<'a: Number>(x: 'a) -> 'a = |x| x;
         let result = f("hi")
@@ -592,7 +588,7 @@ run!(
 // `#[sync]`: an async body is a compile error.
 run!(
     core_method_async_refused,
-    |v: Result<&Value>| v.is_err(),
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("this function is async")),
     "/test.gx" => r##"
         type Key = Abstract<string>;
         impl Display for Key { let fmt = |k| sys::time::timer(duration:0.01s, false) ~ k.0 };

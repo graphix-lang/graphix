@@ -1,15 +1,24 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use arcstr::ArcStr;
 use bytes::Bytes;
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag,
-    expr::{ResolverRef, Source, VfsResolver},
+    BindId, CFlag, ParMode,
+    env::Env,
+    expr::{ExprId, Origin, ResolverRef, Source, VfsEntry, VfsResolver},
 };
-use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt, RegistrationImage};
+use graphix_rt::{
+    Callable, CompRes, GXConfig, GXEvent, GXHandle, GXRt, NoExt, Ref, RegistrationImage,
+};
 use netidx::publisher::Value;
+use netidx_core::path::Path;
 use poolshark::global::GPooled;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use std::time::Duration;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::Instant,
+};
 
 pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
@@ -27,21 +36,12 @@ pub enum FuseExpect {
 }
 
 /// Assert the observed fusion counters match `expect`. Called after a
-/// fixture runs, in `jit` mode only; the per-thread counters are reset
-/// after runtime init so they reflect only the fixture's own program.
+/// fixture runs, in `jit` mode only; the runtime's counters (its
+/// `Control`, debug builds only) are reset after init so they reflect
+/// only the fixture's own program. `Jit` holds when any region ran fused:
+/// a fixture whose point is that one expression fuses says `#[native]`
+/// on it.
 #[cfg(debug_assertions)]
-// CR claude for claude: [test-gap] FuseExpect::Jit, run!'s default, passes when any
-// region of the program fused. A let-bound array literal is a region of its own, so the
-// check holds even while the construct under test node-walks. array_iterq
-// (array.rs:380) is annotated Jit, yet `array::iterq` and `filter` both fail to fuse
-// ('no fast-call entry'), and its one fused region is the `[1, 2, 3, 4]` literal.
-// `array::filter(a, |x| { log(#dest: `Trace, x); 10 / x > 2 })`, whose loop is
-// de-fused, still fuses 2 regions. So the fusion claims in fixture comments
-// (array.rs:401, 418, 513, 702; list.rs:722) are not tested: put #[native] on the
-// expression whose fusion a fixture claims, as array_sort_native_defaults and
-// list_native_pipeline do, or count only regions that cover the result. The doc is also
-// stale: the counters belong to the runtime's Control, not to a thread, and 'With the
-// interpreter gone' (line 45) is history. (tests-lib-a-03)
 pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
     match expect {
         FuseExpect::Jit => {
@@ -54,8 +54,8 @@ pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
             );
             assert!(
                 jit > 0,
-                "fuse: Jit — FUSION>0 but JIT_INVOCATIONS=0. With the \
-                 interpreter gone this should be impossible; investigate.",
+                "fuse: Jit — FUSION>0 but JIT_INVOCATIONS=0: a fused \
+                 region ran without entering its JIT wrapper; investigate.",
             );
         }
         FuseExpect::None => {
@@ -136,11 +136,6 @@ where
         >,
     ),
 {
-    // A fixture that recurses without end must abort instead of
-    // eating the box; an explicit GRAPHIX_STACK_BUDGET still wins.
-    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
-        graphix_compiler::set_stack_budget(1 << 30);
-    }
     init_inner(sub, register, resolvers, flags, false, None, None, None, None, setup)
         .await
 }
@@ -202,9 +197,6 @@ where
         >,
     ),
 {
-    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
-        graphix_compiler::set_stack_budget(1 << 30);
-    }
     init_inner(
         sub,
         register,
@@ -263,17 +255,6 @@ where
     init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
 
-// CR claude for claude: [test-gap] Only init_with_flags_and_setup and
-// init_session_with_setup apply the 1 GiB GRAPHIX_STACK_BUDGET default.
-// init_with_session (and so init_with_registration), init_lsp_with_registration and
-// init_lsp_mode do not. set_stack_budget is process-global, so the image, leak and lsp
-// tests (and netidx-admin's image tests) run with no budget when run alone and with 1
-// GiB once any run! fixture in the same process has set it. A runaway recursion there
-// either eats the machine or aborts, depending on test order. Apply the default once,
-// here. The harness also repeats itself: eval, eval_converged, eval_packed and run!
-// each copy the VFS + `{ mod test; test::result }` + wait loop, and find_bind_id (gui,
-// tui, graphix-tests), wait_for_update and compile_named_callable (gui, tui) are
-// verbatim copies that belong in this module. (x-dup-07)
 async fn init_inner<F>(
     sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     register: &[PackageRef],
@@ -295,16 +276,14 @@ where
     ),
 {
     let _ = env_logger::try_init();
-    // Nothing seeds NetConfig, so tests that touch sys::net share one
-    // process-internal netidx materialized on demand.
-    // CR claude for claude: [doc-drift] The comment above is wrong. NetHandles is
-    // per-runtime libstate, and NetConfig::Internal builds a fresh netidx::InternalOnly
-    // for each runtime, with its own resolver on 127.0.0.1:0
-    // (graphix-package-sys/src/netstate.rs:113-150), so tests do not share a netidx and
-    // can reuse paths. The doc at lines 29-31 calls the fusion counters per-thread, and
-    // lib_tests/lift.rs:63-65 says the same of the self-block count; both are the
-    // runtime's Control atomics (ctx.rt.control()). Say per runtime in all three
-    // places. (tests-lang-c-09)
+    // A fixture that recurses without end must abort instead of
+    // eating the box; an explicit GRAPHIX_STACK_BUDGET still wins.
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        graphix_compiler::set_stack_budget(1 << 30);
+    }
+    // Nothing seeds NetConfig, so a runtime that touches sys::net gets
+    // a process-internal netidx of its own, on demand: tests may reuse
+    // paths.
     let st = std::time::Instant::now();
     let mut ctx = GXRt::<NoExt>::new_state()?;
     log::info!("context creation time: {:?}", st.elapsed());
@@ -342,11 +321,179 @@ where
     Ok(TestCtx { rt })
 }
 
-/// Evaluate a graphix expression and return its Value.
-///
-/// Compiles `code` as `let result = {code}` in a throwaway module,
-/// waits for the first update, and returns the resulting value along
-/// with the test context (caller must shut it down).
+pub type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
+
+/// How a differential test runs a program: the node-walk or fused, each
+/// serial or with every fork point forked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Interp,
+    Jit,
+    Par,
+    JitPar,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 4] = [Mode::Interp, Mode::Jit, Mode::Par, Mode::JitPar];
+
+    pub fn flags(self) -> BitFlags<CFlag> {
+        match self {
+            Mode::Interp | Mode::Par => CFlag::FusionDisabled.into(),
+            Mode::Jit | Mode::JitPar => BitFlags::empty(),
+        }
+    }
+
+    /// The serial modes fork nothing unless `GRAPHIX_PAR` says otherwise.
+    pub fn par(self) -> ParMode {
+        match self {
+            Mode::Interp | Mode::Jit => match std::env::var_os("GRAPHIX_PAR") {
+                Some(_) => ParMode::from_env(),
+                None => ParMode::Off,
+            },
+            Mode::Par | Mode::JitPar => ParMode::Force,
+        }
+    }
+}
+
+/// `let result = {code}`, a fixture's `/test.gx`.
+pub fn result_source(code: &str) -> VfsEntry {
+    VfsEntry::from(ArcStr::from(format_compact!("let result = {code}").as_str()))
+}
+
+/// A runtime for `mode` whose resolver serves `files`, with the
+/// receiver of its events.
+pub async fn fixture_runtime<'a, F>(
+    files: impl IntoIterator<Item = (&'a str, VfsEntry)>,
+    register: &[PackageRef],
+    mode: Mode,
+    setup: F,
+) -> Result<(TestCtx, Events)>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecState<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
+    let (tx, rx) = mpsc::channel(1024);
+    let tbl = ahash::AHashMap::from_iter(
+        files.into_iter().map(|(path, entry)| (Path::from(ArcStr::from(path)), entry)),
+    );
+    let ctx = init_with_flags_and_setup(
+        tx,
+        register,
+        vec![VfsResolver::new(tbl)],
+        mode.flags(),
+        |ctx| {
+            ctx.control.set_par_mode(mode.par());
+            setup(ctx)
+        },
+    )
+    .await?;
+    Ok((ctx, rx))
+}
+
+/// Compile `{ mod test; test::result }`, the expression a fixture's
+/// value is read from; it lives as long as the returned `CompRes`.
+pub async fn compile_result(ctx: &TestCtx) -> Result<CompRes<NoExt>> {
+    ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await
+}
+
+/// The next update of `id`, failing at `deadline`.
+pub async fn next_update(
+    rx: &mut Events,
+    id: ExprId,
+    deadline: Instant,
+) -> Result<Value> {
+    loop {
+        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout waiting for an update of {id:?}"))?
+            .context("the runtime died")?;
+        for e in batch.drain(..) {
+            if let GXEvent::Updated(eid, v) = e
+                && eid == id
+            {
+                return Ok(v);
+            }
+        }
+    }
+}
+
+/// Every update of `id` until no batch arrives for `quiet`, failing at
+/// `deadline` (a program that never quiesces).
+pub async fn updates_until_quiet(
+    rx: &mut Events,
+    id: ExprId,
+    quiet: Duration,
+    deadline: Instant,
+) -> Result<Vec<Value>> {
+    let mut values = Vec::new();
+    loop {
+        if Instant::now() >= deadline {
+            bail!("the program did not quiesce: {values:?}");
+        }
+        match tokio::time::timeout(quiet, rx.recv()).await {
+            Err(_) => return Ok(values),
+            Ok(None) => bail!("the runtime died"),
+            Ok(Some(mut batch)) => {
+                for e in batch.drain(..) {
+                    if let GXEvent::Updated(eid, v) = e
+                        && eid == id
+                    {
+                        values.push(v);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A [`run!`] predicate for a program that must be refused: its compile
+/// error contains `phrase`. A parse error or a dead runtime does not
+/// match the rule's message.
+pub fn refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
+    move |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains(phrase))
+}
+
+/// The `BindId` of a module-qualified name like `"test::clicks"`. Scope
+/// keys are generated paths (`/do…/test`), so the module is matched as a
+/// suffix.
+pub fn find_bind_id(env: &Env, name: &str) -> Result<BindId> {
+    let Some((module, var)) = name.split_once("::") else {
+        bail!("expected module::var, got {name}")
+    };
+    let suffix = format_compact!("/{module}");
+    for (scope, vars) in &env.binds {
+        if Path::as_ref(&scope.0).ends_with(suffix.as_str())
+            && let Some(bid) = vars.get(var)
+        {
+            return Ok(*bid);
+        }
+    }
+    bail!("no binding {name} found in env")
+}
+
+/// Compile the lambda bound to `name` into a callable. The `Ref` and the
+/// `Callable` keep it alive: the caller holds both while it uses the id.
+pub async fn compile_named_callable(
+    gx: &GXHandle<NoExt>,
+    env: &Env,
+    name: &str,
+) -> Result<(Ref<NoExt>, Callable<NoExt>)> {
+    let bid = find_bind_id(env, name)?;
+    let r = gx.compile_ref(bid).await.with_context(|| format!("compile_ref {name}"))?;
+    let val = r.last.clone().with_context(|| format!("no value for {name}"))?;
+    let cb = gx
+        .compile_callable(val)
+        .await
+        .with_context(|| format!("compile_callable {name}"))?;
+    Ok((r, cb))
+}
+
+/// Evaluate a graphix expression and return its first value with the
+/// test context (caller must shut it down).
 pub async fn eval(code: &str, register: &[PackageRef]) -> Result<(Value, TestCtx)> {
     eval_with_setup(code, register, |_| {}).await
 }
@@ -364,77 +511,51 @@ where
         >,
     ),
 {
-    let (tx, mut rx) = mpsc::channel(10);
-    let gx_code = format!("let result = {code}");
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx = init_with_setup(tx, register, vec![resolver], setup).await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for graphix result"),
-            batch = rx.recv() => match batch {
-                None => bail!("graphix runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                return Ok((v, ctx));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    first_value([("/test.gx", result_source(code))], register, setup).await
+}
+
+async fn first_value<'a, F>(
+    files: impl IntoIterator<Item = (&'a str, VfsEntry)>,
+    register: &[PackageRef],
+    setup: F,
+) -> Result<(Value, TestCtx)>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecState<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
+    let (ctx, mut rx) = fixture_runtime(files, register, Mode::Jit, setup).await?;
+    let res = compile_result(&ctx).await?;
+    let v =
+        next_update(&mut rx, res.exprs[0].id, Instant::now() + Duration::from_secs(5))
+            .await?;
+    Ok((v, ctx))
 }
 
 /// Like [`eval`], but for a program that converges over several cycles:
-/// collects updates for a brief window and returns the LAST value of the
-/// result expr.
+/// the LAST value of the result once the runtime has gone quiet.
 pub async fn eval_converged(
     code: &str,
     register: &[PackageRef],
 ) -> Result<(Value, TestCtx)> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let gx_code = format!("let result = {code}");
-    let tbl = ahash::AHashMap::from_iter([(
-        netidx_core::path::Path::from("/test.gx"),
-        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(gx_code)),
-    )]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx = init_with_setup(tx, register, vec![resolver], |_| {}).await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
-    let deadline = tokio::time::sleep(std::time::Duration::from_millis(500));
-    tokio::pin!(deadline);
-    let mut last: Option<Value> = None;
-    loop {
-        tokio::select! {
-            _ = &mut deadline => break,
-            batch = rx.recv() => match batch {
-                None => break,
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e
-                            && id == eid
-                        {
-                            last = Some(v);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    match last {
+    let (ctx, mut rx) =
+        fixture_runtime([("/test.gx", result_source(code))], register, Mode::Jit, |_| {})
+            .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut values = updates_until_quiet(
+        &mut rx,
+        res.exprs[0].id,
+        Duration::from_millis(500),
+        deadline,
+    )
+    .await?;
+    match values.pop() {
         Some(v) => Ok((v, ctx)),
-        None => bail!("no update within deadline"),
+        None => bail!("no update before the runtime went quiet"),
     }
 }
 
@@ -445,42 +566,16 @@ pub async fn eval_packed(
     code: &str,
     register: &[PackageRef],
 ) -> Result<(Value, TestCtx)> {
-    let (tx, mut rx) = mpsc::channel(10);
-    let gx_code = format!("let result = {code}");
-    let source = arcstr::ArcStr::from(gx_code);
-    let ori = graphix_compiler::expr::Origin {
+    let source = ArcStr::from(format_compact!("let result = {code}").as_str());
+    let ori = Origin {
         parent: None,
-        source: graphix_compiler::expr::Source::Internal(arcstr::literal!("test")),
+        source: Source::Internal(arcstr::literal!("test")),
         text: source.clone(),
     };
     let exprs = graphix_compiler::expr::parser::parse(ori)?;
     let packed = graphix_compiler::expr::serialize::pack_module(&exprs)?;
-    let entry = graphix_compiler::expr::VfsEntry { source, packed: Some(packed) };
-    let tbl =
-        ahash::AHashMap::from_iter([(netidx_core::path::Path::from("/test.gx"), entry)]);
-    let resolver = VfsResolver::new(tbl);
-    let ctx = init_with_resolvers(tx, register, vec![resolver]).await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let eid = compiled.exprs[0].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting for graphix result"),
-            batch = rx.recv() => match batch {
-                None => bail!("graphix runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e {
-                            if id == eid {
-                                return Ok((v, ctx));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let entry = VfsEntry { source, packed: Some(packed) };
+    first_value([("/test.gx", entry)], register, |_| {}).await
 }
 
 pub use graphix_compiler::expr::parser::GRAPHIX_ESC;
@@ -495,29 +590,24 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     res
 }
 
-// CR claude for claude: [doc-drift] This doc says two modes, lists three, and says the
-// macro expands to three tests; the standard form generates four (interp, par, jit,
-// jit_par), and jit_par is not listed. check_fuse_expectation's doc (line 30) says
-// per-thread counters, but they are per-runtime atomics on Control
-// (graphix-types/src/stack.rs:213-216), and the message at line 45 ('With the
-// interpreter gone ...') is history. design/queue_fn.md:25-29 gives queuefn's signature
-// without its 'a: Function bound and says there is no Fn kind constraint.
-// CLAUDE.md:612-614 says run! asserts equal values across interp and jit, but each mode
-// only checks the fixture's predicate on its own first update and nothing compares
-// them. (core-aux-16)
-/// Run a graphix fixture under two modes and assert the supplied
-/// predicate holds for the produced Value in each:
+/// Run a graphix fixture in each [`Mode`] and assert the supplied
+/// predicate holds for the value it produces in each. Nothing compares
+/// the modes' values with each other: a predicate that pins the value
+/// exactly is what makes them agree, and a refusal names its message
+/// ([`refused`]).
 ///
-/// - **interp**: `CFlag::FusionDisabled` set; the program runs purely
+/// - **interp**: `CFlag::FusionDisabled`; the program runs purely
 ///   through the node-walk.
 /// - **jit**: the full fusion + JIT path. Asserts the `FuseExpect`
 ///   annotation (and the optional `; shape:` NodeShape) against the
-///   live post-fusion graph; debug builds only, where the counters exist.
-/// - **par**: the node-walk with every fork point forked
+///   live post-fusion graph; the annotation only in debug builds, where
+///   the counters exist.
+/// - **par**, **jit_par**: the same two with every fork point forked
 ///   (`ParMode::Force`, `design/parallel_eval.md`).
 ///
-/// Expands to `mod $name { fn interp() … fn jit() … fn par() … }` —
-/// three `#[tokio::test(flavor = "current_thread")]` functions.
+/// Expands to `mod $name { … }` holding one
+/// `#[tokio::test(flavor = "current_thread")]` per mode; the
+/// `; jit_only` form holds only the fused two.
 #[macro_export]
 macro_rules! run {
     // The `; shape:` and `; jit_only` arms must precede the plain
@@ -563,111 +653,51 @@ macro_rules! run {
                 $shape
             }
 
-            async fn run_with_flags(
-                flags: ::graphix_compiler::BitFlags<::graphix_compiler::CFlag>,
-                par: ::graphix_compiler::ParMode,
+            async fn run_mode(
+                mode: $crate::testing::Mode,
                 reset_counters_after_init: bool,
-                fusion_check: bool,
                 check_shape: bool,
             ) -> ::anyhow::Result<(u64, u64)> {
                 let pred = $pred;
-                let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
-                let tbl = ::ahash::AHashMap::from_iter([
-                    $((
-                        ::netidx_core::path::Path::from($path),
-                        ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)),
-                    )),+
-                ]);
-                let resolver = ::graphix_compiler::expr::VfsResolver::new(tbl);
-                let ctx = $crate::testing::init_with_flags_and_setup(
-                    tx, &crate::TEST_REGISTER, vec![resolver], flags,
-                    |ctx| ctx.control.set_par_mode(par),
+                let (ctx, mut rx) = $crate::testing::fixture_runtime(
+                    [$(($path, ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from($code)))),+],
+                    &crate::TEST_REGISTER,
+                    mode,
+                    |_| {},
                 ).await?;
                 // Init compiles the stdlib root and may fuse there;
                 // only the fixture's own compile should count.
                 if reset_counters_after_init {
                     ctx.rt.control().reset_invocations();
                 }
-                let bs = &ctx.rt;
-                match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
-                    // CR claude for claude: [test-gap] A panic while compiling the
-                    // fixture kills the runtime task, and tokio swallows the panic.
-                    // exec then returns 'runtime did not respond', and this arm passes
-                    // that to the predicate as if it were a refusal. So every fixture
-                    // whose predicate accepts any Err passes on a compiler panic: 45 of
-                    // them in
-                    // lang/{arrays,attributes,basics,collection,datetime,lists,maps,tuples_structs}.rs.
-                    // tuple_index_oob, which says it pins 'a type error, not a compiler
-                    // panic', cannot fail on one. `duration:-1.s` is such an input
-                    // today. Before calling pred, check that the runtime still answers
-                    // (bs.get_env().await is Ok), then tighten those fixtures to match
-                    // their error messages. (tests-lang-d-05)
-                    // CR claude for claude: [test-gap] Every compile error reaches `pred`
-                    // here, a parse error included. 35 run! fixtures in graphix-tests'
-                    // types.rs and traits.rs accept any error with `Err(_)` or
-                    // `is_err()`, which is why SIMPLE_TYPECHECK and RECTYPES2 pass
-                    // today without reaching the rule they name. The crate already
-                    // spells the stronger check by hand 42 times (`Err(e) if
-                    // format!("{e:#}").contains(..)`), plus the eval tables in
-                    // types.rs. Give run! one refusal form that requires a substring of
-                    // the error, which a parse error will not match, and move these
-                    // fixtures onto it with their current messages. Separately,
-                    // CLAUDE.md says run! asserts that the interp and jit values are
-                    // equal. In fact the four modes each apply `pred` on their own and
-                    // nothing compares them. (tests-lang-b-06)
-                    Err(e) => assert!(pred(dbg!(Err(e)))),
-                    Ok(e) => {
-                        let eid = e.exprs[0].id;
+                match $crate::testing::compile_result(&ctx).await {
+                    Err(e) => {
+                        if let ::std::result::Result::Err(dead) = ctx.rt.get_env().await {
+                            ::anyhow::bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
+                        }
+                        assert!(pred(dbg!(Err(e))))
+                    }
+                    Ok(res) => {
+                        let eid = res.exprs[0].id;
                         if check_shape {
                             if let ::std::option::Option::Some(spec) = shape_spec() {
-                                bs.match_shape(eid, spec).await?;
+                                ctx.rt.match_shape(eid, spec).await?;
                             }
                         }
-                        let timeout = ::tokio::time::sleep(
-                            ::std::time::Duration::from_secs($timeout),
-                        );
-                        ::tokio::pin!(timeout);
-                        loop {
-                            ::tokio::select! {
-                                _ = &mut timeout => ::anyhow::bail!(
-                                    "timeout after {}s waiting for result", $timeout,
-                                ),
-                                batch = rx.recv() => match batch {
-                                    None => ::anyhow::bail!("runtime died"),
-                                    Some(mut batch) => {
-                                        let mut done = false;
-                                        for e in batch.drain(..) {
-                                            match e {
-                                                ::graphix_rt::GXEvent::Env(_) => (),
-                                                ::graphix_rt::GXEvent::Updated(id, v) => {
-                                                    eprintln!("{v}");
-                                                    assert_eq!(id, eid);
-                                                    assert!(pred(Ok(&v)));
-                                                    done = true;
-                                                }
-                                            }
-                                        }
-                                        if done { break; }
-                                    }
-                                }
-                            }
-                        }
+                        let deadline = ::tokio::time::Instant::now()
+                            + ::std::time::Duration::from_secs($timeout);
+                        let v = $crate::testing::next_update(&mut rx, eid, deadline).await?;
+                        eprintln!("{v}");
+                        assert!(pred(Ok(&v)));
                     }
                 }
                 let invocations = ctx.rt.control().invocations();
-                #[cfg(debug_assertions)]
-                if fusion_check {
-                    $crate::testing::check_fuse_expectation(invocations, $fexpect);
-                }
                 // The blocker list includes stdlib-root noise (stats
                 // are per-ExecCtx).
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok()
-                    && !flags
-                        .contains(::graphix_compiler::CFlag::FusionDisabled)
+                    && !mode.flags().contains(::graphix_compiler::CFlag::FusionDisabled)
                 {
-                    if let ::std::result::Result::Ok(stats) =
-                        ctx.fusion_stats().await
-                    {
+                    if let ::std::result::Result::Ok(stats) = ctx.fusion_stats().await {
                         for failure in stats.failed.iter() {
                             eprintln!(
                                 "FUSEAUDIT-BLOCKER\t{}\t{:?}\t{}",
@@ -682,57 +712,26 @@ macro_rules! run {
                 Ok(invocations)
             }
 
-            // CR claude for claude: [test-gap] interp and jit pass ParMode::from_env(),
-            // which returns Auto when GRAPHIX_PAR is unset. So these two serial
-            // baselines fork any loop whose probes say a fork pays, and which path a
-            // fixture takes depends on timing; graphix-fuzz pins its Interp and Jit
-            // modes to ParMode::Off (graphix-fuzz/src/lib.rs:73). Pin both to Off
-            // unless GRAPHIX_PAR is set. jit's #[cfg(debug_assertions)] (line 644) is
-            // not needed, since run_with_flags already gates the counter check, and it
-            // leaves cargo test --release with no serial-JIT run of any fixture (the
-            // GRAPHIX_FUSION_DISCOVERY/GRAPHIX_FUSE_AUDIT branches would keep a debug
-            // gate). 44 must-reject fixtures accept any compile error (`Err(_) =>
-            // true`) and 8 accept any error value, so they still pass when the program
-            // fails for an unrelated reason; an expect_err(substring) predicate would
-            // pin the expected refusal. probe:
-            // design/review-2026-10-05/repro/core-aux-13.gx (core-aux-13)
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
-                run_with_flags(
-                    ::graphix_compiler::CFlag::FusionDisabled.into(),
-                    ::graphix_compiler::ParMode::from_env(),
-                    false,
-                    false,
-                    false,
-                ).await.map(|_| ())
+                run_mode($crate::testing::Mode::Interp, false, false).await.map(|_| ())
             }
 
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn par() -> ::anyhow::Result<()> {
-                run_with_flags(
-                    ::graphix_compiler::CFlag::FusionDisabled.into(),
-                    ::graphix_compiler::ParMode::Force,
-                    false,
-                    false,
-                    false,
-                ).await.map(|_| ())
+                run_mode($crate::testing::Mode::Par, false, false).await.map(|_| ())
             }
 
             #[::tokio::test(flavor = "current_thread")]
-            #[cfg(debug_assertions)]
             async fn jit() -> ::anyhow::Result<()> {
                 // GRAPHIX_FUSION_DISCOVERY: run without asserting and
                 // print the observed level (`FUSEMAP <path> <level>`).
+                #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
-                    let (fusion, jit) = run_with_flags(
-                        ::graphix_compiler::BitFlags::empty(),
-                        ::graphix_compiler::ParMode::from_env(),
-                        true,
-                        false,
-                        false,
-                    ).await?;
+                    let (fusion, jit) =
+                        run_mode($crate::testing::Mode::Jit, true, false).await?;
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
@@ -748,14 +747,10 @@ macro_rules! run {
                 // GRAPHIX_FUSE_AUDIT: report the observed fusion level
                 // against the annotation (`FUSEAUDIT` lines) instead
                 // of asserting it.
+                #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
-                    let (fusion, _) = run_with_flags(
-                        ::graphix_compiler::BitFlags::empty(),
-                        ::graphix_compiler::ParMode::from_env(),
-                        true,
-                        false,
-                        false,
-                    ).await?;
+                    let (fusion, _) =
+                        run_mode($crate::testing::Mode::Jit, true, false).await?;
                     let expected = $fexpect;
                     let observed = if fusion > 0 {
                         $crate::testing::FuseExpect::Jit
@@ -771,26 +766,17 @@ macro_rules! run {
                     );
                     return Ok(());
                 }
-                run_with_flags(
-                    ::graphix_compiler::BitFlags::empty(),
-                    ::graphix_compiler::ParMode::from_env(),
-                    true,
-                    true,
-                    true,
-                ).await.map(|_| ())
+                let _invocations = run_mode($crate::testing::Mode::Jit, true, true).await?;
+                #[cfg(debug_assertions)]
+                $crate::testing::check_fuse_expectation(_invocations, $fexpect);
+                Ok(())
             }
 
             /// Fused, with every fork point forked, kernel loops' slots
             /// included.
             #[::tokio::test(flavor = "current_thread")]
             async fn jit_par() -> ::anyhow::Result<()> {
-                run_with_flags(
-                    ::graphix_compiler::BitFlags::empty(),
-                    ::graphix_compiler::ParMode::Force,
-                    false,
-                    false,
-                    false,
-                ).await.map(|_| ())
+                run_mode($crate::testing::Mode::JitPar, false, false).await.map(|_| ())
             }
         }
     };

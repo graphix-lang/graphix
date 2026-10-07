@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
+use graphix_compiler::expr::ExprId;
 use graphix_compiler::expr::VfsResolver;
-use graphix_compiler::{BindId, expr::ExprId};
 use graphix_package_core::testing::{self, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -64,7 +64,12 @@ impl GuiTestHarness {
             .context("compile graphix code")?;
         let expr_id = compiled.exprs[0].id;
 
-        let initial_value = wait_for_update(&mut rx, expr_id).await?;
+        let initial_value = testing::next_update(
+            &mut rx,
+            expr_id,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
 
         let widget = widgets::compile(gx.clone(), initial_value)
             .await
@@ -103,6 +108,8 @@ impl GuiTestHarness {
     // graphix_package_core::testing fixes both; the drain loops that wait for netidx
     // values then need next_update or wait_until, as the TUI's do. probe:
     // design/review-2026-10-05/repro/tests-ui-06.rs (tests-ui-06)
+    // 2026-10-06 claude: find_bind_id, wait_for_update (now next_update) and
+    // compile_named_callable live in graphix_package_core::testing, shared with the TUI.
     async fn drain(&mut self) -> Result<bool> {
         let mut changed = false;
         let timeout = tokio::time::sleep(Duration::from_millis(100));
@@ -147,7 +154,7 @@ impl GuiTestHarness {
     /// return its initial value; `get_watched()` reads it after a
     /// `drain()`.
     async fn watch(&mut self, name: &str) -> Result<Value> {
-        let bid = find_bind_id(&self.compiled.env, name)
+        let bid = testing::find_bind_id(&self.compiled.env, name)
             .with_context(|| format!("watch: lookup {name}"))?;
         let r = self
             .gx
@@ -306,70 +313,14 @@ impl GuiTestHarness {
         &mut self,
         name: &str,
     ) -> Result<graphix_rt::CallableId> {
-        let bid = find_bind_id(&self.compiled.env, name)
-            .with_context(|| format!("compile_named_callable: lookup {name}"))?;
-        let r = self
-            .gx
-            .compile_ref(bid)
+        let (r, cb) = testing::compile_named_callable(&self.gx, &self.compiled.env, name)
             .await
-            .with_context(|| format!("compile_named_callable: compile_ref {name}"))?;
-        let val = r
-            .last
-            .clone()
-            .with_context(|| format!("compile_named_callable: no value for {name}"))?;
-        let cb = self.gx.compile_callable(val).await.with_context(|| {
-            format!("compile_named_callable: compile_callable {name}")
-        })?;
+            .with_context(|| format!("compile_named_callable {name}"))?;
         let id = cb.id();
         self._refs.push(r);
         self._callables.push(cb);
         Ok(id)
     }
-}
-
-/// Wait for a specific expression's update, with timeout.
-async fn wait_for_update(
-    rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
-    target_id: ExprId,
-) -> Result<Value> {
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            biased;
-            Some(mut batch) = rx.recv() => {
-                for event in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = event {
-                        if id == target_id {
-                            return Ok(v);
-                        }
-                    }
-                }
-            }
-            _ = &mut timeout => bail!("timeout waiting for initial widget value"),
-        }
-    }
-}
-
-/// Find a BindId by a name like "test::released". Bindings live under
-/// generated scope prefixes, so this scans for a scope whose suffix
-/// matches the module path.
-fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> {
-    use netidx::path::Path;
-    let parts: Vec<&str> = name.split("::").collect();
-    let (module, var) = match parts.as_slice() {
-        [module, var] => (*module, *var),
-        _ => bail!("expected module::var, got {name}"),
-    };
-    let suffix = format!("/{module}");
-    for (scope, vars) in &env.binds {
-        if Path::as_ref(&scope.0).ends_with(&suffix) {
-            if let Some(bid) = vars.get(var) {
-                return Ok(*bid);
-            }
-        }
-    }
-    bail!("no binding {name} found in env")
 }
 
 use iced_core::{Event, Point, Size, clipboard, mouse};

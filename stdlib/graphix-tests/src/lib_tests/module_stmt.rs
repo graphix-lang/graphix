@@ -2,75 +2,32 @@
 //! persistent env, so dead-statement elimination treats a Module as an
 //! effect.
 
-use anyhow::{Result, anyhow};
-use enumflags2::BitFlags;
-use graphix_compiler::{CFlag, expr::VfsResolver};
-use graphix_rt::GXEvent;
+use anyhow::{Result, bail};
+use graphix_compiler::expr::VfsEntry;
+use graphix_package_core::testing::{Mode, fixture_runtime, next_update};
 use netidx_value::Value;
 use std::time::Duration;
+use tokio::time::Instant;
 
-/// Mount a module exporting a constant, compile a root Do that
-/// declares the module and reads the constant, return the first
-/// published value.
-async fn first_value(flags: BitFlags<CFlag>) -> Result<Value> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    let tbl = ahash::AHashMap::from_iter([
-        (
-            netidx_core::path::Path::from("/m0.gxi"),
-            graphix_compiler::expr::VfsEntry::from(arcstr::literal!("val c: u16;")),
-        ),
-        (
-            netidx_core::path::Path::from("/m0.gx"),
-            graphix_compiler::expr::VfsEntry::from(arcstr::literal!("let c = u16:1000")),
-        ),
-    ]);
-    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
-        tx,
-        &crate::TEST_REGISTER,
-        vec![VfsResolver::new(tbl)],
-        flags,
-        |_| {},
-    )
-    .await?;
-    let compiled = ctx.rt.compile(arcstr::literal!("{ mod m0; m0::c }")).await?;
-    let eid = compiled.exprs[0].id;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let v = loop {
-        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
-            .await
-            .map_err(|_| anyhow!("timeout: module constant never published"))?
-            .ok_or_else(|| anyhow!("runtime died"))?;
-        let mut found = None;
-        for e in batch.drain(..) {
-            if let GXEvent::Updated(id, v) = e {
-                if id == eid {
-                    found = Some(v);
-                }
-            }
+/// Mount a module exporting a constant, compile a root Do that declares
+/// the module and reads the constant: in every mode the first value is
+/// the constant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn module_constant_reaches_root_reader() -> Result<()> {
+    for mode in Mode::ALL {
+        let files = [
+            ("/m0.gxi", VfsEntry::from(arcstr::literal!("val c: u16;"))),
+            ("/m0.gx", VfsEntry::from(arcstr::literal!("let c = u16:1000"))),
+        ];
+        let (ctx, mut rx) =
+            fixture_runtime(files, &crate::TEST_REGISTER, mode, |_| {}).await?;
+        let res = ctx.rt.compile(arcstr::literal!("{ mod m0; m0::c }")).await?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        match next_update(&mut rx, res.exprs[0].id, deadline).await? {
+            Value::U16(1000) => (),
+            other => bail!("{mode:?}: expected u16:1000, got {other:?}"),
         }
-        if let Some(v) = found {
-            break v;
-        }
-    };
-    ctx.shutdown().await;
-    Ok(v)
-}
-
-fn assert_c(v: &Value) -> Result<()> {
-    match v {
-        Value::U16(1000) => Ok(()),
-        other => Err(anyhow!("expected u16:1000, got {other:?}")),
+        ctx.shutdown().await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn module_constant_reaches_root_reader_jit() -> Result<()> {
-    let v = first_value(BitFlags::empty()).await?;
-    assert_c(&v)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn module_constant_reaches_root_reader_interp() -> Result<()> {
-    let v = first_value(CFlag::FusionDisabled.into()).await?;
-    assert_c(&v)
+    Ok(())
 }

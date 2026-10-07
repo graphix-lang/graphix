@@ -22,14 +22,14 @@ invocations are queued and released by an external trigger.
 ## API
 
 ```graphix
-val queuefn: fn(?#count: &[i64, null], #trigger: Any, f: 'a) -> 'a;
+val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger: Any, f: 'a) -> 'a;
 ```
 
-- `f: 'a` — the function to wrap. `'a` is structurally a fn type,
-  checked at the CallSite phase; there is no `Fn` kind constraint.
+- `f: 'a` — the function to wrap; the `Function` bound refuses
+  anything else at the call.
 - `#trigger: Any` — each update releases one queued invocation, or
   banks a pop.
-- `#count: &[i64, null]` — optional writable ref; when non-null the
+- `#count: [&mut i64, null]` — optional writable ref; when non-null the
   builtin writes the queue depth whenever it changes. Pure
   observability, and the stall-visibility tool: a forgotten trigger
   grows the queue without bound, and `#count` is how a program renders

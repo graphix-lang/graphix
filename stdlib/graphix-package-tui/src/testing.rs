@@ -12,8 +12,8 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use crossterm::event::Event;
+use graphix_compiler::expr::ExprId;
 use graphix_compiler::expr::VfsResolver;
-use graphix_compiler::{BindId, expr::ExprId};
 use graphix_package_core::testing::{self, PackageRef, TestCtx};
 use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
@@ -95,7 +95,12 @@ impl TuiTestHarness {
         let expr_id = compiled.exprs[0].id;
 
         // Wait for the initial root widget value.
-        let initial_value = wait_for_update(&mut rx, expr_id).await?;
+        let initial_value = testing::next_update(
+            &mut rx,
+            expr_id,
+            tokio::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
 
         // Build the live widget tree. Same path as the runtime's `run()`
         // takes for the root expression's first delivery.
@@ -174,7 +179,7 @@ impl TuiTestHarness {
     /// `watched`. `name` is module-qualified (e.g. `"test::clicks"`).
     /// Returns the initial value.
     pub async fn watch(&mut self, name: &str) -> Result<Value> {
-        let bid = find_bind_id(&self.compiled.env, name)
+        let bid = testing::find_bind_id(&self.compiled.env, name)
             .with_context(|| format!("watch: lookup {name}"))?;
         let r = self
             .gx
@@ -276,20 +281,9 @@ impl TuiTestHarness {
         &mut self,
         name: &str,
     ) -> Result<graphix_rt::CallableId> {
-        let bid = find_bind_id(&self.compiled.env, name)
-            .with_context(|| format!("compile_named_callable: lookup {name}"))?;
-        let r = self
-            .gx
-            .compile_ref(bid)
+        let (r, cb) = testing::compile_named_callable(&self.gx, &self.compiled.env, name)
             .await
-            .with_context(|| format!("compile_named_callable: compile_ref {name}"))?;
-        let val = r
-            .last
-            .clone()
-            .with_context(|| format!("compile_named_callable: no value for {name}"))?;
-        let cb = self.gx.compile_callable(val).await.with_context(|| {
-            format!("compile_named_callable: compile_callable {name}")
-        })?;
+            .with_context(|| format!("compile_named_callable {name}"))?;
         let id = cb.id();
         self._refs.push(r);
         self._callables.push(cb);
@@ -347,50 +341,6 @@ async fn deliver(
         }
     }
     Ok(updated)
-}
-
-/// Wait up to 5s for a specific expression's update.
-async fn wait_for_update(
-    rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
-    target_id: ExprId,
-) -> Result<Value> {
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            biased;
-            Some(mut batch) = rx.recv() => {
-                for event in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = event {
-                        if id == target_id {
-                            return Ok(v);
-                        }
-                    }
-                }
-            }
-            _ = &mut timeout => bail!("timeout waiting for initial widget value"),
-        }
-    }
-}
-
-/// Look up a `BindId` for a module-qualified name like `"test::clicks"`.
-/// Env scope keys are generated paths (`/do…/test`), so we suffix-match.
-fn find_bind_id(env: &graphix_compiler::env::Env, name: &str) -> Result<BindId> {
-    use netidx::path::Path;
-    let parts: Vec<&str> = name.split("::").collect();
-    let (module, var) = match parts.as_slice() {
-        [module, var] => (*module, *var),
-        _ => bail!("expected module::var, got {name}"),
-    };
-    let suffix = format!("/{module}");
-    for (scope, vars) in &env.binds {
-        if Path::as_ref(&scope.0).ends_with(&suffix) {
-            if let Some(bid) = vars.get(var) {
-                return Ok(*bid);
-            }
-        }
-    }
-    bail!("no binding {name} found in env")
 }
 
 /// Render a `Buffer` into one `String` per row by concatenating each

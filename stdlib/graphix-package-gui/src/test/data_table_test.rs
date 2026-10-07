@@ -573,7 +573,7 @@ let result = data_table(
         "initial ascending sort: r1(10) < r2(20) < r0(30)"
     );
 
-    let bid = find_bind_id(&h.compiled.env, "test::v1")?;
+    let bid = testing::find_bind_id(&h.compiled.env, "test::v1")?;
     let mut v1_ref = h.gx.compile_ref(bid).await?;
     v1_ref.set(Value::F64(100.0))?;
     for _ in 0..15 {
@@ -736,9 +736,9 @@ let result = data_table(
 
     await_order(&mut h, &alpha_asc, "initial alpha asc").await?;
 
-    let col_bid = find_bind_id(&h.compiled.env, "test::sort_col")?;
+    let col_bid = testing::find_bind_id(&h.compiled.env, "test::sort_col")?;
     let mut col_ref = h.gx.compile_ref(col_bid).await?;
-    let dir_bid = find_bind_id(&h.compiled.env, "test::sort_dir")?;
+    let dir_bid = testing::find_bind_id(&h.compiled.env, "test::sort_dir")?;
     let mut dir_ref = h.gx.compile_ref(dir_bid).await?;
 
     dir_ref.set(Value::String(arcstr::literal!("Descending")))?;
@@ -1144,7 +1144,7 @@ let result = data_table(
 "#;
     let mut h = dt(code).await?;
     assert_eq!(h.dt_snapshot().grid[0][0], "v1");
-    let bid = find_bind_id(&h.compiled.env, "test::a")?;
+    let bid = testing::find_bind_id(&h.compiled.env, "test::a")?;
     let mut a_ref = h.gx.compile_ref(bid).await?;
     a_ref.set(Value::String(arcstr::literal!("v1b")))?;
     for _ in 0..5 {

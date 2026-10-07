@@ -36,8 +36,8 @@ async fn wake_recompute_table() -> Result<()> {
     let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let cond = super::callable::find_bind_id(&compiled.env, "test::cond")?;
-    let n = super::callable::find_bind_id(&compiled.env, "test::n")?;
+    let cond = graphix_package_core::testing::find_bind_id(&compiled.env, "test::cond")?;
+    let n = graphix_package_core::testing::find_bind_id(&compiled.env, "test::n")?;
     // settle init, then drive the table's three epochs
     for _ in 0..3 {
         let _e = gx.compile(arcstr::literal!("i64:0")).await?;

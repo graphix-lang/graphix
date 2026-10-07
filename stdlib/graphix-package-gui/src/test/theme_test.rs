@@ -1,4 +1,4 @@
-use super::{TEST_REGISTER, wait_for_update};
+use super::TEST_REGISTER;
 use crate::types::ThemeV;
 use ahash::AHashMap;
 use anyhow::{Context, Result};
@@ -35,7 +35,12 @@ let result = `Custom(stylesheet(
         testing::init_with_resolvers(tx, TEST_REGISTER, vec![VfsResolver::new(vfs)])
             .await?;
     let compiled = ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await?;
-    let v = wait_for_update(&mut rx, compiled.exprs[0].id).await?;
+    let v = testing::next_update(
+        &mut rx,
+        compiled.exprs[0].id,
+        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+    )
+    .await?;
     let ThemeV(theme) = ThemeV::from_value(v)?;
     let p = theme.palette();
     assert_eq!((p.background.r, p.background.g, p.background.b), (0.1, 0.2, 0.3));

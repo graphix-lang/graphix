@@ -4,7 +4,7 @@
 
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
-use graphix_compiler::{env::Env, expr::VfsResolver};
+use graphix_compiler::expr::VfsResolver;
 use graphix_package_core::testing;
 use graphix_rt::{GXEvent, NoExt};
 use netidx::{path::Path, protocol::valarray::ValArray, publisher::Value};
@@ -34,23 +34,8 @@ let result = ed.value
 // the same 'bail on 2, wait for 1, sleep 500 ms, drain' loop four times (lines 156,
 // 388, 474, 686). A setup helper and one settle helper built on wait_idle would replace
 // them. (tests-lib-a-14)
-pub(super) fn find_bind_id(env: &Env, name: &str) -> Result<graphix_compiler::BindId> {
-    let parts: Vec<&str> = name.split("::").collect();
-    let (module, var) = match parts.as_slice() {
-        [module, var] => (*module, *var),
-        _ => bail!("expected module::var, got {name}"),
-    };
-    let suffix = format!("/{module}");
-    for (scope, vars) in &env.binds {
-        if Path::as_ref(&scope.0).ends_with(&suffix) {
-            if let Some(bid) = vars.get(var) {
-                return Ok(*bid);
-            }
-        }
-    }
-    bail!("no binding {name} found in env")
-}
-
+// 2026-10-06 claude: find_bind_id is graphix_package_core::testing's now, shared by
+// gui, tui and this file; the setup and settle helpers remain.
 #[tokio::test(flavor = "multi_thread")]
 async fn callable_handler_writes_through_ref_param() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(100);
@@ -64,7 +49,7 @@ async fn callable_handler_writes_through_ref_param() -> Result<()> {
     let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let handle_bid = find_bind_id(&compiled.env, "test::handle")?;
+    let handle_bid = testing::find_bind_id(&compiled.env, "test::handle")?;
     let r = gx.compile_ref(handle_bid).await?;
     let lambda = r.last.clone().context("handle has no value")?;
     let callable = gx.compile_callable(lambda).await?;
@@ -138,7 +123,7 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
     let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
-    let get = |name: &str| find_bind_id(&compiled.env, name);
+    let get = |name: &str| testing::find_bind_id(&compiled.env, name);
     let handle_l = {
         let r = gx.compile_ref(get("test::handle")?).await?;
         gx.compile_callable(r.last.clone().context("no handle")?).await?
@@ -271,7 +256,8 @@ async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
     let handle_l = {
-        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        let r =
+            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
         gx.compile_callable(r.last.clone().context("no handle")?).await?
     };
     handle_l
@@ -402,7 +388,8 @@ async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee() -> Result<()>
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
     let handle_l = {
-        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        let r =
+            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
         gx.compile_callable(r.last.clone().context("no handle")?).await?
     };
     // Enter on the landing moves the screen; the panels callee it wakes
@@ -490,7 +477,8 @@ async fn alias_read_consumes_the_formals_fire() -> Result<()> {
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
     let handle_l = {
-        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        let r =
+            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
         gx.compile_callable(r.last.clone().context("no handle")?).await?
     };
     handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
@@ -574,7 +562,7 @@ async fn banked_bind_does_not_consume_the_level() -> Result<()> {
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
     let callable = |name: &str| {
         let gx = gx.clone();
-        let bid = find_bind_id(&compiled.env, name);
+        let bid = testing::find_bind_id(&compiled.env, name);
         async move {
             let r = gx.compile_ref(bid?).await?;
             gx.compile_callable(r.last.clone().context("no value")?).await
@@ -634,7 +622,7 @@ async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let lambda = |name: &str| -> Result<Value> {
-        let bid = find_bind_id(&compiled.env, name)?;
+        let bid = testing::find_bind_id(&compiled.env, name)?;
         let gx = gx.clone();
         Ok(tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
@@ -696,7 +684,8 @@ async fn arm_wake_switch_binds_the_standing_key_stale() -> Result<()> {
     let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
     let expr_id = compiled.exprs.last().context("no exprs")?.id;
     let handle_l = {
-        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        let r =
+            gx.compile_ref(testing::find_bind_id(&compiled.env, "test::handle")?).await?;
         gx.compile_callable(r.last.clone().context("no handle")?).await?
     };
     // Enter on the panels selects its Enter arm and moves to the landing,
