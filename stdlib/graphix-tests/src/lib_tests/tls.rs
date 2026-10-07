@@ -2,13 +2,9 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-fn cert_dir() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
-}
-
 // TLS round-trip: connect + accept, then write/read through upgraded
 // streams.
-run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
+run!(tls_round_trip, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     use sys::io::{{Read, Write}};
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;
@@ -27,7 +23,7 @@ run!(tls_round_trip, { let cd = cert_dir(); format!(r#"{{
 
 // Trait dispatch over a union of two Rust-backed abstract types: each
 // member's tag test answers by its registered wrapper UUID.
-run!(socket_union_dispatch, { let cd = cert_dir(); format!(r#"{{
+run!(socket_union_dispatch, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     use sys::io::{{Read, Write}};
     use sys::tcp::Socket;
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;

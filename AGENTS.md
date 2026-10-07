@@ -702,7 +702,7 @@ node graph IS the IR — there is no parallel typed IR
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError`, unchecked wraps, integer
-  div0 bottoms; indexing is bounds-checked through shared helpers on
+  div0 and `MIN / -1` bottom; indexing is bounds-checked through shared helpers on
   both backends; `$` and handler-less `?` log a swallowed error from
   both backends; unchecked-arith diagnostics are node-walk-only (debug
   with `--no-fusion`).

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-027adb0f.js";
+            window.path_to_searchindex_js = "../../searchindex-3004033c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -185,7 +185,7 @@ written in Graphix — works with the same code.</p>
 
 let f = sys::fs::open(`Read, "/etc/hostname")?;
 let text = buffer::to_string(Read::read_all(f)?)?;
-Close::close(f)?
+Close::close(text ~ f)?
 </code></pre>
 <p><code>Read</code> is the one to implement if you are writing a stream of your own:
 <code>read</code> is the only required method, and <code>read_exact</code> and <code>read_all</code> are

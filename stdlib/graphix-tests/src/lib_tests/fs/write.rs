@@ -1,118 +1,9 @@
-use anyhow::Result;
-use arcstr::ArcStr;
-use graphix_package_core::testing::escape_path;
-use graphix_rt::GXEvent;
-use netidx::subscriber::Value;
-use poolshark::global::GPooled;
-use tokio::{fs, sync::mpsc, time::Duration};
+use graphix_package_core::run_with_tempdir;
+use tokio::fs;
 
-/// Build an fs::write_* test: an error expectation, a success case with
-/// verification, or a custom expectation.
-// CR claude for claude: [structure] write_test! repeats run_with_tempdir!
-// (graphix-package-core/src/testing.rs:720) arm for arm: the expect_error and verify
-// arms, the runtime init, the 2 s timeout and the event loop. Only the program text is
-// built differently, so a fix to one runner must be made twice. Delete it and write the
-// eight tests with run_with_tempdir!, as read.rs does: code:
-// r#"sys::fs::write_all(#path: "{}", "Hello, World!")"#. (tests-lib-b1-09)
-macro_rules! write_test {
-    (
-        name: $test_name:ident,
-        function: $func:expr,
-        content: $content:expr,
-        setup: |$temp_dir:ident| $setup:block,
-        expect_error
-    ) => {
-        write_test! {
-            name: $test_name,
-            function: $func,
-            content: $content,
-            setup: |$temp_dir| $setup,
-            expect: |_v: Value| -> Result<()> {
-                if matches!(_v, Value::Error(_)) {
-                    Ok(())
-                } else {
-                    panic!("expected Error value, got: {_v:?}")
-                }
-            }
-        }
-    };
-    (
-        name: $test_name:ident,
-        function: $func:expr,
-        content: $content:expr,
-        setup: |$temp_dir:ident| $setup:block,
-        verify: |$verify_dir:ident| $verify:block
-    ) => {
-        write_test! {
-            name: $test_name,
-            function: $func,
-            content: $content,
-            setup: |$temp_dir| $setup,
-            expect: |_v: Value| -> Result<()> {
-                if !matches!(_v, Value::Null) {
-                    panic!("expected Null (success), got: {_v:?}");
-                }
-                Ok(())
-            },
-            verify: |$verify_dir| $verify
-        }
-    };
-    (
-        name: $test_name:ident,
-        function: $func:expr,
-        content: $content:expr,
-        setup: |$temp_dir:ident| $setup:block,
-        expect: $expect_handler:expr
-        $(, verify: |$verify_dir:ident| $verify:block)?
-    ) => {
-        #[tokio::test(flavor = "current_thread")]
-        async fn $test_name() -> Result<()> {
-            let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
-            let ctx = crate::init(tx).await?;
-            let $temp_dir = tempfile::tempdir()?;
-
-            let test_file = { $setup };
-
-            let code = format!(
-                r#"{}(#path: "{}", {})"#,
-                $func,
-                escape_path(test_file.display()),
-                $content
-            );
-            eprintln!("{code}");
-            let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
-            let eid = compiled.exprs[0].id;
-
-            let timeout = tokio::time::sleep(Duration::from_secs(2));
-            tokio::pin!(timeout);
-
-            loop {
-                tokio::select! {
-                    _ = &mut timeout => panic!("timeout waiting for result"),
-                    Some(mut batch) = rx.recv() => {
-                        for event in batch.drain(..) {
-                            if let GXEvent::Updated(id, v) = event {
-                                if id == eid {
-                                    $expect_handler(v)?;
-                                    $(
-                                        let $verify_dir = &$temp_dir;
-                                        $verify
-                                    )?
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
-write_test! {
+run_with_tempdir! {
     name: test_write_all_basic,
-    function: "sys::fs::write_all",
-    content: r#""Hello, World!""#,
+    code: r#"sys::fs::write_all(#path: "{}", "Hello, World!")"#,
     setup: |temp_dir| {
         temp_dir.path().join("test.txt")
     },
@@ -123,10 +14,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_overwrite_existing,
-    function: "sys::fs::write_all",
-    content: r#""Overwritten content""#,
+    code: r#"sys::fs::write_all(#path: "{}", "Overwritten content")"#,
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("existing.txt");
         fs::write(&test_file, "Original content").await?;
@@ -139,10 +29,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_utf8,
-    function: "sys::fs::write_all",
-    content: r#""Hello, 世界! 🦀""#,
+    code: r#"sys::fs::write_all(#path: "{}", "Hello, 世界! 🦀")"#,
     setup: |temp_dir| {
         temp_dir.path().join("utf8.txt")
     },
@@ -153,10 +42,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_empty_string,
-    function: "sys::fs::write_all",
-    content: r#""""#,
+    code: r#"sys::fs::write_all(#path: "{}", "")"#,
     setup: |temp_dir| {
         temp_dir.path().join("empty.txt")
     },
@@ -167,10 +55,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_bin_basic,
-    function: "sys::fs::write_all_bin",
-    content: r#"bytes:SGVsbG8="#,
+    code: r#"sys::fs::write_all_bin(#path: "{}", bytes:SGVsbG8=)"#,
     setup: |temp_dir| {
         temp_dir.path().join("test.bin")
     },
@@ -181,10 +68,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_bin_with_nulls,
-    function: "sys::fs::write_all_bin",
-    content: r#"bytes:AAECqg=="#,
+    code: r#"sys::fs::write_all_bin(#path: "{}", bytes:AAECqg==)"#,
     setup: |temp_dir| {
         temp_dir.path().join("binary.bin")
     },
@@ -195,10 +81,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_bin_overwrite,
-    function: "sys::fs::write_all_bin",
-    content: r#"bytes:AQI="#,
+    code: r#"sys::fs::write_all_bin(#path: "{}", bytes:AQI=)"#,
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("overwrite.bin");
         fs::write(&test_file, b"\x00\x00\x00\x00").await?;
@@ -211,10 +96,9 @@ write_test! {
     }
 }
 
-write_test! {
+run_with_tempdir! {
     name: test_write_all_invalid_path,
-    function: "sys::fs::write_all",
-    content: r#""content""#,
+    code: r#"sys::fs::write_all(#path: "{}", "content")"#,
     setup: |temp_dir| {
         temp_dir.path().join("nonexistent_dir").join("test.txt")
     },

@@ -18,7 +18,7 @@ fi
 openssl req -new -key server.key -sha512 -out server.csr \
   -subj "/CN=127.0.0.1/O=graphix"
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key \
-  -CAcreateserial -out server.pem -days 730 -extfile <(cat <<EOF
+  -CAcreateserial -out server.pem -days 7300 -extfile <(cat <<EOF
 basicConstraints=critical, CA:FALSE
 keyUsage=nonRepudiation,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth

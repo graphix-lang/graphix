@@ -12,7 +12,7 @@ use sys::io::{Read, Write, Close};
 
 let f = sys::fs::open(`Read, "/etc/hostname")?;
 let text = buffer::to_string(Read::read_all(f)?)?;
-Close::close(f)?
+Close::close(text ~ f)?
 ```
 
 `Read` is the one to implement if you are writing a stream of your own:

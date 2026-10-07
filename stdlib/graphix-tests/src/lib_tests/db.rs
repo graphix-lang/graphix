@@ -25,18 +25,23 @@ fn assert_tree_type(v: &Value, expected_key: &str, expected_val: &str) {
 // env_logger's default filter hides), and the test fails with run_with_tempdir!'s bare
 // 2 s 'timeout waiting for result'. Catching errors into the result value would name
 // the DbErr. (tests-lib-a-18)
+// 2026-10-06 claude: db_open returns the flush result beside the open's. The fixtures
+// still end in an uncaught `?` or `$`, so a failing operation still reads as a timeout.
 run_with_tempdir!(
     name: db_open,
     code: r#"{{
         let db = db::open("{}");
-        db::flush(db$)$;
-        is_err(db)
+        (is_err(db), is_err(db::flush(db$)))
     }}"#,
     setup: |td| {
         td.path().join("test_open.db")
     },
     expect: |v: Value| -> Result<()> {
-        assert!(matches!(v, Value::Bool(false)), "expected open+flush to succeed, got: {v:?}");
+        assert_eq!(
+            v,
+            Value::Array([Value::Bool(false), Value::Bool(false)].into()),
+            "expected open and flush to succeed"
+        );
         Ok(())
     }
 );

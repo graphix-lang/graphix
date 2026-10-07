@@ -4,7 +4,7 @@ use netidx::subscriber::Value;
 use std::path::Path;
 
 const TEMPDIR_BASIC: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::tempdir;
   let temp = tempdir::create(null)?;
   sys::fs::is_dir(tempdir::path(temp))
 }"#;
@@ -14,7 +14,7 @@ run!(test_tempdir_basic, TEMPDIR_BASIC, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 const TEMPDIR_WITH_IN: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::tempdir;
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), null)?;
   sys::fs::is_dir(tempdir::path(child))
@@ -25,7 +25,7 @@ run!(test_tempdir_with_in, TEMPDIR_WITH_IN, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 const TEMPDIR_WITH_PREFIX: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{is_dir, tempdir};
   let temp = tempdir::create(#name: `Prefix("myprefix_"), null)?;
   is_dir(tempdir::path(temp))
 }"#;
@@ -45,7 +45,7 @@ run!(test_tempdir_with_prefix, TEMPDIR_WITH_PREFIX, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 const TEMPDIR_WITH_SUFFIX: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{is_dir, tempdir};
   let temp = tempdir::create(#name: `Suffix("_mysuffix"), null)?;
   is_dir(tempdir::path(temp))
 }"#;
@@ -65,7 +65,7 @@ run!(test_tempdir_with_suffix, TEMPDIR_WITH_SUFFIX, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 const TEMPDIR_WITH_IN_AND_PREFIX: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{is_dir, tempdir};
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), #name: `Prefix("test_"), null)?;
   is_dir(tempdir::path(child))
@@ -86,7 +86,7 @@ run!(test_tempdir_with_in_and_prefix, TEMPDIR_WITH_IN_AND_PREFIX, |v: Result<&Va
 }; FuseExpect::None);
 
 const TEMPDIR_WITH_IN_AND_SUFFIX: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{is_dir, tempdir};
   let parent = tempdir::create(null)?;
   let child = tempdir::create(#in: tempdir::path(parent), #name: `Suffix("_test"), null)?;
   is_dir(tempdir::path(child))
@@ -114,7 +114,7 @@ run!(test_tempdir_invalid_parent, TEMPDIR_INVALID_PARENT, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 const TEMPDIR_WRITE_READ_CYCLE: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{is_dir, is_file, read_all, tempdir, write_all};
   let temp = tempdir::create(null)?;
   let temp_path = tempdir::path(temp);
   let verified_temp = is_dir(temp_path)?;

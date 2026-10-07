@@ -42,24 +42,16 @@ fn map_get<'a>(m: &'a CMap<Value, Value, 32>, key: &str) -> Option<&'a Value> {
     m.get(&Value::String(ArcStr::from(key)))
 }
 
-// CR claude for claude: [style] The five args fixtures (lines 47, 87, 119, 173, 216) open
-// with use args::*; and call everything as args::..., so the glob imports nothing they
-// use: delete it. The use sys::fs::{self, *} in the tempdir.rs and file_handle.rs
-// fixtures never uses self; import the names called instead, per the graphix-lang
-// no-globs rule. (tests-lib-b1-15)
 const PARSE_DEFAULTS: &str = r#"
-{
-    use args::*;
-    args::parse(
-        args::command(
-            #name: "test",
-            [
-                args::option(#name: "count", #default: "1"),
-                args::flag(#name: "verbose"),
-            ]
-        )
+args::parse(
+    args::command(
+        #name: "test",
+        [
+            args::option(#name: "count", #default: "1"),
+            args::flag(#name: "verbose"),
+        ]
     )
-}
+)
 "#;
 
 #[tokio::test(flavor = "current_thread")]
@@ -88,17 +80,14 @@ async fn parse_defaults() -> Result<()> {
 }
 
 const PARSE_FLAGS: &str = r#"
-{
-    use args::*;
-    args::parse(
-        args::command(
-            #name: "test",
-            [
-                args::flag(#name: "verbose", #short: "v"),
-            ]
-        )
+args::parse(
+    args::command(
+        #name: "test",
+        [
+            args::flag(#name: "verbose", #short: "v"),
+        ]
     )
-}
+)
 "#;
 
 #[tokio::test(flavor = "current_thread")]
@@ -120,17 +109,14 @@ async fn parse_flags() -> Result<()> {
 }
 
 const PARSE_OPTIONS: &str = r#"
-{
-    use args::*;
-    args::parse(
-        args::command(
-            #name: "test",
-            [
-                args::option(#name: "port", #short: "p", #default: "8080"),
-            ]
-        )
+args::parse(
+    args::command(
+        #name: "test",
+        [
+            args::option(#name: "port", #short: "p", #default: "8080"),
+        ]
     )
-}
+)
 "#;
 
 #[tokio::test(flavor = "current_thread")]
@@ -174,21 +160,18 @@ async fn parse_option_default() -> Result<()> {
 }
 
 const PARSE_SUBCOMMANDS: &str = r#"
-{
-    use args::*;
-    args::parse(
-        args::command(
-            #name: "test",
-            #subcommands: [
-                args::command(
-                    #name: "serve",
-                    [args::option(#name: "port", #default: "8080")]
-                )
-            ],
-            []
-        )
+args::parse(
+    args::command(
+        #name: "test",
+        #subcommands: [
+            args::command(
+                #name: "serve",
+                [args::option(#name: "port", #default: "8080")]
+            )
+        ],
+        []
     )
-}
+)
 "#;
 
 #[tokio::test(flavor = "current_thread")]
@@ -217,17 +200,14 @@ async fn parse_subcommands() -> Result<()> {
 }
 
 const PARSE_ERROR: &str = r#"
-{
-    use args::*;
-    args::parse(
-        args::command(
-            #name: "test",
-            [
-                args::positional(#name: "file", #required: true),
-            ]
-        )
+args::parse(
+    args::command(
+        #name: "test",
+        [
+            args::positional(#name: "file", #required: true),
+        ]
     )
-}
+)
 "#;
 
 #[tokio::test(flavor = "current_thread")]

@@ -3,7 +3,7 @@ use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
 const WRITE_SEEK_READ: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{Seek, open};
   use sys::io::{Read, Write};
 
   let temp = sys::fs::tempdir::create(null)?;
@@ -21,7 +21,7 @@ run!(test_write_seek_read, WRITE_SEEK_READ, |v: Result<&Value>| {
 });
 
 const WRITE_EXACT_READ_EXACT: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{Seek, open};
   use sys::io::{Read, Write};
 
   let temp = sys::fs::tempdir::create(null)?;
@@ -38,7 +38,7 @@ run!(test_write_exact_read_exact, WRITE_EXACT_READ_EXACT, |v: Result<&Value>| {
 });
 
 const OPEN_NONEXISTENT: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::open;
   open(`Read, "/this/does/not/exist/at/all.txt")
 }"#;
 
@@ -48,7 +48,7 @@ run!(test_open_nonexistent, OPEN_NONEXISTENT, |v: Result<&Value>| {
 
 // fstat after write; flush is required (macOS updates metadata on flush).
 const FSTAT_AFTER_WRITE: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{fstat, open};
   use sys::io::Write;
 
   let temp = sys::fs::tempdir::create(null)?;
@@ -65,7 +65,7 @@ run!(test_fstat_after_write, FSTAT_AFTER_WRITE, |v: Result<&Value>| {
 });
 
 const TRUNCATE_TEST: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::{Seek, open, truncate};
   use sys::io::{Read, Write};
 
   let temp = sys::fs::tempdir::create(null)?;
@@ -87,7 +87,7 @@ run!(test_truncate, TRUNCATE_TEST, |v: Result<&Value>| {
 // samples the argument so the CreateNew open runs after the write, not
 // concurrently with the Create open.
 const CREATE_NEW_EXISTING: &str = r#"{
-  use sys::fs::{self, *};
+  use sys::fs::open;
   use sys::io::Write;
 
   let temp = sys::fs::tempdir::create(null)?;

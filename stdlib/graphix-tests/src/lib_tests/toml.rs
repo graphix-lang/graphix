@@ -73,8 +73,8 @@ run!(toml_stream_tcp, r#"{
     let addr = sys::tcp::listener_addr(listener)?;
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
-    Write::write_exact(client, toml::write_bytes({name: "alice", age: 30})?)?;
-    Socket::shutdown(client)?;
+    let written = Write::write_exact(client, toml::write_bytes({name: "alice", age: 30})?)?;
+    Socket::shutdown(written ~ client)?;
     let msg: Msg = toml::read(Read::read_all(server)?)?;
     msg.name
 }"#, |v: Result<&Value>| {

@@ -38,3 +38,10 @@ mod toml;
 mod typecheck;
 mod wake;
 mod xls;
+
+/// The test certificates' directory, escaped for a Graphix string.
+fn cert_dir() -> String {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/");
+    graphix_package_core::testing::escape_path(std::path::Path::new(&dir).display())
+        .to_string()
+}

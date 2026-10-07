@@ -1,8 +1,9 @@
 //! `GXHandle::interrupt()` / `abort()` recover from and shut down a
 //! wedged runtime. These run on a `multi_thread` runtime: the wedged
 //! `do_cycle` blocks one worker while the test fires the control flag
-//! from another. The sync tail loop is the one program that wedges with
-//! constant stack and bounded memory.
+//! from another. The sync tail loop wedges: fused it is a native loop in
+//! constant memory; node-walked every call is a retained activation, so
+//! its memory grows until the interrupt lands.
 
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
@@ -15,12 +16,6 @@ use tokio::{sync::mpsc, time::Duration};
 
 /// An unbounded sync tail loop: `v + 1` wraps, so it spins forever
 /// within one cycle. Native in jit mode, node-walked in interp mode.
-// CR claude for claude: [doc-drift] The module doc (lines 4-5) says this loop wedges with
-// constant stack and bounded memory, which holds only for the fused native loop. In the
-// node-walk every call is a retained activation, so interrupt_recovers_tail_loop_interp
-// grows about 0.5 GB/s until the interrupt lands. Probe: this program with --no-fusion
-// is OOM-killed after 2.4 s under a 1G cap and 6.5 s under 3G, while fused it ran 8 s
-// under 1G. Correct the doc. (tests-lib-b1-11)
 const TAIL_LOOP: &str = "{ let rec f = |v: i64| -> i64 f(v + 1); f(0) }";
 
 async fn init_flags(

@@ -1,26 +1,20 @@
 use anyhow::{Context, Result};
 use arcstr::format;
 use graphix_compiler::{
-    CFlag, Event, NoUserEvent, Scope, Tag, TagValue, compile,
+    Event, NoUserEvent, Scope, Tag, TagValue, compile,
     expr::{ModPath, parser::parse_one},
 };
-use graphix_package_core::testing::init_with_flags_and_setup;
+use graphix_package_core::testing::{Mode, init_with_flags_and_setup};
 use netidx_value::{ValArray, Value};
 use tokio::sync::mpsc;
 
-// CR claude for claude: [test-gap] strict_bottom, strict_sample and
-// bottom_scrutinee_consults_no_guard are the only tests that assert the fired/bottom
-// tags step by step, and none of them forks. The default Auto mode does not fork
-// programs this small, and run!'s par variants check values, not tags. Add a node-walk
-// variant whose setup closure calls ctx.control.set_par_mode(ParMode::Force). The
-// operands and fields here then read their tagged inputs through forked branches
-// (branch::fork_join). (tests-lib-b1-13)
-async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
+async fn strict_bottom(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
-    let flags =
-        if fusion_disabled { CFlag::FusionDisabled.into() } else { Default::default() };
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
-        .await?;
+    let flags = mode.flags();
+    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
+        ctx.control.set_par_mode(mode.par())
+    })
+    .await?;
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
@@ -52,7 +46,7 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
                 ("[input.0, input.1][0]?", Value::I64(17)),
                 ("{17 => 17}{input.0}?", Value::I64(17)),
             ] {
-                let spec = if fusion_disabled {
+                let spec = if mode.node_walk() {
                     parse_one(code)?
                 } else {
                     parse_one(&format!("#[native]\n{code}"))?
@@ -106,7 +100,7 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
                 .1
                 .id;
             let code = "select input.1 { 3 => input.0, _ => unused }";
-            let spec = if fusion_disabled {
+            let spec = if mode.node_walk() {
                 parse_one(code)?
             } else {
                 parse_one(&format!("#[native]\n{code}"))?
@@ -142,22 +136,13 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
     result
 }
 
-#[tokio::test]
-async fn strict_bottom_interp() -> Result<()> {
-    strict_bottom(true).await
-}
-
-#[tokio::test]
-async fn strict_bottom_jit() -> Result<()> {
-    strict_bottom(false).await
-}
-
-async fn strict_sample(fusion_disabled: bool) -> Result<()> {
+async fn strict_sample(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
-    let flags =
-        if fusion_disabled { CFlag::FusionDisabled.into() } else { Default::default() };
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
-        .await?;
+    let flags = mode.flags();
+    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
+        ctx.control.set_par_mode(mode.par())
+    })
+    .await?;
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
@@ -181,7 +166,7 @@ async fn strict_sample(fusion_disabled: bool) -> Result<()> {
             }
             let mut sample = compile(ctx, flags, &scope, parse_one("clock ~! input")?)?;
             let consumer =
-                if fusion_disabled { "sampled + 1" } else { "#[native]\nsampled + 1" };
+                if mode.node_walk() { "sampled + 1" } else { "#[native]\nsampled + 1" };
             let mut consumer = compile(ctx, flags, &scope, parse_one(consumer)?)?;
             for (i, (clock_tag, input_tag, value, expected_tag, expected_value)) in [
                 (Tag::FIRED, Tag::STALE_BOTTOM, 0, Tag::FRESH_BOTTOM, 0),
@@ -232,25 +217,16 @@ async fn strict_sample(fusion_disabled: bool) -> Result<()> {
     result
 }
 
-#[tokio::test]
-async fn strict_sample_interp() -> Result<()> {
-    strict_sample(true).await
-}
-
-#[tokio::test]
-async fn strict_sample_jit() -> Result<()> {
-    strict_sample(false).await
-}
-
 /// A bottom scrutinee makes no selection and consults no guard: the
 /// select is the scrutinee's bottom, fresh only when the scrutinee
 /// fired, whatever a guard's channel does.
-async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()> {
+async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
-    let flags =
-        if fusion_disabled { CFlag::FusionDisabled.into() } else { Default::default() };
-    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
-        .await?;
+    let flags = mode.flags();
+    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |ctx| {
+        ctx.control.set_par_mode(mode.par())
+    })
+    .await?;
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
@@ -273,7 +249,7 @@ async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()>
                 bindings.push((node, id));
             }
             let code = "select x { v if g > 0 => v, _ => 0 }";
-            let spec = if fusion_disabled {
+            let spec = if mode.node_walk() {
                 parse_one(code)?
             } else {
                 parse_one(&format!("#[native]\n{code}"))?
@@ -311,12 +287,4 @@ async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()>
     result
 }
 
-#[tokio::test]
-async fn bottom_scrutinee_consults_no_guard_interp() -> Result<()> {
-    bottom_scrutinee_consults_no_guard(true).await
-}
-
-#[tokio::test]
-async fn bottom_scrutinee_consults_no_guard_jit() -> Result<()> {
-    bottom_scrutinee_consults_no_guard(false).await
-}
+modes!(strict_bottom, strict_sample, bottom_scrutinee_consults_no_guard);

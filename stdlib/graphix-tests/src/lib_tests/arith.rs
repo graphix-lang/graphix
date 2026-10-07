@@ -14,14 +14,9 @@ run!(float_add_inexact, FLOAT_ADD_INEXACT, |v: Result<&Value>| {
 });
 
 // No fused-multiply-add contraction: a*b+c rounds twice.
-// CR claude for claude: [test-gap] These inputs cannot detect contraction: fma(0.1, 0.2,
-// 0.3) and 0.1 * 0.2 + 0.3 are the same double, 0.32, so a kernel that emitted fma
-// would still pass. Use inputs where the two roundings differ: f64:0.1 * f64:10.0 +
-// f64:-1.0 is 0.0 rounded twice and 5.551115123125783e-17 as an fma (both engines give
-// 0.0 today). (tests-lib-b1-05)
-const FLOAT_FMA_NO_CONTRACT: &str = "f64:0.1 * f64:0.2 + f64:0.3";
+const FLOAT_FMA_NO_CONTRACT: &str = "f64:0.1 * f64:10.0 + f64:-1.0";
 run!(float_fma_no_contract, FLOAT_FMA_NO_CONTRACT, |v: Result<&Value>| {
-    matches!(v, Ok(Value::F64(f)) if *f == 0.1_f64 * 0.2 + 0.3)
+    matches!(v, Ok(Value::F64(f)) if *f == 0.0)
 });
 
 // Float division by zero is IEEE inf, not an error.
@@ -81,13 +76,7 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 5e-324_f64 + 5e-324)
 });
 
-// Float modulo has no cranelift lowering, so the program node-walks;
-// the value must still be right.
-// CR claude for claude: [doc-drift] The comment above says float % has no cranelift
-// lowering and node-walks, and the one at line 92 says the checked operators node-walk.
-// Both fuse: float % calls graphix_f64_rem (fusion/emit/nodes.rs:246) and the checked
-// operators call graphix_value_checked_* (nodes.rs:304). That is what these fixtures'
-// FuseExpect::Jit asserts. Delete both node-walk claims. (tests-lib-b1-07)
+// Float modulo.
 const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
 run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 1.0)
@@ -99,7 +88,7 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
     matches!(v, Ok(Value::F32(f)) if *f == 0.1_f32 + 0.2)
 });
 
-// Checked-arithmetic overflow detection; these node-walk.
+// Checked-arithmetic overflow detection.
 
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
@@ -145,14 +134,17 @@ run!(unchecked_overflow_wraps, UNCHECKED_OVERFLOW_WRAPS, |v: Result<&Value>| {
 
 // Integer div/rem by zero and MIN/-1 bottom without crashing; a valid
 // division still fuses.
-// CR claude for claude: [test-gap] The comment above says MIN/-1 bottoms without
-// crashing, but no fixture in this crate divides a signed MIN by -1. So cargo test
-// never drives the JIT's MIN/-1 guard (fusion/emit/nodes.rs:262) with those values;
-// only the fuzz corpus pins it (findings/source-e-jun2026/06-08), at soak launch. Add
-// is_err(i64:-9223372036854775808 /? i64:-1) and a sink fixture over
-// i64:-9223372036854775808 / i64:-1 (true and 99 in both engines today). CLAUDE.md's
-// "unchecked wraps, integer div0 bottoms" should also say MIN/-1 bottoms.
-// (tests-lib-b1-10)
+const CHECKED_MIN_DIV_NEG_ONE: &str = "is_err(i64:-9223372036854775808 /? i64:-1)";
+run!(checked_min_div_neg_one_errs, CHECKED_MIN_DIV_NEG_ONE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});
+
+const MIN_DIV_NEG_ONE_SINK: &str =
+    "{ let v = i64:-9223372036854775808 / i64:-1; select i64:5 { 2 => v, _ => i64:99 } }";
+run!(min_div_neg_one_sink, MIN_DIV_NEG_ONE_SINK, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(99)))
+});
+
 const DIV_VALID: &str = "i64:10 / i64:2";
 run!(div_valid, DIV_VALID, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))));
 
@@ -279,8 +271,8 @@ run!(sink_nested_stmt, SINK_NESTED_STMT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(50)))
 });
 
-// An impure non-bottom let (a bare `rand`) evaluates eagerly; all modes
-// agree at 99.
+// An impure non-bottom let (a bare `rand`) read only by an untaken arm
+// leaves the select producing: 99 in every mode.
 const SINK_RAND_STAYS_EAGER: &str = "{ let v = rand::rand(#start: 0, #end: 9, #clock: 1); select i64:5 { 2 => v, _ => i64:99 } }";
 run!(sink_rand_stays_eager, SINK_RAND_STAYS_EAGER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(99)))

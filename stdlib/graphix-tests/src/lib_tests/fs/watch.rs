@@ -39,14 +39,7 @@ macro_rules! watch_test {
                 }
             },
             verify: {
-                // CR claude for claude: [test-gap] For expect: false this passes when
-                // nothing arrives at all. If the watch never establishes, or fails (the
-                // `?` and the String filter at line 85 drop its error), _event_count
-                // stays at 0, the action never runs, and (0 > 1) == false holds. Assert
-                // _event_count >= 1 before this comparison. Then
-                // test_watch_interest_filtering shows the watch established and the
-                // write happened before it claims the event was filtered.
-                // (tests-lib-b1-06)
+                assert!(_event_count >= 1, "the watch never established");
                 let got_event = _event_count > 1;
                 assert_eq!(got_event, $expect,
                     "Expected event: {}, Got event: {}", $expect, got_event)
@@ -409,7 +402,11 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
   let w = create(null)?;
   let h1 = watch(#interest: [`Established, `Create], w, "{file1}")?;
   let h2 = watch(#interest: [`Established, `Create], w, "{file2}")?;
-  path(h1, h2)
+  let e = events(h1, h2)?;
+  select e.event {{
+    `Create | `CreateFile | `CreateFolder | `CreateOther => "create [e.paths]",
+    _ => "other"
+  }}
 }}"#,
         file1 = escape_path(file1.display()),
         file2 = escape_path(file2.display()),
@@ -434,22 +431,14 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
                             event_count += 1;
                             eprintln!("Event #{event_count}: {v}");
 
-                            // CR claude for claude: [test-gap] Any event after the first
-                            // sets got_create, and the second watch's own Established
-                            // event is one. Two watches on files that never appear
-                            // deliver two `Established events through one stream
-                            // (probe: watch file1 and file2 in an empty dir with
-                            // #interest: [`Established, `Create] and print events(h1,
-                            // h2)). So this test passes even if no Create is ever
-                            // delivered, and nothing else pins Create through a
-                            // flattened multi-watch stream. Read events(h1, h2) and set
-                            // got_create only for a Create event whose path is file2.
-                            // (tests-lib-b1-04)
                             if !created_file {
                                 eprintln!("Creating file2");
                                 fs::write(&file2, b"content").await?;
                                 created_file = true;
-                            } else {
+                            } else if let Value::String(e) = &v
+                                && e.starts_with("create ")
+                                && e.contains("file2.txt")
+                            {
                                 got_create = true;
                             }
                         }

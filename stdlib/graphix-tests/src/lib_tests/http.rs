@@ -2,20 +2,6 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-// CR claude for claude: [risk] certs/server.pem is signed for 730 days (certs/gen.sh:21)
-// and expires 2028-03-31 23:14:33 GMT. The CA runs to 2046, and nothing regenerates
-// server.pem. From then on every mode of https_round_trip here, and of tls_round_trip
-// and socket_union_dispatch in tls.rs, fails with `timeout after 30s waiting for
-// result`. The `$` on `http::request` drops the TLS error, so only log lines name the
-// certificate. Re-sign server.pem for the CA's lifetime (-days 7300 in gen.sh), or
-// generate the certs at test time. cert_dir is also duplicated in tls.rs:5 and puts the
-// checkout path into a Graphix string without testing::escape_path. probe:
-// design/review-2026-10-05/repro/tests-lib-b1-02.sh (it moves the clock with an
-// LD_PRELOAD shim). (tests-lib-b1-02)
-fn cert_dir() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
-}
-
 // CR claude for claude: [test-gap] All five http tests send one request to a synchronous
 // handler that reads req.method, the one shape under which the server's reply-pairing,
 // wedge, restart and TLS-accept bugs cannot show. Add pins for: two sequential requests
@@ -42,7 +28,7 @@ run!(http_round_trip, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 }; FuseExpect::Jit);
 
-run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
+run!(https_round_trip, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;
     let handler = |req: http::Request| {{

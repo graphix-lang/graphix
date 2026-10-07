@@ -63,14 +63,6 @@ run!(pack_bytes, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
 }; FuseExpect::Jit);
 
-// CR claude for claude: [risk] The write_exact and the shutdown below (lines 69-70) both
-// fire when `client` fires, and nothing orders the shutdown after the write: their two
-// tasks race for the stream's lock. run! passes only because its current_thread runtime
-// polls tasks in spawn order; under the shell's multi-thread runtime the shutdown wins
-// in 10-25% of runs, the write fails with EPIPE and `msg.name` never arrives.
-// toml_stream_tcp (toml.rs:76-77) has the same race. Sequence it: `let written =
-// Write::write_exact(client, ..)?; Socket::shutdown(written ~ client)?;`. probe:
-// design/review-2026-10-05/repro/tests-lib-b2-02.sh (tests-lib-b2-02)
 run!(pack_stream_tcp, r#"{
     use sys::io::{Read, Write};
     use sys::tcp::Socket;
@@ -79,8 +71,8 @@ run!(pack_stream_tcp, r#"{
     let addr = sys::tcp::listener_addr(listener)?;
     let client = sys::tcp::connect(addr)?;
     let server = sys::tcp::accept(listener, client)?;
-    Write::write_exact(client, pack::write_bytes({name: "alice", age: 30})?)?;
-    Socket::shutdown(client)?;
+    let written = Write::write_exact(client, pack::write_bytes({name: "alice", age: 30})?)?;
+    Socket::shutdown(written ~ client)?;
     let msg: Msg = pack::read(Read::read_all(server)?)?;
     msg.name
 }"#, |v: Result<&Value>| {
