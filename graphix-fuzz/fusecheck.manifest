@@ -42,7 +42,7 @@
 0	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
 0	call-arity-jul2026/01_excess_pos_silently_dropped.gx
 4	callable-route-aug2026/01_connectderef_twin.gx
-2	callable-route-aug2026/02_dispatch_route_matrix.gx
+3	callable-route-aug2026/02_dispatch_route_matrix.gx
 1	callee-flags-jul2026/01_bottom_call_result_as_unused_arg.gx
 1	callee-taint-cache-honor-aug2026/00_two_level_call_ride.gx
 1	callee-taint-cache-honor-aug2026/01_top_level_control.gx
