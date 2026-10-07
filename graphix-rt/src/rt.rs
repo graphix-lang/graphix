@@ -9,6 +9,7 @@ use graphix_compiler::{
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::global::GPooled;
+use smallvec::SmallVec;
 use std::{collections::VecDeque, fmt::Debug, time::Duration};
 use tokio::{
     task::{AbortHandle, JoinSet},
@@ -133,15 +134,9 @@ pub struct GXRt<X: GXExt> {
     /// Bumped after each cycle's nodes ran; also the trace
     /// recorder's cycle number.
     pub(super) cycle: u64,
-    // CR claude for claude: [perf] Every referenced variable gets an inner hash table of
-    // its own. ref_var's first insert allocates a minimum-size table and unref_var
-    // frees it when the last reference goes. Yet under a script every reference comes
-    // from the one root expression, so the table holds a single key. For 6000 trivial
-    // array::init/array::map slots that is 1.6 MB of inner tables beside a 1.3 MB outer
-    // table (massif, about 4% of the peak), plus an allocation and a free per variable
-    // whenever a collection's slots come and go. A `SmallVec<[(ExprId, u32); 1]>` per
-    // variable, searched linearly, keeps the common case inline. (x-alloc-05)
-    pub(super) by_ref: IntMap<BindId, IntMap<ExprId, usize>>,
+    /// Each variable's readers and how many times each reads it: under a
+    /// script one expression, inline.
+    pub(super) by_ref: IntMap<BindId, SmallVec<[(ExprId, u32); 1]>>,
     pub(super) var_updates: Waiting<VarUpdate>,
     /// The place each place-reference cell stands for (`Rt::set_ref_path`).
     pub(super) ref_paths: IntMap<BindId, (BindId, Path)>,
@@ -254,21 +249,25 @@ impl<X: GXExt> Rt for GXRt<X> {
         if dbg_vars() {
             eprintln!("REF_VAR {id:?} by {ref_by:?}");
         }
-        *self.by_ref.entry(id).or_default().entry(ref_by).or_default() += 1;
+        let readers = self.by_ref.entry(id).or_default();
+        match readers.iter_mut().find(|(e, _)| *e == ref_by) {
+            Some((_, n)) => *n += 1,
+            None => readers.push((ref_by, 1)),
+        }
     }
 
     fn unref_var(&mut self, id: BindId, ref_by: ExprId) {
         if dbg_vars() {
             eprintln!("UNREF_VAR {id:?} by {ref_by:?}");
         }
-        if let Some(refs) = self.by_ref.get_mut(&id) {
-            if let Some(cn) = refs.get_mut(&ref_by) {
-                *cn -= 1;
-                if *cn == 0 {
-                    refs.remove(&ref_by);
+        if let Some(readers) = self.by_ref.get_mut(&id) {
+            if let Some(i) = readers.iter().position(|(e, _)| *e == ref_by) {
+                readers[i].1 -= 1;
+                if readers[i].1 == 0 {
+                    readers.swap_remove(i);
                 }
             }
-            if refs.is_empty() {
+            if readers.is_empty() {
                 self.by_ref.remove(&id);
             }
         }
@@ -305,7 +304,7 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("NOTIFY_SET {id:?} -> {:?}", self.by_ref.get(&id));
         }
         if let Some(refed) = self.by_ref.get(&id) {
-            for eid in refed.keys() {
+            for (eid, _) in refed {
                 self.updated.entry(*eid).or_default();
             }
         }

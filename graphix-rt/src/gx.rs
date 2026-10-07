@@ -529,7 +529,7 @@ impl<X: GXExt> GX<X> {
     /// Readers of `id` update this cycle.
     fn wake_readers(&mut self, id: &BindId) {
         if let Some(exps) = self.ctx.rt.by_ref.get(id) {
-            for e in exps.keys() {
+            for (e, _) in exps {
                 self.ctx.rt.updated.entry(*e).or_insert(false);
             }
         }
@@ -707,7 +707,7 @@ impl<X: GXExt> GX<X> {
                         .rt
                         .by_ref
                         .values()
-                        .map(|m| m.values().copied().sum::<usize>())
+                        .map(|m| m.iter().map(|(_, n)| *n as usize).sum::<usize>())
                         .sum();
                     let _ = res.send(crate::EnvStats {
                         by_id_len,
