@@ -9,7 +9,7 @@ use crate::{
     is_do_block, mod_root,
     profile::{self, Phase},
     tracked::{TrackedMap, TrackedSet},
-    typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef},
+    typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef, Unguarded},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
@@ -275,6 +275,14 @@ pub struct TraitMethodDef {
 pub struct TraitMethodRef {
     pub trait_id: TraitId,
     pub index: usize,
+}
+
+fn non_contractive(name: &str) -> String {
+    format!(
+        "recursive type {name} refers back to itself through unions and aliases \
+         alone, so it names no value; a recursive type must recurse through a \
+         structural body (variant, tuple, struct, array, ...)"
+    )
 }
 
 /// One `impl Trait for Target` ([`Env::impls`], global).
@@ -1501,7 +1509,7 @@ impl Env {
         doc: Option<ArcStr>,
         pos: SourcePosition,
         ori: Arc<Origin>,
-    ) -> Result<()> {
+    ) -> Result<Unguarded> {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
         }
@@ -1580,35 +1588,43 @@ impl Env {
             };
             self.abstract_reps.insert(*id, Arc::new(r));
         }
+        let def = std::sync::Arc::new(ResolvedRef::new(
+            scope.clone(),
+            pos,
+            ori,
+            params,
+            typ.clone(),
+        ));
+        let key = def.def_key();
         let defs = self.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(
             name.into(),
-            TypeDef {
-                def: std::sync::Arc::new(ResolvedRef::new(
-                    scope.clone(),
-                    pos,
-                    ori,
-                    params,
-                    typ.clone(),
-                )),
-                rep,
-                doc,
-                seeded: Arc::new(AtomicBool::new(false)),
-            },
+            TypeDef { def, rep, doc, seeded: Arc::new(AtomicBool::new(false)) },
         );
         // Every self-reference must sit under a constructor: `type T =
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
-        if typ.reaches_unguarded(self, scope, name) {
-            self.abstract_reps.remove(&AbstractId::of(scope, name));
-            self.undeftype(scope, name);
-            bail!(
-                "recursive type {name} refers back to itself through unions and \
-                 aliases alone, so it names no value; a recursive type must recurse \
-                 through a structural body (variant, tuple, struct, array, ...)"
-            );
+        match typ.reaches_unguarded(self, key) {
+            Unguarded::Reaches => {
+                self.abstract_reps.remove(&AbstractId::of(scope, name));
+                self.undeftype(scope, name);
+                bail!("{}", non_contractive(name))
+            }
+            u => Ok(u),
         }
-        Ok(())
+    }
+
+    /// [`Self::deftype`]'s contractiveness again, for a definition whose
+    /// body named something not defined yet: at the end of the check
+    /// every name it reaches is.
+    pub fn check_contractive(&self, scope: &ModPath, name: &str) -> Result<()> {
+        let Some(td) = self.typedefs.get(scope).and_then(|m| m.get(name)) else {
+            return Ok(());
+        };
+        match td.typ().reaches_unguarded(self, td.def.def_key()) {
+            Unguarded::Reaches => bail!("{}", non_contractive(name)),
+            Unguarded::Guarded | Unguarded::Unknown => Ok(()),
+        }
     }
 
     /// The representation of the Graphix-minted abstract type `id`, if

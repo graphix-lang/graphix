@@ -64,14 +64,30 @@ pub(super) struct ContainsHist {
     /// The shallowest in-progress pair the current verdict assumed.
     low_water: usize,
     epoch: u64,
-    /// Per definition, the expansions of it in progress on this path.
-    unfolding: Lazy<IntMap<usize, u32>>,
+    /// Per definition, on this path: the size of the params its latest
+    /// expansion took, and how many expansions in a row grew them.
+    unfolding: Lazy<IntMap<usize, (usize, u32)>>,
 }
 
-/// How many expansions of one typedef a containment path may hold. A
-/// pair met again ends a walk, so going deeper means the parameters grow
-/// at every level (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
-const MAX_UNFOLDING: u32 = 64;
+/// How many expansions of one typedef in a row may take larger params. A
+/// pair met again ends a walk, so params that keep growing are a walk
+/// that never ends (`type N<'a> = [null, ('a, N<Array<'a>>)]`); nested
+/// applications of one alias shrink theirs.
+const MAX_GROWTH: u32 = 64;
+
+/// The nodes in `ts`, counted up to a bound.
+fn params_size(ts: &[Type]) -> usize {
+    fn go(t: &Type, n: &mut usize) {
+        if *n > 1 << 16 {
+            return;
+        }
+        *n += 1;
+        ensure_sufficient(|| t.for_each_child(&mut |c| go(c, n)))
+    }
+    let mut n = 0;
+    ts.iter().for_each(|t| go(t, &mut n));
+    n
+}
 
 impl Deref for ContainsHist {
     type Target = RefHist<AHashMap<RefPair, usize>>;
@@ -759,22 +775,46 @@ impl Type {
                 // in Env::deftype makes this memo sound but does not bound it, and
                 // nothing here plays the role of fusion's MAX_FREEZE_EXPANSIONS; probe:
                 // design/review-2026-10-05/repro/t-contains-09.gx (t-contains-09)
-                // 2026-10-07 claude: no longer hangs: past MAX_UNFOLDING expansions of
+                // 2026-10-07 claude: no longer hangs: past MAX_GROWTH growing expansions of
                 // one definition on a path the comparison is refused ("cannot compare
                 // two instances of N"). The valid widening N<[i64, string]> := N<i64>
                 // is refused that way too; deciding it needs the parameters' variance.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
-                let defs = [t0, t1].map(|t| match t {
-                    Self::Ref(tr) => tr.def_key(),
+                // one entry per definition, at its larger params
+                let defs = match [t0, t1].map(|t| match t {
+                    Self::Ref(tr) => tr.def_key().map(|d| (d, params_size(&tr.params))),
                     _ => None,
-                });
-                for d in defs.iter().flatten() {
-                    let n = hist.unfolding.get_mut().entry(*d).or_default();
-                    *n += 1;
-                    if *n > MAX_UNFOLDING {
-                        for d in defs.iter().flatten() {
-                            *hist.unfolding.get_mut().entry(*d).or_default() -= 1;
+                }) {
+                    [Some((d0, s0)), Some((d1, s1))] if d0 == d1 => {
+                        [Some((d0, s0.max(s1))), None]
+                    }
+                    defs => defs,
+                };
+                let mut saved: SmallVec<[(usize, Option<(usize, u32)>); 2]> =
+                    SmallVec::new();
+                let restore =
+                    |hist: &mut ContainsHist, saved: &[(usize, Option<(usize, u32)>)]| {
+                        for (d, old) in saved.iter().rev() {
+                            match old {
+                                Some(old) => {
+                                    hist.unfolding.get_mut().insert(*d, *old);
+                                }
+                                None => {
+                                    hist.unfolding.get_mut().remove(d);
+                                }
+                            }
                         }
+                    };
+                for (d, size) in defs.iter().flatten() {
+                    let old = hist.unfolding.get().and_then(|m| m.get(d)).copied();
+                    let growth = match old {
+                        Some((last, g)) if *size > last => g + 1,
+                        _ => 0,
+                    };
+                    saved.push((*d, old));
+                    hist.unfolding.get_mut().insert(*d, (*size, growth));
+                    if growth > MAX_GROWTH {
+                        restore(hist, &saved);
                         let name = match (t0, t1) {
                             (Self::Ref(tr), _) | (_, Self::Ref(tr)) => tr.name.clone(),
                             _ => unreachable!("a definition key is a reference's"),
@@ -794,9 +834,7 @@ impl Type {
                     };
                     e0.contains_int(flags, env, hist, &e1)
                 });
-                for d in defs.iter().flatten() {
-                    *hist.unfolding.get_mut().entry(*d).or_default() -= 1;
-                }
+                restore(hist, &saved);
                 r
             }
             // ⊥ fits whatever the cell becomes; binding would only

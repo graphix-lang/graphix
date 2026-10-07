@@ -1981,3 +1981,52 @@ const CRAFTED_ABSTRACT_PARAMS: &str = r#"
 "#;
 
 run!(crafted_abstract_params, CRAFTED_ABSTRACT_PARAMS, |v: Result<&Value>| matches!(v, Ok(Value::Bool(true))); FuseExpect::Jit);
+
+/// A forward-referenced alias cycle is refused once its names exist.
+const FORWARD_ALIAS_CYCLE: &str = r#"
+{
+    type T = G<[i64, T]>;
+    type G<'a> = 'a;
+    let s: T = "hello";
+    let n: i64 = s;
+    n
+}
+"#;
+
+run!(forward_alias_cycle, FORWARD_ALIAS_CYCLE, refused("refers back to itself"); FuseExpect::None);
+
+const FORWARD_MAYBE_CYCLE: &str = r#"
+{
+    type Node = Maybe<Node>;
+    type Maybe<'a> = ['a, null];
+    0
+}
+"#;
+
+run!(forward_maybe_cycle, FORWARD_MAYBE_CYCLE, refused("refers back to itself"); FuseExpect::None);
+
+/// A renaming import is the type it names.
+run!(
+    renamed_alias_cycle,
+    refused("refers back to itself"),
+    "/test.gx" => r#"
+        use self::T as V;
+        type T = [i64, V];
+        let result = 0
+    "#;
+    FuseExpect::None
+);
+
+/// Nested applications of one alias are no growth: they check and run.
+const NESTED_ALIAS_APPLICATIONS: &str = r#"
+{
+    type W<'a> = 'a;
+    let x: W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<W<i64>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> = 41;
+    x + 1
+}
+"#;
+
+run!(nested_alias_applications, NESTED_ALIAS_APPLICATIONS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(42))
+));

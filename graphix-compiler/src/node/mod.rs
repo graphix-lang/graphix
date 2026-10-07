@@ -544,7 +544,8 @@ impl TypeDef {
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
-        ctx.env
+        let verdict = ctx
+            .env
             .deftype(
                 &scope.lexical,
                 name,
@@ -557,6 +558,13 @@ impl TypeDef {
             )
             .at(&spec)?;
         let name = name.name.clone();
+        if verdict == crate::typ::Unguarded::Unknown {
+            ctx.pending_names.push(crate::Pending::Contractive(
+                scope.lexical.clone(),
+                name.clone(),
+                spec.clone(),
+            ));
+        }
         Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
     }
 }

@@ -275,6 +275,26 @@ impl<H: IsoPoolable> RefHist<H> {
     }
 }
 
+/// Whether a typedef's body returns to the definition with no
+/// constructor between ([`Type::reaches_unguarded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unguarded {
+    Reaches,
+    Guarded,
+    /// A name on the way is not defined yet.
+    Unknown,
+}
+
+impl Unguarded {
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Reaches, _) | (_, Self::Reaches) => Self::Reaches,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            _ => Self::Guarded,
+        }
+    }
+}
+
 /// The identity of an abstract type: the low 64 bits of
 /// [`abstract_uuid`] of its canonical path. Its `Pack` impl is
 /// `uuid_id_codec!`'s.
@@ -2087,66 +2107,51 @@ impl Type {
         go(self, env, seen)
     }
 
-    /// Whether this type reaches the definition `name` in `scope` again
-    /// through unions, aliases (expanded with their params) and bound
-    /// cells alone, with no constructor between. Every definition
-    /// registered before is contractive, so an unguarded path that does
-    /// not return is short; one longer than `UNGUARDED_DEPTH` names is
-    /// taken as not returning.
-    pub(crate) fn reaches_unguarded(&self, env: &Env, scope: &str, name: &str) -> bool {
-        const UNGUARDED_DEPTH: usize = 256;
-        fn go(t: &Type, env: &Env, def: (&str, &str), depth: usize) -> bool {
+    /// Whether this type reaches the definition `def` (a
+    /// [`ResolvedRef::def_key`]) again through unions, aliases (expanded
+    /// with their params) and bound cells alone, with no constructor
+    /// between: compared by the definition, so a renaming import is the
+    /// same type. A name not defined yet leaves the answer
+    /// [`Unguarded::Unknown`]. The walk ends: a cycle among other
+    /// definitions was refused when its last member was defined.
+    pub(crate) fn reaches_unguarded(&self, env: &Env, def: usize) -> Unguarded {
+        fn go(
+            t: &Type,
+            env: &Env,
+            def: usize,
+            path: &mut SmallVec<[usize; 8]>,
+        ) -> Unguarded {
+            let any = |ts: &mut dyn Iterator<Item = Unguarded>| {
+                ts.fold(Unguarded::Guarded, |acc, u| acc.or(u))
+            };
             ensure_sufficient(|| match t {
-                Type::Set(ts) => ts.iter().any(|t| go(t, env, def, depth)),
-                Type::TVar(tv) => tv.binding().is_some_and(|b| go(&b, env, def, depth)),
-                Type::App(c, a) => {
-                    Type::app_filled(c, a).is_some_and(|f| go(&f, env, def, depth))
-                }
-                // CR claude for claude: [bug] This walk answers "guarded" whenever it
-                // cannot see the rest of the path: past UNGUARDED_DEPTH expansions
-                // (this guard falls through to `_ => false`) and at a name not defined
-                // yet (the `else { return false }` below), and nothing checks the
-                // definition again once that name exists. So 256 nested `type W<'a> =
-                // 'a` around `[i64, T]` are accepted (255 are refused), and so are
-                // `type T = G<[i64, T]>; type G<'a> = 'a;` and `type Node =
-                // Maybe<Node>; type Maybe<'a> = ['a, null];`, each refused in the other
-                // order. Such a type contains anything: `let n: i64 = s` over `s: T =
-                // "hello"` checks and the JIT panics at fusion/kernel.rs:243, and `type
-                // T = G<T>; type G<'a> = 'a; let x: T = 1; x` hangs --check (and the
-                // LSP's check) in the unbounded lookup_ref loop at node/pattern.rs:436.
-                // probe: design/review-2026-10-05/repro/x-typecheck-patterns-05.gx
-                // (x-typecheck-patterns-05)
-                Type::Ref(tr) if depth < UNGUARDED_DEPTH => {
-                    let Some(r) = tr.resolve_pure(env) else { return false };
-                    // CR claude for claude: [bug] This decides whether a ref returns to
-                    // the definition being registered by the name as written. So an
-                    // import that renames the type never matches: `use self::T as V;
-                    // type T = [i64, V]`, or a rename anywhere in a cycle. The walk
-                    // runs out at UNGUARDED_DEPTH and deftype accepts a non-contractive
-                    // typedef. contains keys refs by definition identity
-                    // (RefHist::ref_id), so its coinductive memo then accepts anything
-                    // as T: `let n: i64 = s` with `s: T = "hello"` passes the check and
-                    // the run panics at fusion/kernel.rs:243, and `type T = V; let y: T
-                    // = 1` hangs --check (the LSP shares that path) in
-                    // StructPatternNode::compile_int_inner's lookup_ref loop. Compare
-                    // the resolved definition's identity instead (the ResolvedRef
-                    // deftype just inserted, or its def_key). Answering "guarded" at
-                    // the 256 cap is a second hole: a cycle of 300 forward-referenced
-                    // plain aliases is accepted too. probe:
-                    // design/review-2026-10-05/repro/t-typ-mod-01.sh (t-typ-mod-01)
-                    let base =
-                        netidx_core::path::Path::basename(&*tr.name).unwrap_or(&tr.name);
-                    let canon: &str = r.canonical_scope();
-                    if (canon, base) == def {
-                        return true;
+                Type::Set(ts) => any(&mut ts.iter().map(|t| go(t, env, def, path))),
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => go(&b, env, def, path),
+                    None => Unguarded::Guarded,
+                },
+                Type::App(c, a) => match Type::app_filled(c, a) {
+                    Some(f) => go(&f, env, def, path),
+                    None => Unguarded::Guarded,
+                },
+                Type::Ref(tr) => {
+                    let Some(r) = tr.resolve_pure(env) else { return Unguarded::Unknown };
+                    let key = r.def_key();
+                    if key == def {
+                        return Unguarded::Reaches;
                     }
-                    let Some(known) = r.bindings(&tr.params) else { return false };
-                    go(&r.typ.replace_tvars(&known), env, def, depth + 1)
+                    let Some(known) = r.bindings(&tr.params) else {
+                        return Unguarded::Guarded;
+                    };
+                    path.push(key);
+                    let u = go(&r.typ.replace_tvars(&known), env, def, path);
+                    path.pop();
+                    u
                 }
-                _ => false,
+                _ => Unguarded::Guarded,
             })
         }
-        go(self, env, (scope, name), 0)
+        go(self, env, def, &mut SmallVec::new())
     }
 
     pub fn lookup_ref(&self, env: &Env) -> Result<Type> {

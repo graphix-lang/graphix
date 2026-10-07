@@ -1193,11 +1193,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// at the end of [`compile_stmt`].
     pub(crate) pending_imports: Vec<PendingImport>,
-    /// Type names a definition's written types hold that did not resolve
-    /// at its check (a `use` the interface defers may name them later);
-    /// each must name something once the check ends
+    /// What a check could not decide until it ends
     /// ([`check_pending_names`]).
-    pub(crate) pending_names: Vec<(typ::TypeRef, Expr)>,
+    pub(crate) pending_names: Vec<Pending>,
     /// Pending definition assertions; see [`DefAssertion`].
     pub(crate) def_assertions: Arc<Mutex<Vec<DefAssertion>>>,
     /// Registry attributes recorded this `compile_stmt`; each must be
@@ -2237,17 +2235,35 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
 
 /// A written type name that did not resolve at its definition's check
 /// must name something once the check ends.
+/// A question a check leaves open until it ends.
+pub(crate) enum Pending {
+    /// A type name a definition's written types hold that did not
+    /// resolve at its check (a `use` the interface defers may name it
+    /// later); it must name something once the check ends.
+    Name(typ::TypeRef, Expr),
+    /// A typedef whose body named something not defined yet: it must be
+    /// contractive once everything is.
+    Contractive(ModPath, ArcStr, Expr),
+}
+
 pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
 ) -> Result<()> {
     use expr::At;
-    for (tr, spec) in mem::take(&mut ctx.pending_names) {
-        if !tr.names_something(&ctx.env) {
-            let e = anyhow::Error::new(typ::UnresolvableRef {
-                name: tr.name,
-                scope: tr.scope,
-            });
-            return Err(e.at(&spec));
+    for p in mem::take(&mut ctx.pending_names) {
+        match p {
+            Pending::Name(tr, spec) => {
+                if !tr.names_something(&ctx.env) {
+                    let e = anyhow::Error::new(typ::UnresolvableRef {
+                        name: tr.name,
+                        scope: tr.scope,
+                    });
+                    return Err(e.at(&spec));
+                }
+            }
+            Pending::Contractive(scope, name, spec) => {
+                ctx.env.check_contractive(&scope, &name).at(&spec)?
+            }
         }
     }
     Ok(())
@@ -2262,7 +2278,7 @@ pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
 ) {
     let mut names = Vec::new();
     t.unresolved_names(&ctx.env, &mut names);
-    ctx.pending_names.extend(names.into_iter().map(|tr| (tr, spec.clone())));
+    ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
 }
 
 /// A `use` whose name did not exist at its compile position must name
