@@ -7052,8 +7052,11 @@
           "name": "_primary_expression"
         },
         {
-          "type": "STRING",
-          "value": "{"
+          "type": "IMMEDIATE_TOKEN",
+          "content": {
+            "type": "STRING",
+            "value": "{"
+          }
         },
         {
           "type": "SYMBOL",

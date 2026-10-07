@@ -1229,9 +1229,11 @@ module.exports = grammar({
       ']',
     ),
 
+    // The `{` is adjacent to its base, as the combine parser reads it: a
+    // spaced `{` opens what follows (`select |x| 'a { arms }`).
     map_ref: $ => seq(
       $._primary_expression,
-      '{',
+      token.immediate('{'),
       $._expression,
       '}',
     ),

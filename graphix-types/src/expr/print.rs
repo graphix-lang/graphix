@@ -337,6 +337,26 @@ fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
     Ok(())
 }
 
+/// `write_leading` in a flat form, which is mid-line: decorations stand
+/// on lines of their own, so they start a fresh one.
+fn write_leading_flat(
+    f: &mut impl fmt::Write,
+    dec: &Option<Arc<Decorations>>,
+) -> fmt::Result {
+    if dec.as_ref().is_some_and(|d| !d.comments.is_empty() || !d.attrs.is_empty()) {
+        writeln!(f)?;
+    }
+    write_leading(f, dec)
+}
+
+/// `write_comments` in a flat form.
+fn write_comments_flat(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+    if !lines.is_empty() {
+        writeln!(f)?;
+    }
+    write_comments(f, lines)
+}
+
 /// Whether anything in `e`, `e` included, prints on lines of its own
 /// above what it decorates: a comment, an attribute, a doc. Such a tree
 /// has no single-line form.
@@ -643,7 +663,7 @@ impl PrettyDisplay for TypeDefExpr {
 
 impl fmt::Display for TraitMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write_comments(f, self.comments.lines())?;
+        write_comments_flat(f, self.comments.lines())?;
         write!(f, "{}val {}: {}", self.doc, self.name, self.typ)?;
         match &self.default {
             None => Ok(()),
@@ -835,7 +855,7 @@ impl PrettyDisplay for BindSig {
 
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write_comments(f, self.comments.lines())?;
+        write_comments_flat(f, self.comments.lines())?;
         write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
@@ -1096,7 +1116,7 @@ fn write_fields(f: &mut Formatter<'_>, fields: &[(ArcStr, Expr)]) -> fmt::Result
         if i > 0 {
             write!(f, ", ")?
         }
-        write_leading(f, &e.dec)?;
+        write_leading_flat(f, &e.dec)?;
         match puns(name, e) {
             true => write!(f, "{name}")?,
             false => write!(f, "{name}: {}", Bare(e))?,
@@ -1440,7 +1460,7 @@ impl fmt::Display for SelectExpr {
         let SelectExpr { arg, arms } = self;
         write!(f, "select {arg} {{ ")?;
         for (i, (pat, rhs)) in arms.iter().enumerate() {
-            write_leading(f, &rhs.dec)?;
+            write_leading_flat(f, &rhs.dec)?;
             if let Some(tp) = &pat.type_predicate {
                 write!(f, "{tp} as ")?;
             }
