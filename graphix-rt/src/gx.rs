@@ -7,8 +7,8 @@ use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Scope, compile,
     expr::{
-        self, Expr, ExprId, ExprKind, FilesResolver, ModPath, ModuleKind, Origin,
-        ResolverRef, Resolvers, RootFile, Source, parse_modpath,
+        self, Expr, ExprId, ExprKind, ModPath, ModuleKind, Origin, ResolverRef,
+        Resolvers, RootFile, Source,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -280,37 +280,8 @@ impl<X: GXExt> GX<X> {
 
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
         let st_new = Instant::now();
-        let resolvers_default = |r: &mut Vec<ResolverRef>| match dirs::data_dir() {
-            None => (),
-            Some(dd) => r.push(FilesResolver::new(dd.join("graphix"), None)),
-        };
-        match std::env::var("GRAPHIX_MODPATH") {
-            Err(_) => resolvers_default(&mut cfg.resolvers),
-            Ok(mp) => {
-                match parse_modpath(&cfg.resolver_factories, &mut cfg.ctx.libstate, &mp) {
-                    Ok(r) => cfg.resolvers.extend(r),
-                    Err(e) => {
-                        // CR claude for claude: [bug] When parse_modpath refuses one
-                        // entry (graphix-types/src/expr/resolver.rs:170: no scheme, an
-                        // unknown scheme, or the empty entry a trailing comma leaves),
-                        // this replaces the whole list with the data dir and logs where
-                        // the shell shows nothing, so every valid entry is lost and
-                        // `mod x;` says only 'could not be found'. The book documents
-                        // such entries: book/src/shell.md:383
-                        // `GRAPHIX_MODPATH=/opt/graphix-libs`, and
-                        // book/src/modules/implementation.md says an entry without
-                        // `netidx:` is a file path. Skip empty entries and report a
-                        // refused one to the user, or accept a bare path as a file as
-                        // the book says. Separately, a list that parses drops the data
-                        // dir, while both book pages keep it in the search path. probe:
-                        // design/review-2026-10-05/repro/t-format-resolver-12.sh
-                        // (t-format-resolver-12)
-                        error!("failed to parse GRAPHIX_MODPATH, using default {e:?}");
-                        resolvers_default(&mut cfg.resolvers)
-                    }
-                }
-            }
-        };
+        cfg.resolvers
+            .extend(crate::search_path(&cfg.resolver_factories, &mut cfg.ctx.libstate)?);
         let mut ctx = cfg.ctx;
         if cfg.lsp_mode {
             ctx.env.ide = IdeMode::Lsp(None);

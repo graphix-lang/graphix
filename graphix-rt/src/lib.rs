@@ -888,6 +888,23 @@ impl<X: GXExt> GXHandle<X> {
     }
 }
 
+/// The module search after a program's own directory: the entries of
+/// `GRAPHIX_MODPATH`, then the user's data directory.
+pub fn search_path(
+    factories: &ahash::AHashMap<ArcStr, ResolverFactory>,
+    libstate: &mut graphix_compiler::LibState,
+) -> Result<Vec<ResolverRef>> {
+    let mut res = match std::env::var("GRAPHIX_MODPATH") {
+        Ok(mp) => graphix_compiler::expr::parse_modpath(factories, libstate, &mp)
+            .map_err(|e| e.context("GRAPHIX_MODPATH"))?,
+        Err(_) => vec![],
+    };
+    if let Some(dd) = dirs::data_dir() {
+        res.push(graphix_compiler::expr::FilesResolver::new(dd.join("graphix"), None));
+    }
+    Ok(res)
+}
+
 /// What a runtime does about its session image: restore the first of
 /// `restore` that reads instead of compiling the root, and when none
 /// does, send the image of the root it compiled, taken before any

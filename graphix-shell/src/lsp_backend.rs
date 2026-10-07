@@ -51,18 +51,8 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
             .context("registering stdlib modules")?;
     let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
     // The stdlib layer, shared by every per-project check.
-    // CR claude for claude: [bug] base_resolvers holds only the stdlib VFS. GX::new adds
-    // the GRAPHIX_MODPATH entries, or $XDG_DATA_HOME/graphix, only to the runtime's own
-    // chain (graphix-rt/src/gx.rs:251-266), and every LSP check replaces that chain
-    // with resolvers_for (gx.rs:799-802). So a module the CLI finds through
-    // GRAPHIX_MODPATH or the init directory (the book's "Shared Libraries" setup) gets
-    // a "module ... could not be found" error in the editor while `graphix --check`
-    // passes, and the root has no check left for hover to use. The field doc at line 92
-    // says the opposite, and the workspace roots pushed below only reach that same
-    // unused chain. A fix should keep the CLI's order, the file's directory before
-    // MODPATH (main.rs:423-430). probe:
-    // design/review-2026-10-05/repro/t-format-resolver-04.py (t-format-resolver-04)
     let base_resolvers = resolvers.clone();
+    let search = graphix_rt::search_path(&Default::default(), &mut ctx.libstate)?;
     for root in roots {
         resolvers.push(FilesResolver::new(root, None));
     }
@@ -86,6 +76,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
         gx,
         rt_handle: Handle::current(),
         base_resolvers,
+        search,
         buffer_overrides,
     }))
 }
@@ -97,8 +88,12 @@ async fn drain(mut rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>) {
 struct ShellLspBackend {
     gx: GXHandle<NoExt>,
     rt_handle: Handle,
-    /// Stdlib + GRAPHIX_MODPATH resolvers, in scope for every project.
+    /// The stdlib, in scope for every project, ahead of a file's
+    /// directory.
     base_resolvers: Vec<ResolverRef>,
+    /// GRAPHIX_MODPATH and the data directory, behind a file's
+    /// directory, as the CLI searches.
+    search: Vec<ResolverRef>,
     /// Open-buffer overrides, layered into every resolver chain so
     /// unsaved edits are visible to all checks.
     buffer_overrides: BufferOverrides,
@@ -115,6 +110,7 @@ impl ShellLspBackend {
                 Some(self.buffer_overrides.clone()),
             ));
         }
+        resolvers.extend(self.search.iter().cloned());
         resolvers
     }
 }

@@ -149,7 +149,9 @@ impl ModuleResolver for FilesResolver {
 }
 
 /// Parse a GRAPHIX_MODPATH-style list (`scheme:payload,{...}`) into
-/// resolvers. `file:` is built in; other schemes look up `factories`.
+/// resolvers. `file:` is built in, other schemes look up `factories`,
+/// an entry with no registered scheme is a file path, and an empty
+/// entry (a trailing comma's) is nothing.
 pub fn parse_modpath(
     factories: &AHashMap<ArcStr, ResolverFactory>,
     libstate: &mut crate::LibState,
@@ -159,16 +161,17 @@ pub fn parse_modpath(
     for l in escaping::split(s, '\\', ',') {
         // only the separator is escaped: a Windows path keeps its `\`
         let l = l.trim().replace("\\,", ",");
-        if let Some(s) = l.strip_prefix("file:") {
-            res.push(FilesResolver::new(PathBuf::from_str(s)?, None));
-        } else {
-            match l.split_once(':').and_then(|(scheme, rest)| {
-                factories.get(scheme).map(|f| f(libstate, rest))
-            }) {
-                Some(r) => res.push(r?),
-                None => {
-                    bail!("no resolver for {l}: expected file: or a registered scheme")
-                }
+        if l.is_empty() {
+            continue;
+        }
+        let scheme = l
+            .split_once(':')
+            .and_then(|(scheme, rest)| factories.get(scheme).map(|f| f(libstate, rest)));
+        match scheme {
+            Some(r) => res.push(r.with_context(|| format_compact!("{l}"))?),
+            None => {
+                let path = l.strip_prefix("file:").unwrap_or(&l);
+                res.push(FilesResolver::new(PathBuf::from_str(path)?, None))
             }
         }
     }
