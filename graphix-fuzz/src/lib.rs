@@ -4957,6 +4957,7 @@ fn ready_source(
 /// (derive a divergence, admit a ring shape).
 pub async fn run_aggregator(
     corpus: &std::sync::Arc<Corpus>,
+    seed: u64,
     iters: Option<usize>,
     timeout: Duration,
     weights: [f64; SOURCES],
@@ -4997,7 +4998,7 @@ pub async fn run_aggregator(
     let mut launched = 0usize;
     let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut ring_sigs: ahash::AHashSet<u64> = ahash::AHashSet::default();
-    let mut rng = mutate::Rng::new(0xC0FFEE);
+    let mut rng = mutate::Rng::new(seed ^ 0xC0FFEE);
     let mut orders: JoinSet<(usize, OrderResult)> = JoinSet::new();
     let mut derive: JoinSet<()> = JoinSet::new();
     let mut breakage = BreakageWindow::new();
@@ -5058,23 +5059,9 @@ pub async fn run_aggregator(
             let order = WorkOrder {
                 kind: KINDS[si],
                 // distinct per (source, order) without a shared counter
-                // CR claude for claude: [bug] `soak` parses a base seed (main.rs:942) but
-                // never passes it to run_aggregator, so this order seed depends only on
-                // the source and the order count. Every fleet host and every relaunch
-                // therefore checks the same Generate and Reactive programs, and
-                // fleet.sh's per-host seeds do nothing. `Rng::new` also keeps only
-                // `seed | 1` (mutate.rs:20), so consecutive order seeds collapse into
-                // one stream: Generate orders 2 and 3, 4 and 5, ... and Reactive orders
-                // 1 and 2, 3 and 4, ... generate byte-identical 64-program batches, so
-                // half of each host's Generate/Reactive orders re-check the batch
-                // before them. Thread the base seed into run_aggregator and mix it into
-                // each order seed and the ring sampler's Rng, and make Rng::new
-                // scramble its input (splitmix64, then force non-zero) instead of
-                // OR-ing bit 0; the comment at main.rs:964 describes seeding that no
-                // longer exists. probe: design/review-2026-10-05/repro/fuzz-gen-a-01.sh
-                // (fuzz-gen-a-01)
-                seed: (si as u64 + 1)
-                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                seed: seed
+                    .wrapping_mul(0xD6E8_FEB8_6659_FD93)
+                    .wrapping_add((si as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15))
                     .wrapping_add(seed_ctr[si]),
                 count,
                 ring: sample,

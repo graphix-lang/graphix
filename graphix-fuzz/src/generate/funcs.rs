@@ -20,32 +20,6 @@ fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
     (GenType::Num(a), GenType::Num(b))
 }
 
-/// Distinct parameter names, collision-pool-biased but unique within
-/// one param list (`|x, x|` is an error).
-// CR claude for claude: [structure] param_names is param_names_excluding (line 147) with
-// an empty `taken`, drawing the same random numbers: delete it and call
-// param_names_excluding(.., &[]). callback_param (exprs.rs:219) and bind_name
-// (patterns.rs:33) are the same collision-pool-or-fresh draw and differ only in the
-// taken test, so one GenCtx method that takes that test serves both. exprs::pick
-// (exprs.rs:11) duplicates Rng::pick (mutate.rs:36). None of these changes RNG
-// consumption, so programs stay byte-identical per seed. (fuzz-gen-a-11)
-fn param_names(
-    ctx: &mut GenCtx,
-    rng: &mut Rng,
-    cfg: &GenCfg,
-    arity: usize,
-) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for _ in 0..arity {
-        let mut n = ctx.name_for_bind(rng, cfg);
-        while names.contains(&n) {
-            n = ctx.fresh();
-        }
-        names.push(n);
-    }
-    names
-}
-
 /// The body of a typed lambda: an expression of the return type, or,
 /// with `p_body_block`, a block with a collision-prone local. Params are
 /// already in scope.
@@ -89,7 +63,7 @@ pub(super) fn gen_typed_lambda(
     let arity = if nlabels > 0 { rng.below(3) } else { 1 + rng.below(3) };
     let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
     let ret = types::scalar_type(rng);
-    let names = param_names(ctx, rng, cfg, arity);
+    let names = param_names_excluding(ctx, rng, cfg, arity, &[]);
     let mut labeled: Vec<(Label, Option<String>)> = Vec::new();
     for name in param_names_excluding(ctx, rng, cfg, nlabels, &names) {
         let ty = types::scalar_type(rng);
@@ -246,7 +220,7 @@ pub(super) fn gen_poly_lambda(
     stats: &mut GenStats,
 ) -> Vec<String> {
     let arity = 1 + rng.below(2);
-    let names = param_names(ctx, rng, cfg, arity);
+    let names = param_names_excluding(ctx, rng, cfg, arity, &[]);
     let body = poly_body(rng, &names);
     let name = ctx.name_for_bind(rng, cfg);
     if matches!(
@@ -287,7 +261,7 @@ pub(super) fn gen_bare_lambda(
     cfg: &GenCfg,
 ) -> Vec<String> {
     let arity = 1 + rng.below(2);
-    let names = param_names(ctx, rng, cfg, arity);
+    let names = param_names_excluding(ctx, rng, cfg, arity, &[]);
     let body = poly_body(rng, &names);
     let f = ctx.name_for_bind(rng, cfg);
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];

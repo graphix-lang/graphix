@@ -292,13 +292,11 @@ fn nested_connect(
     stmts.push(format!("let {t} = i64:0"));
     ctx.push(t.clone(), I64);
     let b = ctx.fresh();
-    let mark = ctx.mark();
     let inner = ctx.fresh();
     let iv = exprs::gen_typed(ctx, rng, &I64, 2);
     stmts.push(format!(
-        "let {b}: i64 = {{ let {inner}: i64 = {iv};          {t} <- {input} ~ ({t} + {inner}); ({inner} + i64:1) }}"
+        "let {b}: i64 = {{ let {inner}: i64 = {iv}; {t} <- {input} ~ ({t} + {inner}); ({inner} + i64:1) }}"
     ));
-    ctx.truncate(mark);
     ctx.push(b, I64);
     fires_per_injection.push(t);
 }
@@ -437,17 +435,10 @@ fn sample_chain(
 }
 
 /// A toggling node-walked select: the scrutinee is an injected input's
-/// parity, so epochs flip which arm is live, and the `once(...)` arm is
-/// async, which keeps the select on the node-walk. The live arm's
-/// builtin variant carries a per-epoch bottoming arg.
-// CR claude for claude: [doc-drift] The doc says the `once(..)` arm is async, but
-// `core_once` is `Effect::Sync` (stdlib/graphix-package-core/src/lib.rs:1056). The
-// select node-walks because a Sync builtin does not fuse, and the arm exercises once's
-// restart in its own sleep(), not an async output cleared on sleep. Line 499 says the
-// select fires on "its fires_per_injection-arm epochs"; it means the live arm's epochs.
-// In nested_connect the mark/truncate pair (lines 296 and 302) brackets no push and
-// does nothing. The format strings at lines 300, 551 and 556 put 10-space runs into
-// every generated program. (fuzz-gen-b-11)
+/// parity, so epochs flip which arm is live, and the `once(...)` arm, a
+/// Sync builtin, keeps the select on the node-walk and restarts in its own
+/// sleep. The live arm's builtin variant carries a per-epoch bottoming
+/// arg.
 fn slept_arm(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -503,7 +494,7 @@ fn slept_arm(
     stmts.push(format!(
         "let {s} = select ({input} % i64:2) {{ i64:0 => {live_arm}, _ => once({input}) }}"
     ));
-    // not pushed into `fires_per_injection`: the select fires only on its fires_per_injection-arm epochs
+    // not pushed into `fires_per_injection`: the select fires only on its live arm's epochs
     ctx.push(s, I64);
 }
 
@@ -538,7 +529,7 @@ fn dyn_reload(
             inner.truncate(m);
             if chance(rng, 0.5) {
                 // internal block-level computation, so a reload swap
-                // deletes a module-body kernel with live slots
+                // tears down a loaded body with live statements
                 let k = 1 + rng.below(5) as i64;
                 format!(
                     "r#\"let f = |{p}: i64| -> i64 {body}; \
@@ -554,25 +545,15 @@ fn dyn_reload(
     let srcs_name = ctx.fresh();
     stmts.push(format!("let {srcs_name} = [{}]", srcs.join(", ")));
     let status = ctx.fresh();
-    // CR claude for claude: [bug] `sandbox whitelist [core]` leaves out the array, str
-    // and map packages. So every block source built above fails to load with
-    // `array::len not defined` (about half of all sources; each one calls array::len),
-    // and so does any organic body that draws str::len or map::len. The select below
-    // then takes its `i64:-1` arm, and a reload swap never tears down a loaded body
-    // with live statements: in `graphix-fuzz gen 3000 31 --reactive` none of the 245
-    // block sources can load. Whitelist what the bodies reach: `[core, array, str,
-    // map]`. A loaded body is never fused (graphix-compiler/src/node/module.rs:1110),
-    // so the module-body kernel that the block branch's comment promises will not exist
-    // even after the fix; gen_dynamic_module's broad `[core, array, str]` likewise
-    // refuses bodies that draw map::, list:: or re::. probe:
-    // design/review-2026-10-05/repro/fuzz-gen-b-03.gx (fuzz-gen-b-03)
     stmts.push(format!(
-        "let {status} = mod {dname} dynamic {{ sandbox whitelist [core];          sig {{ val f: fn(x: i64) -> i64 }};          source {srcs_name}[{iname} % i64:{n_srcs}]$ }}"
+        "let {status} = mod {dname} dynamic {{ sandbox whitelist {}; \
+         sig {{ val f: fn(x: i64) -> i64 }}; source {srcs_name}[{iname} % i64:{n_srcs}]$ }}",
+        super::BODY_PACKAGES
     ));
     let arg = exprs::gen_typed(ctx, rng, &I64, 1);
     let v = ctx.fresh();
     stmts.push(format!(
-        "let {v} = select {status} {{ error as _ => i64:-1, null as _ =>          {dname}::f({arg}) }}"
+        "let {v} = select {status} {{ error as _ => i64:-1, null as _ => {dname}::f({arg}) }}"
     ));
     ctx.push(v, I64);
 }
@@ -903,7 +884,7 @@ mod test {
     fn ceremony_presence() {
         let mut rng = Rng::new(0x5e9);
         let mut sum = ReactiveStats::default();
-        const N: usize = 400;
+        const N: usize = 1000;
         for _ in 0..N {
             let (_, st) = gen_reactive_stats(&GenCfg::default(), &mut rng);
             sum.seqs += st.seqs;

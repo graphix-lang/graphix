@@ -99,6 +99,47 @@ fn normalize(v: &Value) -> Value {
     out.pop().expect("normalize: empty result stack")
 }
 
+/// Equality as a program can observe it: `Value`'s own, except that a
+/// float compares by its bits (NaN canonical), so `-0.0` is not `0.0`,
+/// and a decimal by mantissa and scale. Iterative: value nesting depth is
+/// program-controlled.
+pub fn same(a: &Value, b: &Value) -> bool {
+    let mut work = vec![(a, b)];
+    while let Some((a, b)) = work.pop() {
+        let equal = match (a, b) {
+            (Value::F64(x), Value::F64(y)) => {
+                x.is_nan() && y.is_nan() || x.to_bits() == y.to_bits()
+            }
+            (Value::F32(x), Value::F32(y)) => {
+                x.is_nan() && y.is_nan() || x.to_bits() == y.to_bits()
+            }
+            (Value::Decimal(x), Value::Decimal(y)) => {
+                x.mantissa() == y.mantissa() && x.scale() == y.scale()
+            }
+            (Value::Array(x), Value::Array(y)) => {
+                work.extend(x.iter().zip(y.iter()));
+                x.len() == y.len()
+            }
+            (Value::Map(x), Value::Map(y)) => {
+                for ((xk, xv), (yk, yv)) in x.into_iter().zip(y.into_iter()) {
+                    work.push((xk, yk));
+                    work.push((xv, yv));
+                }
+                x.len() == y.len()
+            }
+            (Value::Error(x), Value::Error(y)) => {
+                work.push((&**x, &**y));
+                true
+            }
+            (a, b) => a == b,
+        };
+        if !equal {
+            return false;
+        }
+    }
+    true
+}
+
 impl Epoch {
     /// Project a runtime segment onto the watched expr: anchor at the
     /// segment's first event, keep `Updated(eid)` values (fn values
@@ -141,20 +182,19 @@ impl Trace {
         }
     }
 
-    /// Structural equality. `Value`'s own equality is graphix's total
-    /// order (`NaN == NaN`, `-0.0 == 0.0`), so no float special-casing.
-    // CR claude for claude: [doc-drift] Trace equality is Value's equality, which
-    // compares non-NaN floats with == (so -0.0 equals 0.0) and decimals by value
-    // ignoring scale. design/graphix_fuzz.md §3 says floats otherwise compare exactly
-    // and that agrees_with encodes zero relaxations. Both differences are visible to
-    // programs (`"[x]"` prints -0 vs 0, `1.0 / x` gives -inf vs inf), so an engine or
-    // image codec that flips a result's zero sign or decimal scale still agrees here.
-    // Compare float leaves by bits with NaN canonicalized, and decimals by mantissa and
-    // scale, in one trace-specific equality used by agrees_with, agrees_final and the
-    // first-difference classifiers; or state the relaxation in the doc.
-    // (fuzz-main-aux-20)
+    /// Equality as a program could tell: every epoch's cap, offsets and
+    /// values ([`same`]), and the output.
     pub fn agrees_with(&self, other: &Trace) -> bool {
-        self == other
+        self.epochs.len() == other.epochs.len()
+            && self.epochs.iter().zip(&other.epochs).all(|(a, b)| {
+                a.capped == b.capped
+                    && a.events.len() == b.events.len()
+                    && a.events
+                        .iter()
+                        .zip(&b.events)
+                        .all(|((ao, av), (bo, bv))| ao == bo && same(av, bv))
+            })
+            && self.stdout == other.stdout
     }
 
     /// Per-epoch FINAL value: the last event's value, `None` for a
@@ -172,7 +212,12 @@ impl Trace {
             return self.agrees_with(other);
         }
         self.epochs.len() == other.epochs.len()
-            && self.final_values() == other.final_values()
+            && self.final_values().iter().zip(other.final_values()).all(|(a, b)| {
+                match (a, b) {
+                    (Some(a), Some(b)) => same(a, b),
+                    (a, b) => a.is_none() && b.is_none(),
+                }
+            })
     }
 
     /// [`Self::first_difference`] at final strength: the bucket key for
@@ -188,7 +233,10 @@ impl Trace {
         self.final_values()
             .iter()
             .zip(other.final_values().iter())
-            .position(|(a, b)| a != b)
+            .position(|(a, b)| match (a, b) {
+                (Some(a), Some(b)) => !same(a, b),
+                (a, b) => a.is_some() || b.is_some(),
+            })
             .map(TraceDiff::FinalValue)
     }
 
@@ -200,7 +248,7 @@ impl Trace {
                 return Some(TraceDiff::CapMismatch);
             }
             for ((ao, av), (bo, bv)) in a.events.iter().zip(b.events.iter()) {
-                if av != bv {
+                if !same(av, bv) {
                     return Some(TraceDiff::ValueMismatch);
                 }
                 if ao != bo {

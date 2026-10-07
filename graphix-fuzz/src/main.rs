@@ -183,56 +183,55 @@ fn first_line(s: &str) -> String {
 }
 
 /// Per-feature compile rates for gen-check/reactive-check, bucketed by
-/// source substrings. A 0% row is a dead generator arm; an "absent" row
-/// is an arm that stopped firing.
-fn feature_report(progs: &[String], ok: &[bool]) {
-    const FEATURES: &[(&str, &str)] = &[
-        ("catch", "catch("),
-        ("qop-catch", ")?"),
-        ("qop-dollar", "$"),
-        ("select", "select "),
-        ("guard", " if "),
-        ("rec", "let rec"),
-        ("array-hof", "array::"),
-        ("map-hof", "map::"),
-        ("list-hof", "list::"),
-        ("list-lit", "[<"),
-        ("collection-trait", "Collection::"),
-        ("trait-union-call", "::both("),
-        ("bounded-hof-call", "::tsum("),
-        ("collection-generic-call", "::csize("),
-        ("str", "str::"),
-        ("re", "re::"),
-        ("variant", "`"),
-        ("connect", "<-"),
-        ("cast", "cast<"),
-        // CR claude for claude: [test-gap] `&` also matches the `&&` operator: in `gen
-        // 2000 7`, 842 programs contain `&` but only 620 contain a reference, so this
-        // row overstates ref coverage. FEATURES is shared by gen-check and
-        // reactive-check. So every gen-check run reports `reactive` as absent ("arm not
-        // firing?"), and every reactive-check run does the same for the seven
-        // static-only rows (trait-union-call, bounded-hof-call,
-        // collection-generic-call, use-super, use-main, path-super, path-package),
-        // which means the warning fires on every run. `modules` (`mod `) counts only
-        // dynamic modules. Use a pattern that excludes `&&`, give each lane its own row
-        // list, and count from GenStats where it exists. (fuzz-gen-a-12)
-        ("refs", "&"),
-        ("modules", "mod "),
-        ("files", "file-v1"),
-        ("reactive", "schedule-v1"),
-        ("use-super", "use super::"),
-        ("use-main", "use m"),
-        ("path-super", "super::m"),
-        ("path-package", "package::m"),
+/// source shape. A 0% row is a dead generator arm; an "absent" row is an
+/// arm that stopped firing, so each lane lists only the arms it has.
+fn feature_report(progs: &[String], ok: &[bool], reactive: bool) {
+    let sub = |pat: &'static str| move |p: &str| p.contains(pat);
+    // a `&` that is not half of `&&`
+    let reference = |p: &str| {
+        let b = p.as_bytes();
+        (0..b.len()).any(|i| {
+            b[i] == b'&' && b.get(i + 1) != Some(&b'&') && (i == 0 || b[i - 1] != b'&')
+        })
+    };
+    let mut features: Vec<(&str, Box<dyn Fn(&str) -> bool>)> = vec![
+        ("catch", Box::new(sub("catch("))),
+        ("qop-catch", Box::new(sub(")?"))),
+        ("qop-dollar", Box::new(sub("$"))),
+        ("select", Box::new(sub("select "))),
+        ("guard", Box::new(sub(" if "))),
+        ("rec", Box::new(sub("let rec"))),
+        ("array-hof", Box::new(sub("array::"))),
+        ("map-hof", Box::new(sub("map::"))),
+        ("list-hof", Box::new(sub("list::"))),
+        ("list-lit", Box::new(sub("[<"))),
+        ("collection-trait", Box::new(sub("Collection::"))),
+        ("str", Box::new(sub("str::"))),
+        ("re", Box::new(sub("re::"))),
+        ("variant", Box::new(sub("`"))),
+        ("connect", Box::new(sub("<-"))),
+        ("cast", Box::new(sub("cast<"))),
+        ("refs", Box::new(reference)),
+        ("dyn-modules", Box::new(sub(" dynamic {"))),
+        ("files", Box::new(sub("file-v1"))),
     ];
+    if reactive {
+        features.push(("reactive", Box::new(sub("schedule-v1"))));
+    } else {
+        features.extend([
+            ("trait-union-call", Box::new(sub("::both(")) as Box<dyn Fn(&str) -> bool>),
+            ("bounded-hof-call", Box::new(sub("::tsum("))),
+            ("collection-generic-call", Box::new(sub("::csize("))),
+            ("use-super", Box::new(sub("use super::"))),
+            ("use-main", Box::new(sub("use m"))),
+            ("path-super", Box::new(sub("super::m"))),
+            ("path-package", Box::new(sub("package::m"))),
+        ]);
+    }
     println!("  per-feature compile rates:");
-    for (name, pat) in FEATURES {
-        let idx: Vec<usize> = progs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.contains(pat))
-            .map(|(i, _)| i)
-            .collect();
+    for (name, has) in &features {
+        let idx: Vec<usize> =
+            progs.iter().enumerate().filter(|(_, p)| has(p)).map(|(i, _)| i).collect();
         if idx.is_empty() {
             println!("    {name:>12}: absent from sample  <-- arm not firing?");
             continue;
@@ -458,7 +457,7 @@ async fn main() -> Result<()> {
                 "gen-check: seed={seed}: {compiled}/{n} compiled ({:.1}%)",
                 compiled as f64 * 100.0 / n as f64
             );
-            feature_report(&progs, &ok);
+            feature_report(&progs, &ok, false);
             let mut buckets: Vec<(usize, String, String)> =
                 rejects.into_iter().map(|(k, (c, ex))| (c, k, ex)).collect();
             buckets.sort_by(|a, b| b.0.cmp(&a.0));
@@ -696,7 +695,7 @@ async fn main() -> Result<()> {
                 pct(quiesced),
                 pct(advanced),
             );
-            feature_report(&progs, &ok);
+            feature_report(&progs, &ok, true);
             let mut buckets: Vec<(usize, String)> =
                 rejects.into_iter().map(|(k, c)| (c, k)).collect();
             buckets.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1008,7 +1007,8 @@ async fn main() -> Result<()> {
             // per-source seed streams stay separate so a subject is
             // reproducible from its source and seed
             let per_source =
-                graphix_fuzz::run_aggregator(&corpus, iters, campaign_timeout(), w).await;
+                graphix_fuzz::run_aggregator(&corpus, seed, iters, campaign_timeout(), w)
+                    .await;
             let new = corpus.len() - before;
             let total: f64 = per_source.iter().map(|(_, _, c)| c.as_secs_f64()).sum();
             for (name, stats, cpu) in &per_source {

@@ -127,7 +127,7 @@ impl NumTy {
     }
 
     /// A literal of this type from a per-type pool that includes the
-    /// boundary values.
+    /// boundary values (finite: no literal denotes an infinity).
     pub(super) fn literal(self, rng: &mut Rng) -> String {
         let v: &str = match self {
             NumTy::I8 => {
@@ -140,27 +140,55 @@ impl NumTy {
                 ["0", "1", "-1", "42", "100000", "-100000", "2147483647", "-2147483648"]
                     [rng.below(8)]
             }
-            // CR claude for claude: [doc-drift] The doc on `literal` says every pool
-            // includes the boundary values. This i64 pool has no MIN/MAX, and neither
-            // do the f32, f64, v64, z32 and z64 pools, which also have no infinities or
-            // -0.0. The mutation lane's try_perturb_literal does put i64 and float
-            // extremes into mutants. What is missing is the generator lane's own draws
-            // and any v64, z32 or z64 extreme, which nothing produces. Add the extremes
-            // to these pools at modest weight, or narrow the doc to the pools that have
-            // them. (fuzz-gen-b-09)
-            NumTy::I64 => ["0", "1", "-1", "2", "42", "100", "-100", "7"][rng.below(8)],
+            NumTy::I64 => [
+                "0",
+                "1",
+                "-1",
+                "2",
+                "42",
+                "100",
+                "-100",
+                "7",
+                "9223372036854775807",
+                "-9223372036854775808",
+            ][rng.below(10)],
             NumTy::U8 => ["0", "1", "2", "100", "255"][rng.below(5)],
             NumTy::U16 => ["0", "1", "2", "1000", "65535"][rng.below(5)],
             NumTy::U32 => ["0", "1", "7", "100000", "4294967295"][rng.below(5)],
             NumTy::U64 => {
                 ["0", "1", "7", "1000000", "18446744073709551615"][rng.below(5)]
             }
-            NumTy::F32 => ["0.0", "1.0", "-1.0", "3.5", "0.25", "-2.5"][rng.below(6)],
-            NumTy::F64 => ["0.0", "1.0", "-1.0", "3.14", "2.5", "0.1"][rng.below(6)],
+            NumTy::F32 => {
+                ["0.0", "1.0", "-1.0", "3.5", "0.25", "-2.5", "-0.0", "3.4028235e38"]
+                    [rng.below(8)]
+            }
+            NumTy::F64 => [
+                "0.0",
+                "1.0",
+                "-1.0",
+                "3.14",
+                "2.5",
+                "0.1",
+                "-0.0",
+                "1.7976931348623157e308",
+                "5e-324",
+            ][rng.below(9)],
             NumTy::V32 => ["0", "1", "7", "1000", "4294967295"][rng.below(5)],
-            NumTy::V64 => ["0", "1", "7", "1000000"][rng.below(4)],
-            NumTy::Z32 => ["0", "1", "-1", "7", "-1000"][rng.below(5)],
-            NumTy::Z64 => ["0", "1", "-1", "42", "-1000000"][rng.below(5)],
+            NumTy::V64 => {
+                ["0", "1", "7", "1000000", "18446744073709551615"][rng.below(5)]
+            }
+            NumTy::Z32 => {
+                ["0", "1", "-1", "7", "-1000", "2147483647", "-2147483648"][rng.below(7)]
+            }
+            NumTy::Z64 => [
+                "0",
+                "1",
+                "-1",
+                "42",
+                "-1000000",
+                "9223372036854775807",
+                "-9223372036854775808",
+            ][rng.below(7)],
         };
         format!("{}:{v}", self.render())
     }

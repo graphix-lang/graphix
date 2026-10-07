@@ -10,13 +10,10 @@
 //! form (a `callable-v1` header, both routes). Every template quiesces
 //! by construction.
 
+use super::chance;
 use crate::callable::CallSpec;
 use crate::mutate::Rng;
 use crate::schedule::{Lit, Schedule};
-
-fn chance(rng: &mut Rng, pct: usize) -> bool {
-    rng.below(100) < pct
-}
 
 /// One generated state field: name and an update expression over the
 /// old field value `{old}` and the dispatch argument `{arg}`.
@@ -35,15 +32,8 @@ pub struct TwinShape {
 
 const FIELDS: [&str; 3] = ["a", "b", "c"];
 
-// CR claude for claude: [doc-drift] The comment in this function says an overflow bottoms
-// on both twins alike, but unchecked i64 arithmetic wraps: `i64:9223372036854775807 +
-// i64:1` is `-9223372036854775808` in both engines. Twin fields also stay far from
-// overflow. The only invariant worth keeping is that both twins evaluate the identical
-// expression. The local `chance(rng, pct: usize)` at line 19 duplicates
-// `generate::chance(rng, p: f64)` in other units; use the shared one. (fuzz-gen-b-12)
 fn gen_update(rng: &mut Rng, field: &str, arg: &str) -> String {
-    // both twins evaluate the identical expression, so an
-    // overflow-to-bottom hits both sides alike
+    // both twins evaluate the identical expression
     let old = format!("s.{field}");
     match rng.below(5) {
         0 => format!("{old} + {arg}"),
@@ -72,7 +62,7 @@ fn gen_select_body(
     // The quiet arm decides the geometry: an arm matching the canonical
     // default leaves the writing arm asleep through the driver's init
     // call; a wildcard-only select updates on the init call too.
-    if chance(rng, 70) {
+    if chance(rng, 0.7) {
         format!("select {arg} {{\n  i64:0 => null,\n  n => {{\n    {write}\n  }}\n}}")
     } else {
         format!("select {arg} {{\n  n => {{\n    {write}\n  }}\n}}")
@@ -103,7 +93,7 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
         .map(|f| format!("{}: i64:0", f.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let three = chance(rng, 40);
+    let three = chance(rng, 0.4);
     let mut m = String::new();
     m.push_str(&format!("type St = {{ {st_ty} }};\n"));
     m.push_str(&format!("let sa: St = {{ {init} }};\n"));
@@ -192,7 +182,7 @@ pub fn render_callable_form(shape: &TwinShape) -> String {
 /// Generate one twin program: schedule form or callable form.
 pub fn gen_twin_program(rng: &mut Rng) -> String {
     let shape = gen_twin_shape(rng);
-    if chance(rng, 50) {
+    if chance(rng, 0.5) {
         render_schedule_form(&shape)
     } else {
         render_callable_form(&shape)

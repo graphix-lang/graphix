@@ -18,6 +18,10 @@ use types::I64;
 
 use crate::mutate::Rng;
 
+/// The sandbox of a generated dynamic module: every package a generated
+/// body can reach.
+const BODY_PACKAGES: &str = "[core, array, str, map, list, re]";
+
 /// Feature probabilities and limits for one generation profile. All
 /// randomness flows through the seeded [`Rng`], so a given (cfg, seed)
 /// pair always produces the same program text.
@@ -77,7 +81,8 @@ pub struct GenCfg {
     /// A statement slot emits a REFERENCE group (`let r = &v`, tuple
     /// storage, `*r <- lit` write-through).
     pub p_ref: f64,
-    /// Statement slots per program: 0..=max_lets (template slots may
+    /// Statement slots per program: a geometric count with mean
+    /// max_lets/2, capped at min(4 * max_lets, 48) (template slots may
     /// emit several statements).
     pub max_lets: usize,
     /// Depth passed to `random_type` for value-let and tail types.
@@ -239,6 +244,24 @@ impl GenCtx {
         self.fresh()
     }
 
+    /// A collision-pool name (30%) or a fresh one, redrawn fresh while
+    /// `taken` refuses it.
+    fn name_avoiding(
+        &mut self,
+        rng: &mut Rng,
+        taken: impl Fn(&GenCtx, &str) -> bool,
+    ) -> String {
+        let mut n = if rng.below(10) < 3 && !self.collision_pool.is_empty() {
+            self.collision_pool[rng.below(self.collision_pool.len())].clone()
+        } else {
+            self.fresh()
+        };
+        while taken(self, &n) {
+            n = self.fresh();
+        }
+        n
+    }
+
     fn push(&mut self, name: String, ty: GenType) {
         // path-qualified module callables are reference-only vocabulary
         if !name.contains("::") && !self.collision_pool.contains(&name) {
@@ -279,15 +302,19 @@ impl GenCtx {
         self.vars.truncate(mark);
     }
 
-    /// The visible bindings (last binding wins per name), innermost first.
+    /// The visible bindings, innermost first: the last binding of a plain
+    /// name wins; a path-qualified name is never shadowed, so each of its
+    /// entries (one per type a generic callable is registered at) stays.
     fn visible_entries(&self) -> Vec<(&str, &GenType)> {
         let mut seen: Vec<&str> = Vec::new();
         let mut out = Vec::new();
         for (n, t) in self.vars.iter().rev() {
-            if seen.contains(&n.as_str()) {
-                continue;
+            if !n.contains("::") {
+                if seen.contains(&n.as_str()) {
+                    continue;
+                }
+                seen.push(n.as_str());
             }
-            seen.push(n.as_str());
             out.push((n.as_str(), t));
         }
         out

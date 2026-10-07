@@ -5,10 +5,15 @@
 //! ```text
 //! select scrut {
 //!   [0-2 guarded arms]            // first ⇒ can never be dead
-//!   [0-1 unguarded refutable arm] // nothing unguarded before it
+//!   [0-1 bound or-arm]            // over a pair of one integer type
+//!   [0-1 unguarded refutable arm]
 //!   [final irrefutable arm]       // one refutable arm never exhausts
 //! }
 //! ```
+//!
+//! The or-arm may cover the refutable arm by value (`(i64:1, v) | (v,
+//! i64:2)` before `(i64:1, _)`); both stay live because dead arms are
+//! found by type, and literal patterns never complete a type's coverage.
 //!
 //! or, for a variant scrutinee, full-coverage mode: every tag exactly
 //! once, unguarded, with irrefutable payload patterns and no trailing
@@ -27,19 +32,9 @@ struct Pat {
     refutable: bool,
 }
 
-/// A collision-biased bind name for a pattern position: shadowing outer
-/// names is deliberate, but two binds within one arm's pattern must be
-/// distinct (`mark` is the arm's scope start).
+/// A name not bound since `mark`.
 fn bind_name(inner: &mut GenCtx, rng: &mut Rng, mark: usize) -> String {
-    let mut n = if rng.below(10) < 3 && !inner.collision_pool.is_empty() {
-        inner.collision_pool[rng.below(inner.collision_pool.len())].clone()
-    } else {
-        inner.fresh()
-    };
-    while inner.vars[mark..].iter().any(|(m, _)| *m == n) {
-        n = inner.fresh();
-    }
-    n
+    inner.name_avoiding(rng, |c, n| c.vars[mark..].iter().any(|(m, _)| m == n))
 }
 
 // CR claude for claude: [test-gap] gen_pattern never emits a `name@ pattern` capture, a
@@ -355,13 +350,6 @@ fn general_select(
     // a bound or-alternation over an equal-typed integer pair: both
     // alternatives bind the same name at the same type; structurally
     // distinct and refutable
-    // CR claude for claude: [doc-drift] This unguarded or-arm can come before the
-    // unguarded refutable arm, which the module doc's layout (line 8) says has nothing
-    // unguarded before it. It can also cover that arm completely: `(i64:1, v1) | (v1,
-    // i64:2)` followed by `(i64:1, _)` passes `--check`, because dead arms are found by
-    // type, not by value. What keeps the final arm live is that literal patterns never
-    // complete a type's coverage. Add the or-arm to the layout and state that reason.
-    // (fuzz-gen-b-13)
     if let GenType::Tuple(es) = &scrut_ty {
         if es.len() == 2
             && es[0].render() == es[1].render()

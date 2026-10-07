@@ -425,20 +425,6 @@ pub(super) fn gen_module(
                 gxi.push_str(decl);
             }
             gx.push_str(body);
-            // CR claude for claude: [bug] Only the last of these three registrations can
-            // ever be called. GenCtx::visible_entries (mod.rs:283), which
-            // fns_returning, vars_of and poly_fns all go through, keeps one entry per
-            // name, so every generated csize call passes an Array<string> and the Map
-            // and Array<i64> calls this loop is for are never generated.
-            // stats.collection_generic, the 1% check in audit_bug_shapes_reachable and
-            // gen-check's collection-generic-call row still count the shape as covered.
-            // Calls at all three types compile and agree, with and without the gxi, and
-            // a call at two element types is the shape of
-            // findings/interface-ctor-trait-oct2026/00_two_collections.gx. A
-            // path-qualified name is never shadowed, so visible_entries could keep
-            // every `::` entry. probe: design/review-2026-10-05/repro/fuzz-gen-a-04.sh
-            // (seed 7, 2000 programs: 54 csize calls, 0 at Map, 0 at Array<i64>).
-            // (fuzz-gen-a-04)
             for pty in [
                 GenType::Array(Box::new(I64)),
                 GenType::Map(Box::new(I64)),
@@ -606,9 +592,9 @@ pub(super) fn gen_dynamic_module(
     if sig_mismatch {
         sig.push_str("val absent: fn(x: i64) -> i64; ");
     }
-    // a narrow sandbox turns array::/str:: reaches into deterministic
+    // a narrow sandbox turns package reaches into deterministic
     // error-arm outcomes, so both whitelists are healthy to emit
-    let whitelist = if chance(rng, 0.25) { "[core]" } else { "[core, array, str]" };
+    let whitelist = if chance(rng, 0.25) { "[core]" } else { super::BODY_PACKAGES };
     // Counted-hash raw strings are verbatim (a generated body can contain
     // both `\\` and `\[`); one hash suffices unless the source contains `"#`.
     let src = src.trim_end().trim_end_matches(';');

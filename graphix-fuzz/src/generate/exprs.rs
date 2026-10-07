@@ -8,10 +8,6 @@ use super::{
 };
 use crate::mutate::Rng;
 
-pub(super) fn pick<'a>(rng: &mut Rng, xs: &[&'a str]) -> &'a str {
-    xs[rng.below(xs.len())]
-}
-
 /// A call to a visible lambda producing `ty`: a typed lambda returning
 /// `ty`, or, for numeric `ty`, a poly lambda with all args at `ty`.
 fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<String> {
@@ -78,17 +74,7 @@ pub(super) fn call_args(
 /// An accessor over a visible composite producing `ty`: a struct field,
 /// a tuple index, a bounds-checked array index / slice, a map lookup, or
 /// a numeric cast, each fallible one consumed by `$`. Misses are kept to
-/// a small fraction because a bottom program burns the campaign timeout.
-// CR claude for claude: [doc-drift] Stale rationale: the doc above says misses are kept
-// small because a bottom program burns the campaign timeout, and lines 531-532 say a
-// `/0` is slow to check. In fact a bottom program is an instant empty-trace agreement:
-// `{ let v0 = [i64:1, i64:2][5]$; let v1 = (i64:3 / i64:0); (v0, v1) }` agrees in about
-// 200 ms. The real cost of a miss is that one bottom blanks every reader of it.
-// GenCfg::max_lets (mod.rs:80-81) says a program has 0..=max_lets slots, but geo_slots
-// draws a geometric count with mean max_lets/2, capped at min(4 * max_lets, 48).
-// design/graphix_fuzz.md:49-50 names `gen_expr(target: Type)` and `find_producers`,
-// which do not exist: the code is gen_typed over GenType, with try_call, try_accessor
-// and try_hof as the producers. (fuzz-gen-a-08)
+/// a small fraction because one bottom blanks every reader of it.
 fn try_accessor(
     ctx: &GenCtx,
     rng: &mut Rng,
@@ -138,7 +124,7 @@ fn try_accessor(
                     cands.push(format!("{name}[{idx}]$"));
                     // narrow-int index
                     if rng.below(8) == 0 {
-                        let nt = pick(rng, &["u8", "i16", "u32"]);
+                        let nt = *rng.pick(&["u8", "i16", "u32"]);
                         cands.push(format!("{name}[{nt}:1]$"));
                     }
                 }
@@ -148,11 +134,11 @@ fn try_accessor(
                     cands.push(format!("*({name}[{idx}]$)"));
                 }
                 if ty == t {
-                    let slice = pick(rng, &["..1", "1..", "-1..", "..-1", "-3..-1"]);
+                    let slice = *rng.pick(&["..1", "1..", "-1..", "..-1", "-3..-1"]);
                     cands.push(format!("{name}[{slice}]$"));
                     // narrow-int slice bound
                     if rng.below(8) == 0 {
-                        let nt = pick(rng, &["u8", "i16", "u32"]);
+                        let nt = *rng.pick(&["u8", "i16", "u32"]);
                         cands.push(format!("{name}[{nt}:1..]$"));
                     }
                 }
@@ -224,20 +210,6 @@ fn try_accessor(
     Some(cands.swap_remove(rng.below(cands.len())))
 }
 
-/// A callback parameter name, collision-pool-biased, unique within the
-/// param list.
-fn callback_param(inner: &mut GenCtx, rng: &mut Rng, taken: &[String]) -> String {
-    let mut n = if rng.below(10) < 3 && !inner.collision_pool.is_empty() {
-        inner.collision_pool[rng.below(inner.collision_pool.len())].clone()
-    } else {
-        inner.fresh()
-    };
-    while taken.contains(&n) {
-        n = inner.fresh();
-    }
-    n
-}
-
 /// The callback argument text + scope entries for element type `d_ty`:
 /// either one param bound to the whole element, or — for a 2-3 tuple
 /// element — a destructuring `|(k, v)|` pattern. `taken` holds sibling
@@ -252,7 +224,7 @@ fn callback_binder(
         if elems.len() <= 3 && rng.below(2) == 0 {
             let mut names: Vec<String> = taken.to_vec();
             for _ in 0..elems.len() {
-                let n = callback_param(inner, rng, &names);
+                let n = inner.name_avoiding(rng, |_, n| names.iter().any(|t| t == n));
                 names.push(n);
             }
             let names = &names[taken.len()..];
@@ -262,7 +234,7 @@ fn callback_binder(
             return format!("({})", names.join(", "));
         }
     }
-    let n = callback_param(inner, rng, taken);
+    let n = inner.name_avoiding(rng, |_, n| taken.iter().any(|t| t == n));
     inner.push(n.clone(), d_ty.clone());
     n
 }
@@ -377,7 +349,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 // occasionally an over-limit count (> MAX_ARRAY_INIT_LEN):
                 // bottom on both engines, fast to evaluate
                 let n = if rng.below(24) == 0 {
-                    pick(rng, &["16777217", "99999999"]).to_string()
+                    rng.pick(&["16777217", "99999999"]).to_string()
                 } else {
                     (1 + rng.below(4)).to_string()
                 };
@@ -441,7 +413,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             let src = gen_pinned(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
             let init = gen_typed(ctx, rng, ty, d.min(2));
             let mut inner = ctx.clone();
-            let acc = callback_param(&mut inner, rng, &[]);
+            let acc = inner.name_avoiding(rng, |_, _| false);
             inner.push(acc.clone(), ty.clone());
             let binder = callback_binder(&mut inner, rng, &d_ty, &[acc.clone()]);
             let body = if *ty == I64 && rng.below(8) == 0 {
@@ -525,7 +497,7 @@ pub(super) fn gen_typed(
             // checked arithmetic, consumed by `$`, a type-match select
             // with an error arm, or `?` under a catch
             if rng.below(8) == 0 {
-                let op = pick(rng, &["+?", "-?", "*?", "/?", "%?"]);
+                let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
                 let a = gen_typed(ctx, rng, ty, d);
                 let b = gen_typed(ctx, rng, ty, d);
                 let dflt = gen_typed(ctx, rng, ty, d);
@@ -550,9 +522,9 @@ pub(super) fn gen_typed(
             if n.is_signed() && rng.below(6) == 0 {
                 return format!("(-({}))", gen_typed(ctx, rng, ty, d));
             }
-            // bias toward +/-/* : a generated `/0` or `%0` bottoms and is
-            // slow to check
-            let op = pick(rng, &["+", "+", "-", "-", "*", "*", "/", "%"]);
+            // bias toward +/-/* : a generated `/0` or `%0` bottoms, which
+            // blanks every reader of it
+            let op = *rng.pick(&["+", "+", "-", "-", "*", "*", "/", "%"]);
             format!(
                 "({} {} {})",
                 gen_typed(ctx, rng, ty, d),
@@ -563,7 +535,7 @@ pub(super) fn gen_typed(
         GenType::Bool => match rng.below(3) {
             0 => {
                 let nt = types::numeric_type(rng);
-                let op = pick(rng, &["<", ">", "<=", ">=", "==", "!="]);
+                let op = *rng.pick(&["<", ">", "<=", ">=", "==", "!="]);
                 format!(
                     "({} {} {})",
                     gen_typed(ctx, rng, &nt, d),
@@ -572,7 +544,7 @@ pub(super) fn gen_typed(
                 )
             }
             1 => {
-                let op = pick(rng, &["&&", "||"]);
+                let op = *rng.pick(&["&&", "||"]);
                 format!(
                     "({} {} {})",
                     gen_typed(ctx, rng, &GenType::Bool, d),
@@ -757,7 +729,7 @@ fn try_str_builtin(
             // sometimes a regex match; patterns from a valid pool plus one
             // malformed (the `$`-consumed ReError path)
             if rng.below(4) == 0 {
-                let pat = pick(rng, &["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("]);
+                let pat = *rng.pick(&["a+", "[a-z]+", "x|y", "^g", "[0-9]", "(("]);
                 let s = gen_typed(ctx, rng, &GenType::Str, d);
                 // raw string: `[...]` in a plain literal is interpolation
                 return Some(format!("re::is_match(#pat: r\"{pat}\", {s})$"));
@@ -782,7 +754,7 @@ fn try_str_builtin(
                 _ => "str::sprintf(\"%q\", i64:1)$".to_string(),
             }),
             0 => {
-                let f = pick(rng, &["to_upper", "to_lower", "trim"]);
+                let f = *rng.pick(&["to_upper", "to_lower", "trim"]);
                 Some(format!("str::{f}({})", gen_typed(ctx, rng, &GenType::Str, d)))
             }
             // sub: labeled args + a Result return consumed by `$`.
@@ -816,7 +788,7 @@ fn try_str_builtin(
             }
         },
         GenType::Array(e) if **e == GenType::Str => {
-            let pat = pick(rng, &["a", ",", "[0-9]"]);
+            let pat = *rng.pick(&["a", ",", "[0-9]"]);
             let src = gen_typed(ctx, rng, &GenType::Str, d);
             Some(format!("re::split(#pat: r\"{pat}\", {src})$"))
         }
