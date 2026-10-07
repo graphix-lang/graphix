@@ -453,16 +453,6 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
-// CR claude for claude: [test-gap] random_type draws only scalars, tuples, structs,
-// Map<string, _>, List, Array and `[scalar, null]`. random_variant feeds slot lets and
-// interface types, never a field, an element or a payload. So no generated program has
-// a primitive union (`[i64, string]`), an option of a composite, a variant inside a
-// struct or collection, a recursive typedef, a Result held in a binding, or a decimal,
-// datetime, duration or bytes value. Primitive unions and recursive types cross kernels
-// as opaque two-word values, and tag tests over a primitive union are fused, so engine
-// agreement on them is checked only through mutated fixtures. Add a primitive union
-// consumed by a type-test select, Nullable over composites, a nested Variant, and a
-// module-level recursive typedef with a `let rec` builder and consumer. (fuzz-gen-b-06)
 pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
     if depth == 0 {
         return scalar_type(rng);
