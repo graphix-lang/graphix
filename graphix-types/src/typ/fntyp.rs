@@ -941,19 +941,10 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // CR claude for claude: [bug] An open quantifier of `self` (`fn<'b: Number>`)
-        // binds here like any cell. Only `quantified_formal` (node/callsite.rs:244)
-        // holds it rigid, and only for a formal whose whole type is the quantified
-        // function. Every other position accepts a monomorphic function, yet each call
-        // through the value picks `'b` afresh. That covers an annotation through a
-        // typedef (`let h: F = g`, `Array<F>`: the check runs on a fresh expansion, so
-        // `'b := i64` is lost) and a struct field, tuple element, union member or array
-        // element of a formal (a call copies `'b` generic). `--check` passes, `h(1.5)`
-        // runs `g = |x: i64| ..` on 1.5, and the JIT panics at fusion/kernel.rs:243 (a
-        // runtime I64 in a compiled F64 slot); the inline `let h: fn<'b: Number>(x: 'b)
-        // -> 'b = g` instead binds `'b` to i64 for good, so the same type means two
-        // things depending on how it is written. probe:
-        // design/review-2026-10-05/repro/t-fntyp-03.gx (t-fntyp-03)
+        // A quantifier self has not picked stands for every type its bound
+        // admits, since each call through the value picks it anew: t must
+        // fit it held rigid, wherever the type stands.
+        let _gates = self.open_quantifier_gates();
         let (pairs, ok) = self.align(t);
         if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
             return Ok(false);
@@ -971,6 +962,22 @@ impl FnType {
             && self.bounds_hold(flags, env, hist)?
             && t.bounds_hold(flags, env, hist)?
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
+    }
+
+    /// Rigid gates on the quantifiers no call has picked.
+    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
+        let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
+        if self.quantifiers.is_empty() {
+            return gates;
+        }
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut named);
+        for (name, tv) in named.iter() {
+            if self.quantifiers.contains(name) && tv.open_cell().is_some() {
+                gates.push(tv.open_rigid())
+            }
+        }
+        gates
     }
 
     /// Every declared bound holds for its bound variable. An open one

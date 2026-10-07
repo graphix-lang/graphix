@@ -2178,3 +2178,44 @@ const NESTED_QUANTIFIER_SCOPED: &str = r#"
 "#;
 
 run!(nested_quantifier_scoped, NESTED_QUANTIFIER_SCOPED, refused("does not contain fn(y: i64) -> i64"); FuseExpect::None);
+
+/// A value of a quantified fn type is called at any type its bound
+/// admits, so a monomorphic function is not one, however it is written.
+const QUANTIFIED_TYPEDEF_REFUSES_MONO: &str = r#"
+{
+    type F = fn<'b: Number>(x: 'b) -> 'b;
+    let g = |x: i64| -> i64 x + 7;
+    let h: F = g;
+    h(1.5)
+}
+"#;
+
+run!(quantified_typedef_refuses_mono, QUANTIFIED_TYPEDEF_REFUSES_MONO, refused("F does not contain fn(x: i64) -> i64"); FuseExpect::None);
+
+const QUANTIFIED_FIELD_REFUSES_MONO: &str = r#"
+{
+    type T = { f: fn<'c: Number>(c: 'c) -> 'c };
+    let g = |x: i64| -> i64 x + 7;
+    let t: T = { f: g };
+    let h = t.f;
+    h(1.5)
+}
+"#;
+
+run!(quantified_field_refuses_mono, QUANTIFIED_FIELD_REFUSES_MONO, refused("does not contain"); FuseExpect::None);
+
+const QUANTIFIED_TYPEDEF_TAKES_POLY: &str = r#"
+{
+    type F = fn<'b: Number>(x: 'b) -> 'b;
+    let g = 'a: Number |x: 'a| -> 'a x;
+    let h: F = g;
+    h(1.5)
+}
+"#;
+
+run!(quantified_typedef_takes_poly, QUANTIFIED_TYPEDEF_TAKES_POLY, |v: Result<
+    &Value,
+>| matches!(
+    v,
+    Ok(Value::F64(1.5))
+));
