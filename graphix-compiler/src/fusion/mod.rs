@@ -350,7 +350,7 @@ pub struct FusionCtx {
     /// names, the kernel caches (lambda kernel signatures and bodies; a
     /// later compile may call an earlier one's lambda) and the functions
     /// waiting. Built with the JIT; a fusion task's is forked from its
-    /// parent's ([`fuse_each`]); [`Self::reset_jit_for_check`] drops it.
+    /// parent's ([`fuse_each`]).
     emission: parking_lot::Mutex<Option<emit::Emission>>,
     /// Whether fusion is enabled for the current compile; set by
     /// [`crate::compile`].
@@ -473,21 +473,6 @@ impl FusionCtx {
             top_id: None,
             share: None,
         })
-    }
-
-    /// Drop the JIT module (the next fusion builds a fresh one) and
-    /// forget the previous check's kernel signatures and fusion outcomes:
-    /// every lambda id they key on died with it. The old module's code is
-    /// freed once no kernel compiled into it is left.
-    ///
-    /// For the check/LSP path, which would otherwise accumulate every
-    /// checked file's kernels in one module.
-    pub fn reset_jit_for_check(&mut self) -> anyhow::Result<()> {
-        *self.jit.lock() = None;
-        *self.emission.get_mut() = None;
-        self.stats.failed.clear();
-        self.stats.fused_sources.clear();
-        Ok(())
     }
 }
 

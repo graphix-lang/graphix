@@ -33,8 +33,9 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PanicProbe {
     }
 }
 
-/// The values the program produced before its runtime died.
-async fn values_until_death(flags: BitFlags<CFlag>) -> Result<Vec<Value>> {
+/// The values the program produced before its runtime died, and the
+/// fused kernel runs it made.
+async fn values_until_death(flags: BitFlags<CFlag>) -> Result<(Vec<Value>, u64)> {
     let packages: &[graphix_package_core::testing::PackageRef] =
         graphix_package::package_refs!();
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
@@ -42,6 +43,8 @@ async fn values_until_death(flags: BitFlags<CFlag>) -> Result<Vec<Value>> {
         ctx.register_builtin::<CachedArgs<PanicProbe>>().unwrap()
     })
     .await?;
+    let rt = ctx.rt.clone();
+    rt.control().reset_invocations();
     let compiled = ctx
         .rt
         .compile(arcstr::literal!(
@@ -56,7 +59,7 @@ async fn values_until_death(flags: BitFlags<CFlag>) -> Result<Vec<Value>> {
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Err(_) => bail!("timeout: the runtime outlived the panic, saw {out:?}"),
-            Ok(None) => return Ok(out),
+            Ok(None) => return Ok((out, rt.control().invocations().0)),
             Ok(Some(mut batch)) => {
                 for e in batch.drain(..) {
                     if let GXEvent::Updated(id, v) = e
@@ -72,18 +75,14 @@ async fn values_until_death(flags: BitFlags<CFlag>) -> Result<Vec<Value>> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn fast_fn_panic_fails_the_runtime_in_both_engines() -> Result<()> {
-    let interp = values_until_death(CFlag::FusionDisabled.into()).await?;
-    let jit = values_until_death(BitFlags::empty()).await?;
+    let (interp, _) = values_until_death(CFlag::FusionDisabled.into()).await?;
+    let (jit, _fused) = values_until_death(BitFlags::empty()).await?;
     assert_eq!(interp, [Value::I64(2), Value::I64(3)]);
-    // CR claude for claude: [test-gap] The jit run is only compared with the node-walk.
-    // If `probe(x) + 1` stopped fusing, both runs would node-walk and agree, and the
-    // JIT's own panic path would go untested: fast_dispatch's catch_unwind into
-    // KERNEL_PANIC, resumed in FusedKernel::update (fusion/kernel.rs:454). Reset the
-    // invocation counters after init, return `ctx.rt.control().invocations()` from
-    // values_until_death (the handle's Control outlives the runtime), and assert under
-    // cfg(debug_assertions) that the jit run's fused count is above zero. The same
-    // builtin-bodied shape over str_len fuses today (graphix-fuzz run: fused=1).
-    // (tests-lib-b2-17)
     assert_eq!(jit, interp);
+    #[cfg(debug_assertions)]
+    assert!(
+        _fused > 0,
+        "the jit run never ran its kernel, so its panic path is untested"
+    );
     Ok(())
 }

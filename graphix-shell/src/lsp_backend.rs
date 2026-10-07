@@ -69,7 +69,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     for root in roots {
         resolvers.push(FilesResolver::new(root, None));
     }
-    // lsp_mode forces fusion off in compile().
+    // A check runs CFlag::CheckOnly, which never fuses.
     let flags = CFlag::WarnUnhandled | CFlag::WarnUnused;
     // Drain runtime events so the channel never stalls the runtime.
     let (tx, rx) = mpsc::channel(100);

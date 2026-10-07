@@ -906,9 +906,6 @@ impl<X: GXExt> GX<X> {
         initial_scope: Option<ArcStr>,
         expr_types: bool,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
-        // The LSP shares one runtime across every checked file and never
-        // executes a kernel; without a reset each file's kernels accumulate
-        // in the persistent JIT module until finalize fails.
         let env = self.ctx.env.clone();
         // CR claude for claude: [doc-drift] A check runs CheckOnly, which never fuses, so
         // the comment above is stale and reset_jit_for_check here only clears
@@ -925,21 +922,9 @@ impl<X: GXExt> GX<X> {
         // do_cycle, but ext.do_cycle runs after delivery (gx.rs:484), so a write to
         // event.variables reaches neither the store nor rt.updated, and no reader is
         // scheduled. (rt-18)
+        // 2026-10-06 claude: the JIT reset and the comment above it are gone
+        // (tests-lib-b2-16).
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
-            // CR claude for claude: [dead] This reset clears nothing. Every check here
-            // runs CFlag::CheckOnly (lines 837-841; the LSP never sets ExpandSeq),
-            // which returns before typecheck1 and fusion
-            // (graphix-compiler/src/lib.rs:1958), and the LSP's root compiles with
-            // fusion off, so the LSP runtime never builds a JIT module. The comment
-            // above describes checks that fused.
-            // lsp_fusion.rs::lsp_mode_checks_without_fusion_and_survives_ill_typed pins
-            // that a check attempts no fusion. Delete the reset and its comment.
-            // reset_jit_for_check then has no caller except kernel_outlives_jit_reset,
-            // whose property graphix-shell/tests/jit_arena_rotation.rs also exercises,
-            // so remove it or say in its doc what needs it. lsp_backend.rs:61
-            // ('lsp_mode forces fusion off in compile()') is stale for the same reason:
-            // nothing in compile reads lsp_mode. (tests-lib-b2-16)
-            self.ctx.cx.fusion.reset_jit_for_check()?;
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }
         let resolvers_for_call: Resolvers = match resolver_override {
