@@ -1022,6 +1022,9 @@ impl Env {
     /// The trait a type reference names, if it names one rather than a
     /// typedef (a filled resolution cell is always a typedef).
     pub fn trait_of_ref(&self, tr: &TypeRef) -> Option<TraitId> {
+        if let Some(id) = tr.trait_id() {
+            return Some(id);
+        }
         if tr.resolved().is_some() {
             return None;
         }

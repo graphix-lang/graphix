@@ -574,6 +574,17 @@ impl ResolvedRef {
     }
 }
 
+/// What a type reference's name resolved to, written once: a typedef
+/// (held weakly; its `TypeDef` owns it) or a trait, which a bound names.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub enum Resolution {
+    #[default]
+    Open,
+    Def(Weak<ResolvedRef>),
+    Trait(TraitId),
+}
+
 /// A reference to a named typedef, e.g. `Foo` or `Result<i64, string>`.
 /// `pos`/`ori` are IDE metadata and `resolved` is the write-once name
 /// resolution cell ([`ResolvedRef`]); neither is part of type identity
@@ -589,7 +600,7 @@ pub struct TypeRef {
     pub params: Arc<[Type]>,
     pub pos: Option<SourcePosition>,
     pub ori: Option<Arc<Origin>>,
-    pub(in crate::typ) resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>,
+    pub(in crate::typ) resolved: Arc<Mutex<Resolution>>,
 }
 
 pub(crate) fn resolved_encode(
@@ -724,7 +735,41 @@ impl TypeRef {
     /// The definition the cell holds; `None` when it is empty, or when
     /// the definition is gone (see [`Self::resolve_in`]).
     pub(crate) fn resolved(&self) -> Option<sync::Arc<ResolvedRef>> {
-        self.resolved.lock().as_ref().and_then(Weak::upgrade)
+        match &*self.resolved.lock() {
+            Resolution::Def(w) => w.upgrade(),
+            Resolution::Open | Resolution::Trait(_) => None,
+        }
+    }
+
+    /// The trait the cell holds: a bound resolved once, where its name
+    /// was visible.
+    pub(crate) fn trait_id(&self) -> Option<TraitId> {
+        match &*self.resolved.lock() {
+            Resolution::Trait(id) => Some(*id),
+            Resolution::Open | Resolution::Def(_) => None,
+        }
+    }
+
+    /// Fill an open cell with the trait the name means in `env`; the
+    /// trait the cell holds, if any.
+    pub(crate) fn resolve_trait_in(&self, env: &Env) -> Option<TraitId> {
+        if let Some(id) = self.trait_id() {
+            return Some(id);
+        }
+        let Ok(Some(crate::env::TypeName::Trait(id))) =
+            env.resolve_type_name(&self.scope, &self.name)
+        else {
+            return None;
+        };
+        let mut cell = self.resolved.lock();
+        match &*cell {
+            Resolution::Open => {
+                *cell = Resolution::Trait(id);
+                Some(id)
+            }
+            Resolution::Trait(id) => Some(*id),
+            Resolution::Def(_) => None,
+        }
     }
 
     /// Identity of the resolution cell: shared by the rebuilds of one ref.
@@ -768,8 +813,9 @@ impl TypeRef {
     /// fills nothing.
     pub(crate) fn resolve_peek(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
         match &*self.resolved.lock() {
-            Some(w) => w.upgrade(),
-            None => self.resolve_pure(env),
+            Resolution::Def(w) => w.upgrade(),
+            Resolution::Trait(_) => None,
+            Resolution::Open => self.resolve_pure(env),
         }
     }
 
@@ -810,15 +856,18 @@ impl TypeRef {
             );
             None
         };
-        if let Some(w) = &*self.resolved.lock() {
-            return w.upgrade().or_else(dead);
+        match &*self.resolved.lock() {
+            Resolution::Def(w) => return w.upgrade().or_else(dead),
+            Resolution::Trait(_) => return None,
+            Resolution::Open => (),
         }
         let r = self.resolve_pure(env)?;
         let mut cell = self.resolved.lock();
         match &*cell {
-            Some(w) => w.upgrade().or_else(dead),
-            None => {
-                *cell = Some(sync::Arc::downgrade(&r));
+            Resolution::Def(w) => w.upgrade().or_else(dead),
+            Resolution::Trait(_) => None,
+            Resolution::Open => {
+                *cell = Resolution::Def(sync::Arc::downgrade(&r));
                 Some(r)
             }
         }
@@ -2161,6 +2210,7 @@ impl Type {
                     // Keyed on the cell: with_params clones share it.
                     Type::Ref(tr) if seen.insert(Arc::as_ptr(&tr.resolved).addr()) => {
                         match tr.resolve_in(env) {
+                            None if tr.resolve_trait_in(env).is_some() => (),
                             None => all = false,
                             Some(r) => {
                                 for (_, c) in r.params.iter() {

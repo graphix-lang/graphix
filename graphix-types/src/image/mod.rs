@@ -589,7 +589,7 @@ pub(crate) fn is_decoding() -> bool {
 
 /// A type reference's write-once resolution cell, shared by every
 /// rebuild of the reference (`TypeRef::with_params`).
-pub(crate) type RefCell = Arc<Mutex<Option<Weak<ResolvedRef>>>>;
+pub(crate) type RefCell = Arc<Mutex<crate::typ::Resolution>>;
 
 /// A typedef's definition, held by its `TypeDef` and weakly by every
 /// cell naming it: an object by identity, so all of them decode to one.
@@ -625,20 +625,31 @@ pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
 
 /// A resolution cell is an object: written once, referenced afterwards,
 /// so references that share a cell share it again after decode. Its
-/// contents are a tag, `CELL_EMPTY`, `CELL_LIVE` and the definition, or
-/// `CELL_DEAD` for a definition gone before the write.
+/// contents are a tag, `CELL_EMPTY`, `CELL_LIVE` and the definition,
+/// `CELL_DEAD` for a definition gone before the write, or `CELL_TRAIT`
+/// and the trait's id.
 const CELL_EMPTY: u8 = 0;
 const CELL_LIVE: u8 = 1;
 const CELL_DEAD: u8 = 2;
+const CELL_TRAIT: u8 = 3;
 
-/// The cell's definition, cloned out: the definition can reach this
-/// cell again and the lock is not reentrant.
-fn cell_state(cell: &RefCell) -> (u8, Option<Resolved>) {
+/// The cell's state, cloned out: the definition can reach this cell
+/// again and the lock is not reentrant.
+enum CellState {
+    Empty,
+    Live(Resolved),
+    Dead,
+    Trait(crate::typ::TraitId),
+}
+
+fn cell_state(cell: &RefCell) -> CellState {
+    use crate::typ::Resolution;
     match &*cell.lock() {
-        None => (CELL_EMPTY, None),
-        Some(w) => match w.upgrade() {
-            Some(r) => (CELL_LIVE, Some(r)),
-            None => (CELL_DEAD, None),
+        Resolution::Open => CellState::Empty,
+        Resolution::Trait(id) => CellState::Trait(*id),
+        Resolution::Def(w) => match w.upgrade() {
+            Some(r) => CellState::Live(r),
+            None => CellState::Dead,
         },
     }
 }
@@ -658,12 +669,16 @@ pub(crate) fn refcell_encode<B: BufMut>(
         |k| (*k, cell.clone()),
         |e| &mut e.refcells,
         buf,
-        |buf| {
-            let (tag, r) = cell_state(cell);
-            buf.put_u8(tag);
-            match r {
-                Some(r) => resolved_encode(&r, buf),
-                None => Ok(()),
+        |buf| match cell_state(cell) {
+            CellState::Empty => Ok(buf.put_u8(CELL_EMPTY)),
+            CellState::Dead => Ok(buf.put_u8(CELL_DEAD)),
+            CellState::Live(r) => {
+                buf.put_u8(CELL_LIVE);
+                resolved_encode(&r, buf)
+            }
+            CellState::Trait(id) => {
+                buf.put_u8(CELL_TRAIT);
+                id.inner().encode(buf)
             }
         },
     )
@@ -676,15 +691,20 @@ pub(crate) fn refcell_decode(buf: &mut impl Buf) -> Result<RefCell, PackError> {
         |sub| {
             // Entered before its contents: the definition can reach this
             // cell again.
-            let cell: RefCell = Arc::new(Mutex::new(None));
+            use crate::typ::{Resolution, TraitId};
+            let cell: RefCell = Arc::new(Mutex::new(Resolution::Open));
             enter(Obj::RefCell(cell.clone()))?;
             if !sub.has_remaining() {
                 return Err(PackError::BufferShort);
             }
             match sub.get_u8() {
                 CELL_EMPTY => {}
-                CELL_LIVE => *cell.lock() = Some(resolved_decode_weak(sub)?),
-                CELL_DEAD => *cell.lock() = Some(Weak::new()),
+                CELL_LIVE => *cell.lock() = Resolution::Def(resolved_decode_weak(sub)?),
+                CELL_DEAD => *cell.lock() = Resolution::Def(Weak::new()),
+                CELL_TRAIT => {
+                    *cell.lock() =
+                        Resolution::Trait(TraitId::from_inner(u64::decode(sub)?))
+                }
                 _ => return Err(PackError::UnknownTag),
             }
             Ok(cell)

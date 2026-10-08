@@ -1634,3 +1634,53 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
 );
+
+// A trait method named as a value is its eta-expansion: an ordinary
+// function, passed to a collection, forwarded through a parameter,
+// stored, and polymorphic.
+run!(
+    trait_method_value_flows,
+    r#"{
+    trait Show { val show: fn(self) -> string };
+    type A = Abstract<i64>;
+    type B = Abstract<string>;
+    impl Show for A { let show = |a| "A[a.0]" };
+    impl Show for B { let show = |b| "B[b.0]" };
+    impl Show for i64 { let show = |i| "i[i]" };
+    let ys: Array<[A, B]> = [A(1), B("x")];
+    let app = |f: fn(x: i64) -> string, xs: Array<i64>| array::map(xs, |x| f(x));
+    let held = { f: Show::show };
+    let g = Show::show;
+    [
+        array::map([1, 2], Display::fmt),
+        array::map(ys, Show::show),
+        app(Display::fmt, [1, 2]),
+        [(held.f)(A(3)), g(4), g(B("y"))]
+    ]
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap())
+        == r#"[["1", "2"], ["A1", "Bx"], ["1", "2"], ["A3", "i4", "By"]]"#
+);
+
+#[tokio::test(flavor = "current_thread")]
+async fn trait_method_variadic_value_refused() {
+    use graphix_package_core::testing::refusal;
+    let src = "{ trait V { val v: fn(self, @args: i64) -> i64 }; impl V for i64 { let v = |a, @args: i64| a }; let f = V::v; f(1) }";
+    let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+    assert!(e.contains("can be called, not used as a value"), "{e}");
+}
+
+// A bound a definition's body gives its variable resolves once, at the
+// check: an instance built at run time, outside the block that declared
+// the trait, checks it there.
+run!(
+    trait_bound_resolved_at_the_check,
+    r#"{
+    trait Desc { val desc: fn(self) -> string };
+    type A = Abstract<i64>;
+    impl Desc for A { let desc = |a| "desc[a.0]" };
+    let g = |x| Desc::desc(x);
+    array::map([A(4), A(5)], g)
+}"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["desc4", "desc5"]"#
+);

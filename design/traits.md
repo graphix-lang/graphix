@@ -351,8 +351,13 @@ other heads by unification against a fresh instantiation (head bounds
 discharge through the cells) then equivalence; a type with an open
 interior cell never matches. A trait on the right is contained only by
 `Any` or itself. `settle` never picks a trait conjunct as a witness; a
-cell bounded by traits alone stays open. `trait_of_ref` walks the table
-only for refs whose resolution cell is empty.
+cell bounded by traits alone stays open. A bound's reference resolves
+once, like a typedef's: the seed walk at a definition's check
+(`DefTable` rows, `Type::seed_refs`) fills its resolution cell with the
+trait (`Resolution::Trait`), so an instance built at run time, after the
+block that declared the trait has left the environment, checks the bound
+from the cell; `trait_of_ref` reads a filled cell and walks the table
+only for an empty one.
 
 **Dispatch** (`node/callsite.rs`): `try_static_resolve` finds no
 lambda behind a dispatcher `Ref` and calls `resolve_trait_call`: the
@@ -367,11 +372,14 @@ union self type lowers the call to `{ let #s = self; let #a_i = arg_i;
 being the compiler's private spelling for a binding by id — and the
 `CallSite` delegates every `Update` method to the lowered node (the
 generated select de-fuses: coverage residue, `FuseExpect::None`). A
-trait method passed as a HOF argument registers the instance's
-parameter binding in `trait_methods` for the elaboration, and a
-collection's runtime slots call the prototype's resolved definition as
-a constant (`CallKind::slot` in `node/collection.rs`) rather than
-binding on the dispatcher's absent runtime value.
+dispatcher is only ever a call's own function: a trait method named as a
+value is its eta-expansion at the method's signature
+(`node/compiler.rs::eta_dispatcher`: `Desc::desc` is `'eta_self: Desc
+|eta0: 'eta_self| -> string Desc::desc(eta0)`, its variables generic as
+written ones are), an ordinary function value that can be passed,
+stored, written and called polymorphically. A variadic method has no
+expansion (a lambda cannot pass its rest on) and is refused as a
+value.
 
 **A value occurrence is a call site.** A reference to a GENERALIZED
 binding — a let-bound lambda, an interface `val`, a trait dispatcher,

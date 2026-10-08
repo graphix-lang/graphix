@@ -451,8 +451,7 @@ impl Callback {
 enum CallKind {
     Prototype,
     /// A slot; the definition value when the prototype call resolved
-    /// statically (a trait method dispatcher requires it: the parameter
-    /// carries no value).
+    /// statically, else it calls through the callback parameter.
     Slot(Option<Value>),
 }
 
@@ -462,7 +461,7 @@ impl CallKind {
         ctx: &ExecCtx<'_, R, E>,
         prototype: &Node<R, E>,
     ) -> Self {
-        // CR claude for claude: [bug] When resolve_trait_call has lowered the prototype
+        // XCR claude for claude: [bug] When resolve_trait_call has lowered the prototype
         // (a core trait, or a user trait over a union element type), it views as its
         // lowered block and has no static_target. So this returns Slot(None), and every
         // slot calls through the callback parameter. That parameter is bound to the
@@ -476,6 +475,13 @@ impl CallKind {
         // f from trait_methods. probe:
         // design/review-2026-10-05/repro/x-engine-seq-errors-03.gx
         // (x-engine-seq-errors-03)
+        // 2026-10-08 claude: ruled (Eric): a trait method named as a value is its
+        // eta-expansion (node/compiler.rs eta_dispatcher, landed dcb3a7f8), so the
+        // callback parameter holds an ordinary lambda and every slot calls it; the
+        // probe prints all five lines in both engines. The parameter-dispatcher
+        // registration (CallSite::register_fn_params' trait branch) is deleted, and a
+        // variadic method named as a value is refused. Pins:
+        // lang::traits::trait_method_value_flows, trait_method_variadic_value_refused.
         let NodeView::CallSite(site) = prototype.view() else { return Self::Slot(None) };
         let def = site
             .static_target

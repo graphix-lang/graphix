@@ -30,7 +30,10 @@ snapshot.
 
 - **Write-once.** Filled on the first successful `lookup_ref`, never
   overwritten: clones share the cell, and refilling would leak one
-  context's view into every aliasing type.
+  context's view into every aliasing type. A name that means a trait (a
+  bound) fills the cell with the trait (`Resolution::Trait`) when the
+  seed walk reaches it, at a definition's check; image format 35 carries
+  that state.
 - **Lock discipline.** The snapshot is computed WITHOUT the cell lock
   (resolution re-enters through constraint checking, and `deref_typ`
   holds TVar guards); compute, then lock-check-store.

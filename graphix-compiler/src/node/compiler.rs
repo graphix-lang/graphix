@@ -507,7 +507,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
-        ExprKind::Ref { name } => match eta_dispatcher(ctx, scope, &spec, name) {
+        ExprKind::Ref { name } => match eta_dispatcher(ctx, scope, &spec, name)? {
             Some(eta) => compile(ctx, flags, eta, scope, top_id),
             None => Ref::compile(ctx, spec.clone(), scope, top_id, name),
         },
@@ -598,19 +598,30 @@ fn compile_kind<R: Rt, E: UserEvent>(
 /// eta-expansion at the method's signature, `|x| Desc::desc(x)`: a
 /// dispatcher binding holds no
 /// value, the call resolves by its receiver. A call's own function stays
-/// a reference. `None` for any other name, and for a variadic method.
+/// a reference. `None` for any other name; a variadic method has no
+/// expansion (a lambda cannot pass its rest on) and is refused.
 fn eta_dispatcher<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     scope: &Scope,
     spec: &Expr,
     name: &ModPath,
-) -> Option<Expr> {
-    let (_, bind) = ctx.env.lookup_bind(&scope.lexical, name).ok()??;
-    let tm = ctx.env.trait_methods.get(&bind.id)?;
-    let def = ctx.env.trait_defs.get(&tm.trait_id)?;
-    let ft = &def.methods.get(tm.index)?.typ;
+) -> Result<Option<Expr>> {
+    let Some((_, bind)) = ctx.env.lookup_bind(&scope.lexical, name).ok().flatten() else {
+        return Ok(None);
+    };
+    let Some(tm) = ctx.env.trait_methods.get(&bind.id) else { return Ok(None) };
+    let Some(m) =
+        ctx.env.trait_defs.get(&tm.trait_id).and_then(|d| d.methods.get(tm.index))
+    else {
+        return Ok(None);
+    };
+    let ft = &m.typ;
     if ft.vargs.is_some() {
-        return None;
+        bailat!(
+            spec,
+            "{name} is variadic: a trait method with a rest argument can be called, \
+             not used as a value"
+        )
     }
     // the signature over variables of its own, as an annotation writes
     // it; `self` would name an impl's receiver
@@ -618,7 +629,7 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
     ft.collect_tvars(&mut tvs);
     let renamed: AHashMap<ArcStr, Type> = tvs
         .keys()
-        .map(|n| (n.clone(), Type::TVar(TVar::empty_named(arcstr::format!("eta_{n}")))))
+        .map(|n| (n.clone(), Type::TVar(TVar::empty_generic(arcstr::format!("eta_{n}")))))
         .collect();
     let constraints: SmallVec<[(TVar, Type); 2]> = ft
         .constraint_view()
@@ -649,12 +660,12 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
         args: Arc::from_iter(call),
         function: Arc::new(at(ExprKind::Ref { name: name.clone() })),
     }));
-    Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
+    Ok(Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
         args: Arc::from_iter(args),
         vargs: None,
         rtype: Some(ft.rtype.clone()),
         constraints: Arc::from_iter(constraints),
         throws: ft.explicit_throws.then(|| ft.throws.clone()),
         body: LambdaBody::Expr(body),
-    }))))
+    })))))
 }

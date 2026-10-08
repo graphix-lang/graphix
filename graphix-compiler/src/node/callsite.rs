@@ -1656,8 +1656,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee = Callee::Static { apply, first_update: true };
         // Fn-typed args are registered under the instance's param
         // BindIds for the whole body typecheck (`register_fn_params`).
-        let (param_binds, trait_param_binds) =
-            self.register_fn_params(ctx, &instance_ftype);
+        let param_binds = self.register_fn_params(ctx, &instance_ftype);
         if let Some(instance) = instance {
             ctx.push_resolving(
                 def.id,
@@ -1702,7 +1701,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        Self::unregister_fn_params(ctx, param_binds, trait_param_binds);
+        Self::unregister_fn_params(ctx, param_binds);
         if let Some(instance) = instance {
             ctx.pop_resolving(def.id, instance);
         }
@@ -1786,15 +1785,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self,
         ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
-    ) -> (LPooled<Vec<BindId>>, LPooled<Vec<BindId>>) {
+    ) -> LPooled<Vec<BindId>> {
         let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
-        let mut trait_param_binds: LPooled<Vec<BindId>> = LPooled::take();
         let apply = match self.callee.apply() {
             Some(a) => a,
-            None => return (param_binds, trait_param_binds),
+            None => return param_binds,
         };
         let ApplyView::Lambda(g) = apply.view() else {
-            return (param_binds, trait_param_binds);
+            return param_binds;
         };
         let formals =
             ftype.args.iter().zip(g.args()).zip(ArgKey::of_formals(&ftype.args));
@@ -1823,15 +1821,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         }
                         ctx.bind_to_lambda.insert(id, fv);
                         param_binds.push(id);
-                    } else if let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() {
-                        ctx.env.trait_methods.insert(id, tm);
-                        trait_param_binds.push(id);
                     }
                 }
                 _ => {}
             }
         }
-        (param_binds, trait_param_binds)
+        param_binds
     }
 
     /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
@@ -1839,13 +1834,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn unregister_fn_params(
         ctx: &mut CompileCtx<R, E>,
         mut param_binds: LPooled<Vec<BindId>>,
-        mut trait_param_binds: LPooled<Vec<BindId>>,
     ) {
         for id in param_binds.drain(..) {
             ctx.bind_to_lambda.remove(&id);
-        }
-        for id in trait_param_binds.drain(..) {
-            ctx.env.trait_methods.remove(&id);
         }
     }
 

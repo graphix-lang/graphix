@@ -535,7 +535,11 @@ cell), so a type outliving its definition's env entry is refused,
 never re-resolved, and what outlives the entry owns the definitions
 its types name (a definition's check table, a kernel's type constant:
 `DefTable::typedefs`, `record::KernelType`); `Env::seed_typedef_refs` runs right
-before fusion in both modes. A typedef must be contractive: every
+before fusion in both modes. A bound's ref resolves the same way, its
+cell holding the trait (`Resolution::Trait`), filled by the seed walk at
+a definition's check. A trait method named as a value is its
+eta-expansion (`eta_dispatcher`); a dispatcher is only a call's own
+function. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
 sound.
