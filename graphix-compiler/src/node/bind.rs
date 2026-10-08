@@ -1416,18 +1416,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug] ByRef::delete never calls
-        // `ctx.rt.store_remove(&self.id)`. The entry that `publish` and `bottom_mirror`
-        // wrote under the cell id outlives the node and pins the last value it
-        // mirrored. A let's pattern removes its entry at delete (pattern.rs:1068).
-        // Every deleted collection slot or recursive activation holding a `&e` leaks
-        // one entry for the rest of the run: 10 map slots of `&str::concat(..)` (64 KB
-        // each), rebuilt every other ms, grow RSS from 210 to 943 MB in 6 s, while the
-        // same program without the `&` stays at 71 MB. netidx-admin's `array::map(rows,
-        // |e| &row([..]))` tables have this shape. A reference kept past its slot also
-        // reads that frozen copy (104 while x is 110), not bottom. probe:
-        // design/review-2026-10-05/repro/c-bind-11.py (c-bind-11)
         ctx.env.byref_chain.remove(&self.id);
+        ctx.rt.store_remove(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));
     }

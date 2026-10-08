@@ -416,25 +416,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         TagValue::phantom_ref()
     }
 
-    // CR claude for claude: [bug] Catch::delete never unbinds the error binding that
-    // Catch::compile made with env.bind_variable. Every deleted catch (a collection
-    // slot, an activation, a rebound callee) leaves its Bind in env.by_id and its scope
-    // in env.binds for the rest of the run. Other deletes skip their release the same
-    // way. ByRef::delete (bind.rs:1288) keeps its cell's store entry and the value in
-    // it. array Group::delete and queuefn's WrapperApply::delete leave their genn::bind
-    // arguments bound, QueueFn::delete keeps fid's entry holding f's definition, and
-    // Bind::delete leaves its ids in env.poly_binds. The builtins with a private
-    // delivery id (array/list/map iter and iterq, queue, range, CachedArgsAsync,
-    // throttle, subscribe, rpc, the io readers) unref the id but never store_remove it,
-    // neither in delete nor when sleep mints a fresh one; throttle mints one per wait,
-    // so it leaks with no delete at all. With one array::map slot rebuilt every other
-    // cycle, each of these grows memory by 40-350 MB/s while the same slot without them
-    // stays flat; probe: design/review-2026-10-05/repro/x-node-contract-06.sh
-    // (x-node-contract-06)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.give_up_in_flight();
-        ctx.unref_var(self.bind_id, self.top_id);
-        ctx.rt.store_remove(&self.bind_id);
+        ctx.release_var(self.bind_id, self.top_id);
+        ctx.env.unbind_variable(self.bind_id);
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.action {
             abort.node.delete(ctx);

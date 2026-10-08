@@ -22,7 +22,7 @@ use std::time::Duration;
 /// the runtime stored for it, which no one else can read.
 fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, eid: ExprId) {
     ctx.rt.cancel_timer(id);
-    ctx.unref_var(id, eid);
+    ctx.release_var(id, eid);
     ctx.rt.store_remove(&id);
 }
 

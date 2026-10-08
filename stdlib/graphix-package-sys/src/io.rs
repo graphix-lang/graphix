@@ -221,7 +221,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         {
             if self.reading.is_some() {
                 self.stop();
-                ctx.unref_var(self.id, self.top_id);
+                ctx.release_var(self.id, self.top_id);
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
             }
@@ -238,7 +238,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         ctx.rt.store_remove(&self.id);
     }
 

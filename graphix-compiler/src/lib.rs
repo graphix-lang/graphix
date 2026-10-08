@@ -1655,6 +1655,14 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         }
     }
 
+    /// Release an id this node minted for its own deliveries: unregister
+    /// it and forget the value the store holds for it, which nothing will
+    /// read again.
+    pub fn release_var(&mut self, id: BindId, top_id: ExprId) {
+        self.unref_var(id, top_id);
+        self.rt.store_remove(&id);
+    }
+
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {

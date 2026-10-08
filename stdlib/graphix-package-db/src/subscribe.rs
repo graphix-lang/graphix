@@ -371,7 +371,7 @@ macro_rules! db_event_accessor {
                 match self.cached.update(ctx, from) {
                     Invocation::Bottom { fresh } => {
                         if let Some(bid) = self.bind_id.take() {
-                            ctx.unref_var(bid, self.top_id);
+                            ctx.release_var(bid, self.top_id);
                         }
                         return self.out.set_bottom(fresh);
                     }
@@ -379,7 +379,7 @@ macro_rules! db_event_accessor {
                     Invocation::Quiet if self.bind_id.is_some() => (),
                     Invocation::Quiet | Invocation::Fired => {
                         if let Some(bid) = self.bind_id.take() {
-                            ctx.unref_var(bid, self.top_id);
+                            ctx.release_var(bid, self.top_id);
                         }
                         self.bind_id =
                             self.cached.0[0].as_ref().and_then(extract_sub_bind_id);
@@ -396,13 +396,13 @@ macro_rules! db_event_accessor {
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 if let Some(bid) = self.bind_id.take() {
-                    ctx.unref_var(bid, self.top_id);
+                    ctx.release_var(bid, self.top_id);
                 }
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 if let Some(bid) = self.bind_id {
-                    ctx.unref_var(bid, self.top_id);
+                    ctx.release_var(bid, self.top_id);
                 }
             }
         }

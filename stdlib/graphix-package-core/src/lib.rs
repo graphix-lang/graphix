@@ -648,11 +648,11 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for Iter<C> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
+        ctx.release_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -746,11 +746,11 @@ impl<R: Rt, E: UserEvent, C: Elements> Apply<R, E> for IterQ<C> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
+        ctx.release_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.queue.clear();
@@ -1446,7 +1446,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // the reply id is this call's alone, and so is what was stored for it
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         ctx.rt.store_remove(&self.id);
         self.queued.clear();
         self.cached.clear();
@@ -2104,11 +2104,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.triggered = 0;
@@ -2288,11 +2288,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -2414,7 +2414,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             if let Some(id) = self.tid.take()
                 && let Some(last) = &mut self.last
             {
-                ctx.unref_var(id, self.top_id);
+                ctx.release_var(id, self.top_id);
                 maybe_schedule!(last)
             }
         }
@@ -2430,7 +2430,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         if let Some(id) = self.tid
             && let Some(_) = ctx.event.variables.get(&id)
         {
-            ctx.unref_var(id, self.top_id);
+            ctx.release_var(id, self.top_id);
             self.tid = None;
             self.last = Some(Instant::now());
             emit_cached!()
@@ -2440,7 +2440,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.tid.take() {
-            ctx.unref_var(id, self.top_id);
+            ctx.release_var(id, self.top_id);
         }
     }
 

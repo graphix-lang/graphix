@@ -317,7 +317,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id)
         }
@@ -329,7 +329,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
@@ -469,11 +469,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id)
+        ctx.release_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -578,12 +578,12 @@ macro_rules! list {
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                ctx.unref_var(self.id, self.top_id);
+                ctx.release_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                ctx.unref_var(self.id, self.top_id);
+                ctx.release_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
@@ -834,7 +834,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
-        ctx.unref_var(self.wid, self.top_id);
+        ctx.release_var(self.wid, self.top_id);
         ctx.rt.store_remove(&self.pid);
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
@@ -1108,7 +1108,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.current = None;
         self.handler.delete(ctx);
     }
@@ -1116,7 +1116,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.current = None;

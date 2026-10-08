@@ -398,11 +398,23 @@ run!(place_index_is_an_integer, PLACE_INDEX_IS_AN_INTEGER, |v: Result<&Value>| {
 #[tokio::test(flavor = "multi_thread")]
 async fn place_through_deref_mirror() -> Result<()> {
     use graphix_compiler::Rt;
-    let (v, ctx) = graphix_package_core::testing::eval(
-        "{ let a = {p: {x: 10}}; let r = &a.p; &(*r).x }",
-        crate::TEST_REGISTER,
-    )
-    .await?;
+    use graphix_package_core::testing::{compile_result, fixture_runtime, result_source};
+    let src = result_source("{ let a = {p: {x: 10}}; let r = &a.p; &(*r).x }");
+    let (ctx, mut rx) =
+        fixture_runtime([("/test.gx", src)], crate::TEST_REGISTER, Mode::Jit, |_| ())
+            .await?;
+    // the graph lives while its cell is read: a deleted reference forgets it
+    let res = compile_result(&ctx).await?;
+    let id = res.exprs[0].id;
+    let v = loop {
+        let batch = rx.recv().await.ok_or_else(|| anyhow::anyhow!("runtime gone"))?;
+        if let Some(v) = batch.iter().find_map(|e| match e {
+            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
+            _ => None,
+        }) {
+            break v;
+        }
+    };
     let id = match v {
         Value::U64(id) => graphix_compiler::BindId::from(id),
         v => anyhow::bail!("expected a reference, got {v}"),

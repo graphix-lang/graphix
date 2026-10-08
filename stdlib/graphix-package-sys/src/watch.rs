@@ -601,7 +601,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
 impl<K: WatchKind> WatchStream<K> {
     fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in self.bind_ids.drain() {
-            ctx.unref_var(bid, self.top_id);
+            ctx.release_var(bid, self.top_id);
         }
     }
 }
@@ -658,13 +658,13 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         self.unwatch(ctx);
         self.cached.clear();
         self.out = TagValue::phantom();
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.unwatch(ctx);
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
     }
 }

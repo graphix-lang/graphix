@@ -868,7 +868,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.stop();
         self.listening = None;
         self.handler.delete(ctx);
@@ -877,7 +877,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     /// The server stops, its connections and pending requests dropped, and
     /// starts again at the wake on the socket it keeps.
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.id, self.top_id);
+        ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.stop();

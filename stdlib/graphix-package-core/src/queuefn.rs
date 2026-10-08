@@ -498,7 +498,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     fn refs(&self, _refs: &mut Refs) {}
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.unref_var(self.fid, self.top_id);
+        ctx.release_var(self.fid, self.top_id);
         ctx.rt.store_remove(&self.fid);
         if let Some(def) =
             self.lambda.as_ref().and_then(|l| l.downcast_ref::<LambdaDef<R, E>>())
