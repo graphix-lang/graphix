@@ -1526,3 +1526,20 @@ const TRAIT_MISSING_IMPL_NAMED: &str = r#"
 "#;
 
 run!(trait_missing_impl_named, TRAIT_MISSING_IMPL_NAMED, refused("i64 does not implement Show"); FuseExpect::None);
+
+// A trait method named as a value is a function: an alias, a struct
+// field, a callback and an impl bound to it all dispatch.
+run!(
+    trait_method_as_a_value,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "desc2 desc3 [\"desc4\"] desc5"),
+    "/test.gx" => r##"
+        trait Desc { val desc: fn(self) -> string };
+        trait Show { val show: fn(self) -> string };
+        type A = Abstract<i64>;
+        impl Desc for A { let desc = |a| "desc[a.0]" };
+        impl Show for A { let show = Desc::desc };
+        let d = Desc::desc;
+        let ops = {f: Desc::desc};
+        let result = "[d(A(2))] [(ops.f)(A(3))] [array::map([A(4)], d)] [Show::show(A(5))]"
+    "##
+);

@@ -17,8 +17,9 @@ use crate::{
     CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
     UserEvent, bailat,
     expr::{
-        ApplyExpr, Decorations, Expr, ExprId, ExprKind, LambdaBody, ModuleKind, Name,
-        SelectExpr, StructExpr, StructWithExpr, print::PrettyDisplay,
+        ApplyExpr, Arg, ArgKind, Decorations, Expr, ExprId, ExprKind, LambdaBody,
+        LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr, StructWithExpr,
+        StructurePattern, print::PrettyDisplay,
     },
     ide::{ModuleRefSite, ScopeMapEntry},
     node::{
@@ -28,9 +29,11 @@ use crate::{
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
     },
     stack::ensure_sufficient,
-    typ::Type,
+    typ::{TVar, Type},
 };
+use ahash::AHashMap;
 use anyhow::{Context, Result};
+use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
@@ -476,7 +479,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Deref(e) => Deref::compile(ctx, flags, spec.clone(), scope, top_id, e),
         ExprKind::Neg(e) => Neg::compile(ctx, flags, spec.clone(), scope, top_id, e),
-        ExprKind::Ref { name } => Ref::compile(ctx, spec.clone(), scope, top_id, name),
+        ExprKind::Ref { name } => match eta_dispatcher(ctx, scope, &spec, name) {
+            Some(eta) => compile(ctx, flags, eta, scope, top_id),
+            None => Ref::compile(ctx, spec.clone(), scope, top_id, name),
+        },
         ExprKind::TupleRef { source, field } => {
             TupleRef::compile(ctx, flags, spec.clone(), scope, top_id, source, field)
         }
@@ -558,4 +564,69 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, true)
         }
     }
+}
+
+/// A trait method named as a value (`let d = Desc::desc`) is its
+/// eta-expansion at the method's signature, `|x| Desc::desc(x)`: a
+/// dispatcher binding holds no
+/// value, the call resolves by its receiver. A call's own function stays
+/// a reference. `None` for any other name, and for a variadic method.
+fn eta_dispatcher<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    scope: &Scope,
+    spec: &Expr,
+    name: &ModPath,
+) -> Option<Expr> {
+    let (_, bind) = ctx.env.lookup_bind(&scope.lexical, name).ok()??;
+    let tm = ctx.env.trait_methods.get(&bind.id)?;
+    let def = ctx.env.trait_defs.get(&tm.trait_id)?;
+    let ft = &def.methods.get(tm.index)?.typ;
+    if ft.vargs.is_some() {
+        return None;
+    }
+    // the signature over variables of its own, as an annotation writes
+    // it; `self` would name an impl's receiver
+    let mut tvs: AHashMap<ArcStr, TVar> = AHashMap::new();
+    ft.collect_tvars(&mut tvs);
+    let renamed: AHashMap<ArcStr, Type> = tvs
+        .keys()
+        .map(|n| (n.clone(), Type::TVar(TVar::empty_named(arcstr::format!("eta_{n}")))))
+        .collect();
+    let constraints: SmallVec<[(TVar, Type); 2]> = ft
+        .constraint_view()
+        .iter()
+        .filter_map(|(tv, bound)| match renamed.get(&tv.name) {
+            Some(Type::TVar(r)) => Some((r.clone(), bound.replace_tvars(&renamed))),
+            _ => None,
+        })
+        .collect();
+    let ft = ft.replace_tvars(&renamed);
+    let at = |kind| Expr::new(kind, spec.pos);
+    let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
+    let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
+    for (i, a) in ft.args.iter().enumerate() {
+        let (kind, label, var) = match a.label() {
+            Some(l) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
+            None => (ArgKind::Positional, None, arcstr::format!("eta{i}")),
+        };
+        args.push(Arg {
+            kind,
+            pattern: StructurePattern::Bind(Name::from(var.clone())),
+            constraint: Some(a.typ.clone()),
+            pos: Default::default(),
+        });
+        call.push((label, at(ExprKind::Ref { name: ModPath::from([var]) })));
+    }
+    let body = at(ExprKind::Apply(ApplyExpr {
+        args: Arc::from_iter(call),
+        function: Arc::new(at(ExprKind::Ref { name: name.clone() })),
+    }));
+    Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
+        args: Arc::from_iter(args),
+        vargs: None,
+        rtype: Some(ft.rtype.clone()),
+        constraints: Arc::from_iter(constraints),
+        throws: ft.explicit_throws.then(|| ft.throws.clone()),
+        body: LambdaBody::Expr(body),
+    }))))
 }

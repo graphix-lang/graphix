@@ -782,7 +782,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         f: &TArc<Expr>,
     ) -> Result<Node<R, E>> {
         reject_dead_variadic_call(ctx, scope, f, args).at(&spec)?;
-        let fnode = compile(ctx, flags, (**f).clone(), scope, top_id)?;
+        // a call's function is compiled as written: a trait method named
+        // here is the dispatcher itself, never its eta-expansion
+        let fnode = match &f.kind {
+            ExprKind::Ref { name } => {
+                Ref::compile(ctx, (**f).clone(), scope, top_id, name)?
+            }
+            _ => compile(ctx, flags, (**f).clone(), scope, top_id)?,
+        };
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
         let site = Self::unbound(
             TArc::new(spec),
@@ -1599,21 +1606,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let fv = match target {
             Some(fv) => fv,
             None => {
-                // CR claude for claude: [bug] Only two calls are resolved here: one whose
-                // function node is the dispatcher Ref itself, and one through a HOF
-                // parameter that register_fn_params mapped. A Ref to a binding that
-                // only holds a dispatcher falls through to `return Ok(())`. An impl
-                // method bound to a dispatcher (`let show = Desc::desc`) is retargeted
-                // by resolve_trait_call to a binding with no lambda behind it. Both
-                // stay dynamic calls, and a dispatcher binding never holds a runtime
-                // value. So `let d = Desc::desc; d(x)`, `(ops.f)(x)` with `ops = {f:
-                // Desc::desc}`, `array::map(xs, d)` and that impl all pass --check and
-                // never produce in either engine, with nothing logged, while the same
-                // calls written with `Desc::desc` in place work. Either make a
-                // dispatcher's value occurrence a real function (eta-expand it to a
-                // generic lambda) or refuse these uses at the check. probe:
-                // design/review-2026-10-05/repro/x-engine-seq-errors-02.gx
-                // (x-engine-seq-errors-02)
                 if let NodeView::Ref(r) = self.fnode.view()
                     && let Some(tm) = ctx.env.trait_methods.get(&r.id).copied()
                 {
