@@ -714,18 +714,18 @@ impl StructPatternNode {
                     )
                 };
                 let (atyp, rep) = r.instantiate(id);
-                // CR claude for claude: [bug] This arm only checks that the predicate
-                // contains the abstract type. The tuple, variant and struct arms also
-                // require the predicate to be their constructor. Because is_refutable
-                // ignores the tag test, `let Box(x): [Box, i64] = v`, `|Box(x): [Box,
-                // null]| ..` and a select arm `[Box, i64] as Box(x)` are all accepted
-                // as irrefutable. On a value that is not a Box, bind_inner binds
-                // nothing, so x keeps its previous value or never appears. The select
-                // is accepted as exhaustive yet matches no arm, and the `_` fallback it
-                // needs is refused as unreachable. Refuse a predicate that is not this
-                // abstract type, as the variant arm does; probe:
-                // design/review-2026-10-05/repro/c-pattern-09.gx (c-pattern-09)
                 type_predicate.check_contains(&ctx.env, &atyp)?;
+                // the predicate is this abstract type, as a variant pattern's is
+                // its variant: a union around it would make the arm refutable by
+                // a tag test nothing performs
+                if !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
+                {
+                    return format_with_flags(PrintFlag::DerefTVars, || {
+                        bail!(
+                            "{name}(..) patterns can't match {type_predicate}: test the tag first, `{name} as x`"
+                        )
+                    });
+                }
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 // the payload checks against the declared representation
                 let rep_cx = PatCx { inferred: false, ..cx };

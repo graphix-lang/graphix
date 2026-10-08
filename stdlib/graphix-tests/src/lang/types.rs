@@ -1406,6 +1406,14 @@ const TYPE_TEST_RUST_BACKED_PARAMS: &str = r#"{
     0
 }"#;
 
+/// An abstract pattern over a union predicate would be refutable by a
+/// tag test nothing performs.
+const ABSTRACT_PATTERN_OVER_A_UNION: &str = r#"{
+    type Box = Abstract<i64>;
+    let v: [Box, i64] = 1;
+    select v { [Box, i64] as Box(x) => x }
+}"#;
+
 /// `never<T>()` holds T's applications to their parameter bounds.
 const NEVER_OF_AN_UNBOUNDED_APPLICATION: &str = r#"{
     type Num<'a: Number> = 'a;
@@ -1485,6 +1493,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
         (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
+        (ABSTRACT_PATTERN_OVER_A_UNION, "patterns can't match"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {
