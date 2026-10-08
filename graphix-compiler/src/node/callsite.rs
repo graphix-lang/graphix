@@ -352,6 +352,35 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
     }
 }
 
+/// `f`'s parameter `name` as a call through `site` instantiates it: a
+/// fresh instance of `f`'s signature whose other parameters take the
+/// arguments of a copy of the site's, so a variable the site fixes
+/// through another parameter fixes this one.
+fn callee_param<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    f: &LambdaDef<R, E>,
+    name: &ArcStr,
+    site: Option<&FnType>,
+) -> Option<Type> {
+    let inst = f.typ.instantiate(&ctx.rec_defs);
+    if let Some(site) = site {
+        // each argument the site passes fits the callee's parameter for it
+        let site = site.replace_tvars(&Default::default());
+        let keys =
+            |args: &[FnArgType]| ArgKey::of_formals(args).collect::<SmallVec<[_; 4]>>();
+        let (site_keys, inst_keys) = (keys(&site.args), keys(&inst.args));
+        for (sa, k) in site.args.iter().zip(site_keys.iter()) {
+            if sa.label() == Some(name) {
+                continue;
+            }
+            if let Some(i) = inst_keys.iter().position(|ik| ik == k) {
+                let _ = inst.args[i].typ.contains(&ctx.env, &sa.typ);
+            }
+        }
+    }
+    inst.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
+}
+
 /// An argument checked against a formal with quantifiers of its own
 /// holds for every choice of them only if none was aliased to a cell the
 /// argument does not own: a top-level variable or an enclosing
@@ -941,7 +970,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// `f`'s default for the labeled argument `name` as this site sees
     /// it: compiled in `f`'s environment under the site's handlers, and
-    /// checked against the site's instantiated argument type.
+    /// checked against the site's view of the parameter, else `f`'s own
+    /// parameter as the site's fn type instantiates it (a fn type may
+    /// hide or re-type the label).
     fn checked_default(
         &self,
         ctx: &mut CompileCtx<R, E>,
@@ -952,6 +983,84 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         expr: &Expr,
         defaults: &mut Refs,
     ) -> Result<Node<R, E>> {
+        self.checked_default_at(
+            ctx,
+            flags,
+            scope,
+            f,
+            name,
+            expr,
+            defaults,
+            self.ftype.as_deref(),
+        )
+    }
+
+    /// A function passed where a fn type is expected is called through it:
+    /// each default of its definition that such a call may omit, the
+    /// formal hiding the label or making it optional, is judged here, at
+    /// the parameter as the formal instantiates it.
+    fn check_value_defaults(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        ftype: &FnType,
+    ) -> Result<()> {
+        let mut flags = self.flags;
+        flags.remove(CFlag::WarnUnhandled);
+        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
+            let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) else {
+                continue;
+            };
+            let Some(Type::Fn(ref formal)) = farg.typ.deref_cloned() else { continue };
+            let Some(Type::Fn(ref value)) = n.typ().deref_cloned() else { continue };
+            for id in value.lambda_ids.ids().iter() {
+                let def = ctx.lambda_defs.get(id).cloned();
+                let Some(f) =
+                    def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+                else {
+                    continue;
+                };
+                for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
+                    let (Some(name), Some(expr)) = (a.label(), spec.kind.default())
+                    else {
+                        continue;
+                    };
+                    let omittable =
+                        formal.args.iter().find(|fa| fa.label() == Some(name));
+                    if omittable.is_some_and(|fa| !fa.kind.has_default()) {
+                        continue;
+                    }
+                    let node = wrap!(
+                        n,
+                        self.checked_default_at(
+                            ctx,
+                            flags,
+                            &self.scope,
+                            f,
+                            name,
+                            expr,
+                            &mut Refs::default(),
+                            Some(&formal),
+                        )
+                    )?;
+                    ctx.discard(node);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn checked_default_at(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        scope: &Scope,
+        f: &LambdaDef<R, E>,
+        name: &ArcStr,
+        expr: &Expr,
+        defaults: &mut Refs,
+        site: Option<&FnType>,
+    ) -> Result<Node<R, E>> {
         // compiled and checked in `f`'s environment, where its names are
         let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
             let local_scope = Scope {
@@ -960,45 +1069,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             };
             let mut node = compile(ctx, flags, expr.clone(), &local_scope, self.top_id)?;
             let res = node.typecheck0(ctx).and_then(|()| {
-                let site_arg = self
-                    .ftype
-                    .as_ref()
-                    .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)));
-                match site_arg {
-                    // CR claude for claude: [bug] The omitted default is checked against the
-                    // site's view of the labeled parameter, but its value only ever reaches
-                    // the callee's own parameter, and behind a fn-typed parameter the check
-                    // cannot see the callee at all. `let h = |f: fn(?#n: i64, x: i64) ->
-                    // i64| f(1)` applied to `let g = |#n: [i64, string] = "hello", x: i64|
-                    // -> i64 x + 1` passes --check, and the build refuses "hello"
-                    // (graphix-fuzz check: the check accepted what the build refused).
-                    // Through a fn-typed let, the same valid call is refused outright. With
-                    // a generic g (`'a: Number |#n: 'a = 3, x: 'a|` behind `fn(?#n: f64, x:
-                    // f64)`) the build is right to refuse, but --check still passes. Check
-                    // the default against the callee's parameter as this site instantiates
-                    // it, and judge a function value's defaults where the check meets it
-                    // (the `h(g)` argument), so the check and the build agree. probe:
-                    // design/review-2026-10-05/repro/c-callsite-07.gx (c-callsite-07)
-                    Some(sarg) => sarg.typ.check_contains(&ctx.env, node.typ()),
-                    // CR claude for claude: [bug] When the site's fn type does not name this
-                    // label (a value passed as `fn(y: string) -> bool`), the default is
-                    // checked against nothing. prepare_bind then types the argument by the
-                    // default, and the instance, typed by substitution, runs x: string
-                    // holding an i64. The check misses it too: FnType::contains_int lets
-                    // the fn type hide or re-type a value's defaulted label without
-                    // checking the default under that instantiation, and
-                    // check_omitted_defaults returns early when the site hides the label
-                    // and defers (known = false) when the callee is a fn-typed parameter.
-                    // `let g = |#x = 4096, y| x == y; let apply = |h: fn(y: string) ->
-                    // bool| h("seven"); apply(g)` passes --check and the JIT segfaults
-                    // using 4096 as a string pointer; `let scale = |#by = 2, x| x * by;
-                    // array::map([1.5, 2.5], scale)` panics at kernel.rs:243 and the
-                    // node-walk prints [3, 5]. A re-typed label (`fn(?#x: f64, y: f64) ->
-                    // f64`) makes elaboration refuse what the check passed, or, through a
-                    // run-time value, leaves the call bottom forever with only a log line.
-                    // probe: design/review-2026-10-05/repro/x-typecheck-generics-F7.gx
-                    // (x-typecheck-generics-F7)
-                    None => Ok(()),
+                // the site's view first, which a default narrows; where it
+                // hides or re-types the label, the callee's own parameter
+                let site_view = site
+                    .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)))
+                    .map(|a| a.typ.check_contains(&ctx.env, node.typ()));
+                match site_view {
+                    Some(Ok(())) => Ok(()),
+                    site_view => match callee_param(ctx, f, name, site) {
+                        Some(t) => t.check_contains(&ctx.env, node.typ()),
+                        None => site_view.unwrap_or(Ok(())),
+                    },
                 }
             });
             Ok::<_, anyhow::Error>((node, res))
@@ -2430,6 +2511,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 wrap!(n, formal.check_contains(&ctx.env, n.typ()))?;
             }
         }
+        self.check_value_defaults(ctx, ftype)?;
         if fresh {
             self.defaults_open = !self.check_omitted_defaults(ctx, ftype)?;
         }

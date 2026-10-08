@@ -2586,3 +2586,42 @@ const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
 run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a.len() == 3)
 }; FuseExpect::Jit);
+
+// A default omitted through a fn type reaches the callee's own
+// parameter: a wider one holds it, though the fn type names a narrower.
+const DEFAULT_THROUGH_A_NARROWER_FN_TYPE: &str = r#"
+{
+    let g = |#n: [i64, string] = "hello", x: i64| -> i64 x + 1;
+    let h = |f: fn(?#n: i64, x: i64) -> i64| f(1);
+    h(g)
+}
+"#;
+
+run!(default_through_a_narrower_fn_type, DEFAULT_THROUGH_A_NARROWER_FN_TYPE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+}; FuseExpect::Jit);
+
+// A function value's default is judged where the value meets a fn type
+// that hides the label, at the parameter the fn type fixes.
+const DEFAULT_HIDDEN_BY_A_FN_TYPE: &str = r#"
+{
+    let g = |#x = 4096, y| x == y;
+    let apply = |h: fn(y: string) -> bool| h("seven");
+    apply(g)
+}
+"#;
+
+run!(default_hidden_by_a_fn_type, DEFAULT_HIDDEN_BY_A_FN_TYPE, |v: Result<&Value>| {
+    refused("string does not contain i64")(v)
+}; FuseExpect::None);
+
+const DEFAULT_HIDDEN_BY_A_CALLBACK: &str = r#"
+{
+    let scale = |#by = 2, x| x * by;
+    array::map([1.5, 2.5], scale)
+}
+"#;
+
+run!(default_hidden_by_a_callback, DEFAULT_HIDDEN_BY_A_CALLBACK, |v: Result<&Value>| {
+    refused("f64 does not contain i64")(v)
+}; FuseExpect::None);
