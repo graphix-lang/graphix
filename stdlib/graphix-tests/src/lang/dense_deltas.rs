@@ -178,3 +178,24 @@ async fn moving_reference_writes_once(mode: Mode) -> Result<()> {
 }
 
 modes!(moving_reference_writes_once);
+
+// An any whose source went bottom while its arm slept is bottom at the
+// wake: [10, 5, -1] and nothing at the wake.
+const ANY_WAKES_BOTTOM: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 5 => n + 1, _ => never() };
+  let in0 = 0;
+  in0 <- select ep { 3 => 1, 5 => 0, _ => never() };
+  let in1 = 1;
+  in1 <- select ep { 2 => 2, 4 => 0, _ => never() };
+  let v0 = 10 / in1;
+  select in0 { 0 => any(v0, never<i64>()), _ => -1 }
+}"#;
+
+async fn any_wakes_bottom(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(ANY_WAKES_BOTTOM, mode).await?;
+    assert_eq!(as_i64s(&values), vec![10, 5, -1]);
+    Ok(())
+}
+
+modes!(any_wakes_bottom);

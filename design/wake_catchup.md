@@ -182,8 +182,10 @@ depth-0 update takes: the `dense_gate!` structs (the macro takes
 StringInterpolate, MapQ, Bind, CallSite, GXLambda, `CachedArgs`,
 `FusedKernel`, and Select. `Node` stays a bare 16-byte
 newtype; the bools hide in struct padding. Nodes that recompute
-unconditionally need none; `Any` and `~` ride correctly — they ARE
-edge state; `Constant` fires at wake as at init.
+unconditionally need none; `~` rides correctly — it IS edge state;
+`Any` rides too, except that it stands bottom at a wake where the
+child its resident came from is bottom now; `Constant` fires at wake
+as at init.
 
 A woken Select RE-MATCHES against the present scrutinee: a selection
 retained across the sleep was made against a value that may have moved

@@ -2126,6 +2126,9 @@ pub struct Any<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
+    /// The child whose production the resident is.
+    from: Option<usize>,
+    slept: WakeBit,
 }
 
 impl<R: Rt, E: UserEvent> Any<R, E> {
@@ -2136,7 +2139,14 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            from: None,
+            slept: WakeBit::default(),
+        }))
     }
 
     pub(crate) fn compile(
@@ -2156,6 +2166,8 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
             typ: Type::empty_tvar(),
             n,
             resident: TagValue::phantom(),
+            from: None,
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -2170,22 +2182,31 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // the first triggering value-bearing production wins; a
-        // triggering bottom never beats one (`any(risky?, default)`)
-        let mut winner: Option<TagValue> = None;
+        // triggering bottom never beats one (`any(risky?, default)`); at a
+        // wake, the child the resident came from standing bottom now
+        // stands the resident bottom, as its missed fire would have
+        let woke = self.slept.take();
+        let mut winner: Option<(usize, TagValue)> = None;
         let mut bottomed = false;
-        for s in self.n.iter_mut() {
+        let mut lost = false;
+        for (i, s) in self.n.iter_mut().enumerate() {
             let tv = s.update(ctx);
             let tag = tv.tag();
             if tag.triggers() {
                 if tag.is_bottom() {
                     bottomed = true;
                 } else if winner.is_none() {
-                    winner = Some(tv.clone());
+                    winner = Some((i, tv.clone()));
                 }
+            } else if woke && tag.is_bottom() && self.from == Some(i) {
+                lost = true;
             }
         }
         match winner {
-            Some(tv) => self.resident.set(tv),
+            Some((i, tv)) => {
+                self.from = Some(i);
+                self.resident.set(tv)
+            }
             None if bottomed => self.resident.set_bottom(true),
             // CR claude for claude: [bug] At a wake this rides the value held from before
             // the sleep, even when the input that produced it went bottom while the arm
@@ -2197,6 +2218,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
             // design/wake_catchup.md still calls Any's ride correct, and `uniq` rides
             // the same way. Fix the class, or name the exemption in CLAUDE.md. probe:
             // design/review-2026-10-05/repro/c-node-mod-07.gx (c-node-mod-07)
+            // 2026-10-07 claude: Any keeps the child its resident came from and stands
+            // bottom at a wake where that child is bottom now (pin
+            // lang::dense_deltas::any_wakes_bottom). `uniq` still rides.
+            None if lost => self.resident.set_bottom(false),
             None => self.resident.ride(),
         }
     }
@@ -2214,6 +2239,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
