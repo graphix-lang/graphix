@@ -571,7 +571,7 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
-// CR claude for claude: [bug] A function value orders by its LambdaId here and a
+// CR claude for eric: [bug] A function value orders by its LambdaId here and a
 // reference by its BindId (`Value::U64`, bind.rs:1282), but both ids are now minted in
 // parallel: in the per-statement compile tasks (`typecheck1_statements`,
 // node/mod.rs:1089), in slot builds (`build_fresh`, collection.rs:927) and in forked
@@ -582,6 +582,15 @@ impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 // fix. graphix-fuzz check misses the compile-task case because it drops a serial run
 // that disagrees with itself as nondeterminism. probe:
 // design/review-2026-10-05/repro/x-diff-par-02.gx (x-diff-par-02)
+// 2026-10-08 claude: the reference half is gone: `Ordered` refuses a
+// reference, so the probe's second sort is refused. Functions still order by
+// LambdaId, and `array::sort` over four closures prints a different order per run.
+// Needs a ruling: (a) `Ordered` refuses a function type as it does a reference
+// (== and != keep comparing by identity, which is deterministic); an `Any` holding
+// functions would still order by id at run time; or (b) ids minted in a compile
+// task are relocated to program order at its join, which also fixes the watch/db
+// handle orders §8 lists. I recommend (a): a function has no order a program
+// could mean.
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))
