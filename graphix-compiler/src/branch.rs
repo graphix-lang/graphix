@@ -678,20 +678,6 @@ where
     // it waits a cycle, queued where serial evaluation would queue it
     let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
     let mut out = Vec::with_capacity(branches.len());
-    // CR claude for claude: [bug] Every id that a later sibling also delivered is
-    // requeued as a SetVar for the next cycle, and fork_join does the same at line 770.
-    // That matches serial evaluation only for error-handler ids, which is
-    // deliver_error's occupied case. Module::update primes a loaded body's external
-    // refs with try_insert and never removes them (node/module.rs:986-990). So when two
-    // dynamic modules load in one cycle in sibling branches, both own the prime, and
-    // the merge writes the variable again next cycle: a phantom fire that serial
-    // evaluation never makes. The same leftover primes also fire readers later in the
-    // cycle under serial evaluation: with the repro's counter moved below the modules,
-    // serial n becomes 2. Removing the primes after the module's update, as CallSite
-    // does with `set`, fixes both, and a debug_assert here that a duplicate is a
-    // handler id would catch the next such source. probe:
-    // design/review-2026-10-05/repro/x-diff-par-05.gx (graphix-fuzz check: forked
-    // node-walk != serial node-walk). (x-diff-par-05)
     for Part { cx, mut rt, mut event, part: _, out: o } in branches.drain(..) {
         let again: LPooled<Vec<BindId>> =
             event.variables.own_ids().filter(|id| delivered.contains(id)).collect();
@@ -850,24 +836,14 @@ fn audit<R: Rt, E: UserEvent>(
 /// one per core), shared by every runtime in the process.
 pub fn eval_pool() -> &'static rayon::ThreadPool {
     static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-        // CR claude for claude: [bug] When GRAPHIX_EVAL_THREADS is unset this passes
-        // num_threads(0), and rayon resolves 0 through RAYON_NUM_THREADS. The
-        // evaluation pool therefore follows the compile pool's setting, so "one per
-        // core" above and design/parallel_eval.md §9 ("does not govern evaluation") are
-        // false. graphix-fuzz's child_command sets RAYON_NUM_THREADS=2, so every
-        // campaign child runs its Par/JitPar oracle on 2 eval workers (16 on a 16-core
-        // box without it). `graphix-fuzz check` and `regress` run in-process on one
-        // worker per core. An embedder that sets RAYON_NUM_THREADS for its own rayon
-        // work narrows evaluation the same way. Resolve the default here
-        // (GRAPHIX_EVAL_THREADS, else available_parallelism). If the fuzz children
-        // should evaluate on fewer workers, set GRAPHIX_EVAL_THREADS in child_command
-        // and say so in the docs. probe:
-        // design/review-2026-10-05/repro/c-cost-misc-04.gx (GRAPHIX_DBG_PAR=1, without
-        // and with RAYON_NUM_THREADS=2: 16 ranges vs 2). (c-cost-misc-04)
+        // resolved here: rayon resolves 0 through RAYON_NUM_THREADS, the
+        // compile pool's setting
         let threads = std::env::var("GRAPHIX_EVAL_THREADS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map_or(1, |n| n.get())
+            });
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .stack_size(16 << 20)
@@ -890,25 +866,24 @@ pub(crate) fn saturated() -> bool {
 }
 
 /// `n` parts forked: each calls [`Live::done`] when it finishes.
-// CR claude for claude: [risk] Live::start adds every part to the process-wide LIVE_PARTS
-// before the parts run. Each part calls done() only after its closure returns (lines
-// 649, 706, 752, 760; fusion/par_loop.rs:210), so a part that panics never gives its
-// count back. The panic ends only its runtime's tokio task, while the pool and the
-// process go on (a test binary, an embedder hosting several runtimes). Each such panic
-// therefore permanently lowers, for every runtime in the process, the number of live
-// parts at which saturated() reports a full pool, and after one per worker Auto never
-// forks there again. A guard per part whose Drop decrements ties the count to the part.
-// (c-analysis-branch-08)
-pub(crate) struct Live;
+pub(crate) struct Live(AtomicUsize);
 
 impl Live {
     pub(crate) fn start(n: usize) -> Self {
         LIVE_PARTS.fetch_add(n, Ordering::Relaxed);
-        Live
+        Live(AtomicUsize::new(n))
     }
 
     pub(crate) fn done(&self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
         LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// A part that unwound, or never ran, gives its count back here.
+impl Drop for Live {
+    fn drop(&mut self) {
+        LIVE_PARTS.fetch_sub(*self.0.get_mut(), Ordering::Relaxed);
     }
 }
 

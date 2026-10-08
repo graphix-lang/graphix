@@ -768,8 +768,8 @@ forks (`forks`) and its runs of compile tasks (`build_forks`).
 **The pool.** `branch::eval_pool`: one per process, shared by every
 runtime in it, `GRAPHIX_EVAL_THREADS` workers (default: the cores),
 16 MB stacks, `stacker` growing segments as everywhere. The compile
-pool's size is set for the fuzzer (`RAYON_NUM_THREADS=2`) and does not
-govern evaluation.
+pool's size (`RAYON_NUM_THREADS`) does not govern evaluation; the
+fuzzer sets both to two for its children.
 
 **Stack budget.** Per cycle: the `Control` counts the grown segments
 live in its cycle, on every thread (`Control::grown`), and a segment

@@ -3773,10 +3773,10 @@ fn child_exe() -> std::path::PathBuf {
     return std::env::current_exe().expect("current_exe");
 }
 
-/// Compile threads per child. A campaign runs a child per slot, and a
-/// fuzzed program is too small for its compile to gain from more; every
-/// thread costs the child its own allocator arena and pools. Two keep
-/// the compile's tasks and link batches concurrent.
+/// Compile threads, and evaluation workers, per child. A campaign runs a
+/// child per slot, and a fuzzed program is too small for its compile to
+/// gain from more; every thread costs the child its own allocator arena
+/// and pools. Two keep the compile's tasks and link batches concurrent.
 const CHILD_COMPILE_THREADS: &str = "2";
 
 /// Spawn a harness child. A spawn failure (fd or process exhaustion)
@@ -3886,12 +3886,15 @@ async fn run_child(
     }
 }
 
-/// A child of this binary, its compile threads capped unless the
-/// caller set them.
+/// A child of this binary, its compile and evaluation threads capped
+/// unless the caller set them.
 fn child_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(child_exe());
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
         cmd.env("RAYON_NUM_THREADS", CHILD_COMPILE_THREADS);
+    }
+    if std::env::var_os("GRAPHIX_EVAL_THREADS").is_none() {
+        cmd.env("GRAPHIX_EVAL_THREADS", CHILD_COMPILE_THREADS);
     }
     cmd
 }

@@ -1093,6 +1093,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let mut compiled = false;
+        let mut primed: LPooled<Vec<BindId>> = LPooled::take();
         let mut src_tag = Tag::FIRED;
         let src = match &mut self.body {
             Body::Static => None,
@@ -1139,8 +1140,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 n.refs(&mut refs);
             }
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.rt.store_value(&id) {
-                    let _ = ctx.event.variables.try_insert(id, TagValue::fired(v));
+                if let Some(v) = ctx.rt.store_value(&id)
+                    && ctx.event.variables.try_insert(id, TagValue::fired(v)).is_ok()
+                {
+                    primed.push(id)
                 }
             });
         }
@@ -1157,6 +1160,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
         for i in super::evaluation_order(self.nodes.len(), &self.catches) {
             let _ = self.nodes[i].update(ctx);
+        }
+        // a prime is for the fresh body alone: left, it would fire readers
+        // later in the cycle, and a forked merge would requeue it
+        for id in primed.drain(..) {
+            ctx.event.variables.remove(&id);
         }
         ctx.event.init = init;
         for Proxy { inner, outer, private_inner } in &self.proxy {

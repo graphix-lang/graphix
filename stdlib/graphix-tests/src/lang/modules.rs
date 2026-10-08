@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval, refusal, refused},
+    testing::{FuseExpect, Mode, eval, refusal, refused},
 };
 use netidx::publisher::Value;
 
@@ -995,3 +995,32 @@ run!(
         let v = 1
     "#
 );
+
+// A loaded body's primes are its own: two modules loading in one cycle in
+// forked branches requeue nothing, and nothing later in the cycle fires
+// from a prime.
+async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let y = 1;
+            let k = 0;
+            k <- select k { x if x < 3 => x + 1, _ => never() };
+            let src = never();
+            src <- select k { 2 => "let v = super::y + 1", _ => never() };
+            let r = #[parallel] (
+                mod a dynamic { sandbox unrestricted; sig { val v: i64 }; source src },
+                mod b dynamic { sandbox unrestricted; sig { val v: i64 }; source src }
+            );
+            let n = 0;
+            n <- y ~ n + 1;
+            n
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values, vec![Value::I64(0), Value::I64(1)]);
+    Ok(())
+}
+
+modes!(loads_leave_no_primes);
