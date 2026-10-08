@@ -119,18 +119,6 @@ async fn seq_io(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-// CR claude for claude: [test-gap] Every fixture here re-issues its builtin through an
-// argument that fires at the wake, a constant or the `tick`/`go` the woken arm reads;
-// line_reader_rewake's stream stands at the wake, but its reader never stopped, so
-// nothing restarts there. No fixture wakes a builtin whose arguments all stand, the
-// only path where three confirmed bugs show: an async builtin or range stays bottom for
-// good (sys::fs::is_file(path) in a woken arm with `let path = "/etc/hostname"`),
-// take/skip/throttle forget a let-bound #n or #rate, and max/sum/and re-deliver their
-// pre-sleep result. lib_tests/core.rs has no range with a late or bottomed argument
-// either, where range(0, late) first emits RangeError. Both engines run these same
-// nodes, so the fuzzer cannot see any of it. Add an interp/jit fixture per family, `let
-// a = ..; select phase { true => f(a), false => .. }` with phase going true, false,
-// true, plus range(0, late) and range(bottoming, 2). (core-lib-14)
 async fn select_restarts_timer(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
@@ -217,3 +205,79 @@ modes!(seq_network);
 modes!(live_timer_keeps_value);
 #[cfg(unix)]
 modes!(line_reader_rewake);
+
+// A woken arm restarts each builtin over its present arguments, every one
+// of them standing at the wake.
+
+// An async builtin is issued again, so it answers again.
+async fn wake_reissues_standing_async(mode: Mode) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("f"), "")?;
+    let path = dir.path().join("f").to_string_lossy().replace('\\', "/");
+    let code = format!(
+        r#"{{
+            let path = "{path}";
+            let on = true;
+            let r = select on {{ true => sys::fs::is_file(path)$, false => never() }};
+            let n = 0;
+            n <- r ~ n + 1;
+            let t = 0;
+            t <- select on {{
+                false => select t {{ x if x < 3 => x + 1, _ => never() }},
+                true => never()
+            }};
+            on <- select n {{ 1 => false, _ => never() }};
+            on <- select t {{ 3 => true, _ => never() }};
+            n
+        }}"#
+    );
+    let (values, _) = run_delta(&code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 1, 2]);
+    Ok(())
+}
+
+// take keeps a let-bound #n across the sleep and restarts its count.
+async fn wake_keeps_a_standing_count(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select n { k if k < 7 => k + 1, _ => never() };
+        let in0 = select n { 3 | 4 => true, _ => false };
+        let k = 1;
+        select in0 { true => -1, false => take(#n: k, n) }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 0, 0, -1, -1, 5, 5, 5]);
+    Ok(())
+}
+
+// A woken count is a fresh one: it does not deliver its pre-sleep total.
+async fn wake_restarts_a_count(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let n = 0;
+        n <- select n { k if k < 5 => k + 1, _ => never() };
+        let in0 = select n { 2 | 3 => 0, _ => 1 };
+        select in0 { 0 => -1, _ => count(n) }
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [1, 2, -1, -1, 1, 2]);
+    Ok(())
+}
+
+// A range waits for a late bound instead of refusing it.
+async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let late = never();
+        late <- 3;
+        range(0, late)
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(as_i64s(&values), [0, 1, 2]);
+    Ok(())
+}
+
+modes!(
+    wake_reissues_standing_async,
+    wake_keeps_a_standing_count,
+    wake_restarts_a_count,
+    range_over_a_late_bound
+);

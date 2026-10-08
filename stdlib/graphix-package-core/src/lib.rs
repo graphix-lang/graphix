@@ -1470,6 +1470,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     // arm writes again). design/async_sleep_outputs.md and CLAUDE.md say so. The repro
     // prints every arm again after Paused -> Live; the wake tests in lang/async_restart
     // pass unchanged, so a pin for the level-argument case is still owed.
+    // 2026-10-08 claude: pinned by lang::async_restart::wake_reissues_standing_async (an async builtin over a standing path answers again at the wake).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.slept = true;
@@ -1632,6 +1633,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 /// Set the count `#n` gives take and skip: a fired `#n` restarts it, and
 /// a standing one seeds a count not running (after a sleep, or at a birth
 /// whose fire a sibling consumed), so a level `#n` survives a sleep.
+// 2026-10-08 claude: pinned by lang::async_restart::wake_keeps_a_standing_count (take over a let-bound #n across a sleep).
 fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     if let Some(tv) = seam_value(n)
         && (tv.is_fired() || left.is_none())
@@ -2519,6 +2521,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         // 1 at the first fire after the wake, never the old 2). The seq lowering's
         // once, uniq and hold sit inside a machine that resets on its arm's sleep.
         // No pin checks the values; a semantics change: wants review and a soak.
+        // 2026-10-08 claude: pinned by lang::async_restart::wake_restarts_a_count (a woken count delivers 1, not its pre-sleep total).
         self.count = 0;
         self.out = TagValue::phantom();
     }
