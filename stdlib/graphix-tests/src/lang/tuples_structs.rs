@@ -436,3 +436,15 @@ run!(struct_with_select_over_source, STRUCT_WITH_SELECT_OVER_SOURCE, |v: Result<
     },
     _ => false,
 });
+
+// An unannotated partial struct pattern in a let completes against the
+// value, as a select arm's does against its scrutinee.
+run!(
+    let_partial_struct_pattern,
+    r#"{
+    let p = {x: 1, y: 2};
+    let {x, ..} = p;
+    x
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);

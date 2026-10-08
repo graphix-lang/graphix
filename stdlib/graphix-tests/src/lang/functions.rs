@@ -2750,3 +2750,18 @@ run!(default_from_the_environment, DEFAULT_FROM_THE_ENVIRONMENT, |v: Result<&Val
         && a[1] == Value::I64(3),
     _ => false,
 }; FuseExpect::Jit);
+
+// A destructuring let that rebinds a builtin-bound name forgets the
+// builtin: the call reaches the new function.
+const DESTRUCTURING_REBINDS_A_BUILTIN: &str = r#"
+{
+    let slen = |s: string| -> i64 'str_len;
+    let (slen, k) = (|s: string| -> i64 42, 0);
+    let f = |s: string| slen(s);
+    f("abc")
+}
+"#;
+
+run!(destructuring_rebinds_a_builtin, DESTRUCTURING_REBINDS_A_BUILTIN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+}; FuseExpect::None);

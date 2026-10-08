@@ -641,3 +641,51 @@ const WRITE_THROUGH_A_VALUE_REFERENCE: &str = r#"
 run!(write_through_a_value_reference, WRITE_THROUGH_A_VALUE_REFERENCE, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("hello"), Value::from("a/leaf")])
 }; FuseExpect::None);
+
+// A moving place reference held where nothing re-fires it (`once`)
+// still re-fires its readers when its key moves, with the new element.
+const MOVING_REFERENCE_HELD: &str = r#"{
+    let a = [1, 2, 3];
+    let i = 0;
+    let r = once(&a[i]);
+    i <- once(r) ~ 2;
+    *r * 10 + *r
+}"#;
+
+async fn moving_reference_held(mode: Mode) -> Result<()> {
+    use super::dense_deltas::{as_i64s, run_delta};
+    let (values, _) = run_delta(MOVING_REFERENCE_HELD, mode).await?;
+    assert_eq!(as_i64s(&values), vec![11, 33]);
+    Ok(())
+}
+
+modes!(moving_reference_held);
+
+// A binding written only through a writable reference is a `<-` target:
+// an arm's wake keeps its last write, and a call through it dispatches.
+const WRITTEN_THROUGH_A_REFERENCE: &str = r#"{
+    let n = array::iter([0, 1, 2, 3, 4]);
+    let bump = |c: &mut i64, ev: i64| -> i64 { *c <- ev ~ *c + 1; 0 };
+    let viaref = select n % 2 {
+        0 => { let x = 10; let ignored = bump(&mut x, n); x },
+        _ => -1
+    };
+    let f = |x: i64| -> i64 x + 1;
+    let fr = &mut f;
+    *fr <- |x: i64| -> i64 x + 100;
+    (array::group(viaref, |i, _| i == 5), f(1))
+}"#;
+
+run!(written_through_a_reference, WRITTEN_THROUGH_A_REFERENCE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.len() == 2
+                && a[0]
+                    == Value::Array(
+                        [10, -1, 11, -1, 12].map(Value::I64).into_iter().collect(),
+                    )
+                && a[1] == Value::I64(101)
+        }
+        _ => false,
+    }
+}; FuseExpect::Jit);

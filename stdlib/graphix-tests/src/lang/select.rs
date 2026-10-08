@@ -2937,3 +2937,28 @@ const OR_BINDS_UNEQUAL_PAYLOADS: &str = r#"
 run!(or_binds_unequal_payloads, OR_BINDS_UNEQUAL_PAYLOADS, |v: Result<&Value>| {
     refused("must bind x at exactly equal types")(v)
 }; FuseExpect::None);
+
+// A wake keeps a `<-` target's last write but recomputes the target's
+// destructured siblings.
+const WAKE_RECOMPUTES_A_TARGETS_SIBLINGS: &str = r#"
+{
+    let n = array::iter([0, 1, 2, 3, 4]);
+    let z = uniq(select n { 0 => 0, _ => 5 });
+    let r = select n % 2 {
+        0 => { let (a, b) = (0, z + 100); a <- n ~ a + 1; b },
+        _ => z
+    };
+    array::group(r, |i, _| i == 5)
+}
+"#;
+
+run!(
+    wake_recomputes_a_targets_siblings,
+    WAKE_RECOMPUTES_A_TARGETS_SIBLINGS,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => a[..] == [100, 5, 105, 5, 105].map(Value::I64),
+            _ => false,
+        }
+    }
+);

@@ -233,25 +233,20 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         } else {
                             node.typ().clone()
                         };
-                    // a shape check: its cells lower nothing they bind
+                    // a shape check: its cells lower nothing they bind; a
+                    // partial struct pattern completes against the value, as
+                    // a select arm's does against its scrutinee
                     let ptyp = {
                         let _generic = AtLevel::enter(Level::GENERIC);
-                        pat.infer_type_predicate(&ctx.env, &scope.lexical)?
+                        let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
+                        match pat
+                            .complete_type_predicate(&ctx.env, &ptyp, &typ)
+                            .at(&spec)?
+                        {
+                            Some(t) => t,
+                            None => ptyp,
+                        }
                     };
-                    // CR claude for claude: [bug] The shape check compares the pattern's
-                    // un-completed predicate ({x: 'a} for {x, ..}) with the value's
-                    // type, so `let p = {x: 1, y: 2}; let {x, ..} = p` is refused with
-                    // "match error { x: i64, y: i64 } can't be matched by { x: '_N:
-                    // unbound }". StructPatternNode::compile accepts that type
-                    // (pattern.rs:632), the same let annotated with it is accepted, and
-                    // select completes the predicate against its scrutinee
-                    // (select.rs:1240). Over a call's cell the let is refused with
-                    // pattern.rs:641's "non exhaustive struct matches require type
-                    // annotations" instead, so one rule has two messages. Complete ptyp
-                    // against typ as select does, or refuse an unannotated partial
-                    // pattern with the one annotation message. probe:
-                    // design/review-2026-10-05/repro/x-expr-walks.r2-11.gx
-                    // (x-expr-walks.r2-11)
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bailat!(spec, "match error {typ} can't be matched by {ptyp}")
@@ -299,29 +294,17 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
-        // CR claude for claude: [bug] Only a single-name `let` updates
-        // `builtin_bindings`: a destructuring `let` (tuple, struct, variant, `name@`
-        // capture) that rebinds a builtin-bound name in the same scope leaves the old
-        // `(scope, name)` entry, and the fast-call lowering (fusion/lowering.rs:273),
-        // the effect classification (analysis.rs:613) and the dead-variadic check
-        // (callsite.rs:80) all read it for the new binding. The JIT then fast-calls the
-        // old builtin (42 node-walked, 3 fused), and when the new function's return
-        // type differs it reads the result at the wrong type (f64 bits) or aborts the
-        // process on the shape-check panic. The same entry refuses a valid `a()` as a
-        // dead variadic call and lets `#[sync]` pass over an async callee. Remove the
-        // key for every name the pattern binds and insert only for a single-name
-        // builtin binding. probe: design/review-2026-10-05/repro/c-bind-09.gx
-        // (c-bind-09)
-        if let expr::StructurePattern::Bind(name) = pat {
+        // every name the pattern rebinds forgets the builtin it named; a
+        // single name over a builtin names that one
+        pat.with_names(&mut |name| {
             let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
-            match builtin_binding(&node, value) {
-                Some(info) => {
-                    ctx.builtin_bindings.insert(key, info);
-                }
-                None => {
-                    ctx.builtin_bindings.remove(&key);
-                }
-            }
+            ctx.builtin_bindings.remove(&key);
+        });
+        if let expr::StructurePattern::Bind(name) = pat
+            && let Some(info) = builtin_binding(&node, value)
+        {
+            let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
+            ctx.builtin_bindings.insert(key, info);
         }
         Ok(Node::new(Self {
             spec,
@@ -441,34 +424,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // persists in the store. A connect target's value is its last
         // write: a wake's fire republishes nothing over it, nor does a
         // standing bottom (`let x = never()`).
-        // CR claude for claude: [bug] This hold-back is decided once for the whole
-        // pattern. When any id the pattern binds is a `<-` target, no id is published
-        // at the wake, so a destructuring let's non-target siblings keep their
-        // pre-sleep value instead of the recompute. wake_catchup.md exempts only `<-`
-        // targets from the wake republish. In a sleeping arm, `let (a, b) = (0, z +
-        // 100); a <- n ~ a + 1; b` shows b = 100 after z moved to 5 while the other arm
-        // consumed its fire; the same arm written as two lets shows 105, and the quiet
-        // path (`let (a, b) = p`) loses it the same way. Both engines agree, so the
-        // fuzzer cannot see it. Hold back only the target ids and publish the rest as
-        // usual. probe: design/review-2026-10-05/repro/c-bind-05.gx (c-bind-05)
-        let keep_connect_target_value =
-            wake_phantom && (self.ever_published || tag.is_bottom()) && {
-                let mut target = false;
-                self.pattern.ids(&mut |id| {
-                    target = target || ctx.connect_targets.contains(&id);
-                });
-                target
-            };
+        // the ids whose last write a wake keeps: a destructuring let's
+        // other ids recompute
+        let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
+        if wake_phantom && (self.ever_published || tag.is_bottom()) {
+            self.pattern.ids(&mut |id| {
+                if ctx.connect_targets.contains(&id) {
+                    held.push(id)
+                }
+            });
+        }
         // After a sleep the store entry may lag a stale recompute;
         // re-publish quietly (design/wake_catchup.md).
         let wake_refresh = woke && !tag.triggers();
-        let publish = !keep_connect_target_value
-            && (tag.triggers()
-                || (!self.ever_published && !tag.is_bottom())
-                || wake_refresh);
+        let publish =
+            tag.triggers() || (!self.ever_published && !tag.is_bottom()) || wake_refresh;
         if dbgenv::gxdbg_letbind() {
             eprintln!(
-                "LETBIND {} tag={tag:?} val={:?} ever_published={} keep_connect_target_value={keep_connect_target_value} publishing={publish}",
+                "LETBIND {} tag={tag:?} val={:?} ever_published={} held={held:?} publishing={publish}",
                 self.spec.pos,
                 tv.value_cloned(),
                 self.ever_published,
@@ -478,11 +451,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             let quiet = !tag.triggers();
             if wake_phantom && !quiet {
                 self.pattern.ids(&mut |id| {
-                    ctx.event.wake_phantoms.insert(id, ());
+                    if !held.contains(&id) {
+                        ctx.event.wake_phantoms.insert(id, ());
+                    }
                 });
             }
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
+                    if held.contains(&id) {
+                        return;
+                    }
                     ctx.event.variables.insert(id, TagValue::tagged(Value::Null, tag));
                     ctx.rt.store_insert(
                         id,
@@ -495,6 +473,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             } else {
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
+                    if held.contains(&id) {
+                        return;
+                    }
                     ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     ctx.rt.store_insert(id, TagValue::fired(v));
                     if !quiet {
@@ -990,8 +971,8 @@ fn root_place<R: Rt, E: UserEvent>(
     match any.downcast_ref::<Ref>() {
         Some(r) => Some((r.id, &[])),
         None => {
-            let (id, path) = any.downcast_ref::<Deref<R, E>>()?.addr.as_ref()?;
-            Some((*id, path))
+            let a = any.downcast_ref::<Deref<R, E>>()?.addr.as_ref()?;
+            Some((a.id, &a.path))
         }
     }
 }
@@ -1244,17 +1225,6 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         let id = BindId::new();
         // A place reference types as a reference to the element and
         // still mints a cell so embedders keep reading the mirror.
-        // CR claude for claude: [bug] Nothing here marks the referent (the `Ref`'s
-        // binding, or the place's root) as a `<-` target; mark_connect_target's only
-        // caller is Connect::compile. So a binding written only through `*r <- v` (or
-        // by a builtin through the reference) is in neither connect_targets nor
-        // batch_connect_targets. An arm's wake republishes its initializer over the
-        // last write (Bind::update's keep rule misses it, against sleep-is-pause), and
-        // a call to a function binding written this way stays statically resolved to
-        // the old lambda. Both engines agree, so the fuzzer cannot see it. probe:
-        // design/review-2026-10-05/repro/c-node-mod-02.gx (a counter bumped through
-        // `&x` resets to 10 at every wake while the `x <- ..` twin counts 11, 12, 13;
-        // `f(1)` returns 2 while `g = f; g(1)` returns 101). (c-node-mod-02)
         let (referent, typ) = match Place::<R, E>::of(expr) {
             Some((root, specs)) => {
                 let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
@@ -1279,6 +1249,17 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 (Referent::Channel(child), Type::ByRef(mutability, Arc::new(referent)))
             }
         };
+        // a binding a writable reference names is written as a `<-` target
+        // is: a wake keeps its last write, and a call through it dispatches
+        if let Mutability::Mut = mutability {
+            let named = match &referent {
+                Referent::Place(p) => (&*p.root as &dyn Any).downcast_ref::<Ref>(),
+                Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
+            };
+            if let Some(r) = named {
+                ctx.mark_connect_target(r.id);
+            }
+        }
         Ok(Node::new(Self {
             spec,
             typ,
@@ -1462,10 +1443,29 @@ pub struct Deref<R: Rt, E: UserEvent> {
     pub child: Node<R, E>,
     pub(super) top_id: ExprId,
     resident: TagValue,
-    /// The binding the reference's value resolves to and the path into
-    /// that binding's value (empty unless the reference is a place);
-    /// `None` while the reference is bottom.
-    addr: Option<(BindId, Path)>,
+    /// Where the reference points; `None` while it is bottom.
+    addr: Option<Addr>,
+}
+
+/// A reference's target as a `Deref` reads it: the reference's own
+/// cell, which a moving place reference notifies when its path moves,
+/// the binding it resolves to and the path into that binding's value
+/// (empty unless the reference is a place).
+#[derive(Debug, Clone, netidx_derive::Pack)]
+struct Addr {
+    cell: BindId,
+    id: BindId,
+    path: Path,
+}
+
+/// How a `Deref`'s target changed at an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    No,
+    /// Same binding, another path: a moving place reference's key moved.
+    Path,
+    /// Another binding, or the first.
+    Target,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -1477,9 +1477,12 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         let typ = Type::decode(buf)?;
         let child = decode_node(ctx, buf)?;
         let top_id = ExprId::decode(buf)?;
-        let addr = Option::<(BindId, Path)>::decode(buf)?;
-        if let Some((id, _)) = &addr {
-            ctx.record_ref(*id, top_id);
+        let addr = Option::<Addr>::decode(buf)?;
+        if let Some(a) = &addr {
+            ctx.record_ref(a.id, top_id);
+            if a.cell != a.id {
+                ctx.record_ref(a.cell, top_id);
+            }
         }
         Ok(Node::new(Self {
             spec,
@@ -1514,44 +1517,62 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// Address `cell`'s referent: the place it stands for, else the
     /// binding at the end of its byref chain (`&x`'s cell mirrors x a
     /// cycle late, the referent does not; a chainless reference's own
-    /// cell is its only storage). Returns the binding and whether it
-    /// changed.
-    fn address(&mut self, ctx: &mut ExecCtx<'_, R, E>, cell: BindId) -> (BindId, bool) {
+    /// cell is its only storage). Returns the binding and how it moved.
+    fn address(&mut self, ctx: &mut ExecCtx<'_, R, E>, cell: BindId) -> (BindId, Moved) {
         let (id, path) = ref_target(ctx, cell);
-        match &mut self.addr {
-            Some((cur, p)) if *cur == id => {
-                // CR claude for claude: [bug] When the root stays the same and only the
-                // path changes (a moving place reference whose key moved), this returns
-                // moved=false. update() then delivers the element at the new path under
-                // the reference's and the root's tags, which are STALE when neither
-                // fired, so every node downstream keeps the old element (R1 in
-                // design/dense_delivery.md). The Deref also takes a ref only on the
-                // root (the ref_var below), so ByRef's notify_set on the cell at a move
-                // schedules no reader. A moving reference that reaches its reader
-                // without firing (held in state, once, sampled) therefore does not
-                // re-fire the reader at the move, which design/place_references.md
-                // promises and which a sampled plain reference does. With `cur <- go ~
-                // &vals[focus]` and focus moved, `(*cur, *cur * 1)` prints (30, 10) and
-                // a select over `*cur` stays on the old arm, with or without fusion.
-                // probe: design/review-2026-10-05/repro/c-bind-10.gx (c-bind-10)
-                if &p[..] != path {
-                    *p = path.into();
-                }
-                (id, false)
+        let (same_id, same_path) = match &self.addr {
+            Some(a) => (a.id == id, a.id == id && &a.path[..] == path),
+            None => (false, false),
+        };
+        let path: Option<Path> = (!same_path).then(|| path.into());
+        let moved = match (&mut self.addr, path) {
+            (Some(a), None) => {
+                Self::swap_cell(ctx, a, cell, self.top_id);
+                Moved::No
             }
-            _ => {
-                let path = path.into();
+            (Some(a), Some(p)) if same_id => {
+                Self::swap_cell(ctx, a, cell, self.top_id);
+                a.path = p;
+                Moved::Path
+            }
+            (_, p) => {
                 self.release(ctx);
                 ctx.rt.ref_var(id, self.top_id);
-                self.addr = Some((id, path));
-                (id, true)
+                if cell != id {
+                    ctx.rt.ref_var(cell, self.top_id);
+                }
+                self.addr = Some(Addr { cell, id, path: p.unwrap_or_default() });
+                Moved::Target
             }
+        };
+        (id, moved)
+    }
+
+    /// Follow another reference cell to the same binding.
+    fn swap_cell(
+        ctx: &mut ExecCtx<'_, R, E>,
+        a: &mut Addr,
+        cell: BindId,
+        top_id: ExprId,
+    ) {
+        if a.cell == cell {
+            return;
         }
+        if a.cell != a.id {
+            ctx.unref_var(a.cell, top_id);
+        }
+        if cell != a.id {
+            ctx.rt.ref_var(cell, top_id);
+        }
+        a.cell = cell;
     }
 
     fn release(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some((id, _)) = self.addr.take() {
-            ctx.unref_var(id, self.top_id);
+        if let Some(a) = self.addr.take() {
+            ctx.unref_var(a.id, self.top_id);
+            if a.cell != a.id {
+                ctx.unref_var(a.cell, self.top_id);
+            }
         }
     }
 }
@@ -1587,9 +1608,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             None => None,
         };
         let res = match (res, &self.addr) {
-            (Some(tv), Some((_, path))) if !path.is_empty() && !tv.tag().is_bottom() => {
+            (Some(tv), Some(a)) if !a.path.is_empty() && !tv.tag().is_bottom() => {
                 let read =
-                    with_hooks(ctx, || tv.with_value(|v| place::read_path(v, path)));
+                    with_hooks(ctx, || tv.with_value(|v| place::read_path(v, &a.path)));
                 match read {
                     Ok(v) => {
                         let mut c = TagValue::fired(v);
@@ -1606,12 +1627,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         };
         match res {
             Some(mut tv) => {
-                let t = tv.tag().join(addr);
+                // a move of the path is a new element, read fired
+                let t = match moved {
+                    Moved::Path => tv.tag().join(addr).fresh(),
+                    Moved::No | Moved::Target => tv.tag().join(addr),
+                };
                 tv.retag(t);
                 self.resident.set(tv)
             }
             // a moved address with nothing to read is bottom
-            None if moved => self.resident.set_bottom(addr.triggers()),
+            None if moved != Moved::No => {
+                self.resident.set_bottom(addr.triggers() || moved == Moved::Path)
+            }
             None => self.resident.ride(),
         }
     }
@@ -1635,8 +1662,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn refs(&self, refs: &mut Refs) {
         self.child.refs(refs);
-        if let Some((id, _)) = &self.addr {
-            refs.read(*id);
+        if let Some(a) = &self.addr {
+            refs.read(a.id);
+            refs.read(a.cell);
         }
     }
 
