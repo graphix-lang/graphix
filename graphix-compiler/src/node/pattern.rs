@@ -488,22 +488,11 @@ impl StructPatternNode {
         mut mode: BindMode,
     ) -> Result<Self> {
         // an alias of an alias expands to its body: typedefs are
-        // contractive, so the chain ends
+        // contractive, so the chain ends. The chase fills no cell: a name
+        // the body names may yet be declared by a later statement
         let mut type_predicate = type_predicate.clone();
-        // CR claude for claude: [bug] This chase calls lookup_ref while the statement
-        // list is still compiling. Its second step fills the write-once cell of the ref
-        // inside the alias's body, and every expansion of the alias shares that cell.
-        // When a later sibling declares that name and an outer definition of it is
-        // visible (an enclosing block, a glob, the core prelude), the outer one is
-        // captured for the whole program. The alias's meaning then depends on whether
-        // an unrelated earlier pattern destructured it, which gives a silent wrong type
-        // test or a spurious refusal, the same in every engine. A definition's check,
-        // run in its lambda's captured env (DefTable::record's seed_refs_seen over
-        // g.env), fills cells in the same way. probe:
-        // design/review-2026-10-05/repro/t-typ-mod-02.gx prints ("not A1", "A2"),
-        // expected ("A1", "A2"). (t-typ-mod-02)
         while let Type::Ref(_) = type_predicate {
-            type_predicate = type_predicate.lookup_ref(&ctx.env)?;
+            type_predicate = type_predicate.lookup_ref_peek(&ctx.env)?;
         }
         let type_predicate = &type_predicate;
         let t = match &spec {
@@ -647,12 +636,16 @@ impl StructPatternNode {
                 Self::Slice { kind, all, binds }
             }
             StructurePattern::Tuple { all, binds } => {
-                type_predicate.check_contains(
-                    &ctx.env,
-                    &Type::Tuple(Arc::from_iter(
-                        binds.iter().map(|_| Type::empty_tvar()),
-                    )),
-                )?;
+                // an open predicate takes the tuple's shape; a tuple has it,
+                // and a check would expand the names its elements hold
+                if !matches!(type_predicate.deref_cloned(), Some(Type::Tuple(_))) {
+                    type_predicate.check_contains(
+                        &ctx.env,
+                        &Type::Tuple(Arc::from_iter(
+                            binds.iter().map(|_| Type::empty_tvar()),
+                        )),
+                    )?;
+                }
                 let Some(Type::Tuple(elts)) = &type_predicate.deref_cloned() else {
                     return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("tuple patterns can't match {type_predicate}")
@@ -670,14 +663,16 @@ impl StructPatternNode {
                 Self::Slice { kind: SliceKind::Tuple, all, binds }
             }
             StructurePattern::Variant { all, tag, binds } => {
-                type_predicate.check_contains(
-                    &ctx.env,
-                    &Type::Variant(
-                        tag.clone(),
-                        Arc::from_iter(binds.iter().map(|_| Type::empty_tvar())),
-                        WrittenAt::NOWHERE,
-                    ),
-                )?;
+                if !matches!(type_predicate.deref_cloned(), Some(Type::Variant(..))) {
+                    type_predicate.check_contains(
+                        &ctx.env,
+                        &Type::Variant(
+                            tag.clone(),
+                            Arc::from_iter(binds.iter().map(|_| Type::empty_tvar())),
+                            WrittenAt::NOWHERE,
+                        ),
+                    )?;
+                }
                 let Some(Type::Variant(ttag, elts, _)) = &type_predicate.deref_cloned()
                 else {
                     return format_with_flags(PrintFlag::DerefTVars, || {

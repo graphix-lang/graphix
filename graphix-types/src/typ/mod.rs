@@ -764,6 +764,15 @@ impl TypeRef {
 
     /// What this ref's name means in `env`; never reads or writes the
     /// cell.
+    /// The filled cell's definition, else the name's in its scope now;
+    /// fills nothing.
+    pub(crate) fn resolve_peek(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
+        match &*self.resolved.lock() {
+            Some(w) => w.upgrade(),
+            None => self.resolve_pure(env),
+        }
+    }
+
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
         env.resolve_type_name(&self.scope, &self.name)
             .map(|hit| match hit {
@@ -2240,10 +2249,30 @@ impl Type {
     /// violated bound with `None`.
     #[doc(hidden)]
     pub fn lookup_ref_with(&self, env: &Env, commit: bool) -> Result<Option<Type>> {
+        self.lookup_ref_by(env, commit, TypeRef::resolve_in)
+    }
+
+    /// [`Self::lookup_ref`] that fills no resolution cell: a name whose
+    /// cell is empty resolves in its scope as it stands, so a lookup made
+    /// while the statements that may yet declare it compile decides
+    /// nothing for later ones.
+    #[doc(hidden)]
+    pub fn lookup_ref_peek(&self, env: &Env) -> Result<Type> {
+        Ok(self
+            .lookup_ref_by(env, true, TypeRef::resolve_peek)?
+            .expect("a committing lookup refuses by error"))
+    }
+
+    fn lookup_ref_by(
+        &self,
+        env: &Env,
+        commit: bool,
+        resolve: fn(&TypeRef, &Env) -> Option<sync::Arc<ResolvedRef>>,
+    ) -> Result<Option<Type>> {
         match self {
             Self::Ref(tr) => {
                 let TypeRef { scope, name, params, pos, ori, resolved: _ } = &**tr;
-                let resolved = tr.resolve_in(env).ok_or_else(|| {
+                let resolved = resolve(tr, env).ok_or_else(|| {
                     if gxdbg_typeref() {
                         eprintln!(
                             "TYPEREF-MISS {name} in {scope}; typedef scopes with the name:"

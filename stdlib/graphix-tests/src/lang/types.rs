@@ -2398,3 +2398,24 @@ run!(
     FN_MEMBERS_MERGE_THROUGH_BINDINGS,
     |v: Result<&Value>| { matches!(v, Ok(Value::I64(2))) }
 );
+
+// A name in an alias's body means what the block finally declares, however
+// an earlier pattern destructured the alias.
+run!(
+    alias_body_names_the_blocks_type,
+    r#"{
+    type B = string;
+    let r = {
+        type A1 = B;
+        type A2 = B;
+        let (u, n): (A1, i64) = never();
+        type B = i64;
+        let probe: [i64, string] = 1;
+        let t1 = select probe { A1 as _ => "A1", _ => "not A1" };
+        let t2 = select probe { A2 as _ => "A2", _ => "not A2" };
+        "[t1] [t2]"
+    };
+    r
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "A1 A2")
+);
