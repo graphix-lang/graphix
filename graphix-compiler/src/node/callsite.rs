@@ -49,7 +49,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::{error, warn};
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -2250,7 +2250,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let ftype = Option::<FnType>::decode(buf)?;
         let rtype = Type::decode(buf)?;
         let fnode = decode_node(ctx, buf)?;
-        let n = decode_varint(buf)? as usize;
+        let n = crate::image::count_decode(buf)?;
         let mut args = ArgMap::with_capacity_and_hasher(n, Default::default());
         for _ in 0..n {
             let (key, arg) = Arg::image_decode(ctx, buf)?;

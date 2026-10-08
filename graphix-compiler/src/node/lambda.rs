@@ -38,7 +38,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -278,41 +278,34 @@ impl DefTable {
     }
 
     fn image_decode(buf: &mut impl Buf) -> Result<SArc<DefTable>, PackError> {
-        fn len(buf: &mut &[u8]) -> Result<usize, PackError> {
-            let n = decode_varint(buf)? as usize;
-            if n > buf.remaining() {
-                return Err(PackError::BufferShort);
-            }
-            Ok(n)
-        }
         image::foreign_decode(
             buf,
             |sub| {
-                let n = len(sub)?;
+                let n = image::count_decode(sub)?;
                 let mut types = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     types.insert(ExprId::decode(sub)?, Type::decode(sub)?);
                 }
-                let n = len(sub)?;
+                let n = image::count_decode(sub)?;
                 let mut ftypes = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     ftypes.insert(ExprId::decode(sub)?, FnType::decode(sub)?);
                 }
-                let n = len(sub)?;
+                let n = image::count_decode(sub)?;
                 let mut aux = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     let id = ExprId::decode(sub)?;
-                    let m = len(sub)?;
+                    let m = image::count_decode(sub)?;
                     let ts =
                         (0..m).map(|_| Type::decode(sub)).collect::<Result<_, _>>()?;
                     aux.insert(id, ts);
                 }
-                let n = len(sub)?;
+                let n = image::count_decode(sub)?;
                 let mut lambdas = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     lambdas.insert(ExprId::decode(sub)?, Self::image_decode(sub)?);
                 }
-                let n = len(sub)?;
+                let n = image::count_decode(sub)?;
                 let typedefs = (0..n)
                     .map(|_| image::resolved_decode(sub))
                     .collect::<Result<Vec<_>, _>>()?;

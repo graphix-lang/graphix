@@ -18,7 +18,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -58,10 +58,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let n = decode_varint(buf)? as usize;
-        if n > buf.len() {
-            return Err(PackError::TooBig);
-        }
+        let n = crate::image::count_decode(buf)?;
         let entries = (0..n)
             .map(|_| Ok((decode_node(ctx, buf)?, decode_node(ctx, buf)?)))
             .collect::<Result<_, PackError>>()?;

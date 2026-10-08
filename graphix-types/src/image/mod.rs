@@ -786,6 +786,18 @@ pub fn flags_encode(
     Ok(())
 }
 
+/// A count an image declares for what follows it: at most the bytes
+/// left, each counted item taking at least one, so a corrupt count fails
+/// the read instead of sizing an allocation.
+#[doc(hidden)]
+pub fn count_decode(buf: &mut impl Buf) -> Result<usize, PackError> {
+    let n = decode_varint(buf)? as usize;
+    if n > buf.remaining() {
+        return Err(PackError::TooBig);
+    }
+    Ok(n)
+}
+
 #[doc(hidden)]
 pub fn flags_decode(buf: &mut impl Buf) -> Result<BitFlags<CFlag>, PackError> {
     if buf.remaining() < 8 {

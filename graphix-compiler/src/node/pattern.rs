@@ -12,7 +12,7 @@ use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
 use smallvec::{SmallVec, smallvec};
 use std::fmt::Debug;
@@ -1562,18 +1562,10 @@ fn boxed_encode(
 /// A decoded count, capped by the bytes left: every element takes at
 /// least one, so a corrupt count fails the decode instead of sizing an
 /// allocation.
-fn decode_count(buf: &mut impl bytes::Buf) -> Result<usize, PackError> {
-    let n = decode_varint(buf)? as usize;
-    if n > buf.remaining() {
-        return Err(PackError::TooBig);
-    }
-    Ok(n)
-}
-
 fn boxed_decode(
     buf: &mut impl bytes::Buf,
 ) -> Result<Box<[StructPatternNode]>, PackError> {
-    let n = decode_count(buf)?;
+    let n = crate::image::count_decode(buf)?;
     (0..n).map(|_| StructPatternNode::decode(buf)).collect()
 }
 
@@ -1720,7 +1712,7 @@ impl StructPatternNode {
             },
             6 => {
                 let all = Pack::decode(buf)?;
-                let n = decode_count(buf)?;
+                let n = crate::image::count_decode(buf)?;
                 let binds = (0..n)
                     .map(|_| {
                         Ok((Pack::decode(buf)?, Pack::decode(buf)?, Pack::decode(buf)?))

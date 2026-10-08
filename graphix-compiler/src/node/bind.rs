@@ -35,7 +35,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -992,7 +992,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let root = decode_node(ctx, buf)?;
-        let n = decode_varint(buf)? as usize;
+        let n = crate::image::count_decode(buf)?;
         let mut steps = Vec::with_capacity(n);
         for _ in 0..n {
             steps.push(PlaceStep::image_decode(ctx, buf)?);

@@ -22,7 +22,7 @@ use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -206,8 +206,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let arg = Held::image_decode(ctx, buf)?;
-        let n = decode_varint(buf)? as usize;
-        let mut arms = Vec::with_capacity(n.min(buf.len()));
+        let n = crate::image::count_decode(buf)?;
+        let mut arms = Vec::with_capacity(n);
         for _ in 0..n {
             let pat = PatternNode::image_decode(ctx, buf)?;
             let body = decode_node(ctx, buf)?;

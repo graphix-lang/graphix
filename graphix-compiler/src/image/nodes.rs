@@ -8,7 +8,7 @@
 
 use crate::{ExecCtx, Node, Rt, UserEvent, image::ImageBuf, node};
 use bytes::{Buf, BufMut};
-use netidx_core::pack::{PackError, decode_varint, encode_varint};
+use netidx_core::pack::{PackError, encode_varint};
 
 /// `PackError::Application` payload: a node kind with no image codec.
 pub const NOT_IMAGED: u64 = 1;
@@ -89,8 +89,8 @@ pub fn decode_nodes<R: Rt, E: UserEvent>(
     buf: &mut &[u8],
 ) -> Result<Vec<Node<R, E>>, PackError> {
     // every node is one tag byte at least
-    let n = decode_varint(buf)? as usize;
-    let mut out = Vec::with_capacity(n.min(buf.len()));
+    let n = crate::image::count_decode(buf)?;
+    let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(decode_node(ctx, buf)?);
     }

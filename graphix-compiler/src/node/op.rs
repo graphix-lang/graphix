@@ -37,23 +37,6 @@ pub enum BinOp {
     Mod,
 }
 
-// CR claude for claude: [structure] symbol() repeats five of expr::BinOp::token()'s
-// strings. Its only use is arith_rule's message (line 741), which rebuilds the checked
-// token by appending "?". arith_op!'s $name is already the matching expr::BinOp variant
-// (Add, CheckedAdd, ..), and arith_rule uses op for nothing but that message. Pass
-// crate::expr::BinOp::$name, print its token(), and delete symbol(). (c-error-op-07)
-impl BinOp {
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Add => "+",
-            Self::Sub => "-",
-            Self::Mul => "*",
-            Self::Div => "/",
-            Self::Mod => "%",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     Eq,
@@ -71,11 +54,12 @@ pub enum BoolOp {
 }
 
 /// The node of a binary operator: its operands, resident and wake bit,
-/// their codec and plumbing. `$typ` is the result type at construction;
-/// the operator supplies `update`, `typecheck0`, `typecheck1` and
-/// `emit_clif`.
+/// their codec, plumbing and checks. `$typ` is the result type at
+/// construction; the operator supplies `update`, `emit_clif` and
+/// `typecheck_own`, which an instance runs again only for an operator that
+/// `settles` and whose row its definition's check did not record.
 macro_rules! binary_node {
-    ($name:ident, $typ:expr, $(state: $state:ty,)? { $($methods:tt)* }) => {
+    ($name:ident, $typ:expr, $(state: $state:ty,)? $(settles: $settles:literal,)? { $($methods:tt)* }) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
@@ -147,6 +131,30 @@ macro_rules! binary_node {
 
             fn typ(&self) -> &Type {
                 &self.typ
+            }
+
+            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck0_instance(
+                &mut self,
+                ctx: &mut CompileCtx<R, E>,
+                types: &mut super::lambda::InstanceTypes,
+            ) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
+                if false $(|| $settles)? && !types.settle(self.spec.id, &self.typ) {
+                    self.typecheck_own(ctx)?;
+                }
+                Ok(())
+            }
+
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
 
             fn refs(&self, refs: &mut Refs) {
@@ -292,34 +300,6 @@ macro_rules! compare_op {
                 self.resident.set(TagValue::tagged(v, tag))
             }
 
-            // CR claude for claude: [structure] typecheck0 and typecheck1 here are
-            // repeated word for word in bool_op! (lines 342-360) and arith_op!
-            // (795-817), and typecheck0_instance is repeated in bool_op!. Arith's
-            // typecheck0_instance differs only by its settle tail. Move the three into
-            // binary_node! next to the operand plumbing, with each operator giving
-            // typecheck_own and an instance tail (nothing for compare and bool, the
-            // settle for arith). Then correct binary_node!'s doc, which says the
-            // operator supplies typecheck0 and typecheck1. (c-error-op-08)
-            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                self.typecheck_own(ctx)
-            }
-
-            fn typecheck0_instance(
-                &mut self,
-                ctx: &mut CompileCtx<R, E>,
-                types: &mut super::lambda::InstanceTypes,
-            ) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
-                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))
-            }
-
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
-            }
-
             fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
                 emit_cmp_node(cx, CmpOp::$name, &self.lhs, &self.rhs)
             }
@@ -427,26 +407,6 @@ macro_rules! bool_op {
                     Some(v) => self.resident.set(TagValue::tagged(v, tag)),
                     None => self.resident.ride(),
                 }
-            }
-
-            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                self.typecheck_own(ctx)
-            }
-
-            fn typecheck0_instance(
-                &mut self,
-                ctx: &mut CompileCtx<R, E>,
-                types: &mut super::lambda::InstanceTypes,
-            ) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
-                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))
-            }
-
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
 
             fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -833,11 +793,11 @@ macro_rules! arith_emit_clif {
     };
 }
 
-/// `fn('a: Number, 'a) -> 'a`: both operands `lt` and `rt` and the
-/// result `out` are one numeric type. Idempotent.
+/// `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: both operands
+/// `lt` and `rt` and the result `out` are one numeric type. Idempotent.
 pub(crate) fn arith_rule(
     env: &Env,
-    op: BinOp,
+    op: crate::expr::BinOp,
     checked: bool,
     lt: &Type,
     rt: &Type,
@@ -846,18 +806,12 @@ pub(crate) fn arith_rule(
     // A declared `'a: Number` formal is rigid while its def gate is
     // open: `x + f64:0.` must reject, not bind 'a.
     let Some(t) = operand_type(env, lt, rt)? else {
-        // CR claude for claude: [doc-drift] This refusal and arith_rule's doc comment
-        // (line 724) give arithmetic as `fn('a: Number, 'a) -> 'a`, which is neither
-        // the rule nor a parseable fn type. CLAUDE.md and the book
-        // (core/reading_types.md:281) give `fn<'a: Number + Singleton>(x: 'a, y: 'a) ->
-        // 'a`. `let x = 1; x + "s"` shows the user the wrong form. State the current
-        // signature in both places. (t-parser-b-16)
         return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             bail!(
-                "cannot compute {lt} {}{} {rt}: arithmetic is fn('a: Number, 'a) -> 'a — \
-                 both operands must be one numeric type (cast one side explicitly)",
-                op.symbol(),
-                if checked { "?" } else { "" }
+                "cannot compute {lt} {} {rt}: arithmetic is \
+                 fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must \
+                 be one numeric type (cast one side explicitly)",
+                op.token()
             )
         });
     };
@@ -888,7 +842,7 @@ fn defer_operand<R: Rt, E: UserEvent>(ctx: &mut CompileCtx<R, E>, n: &Node<R, E>
 
 macro_rules! arith_op {
     ($name:ident, $checked:tt, $base:ident) => {
-        binary_node!($name, Type::empty_tvar(), {
+        binary_node!($name, Type::empty_tvar(), settles: true, {
             arith_emit_clif!($checked, $base);
 
             fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -910,29 +864,6 @@ macro_rules! arith_op {
                 }
             }
 
-            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                self.typecheck_own(ctx)
-            }
-
-            fn typecheck0_instance(
-                &mut self,
-                ctx: &mut CompileCtx<R, E>,
-                types: &mut super::lambda::InstanceTypes,
-            ) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
-                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                if !types.settle(self.spec.id, &self.typ) {
-                    self.typecheck_own(ctx)?;
-                }
-                Ok(())
-            }
-
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
-            }
         });
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -940,7 +871,14 @@ macro_rules! arith_op {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 wrap!(
                     self,
-                    arith_rule(&ctx.env, BinOp::$base, $checked, lt, rt, &self.typ)
+                    arith_rule(
+                        &ctx.env,
+                        crate::expr::BinOp::$name,
+                        $checked,
+                        lt,
+                        rt,
+                        &self.typ
+                    )
                 )?;
                 defer_operand(ctx, &self.lhs);
                 defer_operand(ctx, &self.rhs);

@@ -425,7 +425,7 @@ const LIST_FIND_HET_FN_FOLD_TYPE_ERR: &str = r#"
 run!(
     list_find_het_fn_fold_type_err,
     LIST_FIND_HET_FN_FOLD_TYPE_ERR,
-    refused("arithmetic is fn(");
+    refused("arithmetic is fn<");
     FuseExpect::None
 );
 

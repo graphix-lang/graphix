@@ -27,7 +27,7 @@ use crate::{
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -247,8 +247,8 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         let id = u64::decode(buf)?;
         let pc = decode_node(ctx, buf)?;
         let pc_id = pc_id(&pc).map_err(|_| PackError::InvalidFormat)?;
-        let n = decode_varint(buf)? as usize;
-        let mut steps = Vec::with_capacity(n.min(buf.len()));
+        let n = crate::image::count_decode(buf)?;
+        let mut steps = Vec::with_capacity(n);
         for _ in 0..n {
             let label = ArcStr::decode(buf)?;
             let until = bool::decode(buf)?;

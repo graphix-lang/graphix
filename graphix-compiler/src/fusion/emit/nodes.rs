@@ -815,7 +815,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Cloned out of the deref before emitting (lock discipline).
     let fields: poolshark::local::LPooled<Vec<(ArcStr, Type)>> =
-        source.typ().with_deref(|t| match t {
+        resolve_node_typ(cx.ctx, source.typ()).with_deref(|t| match t {
             Some(Type::Struct(flds)) => {
                 Ok(flds.iter().map(|(n, t, _)| (n.clone(), t.clone())).collect())
             }
@@ -940,11 +940,9 @@ fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     source: &Node<R, E>,
     want: AbiKind,
 ) -> Result<AccessorSrc> {
-    if kernel_abi::abi_kind(source.typ()) != Some(want) {
-        return Err(anyhow!(
-            "emit_clif: accessor source of type {:?} isn't {want:?}",
-            source.typ()
-        ));
+    let typ = resolve_node_typ(cx.ctx, source.typ());
+    if kernel_abi::abi_kind(&typ) != Some(want) {
+        return Err(anyhow!("emit_clif: accessor source of type {typ} isn't {want:?}"));
     }
     let ownership = node_composite_source(source);
     let cv = source.emit_clif(cx)?;

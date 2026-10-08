@@ -37,7 +37,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -661,7 +661,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let fulfils = Option::<Arc<ImplDef>>::decode(buf)?;
         let trait_def = Arc::<TraitDef>::decode(buf)?;
         let body = decode_node(ctx, buf)?;
-        let n = decode_varint(buf)? as usize;
+        let n = crate::image::count_decode(buf)?;
         let mut prototypes = Vec::with_capacity(n);
         for _ in 0..n {
             let site = decode_node(ctx, buf)?;

@@ -448,3 +448,27 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
 );
+
+// A source typed by a typedef name is a struct or an abstract like any
+// other: a functional update and a payload read go through the name.
+run!(
+    struct_with_through_a_typedef_name,
+    r#"{
+    type Point = {x: f64, y: f64};
+    let w: {p: Point, n: i64} = {p: {x: 1.0, y: 2.0}, n: 0};
+    let q = {(w.p) with x: 3.0};
+    q.x + q.y
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::F64(f)) if *f == 5.0)
+);
+
+run!(
+    abstract_payload_through_a_typedef_name,
+    r#"{
+    type Counter = Abstract<i64>;
+    type W = {c: Counter, n: i64};
+    let f = |w: W| -> i64 #[native] (w.c.0 + w.n);
+    f({c: Counter(1), n: 2})
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3)))
+);

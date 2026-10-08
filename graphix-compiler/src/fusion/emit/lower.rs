@@ -542,7 +542,7 @@ impl LowerCtx<'_> {
 
 /// Expand named/abstract type refs in a node's `Type` through the
 /// region's env snapshot.
-pub(super) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
+pub(crate) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
     lowering::expand_refs(t, ctx.type_env)
 }
 
