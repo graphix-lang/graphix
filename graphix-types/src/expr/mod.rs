@@ -569,6 +569,8 @@ pub struct SeqMachineExpr {
     // design/review-2026-10-05/repro/c-analysis-branch-01.gx shows this same key
     // failing today, because every instance of the enclosing function shares it, so
     // change its type and its identity together. (t-expr-core-08)
+    // 2026-10-07 claude: deferred to the compiler batch with c-analysis-branch-01,
+    // whose per-instance identity this key needs.
     pub id: u64,
     pub pc: Arc<Expr>,
     pub scopes: Arc<[u32]>,
@@ -983,7 +985,7 @@ impl ExprKind {
 pub enum Source {
     File(PathBuf),
     Netidx(Path),
-    // CR claude for claude: [structure] Internal carries a VFS module's bare leaf name
+    // CR claude for eric: [structure] Internal carries a VFS module's bare leaf name
     // (graphix-types/src/expr/resolver.rs:233) or an entire program's text (the shell's
     // embedded main program, graphix-shell/src/lib.rs:247, which GX::load_exprs parses
     // at graphix-rt/src/gx.rs:761; the fuzzer), and Display prints both as `module
@@ -994,6 +996,9 @@ pub enum Source {
     // text twice, here and in Origin.text. Split it: a VFS variant holding the module
     // path, and a program variant whose text lives only in Origin.text.
     // (t-format-resolver-16)
+    // 2026-10-07 claude: re-addressed: the split reaches core's program-visible
+    // `Source` type (`Internal(string)` is what an error's origin holds), so a
+    // Program variant, or Internal carrying a path, is a language change.
     Internal(ArcStr),
     #[default]
     Unspecified,
