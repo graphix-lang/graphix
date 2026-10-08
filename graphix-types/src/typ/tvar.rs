@@ -1108,6 +1108,13 @@ impl TVar {
         }
     }
 
+    /// Whether a ⊥ was produced into the cell while it was open: a
+    /// binding over ⊥ that took its type from its first use.
+    #[doc(hidden)]
+    pub fn bottom_fed(&self) -> bool {
+        self.cell().read().bottom_fed
+    }
+
     /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
     pub(super) fn mark_bottom_fed(&self) {
         if graphix_dbg_bind() {

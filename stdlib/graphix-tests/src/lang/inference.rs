@@ -129,6 +129,21 @@ async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
     Ok(())
 }
 
+/// A writer wider than a `let` typed by its initializer: no "inferred".
+const WRITER_WIDER_THAN_INITIALIZER: &str = r#"{
+    let y = 1;
+    let x = y + 1;
+    x <- "s";
+    x
+}"#;
+
+/// A writer wider than a declared type variable: no declaration widens
+/// it, so none is offered.
+const WRITER_WIDER_THAN_TVAR: &str = r#"{
+    let f = 'a: Number |x: 'a| -> 'a { x <- "s"; x };
+    f(1)
+}"#;
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotations_the_checker_asks_for() -> Result<()> {
     for (src, refusal) in [
@@ -141,6 +156,11 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
             "x is i64, inferred from an earlier use, and cannot hold [i64, null]; \
              declare x: [i64, null] where it is bound (line 3, column 7)",
         ),
+        (
+            WRITER_WIDER_THAN_INITIALIZER,
+            "x is i64 and cannot hold string; declare x: [i64, string] where it is bound",
+        ),
+        (WRITER_WIDER_THAN_TVAR, "x is 'a: unbound within Number and cannot hold string"),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),

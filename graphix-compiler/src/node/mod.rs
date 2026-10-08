@@ -1634,24 +1634,22 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
-    // CR claude for claude: [readability] `inferred` is decided by `bind.typ` being a
-    // TVar. That is also true of a `let` typed by its initializer and of a declared
-    // parameter `x: 'a`, not only of a `let` over ⊥ that takes its type from its first
-    // use. `let y = 1; let x = y + 1; x <- "s"` reports "x is i64, inferred from an
-    // earlier use". `'a: Number |x: 'a| -> 'a { x <- "s"; x }` reports "x is 'a:
-    // unbound within Number, inferred from an earlier use, ... declare x: [string, 'a:
-    // unbound within Number]", a declaration that does not parse and that a rigid
-    // variable could never take. Say "inferred from an earlier use" only for a ⊥-fed
-    // cell, and give a declared type variable no declaration hint. (c-node-mod-05)
     let inferred = match &bind.typ {
-        Type::TVar(_) => ", inferred from an earlier use,",
+        Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
         _ => "",
     };
+    let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
+    // a type variable is declared, and no declaration widens it
+    if matches!(held, Type::TVar(_)) {
+        return format_with_flags(
+            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+            || anyhow!("{name} is {held} and cannot hold {written}"),
+        );
+    }
     let file = match bind.ori == *at {
         true => format_compact!(""),
         false => format_compact!(" {}", bind.ori),
     };
-    let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
     format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
         anyhow!(
             "{name} is {held}{inferred} and cannot hold {written}; declare \
