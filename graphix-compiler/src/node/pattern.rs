@@ -215,7 +215,18 @@ impl StructPatternNode {
         typ: &Type,
         out: &mut SmallVec<[(BindId, Type); 4]>,
     ) {
-        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, out))
+        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, false, out))
+    }
+
+    /// Every name this pattern binds plainly (no capture, no slice
+    /// rest), with the part of `typ` at its position.
+    pub(super) fn bind_types(
+        &self,
+        env: &Env,
+        typ: &Type,
+        out: &mut SmallVec<[(BindId, Type); 4]>,
+    ) {
+        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, true, out))
     }
 
     // CR claude for claude: [structure] captures_inner and realign_inner (:284) derive
@@ -233,14 +244,19 @@ impl StructPatternNode {
         &self,
         env: &Env,
         typ: &Type,
+        plain: bool,
         out: &mut SmallVec<[(BindId, Type); 4]>,
     ) {
         let (all, subs): (&Option<BindId>, SmallVec<[(&Self, Type); 8]>) = match self {
+            Self::Bind(id) if plain => return out.push((*id, typ.clone())),
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => return,
             Self::Or { alts } => {
                 let ts = alt_types(typ, alts.len());
                 for (i, a) in alts.iter().enumerate() {
-                    a.captures(env, ts.as_ref().map_or(typ, |ts| &ts[i]), out)
+                    let t = ts.as_ref().map_or(typ, |ts| &ts[i]);
+                    crate::stack::ensure_sufficient(|| {
+                        a.captures_inner(env, t, plain, out)
+                    })
                 }
                 return;
             }
@@ -277,6 +293,7 @@ impl StructPatternNode {
                 // the rest of a prefix or suffix pattern is the slice's type
                 if let Self::SlicePrefix { tail: Some(id), .. }
                 | Self::SliceSuffix { head: Some(id), .. } = self
+                    && !plain
                 {
                     out.push((*id, typ.clone()));
                 }
@@ -291,11 +308,13 @@ impl StructPatternNode {
                 (all, smallvec![(&**bind, rep.clone())])
             }
         };
-        if let Some(id) = all {
+        if let Some(id) = all
+            && !plain
+        {
             out.push((*id, typ.clone()));
         }
         for (sub, t) in subs {
-            sub.captures(env, &t, out)
+            crate::stack::ensure_sufficient(|| sub.captures_inner(env, &t, plain, out))
         }
     }
 

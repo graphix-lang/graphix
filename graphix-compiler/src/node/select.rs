@@ -551,6 +551,60 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 }
 
+/// An or-arm's alternatives bind each shared name at exactly equal
+/// types, judged on the scrutinee members each alternative can match,
+/// before one cell serves them all.
+fn or_binds_agree<R: Rt, E: UserEvent>(
+    env: &Env,
+    pat: &PatternNode<R, E>,
+    scrut: &Type,
+) -> Result<()> {
+    let atoms = pat.atoms();
+    if atoms.len() < 2 {
+        return Ok(());
+    }
+    let members: SmallVec<[Type; 8]> = match scrut.deref_cloned() {
+        Some(Type::Set(ref ms)) => ms.iter().cloned().collect(),
+        Some(t) => smallvec::smallvec![t],
+        None => return Ok(()),
+    };
+    let mut first: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
+    for (k, (sp, at)) in atoms.iter().enumerate() {
+        let mut matched: SmallVec<[&Type; 4]> = SmallVec::new();
+        for m in members.iter() {
+            if at.could_match(env, m)? {
+                matched.push(m)
+            }
+        }
+        let typ = match matched.len() {
+            0 => continue,
+            _ => Type::union(env, &matched)?,
+        };
+        let mut binds: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
+        sp.bind_types(env, &typ, &mut binds);
+        if k == 0 {
+            first = binds;
+            continue;
+        }
+        let probe = BitFlags::empty();
+        for (id, t) in binds.iter() {
+            let Some((_, t0)) = first.iter().find(|(i, _)| i == id) else { continue };
+            if !(t0.contains_with_flags(probe, env, t)?
+                && t.contains_with_flags(probe, env, t0)?)
+            {
+                let name = env.by_id.get(id).map(|b| b.name.clone()).unwrap_or_default();
+                return format_with_flags(PrintFlag::DerefTVars, || {
+                    Err(anyhow!(
+                        "or-pattern alternatives must bind {name} at exactly equal types \
+                         (first alternative: {t0}, here: {t})"
+                    ))
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The inputs whose fires reach a scrutinee, for the pattern binds it
 /// delivers: its triggering free refs (a level under a sample's right
 /// side is banked, never fired through), with a pattern bind among
@@ -1396,22 +1450,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // earlier unguarded irrefutable atom. The `any_as_tvar` view
             // keeps a `_` slot from short-circuiting the walk.
             let narrowed = pat.type_predicate.any_as_tvar();
-            // CR claude for claude: [bug] An or-arm's payload binds share one cell that
-            // pattern compile already unified: pattern.rs:139 compares two open cells,
-            // so the exactly-equal-types check always passes. Here that cell takes the
-            // first alternative's member type, and later alternatives only have to fit
-            // inside theirs. So `A(x) | `B(x) => x, _ => 0 over [`A(i64), `B([i64,
-            // string]), `C] is accepted with x: i64, while the runtime tests only
-            // `B(Any): `B("s") puts a string in the i64 slot, the node-walk returns "s"
-            // from a -> i64 function, the JIT reads 0, and a select that does not fuse
-            // whole panics at fusion/kernel.rs:243 when x feeds a kernel. The result
-            // also depends on alternative order (`B(x) | `A(x) gets x: [i64, string]),
-            // and the pins or_equal_types_err and or_payload_unequal_rejected are
-            // refused by the dead-alternative check rather than by this rule, so the
-            // rule is not pinned. Compare each shared name's narrowed per-alternative
-            // payload types both ways here, before one cell serves them, and report the
-            // equal-types message. probe:
-            // design/review-2026-10-05/repro/c-pattern-03.gx (c-pattern-03)
+            if checking {
+                or_binds_agree(&ctx.env, pat, &ntype).at(n.spec())?;
+            }
             ntype.contains(&ctx.env, &narrowed)?;
             pat.bind_captures(&ctx.env, &narrowed)?;
             // a runtime test can't tell apart two types with one runtime form

@@ -2924,3 +2924,16 @@ run!(product_of_unions_covered, PRODUCT_OF_UNIONS_COVERED, |v: Result<&Value>| m
     v,
     Ok(Value::I64(33))
 ));
+
+// An or-arm's alternatives bind a shared name at exactly equal types,
+// judged on what each can match: `A(x) gives i64, `B(x) [i64, string].
+const OR_BINDS_UNEQUAL_PAYLOADS: &str = r#"
+{
+    let f = |v: [`A(i64), `B([i64, string]), `C]| -> i64 select v { `A(x) | `B(x) => x, _ => 0 };
+    f(`B("s"))
+}
+"#;
+
+run!(or_binds_unequal_payloads, OR_BINDS_UNEQUAL_PAYLOADS, |v: Result<&Value>| {
+    refused("must bind x at exactly equal types")(v)
+}; FuseExpect::None);
