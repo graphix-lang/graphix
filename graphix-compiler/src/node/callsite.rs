@@ -1377,7 +1377,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx,
             scope,
             f,
-            BindMode::Static { instance: &instance_ftype, site: &site_ftype },
+            BindMode::Static { instance: &instance_ftype },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
         // `site_ftype` is a deep clone: the instance's inferred return
@@ -2591,7 +2591,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         self.raise_throws(ctx, &ftype, false)?;
-        if !wrap!(self, types.settle(self.spec.id, &self.rtype))? {
+        if !types.settle(self.spec.id, &self.rtype) {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }
         self.ftype = Some(TArc::new(ftype));

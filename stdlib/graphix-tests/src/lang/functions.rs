@@ -2670,3 +2670,51 @@ const ORDERED_SLOTS_STAY_SERIAL: &str = r#"
 run!(ordered_slots_stay_serial, ORDERED_SLOTS_STAY_SERIAL, |v: Result<&Value>| {
     matches!(v, Ok(Value::Null))
 }; FuseExpect::Jit);
+
+// A lambda two definitions deep reads the outermost one's cells renamed
+// through every enclosing instance.
+const NESTED_TWO_DEEP: &str = r#"
+{
+    let outer = |d, s: string| {
+        let middle = |y: string| {
+            let inner = |z: string| str::parse(z)$ == d;
+            inner(y)
+        };
+        middle(s)
+    };
+    (outer(1.0, "1"), outer(7, "7"))
+}
+"#;
+
+run!(nested_two_deep, NESTED_TWO_DEEP, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => a[..] == [Value::Bool(true), Value::Bool(true)],
+    _ => false,
+}; FuseExpect::Jit);
+
+// A builtin bound where the site's view omits a defaulted label is
+// typed at the instance's signature, which lists it.
+const BUILTIN_BOUND_WITHOUT_ITS_DEFAULT: &str = r#"
+{
+    let apply = |f: fn(a: Array<i64>) -> Array<i64>, a: Array<i64>| f(a);
+    apply(array::rotate, [1, 2, 3])
+}
+"#;
+
+run!(builtin_bound_without_its_default, BUILTIN_BOUND_WITHOUT_ITS_DEFAULT, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => a.len() == 3,
+    _ => false,
+}; FuseExpect::None);
+
+// A builtin's variadic type is written like its other types: a trait
+// in it is rewritten.
+const BUILTIN_VARIADIC_TRAIT: &str = r#"
+{
+    let f = |@args: fn(x: Eq) -> i64| -> Any 'core_all;
+    let r = f(|x| 1, |x| 2);
+    0
+}
+"#;
+
+run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(0)))
+}; FuseExpect::Jit);

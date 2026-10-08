@@ -568,7 +568,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.node, self.node.typecheck0_instance(ctx, types))?;
-        if !wrap!(self, types.settle(self.spec.id, &self.typ))? {
+        if !types.settle(self.spec.id, &self.typ) {
             self.check_value(ctx)?;
         }
         self.publish(ctx);

@@ -267,8 +267,9 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     }
 }
 
-/// Check and retire every pending assertion whose definition this
-/// analysis reached; drop those whose definition is gone. Stops at the
+/// Check every pending assertion whose definition this analysis
+/// reached, retiring all but a `#[sync]`; drop those whose definition
+/// is gone. Stops at the
 /// first failure.
 fn check_def_assertions<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
@@ -290,9 +291,15 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
             i += 1;
             continue;
         }
-        let a = pending.remove(i);
-        if let Some(msg) = assertion_failure(a.kind, d) {
+        if let Some(msg) = assertion_failure(pending[i].kind, d) {
+            let a = pending.remove(i);
             return Err(anyhow!("{msg}").at(&a.spec));
+        }
+        // an instance a later analysis reaches can still make the
+        // function async; the other facts are the definition's alone
+        match pending[i].kind {
+            DefAssertionKind::Sync => i += 1,
+            _ => drop(pending.remove(i)),
         }
     }
     Ok(())

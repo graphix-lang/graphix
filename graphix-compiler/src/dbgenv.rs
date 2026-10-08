@@ -8,7 +8,7 @@
 // and one #[macro_export] #[doc(hidden)] macro in graphix-types would serve all four.
 // CLAUDE.md's Debugging table lists GXDBG_CALLRET twice with different descriptions
 // (:804, :820). It also omits nine flags defined here and in graphix-types:
-// GRAPHIX_DBG_SELECT, GRAPHIX_RIGID_AUDIT, GXDBG_FREEZE_RET, GXDBG_KERNEL_SLEEP,
+// GRAPHIX_DBG_SELECT, GXDBG_FREEZE_RET, GXDBG_KERNEL_SLEEP,
 // GXDBG_KPOLL, GXDBG_NATIVE_ALL, GXDBG_REFMISS, GXDBG_SEQPLAN and GRAPHIX_DBG_BIND_BT.
 // (c-cost-misc-12)
 macro_rules! dbg_flag {
@@ -30,7 +30,6 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
 dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
-dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");

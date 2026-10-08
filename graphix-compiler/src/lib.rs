@@ -408,16 +408,7 @@ impl<R: Rt, E: UserEvent> std::ops::DerefMut for Node<R, E> {
 pub enum BindMode<'a> {
     Definition,
     Dynamic(&'a FnType),
-    Static { instance: &'a FnType, site: &'a FnType },
-}
-
-impl<'a> BindMode<'a> {
-    pub fn resolved(self) -> Option<&'a FnType> {
-        match self {
-            Self::Definition => None,
-            Self::Dynamic(ftype) | Self::Static { site: ftype, .. } => Some(ftype),
-        }
-    }
+    Static { instance: &'a FnType },
 }
 
 pub type InitFn<R, E> = sync::Arc<

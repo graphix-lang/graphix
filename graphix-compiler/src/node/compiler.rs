@@ -223,16 +223,10 @@ fn compile_inner<R: Rt, E: UserEvent>(
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
-        // CR claude for claude: [bug] This records the assertion under CFlag::CheckOnly
-        // too. A check returns before analysis::analyze (lib.rs:1958), and
-        // check_def_assertions is the only thing that removes an entry, so a checked
-        // assertion is never retired. The language server checks every edit with
-        // CheckOnly on one runtime, so each check leaves one entry per
-        // #[sync]/#[async]/#[tail_recursive] definition, and its spec pins that check's
-        // AST and its Arc<Origin>, the whole source text. A 500 KB file with one tiny
-        // #[sync] function grows the server by about 500 KB per edit, without bound.
-        // Skip recording under CheckOnly and keep the "annotates a function definition"
-        // error. probe: design/review-2026-10-05/repro/c-lib-03.py (c-lib-03)
+        // a check never analyzes, so nothing would retire the assertion
+        if flags.contains(CFlag::CheckOnly) {
+            return Ok(node);
+        }
         let mut pending = ctx.def_assertions.lock();
         for kind in def_asserts.drain(..) {
             if !pending.iter().any(|a| a.id == id && a.kind == kind) {

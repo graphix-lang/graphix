@@ -25,6 +25,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
+    stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
@@ -194,26 +195,44 @@ impl DefTable {
     /// defined has its rows renamed through the enclosing instance's map
     /// already, as its instances read them.
     fn imaged(tables: &Tables) -> SArc<DefTable> {
-        let Some(outer) = &tables.outer else { return tables.table.clone() };
-        let outer = outer.lock();
-        let t = &tables.table;
-        let mut table = DefTable {
-            types: t.types.iter().map(|(id, t)| (*id, t.rename_with(&outer))).collect(),
-            ftypes: t
-                .ftypes
-                .iter()
-                .map(|(id, ft)| (*id, rename_fn(ft, &outer)))
-                .collect(),
-            aux: t
-                .aux
-                .iter()
-                .map(|(id, ts)| (*id, ts.iter().map(|t| t.rename_with(&outer)).collect()))
-                .collect(),
-            lambdas: t.lambdas.clone(),
-            typedefs: vec![],
-        };
-        table.own_typedefs();
-        SArc::new(table)
+        match &tables.outer {
+            None => tables.table.clone(),
+            Some(outer) => SArc::new(tables.table.renamed(&outer.lock())),
+        }
+    }
+
+    /// This table with an enclosing definition's cells renamed through
+    /// `known`, its lambdas' tables included, which name them too.
+    fn renamed(&self, known: &AHashMap<usize, TVar>) -> DefTable {
+        ensure_sufficient(|| {
+            let mut table = DefTable {
+                types: self
+                    .types
+                    .iter()
+                    .map(|(id, t)| (*id, t.rename_with(known)))
+                    .collect(),
+                ftypes: self
+                    .ftypes
+                    .iter()
+                    .map(|(id, ft)| (*id, rename_fn(ft, known)))
+                    .collect(),
+                aux: self
+                    .aux
+                    .iter()
+                    .map(|(id, ts)| {
+                        (*id, ts.iter().map(|t| t.rename_with(known)).collect())
+                    })
+                    .collect(),
+                lambdas: self
+                    .lambdas
+                    .iter()
+                    .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
+                    .collect(),
+                typedefs: vec![],
+            };
+            table.own_typedefs();
+            table
+        })
     }
 
     fn image_encode(
@@ -426,15 +445,8 @@ impl InstanceTypes {
     /// definition's check widened (`d.domain` born `string` where the
     /// check unified it with a formal's `[Array<i64>, string]`): the
     /// instance's knowledge stands.
-    // CR claude for claude: [readability] `settle` cannot fail: both arms are `Ok`, and
-    // `Type::take_row` returns a plain bool. Return `bool` and drop the `wrap!(..)?` at
-    // its five callers (node/mod.rs:487, bind.rs:456, callsite.rs:2189, op.rs:612 and
-    // 808), which read as if a row could refuse. (c-lambda-07)
-    pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> Result<bool> {
-        match self.typ(id) {
-            None => Ok(false),
-            Some(t) => Ok(typ.take_row(&t)),
-        }
+    pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> bool {
+        self.typ(id).is_some_and(|t| typ.take_row(&t))
     }
 
     /// What the node at `id` derived beside its own type, in its order
@@ -455,21 +467,13 @@ impl InstanceTypes {
 
     /// The tables of the lambda literal at `id` of this instance's body.
     pub(crate) fn lambda(&self, id: ExprId) -> Option<Tables> {
-        let table = self.tables.table.lambdas.get(&id)?.clone();
-        // CR claude for claude: [bug] Instances of a lambda defined here rename its rows
-        // through `self.known` alone. That map is keyed by cells already renamed
-        // through `self.tables.outer`, so two instance levels deep (outer > middle >
-        // inner) outer's generic cells and middle's signature cells are never renamed,
-        // and `instantiate_with` copies them fresh. A static instance then refuses what
-        // --check accepted (`str::parse(z)$ == d` in inner: "must be fully known
-        // here"). Arithmetic there silently loses fusion (#[native] is refused), and a
-        // run-time bind only logs its refused settle and computes a wrong value in both
-        // engines. Rename through every enclosing map, outermost first: for example,
-        // rename the nested table, its own `lambdas` included, through
-        // `self.tables.outer` before pairing it with `self.known`. `DefTable::imaged`
-        // needs the same fix, since it copies `lambdas` unrenamed (line 212). probe:
-        // design/review-2026-10-05/repro/c-lambda-01.gx prints (false, true) where
-        // GRAPHIX_NO_SUBST=1 prints (true, true). (c-lambda-01)
+        // renamed through every enclosing map, outermost first: this
+        // instance's map is keyed by cells the enclosing one renamed
+        let table = self.tables.table.lambdas.get(&id)?;
+        let table = match &self.tables.outer {
+            None => table.clone(),
+            Some(outer) => SArc::new(table.renamed(&outer.lock())),
+        };
         Some(Tables { table, outer: Some(self.known.clone()) })
     }
 }
@@ -487,20 +491,10 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// What the definition's check settled, for its instances; shared
     /// with `init`, which hands it to each instance.
     pub table: SArc<DefTables>,
-    /// Intrinsic sync/async effect, computed by `analysis::infer_effects`
-    /// after all lambdas are compiled. Calls through fn-typed parameters
-    /// do not contribute; the call site joins the resolved arg's effect.
-    // CR claude for claude: [bug] This doc says calls through fn-typed parameters do not
-    // contribute, but they do. A resolved callback's instance joins the HOF instance's
-    // facts (analysis.rs `callee_facts`), an unresolved parameter call counts as
-    // `Async`, and every instance joins the definition's facts (`infer_effects`), as
-    // `lang::attributes::sync_on_async_instance` pins. `check_def_assertions` retires
-    // an assertion at the first analysis that reaches its definition. So `#[sync]` on a
-    // HOF misses an async instance bound later at run time, while the same instance
-    // fails the compile when its call is static and is reported when the run-time call
-    // is the only one. Fix the doc, and keep a HOF's assertion live for the instances
-    // later analyses reach. probe: design/review-2026-10-05/repro/c-lambda-04.gx
-    // (c-lambda-04)
+    /// Sync/async effect, computed by `analysis::infer_effects`: the
+    /// body's own, joined with every instance's an analysis reached (a
+    /// resolved callback's instance joins its HOF instance's; a call
+    /// through an unresolved parameter is async), so it only grows.
     pub intrinsic_effect: Mutex<EffectKind>,
     /// The body holds no per-activation state: every builtin it reaches
     /// is `Effect::Stateless`, no `<-` targets its own binding, every
@@ -1308,23 +1302,11 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                     None if ctx.env.ide.is_lsp() => UnknownBuiltIn::init as _,
                     None => bail!("unknown builtin function {name}"),
                 };
-                // CR claude for claude: [bug] The builtin arm types its instance at
-                // `mode.resolved()`, which is the site's view. But `prepare_bind`
-                // passes one argument per formal of the definition, defaulted labels
-                // included, so a builtin bound where the view omits a defaulted label
-                // gets more arguments than its type lists. `array::map([1, 2, 3],
-                // dbg)`, and `apply(array::rotate, a)` through `f: fn(a: Array<i64>) ->
-                // Array<i64>`, pass `--check` and then fail the build with `expected 1
-                // arguments got 2` (graphix-fuzz: the check accepted what the build
-                // refused). The same bind at run time logs `did not type` and skips the
-                // builtin's own typecheck0. Lambdas avoid this because `instantiate()`
-                // types them at `instance`, or at a fitted copy of the definition for a
-                // dynamic view with other parameters. Type the builtin the same way;
-                // then `BindMode::Static` no longer needs `site`. probe:
-                // design/review-2026-10-05/repro/c-lambda-02.gx (c-lambda-02)
-                let resolved = mode.resolved();
-                let typ =
-                    resolved.map_or_else(|| def_typ.clone(), |r| Arc::new(r.clone()));
+                let typ = instance_type(ctx, mode, &def_typ)?;
+                let resolved = match mode {
+                    BindMode::Definition => None,
+                    BindMode::Static { .. } | BindMode::Dynamic(_) => Some(&*typ),
+                };
                 let apply = init(ctx, &def_typ, resolved, &scope, args, tid)?;
                 Ok(Box::new(BuiltInLambda { typ, name: name.clone(), apply }) as Box<_>)
             }
@@ -1338,10 +1320,7 @@ pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
         && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind == b.kind)
 }
 
-/// Build an instance at the signature `mode` names: the site's, unless a
-/// dynamic bind's runtime callee has another parameter list than the
-/// site's view (a label the site omits, defaulted): then a call's copy
-/// of the definition's, fitted to the site's view as a call fits it.
+/// Build an instance at the signature `mode` names ([`instance_type`]).
 fn instantiate<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     mode: BindMode<'_>,
@@ -1355,8 +1334,21 @@ fn instantiate<R: Rt, E: UserEvent>(
             Typing::Substituted(table.clone(), def_typ.clone())
         }
     };
-    let typ = match mode {
-        BindMode::Static { instance, .. } => Arc::new(instance.clone()),
+    let typ = instance_type(ctx, mode, def_typ)?;
+    Ok(Box::new(build(ctx, typ, typing)?))
+}
+
+/// The signature an instance is built at: the site's, unless a dynamic
+/// bind's runtime callee lists other parameters than the site's view (a
+/// label the site omits, defaulted): then a call's copy of the
+/// definition's, fitted to the site's view as a call fits it.
+fn instance_type<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    mode: BindMode<'_>,
+    def_typ: &Arc<FnType>,
+) -> Result<Arc<FnType>> {
+    Ok(match mode {
+        BindMode::Static { instance } => Arc::new(instance.clone()),
         BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
         BindMode::Dynamic(r) => {
             let copy = def_typ.instantiate(&ctx.rec_defs);
@@ -1364,8 +1356,7 @@ fn instantiate<R: Rt, E: UserEvent>(
             Arc::new(copy)
         }
         BindMode::Definition => def_typ.clone(),
-    };
-    Ok(Box::new(build(ctx, typ, typing)?))
+    })
 }
 
 impl Lambda {
@@ -1406,39 +1397,19 @@ impl Lambda {
                 TVar::empty_named(format_compact!("{}#elem", tv.name).as_str().into());
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
-        // CR claude for claude: [bug] The written-type chain
-        // `scope_refs(..).rewrite_trait_args(..)?.apply_ctor_quantifiers(..)` is
-        // spelled out for the return type, the throws type and each argument
-        // constraint, and this variadic copy drops `rewrite_trait_args`. A trait in a
-        // builtin's variadic type is then neither rewritten nor refused. `|@args: fn(x:
-        // Eq) -> i64| -> Any 'core_all` refuses `f(|x| 1, |x| 2)` with a type mismatch
-        // that the positional twin accepts. `@args: Eq` reports "undefined type Eq" at
-        // the call instead of "trait Eq used as a type". One closure for the chain,
-        // used by all four, removes the repetition and the gap. probe:
-        // design/review-2026-10-05/repro/c-lambda-08.gx (c-lambda-08)
+        // a written type, as the definition's signature holds it
+        let written = |env: &Env, t: &Type| -> Result<Type> {
+            Ok(t.scope_refs(&scope.lexical)
+                .rewrite_trait_args(env)?
+                .apply_ctor_quantifiers(&ctors))
+        };
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
-            Some(Some(typ)) => {
-                Some(Some(typ.scope_refs(&scope.lexical).apply_ctor_quantifiers(&ctors)))
-            }
+            Some(Some(t)) => Some(Some(written(&ctx.env, t)?)),
         };
-        let rtype = match l.rtype.as_ref() {
-            None => None,
-            Some(t) => Some(
-                t.scope_refs(&scope.lexical)
-                    .rewrite_trait_args(&ctx.env)?
-                    .apply_ctor_quantifiers(&ctors),
-            ),
-        };
-        let throws = match l.throws.as_ref() {
-            None => None,
-            Some(t) => Some(
-                t.scope_refs(&scope.lexical)
-                    .rewrite_trait_args(&ctx.env)?
-                    .apply_ctor_quantifiers(&ctors),
-            ),
-        };
+        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
+        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         // a trait as a parameter's type is a fresh bounded quantifier
         // (`|s: Read|` ≡ `'s: Read |s: 's|`), joined to the declared ones
         // so the def gate holds it rigid
@@ -1447,24 +1418,18 @@ impl Lambda {
         for (i, a) in l.args.iter().enumerate() {
             let constraint = match &a.constraint {
                 None => None,
-                Some(typ) => {
-                    let typ = typ.scope_refs(&scope.lexical);
-                    match &typ {
-                        Type::Ref(tr) if ctx.env.trait_of_ref(tr).is_some() => {
-                            let name: ArcStr = match a.pattern.single_bind() {
-                                Some(n) => format_compact!("#{n}").as_str().into(),
-                                None => format_compact!("#arg{i}").as_str().into(),
-                            };
-                            let tv = TVar::empty_named(name);
-                            trait_quantifiers.push((tv.clone(), typ.clone()));
-                            Some(Type::trait_param(&ctx.env, tv, tr))
-                        }
-                        _ => Some(
-                            typ.rewrite_trait_args(&ctx.env)?
-                                .apply_ctor_quantifiers(&ctors),
-                        ),
+                Some(typ) => match &typ.scope_refs(&scope.lexical) {
+                    t @ Type::Ref(tr) if ctx.env.trait_of_ref(tr).is_some() => {
+                        let name: ArcStr = match a.pattern.single_bind() {
+                            Some(n) => format_compact!("#{n}").as_str().into(),
+                            None => format_compact!("#arg{i}").as_str().into(),
+                        };
+                        let tv = TVar::empty_named(name);
+                        trait_quantifiers.push((tv.clone(), t.clone()));
+                        Some(Type::trait_param(&ctx.env, tv, tr))
                     }
-                }
+                    _ => Some(written(&ctx.env, typ)?),
+                },
             };
             argspec.push(Arg {
                 kind: a.kind.clone(),
@@ -1921,22 +1886,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body
         self.typ.unbind_vacuous_tvars();
-        // GRAPHIX_RIGID_AUDIT=1 is a cataloging tool: a rejected def that
-        // continues may compile to a different shape, so never trust its
-        // value output
-        // CR claude for claude: [dead] GRAPHIX_RIGID_AUDIT turns every refusal of a
-        // definition's check into success, not only a rigid-tvar one, and nothing in
-        // the repo sets it or lists it. A refused body then fails at its first call
-        // with "whose definition's check recorded no types". A refused throws clause,
-        // checked after the table is recorded, compiles and runs: with the knob set,
-        // `graphix --check` exits 0 on 'let f = |x: i64| -> i64 throws `A
-        // error(`B("no"))?; f(1)'. Delete the knob and its dbgenv flag. (c-lambda-09)
-        if let Err(e) = &res
-            && dbgenv::graphix_rigid_audit()
-        {
-            eprintln!("RIGID-AUDIT reject: {spec} — {e:#}");
-            return Ok(());
-        }
         res
     }
 
