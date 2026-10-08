@@ -2962,3 +2962,86 @@ run!(
         }
     }
 );
+
+// One walk decides what reaches each arm: binds narrow to it, an arm that
+// can match none of it is dead, and nothing may reach past the last arm.
+
+// An irrefutable arm with a head pools with the literal arms.
+run!(coverage_mixed_pool, r#"{
+    let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 };
+    f((false, `B))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::None);
+
+// The full grid of heads covers its product.
+run!(coverage_head_grid, r#"{
+    let f = |v: ([`X, `Y], [`A, `B])| -> i64 select v {
+        (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4
+    };
+    f((`Y, `B))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(4))); FuseExpect::None);
+
+// A nested or-pattern names a set of heads at its position.
+run!(coverage_nested_or, r#"{
+    let f = |v: (bool, [`A, `B])| -> i64 select v { (true, `A | `B) => 1, (false, _) => 2 };
+    f((true, `B))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+// A later bind does not hold what an earlier `null` arm took.
+run!(
+    coverage_narrows_past_null,
+    r#"{
+    let x: [i64, null] = 3;
+    select x { null => 0, v => v + 1 }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4)))
+);
+
+#[tokio::test(flavor = "current_thread")]
+async fn coverage_refusals() {
+    use graphix_package_core::testing::refusal;
+    for (src, why) in [
+        // a covered product leaves the catch-all nothing
+        (
+            "{ let f = |v: ([`X, `Y], [`A, `B])| -> i64 select v { (`X, `A) => 1, (`X, `B) => 2, (`Y, `A) => 3, (`Y, `B) => 4, _ => 5 }; f((`Y, `B)) }",
+            "unreachable arm",
+        ),
+        // a type test that does not hold the member covers none of it
+        (
+            "{ let v: (bool, [i64, string]) = (true, 1); select v { (bool, i64) as (true, x) => 1, (bool, string) as (false, x) => 2 } }",
+            "missing match cases",
+        ),
+        // positions are paths, not indexes
+        (
+            "{ let f = |v: ((bool, bool), (bool, bool))| select v { ((true, _), _) => 1, (_, (false, _)) => 2, ((_, true), _) => 3 }; f(((false, true), (true, false))) }",
+            "missing match cases",
+        ),
+        // a repeat matches nothing new
+        ("{ let x = 0; select x { 0 => 1, 0 => 2, _ => 3 } }", "unreachable arm"),
+        (
+            "{ let t = true; select t { true => 1, true => 2, false => 3 } }",
+            "unreachable arm",
+        ),
+        (
+            "{ let p = (true, false); select p { (true, _) => 1, (true, false) => 2, (false, _) => 3 } }",
+            "unreachable arm",
+        ),
+        (
+            "{ let f = |v: [`A(i64), `B]| select v { `A(0) => 1, `A(0) => 2, `A(_) => 3, `B => 4 }; f(`A(0)) }",
+            "unreachable arm",
+        ),
+    ] {
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(why), "{src}: {e}");
+    }
+}
+
+// A guarded arm before an unguarded one over a payload holding null leaves
+// the unguarded arm's bind its whole type.
+run!(
+    coverage_guarded_nullable_payload,
+    r#"{
+    let v0: [`C([string, null]), `Some] = `C(null);
+    select v0 { `C(x) if false => 0, `C(v1) => select v1 { null => 2, s => 3 }, `Some => 5 }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);

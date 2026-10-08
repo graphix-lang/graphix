@@ -254,100 +254,121 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Select<R, E> {
-    /// Exhaustiveness: the unguarded arms must cover `scrut`, by an arm
-    /// that matches anything or by the union of what the irrefutable
-    /// atoms, `null` (its type's one value), bool literals, literal pools
-    /// and slice ladders cover.
-    // CR claude for claude: [structure] Three walks decide what an arm covers, each with
-    // its own rules: this one (mtypes, the itype pre-check, a pool of refutable atoms
-    // only, ladders), check_dead_arms at :379 (null and bool literals, a pool of every
-    // unguarded atom, ladders) and the narrowing in typecheck0_with at :1254
-    // (irrefutable atoms only). They disagree. `(true, `A), (b, `B), (false, `A)` over
-    // `(bool, [`A, `B])` is refused both with and without a trailing `_`
-    // (design/review-2026-10-05/repro/x-typecheck-patterns-06.sh), and the bind after a
-    // `null =>` arm still holds null (repro c-select-seq-06.gx). Every pool fix (type
-    // predicates, leaf alignment) also has to be made in both pools. One walk that
-    // computes, per arm, the type still reaching it would decide all three: binds
-    // narrow to it, an arm is dead when it cannot match it, and the select is
-    // exhaustive when nothing gets past the last arm. The itype step that settles an
-    // open scrutinee stays. (x-typecheck-patterns-08)
-    fn check_coverage(&self, ctx: &CompileCtx<R, E>, scrut: &Type) -> Result<()> {
-        let env = &ctx.env;
-        let mut mtypes: LPooled<Vec<Type>> = LPooled::take();
-        let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
-        let (mut saw_true, mut saw_false) = (false, false);
-        // An unguarded arm that matches anything makes the select
-        // exhaustive; its fresh-tvar predicate must stay out of the
-        // coverage unions, which `check_contains` would greedily bind.
-        let mut wildcard = false;
-        let mut pooled: SmallVec<[&StructPatternNode; 8]> = SmallVec::new();
-        // `(k, exact, predicate)`: an unguarded slice atom matching every
-        // array of length == k or >= k.
-        let mut slices: SmallVec<[(usize, bool, Type); 8]> = SmallVec::new();
-        let (mut guarded_slice, mut refutable_slice) = (false, false);
-        for (pat, _) in self.arms.iter() {
-            let wild = pat.matches_every(env, scrut)?;
-            match &pat.guard {
-                Some(_) => guarded_slice |= pat.structure_predicate.is_array_slice(),
-                None if wild => wildcard = true,
-                None => {
-                    for (sp, at) in pat.atoms() {
-                        // CR claude for claude: [bug] Coverage pools only refutable
-                        // atoms, but check_dead_arms (line 478) pools every unguarded
-                        // atom, so the two checks disagree. A composite pattern whose
-                        // only heads are payload-less variants, such as `(b, `B)`, is
-                        // irrefutable and adds only its type to mtypes. So `select v {
-                        // (true, `A) => 1, (b, `B) => 2, (false, `A) => 3 }` over
-                        // `(bool, [`A, `B])` is refused for missing cases, and adding
-                        // `_ => 4` is refused as an unreachable arm. The itype
-                        // pre-check below (line 308) splits one position only, so it
-                        // refuses the full grid `(`X, `A), (`X, `B), (`Y, `A), (`Y,
-                        // `B)` before the pool runs, with the same catch-22; pooling
-                        // irrefutable atoms alone does not fix that case. probe:
-                        // design/review-2026-10-05/repro/x-typecheck-patterns-06.sh
-                        // (x-typecheck-patterns-06)
-                        if !sp.is_refutable() {
-                            mtypes.push(at)
-                        } else if let StructPatternNode::Literal(Value::Bool(b)) = sp {
-                            saw_true |= *b;
-                            saw_false |= !*b;
-                            if saw_true && saw_false {
-                                mtypes.push(Type::Primitive(Typ::Bool.into()));
-                            }
-                        } else if let StructPatternNode::Literal(Value::Null) = sp {
-                            mtypes.push(Type::Primitive(Typ::Null.into()));
-                        } else if Shape::of(sp).is_some() {
-                            pooled.push(sp)
-                        } else if let Some((k, exact)) = sp.array_len_coverage() {
-                            slices.push((k, exact, at));
-                        } else if sp.is_array_slice() {
-                            refutable_slice = true;
-                        }
-                    }
-                }
+/// Do two atoms test the same thing: equal literals and heads at every
+/// position, a bind and `_` alike?
+fn same_test(a: &StructPatternNode, b: &StructPatternNode) -> bool {
+    use StructPatternNode as P;
+    let all = |x: &[P], y: &[P]| {
+        x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_test(x, y))
+    };
+    crate::stack::ensure_sufficient(|| match (a, b) {
+        (P::Ignore | P::Bind(_), P::Ignore | P::Bind(_)) => true,
+        (P::Literal(x), P::Literal(y)) => x == y,
+        (P::Slice { kind: k0, binds: b0, .. }, P::Slice { kind: k1, binds: b1, .. }) => {
+            k0 == k1 && all(b0, b1)
+        }
+        (
+            P::SlicePrefix { list: l0, prefix: p0, .. },
+            P::SlicePrefix { list: l1, prefix: p1, .. },
+        ) => l0 == l1 && all(p0, p1),
+        (P::SliceSuffix { suffix: s0, .. }, P::SliceSuffix { suffix: s1, .. }) => {
+            all(s0, s1)
+        }
+        (P::Struct { binds: b0, .. }, P::Struct { binds: b1, .. }) => {
+            b0.len() == b1.len()
+                && b0
+                    .iter()
+                    .zip(b1.iter())
+                    .all(|((n0, _, p0), (n1, _, p1))| n0 == n1 && same_test(p0, p1))
+        }
+        (
+            P::Variant { tag: t0, binds: b0, .. },
+            P::Variant { tag: t1, binds: b1, .. },
+        ) => t0 == t1 && all(b0, b1),
+        (P::Abstract { id: i0, bind: x0, .. }, P::Abstract { id: i1, bind: x1, .. }) => {
+            i0 == i1 && same_test(x0, x1)
+        }
+        (P::Or { alts: a0 }, P::Or { alts: a1 }) => all(a0, a1),
+        _ => false,
+    })
+}
+
+/// A refutable atom that tests what an earlier unguarded one does, under
+/// the same type test, matches nothing new.
+fn type_test<R: Rt, E: UserEvent>(p: &PatternNode<R, E>) -> Option<&Type> {
+    p.explicit_type_predicate.then_some(&p.type_predicate)
+}
+
+fn check_repeats<R: Rt, E: UserEvent>(
+    arms: &[(PatternNode<R, E>, Node<R, E>)],
+) -> Result<()> {
+    for (i, (pat, body)) in arms.iter().enumerate() {
+        for (sp, _) in pat.atoms() {
+            if !sp.is_refutable() {
+                continue;
             }
-            if !wild {
-                itypes.push(&pat.type_predicate);
+            let repeat =
+                arms[..i].iter().filter(|(p, _)| p.guard.is_none()).any(|(p, _)| {
+                    type_test(p) == type_test(pat)
+                        && p.atoms().iter().any(|(e, _)| same_test(e, sp))
+                });
+            if repeat {
+                bailat!(
+                    body.spec(),
+                    "unreachable arm: an earlier arm matches the same values, unused match \
+                     cases"
+                )
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What reaches each arm of a select, walked arm by arm: the scrutinee
+/// less what the unguarded arms before it cover (irrefutable atoms,
+/// `null`, a true/false pair, a completed literal pool, a completed
+/// slice ladder). It narrows an arm's binds, an arm that can match none
+/// of it is dead, and the select is exhaustive when nothing reaches past
+/// the last arm.
+struct Reach {
+    /// What still reaches the next arm.
+    atype: Type,
+    ladders: SmallVec<[Ladder; 4]>,
+    pool: LiteralPool,
+    bools: (bool, bool),
+    /// What the unguarded arms cover, as containment reads it.
+    covered: SmallVec<[Type; 8]>,
+    /// An unguarded arm matches every value.
+    wildcard: bool,
+    guarded_slice: bool,
+    refutable_slice: bool,
+}
+
+impl Reach {
+    /// The walk over `scrut`. An under-constrained scrutinee first
+    /// settles against the arms' informative predicates, except a union
+    /// scrutinee's open members, which are what the arms discriminate.
+    fn new<R: Rt, E: UserEvent>(
+        env: &Env,
+        scrut: &Type,
+        arms: &[(PatternNode<R, E>, Node<R, E>)],
+    ) -> Result<Self> {
+        let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
+        let mut wildcard = false;
+        for (pat, _) in arms.iter() {
+            match pat.matches_every(env, scrut)? {
+                true => wildcard |= pat.guard.is_none(),
+                false => itypes.push(&pat.type_predicate),
             }
         }
         let itype = Type::union_exact(env, &itypes)?;
         drop(itypes);
-        if wildcard {
-            // Narrow an under-constrained scrutinee against the informative
-            // arm predicates, except a union scrutinee: its open members
-            // are what the arms discriminate and must stay free.
-            let union_scrut = match scrut.deref_cloned() {
-                Some(Type::Set(_)) => true,
-                Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(env)?, Type::Set(_)),
-                _ => false,
-            };
-            if itype != Type::Primitive(BitFlags::empty()) && !union_scrut {
-                let _ = itype.contains(env, scrut)?;
-            }
-            return Ok(());
-        }
-        // CR claude for eric: [bug] A guarded arm before an unguarded one over a payload
+        let union_scrut = match scrut.deref_cloned() {
+            Some(Type::Set(_)) => true,
+            Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(env)?, Type::Set(_)),
+            _ => false,
+        };
+        // XCR claude for eric: [bug] A guarded arm before an unguarded one over a payload
         // that holds null refuses the select as non-exhaustive: `select v0 { `C(x) if
         // false => 0, `C(v1) => 2, `Some => 5 }` over `[`C([string, null]), `Some]` fails
         // here with "[`C('_: string), `Some] does not contain [`C([null, string]),
@@ -356,198 +377,200 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         // gen-check while fixing the generator; off the CR campaign's topic, so filed
         // rather than fixed. probe: design/review-2026-10-05/repro/coverage-guarded-nullable-01.gx
         // (coverage-guarded-nullable-01)
-        itype.check_contains(env, scrut).map_err(|e| {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                anyhow!("missing match cases {e}")
-            })
-        })?;
-        // The pools and ladders read the scrutinee as the itype check
-        // settled it.
-        let mut pool = LiteralPool::default();
-        for sp in pooled {
-            if let Some(m) = pool.claim(env, scrut, sp)? {
-                mtypes.push(m)
-            }
+        // 2026-10-08 claude: the check moved from check_coverage, where it refused, to
+        // Reach::new, where it only settles the scrutinee; the arms' walk decides.
+        // 2026-10-08 claude: with that, the probe is accepted and `v1` holds the null
+        // (2 in both engines); pinned by lang::select::coverage_guarded_nullable_payload.
+        let informative = itype != Type::Primitive(BitFlags::empty());
+        if informative && !(wildcard && union_scrut) {
+            let _ = itype.contains(env, scrut);
         }
-        // The first array member the slice arms leave open: its rest
-        // bound and least uncovered length.
-        let mut open: Option<(Option<usize>, Option<usize>)> = None;
-        if !slices.is_empty() {
-            for mut ladder in Ladder::of(env, scrut)? {
-                for (k, exact, at) in slices.iter() {
-                    if at.contains_with_flags(BitFlags::empty(), env, &ladder.member)? {
-                        ladder.claim(*k, *exact);
-                    }
-                }
-                if ladder.complete() {
-                    mtypes.push(ladder.member)
-                } else if open.is_none() {
-                    open = Some((ladder.rest, ladder.gap()))
-                }
-            }
-        }
-        let mtype = Type::union_exact(env, &mtypes.iter().collect::<LPooled<Vec<_>>>())?;
-        mtype.check_contains(env, scrut).map_err(|e| {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                let gap = match open {
-                    None => format_compact!(""),
-                    Some((None, _)) => format_compact!(
-                        " (the slice arms cover finitely many lengths — an array \
-                         or list scrutinee also needs a rest pattern or a wildcard)"
-                    ),
-                    Some((Some(_), n)) => format_compact!(
-                        " (the slice arms leave array length {} uncovered)",
-                        n.unwrap_or(0)
-                    ),
-                };
-                let refutable = if refutable_slice {
-                    " (a slice arm with refutable element patterns — literals, \
-                     variants, nested slices — cannot establish length coverage)"
-                } else {
-                    ""
-                };
-                let guarded = if guarded_slice {
-                    " (a guarded slice arm cannot establish length coverage)"
-                } else {
-                    ""
-                };
-                if mtype == Type::Primitive(BitFlags::empty()) {
-                    anyhow!(
-                        "missing match cases: no unguarded arm irrefutably covers \
-                         {scrut}{gap}{refutable}{guarded}"
-                    )
-                } else {
-                    anyhow!("missing match cases {e}{gap}{refutable}{guarded}")
-                }
-            })
+        let atype = scrut.normalize();
+        let ladders = Ladder::of(env, &atype)?;
+        Ok(Self {
+            atype,
+            ladders,
+            pool: LiteralPool::default(),
+            bools: (false, false),
+            covered: SmallVec::new(),
+            wildcard,
+            guarded_slice: false,
+            refutable_slice: false,
         })
     }
 
-    /// Dead arms: an arm, or an or-alternative, that nothing reaching it
-    /// can match. `atype` is what can still reach each arm; array
-    /// members subtract length-precisely, and a slice arm whose every
-    /// length is already matched is dead whatever its guard.
-    fn check_dead_arms(&self, ctx: &CompileCtx<R, E>, scrut: &Type) -> Result<()> {
-        let env = &ctx.env;
-        let mut atype = scrut.normalize();
-        let mut ladders = Ladder::of(env, &atype)?;
-        let (mut saw_t, mut saw_f) = (false, false);
-        let mut pool = LiteralPool::default();
-        for (pat, body) in self.arms.iter() {
-            let site = body.spec();
-            if atype == Type::Primitive(BitFlags::empty()) {
-                bailat!(
-                    site,
-                    "unreachable arm: the earlier arms already cover the whole \
-                     scrutinee, unused match cases"
-                )
-            }
-            if !pat.type_predicate.could_match(env, &atype)? {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    if pat.explicit_type_predicate && pat.type_predicate.has_bottom() {
-                        bailat!(
-                            site,
-                            "pattern {} will never match {}, unused match cases (`_` in a \
-                             type is bottom, the type of never(); a type test that admits \
-                             any parameter is spelled with Any, e.g. Error<Any>)",
-                            pat.type_predicate,
-                            atype
-                        )
-                    }
+    /// Take away what `t` covers from what reaches the arms after.
+    fn cover(&mut self, env: &Env, t: Type) -> Result<()> {
+        self.atype = self.atype.diff(env, &t)?;
+        self.covered.push(t);
+        Ok(())
+    }
+
+    /// The arm `pat`, whose body is `site`, against what reaches it
+    /// (refused when it is dead and `checking`), then less what it
+    /// covers.
+    fn arm<R: Rt, E: UserEvent>(
+        &mut self,
+        env: &Env,
+        scrut: &Type,
+        pat: &PatternNode<R, E>,
+        site: &Expr,
+        checking: bool,
+    ) -> Result<()> {
+        let empty = Type::Primitive(BitFlags::empty());
+        if checking && self.atype == empty {
+            bailat!(
+                site,
+                "unreachable arm: the earlier arms already cover the whole scrutinee, \
+                 unused match cases"
+            )
+        }
+        if checking && !pat.type_predicate.could_match(env, &self.atype)? {
+            let (tp, atype) = (&pat.type_predicate, &self.atype);
+            format_with_flags(PrintFlag::DerefTVars, || {
+                if pat.explicit_type_predicate && tp.has_bottom() {
                     bailat!(
                         site,
-                        "pattern {} will never match {}, unused match cases",
-                        pat.type_predicate,
-                        atype
+                        "pattern {tp} will never match {atype}, unused match cases (`_` in \
+                         a type is bottom, the type of never(); a type test that admits any \
+                         parameter is spelled with Any, e.g. Error<Any>)"
+                    )
+                }
+                bailat!(site, "pattern {tp} will never match {atype}, unused match cases")
+            })?
+        }
+        let wild = pat.matches_every(env, scrut)?;
+        let unguarded = pat.guard.is_none();
+        if !unguarded {
+            self.guarded_slice |= pat.structure_predicate.is_array_slice();
+        }
+        let atoms = pat.atoms();
+        let or_arm = atoms.len() > 1;
+        let dead = |what: &str| -> Result<()> {
+            match or_arm {
+                true => bailat!(
+                    site,
+                    "unreachable or-pattern alternative: {what}, unused match cases"
+                ),
+                false => bailat!(site, "unreachable arm: {what}, unused match cases"),
+            }
+        };
+        let probe = BitFlags::empty();
+        for (sp, at) in atoms.iter() {
+            if checking && or_arm && !at.could_match(env, &self.atype)? {
+                let atype = &self.atype;
+                format_with_flags(PrintFlag::DerefTVars, || {
+                    bailat!(
+                        site,
+                        "unreachable or-pattern alternative: {at} will never match \
+                         {atype}, unused match cases"
                     )
                 })?
             }
-            let atoms = pat.atoms();
-            let or_arm = atoms.len() > 1;
-            let unguarded = pat.guard.is_none();
-            for (sp, at) in atoms.iter() {
-                if or_arm && !at.could_match(env, &atype)? {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        bailat!(
-                            site,
-                            "unreachable or-pattern alternative: {at} will never \
-                             match {atype}, unused match cases"
-                        )
-                    })?
-                }
-                if let Some((k, exact)) = sp.array_len_range() {
-                    let (mut any, mut all) = (false, true);
-                    for l in ladders.iter() {
-                        if at.could_match(env, &l.member)? {
-                            any = true;
-                            all &= l.covers(k, exact);
-                        }
-                    }
-                    if any && all {
-                        if or_arm {
-                            bailat!(
-                                site,
-                                "unreachable or-pattern alternative: every array \
-                                 length it can match is covered by earlier arms, \
-                                 unused match cases"
-                            )
-                        }
-                        bailat!(
-                            site,
-                            "unreachable arm: every array length this slice pattern \
-                             can match is covered by earlier arms, unused match cases"
-                        )
-                    }
-                    if unguarded && sp.array_len_coverage().is_some() {
-                        for l in ladders.iter_mut() {
-                            if !l.complete()
-                                && at.contains(env, &l.member)?
-                                && l.claim(k, exact)
-                            {
-                                atype = atype.diff(env, &l.member)?;
-                            }
-                        }
+            if let Some((k, exact)) = sp.array_len_range() {
+                let (mut any, mut all) = (false, true);
+                for l in self.ladders.iter() {
+                    if at.could_match(env, &l.member)? {
+                        any = true;
+                        all &= l.covers(k, exact);
                     }
                 }
-                if !unguarded {
-                    continue;
+                if checking && any && all {
+                    dead(
+                        "every array length this slice pattern can match is covered by earlier arms",
+                    )?
                 }
-                match sp {
-                    StructPatternNode::Literal(Value::Bool(b)) => {
-                        saw_t |= *b;
-                        saw_f |= !*b;
-                        if saw_t && saw_f {
-                            atype =
-                                atype.diff(env, &Type::Primitive(Typ::Bool.into()))?;
+                if unguarded && sp.array_len_coverage().is_some() {
+                    let mut done: SmallVec<[Type; 2]> = SmallVec::new();
+                    for l in self.ladders.iter_mut() {
+                        if !l.complete()
+                            && at.contains_with_flags(probe, env, &l.member)?
+                            && l.claim(k, exact)
+                        {
+                            done.push(l.member.clone());
                         }
                     }
-                    StructPatternNode::Literal(Value::Null) => {
-                        atype = atype.diff(env, &Type::Primitive(Typ::Null.into()))?;
+                    for m in done {
+                        self.cover(env, m)?
                     }
+                }
+            }
+            if !unguarded {
+                continue;
+            }
+            if let StructPatternNode::Literal(v) = sp {
+                match v {
+                    Value::Bool(b) => {
+                        self.bools.0 |= *b;
+                        self.bools.1 |= !*b;
+                        if self.bools == (true, true) {
+                            self.cover(env, Type::Primitive(Typ::Bool.into()))?
+                        }
+                    }
+                    Value::Null => self.cover(env, Type::Primitive(Typ::Null.into()))?,
                     _ => (),
                 }
-                // CR claude for claude: [bug] A refutable arm that repeats earlier
-                // unguarded arms, or is covered by them, is never reported. This walk
-                // removes from `atype` only irrefutable atoms, null, a true/false pair
-                // and completed pools, so `0 => 1, 0 => 2, _ => 3`, `true => 1, true =>
-                // 2, false => 3` and `(true, _) => 1, (true, false) => 2, (false, _) =>
-                // 3` all pass with a dead second arm. The same duplicate inside one arm
-                // (`0 | 0`) is refused (pattern.rs:462; pin or_dup_alt_err says dead
-                // alternatives are errors "like dead arms"), so the rule holds within
-                // an arm but not across arms. Refuse a later unguarded atom that is
-                // structurally equal to an earlier unguarded one, the way pattern.rs
-                // compares alternatives, and have the pool refuse an arm whose every
-                // head combination its group has already claimed. probe:
-                // design/review-2026-10-05/repro/c-select-seq-07.gx (c-select-seq-07)
-                if let Some(m) = pool.claim(env, scrut, sp)? {
-                    atype = atype.diff(env, &m)?;
+            }
+            let explicit = pat.explicit_type_predicate.then_some(&pat.type_predicate);
+            match self.pool.claim(env, scrut, sp, explicit)? {
+                Claim::Dead if checking => dead(
+                    "every combination of heads it matches is covered by earlier arms",
+                )?,
+                Claim::Completes(m) => self.cover(env, m)?,
+                Claim::Dead | Claim::Open | Claim::Unpooled => (),
+            }
+            if !sp.is_refutable() {
+                match wild {
+                    true => self.atype = self.atype.diff(env, at)?,
+                    false => self.cover(env, at.clone())?,
                 }
-                if !sp.is_refutable() {
-                    atype = atype.diff(env, at)?;
-                }
+            } else if sp.is_array_slice() && sp.array_len_coverage().is_none() {
+                self.refutable_slice = true;
             }
         }
         Ok(())
+    }
+
+    /// Nothing reaches past the last arm: an unguarded arm matches
+    /// anything, or what the arms cover leaves no case.
+    fn exhausted(&self, env: &Env, scrut: &Type) -> Result<()> {
+        let empty = Type::Primitive(BitFlags::empty());
+        if self.wildcard || self.atype == empty {
+            return Ok(());
+        }
+        let covered: LPooled<Vec<&Type>> = self.covered.iter().collect();
+        if Type::union_exact(env, &covered)?.contains(env, scrut)? {
+            return Ok(());
+        }
+        let open = self.ladders.iter().find(|l| !l.complete()).map(|l| (l.rest, l.gap()));
+        format_with_flags(PrintFlag::DerefTVars, || {
+            let gap = match open {
+                None => format_compact!(""),
+                Some((None, _)) => format_compact!(
+                    " (the slice arms cover finitely many lengths — an array or list \
+                     scrutinee also needs a rest pattern or a wildcard)"
+                ),
+                Some((Some(_), n)) => format_compact!(
+                    " (the slice arms leave array length {} uncovered)",
+                    n.unwrap_or(0)
+                ),
+            };
+            let refutable = match self.refutable_slice {
+                true => {
+                    " (a slice arm with refutable element patterns — literals, variants, \
+                     nested slices — cannot establish length coverage)"
+                }
+                false => "",
+            };
+            let guarded = match self.guarded_slice {
+                true => " (a guarded slice arm cannot establish length coverage)",
+                false => "",
+            };
+            Err(anyhow!(
+                "missing match cases: no arm covers {}{gap}{refutable}{guarded}",
+                self.atype
+            ))
+        })
     }
 }
 
@@ -725,11 +748,13 @@ enum Head {
     Tag(ArcStr, usize),
 }
 
-/// One position of a composite pattern: the head the arm demands there
-/// (`None` = any value) and the heads the scrutinee member admits there
-/// (`None` = not a finite set of heads).
+/// One position of a composite pattern, keyed by its path into the
+/// scrutinee member: the heads the arm admits there (`None` = any
+/// value, which also covers every position under the path) and the
+/// heads the member admits there (`None` = not a finite set of heads).
 struct Leaf {
-    head: Option<Head>,
+    path: SmallVec<[u32; 4]>,
+    heads: Option<SmallVec<[Head; 2]>>,
     domain: Option<SmallVec<[Head; 4]>>,
 }
 
@@ -749,11 +774,24 @@ fn heads(env: &Env, t: &Type) -> Result<Option<SmallVec<[Head; 4]>>> {
     Ok(if members.is_empty() { None } else { members.iter().map(tag).collect() })
 }
 
+/// The head a pattern tests at one position, when it tests only a head:
+/// a bool literal or a variant whose payload matches anything.
+fn head_of(sp: &StructPatternNode) -> Option<Head> {
+    match sp {
+        StructPatternNode::Literal(Value::Bool(b)) => Some(Head::Bool(*b)),
+        StructPatternNode::Variant { tag, all: _, binds }
+            if binds.iter().all(|p| p.matches_anything()) =>
+        {
+            Some(Head::Tag(tag.clone(), binds.len()))
+        }
+        _ => None,
+    }
+}
+
 /// The pooled positions of composite pattern `sp` against `m`, the
-/// scrutinee member of its shape, in position order; `None` when the
-/// pattern has a refutable part the pool does not read (another
-/// literal, a slice, a type test, a variant with a refutable payload)
-/// or tests no head.
+/// scrutinee member of its shape; `None` when the pattern has a
+/// refutable part the pool does not read (another literal, a slice, a
+/// type test, a variant with a refutable payload) or tests no head.
 fn pooled_leaves(
     env: &Env,
     sp: &StructPatternNode,
@@ -763,45 +801,47 @@ fn pooled_leaves(
         env: &Env,
         sp: &StructPatternNode,
         t: &Type,
+        path: &mut SmallVec<[u32; 4]>,
         out: &mut SmallVec<[Leaf; 8]>,
     ) -> Result<bool> {
-        let head = match sp {
+        let admitted = match sp {
             StructPatternNode::Bind(_) | StructPatternNode::Ignore => None,
-            StructPatternNode::Literal(Value::Bool(b)) => Some(Head::Bool(*b)),
-            StructPatternNode::Variant { tag, all: _, binds }
-                if binds.iter().all(|p| p.matches_anything()) =>
-            {
-                Some(Head::Tag(tag.clone(), binds.len()))
-            }
             StructPatternNode::Slice { kind: SliceKind::Tuple, .. }
             | StructPatternNode::Struct { .. } => {
-                return crate::stack::ensure_sufficient(|| children(env, sp, t, out));
+                return crate::stack::ensure_sufficient(|| {
+                    children(env, sp, t, path, out)
+                });
             }
-            // CR claude for claude: [bug] A nested or-pattern stops the leaf walk here,
-            // and is_refutable(Or) keeps the arm out of the irrefutable atoms, so
-            // nested alternation never counts toward coverage. `select (true, 3) {
-            // (true | false, n) => n }` is refused with "missing match cases: no
-            // unguarded arm irrefutably covers (bool, i64)". `(true, `A | `B) => 1,
-            // (false, _) => 2` and `P(`A | `B) => 1, `Q => 2` are refused the same way,
-            // while the same arms written as top-level alternatives pass, so the user
-            // has to add a `_` arm that can never match. Let a leaf carry the set of
-            // heads named by an Or of pool heads, and have PoolGroup::complete test
-            // membership in that set. probe:
-            // design/review-2026-10-05/repro/c-select-seq-08.gx (c-select-seq-08)
-            _ => return Ok(false),
+            StructPatternNode::Or { alts } => {
+                match alts.iter().map(head_of).collect::<Option<SmallVec<[Head; 2]>>>() {
+                    Some(hs) => Some(hs),
+                    None => return Ok(false),
+                }
+            }
+            sp => match head_of(sp) {
+                Some(h) => Some(SmallVec::from_iter([h])),
+                None => return Ok(false),
+            },
         };
-        out.push(Leaf { head, domain: heads(env, t)? });
+        out.push(Leaf { path: path.clone(), heads: admitted, domain: heads(env, t)? });
         Ok(true)
     }
     fn children(
         env: &Env,
         sp: &StructPatternNode,
         t: &Type,
+        path: &mut SmallVec<[u32; 4]>,
         out: &mut SmallVec<[Leaf; 8]>,
     ) -> Result<bool> {
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, t, &mut members)?;
         let [m] = &members[..] else { return Ok(false) };
+        let mut at = |i: usize, p: &StructPatternNode, t: &Type| -> Result<bool> {
+            path.push(i as u32);
+            let r = leaf(env, p, t, path, out);
+            path.pop();
+            r
+        };
         match (sp, m) {
             (
                 StructPatternNode::Slice { kind: SliceKind::Tuple, all: _, binds },
@@ -811,22 +851,19 @@ fn pooled_leaves(
                 StructPatternNode::Variant { tag: _, all: _, binds },
                 Type::Variant(_, ts, _),
             ) if ts.len() == binds.len() => {
-                for (p, t) in binds.iter().zip(ts.iter()) {
-                    if !leaf(env, p, t, out)? {
+                for (i, (p, t)) in binds.iter().zip(ts.iter()).enumerate() {
+                    if !at(i, p, t)? {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
             (StructPatternNode::Struct { all: _, binds }, Type::Struct(fs)) => {
-                let mut order: SmallVec<[&(ArcStr, usize, StructPatternNode); 8]> =
-                    binds.iter().collect();
-                order.sort_by_key(|(_, i, _)| *i);
-                for (name, _, p) in order {
-                    let Some((_, t, _)) = fs.iter().find(|(n, _, _)| n == name) else {
+                for (name, _, p) in binds.iter() {
+                    let Some(i) = fs.iter().position(|(n, _, _)| n == name) else {
                         return Ok(false);
                     };
-                    if !leaf(env, p, t, out)? {
+                    if !at(i, p, &fs[i].1)? {
                         return Ok(false);
                     }
                 }
@@ -836,7 +873,8 @@ fn pooled_leaves(
         }
     }
     let mut out = SmallVec::new();
-    let pooled = children(env, sp, m, &mut out)? && out.iter().any(|l| l.head.is_some());
+    let pooled = children(env, sp, m, &mut SmallVec::new(), &mut out)?
+        && out.iter().any(|l| l.heads.is_some());
     Ok(pooled.then_some(out))
 }
 
@@ -911,28 +949,40 @@ struct PoolGroup {
     done: bool,
 }
 
+/// What pooling an atom decided.
+enum Claim {
+    /// The pool does not read it.
+    Unpooled,
+    /// Its group does not cover its member yet.
+    Open,
+    /// It completes its group: the member it covers.
+    Completes(Type),
+    /// Every combination of heads it matches, earlier arms match.
+    Dead,
+}
+
 impl LiteralPool {
-    /// Pool the unguarded atom `sp`: the scrutinee member whose coverage
-    /// it completes, if it does.
+    /// Pool the unguarded atom `sp`; `explicit`, its arm's written type
+    /// test.
     fn claim(
         &mut self,
         env: &Env,
         scrut: &Type,
         sp: &StructPatternNode,
-    ) -> Result<Option<Type>> {
-        let Some(shape) = Shape::of(sp) else { return Ok(None) };
-        // CR claude for claude: [bug] The pool credits an atom by its structure alone and
-        // never reads the arm's explicit type predicate. So `(bool, i64) as (true, x)`
-        // and `(bool, string) as (false, x)` complete `(bool, [i64, string])`, though
-        // `(false, 5)` and `(true, "s")` match neither arm. check_coverage then accepts
-        // this non-exhaustive select, which in both engines is a silent standing bottom
-        // on those values. check_dead_arms (line 478) also refuses a reachable arm
-        // placed after them as "unreachable arm". Pool an atom against `m` only when
-        // its type predicate contains `m`, as the slice ladder does at line 327. probe:
-        // design/review-2026-10-05/repro/x-typecheck-patterns-02.gx
-        // (x-typecheck-patterns-02)
-        let Some(m) = shape.member(env, scrut)? else { return Ok(None) };
-        let Some(leaves) = pooled_leaves(env, sp, &m)? else { return Ok(None) };
+        explicit: Option<&Type>,
+    ) -> Result<Claim> {
+        let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
+        let Some(m) = shape.member(env, scrut)? else { return Ok(Claim::Unpooled) };
+        // under a type test that does not hold the member, the atom covers
+        // none of it
+        if let Some(t) = explicit
+            && !t.contains_with_flags(BitFlags::empty(), env, &m)?
+        {
+            return Ok(Claim::Unpooled);
+        }
+        let Some(leaves) = pooled_leaves(env, sp, &m)? else {
+            return Ok(Claim::Unpooled);
+        };
         let i = match self.groups.iter().position(|g| g.shape == shape) {
             Some(i) => i,
             None => {
@@ -941,58 +991,86 @@ impl LiteralPool {
             }
         };
         let g = &mut self.groups[i];
-        // CR claude for claude: [bug] Leaves are compared by index, but an index is not a
-        // position. pooled_leaves (:642) descends into a nested tuple or struct only
-        // where the arm's own pattern does, so `((true, _), _)` has leaves at 0.0, 0.1,
-        // 1 and `(_, (false, _))` has them at 0, 1.0, 1.1. This count check is the only
-        // alignment test, and complete() (:818) compares heads and takes domains by
-        // index, so arms that nest differently complete a group that misses values.
-        // check_coverage then accepts a non-exhaustive select, which is silently bottom
-        // for the gap on both engines; check_dead_arms refuses the arm that fills the
-        // gap as unreachable; and an exhaustive set whose arms differ in leaf count is
-        // refused. Key each leaf by its path in the scrutinee type, and let a bind or
-        // `_` at a coarser path match every position under it. probe:
-        // design/review-2026-10-05/repro/c-select-seq-02.gx (c-select-seq-02)
-        if g.done || g.arms.iter().any(|a| a.len() != leaves.len()) {
-            return Ok(None);
+        if g.done {
+            return Ok(Claim::Open);
+        }
+        if !g.arms.is_empty() && g.covers(&leaves) {
+            return Ok(Claim::Dead);
         }
         g.arms.push(leaves);
-        g.done = g.complete();
-        Ok(g.done.then_some(m))
+        g.done = g.covers_all();
+        Ok(match g.done {
+            true => Claim::Completes(m),
+            false => Claim::Open,
+        })
     }
 }
 
+/// Does `arm` match head `h` at `path`: a leaf there admitting it, or
+/// any-value leaf at a path above it.
+fn admits(arm: &[Leaf], path: &[u32], h: &Head) -> bool {
+    arm.iter().any(|l| match &l.heads {
+        None => path.starts_with(&l.path),
+        Some(hs) => l.path[..] == *path && hs.contains(h),
+    })
+}
+
 impl PoolGroup {
-    fn complete(&self) -> bool {
-        let mut positions: SmallVec<[(usize, &[Head]); 8]> = SmallVec::new();
+    /// The positions some arm (or `extra`) tests a head at, with the
+    /// heads the member admits there; `None` when one is not a finite
+    /// set, or there are too many combinations.
+    fn positions<'a>(
+        &'a self,
+        extra: Option<&'a [Leaf]>,
+    ) -> Option<SmallVec<[(&'a [u32], &'a [Head]); 8]>> {
+        let mut out: SmallVec<[(&[u32], &[Head]); 8]> = SmallVec::new();
         let mut total = 1usize;
-        for i in 0..self.arms[0].len() {
-            if self.arms.iter().all(|a| a[i].head.is_none()) {
+        let arms = self.arms.iter().map(|a| &a[..]).chain(extra);
+        for l in arms.flat_map(|a| a.iter()).filter(|l| l.heads.is_some()) {
+            if out.iter().any(|(p, _)| *p == &l.path[..]) {
                 continue;
             }
-            let Some(domain) = self.arms.iter().find_map(|a| a[i].domain.as_deref())
-            else {
-                return false;
-            };
+            let domain = l.domain.as_deref()?;
             total = total.saturating_mul(domain.len());
-            positions.push((i, domain));
+            out.push((&l.path[..], domain));
         }
-        if total > MAX_POOL_COMBINATIONS {
-            return false;
-        }
-        (0..total).all(|mut c| {
-            let mut combo: SmallVec<[&Head; 8]> = SmallVec::new();
-            for (_, domain) in positions.iter() {
-                combo.push(&domain[c % domain.len()]);
-                c /= domain.len();
-            }
-            self.arms.iter().any(|a| {
-                positions
-                    .iter()
-                    .zip(combo.iter())
-                    .all(|((i, _), h)| a[*i].head.as_ref().is_none_or(|x| x == *h))
-            })
+        (total <= MAX_POOL_COMBINATIONS).then_some(out)
+    }
+
+    /// Every combination of heads `positions` names, as head references.
+    fn combinations<'a>(
+        positions: &'a [(&'a [u32], &'a [Head])],
+    ) -> impl Iterator<Item = SmallVec<[&'a Head; 8]>> + 'a {
+        let total = positions.iter().map(|(_, d)| d.len()).product::<usize>();
+        (0..total).map(move |mut c| {
+            positions
+                .iter()
+                .map(|(_, domain)| {
+                    let h = &domain[c % domain.len()];
+                    c /= domain.len();
+                    h
+                })
+                .collect()
         })
+    }
+
+    fn matches(arm: &[Leaf], positions: &[(&[u32], &[Head])], combo: &[&Head]) -> bool {
+        positions.iter().zip(combo.iter()).all(|((p, _), h)| admits(arm, p, h))
+    }
+
+    /// Some arm matches every combination the member admits.
+    fn covers_all(&self) -> bool {
+        let Some(positions) = self.positions(None) else { return false };
+        Self::combinations(&positions)
+            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, &c)))
+    }
+
+    /// Earlier arms match every combination `arm` matches.
+    fn covers(&self, arm: &[Leaf]) -> bool {
+        let Some(positions) = self.positions(Some(arm)) else { return false };
+        Self::combinations(&positions)
+            .filter(|c| Self::matches(arm, &positions, c))
+            .all(|c| self.arms.iter().any(|a| Self::matches(a, &positions, &c)))
     }
 }
 
@@ -1429,24 +1507,22 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
         }
         let scrut = self.arg.node.typ().clone();
-        if checking {
-            self.check_coverage(ctx, &scrut)?;
-        }
+        let mut reach = Reach::new(&ctx.env, &scrut, &self.arms)?;
         let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
-        let mut ntype = scrut.normalize();
         for (pat, n) in self.arms.iter_mut() {
-            // Alias the arm's binds against the scrutinee minus every
-            // earlier unguarded irrefutable atom. The `any_as_tvar` view
-            // keeps a `_` slot from short-circuiting the walk.
+            // The arm's binds alias against what reaches it. The
+            // `any_as_tvar` view keeps a `_` slot from short-circuiting the
+            // walk.
+            let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
             if checking {
-                or_binds_agree(&ctx.env, pat, &ntype).at(n.spec())?;
+                or_binds_agree(&ctx.env, pat, &reaching).at(n.spec())?;
             }
-            ntype.contains(&ctx.env, &narrowed)?;
+            reaching.contains(&ctx.env, &narrowed)?;
             pat.bind_captures(&ctx.env, &narrowed)?;
             // a runtime test can't tell apart two types with one runtime form
             if checking
-                && let Ok(rest) = ntype.diff(&ctx.env, &pat.type_predicate)
+                && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)
                 && let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest)
             {
                 let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
@@ -1469,29 +1545,15 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
-            // CR claude for claude: [bug] Later arms' binds are narrowed only by earlier
-            // irrefutable atoms. check_coverage and check_dead_arms also count a `null`
-            // literal, a true/false pair, a completed literal pool and a complete slice
-            // ladder as covering their member. So a bind keeps a member the dead-arm
-            // walk has proven cannot reach it. Over `x: [i64, null]`, `select x { null
-            // => 0, v => v + 1 }` is refused with `[i64, null] + i64` while `null as _
-            // => 0` is accepted; `true => .., false => ..`, `{d: `A, ..}`/`{d: `B, ..}`
-            // pools and `[]`/`[x, tl..]` ladders fail the same way, and `-> i64 select
-            // o { null => 0, n => n }` is refused. The narrowing should subtract per
-            // arm exactly what check_dead_arms subtracts. probe:
-            // design/review-2026-10-05/repro/c-select-seq-06.gx (c-select-seq-06)
-            if pat.guard.is_none() {
-                for (sp, at) in pat.atoms() {
-                    if !sp.is_refutable() {
-                        ntype = ntype.diff(&ctx.env, &at)?;
-                    }
-                }
-            }
+            reach.arm(&ctx.env, &scrut, pat, n.spec(), checking)?;
         }
         self.typ = Type::union(&ctx.env, &rtypes)?;
         drop(rtypes);
         match checking {
-            true => self.check_dead_arms(ctx, &scrut),
+            true => {
+                check_repeats(&self.arms)?;
+                reach.exhausted(&ctx.env, &scrut).at(&self.spec)
+            }
             false => Ok(()),
         }
     }

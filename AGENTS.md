@@ -856,14 +856,18 @@ cycle, across workers; the compiler never pins threads.
   initializer takes its type from its first use, a writer or a reader;
   a later writer must fit it, and a refused one is told the declaration
   that holds both (`node/mod.rs::write_mismatch`).
-- **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
+- **Sets and coverage**: one walk (`select.rs::Reach`) decides what
+  reaches each arm: its binds narrow to it, an arm that can match none of
+  it, or that tests what an earlier unguarded arm tests, is dead, and the
+  select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member;
   a `null` literal covers `null`; a collection type test (`Array<T> as`)
   narrows later arms only of collections whose every element it
   covers, since a mixed one that fails it may still hold a `T`;
-  bool literals and variant heads
-  (payload irrefutable) pool per position
-  inside composite patterns; an or-arm narrows later arms per
+  bool literals, variant heads
+  (payload irrefutable) and or-patterns of them pool per position
+  inside composite patterns, keyed by path, and an arm under a type
+  test pools only a member the test holds; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
   a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
