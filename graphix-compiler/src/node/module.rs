@@ -2,7 +2,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, Refs, Rt, Saved, Scope, Tag,
     TagValue, Update, UserEvent,
     compiler::compile,
-    env::{self, Env, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
+    env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
     expr::{
         At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
@@ -36,51 +36,49 @@ use poolshark::local::LPooled;
 use std::{any::Any, fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
 
-/// Compile one `use` item into the scope's namespace table
-/// ([`crate::env::Env::names`]): resolve its module prefix, then
-/// install a glob source or an explicit [`ImportEntry`].
-pub(crate) fn compile_use_item(
+/// What one item of a `use` installs.
+enum UseInstall {
+    Glob(Glob),
+    Import {
+        key: CompactString,
+        entry: ImportEntry,
+    },
+    /// Nothing: the prelude provides it, or this site was compiled
+    /// here already (a `.gxi` use is registered by the signature and
+    /// again where it is spliced into the body).
+    Nothing,
+}
+
+/// Resolve one item of a `use` against the namespace table
+/// ([`crate::env::Env::names`]): its module prefix, then a glob source
+/// or an explicit [`ImportEntry`].
+fn resolve_use_item(
     env: &mut Env,
-    pending: &mut Vec<PendingImport>,
     pos: crate::SourcePosition,
     ori: &Arc<Origin>,
     scope: &Scope,
-    replace: bool,
     item: &UseItem,
-) -> Result<()> {
+) -> Result<UseInstall> {
     let modpath = |p: &str| ModPath(Path::from(ArcStr::from(p)));
     let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
     let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
+    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
+    let compiled_here = env
+        .names
+        .get(&scope.lexical)
+        .and_then(|sn| sn.imports.get(key))
+        .is_some_and(|e| e.pos == pos && *e.ori == **ori);
+    if compiled_here {
+        return Ok(UseInstall::Nothing);
+    }
     let anchor = env.use_anchor(&scope.lexical, prefix)?;
     if item.is_glob() {
-        let scope_l = &scope.lexical;
-        match anchor {
+        return match anchor {
             None => bail!("a glob needs a path prefix"),
-            // CR claude for claude: [bug] Splitting one `super::*` into a glob source per
-            // chain level makes Env::lookup_at (graphix-types/src/env.rs:714) treat the
-            // levels as rival globs. Any name declared at two levels, which is ordinary
-            // shadowing, is then reported as ambiguous, even though `use super::x`
-            // walks the chain innermost-first and takes the inner name. The outer name
-            // cannot be named at all, so the advice "import one explicitly" offers no
-            // choice. The error names internal `#do`/`#fn` scopes (and an empty name
-            // for the root under --check), and for a type it shows up as "undefined
-            // type T". Register the chain glob as one source that resolves
-            // innermost-first before it is compared with other globs. probe:
-            // design/review-2026-10-05/repro/t-env-07.sh (t-env-07)
-            Some(UseAnchor::Chain(a)) => {
-                // a `super::*` anchor may span block levels: capture
-                // each level as its own glob source
-                let levels: LPooled<Vec<ModPath>> =
-                    env::chain_levels(a).map(modpath).collect();
-                for l in levels.iter() {
-                    env.import_glob(scope_l, l.clone());
-                }
-            }
-            Some(UseAnchor::Module(m)) => env.import_glob(scope_l, m),
-        }
-        return Ok(());
+            Some(UseAnchor::Chain(a)) => Ok(UseInstall::Glob(Glob::Chain(modpath(a)))),
+            Some(UseAnchor::Module(m)) => Ok(UseInstall::Glob(Glob::Module(m))),
+        };
     }
-    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
     let (target, keyword_anchored) = match anchor {
         Some(UseAnchor::Chain(a)) => (modpath(a), true),
         Some(UseAnchor::Module(m)) => (m, false),
@@ -103,7 +101,7 @@ pub(crate) fn compile_use_item(
     };
     // the prelude already provides every package name as a path root
     if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
-        return Ok(());
+        return Ok(UseInstall::Nothing);
     }
     if env.ide.is_lsp() {
         let canonical = ModPath(entry.scope.append(&entry.name));
@@ -116,19 +114,13 @@ pub(crate) fn compile_use_item(
             segments: Some(item.at.clone()),
         });
     }
-    if !env.import_target_exists(&entry) {
-        pending.push(PendingImport {
-            scope: scope.lexical.clone(),
-            key: key.into(),
-            pos,
-            ori: ori.clone(),
-        });
-    }
-    env.import(&scope.lexical, key, entry, replace)
+    Ok(UseInstall::Import { key: key.into(), entry })
 }
 
 /// Compile the items of a `use` statement, or of a signature's `use`,
-/// into the namespace table.
+/// into the namespace table. Every item's prefix resolves against the
+/// scope as it stood before the statement: an item never sees a name
+/// its sibling installs.
 pub(crate) fn compile_use_items(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
@@ -142,20 +134,26 @@ pub(crate) fn compile_use_items(
     if reexport {
         bail!("re-exports (`pub use`) are not yet supported")
     }
-    // CR claude for claude: [bug] Each item is installed in UseItem::sorted order before
-    // the next item's prefix resolves through the scope's imports. So alphabetical
-    // order decides whether a sibling sees a rename (or glob) that rebinds the
-    // statement's root: `{ use a::{b, c as a}; b }` takes b from `a`, while `{ use
-    // a::{z, c as a}; z }` silently takes z from `a::c`. Resolve every item's prefix
-    // against the scope as it stood before the statement, or refuse an item that
-    // rebinds its own statement's root (rustc takes both from `a::c`). bind_sig_item
-    // (line 210) loops the same way. A .gxi `use` compiles a second time when it is
-    // spliced into the body, so a lone `use sys::net as sys;` in a .gxi is refused as
-    // already imported. probe:
-    // design/review-2026-10-05/repro/t-format-resolver.r2-05.sh
-    // (t-format-resolver.r2-05)
-    for item in items {
-        compile_use_item(env, pending, pos, ori, scope, replace, item)?;
+    let installs = items
+        .iter()
+        .map(|item| resolve_use_item(env, pos, ori, scope, item))
+        .collect::<Result<LPooled<Vec<_>>>>()?;
+    for install in installs.iter() {
+        match install {
+            UseInstall::Nothing => (),
+            UseInstall::Glob(g) => env.import_glob(&scope.lexical, g.clone()),
+            UseInstall::Import { key, entry } => {
+                if !env.import_target_exists(entry) {
+                    pending.push(PendingImport {
+                        scope: scope.lexical.clone(),
+                        key: key.clone(),
+                        pos,
+                        ori: ori.clone(),
+                    });
+                }
+                env.import(&scope.lexical, key, entry.clone(), replace)?
+            }
+        }
     }
     Ok(())
 }
@@ -233,9 +231,7 @@ fn bind_sig_item(
             }
             // `names` is a global registry keyed by scope path, so
             // registering in the outer env covers the impl compile too
-            for item in names.iter() {
-                compile_use_item(env, pending, si.pos, si_ori, scope, false, item)?;
-            }
+            compile_use_items(env, pending, si.pos, si_ori, scope, false, false, names)?;
         }
         SigKind::Bind(BindSig { name, typ }) => {
             let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;

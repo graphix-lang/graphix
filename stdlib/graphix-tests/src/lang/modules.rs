@@ -933,3 +933,65 @@ const RELOAD_CHANGES_A_REPRESENTATION: &str = r#"
 
 run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
     load_refused("representation cannot change"); FuseExpect::Jit);
+
+// `use super::*` from a block-level module takes a name shadowed across
+// the block chain innermost-first, as `use super::x` does.
+run!(
+    glob_super_takes_the_innermost,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        let x = 1;
+        let result = {
+            let x = 2;
+            mod inner;
+            inner::y
+        }
+    "#,
+    "/test/inner.gx" => r#"
+        use super::*;
+        let y = x
+    "#
+);
+
+// A use statement's items resolve against the scope as it stood before
+// it, whatever their order: a sibling's rename never reroutes them.
+run!(
+    use_items_resolve_together,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a[..] == [Value::I64(1), Value::I64(1)],
+        _ => false,
+    },
+    "/test.gx" => r#"
+        mod a;
+        let b = { use a::{b, c as a}; b };
+        let z = { use a::{z, c as a}; z };
+        let result = (b, z)
+    "#,
+    "/test/a.gx" => r#"
+        mod c;
+        let b = 1;
+        let z = 1
+    "#,
+    "/test/a/c.gx" => r#"
+        let b = 2;
+        let z = 2
+    "#
+);
+
+// An interface's use is registered by the signature and again where it
+// is spliced into the body: one site, one import.
+run!(
+    interface_use_renaming_its_root,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::v
+    "#,
+    "/test/m.gxi" => r#"
+        use sys::net as sys;
+        val v: i64
+    "#,
+    "/test/m.gx" => r#"
+        let v = 1
+    "#
+);

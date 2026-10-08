@@ -18,7 +18,7 @@ use super::{
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, SourcePosition,
     TagValue, Update, UserEvent, bailat,
-    env::{Env, ImplDef, Map, TraitDef, TraitMethodRef},
+    env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, LambdaExpr, ModPath, Origin, Pattern, SelectExpr, StructurePattern,
@@ -181,7 +181,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
             )
             .at(&spec)?;
         let dscope = scope.append_block("trait", spec.id.inner());
-        ctx.env.import_glob(&dscope.lexical, def.path.clone());
+        ctx.env.import_glob(&dscope.lexical, Glob::Module(def.path.clone()));
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         for (m, d) in t.methods.iter().zip(def.methods.iter()) {
             // CR claude for claude: [bug] Each default is bound as `let <method>` in one
@@ -531,7 +531,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let (target, params) =
             impl_head(&ctx.env, &scope.lexical, &trait_def, im, false).at(&spec)?;
         let bscope = scope.append_block("impl", spec.id.inner());
-        ctx.env.import_glob(&bscope.lexical, trait_def.path.clone());
+        ctx.env.import_glob(&bscope.lexical, Glob::Module(trait_def.path.clone()));
         let core = CoreTrait::of_id(trait_id).is_some();
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();

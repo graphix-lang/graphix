@@ -179,8 +179,33 @@ pub struct ImportEntry {
 #[derive(Debug, Clone, Default)]
 pub struct ScopeNames {
     pub imports: Map<CompactString, ImportEntry>,
-    /// Glob (`use m::*`) source modules, in declaration order.
-    pub globs: Arc<Vec<ModPath>>,
+    /// Glob (`use m::*`) sources, in declaration order.
+    pub globs: Arc<Vec<Glob>>,
+}
+
+/// Where a glob import finds its names.
+#[derive(Debug, Clone, PartialEq, Eq, Pack)]
+pub enum Glob {
+    /// One module's own names.
+    Module(ModPath),
+    /// A `super::*` anchored at a block level: each level from it up to
+    /// its module, the innermost name first, as `use super::x` takes it.
+    Chain(ModPath),
+}
+
+impl Glob {
+    fn find<T>(&self, n: &str, f: &mut impl FnMut(&str, &str) -> Option<T>) -> Option<T> {
+        match self {
+            Self::Module(m) => f(m, n),
+            Self::Chain(from) => chain_levels(from).find_map(|l| f(l, n)),
+        }
+    }
+
+    fn source(&self) -> &ModPath {
+        match self {
+            Self::Module(m) | Self::Chain(m) => m,
+        }
+    }
 }
 
 impl Pack for ScopeNames {
@@ -802,13 +827,14 @@ impl Env {
         }
         let mut found: Option<(usize, T)> = None;
         for (i, g) in sn.globs.iter().enumerate() {
-            if let Some(t) = f(g, n) {
+            if let Some(t) = g.find(n, f) {
                 match &found {
                     None => found = Some((i, t)),
                     Some((j, _)) => bail!(
-                        "`{n}` is ambiguous: both `{}` and `{g}` provide it; \
+                        "`{n}` is ambiguous: both `{}` and `{}` provide it; \
                          import one explicitly",
-                        sn.globs[*j]
+                        sn.globs[*j].source(),
+                        g.source()
                     ),
                 }
             }
@@ -1317,7 +1343,12 @@ impl Env {
                     f(Visit::Import(name, e));
                 }
                 for g in sn.globs.iter() {
-                    f(Visit::Level(g));
+                    match g {
+                        Glob::Module(m) => f(Visit::Level(m)),
+                        Glob::Chain(from) => {
+                            chain_levels(from).for_each(|l| f(Visit::Level(l)))
+                        }
+                    }
                 }
             }
         }
@@ -1465,7 +1496,7 @@ impl Env {
 
     /// Register a glob (`use m::*`) source module at `scope`.
     /// Idempotent.
-    pub fn import_glob(&mut self, scope: &ModPath, src: ModPath) {
+    pub fn import_glob(&mut self, scope: &ModPath, src: Glob) {
         let sn = self.names.get_or_default(scope.clone());
         let globs = Arc::make_mut(&mut sn.globs);
         if !globs.contains(&src) {
@@ -2070,7 +2101,7 @@ mod test {
             ori: ori.clone(),
         });
         env.register_impl(im).unwrap();
-        env.import_glob(&pkg, ModPath::from(["other"]));
+        env.import_glob(&pkg, Glob::Module(ModPath::from(["other"])));
         env.byref_chain.insert(live, other);
         env.unbind_scope_subtree(&pkg);
         for id in [shadowed, live, local] {
