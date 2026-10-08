@@ -1385,6 +1385,16 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   apply(|x| x * x)
 }"#;
 // Through an alias of the quantified type, the same.
+/// A callback whose type holds a top-level variable is not polymorphic:
+/// aliasing the quantifier to it would carry it out.
+const NESTED_QUANTIFIER_ENV_CELL: &str = r#"{
+    let st = never();
+    let g = |x| { st <- x; st };
+    let h = |f: fn<'b: Any>(x: 'b) -> 'b| (f(1), f("s"));
+    let (a, b) = h(g);
+    a * 2
+}"#;
+
 const NESTED_QUANTIFIER_ALIAS_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
   type G = F;
@@ -1444,6 +1454,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
+        (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {

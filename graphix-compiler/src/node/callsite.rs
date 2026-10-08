@@ -31,7 +31,10 @@ use crate::{
     perfdbg,
     profile::{self, Phase},
     stack::ensure_sufficient,
-    typ::{ContainsFlags, FnArgKind, FnArgType, FnType, TVar, Type, tvar::RigidGate},
+    typ::{
+        ContainsFlags, FnArgKind, FnArgType, FnType, TVar, Type,
+        tvar::{Level, RigidGate},
+    },
     wrap,
 };
 use crate::{
@@ -339,25 +342,77 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
-        // CR claude for claude: [bug] This branch lets the argument alias the rigid
-        // quantifier 'b to a cell the argument does not own. The pre-unify and
-        // check_contains_rigid alias any open non-rigid cell to 'b, including an
-        // environment cell: a top-level `let st = never()` that the callback writes, or
-        // an enclosing definition's parameter. The quantifier then escapes into that
-        // variable's type, so a callback that holds for one type passes as polymorphic.
-        // With a let-bound callback, the check and elaboration both accept and the run
-        // breaks the types: `a: i64` holds "s" and the JIT panics at
-        // fusion/kernel.rs:243, killing the runtime. With an inline callback,
-        // elaboration refuses what the check accepted. probe:
-        // design/review-2026-10-05/repro/x-typecheck-generics-F6.gx
-        // (x-typecheck-generics-F6)
         Some((formal, _rigid)) => {
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
             wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
+            wrap!(n, polymorphic_in(&formal, n.typ()))?;
             Ok(true)
         }
     }
+}
+
+/// An argument checked against a formal with quantifiers of its own
+/// holds for every choice of them only if none was aliased to a cell the
+/// argument does not own: a top-level variable or an enclosing
+/// definition's, which would carry the quantifier out.
+fn polymorphic_in(formal: &Type, arg: &Type) -> Result<()> {
+    let Type::Fn(ft) = formal else { return Ok(()) };
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut named);
+    let quantified: SmallVec<[(ArcStr, usize); 2]> = named
+        .iter()
+        .filter(|(name, _)| ft.quantifiers.contains(*name))
+        .map(|(name, tv)| (name.clone(), tv.cell_addr()))
+        .collect();
+    let own: SmallVec<[LambdaId; 2]> = match arg.deref_cloned() {
+        Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
+        _ => SmallVec::new(),
+    };
+    fn walk(t: &Type, f: &mut impl FnMut(&TVar), seen: &mut AHashSet<usize>) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr()) {
+                    f(tv);
+                    if let Some(b) = tv.binding() {
+                        walk(&b, f, seen)
+                    }
+                }
+            }
+            t => t.for_each_child(&mut |c| walk(c, f, seen)),
+        })
+    }
+    let mut foreign: SmallVec<[TVar; 4]> = SmallVec::new();
+    walk(
+        arg,
+        &mut |tv| match tv.level() {
+            Level::Top => foreign.push(tv.clone()),
+            Level::Def { owner, .. } if !own.contains(&owner) => foreign.push(tv.clone()),
+            Level::Def { .. } | Level::Generic => (),
+        },
+        &mut AHashSet::new(),
+    );
+    for tv in foreign.iter() {
+        let mut reached = None;
+        walk(
+            &Type::TVar(tv.clone()),
+            &mut |c| {
+                if let Some((q, _)) = quantified.iter().find(|(_, a)| *a == c.cell_addr())
+                {
+                    reached = Some(q.clone())
+                }
+            },
+            &mut AHashSet::new(),
+        );
+        if let Some(q) = reached {
+            bail!(
+                "the argument is not polymorphic in '{q}: its type holds '{}, a variable \
+                 of its environment, which would carry '{q} out",
+                tv.name
+            )
+        }
+    }
+    Ok(())
 }
 
 /// Every type variable under `t` by name, with whether each occurrence
