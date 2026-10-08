@@ -155,12 +155,38 @@ pub(crate) type ArgMap<R, E> = IndexMap<ArgKey, Arg<R, E>, ahash::RandomState>;
 pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
-    pub is_default: bool,
+    pub stage: ArgStage,
 }
 
 impl<R: Rt, E: UserEvent> Arg<R, E> {
-    pub(crate) fn new(id: BindId, node: Option<Node<R, E>>, is_default: bool) -> Self {
-        Arg { id, node, is_default }
+    pub(crate) fn new(id: BindId, node: Option<Node<R, E>>, stage: ArgStage) -> Self {
+        Arg { id, node, stage }
+    }
+}
+
+/// Where an argument came from and, for a default the call omits, how
+/// far the bind has taken it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArgStage {
+    /// Written at the call.
+    Given,
+    /// An omitted default's placeholder before any bind (`fill_omitted`).
+    Placeholder,
+    /// A default a bind compiled and has not run (`prepare_bind`).
+    Compiled,
+    /// A default every update runs: a static bind's from the first
+    /// update, another bind's once `prime_bound` ran it.
+    Running,
+}
+
+impl ArgStage {
+    pub(crate) fn is_default(self) -> bool {
+        self != ArgStage::Given
+    }
+
+    /// Whether an update runs the argument.
+    fn runs(self) -> bool {
+        matches!(self, ArgStage::Given | ArgStage::Running)
     }
 }
 
@@ -233,7 +259,7 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
         match res.entry(key) {
             ArgEntry::Occupied(e) => bailat!(spec, "duplicate argument {}", e.key()),
             ArgEntry::Vacant(e) => {
-                e.insert(Arg::new(BindId::new(), node, false));
+                e.insert(Arg::new(BindId::new(), node, ArgStage::Given));
             }
         }
     }
@@ -297,7 +323,7 @@ fn fill_omitted<R: Rt, E: UserEvent>(
                 ArgEntry::Occupied(_) => (),
                 ArgEntry::Vacant(e) if *has_default => {
                     let nop = Nop::new(arg.typ.clone());
-                    e.insert(Arg::new(BindId::new(), Some(nop), true));
+                    e.insert(Arg::new(BindId::new(), Some(nop), ArgStage::Placeholder));
                 }
                 ArgEntry::Vacant(_) => bail!("missing required argument {name}"),
             }
@@ -714,7 +740,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
-    // CR claude for claude: [perf] A CallSite holds two FnTypes inline, this one and
+    // CR claude for eric: [perf] A CallSite holds two FnTypes inline, this one and
     // static_target's, 240 bytes each beside rtype's 64. So every call site, and every
     // collection slot's synthesized one, is about 890 bytes: 5.3 MB of the 69 MB peak
     // for 6000 trivial array::init/array::map slots (massif, --no-fusion). Both are set
@@ -728,6 +754,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     // 2026-10-08 claude: measured with c-cost-misc-06: the call site's share of an
     // instance is ~1.8 KB, these spec copies a few hundred bytes of it; folded into that
     // work.
+    // 2026-10-08 claude: re-addressed with c-cost-misc-06 above.
     pub(super) ftype: Option<TArc<FnType>>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
@@ -735,17 +762,6 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) arg_refs: Vec<Node<R, E>>,
     pub(crate) callee: Callee<R, E>,
     pub(crate) static_target: Option<StaticCallTarget>,
-    /// A trait call over a union self type lowered to a select, one
-    /// static call per member; once set every `Update` method delegates.
-    // CR claude for claude: [structure] A lowered site keeps its dead call beside the
-    // lowered node (a Nop fnode, args whose nodes are gone, callee, static_target,
-    // ftype), so each Update method must check `lowered` before touching the call, and
-    // so must code that downcasts to CallSite (fusion/mod.rs:1004). image_encode does
-    // not delegate: it writes the whole dead call before the lowered node. A method or
-    // downcast that misses the check acts on the dead call. Hold the two states in one
-    // field, e.g. `enum CallBody { Call(..), Lowered(Node) }`, so a lowered site has no
-    // call parts to reach. (x-invalid-states-06)
-    pub(crate) lowered: Option<Node<R, E>>,
     pub(crate) recursive_edge: AtomicBool,
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
@@ -785,7 +801,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             arg_refs: Vec::new(),
             callee: Callee::DynamicUnbound,
             static_target: None,
-            lowered: None,
             recursive_edge: AtomicBool::new(false),
             flags,
             scope,
@@ -888,7 +903,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             flags,
             top_id,
         );
-        Ok(Node::new(site))
+        Ok(Node::new(CallNode::Call(site)))
     }
 
     fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R, E>) {
@@ -899,7 +914,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx.discard(n);
         }
         self.args.retain(|_, arg| {
-            if arg.is_default {
+            if arg.stage.is_default() {
                 ctx.discard_stored(arg.id);
                 if let Some(n) = arg.node.take() {
                     ctx.discard(n);
@@ -913,20 +928,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Build the site's argument references for `f`, compiling the
     /// defaults it omits; `defaults` collects what those read.
-    // CR claude for claude: [structure] A default's life is spread over fill_omitted (a
-    // Nop placeholder), check_omitted_defaults and checked_default (compiled, checked,
-    // discarded), prepare_bind (compiled again at the static bind and at every run-time
-    // bind), typecheck_static_defaults, prime_bound, update_args and
-    // clear_prepared_bind. Which stage an Arg is in is implicit in is_default plus the
-    // Callee variant. The two binds disagree exactly where three bugs sit. Only the
-    // static bind elaborates its defaults
-    // (design/review-2026-10-05/repro/c-callsite-03.gx). A prebound or self-call
-    // default gets its first update from both update_args and prime_bound
-    // (c-callsite-02.gx). checked_default typechecks outside f.env (c-callsite-04.gx).
-    // One builder used by both binds (compile, typecheck, check against the callee's
-    // parameter and elaborate, all under f's env), plus an explicit Arg stage that
-    // update_args skips until the bind promotes it, would make all three
-    // unrepresentable. (c-callsite-06)
     fn prepare_bind(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -958,7 +959,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let id = BindId::new();
             let spec = TArc::new(default_node.spec().clone());
             self.arg_refs.push(Ref::new(ctx, id, typ, self.top_id, spec));
-            self.args.insert(key, Arg::new(id, Some(default_node), true));
+            self.args.insert(key, Arg::new(id, Some(default_node), ArgStage::Compiled));
         }
         if f.typ.vargs.is_some() {
             let positional = f.typ.args.iter().filter(|a| a.is_positional()).count();
@@ -1160,7 +1161,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
     ) -> Result<bool> {
         let omitted = |name: &ArcStr| {
-            self.args.get(&ArgKey::Named(name.clone())).is_some_and(|a| a.is_default)
+            self.args
+                .get(&ArgKey::Named(name.clone()))
+                .is_some_and(|a| a.stage.is_default())
         };
         if !ftype.args.iter().any(|a| a.label().is_some_and(omitted)) {
             return Ok(true);
@@ -1281,7 +1284,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ) -> Result<()> {
         ctx.with_restored(env.clone(), |ctx| {
             for arg in self.args.values_mut() {
-                if arg.is_default
+                if arg.stage.is_default()
                     && let Some(node) = arg.node.as_mut()
                 {
                     wrap!(node, node.typecheck1(ctx))?;
@@ -1300,7 +1303,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         for farg in ftype.args.iter().filter(|_| self.defaults_open) {
             if let FnArgKind::Labeled { name, .. } = &farg.kind
                 && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
-                && a.is_default
+                && a.stage.is_default()
             {
                 crate::typ::settle::position_cells(&farg.typ, &mut dtv);
             }
@@ -1341,8 +1344,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
-    ) -> Result<()> {
-        self.try_static_resolve(ctx)?;
+    ) -> Result<Option<Node<R, E>>> {
+        if let Some(lowered) = self.try_static_resolve(ctx)? {
+            return Ok(Some(lowered));
+        }
         self.refresh_static_ftype();
         let resolved = ftype.resolve_tvars();
         let spec = self.spec.clone();
@@ -1361,7 +1366,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn setup_static_bind(
@@ -1483,7 +1488,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `fv`) as a run-time bind, a compile task of its own, leaving it
     /// `DynamicBound`: the outer variables its compiled defaults read,
     /// for [`Self::prime_bound`].
-    // CR claude for claude: [perf] The node-walk keeps about 21 KB per instance of a
+    // CR claude for eric: [perf] The node-walk keeps about 21 KB per instance of a
     // 22-node body (about 1 KB per node) and still holds it after the cycle. Since
     // every call is a retained activation, this footprint sets how far a node-walked
     // program can go. Probe: design/review-2026-10-05/repro/c-cost-misc-06.gx under
@@ -1503,6 +1508,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     // Constant/Add/Sub/Select nodes ~2.4 KB. The large lever is an instance building its
     // nodes from its definition's types, with no placeholder cells; x-alloc-06's
     // remaining spec copies are part of the call-site share.
+    // 2026-10-08 claude: re-addressed, a scope call: the measurement above points at
+    // instances building their nodes without placeholder type cells, a compiler project
+    // of its own (days, and a soak). Schedule it, or close this as measured?
     fn build_bound(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1614,9 +1622,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         ctx.under(View::Birth, |ctx| {
             for arg in self.args.values_mut() {
-                if arg.is_default
+                if arg.stage == ArgStage::Compiled
                     && let Some(node) = &mut arg.node
                 {
+                    arg.stage = ArgStage::Running;
                     let tv = node.update(ctx).clone();
                     let feeds = Feeds::Id(arg.id);
                     if publish_production(ctx, feeds, &tv, true, QuietAtRoot::Deliver) {
@@ -1688,6 +1697,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             });
         }
         self.callee = Callee::Static { apply, first_update: true };
+        // a static bind's defaults run from its first update
+        for arg in self.args.values_mut() {
+            if arg.stage == ArgStage::Compiled {
+                arg.stage = ArgStage::Running;
+            }
+        }
         // Fn-typed args are registered under the instance's param
         // BindIds for the whole body typecheck (`register_fn_params`).
         let param_binds = self.register_fn_params(ctx, &instance_ftype);
@@ -1746,9 +1761,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// known `LambdaDef` (a `Ref` to a non-`<-`-target lambda binding, or a
     /// lambda literal), or dispatch a trait method by its self type.
     /// No-op for dynamic call sites.
-    fn try_static_resolve(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn try_static_resolve(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
         if matches!(self.callee, Callee::Static { .. }) {
-            return Ok(());
+            return Ok(None);
         }
         let target: Option<Value> = match self.fnode.view() {
             NodeView::Ref(r) => {
@@ -1778,13 +1796,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 {
                     return self.resolve_trait_call(ctx, tm);
                 }
-                return Ok(());
+                return Ok(None);
             }
         };
         let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() else {
-            return Ok(());
+            return Ok(None);
         };
-        self.resolve_static(ctx, def)
+        self.resolve_static(ctx, def).map(|()| None)
     }
 
     /// This site's instantiation identity ([`FnArgIdentity`]): per
@@ -1907,14 +1925,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok((operands, names))
     }
 
-    /// Install `node` as this call's lowering: the function node and
-    /// any remaining argument nodes are deleted, every `Update` method
-    /// delegates to it from now on.
-    pub(super) fn install_lowered(
+    /// `node` as this call's lowering, which stands for it from now on
+    /// ([`CallNode`]): the function node and any remaining argument
+    /// nodes are discarded.
+    pub(super) fn lowering(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         node: Node<R, E>,
-    ) -> Result<()> {
+    ) -> Result<Node<R, E>> {
         wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.take() {
@@ -1926,8 +1944,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let old = mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
         ctx.discard(old);
-        self.lowered = Some(node);
-        Ok(())
+        Ok(node)
     }
 
     /// Re-point this call's function node at binding `bind`.
@@ -1975,13 +1992,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             _ => Keep::Every,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
-        // a bind owns its defaults' first update: a prebound instance's
-        // priming runs them, an unbound site's bind compiles its own
-        let defaults = match &self.callee {
-            Callee::Prebound { .. } | Callee::DynamicUnbound => Defaults::Skip,
-            _ => Defaults::Update,
-        };
-        let pass = Pass { keep, root, defaults };
+        let pass = Pass { keep, root };
         let ArgsOut { fired: arg_fired, prods, mut set } =
             update_args(ctx, self.args.as_mut_slice(), &mut self.fork, pass);
         // `fnode.update` runs every cycle for its effects; a `Static`
@@ -2014,14 +2025,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if bound {
             for arg in self.args.values() {
                 if arg.node.is_none()
-                    || (arg.is_default && defaults == Defaults::Skip)
+                    || !arg.stage.runs()
                     || ctx.event.variables.contains_key(&arg.id)
                 {
                     continue;
                 }
                 let tv = match prods.iter().find(|(id, _)| *id == arg.id) {
                     Some((_, tv)) => tv.clone(),
-                    None if keep == Keep::Defaults && !arg.is_default => {
+                    None if keep == Keep::Defaults && !arg.stage.is_default() => {
                         let Some((tv, _)) = ctx.rt.store_get(&arg.id) else { continue };
                         TagValue::tagged(tv.value_cloned(), tv.tag().quiet())
                     }
@@ -2030,7 +2041,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 if tv.tag().is_bottom() {
                     continue;
                 }
-                let root = match arg.is_default {
+                let root = match arg.stage.is_default() {
                     true => QuietAtRoot::Deliver,
                     false => QuietAtRoot::Stand,
                 };
@@ -2140,7 +2151,13 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
         key.encode(buf)?;
         self.id.encode(buf)?;
         opt_node_encode(self.node.as_ref(), buf)?;
-        self.is_default.encode(buf)
+        buf.put_u8(match self.stage {
+            ArgStage::Given => 0,
+            ArgStage::Placeholder => 1,
+            ArgStage::Compiled => 2,
+            ArgStage::Running => 3,
+        });
+        Ok(())
     }
 
     fn image_decode(
@@ -2150,8 +2167,14 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
         let key = ArgKey::decode(buf)?;
         let id = BindId::decode(buf)?;
         let node = opt_node_decode(ctx, buf)?;
-        let is_default = bool::decode(buf)?;
-        Ok((key, Arg { id, node, is_default }))
+        let stage = match u8::decode(buf)? {
+            0 => ArgStage::Given,
+            1 => ArgStage::Placeholder,
+            2 => ArgStage::Compiled,
+            3 => ArgStage::Running,
+            _ => return Err(PackError::UnknownTag),
+        };
+        Ok((key, Arg { id, node, stage }))
     }
 }
 
@@ -2319,7 +2342,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             _ => return Err(PackError::UnknownTag),
         };
         let static_target = Option::<StaticCallTarget>::decode(buf)?;
-        let lowered = opt_node_decode(ctx, buf)?;
         let recursive_edge = bool::decode(buf)?;
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
@@ -2329,17 +2351,140 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.arg_refs = arg_refs;
         site.callee = callee;
         site.static_target = static_target;
-        site.lowered = lowered;
         site.recursive_edge = AtomicBool::new(recursive_edge);
         // an imaged body's reads schedule this statement before the body
         // decodes, as a cold compile's registrations do
         site.imaged_refs(|id| ctx.rt.ref_var(id, top_id));
-        Ok(Node::new(site))
+        Ok(Node::new(CallNode::Call(site)))
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
+/// A call site as a node: the call, or, once its check lowered it (a
+/// trait call over a union self, a self never produced), the node that
+/// stands for it, with no call parts left to reach.
+#[derive(Debug)]
+pub(crate) enum CallNode<R: Rt, E: UserEvent> {
+    Call(CallSite<R, E>),
+    Lowered(Node<R, E>),
+}
+
+impl<R: Rt, E: UserEvent> CallNode<R, E> {
+    /// The call, unless it was lowered.
+    pub(crate) fn call_mut(&mut self) -> Option<&mut CallSite<R, E>> {
+        match self {
+            Self::Call(c) => Some(c),
+            Self::Lowered(_) => None,
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
+    /// A lowered call is imaged as its lowering, which decodes as itself.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        match self {
+            Self::Call(c) => c.image_encode(buf),
+            Self::Lowered(n) => n.image_encode(buf),
+        }
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        match self {
+            Self::Call(c) => c.update(ctx),
+            Self::Lowered(n) => n.update(ctx),
+        }
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        match self {
+            Self::Call(c) => c.delete(ctx),
+            Self::Lowered(n) => n.delete(ctx),
+        }
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        match self {
+            Self::Call(c) => c.sleep(ctx),
+            Self::Lowered(n) => n.sleep(ctx),
+        }
+    }
+
+    fn typ(&self) -> &Type {
+        match self {
+            Self::Call(c) => c.typ(),
+            Self::Lowered(n) => n.typ(),
+        }
+    }
+
+    fn spec(&self) -> &Expr {
+        match self {
+            Self::Call(c) => c.spec(),
+            Self::Lowered(n) => n.spec(),
+        }
+    }
+
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        match self {
+            Self::Call(c) => c.typecheck0(ctx),
+            Self::Lowered(n) => n.typecheck0(ctx),
+        }
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut InstanceTypes,
+    ) -> Result<()> {
+        match self {
+            Self::Call(c) => c.typecheck0_instance(ctx, types),
+            // a lowering is built by elaboration: no table types it
+            Self::Lowered(n) => n.typecheck0(ctx),
+        }
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        match self {
+            Self::Call(c) => {
+                if let Some(lowered) = c.typecheck1(ctx)? {
+                    *self = Self::Lowered(lowered);
+                }
+                Ok(())
+            }
+            Self::Lowered(n) => n.typecheck1(ctx),
+        }
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        match self {
+            Self::Call(c) => c.refs(refs),
+            Self::Lowered(n) => n.refs(refs),
+        }
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        match self {
+            Self::Call(c) => c.view(),
+            Self::Lowered(n) => n.view(),
+        }
+    }
+
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        match self {
+            Self::Call(c) => c.fuse(ctx),
+            Self::Lowered(n) => n.fuse(ctx),
+        }
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        match self {
+            Self::Call(c) => c.emit_clif(cx),
+            Self::Lowered(n) => n.emit_clif(cx),
+        }
+    }
+}
+
+/// The call's half of [`CallNode`]'s `Update`.
+impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let mode = self.callee_mode()?;
         put_tag(NodeTag::CallSite, buf);
         self.spec.encode(buf)?;
@@ -2388,25 +2533,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             _ => (),
         }
         self.static_target.encode(buf)?;
-        opt_node_encode(self.lowered.as_ref(), buf)?;
         self.recursive_edge.load(Relaxed).encode(buf)?;
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        match self.lowered.is_some() {
-            true => self.lowered.as_mut().unwrap().update(ctx),
-            false => self.update_call(ctx),
-        }
+    pub(crate) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.update_call(ctx)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(mut n) = self.lowered.take() {
-            n.delete(ctx);
-            return;
-        }
+    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let top_id = self.top_id;
         self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
         if let Some(mut f) = self.callee.take_apply() {
@@ -2424,11 +2561,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
-        if let Some(n) = &mut self.lowered {
-            return n.sleep(ctx);
-        }
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
         if super::in_deselected_arm() && self.is_recursive_edge() {
@@ -2449,21 +2583,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn typ(&self) -> &Type {
-        match &self.lowered {
-            Some(n) => n.typ(),
-            None => &self.rtype,
-        }
+    pub(crate) fn typ(&self) -> &Type {
+        &self.rtype
     }
 
-    fn spec(&self) -> &Expr {
+    pub(crate) fn spec(&self) -> &Expr {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        if let Some(n) = &mut self.lowered {
-            return n.typecheck0(ctx);
-        }
+    pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let mut fresh = false;
         let ftype = match self.ftype.as_ref() {
@@ -2581,12 +2709,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         Ok(())
     }
 
-    fn typecheck0_instance(
+    pub(crate) fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
-        let ftype = match self.lowered.is_none() && self.ftype.is_none() {
+        let ftype = match self.ftype.is_none() {
             true => types.ftype(self.spec.id),
             false => None,
         };
@@ -2624,11 +2752,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
     }
 
     /// Second pass: after the subtrees, drive `Apply::typecheck1` for every
-    /// lambda dispatchable here (the callee and each fn-typed callback).
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        if let Some(n) = &mut self.lowered {
-            return n.typecheck1(ctx);
-        }
+    /// lambda dispatchable here (the callee and each fn-typed callback). A
+    /// trait call it resolves may lower to another node, which then
+    /// stands for the call.
+    pub(crate) fn typecheck1(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
         wrap!(self.fnode, self.fnode.typecheck1(ctx))?;
         for arg in self.args.values_mut() {
             if let Some(n) = arg.node.as_mut() {
@@ -2637,7 +2767,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype.clone(),
-            None => return Ok(()),
+            None => return Ok(None),
         };
         // A settle frame for this site's re-drives; leftovers merge up and
         // drain only after this site's writers have run.
@@ -2645,16 +2775,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         let res = self.typecheck1_resolve(ctx, &ftype);
         let leftover = ctx.pending_settles.pop().expect("settle frame");
         ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
-        res?;
+        if let Some(lowered) = res? {
+            return Ok(Some(lowered));
+        }
         let settle = self.pending_settle(&ftype);
         ctx.pending_settles.last_mut().expect("root settle frame").push(settle);
-        Ok(())
+        Ok(None)
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        if let Some(n) = &self.lowered {
-            return n.refs(refs);
-        }
+    pub(crate) fn refs(&self, refs: &mut Refs) {
         if !refs.skip_callees {
             if let Some(fun) = self.callee.apply() {
                 fun.refs(refs)
@@ -2675,17 +2804,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn view(&self) -> NodeView<'_, R, E> {
-        match &self.lowered {
-            Some(n) => n.view(),
-            None => NodeView::CallSite(self),
-        }
+    pub(crate) fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::CallSite(self)
     }
 
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        if let Some(n) = &mut self.lowered {
-            return n.fuse(ctx);
-        }
+    pub(crate) fn fuse(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
         // Reached when this call did not inline: fuse its args in source
         // order, then give the callee its hook.
         fusion::fuse_parts(self.args.values_mut().filter_map(|a| a.node.as_mut()), ctx)?;
@@ -2695,10 +2821,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         Ok(None)
     }
 
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        if let Some(n) = &self.lowered {
-            return n.emit_clif(cx);
-        }
+    pub(crate) fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if let Some(f) = self.callee.apply() {
             if let Some(cv) = f.emit_clif(self, cx)? {
                 return Ok(cv);
@@ -2805,19 +2928,11 @@ enum Keep {
 /// The argument ids a dispatch published on the overlay.
 type Published = SmallVec<[BindId; 4]>;
 
-/// Whether an update runs the defaults a bind compiled.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Defaults {
-    Update,
-    Skip,
-}
-
 /// How an update pass treats its arguments.
 #[derive(Clone, Copy)]
 struct Pass {
     keep: Keep,
     root: QuietAtRoot,
-    defaults: Defaults,
 }
 
 fn update_args<R: Rt, E: UserEvent>(
@@ -2848,10 +2963,10 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
     pass: Pass,
 ) -> ArgsOut {
     let mut out = ArgsOut::default();
-    let Pass { keep, root, defaults } = pass;
+    let Pass { keep, root } = pass;
     for (i, arg) in args.values_mut().enumerate() {
         let Some(node) = &mut arg.node else { continue };
-        if arg.is_default && defaults == Defaults::Skip {
+        if !arg.stage.runs() {
             continue;
         }
         let tv = timed(&mut meter, i, || node.update(ctx));
@@ -2859,7 +2974,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         out.fired |= fired;
         let kept = match keep {
             Keep::Every => true,
-            Keep::Defaults => arg.is_default,
+            Keep::Defaults => arg.stage.is_default(),
             Keep::Nothing => false,
         };
         if kept && !fired {

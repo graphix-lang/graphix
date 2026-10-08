@@ -1,7 +1,7 @@
 use super::{
     Constant, NOP,
     bind::Ref,
-    callsite::{Arg, ArgKey, ArgMap, CallSite},
+    callsite::{Arg, ArgKey, ArgMap, ArgStage, CallNode, CallSite},
 };
 use crate::SourcePosition;
 use crate::{
@@ -101,9 +101,9 @@ fn apply_inner<R: Rt, E: UserEvent>(
     spec.ori = fnode.spec().ori.clone();
     let args: ArgMap<R, E> = ArgKey::of_formals(&typ.args)
         .zip(args)
-        .map(|(key, node)| (key, Arg::new(BindId::new(), Some(node), false)))
+        .map(|(key, node)| (key, Arg::new(BindId::new(), Some(node), ArgStage::Given)))
         .collect();
-    Node::new(CallSite::unbound(
+    Node::new(CallNode::Call(CallSite::unbound(
         Arc::new(spec),
         ftype,
         rtype,
@@ -112,7 +112,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         scope,
         BitFlags::empty(),
         top_id,
-    ))
+    )))
 }
 
 /// A static call to the function binding `bind` over argument bindings

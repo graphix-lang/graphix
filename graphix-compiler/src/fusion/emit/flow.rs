@@ -3,7 +3,7 @@
 //! error-propagation (qop) nodes.
 
 use crate::{
-    BindId, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, Node, NodeView, Refs, Rt, UserEvent,
     expr::ExprKind,
     fusion::{
         self,

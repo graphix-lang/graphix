@@ -32,7 +32,7 @@ use crate::{
         },
         lowering::expand_refs,
     },
-    node::{self, callsite::CallSite, genn},
+    node::{self, callsite::CallNode, genn},
     profile::{self, Phase},
     typ::{FnType, Type},
 };
@@ -981,9 +981,11 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
-    let Some(cs) = child.downcast_mut::<CallSite<R, E>>() else { return Ok(None) };
-    if cs.lowered.is_some() || !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
-    {
+    let Some(cs) = child.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+    else {
+        return Ok(None);
+    };
+    if !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_))) {
         return Ok(None);
     }
     let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
@@ -1050,7 +1052,10 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
             Ok(Some(new))
         }
         None => {
-            let cs = child.downcast_mut::<CallSite<R, E>>().expect("still the call");
+            let cs = child
+                .downcast_mut::<CallNode<R, E>>()
+                .and_then(CallNode::call_mut)
+                .expect("still the call");
             for arg in cs.args.values_mut() {
                 let Some(node) = arg.node.as_mut() else { continue };
                 let NodeView::Ref(r) = node.view() else { continue };

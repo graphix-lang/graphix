@@ -772,12 +772,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         tm: TraitMethodRef,
-    ) -> Result<()> {
+    ) -> Result<Option<Node<R, E>>> {
         let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
             bailat!(self.spec, "trait method call through an unknown trait")
         };
         let m = &def.methods[tm.index];
-        let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
+        let Some(ftype) = self.ftype.as_ref() else { return Ok(None) };
         // Dispatch reasons per union member, so the self type must be in
         // union normal form with its cells settled first.
         let mut self_t = match ftype.args.get(m.self_index) {
@@ -830,7 +830,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // (CallSite::lower_bottom_self). Pin: lang::traits::trait_call_over_bottom_self.
         if self_t.has_unbound() {
             if ctx.def_gate_depth > 0 {
-                return Ok(());
+                return Ok(None);
             }
             bailat!(
                 self.spec,
@@ -899,12 +899,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         {
             self.resolve_static(ctx, ldef)?;
         }
-        Ok(())
+        Ok(None)
     }
 
     /// A call whose self argument is never produced: `never(<args>)`,
     /// its arguments still live.
-    fn lower_bottom_self(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+    fn lower_bottom_self(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+    ) -> Result<Option<Node<R, E>>> {
         let (mut operands, names) = self.take_operands(None)?;
         let spec = (*self.spec).clone();
         let args = names.iter().map(|(_, n)| {
@@ -922,7 +925,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             operands.drain(..),
             e,
         )?;
-        self.install_lowered(ctx, node)
+        self.lowering(ctx, node).map(Some)
     }
 
     /// A core trait's dispatcher is the operator it stands behind:
@@ -932,7 +935,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         core: CoreTrait,
-    ) -> Result<()> {
+    ) -> Result<Option<Node<R, E>>> {
         let (mut operands, names) = self.take_operands(None)?;
         let spec = (*self.spec).clone();
         let mk = |kind: ExprKind| Expr::synth(&spec, kind);
@@ -1004,7 +1007,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             operands.drain(..),
             e,
         )?;
-        self.install_lowered(ctx, node)
+        self.lowering(ctx, node).map(Some)
     }
 
     /// Dispatch over a union self type: the call becomes
@@ -1021,7 +1024,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         def: &TraitDef,
         index: usize,
         members: &[Type],
-    ) -> Result<()> {
+    ) -> Result<Option<Node<R, E>>> {
         let m = &def.methods[index];
         let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
         for mem in members.iter() {
@@ -1085,6 +1088,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             operands.drain(..),
             select,
         )?;
-        self.install_lowered(ctx, node)
+        self.lowering(ctx, node).map(Some)
     }
 }

@@ -1,6 +1,11 @@
 use super::{
-    NOP, WakeBit, callsite::CallSite, coretraits::with_hooks, genn, lambda::GXLambda,
-    list, pattern::StructPatternNode,
+    NOP, WakeBit,
+    callsite::{CallNode, CallSite},
+    coretraits::with_hooks,
+    genn,
+    lambda::GXLambda,
+    list,
+    pattern::StructPatternNode,
 };
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
@@ -438,7 +443,9 @@ impl Callback {
             CallKind::Slot(Some(def)) => {
                 let function = super::Constant::new(def, fty, Expr::clone(&NOP));
                 let mut call = genn::apply(function, scope.clone(), args, typ, *top_id);
-                if let Some(cs) = call.downcast_mut::<CallSite<R, E>>() {
+                if let Some(cs) =
+                    call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+                {
                     cs.share = share.clone();
                 }
                 call
@@ -926,7 +933,9 @@ fn build_fresh<R: Rt, E: UserEvent, S: Send>(
     }
     let prebind = |ctx: &mut CompileCtx<R, E>, slots: &mut [S]| {
         for slot in slots {
-            if let Some(cs) = call(slot).downcast_mut::<CallSite<R, E>>() {
+            if let Some(cs) =
+                call(slot).downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+            {
                 cs.prebind(ctx)
             }
         }
@@ -1563,7 +1572,11 @@ fn fuse_callback<R: Rt, E: UserEvent>(
     prototype: &mut Node<R, E>,
     callback: &mut Callback,
 ) -> Result<Option<Node<R, E>>> {
-    let Some(site) = prototype.downcast_mut::<CallSite<R, E>>() else { return Ok(None) };
+    let Some(site) =
+        prototype.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+    else {
+        return Ok(None);
+    };
     if site.static_target.is_none() {
         return Ok(None);
     }

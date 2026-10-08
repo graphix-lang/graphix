@@ -607,7 +607,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 }
 
 /// A regular graph node, as opposed to a function application (Apply).
-// CR claude for claude: [structure] Node has no child enumeration, unlike Expr's
+// CR claude for eric: [structure] Node has no child enumeration, unlike Expr's
 // for_each_child/map_children. Every Update impl lists its children again by hand in
 // refs, delete, sleep, fuse, typecheck0/1 and the image codecs (Not and Neg in
 // node/op.rs, and Qop and OrNever in node/error.rs, are line-for-line copies), so a
@@ -619,6 +619,13 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 // a guard, a module with an interface or an impl prototype. One
 // for_each_child/for_each_child_mut on Update would drive both walkers and could be the
 // default body of the forwarding methods. (x-dup-03)
+// 2026-10-08 claude: re-addressed, a scope call. Fixed: the walkers agree:
+// node_shape::node_children rides fusion::for_each_child, the one child step, except that
+// it opens a kernel's feeders. Left: a for_each_child_mut on Update as the default body
+// of the forwarding methods (refs, delete, sleep, typecheck0/1). That touches all ~80
+// node impls, and most do more than forward (sleep sets bits, delete unbinds), so the
+// default would serve only the pure forwarders (Not, Neg, Qop, OrNever, ...). Worth a
+// pass of its own, or close as accepted?
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// Update the node with the event and return its production,
     /// borrowed from the node's own resident slot. Every awake node

@@ -3,7 +3,7 @@
 //! typed-fastcall path.
 
 use crate::{
-    Node, Rt, Update, UserEvent,
+    Node, Rt, UserEvent,
     expr::ExprId,
     fusion::{
         LambdaCallInfo,

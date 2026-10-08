@@ -4,7 +4,7 @@
 //! emitters consume.
 
 use crate::{
-    BindId, CompileCtx, Node, NodeView, PrintFlag, Refs, Rt, Update, UserEvent,
+    BindId, CompileCtx, Node, NodeView, PrintFlag, Refs, Rt, UserEvent,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
