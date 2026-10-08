@@ -751,7 +751,14 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             // a `let r = never()` read by `r?` before its writer) and names nothing to
             // annotate. probe: design/review-2026-10-05/repro/c-error-op-05.gx
             // (c-error-op-05)
-            None => bail!("type must be known"),
+            // 2026-10-08 claude: refused with a message that names the payload; the
+            // generic raise (deciding the wrap for a variable payload) remains.
+            None => format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "? raises {etyp}, whose payload is a type variable: whether it is a \
+                     chain already is not known; give the error a concrete type"
+                )
+            }),
             Some(Type::Ref(tr)) if tr.scope == ModPath::root() && tr.name == *ECHAIN =>
             {
                 Ok(etyp.clone())
