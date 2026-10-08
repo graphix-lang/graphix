@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7d3d7981.js";
+            window.path_to_searchindex_js = "searchindex-b896bb5b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -3958,13 +3958,15 @@ defaults:</p>
 // activation per element.
 type L&lt;'a&gt; = [`C('a, L&lt;'a&gt;), `N];
 
-let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b| -&gt; 'b
+let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e|
+    -&gt; 'b throws 'e
     select l {
         `N =&gt; acc,
         `C(x, rest) =&gt; fold_l(rest, f(acc, x), f)
     };
 
-let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt;| -&gt; L&lt;'b&gt;
+let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt; throws 'e|
+    -&gt; L&lt;'b&gt; throws 'e
     select l {
         `N =&gt; `N,
         `C(x, rest) =&gt; select f(x) {
@@ -3976,7 +3978,8 @@ let rec filter_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; Option&lt;'b&gt;| -&g
 let rec append_l = |a: L&lt;'a&gt;, b: L&lt;'a&gt;| -&gt; L&lt;'a&gt;
     select a { `N =&gt; b, `C(x, rest) =&gt; `C(x, append_l(rest, b)) };
 
-let rec flat_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; L&lt;'b&gt;| -&gt; L&lt;'b&gt;
+let rec flat_map_l = |l: L&lt;'a&gt;, f: fn(x: 'a) -&gt; L&lt;'b&gt; throws 'e|
+    -&gt; L&lt;'b&gt; throws 'e
     select l {
         `N =&gt; `N,
         `C(x, rest) =&gt; append_l(f(x), flat_map_l(rest, f))
