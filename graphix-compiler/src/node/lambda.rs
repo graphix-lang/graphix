@@ -11,7 +11,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     dbgenv,
-    effects::{EffectKind, RecursionKind},
+    effects::{EffectKind, LambdaFacts, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
@@ -490,15 +490,15 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// What the definition's check settled, for its instances; shared
     /// with `init`, which hands it to each instance.
     pub table: SArc<DefTables>,
-    /// Sync/async effect, computed by `analysis::infer_effects`: the
-    /// body's own, joined with every instance's an analysis reached (a
-    /// resolved callback's instance joins its HOF instance's; a call
-    /// through an unresolved parameter is async), so it only grows.
-    pub intrinsic_effect: Mutex<EffectKind>,
-    /// The body holds no per-activation state: every builtin it reaches
-    /// is `Effect::Stateless`, no `<-` targets its own binding, every
-    /// callee is stateless. A tail loop reuses one activation only then.
-    pub stateless: AtomicBool,
+    /// Sync/async effect and statelessness, computed by
+    /// `analysis::infer_effects`: the body's own, joined with every
+    /// instance's an analysis reached (a resolved callback's instance
+    /// joins its HOF instance's; a call through an unresolved parameter
+    /// is async), so they only degrade. Stateless: the body holds no
+    /// per-activation state (every builtin it reaches is
+    /// `Effect::Stateless`, no `<-` targets its own binding, every callee
+    /// is stateless); a tail loop reuses one activation only then.
+    pub facts: Mutex<LambdaFacts>,
     /// How this lambda recurses, computed by `analysis::analyze`. The
     /// operational tail-loop gate is `GXLambda::tail_loop`, not this.
     pub recursion: Mutex<RecursionKind>,
@@ -1563,8 +1563,7 @@ impl Lambda {
             scope: scope.clone(),
             check: Mutex::new(None),
             table,
-            intrinsic_effect: Mutex::new(intrinsic_effect),
-            stateless: AtomicBool::new(stateless),
+            facts: Mutex::new(LambdaFacts { effect: intrinsic_effect, stateless }),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: spec.clone() },

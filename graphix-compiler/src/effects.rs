@@ -5,6 +5,35 @@
 //! `FastCall` (`design/strict_fusion.md`): a `Sync` builtin keeps state
 //! and node-walks like an `Async` one.
 
+/// The two facts the fixpoint infers per lambda from an optimistic
+/// start: `effect` (`Sync` degrading to `Async`) and `stateless` (no
+/// per-activation state: every builtin reached is `Effect::Stateless`,
+/// no `<-` targets an own binding, every callee is stateless).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LambdaFacts {
+    pub effect: EffectKind,
+    pub stateless: bool,
+}
+
+impl LambdaFacts {
+    pub const PURE: Self = Self { effect: EffectKind::Sync, stateless: true };
+    pub const ASYNC: Self = Self { effect: EffectKind::Async, stateless: false };
+    pub const STATEFUL: Self = Self { effect: EffectKind::Sync, stateless: false };
+
+    pub fn join(self, other: Self) -> Self {
+        Self {
+            effect: self.effect.join(other.effect),
+            stateless: self.stateless && other.stateless,
+        }
+    }
+
+    /// Sync and stateless: what a tail loop's single activation and a
+    /// sleep-free arm need.
+    pub fn is_pure(self) -> bool {
+        self.effect.is_sync() && self.stateless
+    }
+}
+
 /// The sync/async lattice: `Sync ⊔ Sync = Sync`, everything else is
 /// `Async`. `Async` is the conservative default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, netidx_derive::Pack)]

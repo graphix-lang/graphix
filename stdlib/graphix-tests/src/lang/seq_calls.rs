@@ -147,3 +147,40 @@ modes!(
     native_call,
     reference_argument_writes,
 );
+
+// A builtin given references inside a structure writes through them: the
+// next step waits for the writes.
+async fn builtin_writes_through_nested_references(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(
+        r#"{
+            let x: u8 = u8:0;
+            let b = buffer::encode([`U8(u8:7)]);
+            seq { buffer::decode(b, [`U8(&mut x)])$; cast<i64>(x)$ }
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![7]);
+    Ok(())
+}
+
+// Each instance's seqq captures are its own: a second call's plan does not
+// decide the first's.
+async fn seqq_captures_per_instance(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(
+        r#"{
+            let mk = |go: i64| {
+                let n = 0;
+                let put = |v| { n <- v; v };
+                seqq go { put(5); n }
+            };
+            mk(1) * 10 + mk(1)
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![55]);
+    Ok(())
+}
+
+modes!(builtin_writes_through_nested_references, seqq_captures_per_instance);

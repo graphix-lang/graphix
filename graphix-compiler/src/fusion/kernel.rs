@@ -44,6 +44,9 @@ static EMPTY_ARRAY: LazyLock<Value> = LazyLock::new(|| Value::Array(EMPTY_ARR.cl
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
     typ: Type,
+    /// The region may run a core-trait impl, whose reads its feeders do
+    /// not show (`analysis::region_runs_hooks`).
+    hooks: bool,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
@@ -123,6 +126,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub(crate) fn new(
         spec: Expr,
         typ: Type,
+        hooks: bool,
         kernel: Arc<KernelSig>,
         jit: WrappedKernel,
         feeders: Box<[Node<R, E>]>,
@@ -134,6 +138,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         Node::new(Self {
             spec,
             typ,
+            hooks,
             feeders,
             slept: WakeBit::default(),
             kernel,
@@ -145,6 +150,11 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             tree_size: 0,
             redirects: Box::default(),
         })
+    }
+
+    /// Whether the region may run a core-trait impl.
+    pub(crate) fn runs_hooks(&self) -> bool {
+        self.hooks
     }
 
     /// The kernel signature this region fused into.
@@ -197,6 +207,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
+        let hooks = bool::decode(buf)?;
         let feeders = decode_nodes(ctx, buf)?.into_boxed_slice();
         let state_words = decode_varint(buf)? as usize;
         let slot_table_words = Pack::decode(buf)?;
@@ -226,7 +237,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         if feeders.len() != kernel.params.len() {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Self::new(spec, typ, kernel, jit, feeders))
+        Ok(Self::new(spec, typ, hooks, kernel, jit, feeders))
     }
 
     /// Nothing ran yet: every word the image does not carry is initial.
@@ -305,6 +316,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         put_tag(NodeTag::Fused, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
+        self.hooks.encode(buf)?;
         encode_nodes(&self.feeders, buf)?;
         encode_varint(w.state_words as u64, buf);
         w.slot_table_words.encode(buf)?;

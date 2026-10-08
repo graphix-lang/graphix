@@ -10,7 +10,8 @@ use crate::{
     ApplyView, BindId, CompileCtx, DefAssertionKind, LambdaId, LambdaInstanceId, Node,
     NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
-    effects::{EffectKind, RecursionKind},
+    effects::{LambdaFacts, RecursionKind},
+    env::Env,
     expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
@@ -20,8 +21,8 @@ use crate::{
         seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
-    typ::Type,
 };
+use ahash::AHashMap;
 use anyhow::{Result, anyhow};
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
@@ -39,14 +40,19 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
 /// its callee through, the instances it reached: the back-edge table
 /// for a self-call that is not yet in `ctx.bind_to_lambda` (a
 /// dynamically bound recursive callee). Also the seq machines met, and
-/// the `seqq` captures by the id of their machine, with the bind each
-/// is the value of.
+/// the `seqq` captures by the id of their machine and the instance that
+/// holds them (every instance of a definition shares the machine's id),
+/// with the bind each is the value of.
+/// The instance a node belongs to; `None` outside every instance.
+type Holder = Option<LambdaInstanceId>;
+
 struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>>,
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
-    machines: LPooled<Vec<&'a SeqMachine<R, E>>>,
-    captures: LPooled<IntMap<u64, SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>>>,
+    machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
+    captures:
+        LPooled<AHashMap<(u64, Holder), SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>>>,
 }
 
 impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
@@ -108,12 +114,16 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
         fusion::for_each_node(node, &mut |n| {
             let site = match n.view() {
                 NodeView::CallSite(site) => site,
-                NodeView::SeqMachine(m) => return graph.machines.push(m),
+                NodeView::SeqMachine(m) => return graph.machines.push((m, caller)),
                 NodeView::Bind(b) => {
                     if let NodeView::SeqCapture(c) = b.node.view()
                         && let Some(id) = b.pattern.single_bind_id()
                     {
-                        graph.captures.entry(c.machine).or_default().push((id, c))
+                        graph
+                            .captures
+                            .entry((c.machine, caller))
+                            .or_default()
+                            .push((id, c))
                     }
                     return;
                 }
@@ -237,7 +247,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let graph = collect_static_graph(root, None);
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
-    plan_machines(&graph);
+    plan_machines(&graph, &ctx.env);
     // An assertion whose definition is not yet reached stays pending
     // for a later compile or a runtime bind.
     check_def_assertions(&graph, ctx)
@@ -260,7 +270,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     }
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
-    plan_machines(&graph);
+    plan_machines(&graph, &ctx.env);
     if let Err(e) = check_def_assertions(&graph, ctx) {
         log::error!("{e:#}");
         eprintln!("{e:#}");
@@ -309,7 +319,7 @@ fn assertion_failure<R: Rt, E: UserEvent>(
     kind: DefAssertionKind,
     d: &LambdaDef<R, E>,
 ) -> Option<&'static str> {
-    let effect = *d.intrinsic_effect.lock();
+    let effect = d.facts.lock().effect;
     match kind {
         DefAssertionKind::Sync => effect.is_async().then_some(
             "#[sync]: this function is async — its body reaches an async builtin \
@@ -394,62 +404,17 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
     for (iid, b) in bodies.iter() {
         if let Some(d) = lambda_def(ctx, b.lambda) {
-            // CR claude for claude: [bug] This read-join-write of a definition's facts
-            // holds no lock across it: def_facts reads intrinsic_effect and stateless,
-            // and the two stores below happen later. Run-time binds in forked branches
-            // (build_bound -> analyze_bound_callee) run this loop at the same time on
-            // one shared LambdaDef. A bind of a pure instance that read the facts
-            // before a stateful or async instance's stores then writes them back as
-            // pure after those stores, so the definition's facts improve.
-            // arm_sleeps_on_deselect then reads the improved facts, the arm is never
-            // slept, and a count in it is not reset: under GRAPHIX_PAR=force about one
-            // trial in 200 of the probe ends at 8, where the serial run ends at 5. Keep
-            // the facts as one value joined atomically (Pure < Stateful < Async in an
-            // AtomicU8 with fetch_max, or one Mutex<LambdaFacts> held across the join);
-            // that also removes the (Async, stateless) state that only a torn write can
-            // make. probe: design/review-2026-10-05/repro/c-lambda-05.sh (c-lambda-05)
-            let e = def_facts(d).join(eff[iid]);
-            *d.intrinsic_effect.lock() = e.effect;
-            d.stateless.store(e.stateless, Ordering::Relaxed);
+            // joined under the lock: binds in forked branches join here
+            // at once, and the facts only ever degrade
+            let mut facts = d.facts.lock();
+            *facts = facts.join(eff[iid]);
         }
     }
     eff
 }
 
 fn def_facts<R: Rt, E: UserEvent>(d: &LambdaDef<R, E>) -> LambdaFacts {
-    LambdaFacts {
-        effect: *d.intrinsic_effect.lock(),
-        stateless: d.stateless.load(Ordering::Relaxed),
-    }
-}
-
-/// The two facts the fixpoint infers per lambda from an optimistic
-/// start: `effect` (`Sync` degrading to `Async`) and `stateless` (no
-/// per-activation state: every builtin reached is `Effect::Stateless`,
-/// no `<-` targets an own binding, every callee is stateless).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LambdaFacts {
-    effect: EffectKind,
-    stateless: bool,
-}
-
-impl LambdaFacts {
-    const PURE: Self = Self { effect: EffectKind::Sync, stateless: true };
-    const ASYNC: Self = Self { effect: EffectKind::Async, stateless: false };
-    const STATEFUL: Self = Self { effect: EffectKind::Sync, stateless: false };
-
-    fn join(self, other: Self) -> Self {
-        Self {
-            effect: self.effect.join(other.effect),
-            stateless: self.stateless && other.stateless,
-        }
-    }
-
-    /// Sync and stateless: what a tail loop's single activation and a
-    /// sleep-free arm need.
-    fn is_pure(self) -> bool {
-        self.effect.is_sync() && self.stateless
-    }
+    *d.facts.lock()
 }
 
 /// Reduce one instance body (nested lambda bodies excluded) to its
@@ -529,7 +494,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
-        // CR claude for claude: [bug] A fused arm body is a FusedKernel. This line calls
+        // CR claude for eric: [bug] A fused arm body is a FusedKernel. This line calls
         // it ASYNC and for_each_node does not look inside it, so under fusion
         // arm_sleeps_on_deselect puts a pure arm to sleep that the node-walk never
         // sleeps. At re-entry the node-walk runs that arm as a birth (standing reads
@@ -939,34 +904,53 @@ impl Summary {
 /// reach into `callees`. A write or read through a reference, a call
 /// with no static target, a dynamic module, and a builtin handed a
 /// function or a reference touch every variable.
+/// Whether `n` itself may run a core-trait impl (`Eq`, `Ord`,
+/// `Display`): a comparison or a print of a value that can hold an
+/// abstract one, or a kernel whose region holds one.
+fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+    let holds = |n: &Node<R, E>| n.typ().holds_abstract(env);
+    match n.view() {
+        NodeView::Eq(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::Ne(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::Lt(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::Gt(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::Lte(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::Gte(o) => holds(&o.lhs) || holds(&o.rhs),
+        NodeView::StringInterpolate(si) => si.args.iter().any(holds),
+        NodeView::FusedKernel(k) => k.runs_hooks(),
+        _ => false,
+    }
+}
+
+/// Whether anything in the region `n`, callees excluded, may run a
+/// core-trait impl.
+pub(crate) fn region_runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+    let mut runs = false;
+    fusion::for_each_node(n, &mut |x| runs = runs || runs_hooks(x, env));
+    runs
+}
+
 fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
+    env: &Env,
     ordered: &dyn Fn(&str) -> bool,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
-    // CR claude for claude: [bug] local_summary does not see a core-trait dispatch. `==`,
-    // `<` or `"[x]"` on an abstract value with an `impl Eq/Ord/Display` runs the method
-    // through coretraits::call_hook, and no summary includes what the method reads. So
-    // a seq step that compares or prints such a value after a step that writes a
-    // variable the method reads is planned same-cycle and reads the old value: `seq {
-    // sym <- "EUR"; "[price]" }` gives "$5", while the same body through a plain fn
-    // gives "EUR5". plan_block likewise puts a comparison in one run with the statement
-    // that publishes what the method reads (when the comparison comes before the impl,
-    // or the method reads `*r`), so forked and serial evaluation disagree and the
-    // default Auto mode answers nondeterministically; its doc's claim that an impl's
-    // methods read only earlier runs does not hold. A stateful method also gets
-    // different pooled hook sites forked than serial, so it sees different state.
-    // probe: design/review-2026-10-05/repro/c-analysis-branch-02.sh
-    // (c-analysis-branch-02)
     fusion::for_each_node(n, &mut |x| match x.view() {
         NodeView::Ref(r) => {
             s.reads.ids.insert(r.id);
         }
-        // a kernel reads only through its feeders
+        // a kernel reads only through its feeders, and through the core-trait
+        // impls its region may run
         NodeView::FusedKernel(k) => {
-            k.feeders().iter().for_each(|f| local_summary(f, graph, ordered, s, callees))
+            if k.runs_hooks() {
+                s.opaque()
+            }
+            k.feeders()
+                .iter()
+                .for_each(|f| local_summary(f, graph, env, ordered, s, callees))
         }
         NodeView::Connect(c) => {
             s.writes.ids.insert(c.id);
@@ -978,6 +962,9 @@ fn local_summary<R: Rt, E: UserEvent>(
         }
         NodeView::Deref(_) => s.reads.refs = true,
         NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
+        // a comparison or a print of an abstract value runs its core-trait
+        // impl, whose reads no summary holds
+        _ if runs_hooks(x, env) => s.opaque(),
         NodeView::CallSite(cs) => {
             if let Some(t) = cs.static_target()
                 && graph.instances.contains_key(&t.instance)
@@ -992,28 +979,11 @@ fn local_summary<R: Rt, E: UserEvent>(
                 }
                 Some(ApplyView::BuiltIn(name)) => {
                     s.ordered |= ordered(name);
-                    // CR claude for claude: [bug] A builtin is made opaque only when an
-                    // argument's top-level type is &T, fn or Any. So
-                    // `buffer::decode(buf, spec)` summarizes as touching nothing,
-                    // although it writes (set_var) and reads lengths (store_value)
-                    // through the references inside `spec: Array<Decode>`.
-                    // plan_machines then enters the next seq step in the cycle the
-                    // decode completes, before the decoded writes land. `seq {
-                    // buffer::decode(b, [`U8(&x)])$; x }` yields the old x (0, not 7),
-                    // and a length written by the step before a decode is read stale.
-                    // Test argument types deeply for references and functions, through
-                    // typedefs. probe:
-                    // design/review-2026-10-05/repro/x-builtin-effects-03.gx
-                    // (x-builtin-effects-03)
-                    let reaches =
-                        cs.args.values().filter_map(|a| a.node.as_ref()).any(|a| {
-                            a.typ().with_deref(|t| {
-                                matches!(
-                                    t,
-                                    Some(Type::ByRef(..) | Type::Fn(_) | Type::Any)
-                                )
-                            })
-                        });
+                    let reaches = cs
+                        .args
+                        .values()
+                        .filter_map(|a| a.node.as_ref())
+                        .any(|a| a.typ().reaches_out(env));
                     if reaches {
                         if gxdbg_seqplan() {
                             eprintln!("SEQPLAN   opaque builtin {}", cs.fnode().spec());
@@ -1052,6 +1022,7 @@ fn local_summary<R: Rt, E: UserEvent>(
 /// writes joined with its callees', to a fixpoint over recursion.
 fn instance_summaries<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
+    env: &Env,
     ordered: &dyn Fn(&str) -> bool,
     roots: impl IntoIterator<Item = LambdaInstanceId>,
 ) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
@@ -1066,7 +1037,7 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let Some(g) = graph.instances.get(&i) else { continue };
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, ordered, &mut s, &mut cs);
+        local_summary(g.body(), graph, env, ordered, &mut s, &mut cs);
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
         callees.insert(i, cs);
@@ -1127,12 +1098,13 @@ fn accesses<'a, R: Rt, E: UserEvent>(
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
-            local_summary(n, &graph, &ordered, &mut s, &mut cs);
+            local_summary(n, &graph, &ctx.env, &ordered, &mut s, &mut cs);
             (s, cs)
         })
         .collect();
     let sums = instance_summaries(
         &graph,
+        &ctx.env,
         &ordered,
         locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
     );
@@ -1256,23 +1228,17 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
             published = Vars::default();
             run_ordered = false;
         }
-        // CR claude for claude: [bug] `published` holds only the ids a statement binds,
-        // but a reference publishes too. A chainless `&(e)` writes its own cell
-        // (`ByRef::publish`), and a place `&a[i]` with a moving key sets its path
-        // (`set_ref_path`). Neither id is bound, and a later `*r` meets `published`
-        // only when it is non-empty, so `{ r <- &(n * 10); let v = *r; v }` is planned
-        // as one run. Forked, `*r` reads the parent's cell or path: `v` stays at its
-        // init value and a place read lags a cycle, where serial evaluation gives the
-        // new value; default Auto does the same with no attribute once both statements
-        // are expensive. GRAPHIX_PAR_AUDIT catches the cell case but not the path case,
-        // because `ForkRt::ref_path` notes no read and `audit` never compares
-        // `ref_paths`. probe: design/review-2026-10-05/repro/c-analysis-branch-04.gx
-        // (graphix-fuzz check: DIVERGENCE, parallel evaluation bug).
-        // (c-analysis-branch-04)
         let mut refs = Refs::without_callees();
         n.refs(&mut refs);
         refs.with_bound(|id| {
             published.ids.insert(id);
+        });
+        // a reference publishes its cell (and a moving place its path)
+        // in the cycle it fires, which a later `*r` reads
+        fusion::for_each_node(n, &mut |x| {
+            if let NodeView::ByRef(b) = x.view() {
+                published.ids.insert(b.id);
+            }
         });
         run_ordered |= access.ordered;
         after_module = module;
@@ -1288,7 +1254,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
 /// since the last next-cycle boundary is still carrying there
 /// (`design/dependency_summaries.md` §3). A `seqq` capture of a variable
 /// some step writes is live (§4).
-fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
+fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &Env) {
     let StaticCallGraph { machines, captures, .. } = graph;
     if machines.is_empty() {
         return;
@@ -1297,14 +1263,14 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
     let steps: LPooled<Vec<SmallVec<[(Summary, SmallVec<[LambdaInstanceId; 4]>); 8]>>> =
         machines
             .iter()
-            .map(|m| {
+            .map(|(m, _)| {
                 m.steps
                     .iter()
                     .map(|s| {
                         let mut sum = Summary::default();
                         let mut cs = SmallVec::new();
                         s.nodes.iter().for_each(|n| {
-                            local_summary(n, graph, &|_| false, &mut sum, &mut cs)
+                            local_summary(n, graph, env, &|_| false, &mut sum, &mut cs)
                         });
                         (sum, cs)
                     })
@@ -1313,10 +1279,11 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
             .collect();
     let sums = instance_summaries(
         graph,
+        env,
         &|_| false,
         steps.iter().flat_map(|m| m.iter().flat_map(|(_, cs)| cs.iter().copied())),
     );
-    for (m, local) in machines.iter().zip(steps.iter()) {
+    for ((m, holder), local) in machines.iter().zip(steps.iter()) {
         let mut access: SmallVec<[Summary; 8]> = local
             .iter()
             .map(|(local, cs)| {
@@ -1330,18 +1297,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
                 s
             })
             .collect();
-        // CR claude for claude: [bug] `captures` is keyed by the seq's expression id
-        // (analysis.rs:116), and every instance of the enclosing definition shares it.
-        // So this lookup returns every instance's captures, the store below writes this
-        // machine's verdict into all of them, and the machine planned last decides
-        // liveness for every instance. A function holding `seqq go { put(5); n }`,
-        // where `put` writes the local `n`, prints 5 when called once and (5, 0) when
-        // called twice. In a HOF the verdict follows whichever callback was planned
-        // last. Every engine, parallel mode and image agrees, so graphix-fuzz cannot
-        // see it. Key the captures by the instance that holds them (the walk's
-        // `caller`) as well as by the machine id. probe:
-        // design/review-2026-10-05/repro/c-analysis-branch-01.gx (c-analysis-branch-01)
-        if let Some(caps) = captures.get(&m.id) {
+        if let Some(caps) = captures.get(&(m.id, *holder)) {
             let mut written = Vars::default();
             access.iter().for_each(|s| {
                 written.union(&s.writes);
@@ -1395,7 +1351,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
                     },
                 );
             }
-            for (_, c) in captures.get(&m.id).into_iter().flatten() {
+            for (_, c) in captures.get(&(m.id, *holder)).into_iter().flatten() {
                 eprintln!(
                     "SEQPLAN   capture {:?} live {}",
                     c.live_id,
@@ -1424,24 +1380,31 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
             _ => break,
         }
     }
+    // a constant, a variable read, a function literal or a declaration
+    // is nothing to run beside something else
+    let work = |n: &Node<R, E>| {
+        let n = match n.view() {
+            NodeView::Bind(b) => &b.node,
+            _ => n,
+        };
+        !matches!(
+            n.view(),
+            NodeView::Constant(_)
+                | NodeView::Ref(_)
+                | NodeView::Lambda(_)
+                | NodeView::TypeDef(_)
+                | NodeView::Nop(_)
+        )
+    };
     if let NodeView::Block(b) = target.view() {
         let mut first: Option<(usize, RunBreak)> = None;
         let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
             first.get_or_insert((i, why));
         });
-        // CR claude for claude: [bug] A block passes on any run of two statements, even
-        // when one is a constant `let` or a typedef. `#[parallel] { let k = 1; let a =
-        // g(n); a + k }` builds, and its only fork puts the constant beside the call,
-        // while `#[parallel] (1, g(n))` is refused, because every other fork point
-        // needs two children that are more than a constant or a variable read (line
-        // 1295). The check also passes a `#[parallel]` lexically inside a seq body or a
-        // `#[serial]`. There ForkControl keeps the context's `seq` or `inhibit` flag
-        // (node/fork_control.rs:93-95) and fork_mode() is Off (lib.rs:1507), so nothing
-        // under it ever forks: `seq { let v = #[parallel] (g(n), h(n)); v }` builds and
-        // runs serially. Apply the same work test to a run's members, and refuse the
-        // attribute where an enclosing seq or `#[serial]` turns forking off. probe:
-        // design/review-2026-10-05/repro/c-analysis-branch-06.gx (c-analysis-branch-06)
-        if runs.iter().any(|(a, b)| b - a >= 2) {
+        let two = |&(a, z): &(u32, u32)| {
+            (a..z).filter(|i| work(&b.children[*i as usize])).count() >= 2
+        };
+        if runs.iter().any(two) {
             return Ok(());
         }
         let Some((i, why)) = first else {
@@ -1471,8 +1434,6 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
             i + 1
         )
     }
-    let work =
-        |n: &Node<R, E>| !matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
     let two =
         |ns: &mut dyn Iterator<Item = &Node<R, E>>| ns.filter(|n| work(n)).count() >= 2;
     let mut forks = false;

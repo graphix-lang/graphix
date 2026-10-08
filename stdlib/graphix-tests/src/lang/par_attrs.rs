@@ -240,3 +240,38 @@ async fn fork_attribute_arguments() {
         assert!(e.contains(msg), "{code}: {e}");
     }
 }
+
+// A constant beside a call is nothing to run in parallel.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_block_needs_two_that_work() {
+    let e = refusal(
+        "{ let g = |x: i64| x * 2; let n = 3; #[parallel] { let k = 1; let a = g(n); a + k } }",
+    )
+    .await;
+    assert!(e.contains("#[parallel] has nothing to run in parallel"), "{e}");
+}
+
+// A reference publishes its cell: the read through it is a later run.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_reference_publishes() {
+    let e = refusal(
+        "{ let n = 1; let holder = 0; let r = &holder; #[parallel] { r <- &(n * 10); let v = *r; v } }",
+    )
+    .await;
+    assert!(e.contains("reads through a reference"), "{e}");
+}
+
+// Nothing under a seq or a #[serial] forks.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_where_nothing_forks() {
+    let e = refusal(
+        "{ let g = |x: i64| x * 2; let n = 3; seq { let v = #[parallel] (g(n), g(n + 1)); v } }",
+    )
+    .await;
+    assert!(e.contains("#[parallel] is not allowed inside a seq"), "{e}");
+    let e = refusal(
+        "{ let g = |x: i64| x * 2; let n = 3; #[serial] { let v = #[parallel] (g(n), g(n + 1)); v } }",
+    )
+    .await;
+    assert!(e.contains("#[parallel] under #[serial] never forks"), "{e}");
+}

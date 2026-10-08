@@ -1543,3 +1543,21 @@ run!(
         let result = "[d(A(2))] [(ops.f)(A(3))] [array::map([A(4)], d)] [Show::show(A(5))]"
     "##
 );
+
+// A comparison runs its core-trait impl, which reads what the summary
+// of the comparison cannot see: forked and serial evaluation agree.
+run!(
+    core_impl_reads_follow_the_plan,
+    r#"{
+    type Key = Abstract<i64>;
+    let n = array::iter([0, 1, 2, 3]);
+    let k = n * 10;
+    let same = Key(n) == Key(n + n * 10);
+    impl Eq for Key { let eq = |a, b| (a.0 + k) == b.0 };
+    array::group(same, |i, _| i == 4)
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => a.len() == 4 && a.iter().all(|v| *v == Value::Bool(true)),
+        _ => false,
+    }
+);

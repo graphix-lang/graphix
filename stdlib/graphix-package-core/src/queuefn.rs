@@ -4,7 +4,7 @@ use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
     Node, Refs, Rt, Scope, TagValue, TagView, UserEvent,
-    effects::{EffectKind, RecursionKind},
+    effects::{LambdaFacts, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
@@ -331,8 +331,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             init,
             check: Mutex::new(None),
             table: Default::default(),
-            intrinsic_effect: Mutex::new(EffectKind::Async),
-            stateless: std::sync::atomic::AtomicBool::new(false),
+            facts: Mutex::new(LambdaFacts::ASYNC),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,
             origin: graphix_compiler::node::lambda::DefOrigin::Runtime,

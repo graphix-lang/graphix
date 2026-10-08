@@ -285,6 +285,27 @@ impl Type {
         })
     }
 
+    /// Whether a value of this type can hold a reference, a function or
+    /// `Any` anywhere: what a builtin given one may reach through.
+    #[doc(hidden)]
+    pub fn reaches_out(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::ByRef(..) | Type::Fn(_) | Type::Any => Some(true),
+            _ => None,
+        })
+    }
+
+    /// Whether a value of this type can hold an abstract value, whose
+    /// core-trait impls (`Eq`, `Ord`, `Display`) a comparison or a print
+    /// runs.
+    #[doc(hidden)]
+    pub fn holds_abstract(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Abstract { .. } | Type::Any => Some(true),
+            _ => None,
+        })
+    }
+
     /// Whether some part of this type is one `leaf` says yes to; `leaf`
     /// stops the walk at a part it decides.
     fn holds(

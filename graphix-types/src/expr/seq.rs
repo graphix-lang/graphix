@@ -243,7 +243,7 @@ fn desugar_plain(
     let id = spec.id.inner();
     let mut steps: SmallVec<[&Expr; 8]> = SmallVec::new();
     for e in body.iter() {
-        refuse_catch(e)?;
+        refuse_in_seq(e)?;
         if !matches!(e.kind, ExprKind::NoOp) {
             steps.push(e);
         }
@@ -480,17 +480,28 @@ fn reads_name(stmts: &[Expr], n: &str) -> bool {
 }
 
 /// `catch` is refused anywhere in a seq body: an install cannot produce
-/// the value the next step waits for. A lambda literal is its own dynamic
-/// scope, so its body and defaults are exempt.
-fn refuse_catch(e: &Expr) -> Result<()> {
-    match find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
-        None => Ok(()),
-        Some(c) => Err(anyhow!(
+/// the value the next step waits for. So is `#[parallel]`: a seq runs
+/// serially inside, so nothing under it forks. A lambda literal is its
+/// own dynamic scope, so its body and defaults are exempt.
+fn refuse_in_seq(e: &Expr) -> Result<()> {
+    if let Some(c) = find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Catch(_))) {
+        return Err(anyhow!(
             "catch is not allowed inside a seq: `?` aborts the run, \
              `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
              seq sees the abort"
         )
-        .at(&c)),
+        .at(&c));
+    }
+    let parallel = |x: &Expr| {
+        x.dec.as_ref().is_some_and(|d| d.attrs.iter().any(|a| a.name == "parallel"))
+    };
+    match find_outside_lambdas(e, parallel) {
+        None => Ok(()),
+        Some(p) => Err(anyhow!(
+            "#[parallel] is not allowed inside a seq: a seq runs its steps serially, \
+             so nothing under it forks"
+        )
+        .at(&p)),
     }
 }
 
