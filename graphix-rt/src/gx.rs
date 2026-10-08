@@ -890,6 +890,9 @@ impl<X: GXExt> GX<X> {
                 // .gxi); through `mod foo;` the same pair checks correctly. probe:
                 // design/review-2026-10-05/repro/t-format-resolver-03.sh
                 // (t-format-resolver-03)
+                // 2026-10-08 claude: the check compiles a lone root with an interface as `mod
+                // <stem>`, as a package root, so the whole interface applies there; a run
+                // still splices it (a script is not a module).
                 (root.ori, root.exprs)
             }
             source @ Source::Netidx(_) => {
@@ -947,7 +950,10 @@ impl<X: GXExt> GX<X> {
             let st = Instant::now();
             // A package root is the body of `mod <package>`, recompiled
             // over the copy registered at startup.
-            let (ori, exprs, modules_at) = match (&initial_scope, source) {
+            let overrides = resolvers_for_call.iter().find_map(|r| r.overrides());
+            // a root with an interface is the body of a module: a package's
+            // under its name, a lone one's under its file's stem
+            let (ori, exprs, modules_at, as_module) = match (&initial_scope, source) {
                 (Some(name), Source::File(file)) => {
                     let path =
                         ModPath(netidx_core::path::Path::root().append(name.as_str()));
@@ -955,16 +961,35 @@ impl<X: GXExt> GX<X> {
                     // a package this binary was not built with is still
                     // the root `package::` names
                     self.ctx.env.package_roots.insert(name.clone());
-                    let overrides = resolvers_for_call.iter().find_map(|r| r.overrides());
                     let root = RootFile::load(file, overrides.as_ref()).await?;
                     let ori = root.ori.clone();
-                    (ori, Arc::from_iter([root.into_module(name.clone())]), path)
+                    (ori, Arc::from_iter([root.into_module(name.clone())]), path, true)
                 }
                 (Some(_), _) => bail!("only a file can be checked as a package root"),
+                (None, Source::File(file)) => {
+                    let root = RootFile::load(file, overrides.as_ref()).await?;
+                    let stem = file.file_stem().and_then(|s| s.to_str());
+                    match (&root.sig, stem) {
+                        (Some(_), Some(stem)) => {
+                            let name = ArcStr::from(stem);
+                            let path =
+                                ModPath(netidx_core::path::Path::root().append(stem));
+                            self.ctx.env.unbind_scope_subtree(&path);
+                            let ori = root.ori.clone();
+                            (
+                                ori,
+                                Arc::from_iter([root.into_module(name)]),
+                                ModPath::root(),
+                                true,
+                            )
+                        }
+                        _ => (root.ori, root.exprs, ModPath::root(), false),
+                    }
+                }
                 (None, _) => {
                     let (ori, exprs) =
                         self.load_exprs(source, &resolvers_for_call).await?;
-                    (ori, exprs, ModPath::root())
+                    (ori, exprs, ModPath::root(), false)
                 }
             };
             let exprs =
@@ -982,8 +1007,8 @@ impl<X: GXExt> GX<X> {
                 self.flags | CFlag::CheckOnly
             };
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
-            let res = match &initial_scope {
-                Some(_) => exprs.iter().try_for_each(|e| {
+            let res = match as_module {
+                true => exprs.iter().try_for_each(|e| {
                     let (n, _) = graphix_compiler::compile_stmt(
                         &mut self.ctx.view(),
                         flags,
@@ -994,10 +1019,10 @@ impl<X: GXExt> GX<X> {
                     Ok(())
                 }),
                 // A script checks as it runs: its file is one block.
-                None => {
+                false => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
-                    // CR claude for claude: [bug] The check compiles a script with its
+                    // CR claude for eric: [bug] The check compiles a script with its
                     // names at `/` (compile_script at Scope::root()). load_program, the
                     // run, compiles the same file as a Block that compile() scopes at
                     // `/#do<id>`, so any verdict that depends on the scope can differ.
@@ -1010,6 +1035,9 @@ impl<X: GXExt> GX<X> {
                     // one scope, or anchor `self::` at a script's `#do` level as
                     // Env::package_root does for `package::`, then correct CLAUDE.md's
                     // "as it runs, with its names at the root". (t-typ-mod-04)
+                    // 2026-10-08 claude: the same choice as c-analysis-branch-11 (Env::package_root),
+                    // which is with Eric: compile the check at the script's `#do` level, or record
+                    // the scope a script compiled at and anchor `self::` and `package::` there.
                     graphix_compiler::compile_script(
                         &mut self.ctx.view(),
                         flags,

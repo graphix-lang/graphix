@@ -678,3 +678,15 @@ fn an_interface_mismatch_is_reported_where_it_is() {
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0].0, c.at("api.gxi", "|val y").line);
 }
+
+#[test]
+fn a_lone_module_is_checked_against_its_interface() {
+    let mut c =
+        Client::start(&[("api.gxi", "val x: string;\n"), ("api.gx", "let x = 1\n")]);
+    c.open("api.gx");
+    let d = c.diagnostics("api.gx");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].2.contains("val x"), "{d:?}");
+    c.edit("api.gx", "let x = \"s\"\n");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+}
