@@ -2,13 +2,19 @@
 //! what a fork point measures of its children under [`ParMode::Auto`],
 //! and where it forks.
 
-use crate::{ExecCtx, Rt, UserEvent, branch::saturated};
+use crate::{
+    ExecCtx, Rt, UserEvent,
+    branch::{eval_pool, pool_idle, saturated},
+};
 use graphix_types::stack::ParMode;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
-use std::sync::{
-    OnceLock,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+use std::{
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 /// The platform's cheapest monotonic counter. Ticks are never converted
@@ -63,18 +69,6 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
-    // CR claude for claude: [perf] calibration() starts measuring at the first plan of
-    // any site and returns None for at least 18 ms (nine 2 ms sleeps); every site that
-    // plans in that window runs in order. A kernel loop plans once per run, so a
-    // program whose first cycle is one big fused loop never forks under Auto.
-    // design/parallel_eval.md:412-419 (and §10 for kernel loops) says a one-shot growth
-    // forks in the cycle that builds it. Probe:
-    // design/review-2026-10-05/repro/c-cost-misc-07.gx, a 20000-slot map of 1023 calls
-    // per slot: Auto forks nothing (real 1.59 s against 1.68 s with off), while Force
-    // forks both loops. Starting the calibration with the runtime was measured to make
-    // forced ranges bimodal (parallel_eval.md:464-471), so the options are for a long
-    // loop planned inside the window to wait for the calibration, or for the doc to say
-    // the first cycle may not fork. (c-cost-misc-07)
     if !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
@@ -86,29 +80,46 @@ pub fn calibration() -> Option<&'static Calibration> {
     None
 }
 
+/// How many times a sample of the calibration waits for an idle pool.
+const IDLE_TRIES: usize = 500;
+
+/// How long a run must be estimated to take to wait for the calibration
+/// rather than run in order: several times the measurement's length.
+const WAIT_FOR_CALIBRATION: Duration = Duration::from_millis(100);
+
+/// The calibration for a run of `n` more items like one that took
+/// `first`. A run long enough to pay for it waits for the measurement,
+/// so a one-shot growth forks in the cycle that builds it; a pool worker
+/// never waits, since the measurement needs a free one.
+pub fn calibration_for(n: usize, first: Duration) -> Option<&'static Calibration> {
+    calibration().or_else(|| {
+        let long =
+            first.as_nanos().saturating_mul(n as u128) >= WAIT_FOR_CALIBRATION.as_nanos();
+        (long && eval_pool().current_thread_index().is_none()).then(|| CALIBRATION.wait())
+    })
+}
+
 /// The latency, in ticks, from handing an idle evaluation pool a job to
 /// the job starting: the cost a fork pays when its right side is
 /// stolen.
 fn calibrate() -> Calibration {
-    let pool = crate::branch::eval_pool();
+    let pool = eval_pool();
     let mut wakes = [0u64; 9];
-    // CR claude for claude: [perf] T is measured once per process (a OnceLock) from nine
-    // pool wakes, keeping the lower quartile, and nothing checks that the pool is idle
-    // while it samples. Forced work can hold the workers through that window:
-    // #[parallel] forks before any calibration exists, and so does a Force runtime in
-    // the same process. More than six samples then queue behind real jobs, and T stays
-    // inflated for every runtime in the process. At 15.75M ticks (about 4.3 ms), Auto
-    // forks nothing estimated below that. Probe:
-    // design/review-2026-10-05/repro/c-cost-misc-03.gx, a #[parallel] map of 64 heavy
-    // slots every 5 ms: four runs gave T = 2.19M, 99k, 209k and 15.75M ticks, against
-    // 99k-350k with an idle pool. Sampling only while no part is live (and retrying),
-    // or re-measuring and keeping the minimum, would keep T measuring the idle pool.
-    // (c-cost-misc-03)
     for w in wakes.iter_mut() {
-        // let the workers park
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let t0 = ticks();
-        *w = pool.install(ticks).saturating_sub(t0);
+        // a wake measures an idle pool: a sample taken while a part ran
+        // measures the part, so it is taken again
+        for _ in 0..IDLE_TRIES {
+            // let the workers park
+            std::thread::sleep(Duration::from_millis(2));
+            if !pool_idle() {
+                continue;
+            }
+            let t0 = ticks();
+            *w = pool.install(ticks).saturating_sub(t0);
+            if pool_idle() {
+                break;
+            }
+        }
     }
     wakes.sort_unstable();
     // contention only adds to a wake: the lower quartile is the pool's
@@ -298,16 +309,6 @@ impl ForkSite {
         }
     }
 
-    // CR claude for claude: [perf] Under Auto, a wide run of statements that only ride is
-    // forked on every cycle. Meter::time counts a quiet update like any other, so once
-    // a run's quiet walk reaches 2T the site turns Measured. This plan then forks every
-    // unsampled update and wakes the pool, whose idle workers spin, for work that fired
-    // nothing; T prices the wake latency, not that spin. A Measured run of 256 or more
-    // statements also never returns to Serial: each child's estimate is at least
-    // floor(0), T/128 to T/64, so `pays` holds whatever the children cost. Probe:
-    // design/review-2026-10-05/repro/x-alloc-02.gx (1000 quiet lets beside a 100us
-    // timer) runs 4.0 s wall in both modes, with user+sys 2.7 s under GRAPHIX_PAR=off
-    // against 14 s under the default Auto. (x-alloc-02)
     fn plan_auto(&mut self, n: usize) -> Plan<'_> {
         let Some(cal) = calibration() else { return Plan::Serial };
         match &mut self.0 {
@@ -651,6 +652,9 @@ pub struct ProbeSite {
 /// What a [`ProbeSite`] does with its items.
 pub enum ProbePlan {
     Serial,
+    /// Time the first item, then wait for the calibration if the rest is
+    /// long enough ([`calibration_for`]).
+    Uncalibrated,
     /// Run the first `n` in order, timing each, then decide about the
     /// rest.
     Probe(usize),
@@ -666,7 +670,7 @@ impl ProbeSite {
             ParMode::Off => ProbePlan::Serial,
             _ if n < 2 => ProbePlan::Serial,
             ParMode::Force => ProbePlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
-            ParMode::Auto if calibration().is_none() => ProbePlan::Serial,
+            ParMode::Auto if calibration().is_none() => ProbePlan::Uncalibrated,
             ParMode::Auto => ProbePlan::Probe(self.probes(n)),
         }
     }
@@ -713,11 +717,35 @@ impl ProbeSite {
         join: impl Fn(T, T) -> T,
     ) -> Option<T> {
         let (mut items, mut at) = (items, at);
-        let grain = match self.plan(ctx, items.len()) {
-            ProbePlan::Serial => None,
-            ProbePlan::Fork { grain } => Some(grain),
+        let (cal, k) = match self.plan(ctx, items.len()) {
+            ProbePlan::Serial => (None, 0),
+            ProbePlan::Fork { grain } => {
+                let r = rest(ctx, items, at, Some(grain))?;
+                return Some(join(acc, r));
+            }
             ProbePlan::Probe(k) => {
-                let cal = calibration().expect("a probe is planned once calibrated");
+                (Some(calibration().expect("a probe is planned once calibrated")), k)
+            }
+            ProbePlan::Uncalibrated => {
+                let first;
+                (first, items) = items.split_at_mut(1);
+                let (t0, started) = (ticks(), Instant::now());
+                let r = probe(ctx, &mut first[0], at)?;
+                let (dt, took) = (ticks().wrapping_sub(t0), started.elapsed());
+                acc = join(acc, r);
+                at += 1;
+                match calibration_for(items.len(), took) {
+                    None => (None, 0),
+                    Some(cal) => {
+                        self.probed(cal, dt);
+                        (Some(cal), self.probes(items.len()))
+                    }
+                }
+            }
+        };
+        let grain = match cal {
+            None => None,
+            Some(cal) => {
                 let probed;
                 (probed, items) = items.split_at_mut(k);
                 for item in probed {

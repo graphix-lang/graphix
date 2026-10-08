@@ -566,7 +566,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
         ctx: &mut ExecCtx<'_, R, E>,
         _from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if ctx.event.init && self.once.take() {
+        if ctx.event.init() && self.once.take() {
             let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
             let arr: ValArray =
                 pargs.0.iter().map(|s| Value::String(s.clone())).collect();

@@ -2775,3 +2775,22 @@ const DESTRUCTURING_REBINDS_A_BUILTIN: &str = r#"
 run!(destructuring_rebinds_a_builtin, DESTRUCTURING_REBINDS_A_BUILTIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; FuseExpect::None);
+
+// A site whose function changes binds the new definition over its quiet
+// arguments as they stand: `x` fired once, at init.
+async fn rebind_reads_quiet_args(mode: Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+            let t = array::iter([0, 1]);
+            let x = 5;
+            let f = select t { 0 => |v| v + 1, _ => |v| v * 10 };
+            f(x)
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 50]);
+    Ok(())
+}
+
+modes!(rebind_reads_quiet_args);

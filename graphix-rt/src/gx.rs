@@ -5,7 +5,7 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Scope, compile,
+    BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Saved, Scope, View, compile,
     expr::{
         self, Expr, ExprId, ExprKind, ModPath, ModuleKind, Origin, ResolverRef,
         Resolvers, RootFile, Source,
@@ -404,7 +404,7 @@ impl<X: GXExt> GX<X> {
     fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
         for (id, n) in self.nodes.iter_mut() {
             if let Some(init) = self.ctx.rt.updated.get(id) {
-                self.ctx.event.init = *init;
+                self.ctx.event.view = if *init { View::Birth } else { View::Cycle };
                 // Only a FIRED production becomes an event.
                 let tv = n.update(&mut self.ctx.view());
                 if tv.is_fired() {
@@ -947,6 +947,8 @@ impl<X: GXExt> GX<X> {
         expr_types: bool,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         let env = self.ctx.env.clone();
+        // a check runs nothing: everything it compiled is rolled back
+        let saved = Saved::take(&self.ctx.cx);
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }
@@ -1089,7 +1091,7 @@ impl<X: GXExt> GX<X> {
             Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
         };
         let res = go.await;
-        self.ctx.env = env;
+        saved.restore(&mut self.ctx.cx);
         res
     }
 
@@ -1154,7 +1156,7 @@ impl<X: GXExt> GX<X> {
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
         let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
-        self.ctx.view().begin_runtime_node(eid);
+        self.ctx.view().open_compile_frame(eid);
         if let Err(e) =
             graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)
         {

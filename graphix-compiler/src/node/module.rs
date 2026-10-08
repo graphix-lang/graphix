@@ -1,6 +1,6 @@
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, Refs, Rt, Saved, Scope, Tag,
-    TagValue, Update, UserEvent,
+    TagValue, Update, UserEvent, View,
     compiler::compile,
     env::{Env, Glob, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -1153,26 +1153,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 }
             });
         }
-        let init = ctx.event.init;
-        if compiled {
-            ctx.event.init = true;
-        }
-        for Proxy { inner, outer, private_inner } in &self.proxy {
-            if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
-                let tv = tv.clone();
-                store_production(ctx, *inner, &tv);
-                ctx.event.variables.insert(*inner, tv);
+        let view = if compiled { View::Birth } else { View::Cycle };
+        ctx.under(view, |ctx| {
+            for Proxy { inner, outer, private_inner } in &self.proxy {
+                if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
+                    let tv = tv.clone();
+                    store_production(ctx, *inner, &tv);
+                    ctx.event.variables.insert(*inner, tv);
+                }
             }
-        }
-        for i in super::evaluation_order(self.nodes.len(), &self.catches) {
-            let _ = self.nodes[i].update(ctx);
-        }
+            for i in super::evaluation_order(self.nodes.len(), &self.catches) {
+                let _ = self.nodes[i].update(ctx);
+            }
+        });
         // a prime is for the fresh body alone: left, it would fire readers
         // later in the cycle, and a forked merge would requeue it
         for id in primed.drain(..) {
             ctx.event.variables.remove(&id);
         }
-        ctx.event.init = init;
         for Proxy { inner, outer, private_inner } in &self.proxy {
             let tv = if *private_inner {
                 ctx.event.variables.remove(inner)

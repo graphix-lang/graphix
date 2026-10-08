@@ -1251,7 +1251,9 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     body: DefBody,
     table: SArc<DefTables>,
 ) -> InitFn<R, E> {
-    let def_scope = scope.append_block("fn", id.inner());
+    // named by the expression, which every compile of a literal shares,
+    // so what is keyed by scope (a seq's lowering) is found again
+    let def_scope = scope.append_block("fn", def_spec.id.inner());
     SArc::new(move |scope, ctx, args, mode, tid| {
         // the definition's names, the call site's handlers
         let scope =

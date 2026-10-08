@@ -5,7 +5,7 @@ use super::{
 use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent,
+    TagValue, Update, UserEvent, View,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
@@ -1015,10 +1015,8 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
         if ctx.interrupted() {
             return None;
         }
-        if i >= old_len {
-            ctx.event.init = true;
-        }
-        let tv = slot.call.update(ctx);
+        let view = if i >= old_len { View::Birth } else { View::Cycle };
+        let tv = ctx.under(view, |ctx| slot.call.update(ctx));
         let tag = tv.tag();
         if gxdbg_slot() {
             eprintln!(
@@ -1138,9 +1136,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 }
             }
         }
-        let saved_init = ctx.event.init;
         let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len);
-        ctx.event.init = saved_init;
         match slots {
             None => return self.resident.ride(),
             Some(Some(tag)) => production = merge_tag(production, tag),
@@ -1554,16 +1550,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         } else if resized || back {
             prod = merge_tag(prod, tag.as_fire());
         }
-        let saved_init = ctx.event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
-                ctx.event.init = saved_init;
                 return self.resident.ride();
             }
-            // A fresh slot's first dispatch runs under a forced init view,
-            // its acc seeded with the chain's state as it stands.
+            // A fresh slot's first dispatch runs under the birth view, its
+            // acc seeded with the chain's state as it stands.
+            let view = if i >= old_len { View::Birth } else { View::Cycle };
             if i >= old_len {
-                ctx.event.init = true;
                 let seed = match i {
                     0 if init.tag().is_bottom() => {
                         TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
@@ -1579,7 +1573,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 deliver(ctx, self.slots[i].acc_id, seed);
             }
             let slot = &mut self.slots[i];
-            let tv = slot.call.update(ctx).clone();
+            let tv = ctx.under(view, |ctx| slot.call.update(ctx).clone());
             prod = merge_tag(prod, tv.tag());
             slot.state.set(&tv);
             // The production, a bottom included, travels the acc chain.
@@ -1587,7 +1581,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 deliver(ctx, next.acc_id, tv);
             }
         }
-        ctx.event.init = saved_init;
         // An interior slot's poison bottoms the fold only if a downstream
         // callback consumes it; only the last slot's state is the result.
         let prod = prod.unwrap_or(Tag::STALE);

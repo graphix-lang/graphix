@@ -326,3 +326,31 @@ async fn seq_in_try_lowers_once(mode: Mode) -> Result<()> {
 }
 
 modes!(seq_in_try_lowers_once);
+
+// A run aborted while its try body's errors are still arriving takes no
+// jump: the next run's result is its own.
+async fn abort_while_errors_drain(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(
+        r#"{
+            let step = 0;
+            step <- select step { n if n < 30 => n + 1, _ => never() };
+            let go = select step { 1 | 5 => step, _ => never() };
+            seq let c = go; abort(select step { 3 => true, _ => never() }) {
+                let v = try {
+                    {
+                        let a = (select c { 1 => error(`A), n => n })?;
+                        let b = (select c { 1 => error(`B), n => n })?;
+                        a + b
+                    }
+                } with(e) { -1 };
+                v
+            }
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![10]);
+    Ok(())
+}
+
+modes!(abort_while_errors_drain);

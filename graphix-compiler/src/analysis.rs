@@ -277,8 +277,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     mark_recursion(&graph, &facts, ctx);
     plan_machines(&graph, &ctx.env);
     if let Err(e) = check_def_assertions(&graph, ctx) {
-        log::error!("{e:#}");
-        eprintln!("{e:#}");
+        crate::node::error::report_failure!(&compact_str::format_compact!("{e:#}"));
     }
 }
 
@@ -596,7 +595,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
 /// facts, a builtin its declared `EFFECT`, anything else `Async`.
-// CR claude for claude: [bug] A builtin call contributes only its declared EFFECT, and a
+// CR claude for eric: [bug] A builtin call contributes only its declared EFFECT, and a
 // lambda passed to it counts as a PURE literal, so the effect of a callback the builtin
 // calls (filter's predicate, opt::map's f, array::group's f) never reaches the caller's
 // facts. `#[sync] let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms,
@@ -605,6 +604,18 @@ fn node_facts<R: Rt, E: UserEvent>(
 // #[sync]/#[async] verdicts are wrong. A builtin call's facts should join the facts of
 // the function arguments it calls back. probe:
 // design/review-2026-10-05/repro/core-lib-08.gx (core-lib-08)
+// 2026-10-08 claude: re-addressed, a design call (one ruling covers core-aux-11 below). A
+// builtin calls its callback through a call site bound at run time, so the check has no
+// instance of the callback to analyze, and the definition check's own body is pessimistic
+// (a call to a function parameter reads as async there). Options: (a) a builtin HOF call
+// materializes its callback's instance at the check, as MapQ keeps a prototype, and the
+// analysis walks it (memory and check time per call); (b) a builtin declares which
+// arguments it calls back, and those arguments' facts join the call's, computed by a body
+// walk at each literal's definition check where calls to parameters count as their
+// declared types' effects (a new walk; named loss: wrong #[sync] verdicts and
+// core-aux-11's map of len 1); (c) treat every function argument of a builtin as async
+// unless it is a known pure definition (cheap, but de-classifies today's sync uses of
+// opt::map and filter). I lean to (b).
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
@@ -627,7 +638,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return instance(g.instance_id(), g.id());
     }
-    // CR claude for claude: [bug] A call to a builtin contributes only the builtin's
+    // CR claude for eric: [bug] A call to a builtin contributes only the builtin's
     // declared EFFECT, either through the builtin-bodied def that bind_to_lambda names
     // (opt::map takes this branch) or through builtin_bindings below. The functions
     // handed to the builtin are never consulted, and a lambda literal argument counts
@@ -639,6 +650,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
     // Ord impl whose cmp goes through opt::map with an after_idle callback compiles,
     // and a map of three distinct keys of that type has len 1. probe:
     // design/review-2026-10-05/repro/core-aux-11.gx (core-aux-11)
+    // 2026-10-08 claude: re-addressed with core-lib-08 above: one ruling covers both.
     if let NodeView::Ref(r) = cs.fnode().view() {
         if let Some(ids) = graph.and_then(|graph| graph.self_binds.get(&r.id)) {
             ids.iter().for_each(|iid| pending(*iid));

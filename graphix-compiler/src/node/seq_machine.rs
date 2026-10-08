@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
-    Update, UserEvent,
+    Update, UserEvent, View,
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
         self,
@@ -301,28 +301,25 @@ fn evaluate<R: Rt, E: UserEvent>(
     step: &mut Step<R, E>,
     entered: bool,
 ) -> bool {
-    let (init, wake) = (ctx.event.init, ctx.event.wake_init);
-    if entered {
-        ctx.event.init = true;
-        ctx.event.wake_init = true;
-    }
-    let injected = tracked.deliver(ctx, k);
-    let mut done = false;
-    for i in evaluation_order(step.nodes.len(), &step.catches) {
-        if i > step.value && !done {
-            continue;
+    let view = if entered { View::Wake } else { View::Cycle };
+    ctx.under(view, |ctx| {
+        let injected = tracked.deliver(ctx, k);
+        let mut done = false;
+        for i in evaluation_order(step.nodes.len(), &step.catches) {
+            if i > step.value && !done {
+                continue;
+            }
+            step.nodes[i].update(ctx);
+            if i == step.value {
+                done = ctx.event.variables.get(&step.value_id).is_some_and(|tv| {
+                    tv.is_fired()
+                        && (!step.until || tv.value_cloned() == Value::Bool(true))
+                });
+            }
         }
-        step.nodes[i].update(ctx);
-        if i == step.value {
-            done = ctx.event.variables.get(&step.value_id).is_some_and(|tv| {
-                tv.is_fired() && (!step.until || tv.value_cloned() == Value::Bool(true))
-            });
-        }
-    }
-    TrackedFires::restore(ctx.event, injected);
-    ctx.event.init = init;
-    ctx.event.wake_init = wake;
-    done
+        TrackedFires::restore(ctx.event, injected);
+        done
+    })
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {

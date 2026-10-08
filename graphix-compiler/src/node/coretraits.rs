@@ -9,7 +9,7 @@
 
 use super::genn::SynthCall;
 use crate::{
-    BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent,
+    BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent, View,
     abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::ExprId,
@@ -375,13 +375,13 @@ fn call_hook_over<R: Rt, E: UserEvent>(
         ctx.rt.store_insert(*id, TagValue::fired(v.clone()));
         ctx.event.variables.insert(*id, TagValue::fired(v));
     }
-    if s.first {
-        s.first = false;
-        ctx.event.init = true;
-    }
-    let tv = s.call.site.update(ctx);
-    let r = if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
-    ctx.event.init = false;
+    let view =
+        if std::mem::replace(&mut s.first, false) { View::Birth } else { View::Cycle };
+    let site = &mut s.call.site;
+    let r = ctx.under(view, |ctx| {
+        let tv = site.update(ctx);
+        if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
+    });
     return_site(ctx, loan);
     Some(r)
 }

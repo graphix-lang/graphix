@@ -433,7 +433,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             }
         }
         self.maybe_write_count(ctx);
-        let res = if ctx.event.init { self.lambda.clone() } else { new_lambda };
+        let res = if ctx.event.init() { self.lambda.clone() } else { new_lambda };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),

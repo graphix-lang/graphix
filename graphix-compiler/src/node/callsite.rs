@@ -12,7 +12,7 @@ use super::{
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
+    TagValue, Update, UserEvent, View, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
@@ -725,6 +725,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     // (x-alloc-06)
     // 2026-10-07 claude: both fn types are Arc'd now. The spec copies (arg_ref's
     // TArc::new(n.spec().clone()) and genn's synthesized ApplyExpr) remain.
+    // 2026-10-08 claude: measured with c-cost-misc-06: the call site's share of an
+    // instance is ~1.8 KB, these spec copies a few hundred bytes of it; folded into that
+    // work.
     pub(super) ftype: Option<TArc<FnType>>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
@@ -1102,7 +1105,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
-        // CR claude for claude: [bug] This returns early when the callee's `throws` is an
+        // CR claude for eric: [bug] This returns early when the callee's `throws` is an
         // open cell. In a definition's check that is always true for a call through a
         // `fn(..) throws 'e` parameter, and for `array::map(xs, f)` over one. So
         // nothing joins the enclosing catch or the gate's inferred throws: a catch
@@ -1122,18 +1125,21 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // typed by that open cell. Decide with t-tvar-02 (implicit throws).
         // a definition's own `throws 'e` (a call through a `fn(..) throws
         // 'e` parameter) still reaches the catch: it joins as the cell
+        // 2026-10-08 claude: re-addressed: what remains is the implicit-throws question
+        // in t-tvar-02 (graphix-types/src/typ/tvar.rs), which is with you; this follows
+        // from that ruling.
         let Some(t) = ftype.throws.deref_cloned() else {
             let rigid = match &ftype.throws {
                 Type::TVar(tv) => tv.open_cell().is_some_and(|c| c.is_rigid()),
                 _ => false,
             };
-            return match self.scope.dynamic.catch() {
-                Some((id, _)) if rigid => join_open_raised(&ctx.env, id, &ftype.throws),
+            return match self.scope.dynamic.handler() {
+                Some(h) if rigid => join_open_raised(&ctx.env, &h, &ftype.throws),
                 _ => Ok(()),
             };
         };
-        match self.scope.dynamic.catch() {
-            Some((id, _)) => join_raised(&ctx.env, id, &t),
+        match self.scope.dynamic.handler() {
+            Some(h) => join_raised(&ctx.env, &h, &t),
             // it doesn't throw any errors
             None if t == Type::Bottom || !check => Ok(()),
             None => Qop::<R, E>::check_unhandled(
@@ -1231,7 +1237,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
-        // CR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
+        // XCR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
         // at 1196, is only logged: the instance is installed and dispatched anyway,
         // though design/parallel_compile.md says an instance whose signature its
         // definition's does not hold is refused. Any checker gap that lets a mistyped
@@ -1252,6 +1258,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // known" at a seq-lowered field read (`seqt.._r.path`, admin line 852) yet
         // run right. That elaboration refusal is a checker bug to find first.
         // an instance its definition's signature does not hold is refused
+        // 2026-10-08 claude: a failed elaboration is refused too: the instance is
+        // discarded and the site is Callee::Failed (CallSite::build_bound). The admin
+        // refusal the earlier note names no longer occurs: admin's tests and
+        // graphix-tests pass with the refusal in place, and the probe is now refused by
+        // the check itself. What would catch a regression: the soak (a checker gap would
+        // surface as a failed bind).
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             ctx.discard_apply(apply);
             return Err(
@@ -1482,6 +1494,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     // its fold takes about 25 KB per slot node-walked. The first step is to measure
     // what one instance holds: its nodes, its per-instance types and env entries, and
     // its call-site state. (c-cost-misc-06)
+    // 2026-10-08 claude: measured (massif, debug, --no-fusion, GRAPHIX_PAR=off): 100
+    // slots of f(2, x) vs f(4, x), peak heap 41.9 vs 79.2 MB, so 15.5 KB per instance. By
+    // allocation site, per instance: fresh type cells made at each node's compile and
+    // then replaced by the substitution (Type::empty_tvar, TVar::default, empty_generic)
+    // ~2.5 KB; Ref nodes (Ref::compile, with_signature) ~2.2 KB; the call site (compile,
+    // prepare_bind, resolve_static, arg_ref) ~1.8 KB; the arm's pattern nodes ~0.7 KB;
+    // Constant/Add/Sub/Select nodes ~2.4 KB. The large lever is an instance building its
+    // nodes from its definition's types, with no placeholder cells; x-alloc-06's
+    // remaining spec copies are part of the call-site share.
     fn build_bound(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -1530,16 +1551,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         identity,
                     },
                 );
-                if !already_active {
-                    let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
-                    if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
-                        log::error!(
-                            "a run-time bind at {} did not elaborate: {e:#}",
-                            self.spec
-                        );
+                let elaborated = match already_active {
+                    true => Ok(()),
+                    false => {
+                        let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
+                        apply.typecheck1(ctx, &mut [], &instance_ftype)
                     }
-                }
+                };
                 ctx.pop_resolving(f.id, instance);
+                if let Err(e) = elaborated {
+                    if restored_def {
+                        ctx.lambda_defs.remove(&f.id);
+                    }
+                    if let Callee::DynamicBound { def, apply } =
+                        mem::replace(&mut self.callee, Callee::DynamicUnbound)
+                    {
+                        ctx.discard_apply(apply);
+                        self.callee = Callee::Failed { def };
+                    }
+                    return Err(e.context(format!(
+                        "a run-time bind at {} did not elaborate",
+                        self.spec
+                    )));
+                }
                 if let ApplyView::Lambda(g) = apply.view() {
                     let _an_span = perfdbg::span(&perfdbg::ANALYZE_NS);
                     let self_bind = match self.fnode.view() {
@@ -1578,19 +1612,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 set.push(*id);
             }
         }
-        let prev_init = mem::replace(&mut ctx.event.init, true);
-        for arg in self.args.values_mut() {
-            if arg.is_default
-                && let Some(node) = &mut arg.node
-            {
-                let tv = node.update(ctx).clone();
-                let feeds = Feeds::Id(arg.id);
-                if publish_production(ctx, feeds, &tv, true, QuietAtRoot::Deliver) {
-                    set.push(arg.id);
+        ctx.under(View::Birth, |ctx| {
+            for arg in self.args.values_mut() {
+                if arg.is_default
+                    && let Some(node) = &mut arg.node
+                {
+                    let tv = node.update(ctx).clone();
+                    let feeds = Feeds::Id(arg.id);
+                    if publish_production(ctx, feeds, &tv, true, QuietAtRoot::Deliver) {
+                        set.push(arg.id);
+                    }
                 }
             }
-        }
-        ctx.event.init = prev_init;
+        });
     }
 
     /// Pre-bind this CallSite to a statically known `LambdaDef` at compile
@@ -1925,14 +1959,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
             self.callee = Callee::DynamicUnbound;
         }
-        // a bound callee rebinds only when its function yields another
-        // definition, which a constant never does
-        let may_bind = match &self.callee {
-            Callee::Static { first_update, .. } => *first_update,
-            Callee::DynamicBound { .. } => {
-                !matches!(self.fnode.view(), NodeView::Constant(_))
+        // a first bind reads every quiet production; a bound site's rebind
+        // finds its arguments' standing values in the store, which its
+        // first bind stood them in, but not its defaults'; a constant
+        // function never rebinds
+        let keep = match &self.callee {
+            Callee::Static { first_update: true, .. } => Keep::Every,
+            Callee::Static { .. } => Keep::Nothing,
+            Callee::DynamicBound { .. }
+                if matches!(self.fnode.view(), NodeView::Constant(_)) =>
+            {
+                Keep::Nothing
             }
-            _ => true,
+            Callee::DynamicBound { .. } => Keep::Defaults,
+            _ => Keep::Every,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         // a bind owns its defaults' first update: a prebound instance's
@@ -1946,7 +1986,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx,
             self.args.as_mut_slice(),
             &mut self.fork,
-            Pass { may_bind, root, defaults },
+            Pass { keep, root, defaults },
             &mut out,
         );
         let ArgsOut { fired: arg_fired, prods, mut set } = out;
@@ -1976,22 +2016,32 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         } else {
             fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
         };
+        // a fresh bind reads its quiet arguments as new
         if bound {
-            for (id, tv) in prods.iter() {
-                let tag = tv.tag();
-                if tag.triggers() || tag.is_bottom() {
+            for arg in self.args.values() {
+                if arg.node.is_none()
+                    || (arg.is_default && defaults == Defaults::Skip)
+                    || ctx.event.variables.contains_key(&arg.id)
+                {
                     continue;
                 }
-                let Some(arg) = self.args.values().find(|a| a.id == *id) else {
+                let tv = match prods.iter().find(|(id, _)| *id == arg.id) {
+                    Some((_, tv)) => tv.clone(),
+                    None if keep == Keep::Defaults && !arg.is_default => {
+                        let Some((tv, _)) = ctx.rt.store_get(&arg.id) else { continue };
+                        TagValue::tagged(tv.value_cloned(), tv.tag().quiet())
+                    }
+                    None => continue,
+                };
+                if tv.tag().is_bottom() {
                     continue;
+                }
+                let root = match arg.is_default {
+                    true => QuietAtRoot::Deliver,
+                    false => QuietAtRoot::Stand,
                 };
-                let root = if arg.is_default {
-                    QuietAtRoot::Deliver
-                } else {
-                    QuietAtRoot::Stand
-                };
-                if publish_production(ctx, Feeds::Id(*id), tv, true, root) {
-                    set.push(*id);
+                if publish_production(ctx, Feeds::Id(arg.id), &tv, true, root) {
+                    set.push(arg.id);
                 }
             }
         }
@@ -2013,10 +2063,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs).clone()),
             Some(f) => {
                 // A fresh bind dispatches under the init view.
-                let init = mem::replace(&mut ctx.event.init, true);
-                let res = f.update(ctx, &mut self.arg_refs).clone();
-                ctx.event.init = init;
-                Some(res)
+                let arg_refs = &mut self.arg_refs;
+                Some(ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone()))
             }
         };
         if dbgenv::gxdbg_cs() {
@@ -2554,21 +2602,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // a lambda argument learns its parameters' types from the formal
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                // CR claude for claude: [risk] The formals taken from the table row can
-                // hold cells nothing here decides: for `filter(v, |zz| zz > 0)` the
-                // callback formal is `fn(zz: '_N) -> '_M`, pre_unify_arg fixes only the
-                // lambda's parameters, and the full check's `formal.contains(arg)`
-                // (typecheck_arg) does not run. BuiltInLambda::typecheck0's
-                // check_contains_rigid then binds them during elaboration, inside the
-                // statement task typecheck1_statements forked, so statement elaboration
-                // writes a cell an earlier task created: GRAPHIX_TASK_AUDIT reports one
-                // such write per instance of any function whose block passes a lambda
-                // to a builtin, every seq in a function body included (its lowering
-                // calls `filter(trigger, |x| x ~ idle)`), and none under
-                // GRAPHIX_NO_SUBST=1. No wrong value seen; probe:
-                // design/review-2026-10-05/repro/x-diff-types-07.gx. (x-diff-types-07)
                 Type::pre_unify_arg(&ctx.env, &farg.typ, n.typ())?;
                 wrap!(n, n.typecheck0_instance(ctx, types))?;
+                // a callback formal's other cells (its return) are decided
+                // here, in the instance's task, not by its elaboration
+                if farg.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) {
+                    wrap!(n, farg.typ.check_contains(&ctx.env, n.typ()))?;
+                }
             }
         }
         if let Some(typ) = &ftype.vargs {
@@ -2757,6 +2797,15 @@ struct ArgsOut {
     set: Published,
 }
 
+/// Which quiet productions an update pass keeps for a bind to read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Every,
+    /// The defaults': the store holds the other arguments' values.
+    Defaults,
+    Nothing,
+}
+
 /// Update `args` and publish each production on its argument's id into
 /// `out`, in order or forked where the site's plan says.
 /// The argument ids a dispatch published on the overlay.
@@ -2772,7 +2821,7 @@ enum Defaults {
 /// How an update pass treats its arguments.
 #[derive(Clone, Copy)]
 struct Pass {
-    may_bind: bool,
+    keep: Keep,
     root: QuietAtRoot,
     defaults: Defaults,
 }
@@ -2830,7 +2879,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
     pass: Pass,
     out: &mut ArgsOut,
 ) {
-    let Pass { may_bind, root, defaults } = pass;
+    let Pass { keep, root, defaults } = pass;
     for (i, arg) in args.values_mut().enumerate() {
         let Some(node) = &mut arg.node else { continue };
         if arg.is_default && defaults == Defaults::Skip {
@@ -2839,19 +2888,12 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         let tv = timed(&mut meter, i, || node.update(ctx));
         let fired = tv.tag().triggers();
         out.fired |= fired;
-        // CR claude for claude: [perf] may_bind is true on every update of a callee that
-        // is not Static, so every quiet argument's TagValue is cloned into prods, which
-        // only a fresh bind reads (line 1630). Every collection slot's call is
-        // DynamicBound after its first dispatch, so each slot update pays a Value clone
-        // and drop per quiet argument. A call with more than four quiet arguments
-        // spills the SmallVec to the heap every cycle. A DynamicBound site rebinds only
-        // when fnode produces another definition, and a Constant fnode never does. Read
-        // the quiet arguments' standing values from the store at the bind instead of
-        // cloning them on speculation. (c-callsite-08)
-        // 2026-10-07 claude: a DynamicBound site whose function is a constant (every
-        // collection slot's) no longer speculates. Other dynamic sites still clone;
-        // reading the store at the bind would remove the rest.
-        if may_bind && !fired {
+        let kept = match keep {
+            Keep::Every => true,
+            Keep::Defaults => arg.is_default,
+            Keep::Nothing => false,
+        };
+        if kept && !fired {
             out.prods.push((arg.id, tv.clone()));
         }
         if publish_production(ctx, Feeds::Id(arg.id), tv, false, root) {

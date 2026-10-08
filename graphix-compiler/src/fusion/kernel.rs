@@ -353,14 +353,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",
                 self.kernel.fn_name,
-                ctx.event.init,
+                ctx.event.init(),
                 polled.iter().map(|tv| tv.tag().bits()).collect::<Vec<_>>(),
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
             );
         }
         if !(any_updated
             || any_bottom
-            || ctx.event.init
+            || ctx.event.init()
             || woke
             || self.resident.tag().is_bottom())
         {
@@ -370,7 +370,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             eprintln!(
                 "KERNEL INVOKE {} init={} fired={:?} present={:?}",
                 self.kernel.fn_name,
-                ctx.event.init,
+                ctx.event.init(),
                 polled.iter().map(|tv| tv.is_fired()).collect::<Vec<_>>(),
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>()
             );
@@ -379,8 +379,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         record_fusion_invocation();
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
         // Slot 0: bit 0 init view, bit 1 wake.
-        let wake = ctx.event.wake_init || woke;
-        slots.push(ctx.event.init as u64 | (wake as u64) << 1);
+        let wake = ctx.event.wake() || woke;
+        slots.push(ctx.event.init() as u64 | (wake as u64) << 1);
         slots.push(if self.state.is_empty() {
             0
         } else {

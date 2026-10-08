@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, bailat,
+    TagValue, Update, UserEvent, View, bailat,
     env::Env,
     expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
     format_with_flags,
@@ -1136,7 +1136,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             eprintln!(
                 "SELECT[{}] upd init={} pat_up={pat_up} sel={selected:?} argc={v:?} vars={}",
                 spec.pos,
-                ctx.event.init,
+                ctx.event.init(),
                 ctx.event.variables.len()
             );
         }
@@ -1206,7 +1206,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 if crate::dbgenv::graphix_dbg_select() {
                     eprintln!(
                         "SELECT[{}] BECOMING-SELECTED {selected:?} -> {i} init={}",
-                        spec.pos, ctx.event.init
+                        spec.pos,
+                        ctx.event.init()
                     );
                 }
                 if let Some(j) = selected.replace(i) {
@@ -1217,7 +1218,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // under an init view a guard's fire is its birth, not a flip.
                 let bind_tag = if arg_prod.triggers() {
                     arg_prod
-                } else if planes.guard_fire && !ctx.event.init && !woke {
+                } else if planes.guard_fire && !ctx.event.init() && !woke {
                     Tag::FIRED
                 } else {
                     Tag::STALE
@@ -1227,14 +1228,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // view, its first selection included; a pure
                 // non-recursive arm, with nothing to pause, enters under
                 // `init` alone.
-                let (init, wake) = (ctx.event.init, ctx.event.wake_init);
-                ctx.event.init = true;
-                if sleep_on_deselect[i] {
-                    ctx.event.wake_init = true;
-                }
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
-                ctx.event.init = init;
-                ctx.event.wake_init = wake;
+                let view = if sleep_on_deselect[i] { View::Wake } else { View::Birth };
+                let (t, v) =
+                    ctx.under(view, |ctx| evaluate_arm(tracked, &mut arms[i].1, i, ctx));
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.

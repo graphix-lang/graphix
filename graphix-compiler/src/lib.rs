@@ -70,7 +70,7 @@ use std::{
     mem,
     sync::{
         self, LazyLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -140,25 +140,37 @@ impl UserEvent for NoUserEvent {
 pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>> =
     LazyLock::new(|| Pool::new(10000, 1000));
 
+/// How an update reads what stands: in order, a stronger view includes
+/// the weaker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum View {
+    /// An ordinary cycle: only what was delivered fired.
+    #[default]
+    Cycle,
+    /// A birth: standing values read as delivered.
+    Birth,
+    /// A select arm's or a seq step's wake: a birth, except that a `<-`
+    /// target that already holds a value keeps it.
+    Wake,
+}
+
+impl View {
+    /// A birth or a wake.
+    pub fn init(self) -> bool {
+        self != View::Cycle
+    }
+
+    pub fn wake(self) -> bool {
+        self == View::Wake
+    }
+}
+
 /// Everything that happened simultaneously in one execution cycle. At
 /// most one update per variable per cycle; further updates are queued
 /// for later cycles.
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
-    // CR claude for claude: [structure] `init` and `wake_init` are two bools for three
-    // views (ordinary cycle, birth, wake); `wake_init` without `init` means nothing and
-    // is never built. Every view change saves and restores them by hand, eight times
-    // (select.rs:1010, seq_machine.rs:299, callsite.rs:1242 and 1667, collection.rs:975
-    // with 1073, collection.rs:1477, error.rs:344, module.rs:992), and a birth inside a
-    // wake keeps the wake view only because those sites leave `wake_init` alone. One
-    // `enum View { Cycle, Birth, Wake }` with a scoped setter makes the meaningless
-    // pair unrepresentable and states the birth-inside-wake rule once.
-    // (x-invalid-states-07)
-    pub init: bool,
-    /// Set alongside `init` when the forced init view is a select arm's
-    /// wake rather than a birth: a `<-` target that already holds a
-    /// value keeps it instead of being reseeded.
-    pub wake_init: bool,
+    pub view: View,
     /// The overlay: this cycle's transient deliveries. Not the value
     /// store: reads fall through to [`Rt::store_get`].
     pub variables: branch::Layered<TagValue>,
@@ -171,12 +183,20 @@ pub struct Event<E: UserEvent> {
 impl<E: UserEvent> Event<E> {
     pub fn new(user: E) -> Self {
         Event {
-            init: false,
-            wake_init: false,
+            view: View::Cycle,
             variables: branch::Layered::default(),
             custom: Arc::new(Mutex::new(IntMap::default())),
             user,
         }
+    }
+
+    /// Whether standing values read as delivered: a birth or a wake.
+    pub fn init(&self) -> bool {
+        self.view.init()
+    }
+
+    pub fn wake(&self) -> bool {
+        self.view.wake()
     }
 
     /// Take the cycle's custom delivery for `id`.
@@ -196,8 +216,7 @@ impl<E: UserEvent> Event<E> {
     /// The event a branch forked from this one runs over.
     pub(crate) fn fork(&self) -> Self {
         Event {
-            init: self.init,
-            wake_init: self.wake_init,
+            view: self.view,
             variables: self.variables.fork(),
             custom: self.custom.clone(),
             user: self.user.clone(),
@@ -206,14 +225,13 @@ impl<E: UserEvent> Event<E> {
 
     /// Apply what the forked branch's event `child` delivered.
     pub(crate) fn merge(&mut self, child: Self) {
-        let Self { init: _, wake_init: _, variables, custom: _, user: _ } = child;
+        let Self { view: _, variables, custom: _, user: _ } = child;
         self.variables.merge(variables);
     }
 
     pub fn clear(&mut self) {
-        let Self { init, wake_init, variables, custom, user } = self;
-        *init = false;
-        *wake_init = false;
+        let Self { view, variables, custom, user } = self;
+        *view = View::Cycle;
         variables.clear();
         custom.lock().clear();
         user.clear();
@@ -908,6 +926,11 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     }
 }
 
+/// The log target of a running program's failures: an error nothing
+/// handles, a hot operator's failure, a definition assertion a run-time
+/// bind breaks. An embedder shows or routes them through its logger.
+pub const FAILURE_TARGET: &str = "graphix::failure";
+
 pub trait Rt: Debug + Any + Send + Sync {
     /// Called whenever a bound variable (or lambda) is referenced;
     /// `ref_by` is the toplevel expression containing the reference,
@@ -1175,7 +1198,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
-    // CR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
+    // XCR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
     // key's scope is minted fresh on many compiles: a try/with body scope is named by
     // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
     // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
@@ -1191,6 +1214,12 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // 2026-10-07 claude: a failed compile now drops what it lowered (Saved, c-lib-07).
     // The minted scopes remain: desugar reads the lexical scope, so keying by
     // the expression alone needs the lowering to stop depending on it.
+    // 2026-10-08 claude: a definition's body scope is named by its expression id
+    // (node/lambda.rs, lambda_init), which every compile of a literal shares, so a seq in
+    // a literal inside a function lowers once: the probe's literal variant levels off at
+    // ~90 MB (was +18 MB per 400 steps). A check (GXRt::check, the LSP) now rolls back
+    // every registry Saved holds, lowered_seqs included. Left: a dynamic module's reload
+    // keeps its old lowerings. No pin: RSS by probe only.
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1588,6 +1617,17 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
+    /// `f` under `view`, or under the stronger view already in force: a
+    /// birth inside a wake stays a wake.
+    #[inline]
+    pub fn under<T>(&mut self, view: View, f: impl FnOnce(&mut Self) -> T) -> T {
+        let prev = self.event.view;
+        self.event.view = prev.max(view);
+        let r = f(self);
+        self.event.view = prev;
+        r
+    }
+
     /// `v`, a value of `t`, with each reference a comparison meets
     /// replaced by what it names, `[root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
@@ -1716,12 +1756,18 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         self.control.interrupted()
     }
 
-    /// Open a compile frame for a node built at runtime outside any
-    /// statement, as `compile_stmt` does before [`check_and_fuse`].
-    pub fn begin_runtime_node(&mut self, top_id: ExprId) {
-        self.fusion.top_id = Some(top_id);
+    /// Open the compile frame of a top-level node, a statement's or one
+    /// built at runtime outside any statement, before [`check_and_fuse`]:
+    /// the previous compile's scratch is dropped.
+    pub fn open_compile_frame(&mut self, top_id: ExprId) {
+        self.attr_census.lock().clear();
+        self.attr_dispatched.lock().clear();
+        self.attr_absorbed.lock().clear();
+        self.pending_imports.clear();
+        self.pending_names.clear();
         self.pending_settles.clear();
         self.pending_settles.push(Vec::new());
+        self.fusion.top_id = Some(top_id);
     }
     env_restore_methods!();
 }
@@ -1981,6 +2027,9 @@ struct DynNode {
     raised: AtomicU64,
     /// Raised to descendant handlers and not yet processed by them.
     nested: AtomicU64,
+    /// The handler that reads the error was checked: a raise compiled
+    /// later must fit the type it was checked at.
+    sealed: AtomicBool,
     parent: DynScope,
 }
 
@@ -2026,6 +2075,12 @@ impl ErrorHandler {
         self.0.aborted.load(Ordering::Relaxed) == cycle.wrapping_add(1)
     }
 
+    /// Changes at every `abort(..)`: a run that began under one stamp
+    /// and sees another was aborted.
+    pub(crate) fn abort_stamp(&self) -> u64 {
+        self.0.aborted.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.0.raised.load(Ordering::Relaxed)
     }
@@ -2057,6 +2112,14 @@ impl ErrorHandler {
         self.0.parent.clone()
     }
 
+    pub(crate) fn seal(&self) {
+        self.0.sealed.store(true, Ordering::Relaxed)
+    }
+
+    pub(crate) fn sealed(&self) -> bool {
+        self.0.sealed.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn has_nested_errors(&self) -> bool {
         self.0.nested.load(Ordering::Relaxed) != 0
     }
@@ -2084,6 +2147,7 @@ impl DynScope {
             aborted: AtomicU64::new(0),
             raised: AtomicU64::new(0),
             nested: AtomicU64::new(0),
+            sealed: AtomicBool::new(false),
             parent: self.clone(),
         }))))
     }
@@ -2192,21 +2256,6 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     info!("typecheck time {:?}", st.elapsed());
     analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
-    // CR claude for claude: [risk] check_and_fuse takes `flags` but decides fusion from
-    // ctx.fusion.enabled, which only compile_top sets from its own flags.
-    // compile_callable (begin_runtime_node, then check_and_fuse) inherits whatever the
-    // last compile_top left. After a warm start no compile_top has run, so the field is
-    // still FusionCtx::new's `true`, and every GUI widget callback's compile runs the
-    // fusion pass under --no-fusion and on Windows. Nothing fuses there today only
-    // because the callable's call site has a constant function node and binds
-    // dynamically. Decide from `!flags.contains(CFlag::FusionDisabled) &&
-    // cfg!(not(windows))` here and in compile_top's attribute check, and delete
-    // FusionCtx::enabled (only lib.rs reads it). Open the compile frame for compile_top
-    // and begin_runtime_node through one function, since today they reset different
-    // scratch. (c-lib-09)
-    // 2026-10-07 claude: fusion is decided from `flags` (fusion_on) and
-    // FusionCtx::enabled is gone; one function opening the compile frame for both
-    // remains.
     if fusion_on(flags) {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
@@ -2378,19 +2427,8 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
 }
 
 /// The registries a compile or a registration read writes, as they were
-/// before it, so a failure puts them back.
-// CR claude for claude: [structure] Saved is the only list of the tracked registries that
-// the compiler does not check. fork, join and ExecState::new are struct literals or
-// destructures, but Saved is written by hand, and it has drifted: it omits
-// lowered_seqs, which fork and join treat as program state. A failed compile (a REPL
-// line, a dynamic module's source) therefore keeps every seq it lowered, each entry
-// pinning its expression and source text, and the doc above no longer says what Saved
-// holds. Group the forked-and-joined registries in one struct with fork, join and
-// Clone. Saved then becomes a clone of it and cannot drift, and fork, join and new each
-// handle it in one line. (c-lib-07)
-// 2026-10-07 claude: Saved now holds lowered_seqs, so a failed compile drops
-// the seqs it lowered. The grouping that would keep it from drifting again remains.
-pub(crate) struct Saved {
+/// before it, so a failure, or a check that runs nothing, puts them back.
+pub struct Saved {
     env: Env,
     lambda_defs: TrackedMap<LambdaId, Value>,
     bind_to_lambda: TrackedMap<BindId, Value>,
@@ -2403,21 +2441,51 @@ pub(crate) struct Saved {
 }
 
 impl Saved {
-    pub(crate) fn take<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> Self {
+    pub fn take<R: Rt, E: UserEvent>(ctx: &CompileCtx<R, E>) -> Self {
+        // every field is named, so a new one is decided here: program
+        // state a failed compile rolls back, or scratch
+        let CompileCtx {
+            registry: _,
+            tags,
+            env,
+            lambda_defs,
+            bind_to_lambda,
+            batch_connect_targets,
+            connect_targets,
+            builtin_bindings,
+            rec_defs: _,
+            def_gate_params: _,
+            def_gate_depth: _,
+            resolving_lambdas: _,
+            fn_forward_resolutions,
+            lowered_seqs,
+            pending_settles: _,
+            pending_imports: _,
+            pending_names: _,
+            def_assertions: _,
+            attr_census: _,
+            attr_dispatched: _,
+            attr_absorbed: _,
+            pending_refs: _,
+            discarded: _,
+            task: _,
+            profile: _,
+            fusion: _,
+        } = ctx;
         Saved {
-            env: ctx.env.clone(),
-            lambda_defs: ctx.lambda_defs.clone(),
-            bind_to_lambda: ctx.bind_to_lambda.clone(),
-            builtin_bindings: ctx.builtin_bindings.clone(),
-            fn_forward_resolutions: ctx.fn_forward_resolutions.clone(),
-            connect_targets: ctx.connect_targets.clone(),
-            batch_connect_targets: ctx.batch_connect_targets.clone(),
-            tags: ctx.tags.clone(),
-            lowered_seqs: ctx.lowered_seqs.clone(),
+            env: env.clone(),
+            lambda_defs: lambda_defs.clone(),
+            bind_to_lambda: bind_to_lambda.clone(),
+            builtin_bindings: builtin_bindings.clone(),
+            fn_forward_resolutions: fn_forward_resolutions.clone(),
+            connect_targets: connect_targets.clone(),
+            batch_connect_targets: batch_connect_targets.clone(),
+            tags: tags.clone(),
+            lowered_seqs: lowered_seqs.clone(),
         }
     }
 
-    pub(crate) fn restore<R: Rt, E: UserEvent>(self, ctx: &mut ExecCtx<'_, R, E>) {
+    pub fn restore<R: Rt, E: UserEvent>(self, ctx: &mut CompileCtx<R, E>) {
         let Saved {
             env,
             lambda_defs,
@@ -2451,15 +2519,8 @@ fn compile_top<R: Rt, E: UserEvent>(
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
-    ctx.attr_census.lock().clear();
-    ctx.attr_dispatched.lock().clear();
-    ctx.attr_absorbed.lock().clear();
-    ctx.pending_imports.clear();
-    ctx.pending_names.clear();
-    ctx.pending_settles.clear();
-    ctx.pending_settles.push(Vec::new());
     let top_id = spec.id;
-    ctx.fusion.top_id = Some(top_id);
+    ctx.open_compile_frame(top_id);
     let saved = Saved::take(ctx);
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);

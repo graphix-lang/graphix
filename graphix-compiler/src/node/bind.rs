@@ -426,7 +426,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let tag = tv.tag();
         // under a wake view, a production that is no real event leaves a
         // `<-` target's last write
-        let wake_phantom = ctx.event.wake_init && !tag.is_event();
+        let wake_phantom = ctx.event.wake() && !tag.is_event();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store. A connect target's value is its last
@@ -773,8 +773,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                         self.spec,
                         self.spec.pos,
                         self.id,
-                        ctx.event.init,
-                        ctx.event.wake_init,
+                        ctx.event.init(),
+                        ctx.event.wake(),
                         tv.tag(),
                         tv.value_cloned()
                     );
@@ -1292,7 +1292,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             ctx.rt.store_insert(self.id, stored);
             ctx.event.variables.insert(self.id, tv);
             ctx.rt.notify_set(self.id);
-        } else if ctx.event.init {
+        } else if ctx.event.init() {
             ctx.rt.store_insert_standing(self.id, tv);
         }
     }
@@ -1356,7 +1356,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     if self.unregister(ctx) {
                         self.bottom_mirror(ctx);
                     }
-                    return self.resident.set_bottom(moved || ctx.event.init);
+                    return self.resident.set_bottom(moved || ctx.event.init());
                 };
                 let same = self
                     .registered
@@ -1369,7 +1369,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 }
                 // the cell mirrors the element, read through the address;
                 // a bottom root sets it bottom
-                if moved || ctx.event.init {
+                if moved || ctx.event.init() {
                     let read = match root.tag().is_bottom() {
                         true => None,
                         false => Some(with_hooks(ctx, || {
@@ -1391,7 +1391,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 moved
             }
         };
-        if ctx.event.init || moved {
+        if ctx.event.init() || moved {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
             self.resident.ride()

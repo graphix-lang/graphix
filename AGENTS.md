@@ -357,7 +357,11 @@ in `EvalCachedAsync::attach`. Static resolution reads only the index
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
 that packages use to feed external events in. Event processing is
 batched: all simultaneous events form one `Event` delivered in one
-cycle; several writes to one variable in a cycle queue for the next.
+cycle; several writes to one variable in a cycle queue for the next,
+except a level's (`Rt::set_level`), which replaces its pending write. A
+running program's failures (an unhandled `?`, a hot operator's failure)
+are logged under `graphix_compiler::FAILURE_TARGET`, never printed; the
+shell shows that target on stderr.
 
 **Session images** (`design/program_image.md`): the shell caches the
 session state before any cycle (`graphix-compiler/src/image/` over

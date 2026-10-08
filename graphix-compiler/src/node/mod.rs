@@ -95,7 +95,7 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
 /// event the graph already consumed.
 pub(crate) fn standing_view<E: UserEvent>(event: &Event<E>, tv: &TagValue) -> TagValue {
     let tag =
-        if event.init && !event.wake_init { tv.tag().fresh() } else { tv.tag().quiet() };
+        if event.init() && !event.wake() { tv.tag().fresh() } else { tv.tag().quiet() };
     let mut tv = tv.clone();
     tv.retag(tag);
     tv
@@ -658,8 +658,8 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
 ) -> &'a TagValue {
     // a constant's resident is bottom only before it produced: it
     // stands stale with its value off an init view, as a kernel's does
-    if event.init {
-        let tag = if event.wake_init { Tag::WAKE_FIRED } else { Tag::FIRED };
+    if event.init() {
+        let tag = if event.wake() { Tag::WAKE_FIRED } else { Tag::FIRED };
         resident.set(TagValue::tagged(value(), tag))
     } else if resident.is_bottom() {
         resident.set(TagValue::stale(value()))

@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Rt, Scope, Tag, TagValue, Update, UserEvent,
+    Rt, Scope, Tag, TagValue, Update, UserEvent, View,
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
@@ -113,7 +113,9 @@ pub struct Catch<R: Rt, E: UserEvent> {
 pub(crate) struct CatchAction<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
     role: AbortRole<R, E>,
-    pending: bool,
+    /// A failure is being collected: the abort stamp of the covering
+    /// seq machine when it began ([`ErrorHandler::abort_stamp`]).
+    pending: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -154,28 +156,13 @@ impl<R: Rt, E: UserEvent> CatchAction<R, E> {
     }
 }
 
-/// Join `etyp`, an error type raised to the catch `catch`, into the type
-/// its bind infers.
-pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
+/// Join `etyp`, an error type raised to `handler`'s catch, into the type
+/// its bind infers. A sealed catch takes only what its bind holds.
+pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
+    let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    // CR claude for claude: [bug] join_raised widens the catch's bind without any check.
-    // It also runs for raises compiled after the catch was checked and its handler
-    // typed and fused: a dynamic module's body, checked at load under the enclosing
-    // catch, and a later REPL input under the session scope. The ascription's coverage
-    // check (the PendingSettle::Contains in Catch::typecheck0_with) and the handler's
-    // typing ran only once, so the handler then receives values outside its type. The
-    // JIT panics at fusion/kernel.rs:243 and the runtime dies; the node-walk passes a
-    // string to an i64 parameter. The same raise written statically is refused by
-    // --check. A raise compiled after its catch was checked should require the bind to
-    // already contain it and fail the load or the input otherwise (the REPL tail catch
-    // must still cover later inputs, catch_repl_cross_input). probe:
-    // design/review-2026-10-05/repro/c-error-op-02.gx (c-error-op-02)
-    // 2026-10-07 claude: open. Sealing a catch once its handler is checked needs
-    // a rule for the REPL's tail catch, whose handler may ignore `e` and must
-    // take later inputs' raises (catch_repl_cross_input): seal only a catch whose
-    // handler reads its bind.
     let joined = match tv.binding() {
         None => etyp.clone(),
         Some(t)
@@ -184,6 +171,10 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
         {
             return Ok(());
         }
+        Some(t) if handler.sealed() && !etyp.has_unbound() => bail!(
+            "this error reaches a catch whose handler was checked to take {t}, \
+             which does not contain {etyp}"
+        ),
         Some(t) => Type::union(env, &[&t, etyp])?,
     };
     tv.bind(joined);
@@ -193,7 +184,12 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
 /// Join an open raised type (a callback's `throws 'e`) into `catch`: two
 /// open cells are one (a gate's `'e` and a call's instantiation of it),
 /// anything else joins as a union member.
-pub(crate) fn join_open_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
+pub(crate) fn join_open_raised(
+    env: &Env,
+    handler: &ErrorHandler,
+    etyp: &Type,
+) -> Result<()> {
+    let (catch, _) = handler.id();
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
@@ -203,11 +199,16 @@ pub(crate) fn join_open_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<
         {
             Ok(())
         }
-        _ => join_raised(env, catch, etyp),
+        _ => join_raised(env, handler, etyp),
     }
 }
 
 impl<R: Rt, E: UserEvent> Catch<R, E> {
+    /// The covering seq machine's abort stamp, 0 outside one.
+    fn run_stamp(&self) -> u64 {
+        self.own_handler.machine().map_or(0, |m| m.abort_stamp())
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
@@ -225,7 +226,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 } else {
                     AbortRole::Try { capture: BindId::decode(buf)? }
                 };
-                Some(CatchAction { node, role, pending: false })
+                Some(CatchAction { node, role, pending: None })
             }
         };
         let own_handler = image::handler_decode(buf)?;
@@ -298,12 +299,12 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                         .transpose()?,
                     pc: lookup(ctx, pc)?,
                 },
-                pending: false,
+                pending: None,
             }),
             CatchRole::Try { action, capture } => Some(CatchAction {
                 node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
                 role: AbortRole::Try { capture: lookup(ctx, capture)? },
-                pending: false,
+                pending: None,
             }),
         };
         ctx.record_ref(bind_id, top_id);
@@ -360,8 +361,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let _ = self.handler.update(ctx);
         let cycle = ctx.rt.cycle();
-        let capture =
-            self.action.as_ref().and_then(|a| a.capture().filter(|_| !a.pending));
+        let capture = self
+            .action
+            .as_ref()
+            .and_then(|a| a.capture().filter(|_| a.pending.is_none()));
         // a delivery whose raise was given up while asleep is not counted again
         let delivered = match read_var(ctx, &self.bind_id) {
             Some(VarRead::Delivered(tv))
@@ -380,8 +383,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             if let Some((cap, v)) = captured {
                 ctx.rt.set_var(cap, v);
             }
+            let stamp = self.run_stamp();
             if let Some(abort) = &mut self.action {
-                abort.pending = true;
+                abort.pending.get_or_insert(stamp);
             }
         }
         if let Some(abort) = &mut self.action {
@@ -389,31 +393,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 && manual.update(ctx).is_fired()
             {
                 self.received = self.received.wrapping_add(1);
-                abort.pending = true;
+                abort.pending.get_or_insert(0);
             }
-            // CR claude for claude: [bug] A try's jump runs here once its own handler has
-            // drained, with no check that the machine was aborted meanwhile. A try-body
-            // step that raises two errors in one cycle gets the second one a cycle
-            // later (deliver_error's set_var fallback). An abort(..) firing during that
-            // drain then runs the machine catch's `pc <- Idle` in the same cycle as
-            // this `pc <- S_with`, and the runtime requeues one of the two writes. So
-            // the aborted run takes its with body, and its join step later restarts the
-            // machine from Idle. The aborted run's fallback is emitted under the next
-            // run's trigger and the next run's result is lost (under seqq, results pair
-            // with the wrong requests), against design/seq_blocks.md §9. probe:
-            // design/review-2026-10-05/repro/t-seq-01.gx prints (5, -1); expected (5,
-            // 10), which it prints with one failing `?`. (t-seq-01)
-            // 2026-10-08 claude: open: the jump needs to know its run was aborted, and
-            // it meets the abort only through the machine's pc writes; a run token
-            // the abort advances and the jump compares would decide it.
-            if abort.pending
+            if let Some(stamp) = abort.pending
                 && self.received == self.own_handler.generation()
                 && !self.own_handler.has_nested_errors()
             {
-                abort.pending = false;
-                let init = std::mem::replace(&mut ctx.event.init, true);
-                let _ = abort.node.update(ctx);
-                ctx.event.init = init;
+                abort.pending = None;
+                // a try's run aborted while its errors drained takes no jump
+                let aborted = matches!(abort.role, AbortRole::Try { .. })
+                    && self
+                        .own_handler
+                        .machine()
+                        .is_some_and(|m| m.abort_stamp() != stamp);
+                if !aborted {
+                    ctx.under(View::Birth, |ctx| {
+                        let _ = abort.node.update(ctx);
+                    });
+                }
             }
         }
         TagValue::phantom_ref()
@@ -436,7 +433,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         if let Some(abort) = &mut self.action {
             abort.node.sleep(ctx);
             abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
-            abort.pending = false;
+            abort.pending = None;
             if let AbortRole::Machine { pc, .. } = abort.role {
                 ctx.rt.set_var(pc, Value::String(crate::expr::seq::IDLE.clone()));
             }
@@ -644,27 +641,13 @@ pub(crate) fn unhandled_msg(site: &str, e: &dyn fmt::Display) -> ArcStr {
 }
 
 /// An error nothing handles, or a hot operator's failure: logged from
-/// the calling module, so the log tells the engines apart, and written
-/// to stderr, which a shell without a log still shows.
+/// the calling module, so the log tells the engines apart, under
+/// [`crate::FAILURE_TARGET`], which an embedder routes (the shell shows
+/// it on stderr).
 macro_rules! report_failure {
     ($msg:expr) => {{
         let msg: &str = $msg;
-        log::error!("{msg}");
-        // CR claude for claude: [bug] This eprintln! writes every unhandled `?` error (in
-        // both engines) and every node-walk unchecked-arith failure to stderr. In a TUI
-        // program stderr is the terminal ratatui draws on. The text lands at the
-        // cursor, a message that runs past the bottom row scrolls the alternate screen,
-        // and ratatui repaints only the cells it changes. So one failure corrupts the
-        // display for the rest of the run: the header scrolls away and the status line
-        // keeps only its changing digits. --log-dir does not stop it and an embedder
-        // cannot redirect it, because only `log` output can be routed;
-        // analysis.rs:265-266 repeats the same log::error! + eprintln! pair by hand.
-        // probe: design/review-2026-10-05/repro/x-errors-09.sh (needs tmux).
-        // (x-errors-09)
-        // 2026-10-07 claude: a TUI no longer garbles: the tui package holds fd 2 in a
-        // file while it owns the terminal and replays it after (StderrHeld). An
-        // embedder still cannot route this text.
-        eprintln!("{msg}");
+        log::error!(target: $crate::FAILURE_TARGET, "{msg}");
     }};
 }
 pub(crate) use report_failure;
@@ -726,7 +709,7 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             }
         },
         Some(Type::Error(et)) => et.with_deref(|et| match et {
-            // CR claude for claude: [bug] `?` refuses any operand whose error payload is
+            // CR claude for eric: [bug] `?` refuses any operand whose error payload is
             // a type variable. `|r: Result<i64, 'e>| -> i64 r?` stops here with `type
             // must be known`, although the type is written out and `r$` checks. A bound
             // that rules out a chain (`'e: [`A, `B]`) and `|e| error(e)?` are refused
@@ -743,6 +726,14 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             // (c-error-op-05)
             // 2026-10-08 claude: refused with a message that names the payload; the
             // generic raise (deciding the wrap for a variable payload) remains.
+            // 2026-10-08 claude: re-addressed, a typing rule: what a `?` over `Result<T,
+            // 'e>` raises when 'e is generic. wrap_error chains by the value's shape, so
+            // the raise is ErrChain<'e> unless 'e binds to a chain, which is that chain.
+            // Options: (a) a bound that keeps chains out of 'e (the raise is then
+            // ErrChain<'e>, exact); (b) type the raise ErrChain<Any> (sound, a typed
+            // catch loses the payload's type); (c) keep the refusal, which now names the
+            // payload. I lean to (a): a generic error type that is itself a chain is the
+            // rare case.
             None => format_with_flags(PrintFlag::DerefTVars, || {
                 bail!(
                     "? raises {etyp}, whose payload is a type variable: whether it is a \
@@ -1438,6 +1429,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             }
         }
         wrap!(self.handler, child(&mut self.handler, ctx))?;
+        // a handler that reads the error was checked at the bind's type; a
+        // handler that ignores it (the REPL's tail catch) takes any raise
+        let mut refs = Refs::default();
+        self.handler.refs(&mut refs);
+        if refs.is_refed(self.bind_id) {
+            self.own_handler.seal();
+        }
         let Some(abort) = &mut self.action else { return Ok(()) };
         wrap!(abort.node, child(&mut abort.node, ctx))?;
         if let Some(manual) = abort.manual_mut() {
@@ -1505,14 +1503,13 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         }
         if let Some(handler) = &self.handler {
-            let (id, _) = handler.id();
             let etyp = match self.strip {
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
             let etyp =
                 if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            join_raised(&ctx.env, id, &etyp)?;
+            join_raised(&ctx.env, handler, &etyp)?;
         }
         Ok(())
     }

@@ -49,7 +49,7 @@ macro_rules! dirs_builtin {
                 ctx: &mut ExecCtx<'_, R, E>,
                 _from: &mut [Node<R, E>],
             ) -> &TagValue {
-                if ctx.event.init && self.once.take() {
+                if ctx.event.init() && self.once.take() {
                     let v = match $fn() {
                         Some(p) => Value::String(crate::convert_path(&p)),
                         None => Value::Null,

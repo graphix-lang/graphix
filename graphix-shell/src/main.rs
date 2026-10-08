@@ -2,9 +2,9 @@ use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use clap::{Args, Parser, Subcommand};
 use enumflags2::BitFlags;
-use flexi_logger::{FileSpec, Logger};
+use flexi_logger::{Duplicate, FileSpec, Logger};
 use graphix_compiler::{
-    CFlag,
+    CFlag, FAILURE_TARGET,
     expr::{FilesResolver, Source},
 };
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
@@ -348,8 +348,9 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
         .build()
         .context("building tokio runtime")?;
     rt.block_on(async move {
-        if let Some(dir) = &p.log_dir {
-            let _ = Logger::try_with_env()
+        // a program's failures reach stderr with or without a log
+        let _logger = match &p.log_dir {
+            Some(dir) => Logger::try_with_env()
                 .context("initializing log")?
                 .log_to_file(
                     FileSpec::default()
@@ -357,9 +358,16 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
                         .basename("graphix")
                         .use_timestamp(false),
                 )
+                .duplicate_to_stderr(Duplicate::Error)
                 .start()
-                .context("starting log")?;
-        }
+                .context("starting log")?,
+            None => Logger::try_with_str(format!("off, {FAILURE_TARGET}=error"))
+                .context("initializing log")?
+                .log_to_stderr()
+                .format(|w, _, record| write!(w, "{}", record.args()))
+                .start()
+                .context("starting log")?,
+        };
         info!("graphix shell starting");
         // a netidx: script needs its subscriber to load; anything else
         // loads netidx when the program first touches it

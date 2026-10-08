@@ -286,7 +286,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(self.b.ins().call(f, args))
     }
 
-    /// Nonzero on an init view (`I64`): the `event.init` word from wire
+    /// Nonzero on an init view (`I64`): the `event.init()` word from wire
     /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
     /// or the slot's first iteration, as a new slot is a new instance.
     pub fn init_flag(&self) -> ClifValue {

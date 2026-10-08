@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use arcstr::format;
 use graphix_compiler::{
-    Event, NoUserEvent, Scope, Tag, TagValue, compile,
+    Event, NoUserEvent, Scope, Tag, TagValue, View, compile,
     expr::{ModPath, parser::parse_one},
 };
 use graphix_package_core::testing::{Mode, init_with_flags_and_setup};
@@ -70,7 +70,7 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
                             node.sleep(ctx);
                         }
                         let mut event = Event::new(NoUserEvent);
-                        event.init = i == 0;
+                        event.view = if i == 0 { View::Birth } else { View::Cycle };
                         let payload =
                             if tag.is_bottom() { Value::Null } else { value.clone() };
                         event.variables.insert(id, TagValue::tagged(payload, tag));
@@ -117,7 +117,7 @@ async fn strict_bottom(mode: Mode) -> Result<()> {
             .enumerate()
             {
                 let mut event = Event::new(NoUserEvent);
-                event.init = i == 0;
+                event.view = if i == 0 { View::Birth } else { View::Cycle };
                 let expected = if i == 0 { Tag::FIRED } else { Tag::STALE };
                 event.variables.insert(id, TagValue::tagged(value.clone(), expected));
                 let payload = if tag.is_bottom() { Value::Null } else { Value::I64(9) };
@@ -184,7 +184,7 @@ async fn strict_sample(mode: Mode) -> Result<()> {
             .enumerate()
             {
                 let mut event = Event::new(NoUserEvent);
-                event.init = i == 0;
+                event.view = if i == 0 { View::Birth } else { View::Cycle };
                 event.variables.insert(
                     bindings[0].1,
                     TagValue::tagged(Value::I64(i as i64), clock_tag),
@@ -267,7 +267,7 @@ async fn bottom_scrutinee_consults_no_guard(mode: Mode) -> Result<()> {
             .enumerate()
             {
                 let mut event = Event::new(NoUserEvent);
-                event.init = i == 0;
+                event.view = if i == 0 { View::Birth } else { View::Cycle };
                 event
                     .variables
                     .insert(bindings[0].1, TagValue::tagged(Value::Null, x_tag));

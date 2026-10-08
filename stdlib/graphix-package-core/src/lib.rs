@@ -1263,7 +1263,7 @@ impl<T> CachedArgs<T> {
     {
         // a wake's own fire when every fired arg was, as a kernel's fast
         // call folds it; under a genuine init every arg is born
-        let genuine = ctx.event.init && !ctx.event.wake_init;
+        let genuine = ctx.event.init() && !ctx.event.wake();
         let prod =
             cached.update_full(ctx, from).map(|t| if genuine { t.real() } else { t });
         match prod {

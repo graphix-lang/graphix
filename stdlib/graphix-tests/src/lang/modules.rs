@@ -1055,3 +1055,23 @@ let v = B(2);
 impl super::Show for B { let show = |b| "b[b.0]" }
 "#
 );
+
+// A dynamic module compiles after the catch around it was checked: its
+// raise must fit the type the catch's handler was checked at.
+run!(
+    dynamic_raise_fits_the_checked_catch,
+    r##"{
+    let r = {
+        catch(e: Error<ErrChain<i64>>) never(e);
+        mod foo dynamic {
+            sandbox unrestricted;
+            sig { val v: i64 };
+            source "let v = 1; let w = error(\"hello\")?"
+        }
+    };
+    r
+}"##,
+    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
+        if format!("{v}").contains("handler was checked to take Error<ErrChain<i64>>"));
+    FuseExpect::None
+);

@@ -16,7 +16,7 @@ use graphix_types::{
 };
 use poolshark::local::LPooled;
 use rayon::prelude::*;
-use std::{any::Any, cell::Cell};
+use std::{any::Any, cell::Cell, time::Instant};
 
 /// A chunk: runs slots `lo..hi` of its loop over the kernel's `frame`
 /// and fills `out`.
@@ -161,41 +161,55 @@ pub(crate) unsafe fn run(
             let forced = if kind & ROOT != 0 { loan.forced } else { None };
             (0, Some(cost::forced_grain(forced, len)))
         }
-        ParMode::Auto => match (cost::calibration(), site.untimed(len)) {
-            (Some(cal), false) => {
-                let Some(k) = site.probes(len) else {
-                    return unsafe { in_order(chunk, frame, len, find, out) };
-                };
-                let mut probes = Probes::new();
-                // CR claude for claude: [perf] Once its site has settled, each run times
-                // one slot, slot 0, as a one-slot chunk run. Every sample after the
-                // first four therefore carries the run's fixed costs (the loan swaps,
-                // with_qop_raises, the chunk's own buffer) and, after an idle gap, the
-                // cold start. The estimate inflates, and the first loop of a cycle
-                // looks costlier than an equally cheap later one. Probe:
-                // design/review-2026-10-05/repro/c-cost-misc-02.gx, a 100-slot init on
-                // a 2 ms timer, short enough that the bucket floor alone would not fork
-                // it: 1467-1479 of 1500 cycles forked at 8192 ticks a slot, with CPU at
-                // 1.3-1.8 s against 0.62 s under off. Two equally cheap loops in one
-                // cycle (150 and 170 slots, 20 ms timer) were estimated at 16384 and
-                // 2048 ticks a slot. Timing the probed slots as one run and recording
-                // elapsed / k would spread both costs across the slots.
-                // (c-cost-misc-02)
-                for i in 0..k {
-                    let mut r = Run::new(i, i + 1);
-                    let t0 = cost::ticks();
+        ParMode::Auto => 'auto: {
+            if site.untimed(len) {
+                return unsafe { in_order(chunk, frame, len, find, out) };
+            }
+            let mut probes = Probes::new();
+            let mut at = 0;
+            let cal = match cost::calibration() {
+                Some(cal) => cal,
+                None => {
+                    let mut r = Run::new(0, 1);
+                    let (t0, started) = (cost::ticks(), Instant::now());
                     unsafe { run_here(chunk, frame, &mut r) };
-                    probes.push(cost::ticks().wrapping_sub(t0));
+                    let (dt, took) = (cost::ticks().wrapping_sub(t0), started.elapsed());
                     let aborted = r.aborted;
                     runs.push(r);
                     if aborted {
                         return unsafe { finish(&mut runs, find, out) };
                     }
+                    at = 1;
+                    match cost::calibration_for(len - 1, took) {
+                        None => break 'auto (1, None),
+                        Some(cal) => {
+                            probes.push(dt);
+                            cal
+                        }
+                    }
                 }
-                (k, site.grain(cal, &probes, len - k))
+            };
+            let Some(k) = site.probes(len - at) else {
+                if at == 0 {
+                    return unsafe { in_order(chunk, frame, len, find, out) };
+                }
+                break 'auto (at, None);
+            };
+            if k > 0 {
+                // the probed slots run as one, so a run's fixed costs spread over them
+                let mut r = Run::new(at, at + k);
+                let t0 = cost::ticks();
+                unsafe { run_here(chunk, frame, &mut r) };
+                let each = cost::ticks().wrapping_sub(t0) / k as u64;
+                probes.extend((0..k).map(|_| each));
+                let aborted = r.aborted;
+                runs.push(r);
+                if aborted {
+                    return unsafe { finish(&mut runs, find, out) };
+                }
             }
-            _ => return unsafe { in_order(chunk, frame, len, find, out) },
-        },
+            (at + k, site.grain(cal, &probes, len - at - k))
+        }
     };
     match grain {
         None if at < len => {

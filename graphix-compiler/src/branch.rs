@@ -864,6 +864,11 @@ pub fn eval_pool() -> &'static rayon::ThreadPool {
 /// every runtime in the process.
 static LIVE_PARTS: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether no part is forked onto the evaluation pool.
+pub(crate) fn pool_idle() -> bool {
+    LIVE_PARTS.load(Ordering::Relaxed) == 0
+}
+
 /// Whether every worker of the evaluation pool has a part to run. A
 /// fork made then only queues behind them, and a fork costs its
 /// branches and merge whether or not another worker takes a part.

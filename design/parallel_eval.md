@@ -394,8 +394,13 @@ schedule, and turns serial when no split reaches `T` on both sides. A
 `SlotSite` keeps one per-slot histogram (the measured loop's total over
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
 is four times the lower quartile of nine latencies of handing an idle
-pool a job, measured on a thread of its own at the first use (`Auto` forks nothing
-until then). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
+pool a job, measured on a thread of its own at the first use; a sample
+taken while any part is live is taken again, so forced work cannot
+inflate `T`. Until it lands `Auto` forks nothing, except that a one-shot
+run of like items (a `ProbeSite`, a kernel loop) times its first item
+and, when the run is estimated at 100 ms or more, waits for it
+(`cost::calibration_for`; never on a pool worker, which the measurement
+needs). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
 
 **As built (phase 5).**
 
