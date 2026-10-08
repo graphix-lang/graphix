@@ -1158,3 +1158,36 @@ run!(
         let c = 1;
         let x = select c { 0 => (1, 2.0), 1 => (1, true), _ => ("a", true) }
     "#; FuseExpect::Jit);
+
+// A module never sees a static sibling's undeclared impl, whatever
+// stands between them.
+run!(
+    undeclared_impl_hidden_apart,
+    refused("is not in its interface"),
+    "/test.gx" => r#"
+        mod t;
+        mod a;
+        let z = 0;
+        mod b;
+        let result = b::shown
+    "#,
+    "/test/t.gxi" => r#"
+        trait Show { val show: fn(self) -> string }
+    "#,
+    "/test/t.gx" => r#"
+        let unused = 0
+    "#,
+    "/test/a.gxi" => r#"
+        val unused: i64
+    "#,
+    "/test/a.gx" => r#"
+        use super::t::Show;
+        impl Show for i64 { let show = |x| "int [x]" };
+        let unused = 0
+    "#,
+    "/test/b.gxi" => r#"
+        val shown: string
+    "#,
+    "/test/b.gx" => r#"
+        let shown = super::t::Show::show(1)
+    "#; FuseExpect::None);

@@ -1046,32 +1046,34 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
             _ => false,
         })
     };
+    // a module's check sees no static sibling's undeclared impl, whether
+    // it checks in a run or alone
+    let siblings: LPooled<Vec<ModPath>> = slots
+        .iter()
+        .filter(|n| is_static_module(n))
+        .filter_map(|n| module_path(n.as_deref()?))
+        .collect();
     let mut at = 0;
     while at < order.len() {
         let run =
             order[at..].iter().take_while(|i| is_static_module(&slots[**i])).count();
-        // CR claude for claude: [bug] Undeclared impls are hidden only among the members
-        // of one run of adjacent static modules. A module checked alone takes the else
-        // branch with nothing hidden, and impls register at compile time, so it sees
-        // every sibling's undeclared impl, a later sibling's included. Whether b may
-        // use a's undeclared `impl Show for i64` therefore depends on statement
-        // placement. `mod a; mod b;` refuses it. `mod a; let z = 0; mod b;`, `mod b;
-        // let z = 0; mod a;` and an interface-less `mod c;` between them all accept and
-        // run it, and giving c a .gxi refuses it again. CLAUDE.md states the rule
-        // without conditions ("Siblings reach each other only through interfaces"), and
-        // the foreign-write rule in Module::typecheck0 already holds for a module
-        // checked alone, so either hide every static sibling's undeclared impls from
-        // each module's check, serial branch included, or document the run-scoped rule.
-        // probe: design/review-2026-10-05/repro/c-node-mod-04.sh (c-node-mod-04)
         if run >= 2 && !RUNTIME_BIND.get() {
             let run_nodes = order[at..at + run]
                 .iter()
                 .map(|i| slots[*i].take().expect("an order visits each once"));
-            typecheck0_modules(ctx, run_nodes, module)?;
+            typecheck0_modules(ctx, run_nodes, &siblings, module)?;
             at += run;
         } else {
             let n = slots[order[at]].take().expect("an order visits each once");
+            let prev = ctx.env.hidden_impls.clone();
+            if let NodeView::Module(m) = n.view()
+                && m.static_task().is_some()
+            {
+                let own = m.scope.lexical.clone();
+                ctx.env.hidden_impls = Arc::new(hide_siblings(&prev, &siblings, &own));
+            }
             let r = wrap!(n, n.typecheck0(ctx));
+            ctx.env.hidden_impls = prev;
             match module {
                 true => r.with_context(|| n.spec().ori.clone())?,
                 false => r?,
@@ -1082,27 +1084,36 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// The scope of a module statement.
+fn module_path<R: Rt, E: UserEvent>(n: &Node<R, E>) -> Option<ModPath> {
+    match n.view() {
+        NodeView::Module(m) => Some(m.scope.lexical.clone()),
+        _ => None,
+    }
+}
+
+/// `hidden` and every sibling but `own`.
+fn hide_siblings(
+    hidden: &[ModPath],
+    siblings: &[ModPath],
+    own: &ModPath,
+) -> Vec<ModPath> {
+    hidden.iter().chain(siblings.iter().filter(|p| *p != own)).cloned().collect()
+}
+
 /// Check each module of a run in a compile task forked before any runs.
 fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     run: impl Iterator<Item = &'a mut Node<R, E>>,
+    siblings: &[ModPath],
     module: bool,
 ) -> Result<()> {
     let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> =
         run.map(|n| (n, ctx.fork())).collect();
-    let paths: LPooled<Vec<ModPath>> = work
-        .iter()
-        .map(|(n, _)| match n.view() {
-            NodeView::Module(m) => m.scope.lexical.clone(),
-            _ => unreachable!("a run is of modules"),
-        })
-        .collect();
-    for (i, (_, task)) in work.iter_mut().enumerate() {
-        let mut hidden = (*task.env.hidden_impls).clone();
-        hidden.extend(
-            paths.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| p.clone()),
-        );
-        task.env.hidden_impls = Arc::new(hidden);
+    for (n, task) in work.iter_mut() {
+        let own = module_path(n).expect("a run is of modules");
+        task.env.hidden_impls =
+            Arc::new(hide_siblings(&task.env.hidden_impls, siblings, &own));
     }
     let level = current_level();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
