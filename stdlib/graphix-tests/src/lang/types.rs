@@ -1385,6 +1385,27 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   apply(|x| x * x)
 }"#;
 // Through an alias of the quantified type, the same.
+/// A type test can't tell one function signature from another, inside
+/// a tuple too.
+const TYPE_TEST_HOLDING_A_FN: &str = r#"{
+    let fs = |x: string| "[x]!";
+    let u: [(fn(x: i64) -> i64, i64), (fn(x: string) -> string, i64)] = (fs, 1);
+    select u {
+        (fn(x: i64) -> i64, i64) as (f, n) => f(n),
+        (fn(x: string) -> string, i64) as (f, n) => 0
+    }
+}"#;
+
+/// A Rust-backed abstract's values carry no parameters: two of its
+/// instantiations share one runtime form.
+const TYPE_TEST_RUST_BACKED_PARAMS: &str = r#"{
+    let f = |x: [db::Tree<i64, string>, db::Tree<string, i64>]| select x {
+        db::Tree<string, i64> as _ => 1,
+        db::Tree<i64, string> as _ => 2
+    };
+    0
+}"#;
+
 /// `never<T>()` holds T's applications to their parameter bounds.
 const NEVER_OF_AN_UNBOUNDED_APPLICATION: &str = r#"{
     type Num<'a: Number> = 'a;
@@ -1462,6 +1483,8 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
         (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
+        (TYPE_TEST_HOLDING_A_FN, "can't match on a type holding a function"),
+        (TYPE_TEST_RUST_BACKED_PARAMS, "same runtime form"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {

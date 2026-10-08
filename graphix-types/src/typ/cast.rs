@@ -5,7 +5,7 @@ use crate::{
     expr::WrittenAt,
     format_with_flags, list,
     stack::ensure_sufficient,
-    typ::{Type, TypeRef, params_size, tval::NakedPrefix},
+    typ::{Type, TypeRef, params_size, setops::union_identical, tval::NakedPrefix},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -266,37 +266,63 @@ impl Type {
     /// cast refuses such a source: a reference is not a number.
     #[doc(hidden)]
     pub fn holds_ref(&self, env: &Env) -> bool {
-        self.holds_ref_int(env, &mut Verdicts::new())
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::ByRef(..) => Some(true),
+            Type::Fn(_) | Type::Abstract { .. } => Some(false),
+            _ => None,
+        })
     }
 
-    fn holds_ref_int(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
-        ensure_sufficient(|| match self {
-            Type::ByRef(..) => true,
-            Type::Fn(_) | Type::Abstract { .. } => false,
-            Type::TVar(_) => {
-                self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
+    /// Whether a value of this type can hold a function outside an
+    /// abstract type: a runtime type test tells a function from a value
+    /// but not one signature from another.
+    #[doc(hidden)]
+    pub fn holds_fn(&self, env: &Env) -> bool {
+        self.holds(env, &mut Verdicts::new(), &|t| match t {
+            Type::Fn(_) => Some(true),
+            Type::Abstract { .. } => Some(false),
+            _ => None,
+        })
+    }
+
+    /// Whether some part of this type is one `leaf` says yes to; `leaf`
+    /// stops the walk at a part it decides.
+    fn holds(
+        &self,
+        env: &Env,
+        seen: &mut Verdicts<bool>,
+        leaf: &dyn Fn(&Type) -> Option<bool>,
+    ) -> bool {
+        ensure_sufficient(|| {
+            if let Some(v) = leaf(self) {
+                return v;
             }
-            // an open constructor is unknown like an open cell: its argument
-            // decides
-            Type::App(c, a) => match Type::app_filled(c, a) {
-                Some(f) => f.holds_ref_int(env, seen),
-                None => a.holds_ref_int(env, seen),
-            },
-            Type::Ref(tr) => {
-                let Ok(t) = self.lookup_ref(env) else { return false };
-                let shape =
-                    tr.params.iter().map(|p| p.holds_ref_int(env, seen)).collect();
-                match tr.def_key() {
-                    None => t.holds_ref_int(env, seen),
-                    Some(k) => decide_once(seen, (k, shape), false, |seen| {
-                        t.holds_ref_int(env, seen)
-                    }),
+            match self {
+                Type::TVar(_) => {
+                    self.deref_cloned().is_some_and(|t| t.holds(env, seen, leaf))
                 }
-            }
-            t => {
-                let mut r = false;
-                t.for_each_child(&mut |c| r = r || c.holds_ref_int(env, seen));
-                r
+                // an open constructor is unknown like an open cell: its
+                // argument decides
+                Type::App(c, a) => match Type::app_filled(c, a) {
+                    Some(f) => f.holds(env, seen, leaf),
+                    None => a.holds(env, seen, leaf),
+                },
+                Type::Ref(tr) => {
+                    let Ok(t) = self.lookup_ref(env) else { return false };
+                    let shape =
+                        tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
+                    match tr.def_key() {
+                        None => t.holds(env, seen, leaf),
+                        Some(k) => decide_once(seen, (k, shape), false, |seen| {
+                            t.holds(env, seen, leaf)
+                        }),
+                    }
+                }
+                t => {
+                    let mut r = false;
+                    t.for_each_child(&mut |c| r = r || c.holds(env, seen, leaf));
+                    r
+                }
             }
         })
     }
@@ -1392,8 +1418,17 @@ fn rep_collision(
             {
                 pairs(&mut xa.iter().zip(ya.iter()))
             }
-            (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) if x == y => {
-                None
+            // a Graphix-minted value carries its params and the test compares
+            // them; a Rust-backed one carries only its id, so two of its
+            // instantiations share one runtime form
+            (
+                a @ Type::Abstract { id: x, params: px },
+                b @ Type::Abstract { id: y, params: py },
+            ) if x == y => {
+                let rust_backed = env.abstract_reps.get(x).is_none();
+                let same = px.len() == py.len()
+                    && px.iter().zip(py.iter()).all(|(p, q)| union_identical(p, q));
+                (rust_backed && !same).then(|| (a.clone(), b.clone()))
             }
             (Type::ByRef(_, x), Type::ByRef(_, y)) if x == y => None,
             (Type::Fn(x), Type::Fn(y)) if x == y => None,

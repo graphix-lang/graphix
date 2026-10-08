@@ -33,8 +33,8 @@ val get: fn(c: Counter) -> u64;
 // counter.gx
 type Counter = Abstract<u64>;
 let make = |x| Counter(x);                     // construct
-let get = |c| c.0;                             // payload
-let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
+let get = |c: Counter| c.0;                    // payload
+let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destructure
 ```
 
 1. `Abstract<...>` is legal only as the ENTIRE body of a named `type`:
@@ -53,26 +53,18 @@ let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.
-<!-- CR claude for claude: [doc-drift] Point 4 is stale. GxAbstract carries the type
-arguments it was constructed at (graphix-types/src/abstract_value.rs:92-95) and
-Type::is_a compares them (graphix-types/src/typ/cast.rs:676-681), so `Box<i64> as b`
-does not match a Box<string>, as the pin lang::traits::abstract_test_matches_parameters
-asserts. The runtime-shape paragraph (98-101) leaves out `params` and points at
-graphix-compiler/src/abstract_value.rs; the file is graphix-types/src/abstract_value.rs.
-The comment above `match &type_predicate` at
-graphix-compiler/src/node/pattern.rs:1196-1198 repeats the stale claim and should go.
-(t-cast-setops-16) -->
-<!-- 2026-10-07 claude: the runtime-shape paragraph is fixed (t-expr-core-09); point 4
-and the pattern.rs comment still stand. -->
 4. Parameters flow through: `type Box<'a> = Abstract<'a>`, constructor
-   `fn<'a>(x: 'a) -> Box<'a>`. The runtime tag does not carry `'a`
-   (erased, as in Rust), so `Box<i64> as b` also matches a
-   `Box<string>` — the same limit a variant has. Constraints must
-   match the gxi (`type NumBox<'a: Number>;`).
-5. The constructor is an ordinary fn value (`array::map(xs, Counter)`).
-   Type and value names are separate namespaces, so `Counter(x)`
-   resolves to the constructor when no VALUE `Counter` is in scope; a
-   declaration shadows, as everywhere.
+   `fn<'a>(x: 'a) -> Box<'a>`. A value carries the parameters it was
+   constructed at and a type test compares them, so `Box<i64> as b`
+   does not match a `Box<string>`. A Rust-backed abstract's value
+   carries its id alone, so a select over two instantiations of one is
+   refused (they share a runtime form, `Type::rep_collision`).
+   Constraints must match the gxi (`type NumBox<'a: Number>;`).
+5. The constructor is syntax, not a value: `Counter(x)` constructs, and
+   a function that builds one is written `|x| Counter(x)`. Type and
+   value names are separate namespaces, so `Counter(x)` resolves to the
+   constructor when no VALUE `Counter` is in scope; a declaration
+   shadows, as everywhere.
 
 Equality is same tag + equal payloads (overridable through the core
 traits, `traits.md`); a value prints as `Counter(5)`.

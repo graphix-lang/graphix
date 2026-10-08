@@ -1314,49 +1314,16 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             }
         };
         // an explicit predicate on an abstract type is a nominal tag
-        // test; parameters are not carried at runtime, so `Box<i64> as b`
-        // also matches a `Box<string>`
-        // CR claude for claude: [bug] The comment above is false for a Graphix abstract:
-        // the box carries its params and Type::is_a compares them
-        // (graphix-types/src/typ/cast.rs:672; pin abstract_test_matches_parameters,
-        // stdlib/graphix-tests/src/lang/traits.rs:1410).
-        // design/nominal_abstract_types.md rule 4 and its Runtime shape paragraph make
-        // the same stale claim. It holds only for a Rust-backed abstract with
-        // parameters (db::Tree, Cursor, TxnTree, Subscription; netidx-admin's
-        // Ceremony), whose test compares the id alone (cast.rs:683), and there it is
-        // unsound: over [db::Tree<i64, string>, db::Tree<string, i64>] holding a
-        // Tree<i64, string>, `db::Tree<string, i64> as t` is taken and db::first(t)
-        // yields 1 typed string and "one" typed i64 (the JIT reads them as "" and 0,
-        // the node-walk passes them through), and trait dispatch on such a union self
-        // calls the other instantiation's impl. Fix it in one of two ways: refuse such
-        // a test where the scrutinee can hold another instantiation of the same
-        // Rust-backed type, or have the Rust value report its params. Then delete this
-        // comment. probe: design/review-2026-10-05/repro/x-unsafe-05.gx (x-unsafe-05)
-        // CR claude for claude: [doc-drift] The comment above is wrong for a
-        // Graphix-minted abstract. GxAbstract carries its params and Type::is_a
-        // compares them (graphix-types/src/typ/cast.rs:672-681), so with `type Box<'a>
-        // = Abstract<'a>` and `let b: Any = Box(s)` over a string `s`, `select b {
-        // Box<i64> as i => "int box", _ => "other" }` gives "other". Only a Rust-backed
-        // abstract is tested by id alone. design/nominal_abstract_types.md makes the
-        // same claim in item 4 (:56-59). Item 5 (:61) calls the constructor an ordinary
-        // fn value, but `let c = Counter;` and `array::map([1, 2], Box)` are parse
-        // errors. Its three-faces example (:35-37) is refused at `|c| c.0` (needs `c:
-        // Counter`) and at `x + 1` (u64 plus i64), and :98 and :101 leave params out of
-        // GxAbstract and Type::Abstract. (x-typecheck-patterns-13)
+        // test that compares the parameters a Graphix-minted value
+        // carries; a Rust-backed value carries its id alone, and the
+        // select refuses a test over two of its instantiations
         match &type_predicate {
-            // CR claude for claude: [bug] Only a top-level Fn is refused here. A Fn
-            // inside a tuple, struct, array, union member or typedef body passes, and
-            // at run time Type::is_a (graphix-types/src/typ/cast.rs:786) accepts any
-            // lambda for it. So `(fn(x: string) -> string, i64) as (f, n)` matches a
-            // tuple holding a fn(x: i64) -> i64: the select takes the wrong arm and
-            // binds f at a signature it does not have. Calling f runs the function on a
-            // wrong-typed argument, and under fusion a kernel then panics on the
-            // mistyped value (fusion/kernel.rs:243), which kills the runtime.
-            // check_cast already refuses a Fn anywhere in its target, and this check
-            // needs the same whole-type walk. probe:
-            // design/review-2026-10-05/repro/x-typecheck-generics-F5.gx
-            // (x-typecheck-generics-F5)
             Type::Fn(_) => bail!("can't match on Fn type"),
+            t if explicit && t.holds_fn(&ctx.env) => {
+                bail!(
+                    "can't match on a type holding a function: a test tells a function from a value, not one signature from another"
+                )
+            }
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
             Type::Concrete
             | Type::Function
