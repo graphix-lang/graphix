@@ -1385,6 +1385,12 @@ const NESTED_QUANTIFIER_SQUARE: &str = r#"{
   apply(|x| x * x)
 }"#;
 // Through an alias of the quantified type, the same.
+/// `never<T>()` holds T's applications to their parameter bounds.
+const NEVER_OF_AN_UNBOUNDED_APPLICATION: &str = r#"{
+    type Num<'a: Number> = 'a;
+    never<Num<string>>()
+}"#;
+
 /// A callback whose type holds a top-level variable is not polymorphic:
 /// aliasing the quantifier to it would carry it out.
 const NESTED_QUANTIFIER_ENV_CELL: &str = r#"{
@@ -1455,6 +1461,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_ALIAS_MONO, "does not contain"),
         (NESTED_QUANTIFIER_ALIAS_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_ENV_CELL, "not polymorphic"),
+        (NEVER_OF_AN_UNBOUNDED_APPLICATION, "Number does not contain string"),
         (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {

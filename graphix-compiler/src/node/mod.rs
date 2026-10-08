@@ -2078,16 +2078,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        // CR claude for claude: [bug] Only T's names are deferred here; nothing checks
-        // T's typedef applications against their parameter bounds, which every other
-        // site that writes a type gets when a contains expands the Ref
-        // (Type::lookup_ref_with). `type Num<'a: Number> = 'a; never<Num<string>>()`
-        // passes --check, and once the never feeds an unannotated `let` the refusal
-        // comes from Bind::compile's `ptyp.contains(..)?` (node/bind.rs:207) with no
-        // position; `let x = never<Nope>(); x` also reports `undefined type Nope`
-        // unpositioned. Probe: design/review-2026-10-05/repro/x-diff-types-06.gx.
-        // (x-diff-types-06)
         defer_unresolved_names(ctx, &self.typ, &self.spec);
+        // each application of a definition T names holds its parameter
+        // bounds, as where a contains expands it
+        fn applications(t: &Type, env: &env::Env, r: &mut Result<()>) {
+            if r.is_err() {
+                return;
+            }
+            if let Type::Ref(tr) = t
+                && tr.resolve_in(env).is_some()
+            {
+                *r = t.lookup_ref(env).map(|_| ());
+            }
+            crate::stack::ensure_sufficient(|| {
+                t.for_each_child(&mut |c| applications(c, env, r))
+            })
+        }
+        let mut r = Ok(());
+        applications(&self.typ, &ctx.env, &mut r);
+        wrap!(self, r)?;
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
 
