@@ -46,19 +46,9 @@ pub struct Calibration {
     shift: u32,
 }
 
-// CR claude for claude: [perf] T_BUCKET = 6 puts T in bucket 6. The smallest per-slot
-// estimate a histogram can give is then floor(0) = 2^shift, between T/128 and T/64
-// (2048 ticks at T = 143552), and any cheaper slot is rounded up to it.
-// ProbeSite::grain forks once est * n >= 2T, and a LoopSite never checks a loop's
-// measured total first (SlotSite's Probe stage does). So under Auto every kernel loop
-// longer than 128-256 slots forks, however cheap its slots are. Probe:
-// design/review-2026-10-05/repro/c-cost-misc-01.gx, a 400-slot `i + n` init recomputed
-// 20000 times. Off: 0.82 s wall, 0.85 s CPU. Auto: 2.3-2.5 s wall, 9.2-9.7 s CPU, with
-// about 19000 cycles forked into 5-6 ranges at an estimate of exactly floor(0).
-// design/parallel_eval.md §5 wants bucket 0 near 16 ns; anchoring T near bucket 12 (or
-// adding buckets) and requiring a measured loop total of 2T before a LoopSite forks
-// would each stop it. (c-cost-misc-01)
-const T_BUCKET: u32 = 6;
+/// The bucket `T` falls in: bucket 0 starts between `T/8192` and
+/// `T/4096`, near the cost of a cheap slot, and bucket 15 at `8T`.
+const T_BUCKET: u32 = 12;
 
 /// How many threshold multiples of a stolen job's start latency.
 const T_PER_WAKE: u64 = 4;

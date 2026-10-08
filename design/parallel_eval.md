@@ -344,8 +344,9 @@ tick is the cheapest monotonic counter the platform has: `rdtsc` on
 x86_64 (invariant on every current CPU, constant rate across cores and
 frequency changes), `CNTVCT_EL0` on aarch64, `Instant` elsewhere.
 Nothing converts ticks to time: `T` below is calibrated in ticks too,
-and `shift` puts `T` in bucket 6 (`T_BUCKET`), so bucket 0 starts
-between `T/128` and `T/64`. The counter's not being serializing is lost
+and `shift` puts `T` in bucket 12 (`T_BUCKET`), so bucket 0 starts
+between `T/8192` and `T/4096` (a cheap slot's cost, not rounded up to a
+fork's) and bucket 15 at `8T`. The counter's not being serializing is lost
 in the log2 buckets. Every 64 samples halve the counts, so old behavior
 fades. A collection keeps one histogram for its standing slots' per-slot
 cost, not one per slot, and its growth two `ProbeSite`s (below). A fork
