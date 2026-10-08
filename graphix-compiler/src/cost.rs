@@ -232,7 +232,17 @@ pub enum Plan<'a> {
 /// arguments, a constructor's fields, an operator's operands): its
 /// state under `Auto`.
 #[derive(Debug, Default)]
-pub struct ForkSite(Site);
+pub struct ForkSite(Site, Siblings);
+
+/// Whether a fork point's children may run in parallel at all, decided
+/// once ([`crate::analysis::independent`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Siblings {
+    #[default]
+    Undecided,
+    Independent,
+    Dependent,
+}
 
 #[derive(Debug)]
 enum Site {
@@ -266,6 +276,23 @@ struct Measured {
 }
 
 impl ForkSite {
+    /// Decide, once, whether the site's `n` children are independent;
+    /// dependent ones always run in order.
+    #[inline]
+    pub fn decide_siblings<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        n: usize,
+        independent: impl FnOnce() -> bool,
+    ) {
+        if self.1 == Siblings::Undecided && n >= 2 && ctx.fork_mode() != ParMode::Off {
+            self.1 = match independent() {
+                true => Siblings::Independent,
+                false => Siblings::Dependent,
+            }
+        }
+    }
+
     /// What this update does with the site's `n` children.
     #[inline]
     pub fn plan<R: Rt, E: UserEvent>(
@@ -275,7 +302,7 @@ impl ForkSite {
     ) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
-            _ if n < 2 => Plan::Serial,
+            _ if n < 2 || self.1 == Siblings::Dependent => Plan::Serial,
             ParMode::Force => Plan::Fork(Splits::Halves),
             ParMode::Auto => self.plan_auto(n),
         }
@@ -466,6 +493,7 @@ pub struct SlotSite {
     standing: Slots,
     pub fresh: ProbeSite,
     pub build: ProbeSite,
+    siblings: Siblings,
 }
 
 #[derive(Debug)]
@@ -521,6 +549,31 @@ pub enum SlotPlan {
 }
 
 impl SlotSite {
+    /// Decide, once, whether the slots are independent: they share one
+    /// callback, so two of them stand for all; dependent slots always
+    /// run in order.
+    pub fn decide_siblings<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &ExecCtx<'_, R, E>,
+        n: usize,
+        independent: impl FnOnce() -> bool,
+    ) {
+        if self.siblings == Siblings::Undecided
+            && n >= 2
+            && ctx.fork_mode() != ParMode::Off
+        {
+            self.siblings = match independent() {
+                true => Siblings::Independent,
+                false => Siblings::Dependent,
+            }
+        }
+    }
+
+    /// Whether the slots must run in order.
+    pub fn dependent(&self) -> bool {
+        self.siblings == Siblings::Dependent
+    }
+
     /// The plan for the `n` standing slots.
     #[inline]
     pub fn plan<R: Rt, E: UserEvent>(
@@ -530,7 +583,7 @@ impl SlotSite {
     ) -> SlotPlan {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
-            _ if n < 2 => SlotPlan::Serial,
+            _ if n < 2 || self.siblings == Siblings::Dependent => SlotPlan::Serial,
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }

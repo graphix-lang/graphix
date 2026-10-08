@@ -1108,6 +1108,66 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
     plan_block_explained(children, catches, ctx, &mut |_, _| ())
 }
 
+/// What each of `children` reads, writes and calls, its callees
+/// included.
+fn accesses<'a, R: Rt, E: UserEvent>(
+    children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    ctx: &CompileCtx<R, E>,
+) -> LPooled<Vec<Summary>> {
+    let graph = collect_static_graph_of(children.clone());
+    let ordered = |name: &str| ctx.builtin_ordered(name);
+    let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
+        .map(|n| {
+            let mut s = Summary::default();
+            let mut cs = SmallVec::new();
+            local_summary(n, &graph, &ordered, &mut s, &mut cs);
+            (s, cs)
+        })
+        .collect();
+    let sums = instance_summaries(
+        &graph,
+        &ordered,
+        locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
+    );
+    locals
+        .iter()
+        .map(|(local, cs)| {
+            let mut access = Summary::default();
+            access.union(local);
+            cs.iter().filter_map(|c| sums.get(c)).for_each(|c| {
+                access.union(c);
+            });
+            access
+        })
+        .collect()
+}
+
+/// Whether siblings forked at a fork point other than a block's (a
+/// constructor's fields, a call's arguments, an operator's operands, a
+/// collection's slots) compute in parallel what they do in order: none
+/// reads what an earlier one publishes, and no two make ordered calls.
+/// A call not resolved yet is opaque, so this is decided before binds.
+pub(crate) fn independent<'a, R: Rt, E: UserEvent>(
+    children: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    ctx: &CompileCtx<R, E>,
+) -> bool {
+    let accesses = accesses(children.clone(), ctx);
+    let mut published = Vars::default();
+    let mut ordered = false;
+    for (n, access) in children.zip(accesses.iter()) {
+        if access.reads.meeting(&published).is_some() || (access.ordered && ordered) {
+            return false;
+        }
+        let mut refs = Refs::without_callees();
+        n.refs(&mut refs);
+        refs.with_bound(|id| {
+            published.ids.insert(id);
+        });
+        ordered |= access.ordered;
+    }
+    true
+}
+
 /// Why a block plan starts a new run at a statement.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RunBreak {
@@ -1148,22 +1208,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     // instance's own lets, which each activation binds afresh, or statement 2 still
     // reads `a` through it. probe:
     // design/review-2026-10-05/repro/c-analysis-branch-05.gx (c-analysis-branch-05)
-    let graph = collect_static_graph_of(children.iter());
-    let ordered = |name: &str| ctx.builtin_ordered(name);
-    let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
-        .iter()
-        .map(|n| {
-            let mut s = Summary::default();
-            let mut cs = SmallVec::new();
-            local_summary(n, &graph, &ordered, &mut s, &mut cs);
-            (s, cs)
-        })
-        .collect();
-    let sums = instance_summaries(
-        &graph,
-        &ordered,
-        locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
-    );
+    let accesses = accesses(children.iter(), ctx);
     let mut runs: LPooled<Vec<(u32, u32)>> = LPooled::take();
     let mut start: Option<usize> = None;
     let mut published = Vars::default();
@@ -1177,12 +1222,8 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
             }
             continue;
         }
-        let (local, cs) = &locals[i];
         let mut access = Summary::default();
-        access.union(local);
-        cs.iter().filter_map(|c| sums.get(c)).for_each(|c| {
-            access.union(c);
-        });
+        access.union(&accesses[i]);
         let module = matches!(
             n.spec().kind,
             ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_)

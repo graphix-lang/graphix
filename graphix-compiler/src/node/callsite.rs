@@ -2794,6 +2794,9 @@ fn update_args<R: Rt, E: UserEvent>(
     out: &mut ArgsOut,
 ) {
     let n = args.len();
+    site.decide_siblings(ctx, n, || {
+        crate::analysis::independent(args.values().filter_map(|a| a.node.as_ref()), ctx)
+    });
     match site.plan(ctx, n) {
         Plan::Serial => update_args_in_order(ctx, args, None, pass, out),
         Plan::Measure(mut m) => {

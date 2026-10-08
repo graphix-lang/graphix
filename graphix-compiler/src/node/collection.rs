@@ -891,21 +891,14 @@ fn update_slots<R: Rt, E: UserEvent>(
     site: &mut SlotSite,
     old_len: usize,
 ) -> Option<Option<Tag>> {
+    site.decide_siblings(ctx, slots.len(), || {
+        crate::analysis::independent(slots.iter().take(2).map(|s| &s.call), ctx)
+    });
+    if site.dependent() {
+        return update_slots_in_order(ctx, slots, 0, old_len);
+    }
     let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));
     let n = standing.len();
-    // CR claude for claude: [bug] The standing slots fork here on cost alone, and the
-    // fresh ones fork through site.fresh.run below. Nothing tells the collection that
-    // its callback reaches an ordered or opaque call, so slots that share one queuefn
-    // queue push into it and pop from it in thread order. That breaks the rule
-    // plan_block enforces for statements (design/parallel_eval.md §3.2, §6). In the
-    // default Auto mode the program's value then depends on scheduling. Probe:
-    // design/review-2026-10-05/repro/c-collection-02.gx prints null under
-    // GRAPHIX_PAR=off and an out-of-order index in most default runs, and graphix-fuzz
-    // check on `array::map([1, 2, 3, 4, 5, 6, 7, 8], |x| q(x) ~ n)` over a shared
-    // queuefn reports a parallel-evaluation DIVERGENCE. The ForkSite users (gather,
-    // call arguments, operands) have the same hole: `(q(1) ~ n, q(2) ~ n, q(3) ~ n,
-    // q(4) ~ n)` comes out in a different order under GRAPHIX_PAR=force.
-    // (c-collection-02)
     let production = match site.plan(ctx, n) {
         SlotPlan::Serial => update_slots_in_order(ctx, standing, 0, old_len)?,
         SlotPlan::Measure(t0) => {

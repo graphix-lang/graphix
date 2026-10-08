@@ -2625,3 +2625,48 @@ const DEFAULT_HIDDEN_BY_A_CALLBACK: &str = r#"
 run!(default_hidden_by_a_callback, DEFAULT_HIDDEN_BY_A_CALLBACK, |v: Result<&Value>| {
     refused("f64 does not contain i64")(v)
 }; FuseExpect::None);
+
+// Siblings that reach one ordered queuefn wrapper keep their serial
+// order when the fields, arguments or operands would fork.
+const ORDERED_SIBLINGS_STAY_SERIAL: &str = r#"
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let fields: Array<i64> = [];
+    let args: Array<i64> = [];
+    let operands: Array<i64> = [];
+    let qf = queuefn(#trigger: clk, |x: i64| -> i64 { fields <- x ~ array::push(fields, x); x });
+    let qa = queuefn(#trigger: clk, |x: i64| -> i64 { args <- x ~ array::push(args, x); x });
+    let qo = queuefn(#trigger: clk, |x: i64| -> i64 { operands <- x ~ array::push(operands, x); x });
+    let f = |a: i64, b: i64, c: i64, d: i64, e: i64, g: i64| -> i64 a + b + c + d + e + g;
+    let t = (qf(1), qf(2), qf(3), qf(4), qf(5), qf(6));
+    let s = f(qa(1), qa(2), qa(3), qa(4), qa(5), qa(6));
+    let o = ((qo(1) + qo(2)) + (qo(3) + qo(4))) + (qo(5) + qo(6));
+    select n { x if x > 9 => (fields, args, operands), _ => never() }
+}
+"#;
+
+run!(ordered_siblings_stay_serial, ORDERED_SIBLINGS_STAY_SERIAL, |v: Result<&Value>| {
+    let seq = || Value::Array((1..=6).map(Value::I64).collect());
+    matches!(v, Ok(Value::Array(a)) if a[..] == [seq(), seq(), seq()])
+}; FuseExpect::Jit);
+
+// Slots that reach one ordered queuefn wrapper keep their serial order.
+const ORDERED_SLOTS_STAY_SERIAL: &str = r#"
+{
+    let i = 0;
+    let clock = sys::time::timer(duration:1.ms, true);
+    i <- clock ~ i + 1;
+    let q = queuefn(#trigger: clock, |x: i64| -> i64 x);
+    let r = array::map(array::init(16, |j| j), |x| (q(x) ~ i, x));
+    select i {
+        n if n > 20 => array::find(array::init(15, |j| j), |j| r[j + 1]$.0 < r[j]$.0),
+        _ => never()
+    }
+}
+"#;
+
+run!(ordered_slots_stay_serial, ORDERED_SLOTS_STAY_SERIAL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+}; FuseExpect::Jit);

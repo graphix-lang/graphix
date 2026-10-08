@@ -414,7 +414,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // passing its in-order update and its merge, would leave one place to change it,
     // for example to add the independence check that field, argument and operand forks
     // lack. (c-analysis-branch-09)
-    // CR claude for claude: [bug] This fork point decides on cost alone, and so do
+    // XCR claude for claude: [bug] This fork point decides on cost alone, and so do
     // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
     // operands). Only plan_block applies the rule that two children reaching an ordered
     // call keep their serial order (design/parallel_eval.md §3.2, §6). So two calls of
@@ -429,6 +429,14 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // three [1, 2, 3, 4, 5, 6] logs under GRAPHIX_PAR=off and a new permutation on
     // every default run; graphix-fuzz check on `(q(10), q(20), .., q(60))` with
     // `#trigger: in0` reports a parallel-evaluation DIVERGENCE. (x-parallel-01)
+    // 2026-10-07 claude: every ForkSite and SlotSite decides once, before binds,
+    // whether its children are independent (analysis::independent: no child reads
+    // what an earlier one publishes, no two make ordered calls; an unresolved call
+    // is opaque) and runs dependent ones in order. Pins:
+    // lang::functions::ordered_siblings_stay_serial, ordered_slots_stay_serial.
+    // check_parallel still accepts #[parallel] over such siblings, which then run in
+    // order.
+    site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
     match site.plan(ctx, n) {
         Plan::Serial => gather_in_order(ctx, nodes, None),
         Plan::Measure(mut m) => {
@@ -436,17 +444,6 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
             m.done(n);
             r
         }
-        // CR claude for claude: [bug] These fields fork with no independence check, and
-        // so do call arguments (callsite.rs:2387), binary operands (op.rs:179) and
-        // collection slots (collection.rs:867); only a block's runs consult
-        // analysis::plan_block. A sibling can still read what an earlier one publishes
-        // this cycle through a reference to its inner let (`*r` after `r <- &v`), and
-        // two siblings can call one ORDERED queuefn wrapper. A forked cycle then
-        // computes values the serial node-walk does not, which breaks CLAUDE.md's
-        // independence and ORDERED rules. It shows under #[parallel], under
-        // GRAPHIX_PAR=force, and in plain Auto once both siblings cost enough to fork;
-        // GRAPHIX_PAR_AUDIT=1 panics on it. probe:
-        // design/review-2026-10-05/repro/c-analysis-branch-03.gx (c-analysis-branch-03)
         Plan::Fork(s) => {
             let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
             s.ranges(0, n, &mut ranges);

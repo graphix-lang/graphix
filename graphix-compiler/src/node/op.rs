@@ -186,6 +186,9 @@ macro_rules! gated_operands {
     ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
+        $self.fork.decide_siblings($ctx, 2, || {
+            $crate::analysis::independent([&*lhs, &*rhs].into_iter(), $ctx)
+        });
         let (l, r) = $crate::branch::join2(
             &mut $self.fork,
             $ctx,
