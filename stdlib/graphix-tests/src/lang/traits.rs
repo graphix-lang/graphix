@@ -1621,3 +1621,16 @@ async fn implementations_are_declared_ones() {
         assert!(e.contains(why), "{src}: {e}");
     }
 }
+
+// A trait call whose self argument is never produced dispatches nothing:
+// it is bottom, its other arguments still live, and the program builds.
+run!(
+    trait_call_over_bottom_self,
+    r#"{
+    let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+    let never_sized = csize(never());
+    let sized = csize(["a", "b"]);
+    sized
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
+);

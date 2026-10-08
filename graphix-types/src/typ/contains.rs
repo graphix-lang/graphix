@@ -834,6 +834,18 @@ impl Type {
                 }
             },
             (Self::Bottom, Self::Bottom) => Ok(true),
+            // a constructor applied over open cells: each was fed ⊥
+            (t0 @ Self::App(..), Self::Bottom) => {
+                if commit {
+                    let mut tvs: LPooled<AHashMap<arcstr::ArcStr, TVar>> =
+                        LPooled::take();
+                    t0.collect_tvars(&mut tvs);
+                    for tv in tvs.values().filter(|tv| tv.binding().is_none()) {
+                        tv.mark_bottom_fed();
+                    }
+                }
+                Ok(true)
+            }
             (Self::Bottom, _) => Ok(false),
             (_, Self::Bottom) => Ok(true),
             (Self::TVar(t0), Self::Any) => {

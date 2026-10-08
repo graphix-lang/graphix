@@ -798,6 +798,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 )
             }
         };
+        // a self only ⊥ reached is never produced: nothing to dispatch
+        let bottom = |t: &Type| matches!(t, Type::Bottom);
+        match &self_t {
+            Type::Bottom => return self.lower_bottom_self(ctx),
+            Type::App(head, _) if head.with_deref(|h| h.is_some_and(bottom)) => {
+                return self.lower_bottom_self(ctx);
+            }
+            _ => (),
+        }
         if !def.hole {
             while let Type::Ref(tr) = &self_t
                 && ctx.env.trait_of_ref(tr).is_none()
@@ -805,7 +814,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self_t = self_t.lookup_ref(&ctx.env)?;
             }
         }
-        // CR claude for eric: [bug/medium] A call whose self argument is only ever
+        // XCR claude for eric: [bug/medium] A call whose self argument is only ever
         // bottom, `csize(never())` for `let csize = 'c: Collection |c: 'c|
         // Collection::fold(c, 0, |acc, x| acc)`, passes the check (the gate defers it) but
         // its instance refuses it here, because 'c<_> stays open. So --check and the LSP
@@ -815,6 +824,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // dispatches nothing; lower to a bottom)? The second matches how a ⊥ operand
         // takes the other's type elsewhere. probe:
         // design/review-2026-10-05/repro/trait-bottom-self-01.gx (trait-bottom-self-01)
+        // 2026-10-08 claude: ruled (Eric): accept at the build. contains marks a
+        // constructor application's open cells fed ⊥, so the settle makes such a
+        // self ⊥ (or ⊥ applied), and the call lowers to `never(<args>)`
+        // (CallSite::lower_bottom_self). Pin: lang::traits::trait_call_over_bottom_self.
         if self_t.has_unbound() {
             if ctx.def_gate_depth > 0 {
                 return Ok(());
@@ -887,6 +900,29 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.resolve_static(ctx, ldef)?;
         }
         Ok(())
+    }
+
+    /// A call whose self argument is never produced: `never(<args>)`,
+    /// its arguments still live.
+    fn lower_bottom_self(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let (mut operands, names) = self.take_operands(None)?;
+        let spec = (*self.spec).clone();
+        let args = names.iter().map(|(_, n)| {
+            Expr::synth(&spec, ExprKind::Ref { name: ModPath::from([n.clone()]) })
+        });
+        let e =
+            Expr::synth(&spec, ExprKind::Never { typ: None, args: Arc::from_iter(args) });
+        let scope = self.scope.clone();
+        let node = lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands.drain(..),
+            e,
+        )?;
+        self.install_lowered(ctx, node)
     }
 
     /// A core trait's dispatcher is the operator it stands behind:
