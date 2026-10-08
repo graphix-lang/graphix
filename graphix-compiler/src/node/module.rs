@@ -363,7 +363,7 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
-            // CR claude for claude: [bug] This publishes the rep of every abstract
+            // CR claude for eric: [bug] This publishes the rep of every abstract
             // typedef with a body under a re-exported `mod sub;`. A gxi body is already
             // public from bind_sig, so the only reps this changes are an interface-less
             // descendant's own `type T = Abstract<..>`. As a result, a parent gxi that
@@ -379,6 +379,13 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             // design/review-2026-10-05/repro/x-typecheck-patterns-10.sh (nested_gxi and
             // deep print "5 6"; nested_plain and flat refuse).
             // (x-typecheck-patterns-10)
+            // 2026-10-08 claude: needs a ruling. As built, a top-level interface-less
+            // module's rep is private (the flat case refuses), which the design table's
+            // "module-private" row says; the book's "a module with no interface file
+            // exports its definitions too, so its Abstract types are public newtypes"
+            // was written in the same commit (927b1e75) and says the opposite. Private
+            // means deleting this loop; public means TypeDef::compile registers an
+            // interface-less module's reps public.
             let exported: LPooled<Vec<AbstractId>> = inner_env
                 .typedefs
                 .iter()
