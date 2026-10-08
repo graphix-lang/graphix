@@ -1973,6 +1973,10 @@ impl Type {
         let a = actual.deref_cloned();
         match (&d, &a) {
             (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
+            // a reference's referent pre-unifies as the referent would
+            (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a))) => {
+                Self::pre_unify_arg(env, d, a)
+            }
             // a union formal two of whose members admit the argument leaves
             // the choice to the argument's own check
             (Some(Type::Set(ms)), _) => {

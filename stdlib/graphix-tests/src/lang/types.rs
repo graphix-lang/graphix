@@ -2419,3 +2419,16 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "A1 A2")
 );
+
+// A literal passed where a union of collection types is expected takes the
+// member its elements fit, behind a reference too.
+run!(
+    literal_into_a_union_formal,
+    r#"{
+    let f = |x: [Array<i64>, Array<string>]| 1;
+    let g = |x: &[Array<i64>, Array<string>]| 10;
+    let h = |x: [Array<(i64, i64)>, Array<(string, f64)>]| 100;
+    f(["a"]) + g(&["a"]) + h([("a", 1.0)])
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(111)))
+);

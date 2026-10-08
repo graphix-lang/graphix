@@ -703,17 +703,6 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
             Type::Bottom => K::typ(Type::empty_tvar()),
             t => K::typ(t),
         };
-        // CR claude for claude: [bug/medium] An array literal passed where a union of
-        // array types is expected is refused when its elements fit a later member:
-        // `let f = |x: [Array<i64>, Array<string>]| 0; f(["a"])` fails with "type
-        // mismatch Array<'_n: i64> does not contain Array<string>", while `let a =
-        // ["a"]; f(a)` checks, and so does the same shape with tuples. By the time this
-        // check runs, the literal's element cell already holds the union's first
-        // member, so something upstream (the call site pushing the formal into the
-        // argument, or union containment binding a cell on its first trial) commits to
-        // one alternative. Found writing chart pins: `chart::line(&[(datetime:"..",
-        // 1.0)])` is refused and the pins bind the data to a name first.
-        // (literal-union-01)
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 }
