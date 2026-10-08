@@ -334,7 +334,7 @@ fn desugar_plain(
     });
     exprs.push(
         ExprKind::SeqMachine(Arc::new(SeqMachineExpr {
-            id,
+            id: spec.id,
             pc: Arc::new(r#ref(pos, &pc)),
             scopes: Arc::from_iter(scopes.iter().copied()),
             steps: Arc::from_iter(steps),
@@ -1154,7 +1154,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
                 ExprKind::TupleRef { source: Arc::new(r#ref(pos, &input)), field }
                     .to_expr(pos);
             ExprKind::SeqCapture(Arc::new(SeqCaptureExpr {
-                machine: id,
+                machine: seq.spec.id,
                 snapshot: Arc::new(snapshot),
                 live: Arc::new(live.clone()),
             }))

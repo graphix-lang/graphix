@@ -560,18 +560,7 @@ pub struct TryWithExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct SeqMachineExpr {
-    // CR claude for claude: [structure] `id` and `SeqCaptureExpr::machine` (line 560) are
-    // the seq's `spec.id.inner()` (seq.rs:230, :833) held as bare u64s, and so are the
-    // node fields and the analysis map that pair them (seq_machine.rs:95, :440;
-    // analysis.rs:49). That skips the typed-id rule and image relocation: an image
-    // writes them raw, which works only because nothing compares them with a live
-    // ExprId. Type them as ExprId.
-    // design/review-2026-10-05/repro/c-analysis-branch-01.gx shows this same key
-    // failing today, because every instance of the enclosing function shares it, so
-    // change its type and its identity together. (t-expr-core-08)
-    // 2026-10-07 claude: deferred to the compiler batch with c-analysis-branch-01,
-    // whose per-instance identity this key needs.
-    pub id: u64,
+    pub id: ExprId,
     pub pc: Arc<Expr>,
     pub scopes: Arc<[u32]>,
     pub steps: Arc<[SeqStep]>,
@@ -598,7 +587,7 @@ pub struct SeqStep {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct SeqCaptureExpr {
-    pub machine: u64,
+    pub machine: ExprId,
     pub snapshot: Arc<Expr>,
     pub live: Arc<Expr>,
 }

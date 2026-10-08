@@ -2682,7 +2682,7 @@ fn compiler_kinds_children_agree() {
         (SeqAbort(arc("a")), 1),
         (
             SeqMachine(Arc::new(SeqMachineExpr {
-                id: 0,
+                id: ExprId::new(),
                 pc: arc("pc"),
                 scopes: Arc::from_iter([0]),
                 steps: Arc::from_iter([
@@ -2708,7 +2708,7 @@ fn compiler_kinds_children_agree() {
         ),
         (
             SeqCapture(Arc::new(SeqCaptureExpr {
-                machine: 0,
+                machine: ExprId::new(),
                 snapshot: arc("s"),
                 live: arc("l"),
             })),

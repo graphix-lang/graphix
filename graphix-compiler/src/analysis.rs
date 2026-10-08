@@ -51,8 +51,12 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
     machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
-    captures:
-        LPooled<AHashMap<(u64, Holder), SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>>>,
+    captures: LPooled<
+        AHashMap<
+            (crate::expr::ExprId, Holder),
+            SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>,
+        >,
+    >,
 }
 
 impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {

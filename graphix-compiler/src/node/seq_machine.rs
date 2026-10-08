@@ -92,7 +92,7 @@ impl<R: Rt, E: UserEvent> Step<R, E> {
 pub struct SeqMachine<R: Rt, E: UserEvent> {
     spec: Expr,
     /// The seq's id, which its `seqq` captures name.
-    pub(crate) id: u64,
+    pub(crate) id: ExprId,
     pub(crate) pc: Node<R, E>,
     pub(crate) pc_id: BindId,
     pub(crate) steps: Box<[Step<R, E>]>,
@@ -192,22 +192,12 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         for (i, parent) in m.scopes.iter().enumerate() {
             let s = match i {
                 0 => scope.clone(),
-                // CR claude for claude: [bug] Each try or with body scope gets a fresh
-                // ExprId on every compile. So the lowered_seqs key (seq id, lexical
-                // scope) misses for a seq nested there, and every compile of the
-                // enclosing definition lowers it again with new expression ids. Each
-                // instance's copy then has no DefTable rows and is checked again
-                // instead of substituted. lowered_seqs also gains an entry per instance
-                // that is never removed: a collection callback of this shape grows
-                // memory about 5x faster while its slots are re-created. A lambda
-                // literal there gets a new source id per instance, so a recursive call
-                // passing it never matches the resolving instance's FnArgIdentity, and
-                // elaboration builds instances until memory runs out; the same body
-                // with the inner seq moved out of the try prints 13 in 0.3 s. Name the
-                // scope from data that stays the same across compiles of the definition
-                // (the machine's id and the scope index), as blocks and selects use
-                // spec.id. probe: design/review-2026-10-05/repro/t-seq-09.gx (t-seq-09)
-                _ => scopes[*parent as usize].append_block("seq", ExprId::new().inner()),
+                // named from what every compile of the definition shares, so a
+                // seq nested here is lowered once
+                _ => scopes[*parent as usize].append_block(
+                    compact_str::format_compact!("seq{i}_").as_str(),
+                    m.id.inner(),
+                ),
             };
             scopes.push(s);
         }
@@ -236,7 +226,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
-        let id = u64::decode(buf)?;
+        let id = ExprId::decode(buf)?;
         let pc = decode_node(ctx, buf)?;
         let pc_id = pc_id(&pc).map_err(|_| PackError::InvalidFormat)?;
         let n = crate::image::count_decode(buf)?;
@@ -452,7 +442,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
 #[derive(Debug)]
 pub struct SeqCapture<R: Rt, E: UserEvent> {
     spec: Expr,
-    pub(crate) machine: u64,
+    pub(crate) machine: ExprId,
     pub(crate) snapshot: Node<R, E>,
     pub(crate) live: Node<R, E>,
     pub(crate) live_id: BindId,
@@ -481,7 +471,7 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
-        let machine = u64::decode(buf)?;
+        let machine = ExprId::decode(buf)?;
         let snapshot = decode_node(ctx, buf)?;
         let live = decode_node(ctx, buf)?;
         let live_id = pc_id(&live).map_err(|_| PackError::InvalidFormat)?;

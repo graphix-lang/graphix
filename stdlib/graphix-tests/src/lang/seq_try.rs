@@ -305,3 +305,24 @@ modes!(
     value_forms,
     seqq_credit,
 );
+
+// A seq nested in a try is lowered once per definition, so a recursion
+// through it reuses its instances instead of building new ones forever.
+async fn seq_in_try_lowers_once(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(
+        r#"{
+            let rec g = |f: fn(x: i64) -> i64, n: i64| -> i64 seq {
+                try {
+                    seq { select n { 0 => f(0), _ => g(|x| f(x) + 1, n - 1) } }
+                } with(e) { 0 }
+            };
+            g(|x| x + 10, 3)
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![13]);
+    Ok(())
+}
+
+modes!(seq_in_try_lowers_once);
