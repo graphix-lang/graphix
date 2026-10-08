@@ -17,15 +17,13 @@ use tokio::{
 };
 use triomphe::Arc;
 
-/// `GRAPHIX_DBG_VARS=1` prints every runtime variable event:
-/// `REF_VAR`/`UNREF_VAR` (wake-interest refcounts), `SET_VAR` (queued
-/// cross-cycle writes) and `NOTIFY_SET` (same-cycle bind delivery).
-/// Checked once; set before launch.
-fn dbg_vars() -> bool {
-    static ON: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DBG_VARS").is_some());
-    *ON
-}
+graphix_compiler::dbg_flag!(
+    /// `GRAPHIX_DBG_VARS=1` prints every runtime variable event:
+    /// `REF_VAR`/`UNREF_VAR` (wake-interest refcounts), `SET_VAR` (queued
+    /// cross-cycle writes) and `NOTIFY_SET` (same-cycle bind delivery).
+    dbg_vars,
+    "GRAPHIX_DBG_VARS"
+);
 
 /// How a waiting write came.
 #[derive(Debug, Clone)]

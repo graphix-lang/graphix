@@ -2,8 +2,7 @@
 //! both fusion modes. Three passes over the reachable call graph:
 //! effect inference (a greatest fixpoint from `Sync` down to `Async`),
 //! the instance call graph, and recursion/tail marking (SCCs,
-//! `GXLambda::tail_loop`, `CallSite::is_self_tail_call`,
-//! `RecursionKind`). Both engines read the facts; the structural
+//! `GXLambda::tail_loop`, `RecursionKind`). Both engines read the facts; the structural
 //! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
 use crate::{

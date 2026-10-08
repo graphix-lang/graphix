@@ -843,7 +843,6 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_INVOKE=1` | each fused-kernel invocation with per-input fired/present |
 | `GRAPHIX_DBG_REGION=1` / `_FREEZE=1` | fused-region input wiring / freeze outcomes |
 | `GRAPHIX_DUMP_CLIF=1` | every linked function's CLIF, at link in join order (`u0:N` = helper registration order in `emit_helpers.rs`) |
-| `GXDBG_CALLRET=1` | from inside JIT code (debug builds): each kernel's entry init word (tag 4) and return disc (2) and scrutinee accumulator (3) |
 | `GRAPHIX_DBG_VARS=1` | runtime variable events (ref/unref, set, same-cycle notify) — graphix-rt |
 | `GRAPHIX_DBG_PERF=1` | interp lazy-bind phase counters every 250ms |
 | `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |
@@ -859,7 +858,15 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |
-| `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init flag, each return disc and tail fold, each cross-kernel call result |
+| `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init word (tag 4), return disc (2), scrutinee accumulator (3), tail fold and cross-kernel call result |
+| `GRAPHIX_DBG_SELECT=1` | each select update: its selection, the scrutinee and the event's size |
+| `GRAPHIX_DBG_BIND_BT=<id>` | a backtrace at every write to the cell with that `TVarId` |
+| `GXDBG_FREEZE_RET=1` | a region whose return type does not freeze for the kernel ABI |
+| `GXDBG_KERNEL_SLEEP=1` | each fused kernel put to sleep |
+| `GXDBG_KPOLL=1` | each kernel's feeder poll: init, tags and presence |
+| `GXDBG_NATIVE_ALL=1` | every fusion failure, not only those under a `#[native]` |
+| `GXDBG_REFMISS=1` | a kernel read of a name with no local or input |
+| `GXDBG_SEQPLAN=1` | each seq machine's planned steps, its step summaries and captures, and each block's opaque call |
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
 | `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / read misses |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |

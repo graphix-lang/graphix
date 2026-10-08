@@ -114,17 +114,7 @@ impl Effect {
 /// How a lambda recurses on its own `LambdaId`, the join over its
 /// instances in declaration order (a later variant dominates). Read by
 /// `#[tail_recursive]` and the arm-sleep rule; the operational gate is
-/// `GXLambda::tail_loop` plus the per-call-site `is_self_tail_call`.
-// CR claude for claude: [doc-drift] These docs name things that do not exist. Lines 86-87
-// and analysis.rs:5 cite `CallSite::is_self_tail_call`, which is not in the tree.
-// `TailRecursive` (97-99) says the recursion runs as a constant-space loop, but only a
-// fused kernel loops: the node-walk dispatches an activation per call
-// (design/tail_calls_are_calls.md), and the analysis assigns this variant with fusion
-// off too. lambda.rs:1574 and 1778 cite `ExecCtx::rec_defs` and
-// `ExecCtx::def_gate_params`, which are `CompileCtx` fields. lambda.rs:391-392 says the
-// instance's own check reports a failed `InstanceTypes::new`, but instances do not
-// check their bodies: `instance_types` (lambda.rs:709-712) refuses it as a compiler
-// bug. (c-lambda-06)
+/// `GXLambda::tail_loop`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, netidx_derive::Pack,
 )]
@@ -134,8 +124,9 @@ pub enum RecursionKind {
     /// lambda the analysis never reached.
     #[default]
     NotRecursive,
-    /// Every self-call is in tail position and runs as a constant-space
-    /// loop.
+    /// Every self-call is in tail position and the body holds no
+    /// per-activation state: a fused body runs it as a constant-space
+    /// loop (the node-walk still dispatches an activation per call).
     TailRecursive,
     /// Every self-call is in tail position but no loop is built: the
     /// body keeps per-activation state, or a formal is one the loop

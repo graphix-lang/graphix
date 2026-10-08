@@ -31,10 +31,7 @@ use std::{
 };
 use tokio::{sync::oneshot, task, time};
 
-pub(crate) fn rpc_dbg() -> bool {
-    static ON: LazyLock<bool> = LazyLock::new(|| std::env::var("GXDBG_RPC").is_ok());
-    *ON
-}
+graphix_compiler::dbg_flag!(rpc_dbg, "GXDBG_RPC");
 
 /// A subscription update routed to a builtin's BindId. Unsubscribed
 /// is delivered as an error value.

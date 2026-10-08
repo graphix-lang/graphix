@@ -240,17 +240,11 @@ fn build_site<R: Rt, E: UserEvent>(
     let top_id = ExprId::new();
     let prefix = format_compact!("#seam{}", top_id.inner());
     let types = (0..t.arity()).map(|_| h.typ.clone());
-    // CR claude for claude: [risk] This builds the hook site's call, and through it the
-    // impl's instance, during a cycle without node::with_runtime_settles, unlike
-    // CallSite::build_bound (callsite.rs:1165): its site settles go onto the root
-    // frame, which nothing drains until the next compile_top clears them unjudged, its
-    // cells belong to task 0, and with RUNTIME_BIND unset the impl body's statements
-    // fork rayon compile tasks from inside the cycle. GRAPHIX_TASK_AUDIT shows a forked
-    // task writing a task-0 cell at the first `==` on a user `impl Eq` whose `eq` body
-    // is a block. Probe: design/review-2026-10-05/repro/x-diff-types-08.gx.
-    // (x-diff-types-08)
-    let call =
-        SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id);
+    // built mid-cycle, as a run-time bind is: a task of its own, its
+    // settles drained when it returns
+    let call = super::with_runtime_settles(ctx, |ctx| {
+        SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)
+    });
     ctx.apply_deferred();
     Ok(HookSite { call: call?, first: true })
 }

@@ -2,6 +2,10 @@
 //! flags. Each flag is read once per process because several gate
 //! prints on hot paths; set them at launch.
 
+/// `dbg_flag!(name, "ENV")`: `fn name() -> bool`, whether `ENV` was set
+/// when the process first asked. Every crate's debug flags use it.
+#[macro_export]
+#[doc(hidden)]
 macro_rules! dbg_flag {
     ($(#[$m:meta])* $name:ident, $env:literal) => {
         $(#[$m])*

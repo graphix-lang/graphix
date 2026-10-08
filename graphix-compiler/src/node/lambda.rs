@@ -400,7 +400,7 @@ pub struct InstanceTypes {
 
 impl InstanceTypes {
     /// `None` when the instance's signature does not hold the
-    /// definition's: a type-system bug the instance's own check reports.
+    /// definition's: a type-system bug, which `instance_types` refuses.
     fn new<R: Rt, E: UserEvent>(
         ctx: &CompileCtx<R, E>,
         tables: Tables,
@@ -1590,7 +1590,7 @@ impl Lambda {
 /// argument, raising to a faux catch that collects its throws. Its
 /// declared tvars are rigid (the body must be well-typed for any 'a;
 /// anonymous '_N inference cells stay bindable) and a self-call knots to
-/// its own cells (`ExecCtx::rec_defs`). Every path leaves by `close`.
+/// its own cells (`CompileCtx::rec_defs`). Every path leaves by `close`.
 struct DefGate<R: Rt, E: UserEvent> {
     def: LambdaId,
     depth: u32,
@@ -1821,7 +1821,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // fn-typed params knot like self-calls: a call to `f` unifies
-            // against the param's own declared cells (`ExecCtx::def_gate_params`)
+            // against the param's own declared cells (`CompileCtx::def_gate_params`)
             let mut param_knot: LPooled<Vec<BindId>> = LPooled::take();
             if let ApplyView::Lambda(g) = f.view() {
                 for (pat, at) in g.args().iter().zip(ftyp.args.iter()) {
