@@ -1085,6 +1085,26 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
+        // CR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
+        // at 1196, is only logged: the instance is installed and dispatched anyway,
+        // though design/parallel_compile.md says an instance whose signature its
+        // definition's does not hold is refused. Any checker gap that lets a mistyped
+        // function value reach a dynamic site then runs the callee on values of the
+        // wrong type. In the probe an i64 function reaches an f64 site: the fused run
+        // dies at fusion/kernel.rs:243 (`runtime I64(7) does not match the compiled
+        // Scalar(F64) slot`), and --no-fusion puts an i64 in an f64 tuple slot. Refuse
+        // it the way the site's other bind errors are refused (discard the apply,
+        // return the error, Callee::Failed). The rebind refusal branch (1722-1726) then
+        // has to apply its discards in the same cycle: today it leaves them to the next
+        // one, and a debug build panics with 'compiled references left unreplayed'.
+        // probe: design/review-2026-10-05/repro/x-typecheck-generics-F10.gx
+        // (x-typecheck-generics-F10)
+        // 2026-10-07 claude: a failed typecheck0 is refused now (the instance is
+        // discarded, Callee::Failed) and a failed bind drops what it deferred. A
+        // failed typecheck1 still only logs: refusing it broke netidx-admin, whose
+        // run-time binds of on_press's handlers fail elaboration with "type must be
+        // known" at a seq-lowered field read (`seqt.._r.path`, admin line 852) yet
+        // run right. That elaboration refusal is a checker bug to find first.
         // an instance its definition's signature does not hold is refused
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             ctx.discard_apply(apply);
@@ -1346,7 +1366,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ctx.lambda_defs.insert(f.id, fv.clone());
             }
             self.callee = Callee::DynamicBound { def: fv, apply };
-            let mut elab = Ok(());
             // The lazy-bound body postdates the program-wide typecheck1 and
             // analysis passes: resolve its call sites and analyze it here.
             let identity = self.fn_arg_identity(ctx);
@@ -1367,9 +1386,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 );
                 if !already_active {
                     let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
-                    elab = apply.typecheck1(ctx, &mut [], &instance_ftype).with_context(
-                        || format!("a run-time bind at {} did not elaborate", self.spec),
-                    );
+                    if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
+                        log::error!(
+                            "a run-time bind at {} did not elaborate: {e:#}",
+                            self.spec
+                        );
+                    }
                 }
                 ctx.pop_resolving(f.id, instance);
                 if let ApplyView::Lambda(g) = apply.view() {
@@ -1383,14 +1405,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             if restored_def {
                 ctx.lambda_defs.remove(&f.id);
-            }
-            if let Err(e) = elab {
-                if let Callee::DynamicBound { apply, .. } =
-                    mem::replace(&mut self.callee, Callee::DynamicUnbound)
-                {
-                    ctx.discard_apply(apply);
-                }
-                return Err(e);
             }
             Ok(defaults)
         })?;
