@@ -80,10 +80,9 @@ pub enum StructPatternNode {
 /// How pattern-leaf names bind during compile: `Fresh` allocates;
 /// `Record` allocates and records `name → (id, type)` (an or-pattern's
 /// first alternative); `Reuse` looks the id up instead of allocating and
-/// adds nothing to the env. Under a written predicate a reused payload
-/// leaf must have exactly the first alternative's type (open cells
-/// unify), and a reused capture widens to the union of the alternatives'
-/// types; under an inferred one the select judges them after narrowing.
+/// adds nothing to the env. A name the alternatives share types as the
+/// union of their types: under a written predicate here, under an
+/// inferred one once the select narrows them.
 enum BindMode<'a> {
     Fresh,
     Record(&'a mut AHashMap<ArcStr, (BindId, Type)>),
@@ -117,7 +116,6 @@ fn leaf_bind<R: Rt, E: UserEvent>(
     name: &Name,
     typ: &Type,
     mode: &mut BindMode,
-    capture: bool,
 ) -> Result<BindId> {
     let pos = name.pos_or(cx.pos);
     let name = &name.name;
@@ -155,20 +153,18 @@ fn leaf_bind<R: Rt, E: UserEvent>(
             // select narrows each over the scrutinee: plain binds must agree exactly, and
             // a name some alternative captures (a rest included) takes the union. Pins:
             // lang::select::or_capture_and_payload, pattern_typing_refusals.
+            // 2026-10-08 claude: Eric ruled: a name or-alternatives share is always the
+            // union of their narrowed types, plain binds included (no exact-equality
+            // rule). Pin: lang::select::or_binds_union.
             // under an inferred predicate the alternatives' types are
             // judged once the select narrows them (`leaves`)
             Some((id, _)) if cx.inferred => Ok(*id),
             Some((id, t0)) => {
                 let id = *id;
-                if !(t0.contains(&ctx.env, typ)? && typ.contains(&ctx.env, t0)?) {
-                    if !capture {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!(
-                                "or-pattern alternatives must bind {name} at exactly \
-                                 equal types (first alternative: {t0}, here: {typ})"
-                            )
-                        })?
-                    }
+                let probe = BitFlags::empty();
+                if !(t0.contains_with_flags(probe, &ctx.env, typ)?
+                    && typ.contains_with_flags(probe, &ctx.env, t0)?)
+                {
                     let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));
                     ctx.env.retype(id, u);
@@ -191,7 +187,7 @@ fn bind_all<R: Rt, E: UserEvent>(
     typ: &Type,
     mode: &mut BindMode,
 ) -> Result<Option<BindId>> {
-    all.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, mode, true)).transpose()
+    all.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, mode)).transpose()
 }
 
 /// The members of an inferred Set, one per child: an or-pattern's
@@ -215,12 +211,14 @@ fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)
 }
 
 /// One leaf name of a pattern with the part of a type it stands over.
-/// A capture (`name@`, a slice's rest) stands over a whole position; a
-/// plain bind is the position's own cell.
+/// `fresh`: the name's own cell is fresh and takes `typ` once the select
+/// narrows the arm: a capture (`name@`, a slice's rest), which stands
+/// over a whole position, or a name or-alternatives share, which is the
+/// union of theirs. Any other plain bind is its position's own cell.
 pub(super) struct Leaf {
     pub(super) id: BindId,
     pub(super) typ: Type,
-    pub(super) capture: bool,
+    pub(super) fresh: bool,
 }
 
 impl StructPatternNode {
@@ -349,11 +347,10 @@ impl StructPatternNode {
 
     /// Every leaf name with the part of `typ` it stands over, `typ`
     /// being a type of this pattern's shape. An or-pattern's
-    /// alternatives share their names: they are reported once, a capture
-    /// as the union of the alternatives' parts, a plain bind at the part
-    /// every alternative must bind it at exactly, unified here; with
-    /// `checking`, alternatives a run-time test cannot tell apart are
-    /// refused, as separate arms would be.
+    /// alternatives share their names: each is reported once, at the
+    /// union of the alternatives' parts; with `checking`, alternatives a
+    /// run-time test cannot tell apart are refused, as separate arms
+    /// would be.
     pub(super) fn leaves(
         &self,
         env: &Env,
@@ -376,11 +373,11 @@ impl StructPatternNode {
         out: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
         if let Self::Bind(id) = self {
-            out.push(Leaf { id: *id, typ: typ.clone(), capture: false });
+            out.push(Leaf { id: *id, typ: typ.clone(), fresh: false });
             return Ok(());
         }
         for id in self.whole_binds() {
-            out.push(Leaf { id, typ: typ.normalize(), capture: true })
+            out.push(Leaf { id, typ: typ.normalize(), fresh: true })
         }
         let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
         let sub = self.children_inferred(inferred);
@@ -419,27 +416,9 @@ impl StructPatternNode {
         let Some((first, rest)) = per.split_first() else { return Ok(()) };
         for l in first.iter() {
             let others = rest.iter().flat_map(|v| v.iter().filter(|o| o.id == l.id));
-            if l.capture || others.clone().any(|o| o.capture) {
-                let ts: SmallVec<[&Type; 4]> =
-                    std::iter::once(&l.typ).chain(others.map(|o| &o.typ)).collect();
-                let typ = Type::union(env, &ts)?;
-                out.push(Leaf { id: l.id, typ, capture: true });
-                continue;
-            }
-            for o in others {
-                if !(l.typ.contains(env, &o.typ)? && o.typ.contains(env, &l.typ)?) {
-                    let name =
-                        env.by_id.get(&l.id).map(|b| b.name.clone()).unwrap_or_default();
-                    let (t0, t) = (&l.typ, &o.typ);
-                    return format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "or-pattern alternatives must bind {name} at exactly equal \
-                             types (first alternative: {t0}, here: {t})"
-                        )
-                    });
-                }
-            }
-            out.push(Leaf { id: l.id, typ: l.typ.clone(), capture: false });
+            let ts: SmallVec<[&Type; 4]> =
+                std::iter::once(&l.typ).chain(others.map(|o| &o.typ)).collect();
+            out.push(Leaf { id: l.id, typ: Type::union(env, &ts)?, fresh: true });
         }
         Ok(())
     }
@@ -504,12 +483,16 @@ impl StructPatternNode {
         })
     }
 
-    /// Every capture's id: a name some position's whole value binds.
-    fn capture_ids(&self, f: &mut impl FnMut(BindId)) {
-        crate::stack::ensure_sufficient(|| {
-            self.whole_binds().for_each(&mut *f);
-            for c in self.children() {
-                c.capture_ids(f)
+    /// The id of every [`Leaf::fresh`] name: each capture and every
+    /// name an or-pattern binds.
+    fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
+        crate::stack::ensure_sufficient(|| match self {
+            Self::Or { .. } => self.ids(&mut *f),
+            _ => {
+                self.whole_binds().for_each(&mut *f);
+                for c in self.children() {
+                    c.fresh_ids(f)
+                }
             }
         })
     }
@@ -651,7 +634,7 @@ impl StructPatternNode {
             false => None,
         };
         let all = bind_all(ctx, cx, all, typ, &mut mode)?;
-        let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, true));
+        let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode));
         let rest = rest.transpose()?;
         let elems = elems
             .iter()
@@ -793,7 +776,7 @@ impl StructPatternNode {
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
-                Self::Bind(leaf_bind(ctx, cx, name, type_predicate, &mut mode, false)?)
+                Self::Bind(leaf_bind(ctx, cx, name, type_predicate, &mut mode)?)
             }
             StructurePattern::SlicePrefix { list, all, prefix, tail } => {
                 let (all, tail, prefix) = Self::compile_slice(
@@ -1112,6 +1095,9 @@ impl StructPatternNode {
                     // refused. The probe is refused: x is [i64, string] in one
                     // alternative and i64 in the other. Pins:
                     // lang::select::pattern_typing_refusals.
+                    // 2026-10-08 claude: with the union rule (Eric) x is [i64, string]
+                    // over the probe, so `-> i64` refuses it, and without the annotation
+                    // `A("s", 1) binds x = "s" soundly (lang::select::or_binds_union).
                     if a.is_match(v) {
                         return a.bind(v, f);
                     }
@@ -1483,8 +1469,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// Type the arm's binds from `narrowed`, the arm's predicate as the
     /// select narrowed it against what reaches the arm: each capture
     /// takes the part it stands over (a `_` slot and a field a partial
-    /// pattern leaves out have the scrutinee's type), and or-alternatives
-    /// agree on the names they share ([`StructPatternNode::leaves`]).
+    /// pattern leaves out have the scrutinee's type), and a name
+    /// or-alternatives share the union of theirs
+    /// ([`StructPatternNode::leaves`]).
     pub(super) fn bind_narrowed(
         &self,
         env: &Env,
@@ -1496,7 +1483,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
         let mut leaves = SmallVec::new();
         self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
-        for l in leaves.iter().filter(|l| l.capture) {
+        for l in leaves.iter().filter(|l| l.fresh) {
             if let Some(b) = env.by_id.get(&l.id) {
                 b.typ.check_contains(env, &l.typ)?;
             }
@@ -1571,7 +1558,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // cell.
         if !explicit {
             structure_predicate
-                .capture_ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
+                .fresh_ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
         }
         let guard = spec
             .guard

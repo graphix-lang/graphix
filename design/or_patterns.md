@@ -1,7 +1,7 @@
 # Or-patterns
 
 Status: built 2026-08-31
-Pins: `stdlib/graphix-tests/src/lang/select.rs` (`or_*`: `or_first_match`, `or_same_binds_err`, `or_equal_types_err`, `or_dead_alt_err`, `or_dup_alt_err`, `or_slice_ladder`, `or_variant_exhaust`, `or_capture_union`, `or_payload_unequal_rejected`, `or_native`, `or_owned_binds`, `or_guard_prologue`), `graphix-types/src/expr/parser/test.rs` (`or_patterns_parse`)
+Pins: `stdlib/graphix-tests/src/lang/select.rs` (`or_*`: `or_first_match`, `or_same_binds_err`, `or_union_types`, `or_binds_union`, `or_dead_alt_err`, `or_dup_alt_err`, `or_slice_ladder`, `or_variant_exhaust`, `or_capture_union`, `or_native`, `or_owned_binds`, `or_guard_prologue`), `graphix-types/src/expr/parser/test.rs` (`or_patterns_parse`)
 
 Functional-programming orthodoxy, no deviations: same binds, one guard,
 first structural match wins. Two Graphix-specific syntax rulings:
@@ -60,17 +60,14 @@ select x {
   (`StructPatternNode::footprint`: `(x, _) | {x, ..}` over a tuple and
   a struct; as separate arms each gets its deep type test and is
   accepted).
-- **Same binds.** Every alternative binds exactly the same name set.
-  PAYLOAD binds must have EXACTLY EQUAL types after narrowing (a
-  bidirectional `contains`, which unifies open cells) — the body reads
-  through the slot at one type. A name some alternative captures (an
-  `@`-capture or a slice rest) types as the UNION of its per-alternative
-  narrowed types (`t: [`D(..), `E(..)]` above): Graphix narrows captures
-  where Rust binds at the enum type, so exact equality refused
-  ``kk@ `Up | kk@ `Char("k")``, the form orthodox code writes; the
-  capture is the whole matched value, so the union is exact. Under an
-  explicit type predicate every alternative checks against the one
-  type, at pattern compile.
+- **Same binds.** Every alternative binds exactly the same name set,
+  and a shared name types as the UNION of its per-alternative narrowed
+  types, a payload bind, an `@`-capture or a slice rest alike (`t:
+  [`D(..), `E(..)]` above): whichever alternative matches, the value it
+  binds is in the union. Under an explicit type predicate the union is
+  taken at pattern compile; under an inferred one after narrowing
+  (`StructPatternNode::leaves`), each shared name's cell being fresh
+  (`fresh_ids`).
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
   `[x, r..] | [a, b, c]` are errors. At compile a duplicate, or any
@@ -116,12 +113,10 @@ reborrowable `BindMode`: alternative 0 compiles under `Record`
 (allocating ids via `env.bind_variable` and recording `name → (id,
 type)`), later alternatives under `Reuse` (each leaf LOOKS UP the id
 instead of allocating and binds nothing in the env — no shadowing, no
-cleanup). Under an explicit predicate equal types enforce at each
-reused leaf: open cells unify, concrete mismatches err, captures widen
-to the union. Under an inferred one a reused leaf only shares the id:
-alternative 0's cell is the bind's type, and the agreement is judged
-after narrowing (above), so no alternative's literal decides another's
-cell. A nested Or composes: under `Record` its first alternative
+cleanup). Under an explicit predicate a reused leaf of another type
+widens the name to the union. Under an inferred one a reused leaf only
+shares the id, and the union is taken after narrowing (above), so no
+alternative's literal decides another's cell. A nested Or composes: under `Record` its first alternative
 records into the outer map; under `Reuse` every alternative reuses.
 An Or inside a slice element pairs with that element's own member of
 the slice's element Set (`infer_slice`: one member per element, then a

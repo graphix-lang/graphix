@@ -1678,15 +1678,19 @@ select 1 { 1 | x => 0, _ => 1 }
 run!(or_same_binds_err, OR_SAME_BINDS_ERR, refused("must bind the same names");
  FuseExpect::None);
 
-// Payload binds must have exactly equal types across alternatives. Under
-// an explicit type predicate the rule is what refuses; inferred, the same
-// mistake is an unreachable alternative.
-const OR_EQUAL_TYPES_ERR: &str = r#"
-select (1, "a") { (i64, string) as (1, y) | (y, "b") => 1, _ => 0 }
+// A name the alternatives share is the union of their types, under an
+// explicit type predicate too.
+const OR_UNION_TYPES: &str = r#"
+select (1, "a") {
+    (i64, string) as (1, y) | (y, "b") => select y { i64 as n => "i", string as s => s },
+    _ => "none"
+}
 "#;
 
-run!(or_equal_types_err, OR_EQUAL_TYPES_ERR, refused("must bind y at exactly equal types");
- FuseExpect::None);
+run!(or_union_types, OR_UNION_TYPES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::String(s)) if &**s == "a"
+); FuseExpect::Jit);
 
 // Dead alternatives are errors, like dead arms.
 const OR_DUP_ALT_ERR: &str = r#"
@@ -2925,8 +2929,8 @@ run!(product_of_unions_covered, PRODUCT_OF_UNIONS_COVERED, |v: Result<&Value>| m
     Ok(Value::I64(33))
 ));
 
-// An or-arm's alternatives bind a shared name at exactly equal types,
-// judged on what each can match: `A(x) gives i64, `B(x) [i64, string].
+// A name the alternatives share is the union of what each can match:
+// `A(x) gives i64, `B(x) [i64, string].
 const OR_BINDS_UNEQUAL_PAYLOADS: &str = r#"
 {
     let f = |v: [`A(i64), `B([i64, string]), `C]| -> i64 select v { `A(x) | `B(x) => x, _ => 0 };
@@ -2935,8 +2939,28 @@ const OR_BINDS_UNEQUAL_PAYLOADS: &str = r#"
 "#;
 
 run!(or_binds_unequal_payloads, OR_BINDS_UNEQUAL_PAYLOADS, |v: Result<&Value>| {
-    refused("must bind x at exactly equal types")(v)
+    refused("i64 does not contain [i64, string]")(v)
 }; FuseExpect::None);
+
+const OR_BINDS_UNION: &str = r#"
+{
+    type E = [`A(i64, i64), `A(string, i64)];
+    let f = |v: [`A(i64), `B([i64, string]), `C]| select v {
+        `A(x) | `B(x) => select x { i64 as n => n, string as _ => 7 },
+        _ => 0
+    };
+    let g = |v: E| select v { `A(x, 1) | `A(_, x) => select x { i64 as n => n, string as _ => 9 } };
+    [f(`B("s")), f(`A(3)), g(`A("s", 1)), g(`A(2, 5))]
+}
+"#;
+
+run!(or_binds_union, OR_BINDS_UNION, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+            == vec![7, 3, 9, 5]
+    }
+    _ => false,
+}; FuseExpect::Jit);
 
 // A wake keeps a `<-` target's last write but recomputes the target's
 // destructured siblings.
@@ -3148,10 +3172,10 @@ async fn pattern_typing_refusals() {
             "{ let a: Array<[i64, null]> = [null, 1]; select a { [x, 1 | 2] => x + 1, _ => 0 } }",
             "cannot compute",
         ),
-        // alternatives agree on the scrutinee's types, not each other's
+        // a shared name is typed over what every alternative can match
         (
             "{ let f = |v: [`A(i64, i64), `A(string, i64)]| -> i64 select v { `A(x, 1) | `A(_, x) => x }; f(`A(\"s\", 1)) }",
-            "exactly equal types",
+            "does not contain",
         ),
         // an or-arm is a wildcard only through a bare name
         (

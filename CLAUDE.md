@@ -719,8 +719,8 @@ cycle, across workers; the compiler never pins threads.
   `slice_elements_typed_apart`, `slice_rest_scrutinee_type`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
   element positions; each alternative is typed over the scrutinee as a
-  separate arm is, then alternatives bind the same names at exactly
-  equal payload types and captures type as the union; alternatives a
+  separate arm is, alternatives bind the same names, and a shared name
+  is the union of the alternatives' types; alternatives a
   structure test cannot tell apart are refused
   (`StructPatternNode::footprint`); one guard per arm; dead alternatives
   are errors; they fuse natively.
