@@ -199,6 +199,17 @@ pub(crate) fn set_members(typ: &Type, n: usize) -> Option<Arc<[Type]>> {
     })
 }
 
+/// `typ` through its bindings and aliases: the constructor at its head.
+/// The chase fills no alias's cell: a name the body names may yet be
+/// declared by a later statement.
+fn expand(env: &Env, typ: &Type) -> Option<Type> {
+    let mut t = typ.deref_cloned()?;
+    while let Type::Ref(_) = t {
+        t = t.lookup_ref_peek(env).ok()?.deref_cloned()?;
+    }
+    Some(t)
+}
+
 fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)]>> {
     typ.with_deref(|t| match t {
         Some(t @ Type::Ref(_)) => match &t.lookup_ref(env) {
@@ -262,6 +273,8 @@ impl StructPatternNode {
         typ: &Type,
         inferred: bool,
     ) -> Option<SmallVec<[Option<(Type, usize)>; 8]>> {
+        let expanded = expand(env, typ);
+        let typ = expanded.as_ref().unwrap_or(typ);
         fn at(ts: &[Type]) -> SmallVec<[Option<(Type, usize)>; 8]> {
             ts.iter().enumerate().map(|(i, t)| Some((t.clone(), i))).collect()
         }
@@ -609,7 +622,7 @@ impl StructPatternNode {
                 bail!("slice patterns can't match {typ}")
             });
         };
-        // CR claude for claude: [bug] Every element compiles against one element type.
+        // XCR claude for claude: [bug] Every element compiles against one element type.
         // Under an inferred predicate, that type is infer_slice's union of all the
         // element patterns (graphix-types/src/expr/pattern.rs:201). A `_` element makes
         // it Any, so every bind beside it is Any: `[x, _] => x + 1` over Array<i64> is
@@ -629,6 +642,17 @@ impl StructPatternNode {
         // member needs the node to carry its own refutable test: Variant/Tuple/Struct
         // claim irrefutability because a type test decided their constructor, so `let
         // `A(x) = v` over [`A(i64), `B] would be accepted and bind nothing.
+        // 2026-10-08 claude: ruled (Eric): the written-type cases too. Refutability is
+        // judged against a type now (StructPatternNode::covers: a constructor covers only
+        // a position whose type is that constructor), so a constructor at a union
+        // position under a written type narrows to its member at compile with its own
+        // test live; a slice ladder under a written type needs its elements to cover the
+        // written element type; Reach credits a written-union atom with each member it
+        // covers; the literal pool reads an abstract's payload. `Array<[`A, `B]> as [`A,
+        // `B]` and `Box(`A(x)) / Box(`B(y))` are accepted, the latter exhaustive; `let
+        // `A(x) = v` over a union is refused as refutable. Pins:
+        // lang::select::written_type_constructor_at_union,
+        // written_type_constructor_refusals.
         let members = match cx.inferred {
             true => set_members(&et, elems.len() + open as usize),
             false => None,
@@ -662,6 +686,42 @@ impl StructPatternNode {
             type_predicate = type_predicate.lookup_ref_peek(&ctx.env)?;
         }
         let type_predicate = &type_predicate;
+        // under a written type, a constructor pattern at a union narrows to
+        // the members it can match, as an arm narrows over its scrutinee;
+        // its own test then decides them (`covers`)
+        let constructor = matches!(
+            spec,
+            StructurePattern::Tuple { .. }
+                | StructurePattern::Variant { .. }
+                | StructurePattern::Struct { .. }
+        );
+        if constructor
+            && !cx.inferred
+            && type_predicate.with_deref(|t| matches!(t, Some(Type::Set(_))))
+        {
+            let env = &ctx.env;
+            let shape = spec.infer_type_predicate(env, &cx.scope.lexical)?;
+            let shape = match spec.complete_type_predicate(env, &shape, type_predicate)? {
+                Some(t) => t,
+                None => shape,
+            };
+            let shape = shape.any_as_tvar();
+            type_predicate.check_contains(env, &shape)?;
+            let node = Self::compile_int_inner(ctx, cx, &shape, spec, mode)?;
+            let env = &ctx.env;
+            if let Ok(rest) = type_predicate.diff(env, &shape)
+                && node.footprint(env, &shape, false).rep_collision(env, &rest).is_some()
+            {
+                let (a, b) = (shape.resolve_tvars(), rest.resolve_tvars());
+                return format_with_flags(PrintFlag::DerefTVars, || {
+                    bail!(
+                        "this pattern can't tell {a} from {b}: its structure test \
+                         passes a value of either; test the type first"
+                    )
+                });
+            }
+            return Ok(node);
+        }
         let t = match &spec {
             StructurePattern::Or(alts) => {
                 if alts.len() < 2 {
@@ -737,7 +797,7 @@ impl StructPatternNode {
                 // select arm by arm
                 let wild = |p: &Self| match cx.inferred {
                     true => matches!(p, Self::Bind(_) | Self::Ignore),
-                    false => p.matches_anything(),
+                    false => p.covers(&ctx.env, type_predicate, false),
                 };
                 for i in 1..compiled.len() {
                     // XCR claude for claude: [bug] An alternative that matches_anything()
@@ -1278,29 +1338,51 @@ impl StructPatternNode {
         }
     }
 
-    pub fn is_refutable(&self) -> bool {
-        crate::stack::ensure_sufficient(|| self.is_refutable_inner())
+    /// Whether every value of `typ` passes this pattern's structure:
+    /// the pattern is irrefutable over `typ`. A constructor pattern
+    /// covers only a position whose type is that constructor, so its own
+    /// tag, arity or field test decides nothing there; `inferred` pairs
+    /// an or-pattern's alternatives and a slice's elements with their
+    /// members, as [`Self::child_types`] does.
+    pub fn covers(&self, env: &Env, typ: &Type, inferred: bool) -> bool {
+        crate::stack::ensure_sufficient(|| self.covers_inner(env, typ, inferred))
     }
 
-    fn is_refutable_inner(&self) -> bool {
-        match &self {
-            Self::Abstract { bind, .. } => bind.is_refutable(),
-            Self::Bind(_) | Self::Ignore => false,
-            Self::Or { .. } => true,
-            Self::Literal(_) => true,
-            Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
-                binds.iter().any(|p| p.is_refutable())
-            }
-            Self::Struct { all: _, binds } => {
-                binds.iter().any(|(_, _, p)| p.is_refutable())
-            }
-            Self::Variant { all: _, tag: _, binds } => {
-                binds.len() > 0 && binds.iter().any(|p| p.is_refutable())
-            }
-            Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
-            | Self::SlicePrefix { .. }
-            | Self::SliceSuffix { .. } => true,
+    fn covers_inner(&self, env: &Env, typ: &Type, inferred: bool) -> bool {
+        if let Self::Bind(_) | Self::Ignore = self {
+            return true;
         }
+        let shape = expand(env, typ);
+        let shaped = match (self, &shape) {
+            (Self::Bind(_) | Self::Ignore, _) => return true,
+            (
+                Self::Or { .. }
+                | Self::Literal(_)
+                | Self::Slice { kind: SliceKind::Array | SliceKind::List, .. }
+                | Self::SlicePrefix { .. }
+                | Self::SliceSuffix { .. },
+                _,
+            ) => return false,
+            (
+                Self::Slice { kind: SliceKind::Tuple, binds, .. },
+                Some(Type::Tuple(ts)),
+            ) => ts.len() == binds.len(),
+            (Self::Variant { tag, binds, .. }, Some(Type::Variant(t, ts, _))) => {
+                t == tag && ts.len() == binds.len()
+            }
+            (Self::Struct { .. }, Some(Type::Struct(_))) => true,
+            (Self::Abstract { id, .. }, Some(Type::Abstract { id: t, .. })) => id == t,
+            _ => false,
+        };
+        let Some(ts) = shaped.then(|| self.child_types(env, typ, inferred)).flatten()
+        else {
+            return false;
+        };
+        let sub = self.children_inferred(inferred);
+        self.children()
+            .into_iter()
+            .zip(ts)
+            .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, sub)))
     }
 
     /// True when the pattern matches any value of the scrutinee's type:
@@ -1342,7 +1424,13 @@ impl StructPatternNode {
     /// The pattern's array-length coverage claim: the length range, but
     /// only when every element sub-pattern matches anything. The type
     /// half of the claim is the caller's to verify.
-    pub fn array_len_coverage(&self) -> Option<(usize, bool)> {
+    /// Under a written type test, `explicit`, the elements must also
+    /// cover its element type: nothing else tests them.
+    pub fn array_len_coverage(
+        &self,
+        env: &Env,
+        explicit: Option<&Type>,
+    ) -> Option<(usize, bool)> {
         let all_cover = match self {
             Self::Slice { kind: SliceKind::Array | SliceKind::List, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
@@ -1355,7 +1443,16 @@ impl StructPatternNode {
             }
             _ => false,
         };
-        if all_cover { self.array_len_range() } else { None }
+        let typed = match explicit {
+            None => true,
+            Some(t) => self.child_types(env, t, false).is_some_and(|ts| {
+                self.children()
+                    .into_iter()
+                    .zip(ts)
+                    .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, false)))
+            }),
+        };
+        if all_cover && typed { self.array_len_range() } else { None }
     }
 
     fn matches_anything_inner(&self) -> bool {

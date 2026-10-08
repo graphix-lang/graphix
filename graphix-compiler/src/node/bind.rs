@@ -202,8 +202,19 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         }
                     };
                     if !ptyp.contains(&ctx.env, &typ)? {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            bailat!(spec, "match error {typ} can't be matched by {ptyp}")
+                        let part = ptyp.could_match(&ctx.env, &typ)?;
+                        format_with_flags(PrintFlag::DerefTVars, || match part {
+                            true => bailat!(
+                                spec,
+                                "refutable patterns are not allowed in let: {ptyp} \
+                                 matches only part of {typ}"
+                            ),
+                            false => {
+                                bailat!(
+                                    spec,
+                                    "match error {typ} can't be matched by {ptyp}"
+                                )
+                            }
                         })?
                     }
                     typ
@@ -212,7 +223,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             let pattern = compile_pattern(ctx, &typ)?;
             (node, pattern, typ)
         };
-        if pattern.is_refutable() {
+        if !pattern.covers(&ctx.env, &typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
         let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();

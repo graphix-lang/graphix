@@ -15,7 +15,7 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::Type,
+    typ::{AbstractId, Type},
     wrap,
 };
 use anyhow::{Result, anyhow};
@@ -308,11 +308,12 @@ fn type_test<R: Rt, E: UserEvent>(p: &PatternNode<R, E>) -> Option<&Type> {
 }
 
 fn check_repeats<R: Rt, E: UserEvent>(
+    env: &Env,
     arms: &[(PatternNode<R, E>, Node<R, E>)],
 ) -> Result<()> {
     for (i, (pat, body)) in arms.iter().enumerate() {
-        for (sp, _) in pat.atoms() {
-            if !sp.is_refutable() {
+        for (sp, at) in pat.atoms() {
+            if sp.covers(env, &at, !pat.explicit_type_predicate) {
                 continue;
             }
             let repeat =
@@ -488,7 +489,8 @@ impl Reach {
                         "every array length this slice pattern can match is covered by earlier arms",
                     )?
                 }
-                if unguarded && sp.array_len_coverage().is_some() {
+                let explicit = pat.explicit_type_predicate.then_some(at);
+                if unguarded && sp.array_len_coverage(env, explicit).is_some() {
                     let mut done: SmallVec<[Type; 2]> = SmallVec::new();
                     for l in self.ladders.iter_mut() {
                         if !l.complete()
@@ -527,13 +529,27 @@ impl Reach {
                 Claim::Completes(m) => self.cover(env, m)?,
                 Claim::Dead | Claim::Open | Claim::Unpooled => (),
             }
-            if !sp.is_refutable() {
+            if sp.covers(env, at, !pat.explicit_type_predicate) {
                 match wild {
                     true => self.atype = self.atype.diff(env, at)?,
                     false => self.cover(env, at.clone())?,
                 }
-            } else if sp.is_array_slice() && sp.array_len_coverage().is_none() {
-                self.refutable_slice = true;
+            } else {
+                // under a written union, each member the atom covers
+                if pat.explicit_type_predicate {
+                    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+                    union_members(env, at, &mut members)?;
+                    if members.len() > 1 {
+                        for m in members {
+                            if sp.covers(env, &m, false) {
+                                self.cover(env, m)?
+                            }
+                        }
+                    }
+                }
+                if sp.is_array_slice() && sp.array_len_coverage(env, explicit).is_none() {
+                    self.refutable_slice = true;
+                }
             }
         }
         Ok(())
@@ -812,6 +828,10 @@ fn pooled_leaves(
                 }
                 Ok(true)
             }
+            (
+                StructPatternNode::Abstract { id, bind, rep, .. },
+                Type::Abstract { id: t, .. },
+            ) if id == t => at(0, bind, rep),
             (StructPatternNode::Struct { all: _, binds }, Type::Struct(fs)) => {
                 for (name, _, p) in binds.iter() {
                     let Some(i) = fs.iter().position(|(n, _, _)| n == name) else {
@@ -839,6 +859,7 @@ enum Shape {
     Tuple(usize),
     Variant(ArcStr, usize),
     Struct(SmallVec<[ArcStr; 8]>),
+    Abstract(AbstractId),
 }
 
 impl Shape {
@@ -856,6 +877,7 @@ impl Shape {
                 names.sort();
                 Some(Shape::Struct(names))
             }
+            StructPatternNode::Abstract { id, .. } => Some(Shape::Abstract(*id)),
             _ => None,
         }
     }
@@ -870,6 +892,7 @@ impl Shape {
                 names.len() == fs.len()
                     && names.iter().zip(fs.iter()).all(|(n, (f, _, _))| n == f)
             }
+            (Shape::Abstract(id), Type::Abstract { id: t, .. }) => id == t,
             _ => false,
         }
     }
@@ -1502,7 +1525,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         drop(rtypes);
         match checking {
             true => {
-                check_repeats(&self.arms)?;
+                check_repeats(&ctx.env, &self.arms)?;
                 reach.exhausted(&ctx.env, &scrut).at(&self.spec)
             }
             false => Ok(()),

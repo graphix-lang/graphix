@@ -2863,6 +2863,8 @@ run!(or_explicit_type, OR_EXPLICIT_TYPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(5)))
 });
 
+// A bare variant alternative under a written union narrows to its member,
+// whatever order the alternatives are written in.
 const OR_EXPLICIT_UNION_ORDER: &str = r#"
 {
   let v: [`A, `B] = `B;
@@ -2871,8 +2873,8 @@ const OR_EXPLICIT_UNION_ORDER: &str = r#"
 "#;
 
 run!(or_explicit_union_order, OR_EXPLICIT_UNION_ORDER, |v: Result<&Value>| {
-    matches!(&v, Err(e) if format!("{e:#}").contains("variant patterns can't match"))
-}; FuseExpect::None);
+    matches!(v, Ok(Value::I64(1)))
+});
 
 // A pattern error is sited at the pattern.
 const PATTERN_ERROR_SITE: &str = r#"select 1 {
@@ -3334,3 +3336,52 @@ run!(wake_quiet_republish_catches_up, WAKE_QUIET_REPUBLISH_CATCHES_UP, |v: Resul
     "{}",
     v.unwrap()
 ) == "[i64:1, i64:1, i64:1]");
+
+// Under a written type, a constructor pattern at a union narrows to its
+// member, and its own test decides it: it covers only a position whose
+// type is that constructor.
+run!(
+    written_type_constructor_at_union,
+    r#"{
+    type Box = Abstract<[`A(i64), `B(i64)]>;
+    type U = [(i64, i64), (i64, i64, i64)];
+    let f = |a: Array<[`A, `B]>| select a { Array<[`A, `B]> as [`A, `B] => 1, _ => 0 };
+    let g = |b: Box| select b { Box(`A(x)) => x, Box(`B(y)) => y * 10 };
+    let h = |b: Box| select b { Box(`A(x)) => x, _ => 7 };
+    let k = |t: U| select t { U as (x, _) | (x, _, _) => x };
+    [f([`A, `B]), f([`B, `A]), g(Box(`A(3))), g(Box(`B(3))), h(Box(`B(3))), k((5, 6)), k((8, 0, 0))]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![1, 0, 3, 30, 7, 5, 8]
+        }
+        _ => false,
+    }
+);
+
+#[tokio::test(flavor = "current_thread")]
+async fn written_type_constructor_refusals() {
+    use graphix_package_core::testing::refusal;
+    for (src, why) in [
+        // a constructor over a union is refutable
+        (
+            "{ let v: [`A(i64), `B] = `B; let `A(x) = v; x }",
+            "refutable patterns are not allowed in let",
+        ),
+        // a slice of tuples under a written type covers no length of a
+        // union of tuple shapes
+        (
+            "{ type U = [(i64, i64), (i64, i64, i64)]; let f = |a: Array<U>| select a { Array<U> as [(x, _)] => x, [] => 0, [_, _, ..] => 9 }; f([(1, 2)]) }",
+            "missing match cases",
+        ),
+        // a structure test that passes another member's runtime form
+        (
+            "{ let v: [`A(i64), (string, i64)] = (\"A\", 5); select v { [`A(i64), (string, i64)] as `A(x) => x, _ => 0 } }",
+            "can't tell",
+        ),
+    ] {
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(why), "{src}: {e}");
+    }
+}

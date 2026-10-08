@@ -50,6 +50,12 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    a tag comparison, which is what lets `select` accept abstract
    predicates and what trait dispatch over a union needs
    (`traits.md`).
+   The payload pattern checks against the declared representation;
+   over a union representation a constructor narrows to its member,
+   as under any written type, so `Box(`A(x))` and `Box(`B(y))` are
+   two refutable arms that together cover `Box` (the literal pool
+   reads the payload's heads). In `let` the payload must cover the
+   representation.
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.

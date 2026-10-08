@@ -1004,7 +1004,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 a.pos.0,
                 origin.clone(),
             )?;
-            if pattern.is_refutable() {
+            if !pattern.covers(&ctx.env, &atyp.typ, false) {
                 bail!(
                     "refutable patterns are not allowed in lambda arguments {}",
                     a.pattern

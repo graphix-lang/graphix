@@ -1,0 +1,9 @@
+// trait-bottom-self-01: a constructor-trait generic called with a bottom
+// argument passes the check and is refused by elaboration.
+//
+// command: graphix --check FILE (accepted); graphix --no-cache FILE:
+//   "cannot resolve Collection::fold: the type of its self argument
+//   ('c<_>) is not known at this call; annotate it"
+// found by graphix-fuzz fuzz 3000 1013 (Pair::Check); reproduces at HEAD
+// f80b755c, before the c-pattern-08 work.
+{ let x = { let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc); csize(never()) }; let s = 2 }

@@ -875,7 +875,12 @@ cycle, across workers; the compiler never pins threads.
   alternative; a structure that matches anything is a wildcard only over
   a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
-  same scrutinee ref claims nothing on re-entry.
+  same scrutinee ref claims nothing on re-entry. Refutability is judged
+  against a type (`StructPatternNode::covers`): a constructor pattern
+  covers only a position whose type is that constructor, so under a
+  written type (a type test, a `let`, an abstract payload) one at a union
+  position narrows to its member and is refutable; a written-union atom
+  covers each member it covers; the pool reads an abstract's payload.
 - **One runtime form** (`Type::rep_collision`): no select arm, and so no
   union trait dispatch, may tell apart two types that share a runtime
   form: a tuple, struct, list or payload variant and an array (an empty
