@@ -308,6 +308,12 @@ pub fn is_block_component(part: &str) -> bool {
     part.starts_with('#')
 }
 
+/// True iff `part` is a function body's scope component, which every
+/// instance of the function compiles again.
+pub fn is_fn_block(part: &str) -> bool {
+    part.strip_prefix("#fn").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// True iff `part` is a `do` block's scope component: a loaded
 /// script's top level is one.
 pub fn is_do_block(part: &str) -> bool {

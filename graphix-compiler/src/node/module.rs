@@ -276,14 +276,23 @@ fn bind_sig_item(
         }
         SigKind::Trait(t) => {
             let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, si_ori);
-            let sigs = t.methods.iter().map(|m| {
-                let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
-                (m.name.name.clone(), m.name.pos_or(si.pos), Arc::new(ft), m.self_index)
-            });
+            let mut sigs = t
+                .methods
+                .iter()
+                .map(|m| {
+                    let ft = traits::method_sig(env, &m.typ, &tref, &scope.lexical)?;
+                    Ok((
+                        m.name.name.clone(),
+                        m.name.pos_or(si.pos),
+                        Arc::new(ft),
+                        m.self_index,
+                    ))
+                })
+                .collect::<Result<LPooled<Vec<_>>>>()?;
             env.deftrait(
                 &scope.lexical,
                 &t.name,
-                sigs,
+                sigs.drain(..),
                 si.doc.0.clone(),
                 t.name.pos_or(si.pos),
                 si_ori.clone(),
@@ -668,7 +677,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 let ori = si.ori.clone().unwrap_or_default();
                 let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &ori);
                 let method = |m: &crate::expr::TraitMethod| {
-                    traits::method_sig(&m.typ, &tref, &scope.lexical)
+                    traits::method_sig(&ctx.env, &m.typ, &tref, &scope.lexical)
                 };
                 for n in nodes {
                     if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
@@ -679,7 +688,10 @@ fn check_sig<R: Rt, E: UserEvent>(
                                 a.name == b.name
                                     && a.self_index == b.self_index
                                     && a.default.is_some() == b.default.is_some()
-                                    && method(b).sig_matches(&ctx.env, &method(a)).is_ok()
+                                    && match (method(b), method(a)) {
+                                        (Ok(b), Ok(a)) => b.sig_matches(&ctx.env, &a).is_ok(),
+                                        _ => false,
+                                    }
                             });
                         if !agree {
                             bail!(

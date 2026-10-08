@@ -96,16 +96,16 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(122))),
     "/test.gx" => r#"
         type L<'a> = [`C('a, L<'a>), `N];
-        let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b select l {
+        let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e| -> 'b throws 'e select l {
             `N => acc,
             `C(x, rest) => fold_l(rest, f(acc, x), f)
         };
-        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> Option<'b>| -> L<'b> select l {
+        let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> Option<'b> throws 'e| -> L<'b> throws 'e select l {
             `N => `N,
             `C(x, rest) => select f(x) { null as _ => filter_map_l(rest, f), y => `C(y, filter_map_l(rest, f)) }
         };
         let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a> select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
-        let rec flat_map_l = |l: L<'a>, f: fn(x: 'a) -> L<'b>| -> L<'b> select l {
+        let rec flat_map_l = |l: L<'a>, f: fn(x: 'a) -> L<'b> throws 'e| -> L<'b> throws 'e select l {
             `N => `N,
             `C(x, rest) => append_l(f(x), flat_map_l(rest, f))
         };

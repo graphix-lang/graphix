@@ -1561,3 +1561,63 @@ run!(
         _ => false,
     }
 );
+
+// A trait as a method parameter's type is written as in any signature.
+run!(method_parameter_of_trait_type, r#"{
+    type K = Abstract<i64>;
+    type J = Abstract<string>;
+    impl Display for J { let fmt = |j| "J([j.0])" };
+    trait Sh { val sh: fn(self, c: Display) -> string };
+    impl Sh for K { let sh = |k, c| "[k.0]:[c]" };
+    Sh::sh(K(1), J("a"))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1:J(a)"); FuseExpect::None);
+
+// A union of primitives as a self dispatches per primitive.
+run!(primitive_union_self, r#"{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |a| "i[a]" };
+    impl Show for string { let show = |b| "s[b]" };
+    let one: [i64, string] = "q";
+    Show::show(one)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "sq"); FuseExpect::Jit);
+
+// A bare sibling method in a default body dispatches, whatever the order.
+run!(default_calls_its_sibling_through_dispatch, r#"{
+    trait Show {
+        val show: fn(self) -> string;
+        val before: fn(self) -> string = |s| "[twice(s)]+[show(s)]";
+        val twice: fn(self) -> string = |s| "[show(s)]+[show(s)]";
+        val after: fn(self) -> string = |s| "[twice(s)]+[show(s)]"
+    };
+    type B = Abstract<string>;
+    impl Show for B {
+        let show = |b| "B[b.0]";
+        let twice = |b| "BB[b.0]"
+    };
+    "[Show::before(B("y"))] [Show::after(B("y"))]"
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "BBy+By BBy+By"); FuseExpect::Jit);
+
+// An implementation is the declared signature: a union of primitives is no
+// target, an impl in a function body would register per call, and a method
+// may not need a bound the trait does not declare.
+#[tokio::test(flavor = "current_thread")]
+async fn implementations_are_declared_ones() {
+    use graphix_package_core::testing::refusal;
+    for (src, why) in [
+        (
+            "{ trait Show { val show: fn(self) -> string }; impl Show for [i64, string] { let show = |p| \"u\" }; 0 }",
+            "a union is never an implementation target",
+        ),
+        (
+            "{ trait Show { val show: fn(self) -> string }; type T = Abstract<i64>; let f = |x: i64| -> string { impl Show for T { let show = |t| \"t\" }; \"[x]\" }; f(1) }",
+            "is in a function body",
+        ),
+        (
+            "{ type Counter = Abstract<i64>; trait Twice { val twice: fn(self, x: 'a) -> 'a }; impl Twice for Counter { let twice = |c, x| x + x }; Twice::twice(Counter(1), 2) }",
+            "which the signature does not declare",
+        ),
+    ] {
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(why), "{src}: {e}");
+    }
+}
