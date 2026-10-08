@@ -403,6 +403,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             // with the wrong requests), against design/seq_blocks.md §9. probe:
             // design/review-2026-10-05/repro/t-seq-01.gx prints (5, -1); expected (5,
             // 10), which it prints with one failing `?`. (t-seq-01)
+            // 2026-10-08 claude: open: the jump needs to know its run was aborted, and
+            // it meets the abort only through the machine's pc writes; a run token
+            // the abort advances and the jump compares would decide it.
             if abort.pending
                 && self.received == self.own_handler.generation()
                 && !self.own_handler.has_nested_errors()
