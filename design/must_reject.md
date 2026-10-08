@@ -168,9 +168,9 @@ them:
   lacks, and may omit a label with a default; labels match by name,
   never by position;
 - a default is checked at the definition against its parameter's type
-  (or a declared variable's constraints, `lambda.rs::check_defaults`)
-  and again at each site that omits it, where it may narrow that site's
-  cells;
+  (or a declared variable's constraints, `lambda.rs::check_defaults`; a
+  variable nested in the type is any instance of it there) and again at
+  each site that omits it, where it may narrow that site's cells;
 - `F ⊇ G` for function types (`fntyp.rs::align`): the same number of
   positionals, paired in order; every label of `F` present in `G`;
   every label of `G` that `F` lacks optional in `G`; and never `?#x` in

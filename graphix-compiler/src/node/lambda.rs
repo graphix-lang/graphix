@@ -1730,35 +1730,15 @@ fn check_defaults<R: Rt, E: UserEvent>(
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
             match &at.typ {
-                // CR claude for claude: [bug] Each conjunct is committed against the
-                // default's type, so an open cell there is bound to the whole bound:
-                // `Number ⊇ 'k` binds the cell to Number, and the next conjunct,
-                // Singleton, then refuses it. `let scale = |k| { let mul = |#by = k, x|
-                // x * by; mul(3) }; scale(2)` is refused at `k` with "Singleton does
-                // not contain Number", while the same helper reading `k` in its body
-                // runs and prints 6. The cell that gets bound belongs to the
-                // environment: after `let d = never(); let f = 'a: Number |#x: 'a = d,
-                // y: 'a| [x, y]; d <- 2`, `d` stays Number, so `d + 1` is refused, and
-                // so is every call that omits `#x` (`f(3)`). This arm also matches
-                // inferred parameter cells (`by` is not a declared tvar), and a
-                // declared variable nested in the parameter type gets no conjunct
-                // treatment at all (`|#x: Array<'a> = [1], y: 'a| -> 'a y` is refused
-                // at the definition). Narrowing the default's open cells by the
-                // conjuncts (`TVar::narrow_cell`, as `op::constrain_operand` does)
-                // would check them without deciding the cell. probe:
-                // design/review-2026-10-05/repro/x-typecheck-generics-F11.gx
-                // (x-typecheck-generics-F11)
-                // 2026-10-08 claude: a parameter that is a declared or inferred
-                // variable now narrows the default's cells by each conjunct
-                // (op::constrain_operand): `scale` and the `d` case check. Open: a
-                // declared variable nested in the parameter type (`|#x: Array<'a> =
-                // [1], y: 'a|`) is still held rigid against the default.
                 // each conjunct narrows the default's open cells, which
                 // may be the environment's, rather than deciding them
                 Type::TVar(tv) if !tv.is_bound() => tv
                     .cell_constraints()
                     .iter()
                     .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
+                // a variable inside the type is checked as any instance of
+                // it: each omitting call checks the default again
+                t if t.has_unbound() => t.reset_tvars().check_contains(&ctx.env, &typ),
                 t => t.check_contains(&ctx.env, &typ),
             }
         });

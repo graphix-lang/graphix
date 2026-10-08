@@ -51,7 +51,7 @@ impl ForkKind {
 
 #[derive(Debug)]
 pub struct ForkControl<R: Rt, E: UserEvent> {
-    spec: Expr,
+    pub(crate) spec: Expr,
     pub(crate) kind: ForkKind,
     pub(crate) n: Node<R, E>,
 }
@@ -120,9 +120,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         match self.kind {
-            ForkKind::Parallel(_) => {
-                crate::analysis::check_parallel(&self.spec, &self.n, ctx)?
-            }
+            // checked by the analysis, once the blocks under it are planned
+            ForkKind::Parallel(_) => (),
             // nothing under a `#[serial]` forks, callees included
             ForkKind::Serial => {
                 let mut inner = None;

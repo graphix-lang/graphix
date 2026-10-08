@@ -182,8 +182,9 @@ StringInterpolate, MapQ, Bind, CallSite, GXLambda, `CachedArgs`,
 newtype; the bits hide in struct padding. Nodes that recompute
 unconditionally need none; `~` rides correctly — it IS edge state;
 `Any` rides too, except that it stands bottom at a wake where the
-child its resident came from is bottom now; `Constant` fires at wake
-as at init.
+child its resident came from is bottom now; `uniq` is bottom while its
+input is, and a value back from bottom is new to it; `Constant` fires
+at wake as at init.
 
 A woken Select RE-MATCHES against the present scrutinee: a selection
 retained across the sleep was made against a value that may have moved

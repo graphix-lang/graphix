@@ -2607,7 +2607,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         let (last, out) = (&mut self.0, &mut self.1);
-        let Some(v) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned()) else {
+        let tv = from[0].update(ctx);
+        // a bottom input is a bottom output, and what comes back from it
+        // is new
+        if tv.tag().is_bottom() {
+            *last = None;
+            return out.set_bottom(tv.tag().triggers());
+        }
+        let Some(v) = seam_tick(tv).map(|tv| tv.value_cloned()) else {
             return out.ride();
         };
         let cmp = match &self.2 {

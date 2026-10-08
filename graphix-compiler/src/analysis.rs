@@ -16,7 +16,9 @@ use crate::{
     expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
+        Block,
         callsite::CallSite,
+        fork_control::{ForkControl, ForkKind},
         lambda::{GXLambda, LambdaDef},
         module::Module,
         seq_machine::{SeqCapture, SeqMachine},
@@ -52,6 +54,10 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
     machines: LPooled<Vec<(&'a SeqMachine<R, E>, Holder)>>,
+    /// Blocks of two or more statements, by the instance holding them.
+    blocks: LPooled<Vec<(&'a Block<R, E>, Holder)>>,
+    /// The `#[parallel]` sites.
+    parallels: LPooled<Vec<&'a ForkControl<R, E>>>,
     captures: LPooled<
         AHashMap<
             (crate::expr::ExprId, Holder),
@@ -61,6 +67,18 @@ struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
 }
 
 impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
+    fn new() -> Self {
+        StaticCallGraph {
+            instances: LPooled::take(),
+            edges: LPooled::take(),
+            self_binds: LPooled::take(),
+            machines: LPooled::take(),
+            blocks: LPooled::take(),
+            parallels: LPooled::take(),
+            captures: LPooled::take(),
+        }
+    }
+
     fn add_self_bind(&mut self, bind: BindId, instance: LambdaInstanceId) {
         let ids = self.self_binds.entry(bind).or_default();
         if !ids.contains(&instance) {
@@ -76,13 +94,7 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     seed: Option<&'a GXLambda<R, E>>,
 ) -> StaticCallGraph<'a, R, E> {
     let _profile = profile::phase(Phase::CallGraph);
-    let mut graph = StaticCallGraph {
-        instances: LPooled::take(),
-        edges: LPooled::take(),
-        self_binds: LPooled::take(),
-        machines: LPooled::take(),
-        captures: LPooled::take(),
-    };
+    let mut graph = StaticCallGraph::new();
     let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
         LPooled::take();
     match seed {
@@ -100,13 +112,7 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
 fn collect_static_graph_of<'a, R: Rt, E: UserEvent>(
     roots: impl IntoIterator<Item = &'a Node<R, E>>,
 ) -> StaticCallGraph<'a, R, E> {
-    let mut graph = StaticCallGraph {
-        instances: LPooled::take(),
-        edges: LPooled::take(),
-        self_binds: LPooled::take(),
-        machines: LPooled::take(),
-        captures: LPooled::take(),
-    };
+    let mut graph = StaticCallGraph::new();
     walk_static_graph(&mut graph, roots.into_iter().map(|r| (r, None)).collect());
     graph
 }
@@ -120,6 +126,12 @@ fn walk_static_graph<'a, R: Rt, E: UserEvent>(
             let site = match n.view() {
                 NodeView::CallSite(site) => site,
                 NodeView::SeqMachine(m) => return graph.machines.push((m, caller)),
+                NodeView::Block(b) if b.children.len() > 1 => {
+                    return graph.blocks.push((b, caller));
+                }
+                NodeView::ForkControl(f) if matches!(f.kind, ForkKind::Parallel(_)) => {
+                    return graph.parallels.push(f);
+                }
                 NodeView::Bind(b) => {
                     if let NodeView::SeqCapture(c) = b.node.view()
                         && let Some(id) = b.pattern.single_bind_id()
@@ -253,6 +265,10 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
     plan_machines(&graph, &ctx.env);
+    plan_blocks(&graph, ctx);
+    for f in graph.parallels.iter() {
+        check_parallel(&f.spec, &f.n, ctx)?
+    }
     // An assertion whose definition is not yet reached stays pending
     // for a later compile or a runtime bind.
     check_def_assertions(&graph, ctx)
@@ -276,7 +292,10 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
     plan_machines(&graph, &ctx.env);
-    if let Err(e) = check_def_assertions(&graph, ctx) {
+    plan_blocks(&graph, ctx);
+    let parallels =
+        graph.parallels.iter().try_for_each(|f| check_parallel(&f.spec, &f.n, ctx));
+    if let Err(e) = parallels.and_then(|()| check_def_assertions(&graph, ctx)) {
         crate::node::error::report_failure!(&compact_str::format_compact!("{e:#}"));
     }
 }
@@ -320,9 +339,10 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
 }
 
 /// The heads of the refusals only a build makes: a definition
-/// assertion (`assertion_failure`) or `#[native]`, which `--check`
-/// (`CFlag::CheckOnly`) leaves unverified.
-const BUILD_ONLY_REFUSALS: [&str; 4] = [
+/// assertion (`assertion_failure`), `#[parallel]` (`check_parallel`) or
+/// `#[native]`, which `--check` (`CFlag::CheckOnly`) leaves unverified.
+const BUILD_ONLY_REFUSALS: [&str; 5] = [
+    "#[parallel] has nothing to run in parallel",
     "#[sync]:",
     "#[async]:",
     "#[tail_recursive]:",
@@ -919,6 +939,14 @@ struct Summary {
 }
 
 impl Summary {
+    /// This summary less its reads of `ids`.
+    fn without_reads(&self, ids: &IntSet<BindId>) -> Summary {
+        let mut s = Summary::default();
+        s.union(self);
+        s.reads.ids.retain(|id| !ids.contains(id));
+        s
+    }
+
     fn opaque(&mut self) {
         self.reads.all = true;
         self.writes.all = true;
@@ -1126,32 +1154,86 @@ fn accesses<'a, R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
 ) -> LPooled<Vec<Summary>> {
     let graph = collect_static_graph_of(children.clone());
+    accesses_in(children, &graph, None, ctx)
+}
+
+/// [`accesses`] over `graph`, where `holder`'s instance holds the
+/// children: a call to it is a fresh activation, whose own bindings no
+/// earlier statement publishes.
+fn accesses_in<'a, R: Rt, E: UserEvent>(
+    children: impl Iterator<Item = &'a Node<R, E>>,
+    graph: &StaticCallGraph<'_, R, E>,
+    holder: Holder,
+    ctx: &CompileCtx<R, E>,
+) -> LPooled<Vec<Summary>> {
     let ordered = |name: &str| ctx.builtin_ordered(name);
     let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
         .map(|n| {
             let mut s = Summary::default();
             let mut cs = SmallVec::new();
-            local_summary(n, &graph, &ctx.env, &ordered, &mut s, &mut cs);
+            local_summary(n, graph, &ctx.env, &ordered, &mut s, &mut cs);
             (s, cs)
         })
         .collect();
     let sums = instance_summaries(
-        &graph,
+        graph,
         &ctx.env,
         &ordered,
         locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
     );
+    let own: LPooled<IntSet<BindId>> = match holder.and_then(|h| graph.instances.get(&h))
+    {
+        None => LPooled::take(),
+        Some(g) => {
+            let mut refs = Refs::without_callees();
+            g.body().refs(&mut refs);
+            let mut own: LPooled<IntSet<BindId>> = LPooled::take();
+            refs.with_bound(|id| {
+                own.insert(id);
+            });
+            g.args().iter().for_each(|p| {
+                p.ids(&mut |id| {
+                    own.insert(id);
+                })
+            });
+            own
+        }
+    };
     locals
         .iter()
         .map(|(local, cs)| {
             let mut access = Summary::default();
             access.union(local);
-            cs.iter().filter_map(|c| sums.get(c)).for_each(|c| {
-                access.union(c);
-            });
+            for c in cs.iter() {
+                let Some(sum) = sums.get(c) else { continue };
+                // a self-call's reads of the activation's own names are the
+                // new activation's
+                match Some(*c) == holder {
+                    true => access.union(&sum.without_reads(&own)),
+                    false => access.union(sum),
+                };
+            }
             access
         })
         .collect()
+}
+
+/// Plan each block the analysis reached with the whole graph in hand,
+/// once: what a block's first update would plan from its own children
+/// misses a call to the instance holding it, and a warm start, whose
+/// callees are still imaged.
+fn plan_blocks<R: Rt, E: UserEvent>(
+    graph: &StaticCallGraph<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
+) {
+    for (b, holder) in graph.blocks.iter() {
+        if b.planned.get().is_some() {
+            continue;
+        }
+        let accesses = accesses_in(b.children.iter(), graph, *holder, ctx);
+        let plan = plan_runs(&b.children, &b.catches, &accesses, &mut |_, _| ());
+        let _ = b.planned.set(plan);
+    }
 }
 
 /// Whether siblings forked at a fork point other than a block's (a
@@ -1202,25 +1284,17 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
-    // CR claude for claude: [perf] A block's plan is made at its first update from a call
-    // graph collected from its own children, and local_summary makes every call whose
-    // target that graph lacks opaque (reads and writes everything, ordered), so the
-    // statement after a `let` starts a new run. A self-call targets the enclosing
-    // instance, which no walk down from the children reaches: `{ let a = fib(n - 1);
-    // let b = fib(n - 2); a + b }` never forks, and under `#[parallel]` the build is
-    // refused ('statement 2 reads through a reference or a call the compiler cannot
-    // resolve') while `#[parallel] (fib(n - 1) + fib(n - 2))` builds. On a warm image
-    // start every static site is still Callee::Imaged when the plan is made, so no
-    // block of calls forks (GXDBG_SEQPLAN=1 --no-fusion prints 'opaque call g(n) ...
-    // static=true applied=none' on the warm run only). Under the default Auto, every
-    // multi-statement block in every slot and activation also repeats this callee-graph
-    // walk at its first update. Planning where analysis::analyze and
-    // analyze_bound_callee hold the whole graph, and imaging the plan with the block,
-    // fixes the warm start; a self-call also needs its target's summary without the
-    // instance's own lets, which each activation binds afresh, or statement 2 still
-    // reads `a` through it. probe:
-    // design/review-2026-10-05/repro/c-analysis-branch-05.gx (c-analysis-branch-05)
     let accesses = accesses(children.iter(), ctx);
+    plan_runs(children, catches, &accesses, explain)
+}
+
+/// The runs of `children` given what each accesses.
+fn plan_runs<R: Rt, E: UserEvent>(
+    children: &[Node<R, E>],
+    catches: &[usize],
+    accesses: &[Summary],
+    explain: &mut dyn FnMut(usize, RunBreak),
+) -> Box<[(u32, u32)]> {
     let mut runs: LPooled<Vec<(u32, u32)>> = LPooled::take();
     let mut start: Option<usize> = None;
     let mut published = Vars::default();
@@ -1430,13 +1504,16 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         )
     };
     if let NodeView::Block(b) = target.view() {
+        let two = |&(a, z): &(u32, u32)| {
+            (a..z).filter(|i| work(&b.children[*i as usize])).count() >= 2
+        };
+        if b.planned.get().is_some_and(|runs| runs.iter().any(two)) {
+            return Ok(());
+        }
         let mut first: Option<(usize, RunBreak)> = None;
         let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
             first.get_or_insert((i, why));
         });
-        let two = |&(a, z): &(u32, u32)| {
-            (a..z).filter(|i| work(&b.children[*i as usize])).count() >= 2
-        };
         if runs.iter().any(two) {
             return Ok(());
         }
@@ -1474,9 +1551,14 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         forks = forks
             || match n.view() {
                 NodeView::MapQ(_) => true,
-                NodeView::Block(b) => plan_block(&b.children, &b.catches, ctx)
-                    .iter()
-                    .any(|(a, b)| b - a >= 2),
+                NodeView::Block(b) => {
+                    let forks =
+                        |runs: &[(u32, u32)]| runs.iter().any(|(a, z)| z - a >= 2);
+                    match b.planned.get() {
+                        Some(runs) => forks(runs),
+                        None => forks(&plan_block(&b.children, &b.catches, ctx)),
+                    }
+                }
                 NodeView::CallSite(cs) => {
                     let slots = matches!(
                         cs.resolved_apply(),

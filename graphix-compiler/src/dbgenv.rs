@@ -16,6 +16,7 @@ dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");
 dbg_flag!(graphix_par_audit, "GRAPHIX_PAR_AUDIT");
+dbg_flag!(graphix_abort_on_no_match, "GRAPHIX_ABORT_ON_NO_MATCH");
 dbg_flag!(graphix_dbg_par, "GRAPHIX_DBG_PAR");
 dbg_flag!(
     #[cfg(debug_assertions)]

@@ -1234,26 +1234,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.
-            // CR claude for claude: [test-gap] Since exhaustiveness is enforced, only a
-            // checker bug can leave no arm matching, yet that case is silent. The
-            // select goes bottom here, the JIT's last-arm fall-through
-            // (fusion/emit/select.rs:853) jumps to the same bottom, nothing is logged,
-            // and the two engines agree. So graphix-fuzz reports AGREE and soaks cannot
-            // surface a coverage hole:
-            // design/review-2026-10-05/repro/c-select-seq-02.gx is a non-exhaustive
-            // select the checker accepts, and both engines give an empty trace for its
-            // uncovered values. Log a no-match at error level, once per select site and
-            // in both engines, as a swallowed `$` is logged, and have the fuzzer count
-            // that log as a single-run finding. (x-typecheck-patterns-09)
-            // 2026-10-07 claude: the node-walk logs a no-match once per select. The
-            // JIT's fall-through and the fuzzer's counting of the log remain.
             ChainOut::Taken(None) => {
                 // exhaustiveness makes this a checker bug: say so, once
                 if !std::mem::replace(logged_no_match, true) {
-                    log::error!(
-                        "{}: no arm matches {v}, a coverage hole in the check",
-                        spec
-                    );
+                    crate::node::error::report_coverage_hole(&format_args!(
+                        "{spec}: no arm matches {v}"
+                    ));
                 }
                 if let Some(j) = selected.take() {
                     deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);

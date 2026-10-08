@@ -433,11 +433,6 @@ impl<V: Clone> Layered<V> {
         self.map.keys().copied()
     }
 
-    /// The ids this layer and `other` both delivered themselves.
-    pub(crate) fn delivered_in_both(&self, other: &Self) -> LPooled<Vec<BindId>> {
-        self.map.keys().filter(|id| other.map.contains_key(*id)).copied().collect()
-    }
-
     /// Take this layer's own entry for `id`, leaving what its parent
     /// holds visible.
     pub(crate) fn take_own(&mut self, id: &BindId) -> Option<V> {
@@ -571,18 +566,82 @@ impl<'a, R: Rt, E: UserEvent> DerefMut for CxView<'a, R, E> {
 }
 
 /// `xs` cut at `ranges`, which cover it in order.
-pub(crate) fn cut<'a, T>(
-    mut xs: &'a mut [T],
-    ranges: &[(usize, usize)],
-) -> SmallVec<[&'a mut [T]; 16]> {
+pub(crate) fn cut<S: Run>(xs: S, ranges: &[(usize, usize)]) -> SmallVec<[S; 16]> {
+    let mut rest = Some(xs);
     ranges
         .iter()
         .map(|&(lo, hi)| {
-            let (part, rest) = std::mem::take(&mut xs).split_at_mut(hi - lo);
-            xs = rest;
+            let (part, r) = rest.take().expect("a range past the end").split_at(hi - lo);
+            rest = Some(r);
             part
         })
         .collect()
+}
+
+/// A run of siblings a fork point may cut into parts.
+pub(crate) trait Run: Sized + Send {
+    fn len(&self) -> usize;
+    fn split_at(self, i: usize) -> (Self, Self);
+}
+
+impl<T: Send> Run for &mut [T] {
+    fn len(&self) -> usize {
+        <[T]>::len(self)
+    }
+
+    fn split_at(self, i: usize) -> (Self, Self) {
+        self.split_at_mut(i)
+    }
+}
+
+impl<K: Send, V: Send> Run for &mut indexmap::map::Slice<K, V> {
+    fn len(&self) -> usize {
+        indexmap::map::Slice::len(self)
+    }
+
+    fn split_at(self, i: usize) -> (Self, Self) {
+        self.split_at_mut(i)
+    }
+}
+
+/// Update `items`, the children of the fork point `site`, as its plan
+/// says: in order, timed when it measures, or cut into the ranges it
+/// forks, each updated in order on a branch of its own, their results
+/// folded in order by `merge`.
+pub(crate) fn fork_point<R, E, S, T>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    items: S,
+    site: &mut ForkSite,
+    in_order: impl Fn(&mut ExecCtx<'_, R, E>, S, Option<&mut Meter<'_>>) -> T + Sync,
+    merge: impl FnMut(T, T) -> T,
+) -> T
+where
+    R: Rt,
+    E: UserEvent,
+    S: Run,
+    T: Send,
+{
+    let n = items.len();
+    match site.plan(ctx, n) {
+        Plan::Serial => in_order(ctx, items, None),
+        Plan::Measure(mut m) => {
+            let r = in_order(ctx, items, Some(&mut m));
+            m.done(n);
+            r
+        }
+        Plan::Fork(s) => {
+            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
+            s.ranges(0, n, &mut ranges);
+            if ranges.len() < 2 {
+                return in_order(ctx, items, None);
+            }
+            let parts = cut(items, &ranges);
+            fork_each(ctx, parts, |c, p| in_order(c, p, None))
+                .into_iter()
+                .reduce(merge)
+                .expect("a part")
+        }
+    }
 }
 
 /// What the code around a node says about forking it.
@@ -607,11 +666,123 @@ impl ForkFlags {
     }
 }
 
-/// One part of a [`fork_each`]: its branch's views and its result.
-struct Part<R: Rt, E: UserEvent, P, T> {
+/// A forked branch: its views of the compile state and the runtime, and
+/// its event.
+struct Branch<R: Rt, E: UserEvent> {
     cx: ForkCx<R, E>,
     rt: ForkRt<R>,
     event: Event<E>,
+}
+
+impl<R: Rt, E: UserEvent> Branch<R, E> {
+    fn new(ctx: &ExecCtx<'_, R, E>) -> Self {
+        Branch {
+            cx: ForkCx::new(&ctx.cx),
+            rt: ForkRt::new(&ctx.rt),
+            event: ctx.event.fork(),
+        }
+    }
+}
+
+/// What every branch of one fork shares with the view it forked from.
+struct Shared<'a, R: Rt, E: UserEvent> {
+    image_decoder: &'a std::sync::OnceLock<crate::image::SharedDecoder>,
+    libstate: &'a crate::LibState,
+    core_hook_sites: &'a parking_lot::Mutex<crate::node::coretraits::CoreHookSites<R, E>>,
+    control: &'a triomphe::Arc<Control>,
+    fork_depth: u8,
+    par: graphix_types::stack::ParMode,
+    fork: ForkFlags,
+}
+
+impl<'a, R: Rt, E: UserEvent> Shared<'a, R, E> {
+    /// What `ctx`'s branches share, one fork level down.
+    fn of(ctx: &ExecCtx<'a, R, E>) -> Self {
+        Shared {
+            image_decoder: ctx.image_decoder,
+            libstate: ctx.libstate,
+            core_hook_sites: ctx.core_hook_sites,
+            control: ctx.control,
+            fork_depth: ctx.fork_depth + 1,
+            par: ctx.par,
+            fork: ctx.fork,
+        }
+    }
+
+    /// The view the branch `b` runs under.
+    fn ctx<'b>(&self, b: &'b mut Branch<R, E>) -> ExecCtx<'b, R, E>
+    where
+        'a: 'b,
+    {
+        ExecCtx {
+            cx: CxView::Fork(&mut b.cx),
+            image_decoder: self.image_decoder,
+            libstate: self.libstate,
+            rt: RtView::Fork(&mut b.rt),
+            core_hook_sites: self.core_hook_sites,
+            control: self.control,
+            event: &mut b.event,
+            fork_depth: self.fork_depth,
+            par: self.par,
+            fork: self.fork,
+        }
+    }
+}
+
+/// `GRAPHIX_PAR_AUDIT`: no branch read what an earlier one published in
+/// the same cycle, which serial evaluation would have shown it.
+fn audit_in_order<R: Rt, E: UserEvent>(branches: &[&Branch<R, E>]) {
+    for (i, b) in branches.iter().enumerate() {
+        let Some(reads) = b.rt.reads.as_ref() else { continue };
+        let reads = reads.lock();
+        for a in &branches[..i] {
+            audit(&reads, &a.event, &a.rt, &b.event, &b.rt);
+        }
+    }
+}
+
+/// Merge `branches`, forked from `ctx`, back in order: `ctx` ends as the
+/// serial evaluation of the branches would leave it. What an earlier
+/// branch delivered first, a later one's delivery waits a cycle for,
+/// queued where serial evaluation would queue it.
+fn merge_in_order<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    branches: impl IntoIterator<Item = Branch<R, E>>,
+) {
+    let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
+    for Branch { cx, mut rt, mut event } in branches {
+        let again: LPooled<Vec<BindId>> =
+            event.variables.own_ids().filter(|id| delivered.contains(id)).collect();
+        for id in again.iter() {
+            let tv = event.variables.take_own(id).expect("delivered");
+            rt.queue_first(*id, tv.value());
+        }
+        delivered.extend(event.variables.own_ids());
+        ctx.cx.merge(cx);
+        ctx.rt.merge(rt);
+        ctx.event.merge(event);
+    }
+}
+
+/// Run `f`, one part of a fork, on a thread of the pool: under the
+/// runtime's control and the caller's tokio runtime, its share of
+/// `live` given back when it ends, or unwinds.
+pub(crate) fn as_part<T>(
+    control: &Control,
+    tokio: Option<&tokio::runtime::Handle>,
+    live: &Live,
+    f: impl FnOnce() -> T,
+) -> T {
+    with_control(control, || {
+        let _tokio = tokio.map(|h| h.enter());
+        let _part = live.part();
+        f()
+    })
+}
+
+/// One part of a [`fork_each`]: its branch and its result.
+struct Part<R: Rt, E: UserEvent, P, T> {
+    branch: Branch<R, E>,
     part: Option<P>,
     out: Option<T>,
 }
@@ -636,67 +807,33 @@ where
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
     let mut branches: Vec<Part<R, E, P, T>> = parts
         .into_iter()
-        .map(|p| Part {
-            cx: ForkCx::new(&ctx.cx),
-            rt: ForkRt::new(&ctx.rt),
-            event: ctx.event.fork(),
-            part: Some(p),
-            out: None,
-        })
+        .map(|p| Part { branch: Branch::new(ctx), part: Some(p), out: None })
         .collect();
-    let (libstate, hooks, control, decoder) =
-        (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
-    let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
+    let shared = Shared::of(ctx);
+    let control = ctx.control;
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(branches.len());
     on_pool(control, || {
         branches.par_iter_mut().with_max_len(1).for_each(|b| {
             // a part may run on any thread of the pool
-            with_control(control, || {
-                let _tokio = tokio.as_ref().map(|h| h.enter());
-                let mut c = ExecCtx {
-                    cx: CxView::Fork(&mut b.cx),
-                    image_decoder: decoder,
-                    libstate,
-                    rt: RtView::Fork(&mut b.rt),
-                    core_hook_sites: hooks,
-                    control,
-                    event: &mut b.event,
-                    fork_depth,
-                    par,
-                    fork,
-                };
-                b.out = Some(f(&mut c, b.part.take().expect("a part")));
-                live.done();
+            as_part(control, tokio.as_ref(), &live, || {
+                let part = b.part.take().expect("a part");
+                b.out = Some(f(&mut shared.ctx(&mut b.branch), part));
             })
         })
     });
-    if branches.first().is_some_and(|b| b.rt.reads.is_some()) {
-        for (i, b) in branches.iter().enumerate() {
-            let reads = b.rt.reads.as_ref().expect("audited").lock();
-            for a in &branches[..i] {
-                audit(&reads, &a.event, &a.rt, &b.event, &b.rt);
-            }
-        }
+    if branches.first().is_some_and(|b| b.branch.rt.reads.is_some()) {
+        let all: SmallVec<[&Branch<R, E>; 16]> =
+            branches.iter().map(|b| &b.branch).collect();
+        audit_in_order(&all);
     }
-    // what an earlier part delivered first: a later part's delivery of
-    // it waits a cycle, queued where serial evaluation would queue it
-    let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
     let mut out = Vec::with_capacity(branches.len());
-    for Part { cx, mut rt, mut event, part: _, out: o } in branches.drain(..) {
-        let again: LPooled<Vec<BindId>> =
-            event.variables.own_ids().filter(|id| delivered.contains(id)).collect();
-        for id in again.iter() {
-            let tv = event.variables.take_own(id).expect("delivered");
-            rt.queue_first(*id, tv.value());
-        }
-        delivered.extend(event.variables.own_ids());
-        ctx.cx.merge(cx);
-        ctx.rt.merge(rt);
-        ctx.event.merge(event);
+    let parts = branches.drain(..).map(|Part { branch, part: _, out: o }| {
         out.push(o.expect("every part ran"));
-    }
+        branch
+    });
+    merge_in_order(ctx, parts);
     out
 }
 
@@ -722,11 +859,9 @@ pub(crate) fn compile_each<R, E, P, F>(
     let live = Live::start(tasks.len());
     on_pool(control, || {
         tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
-            with_control(control, || {
-                let _tokio = tokio.as_ref().map(|h| h.enter());
+            as_part(control, tokio.as_ref(), &live, || {
                 let _level = crate::typ::tvar::AtLevel::enter(level);
                 task.run_task(|task| f(task, p.take().expect("a part")));
-                live.done();
             })
         })
     });
@@ -738,17 +873,6 @@ pub(crate) fn compile_each<R, E, P, F>(
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
 /// `a`'s first: neither sees what the other did, and `ctx` ends as the
 /// serial evaluation of `a` then `b` would leave it.
-// CR claude for claude: [structure] fork_join is fork_each for two parts written again.
-// It repeats the per-branch ForkCx/ForkRt/Event and ExecCtx, forked() and Live, the
-// stolen side's InterruptScope and tokio enter, the audit, and the in-order merge. The
-// merge's rule (a later part's delivery of an id an earlier part delivered waits a
-// cycle) now exists twice, as fork_each's `delivered` set and as `delivered_in_both`.
-// compile_each and par_loop::run repeat the worker prologue (Live, on_pool,
-// InterruptScope, tokio) once more. Live::done is called by hand in five places, so a
-// part that unwinds leaves LIVE_PARTS raised. One branch type (views plus event, a
-// ctx() builder, one merge over branches in order, allocation-free for two) and one
-// worker helper that owns a Live drop guard would leave one copy of each rule.
-// (x-parallel-09)
 pub fn fork_join<R, E, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R, E>, a: A, b: B) -> (RA, RB)
 where
     R: Rt,
@@ -759,60 +883,26 @@ where
     RB: Send,
 {
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
-    let (mut rt_a, mut rt_b) = (ForkRt::new(&ctx.rt), ForkRt::new(&ctx.rt));
-    let (mut cx_a, mut cx_b) = (ForkCx::new(&ctx.cx), ForkCx::new(&ctx.cx));
-    let (mut ev_a, mut ev_b) = (ctx.event.fork(), ctx.event.fork());
-    let (libstate, hooks, control, decoder) =
-        (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
-    let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
+    let (mut left, mut right) = (Branch::new(ctx), Branch::new(ctx));
+    let shared = Shared::of(ctx);
+    let control = ctx.control;
     control.forked();
-    let branch = |cx, rt, event| ExecCtx {
-        cx: CxView::Fork(cx),
-        image_decoder: decoder,
-        libstate,
-        rt: RtView::Fork(rt),
-        core_hook_sites: hooks,
-        control,
-        event,
-        fork_depth,
-        par,
-        fork,
-    };
     let tokio = tokio::runtime::Handle::try_current().ok();
     let live = Live::start(2);
     let (ra, rb) = on_pool(control, || {
         rayon::join(
             || {
-                let r = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
-                live.done();
-                r
+                let _part = live.part();
+                a(&mut shared.ctx(&mut left))
             },
-            || {
-                // the stolen side runs on a thread of its own
-                with_control(control, || {
-                    let _tokio = tokio.as_ref().map(|h| h.enter());
-                    let r = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
-                    live.done();
-                    r
-                })
-            },
+            // the stolen side runs on a thread of its own
+            || as_part(control, tokio.as_ref(), &live, || b(&mut shared.ctx(&mut right))),
         )
     });
-    if let Some(reads) = &rt_b.reads {
-        audit(&reads.lock(), &ev_a, &rt_a, &ev_b, &rt_b);
+    if right.rt.reads.is_some() {
+        audit_in_order(&[&left, &right]);
     }
-    // what both delivered, the left delivered first: the right's waits a
-    // cycle, queued where serial evaluation would have queued it
-    for id in ev_b.variables.delivered_in_both(&ev_a.variables).drain(..) {
-        let tv = ev_b.variables.take_own(&id).expect("delivered");
-        rt_b.queue_first(id, tv.value());
-    }
-    ctx.cx.merge(cx_a);
-    ctx.rt.merge(rt_a);
-    ctx.event.merge(ev_a);
-    ctx.cx.merge(cx_b);
-    ctx.rt.merge(rt_b);
-    ctx.event.merge(ev_b);
+    merge_in_order(ctx, [left, right]);
     (ra, rb)
 }
 
@@ -885,8 +975,18 @@ impl Live {
         Live(AtomicUsize::new(n))
     }
 
-    pub(crate) fn done(&self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+    /// One part's share, given back when it drops.
+    pub(crate) fn part(&self) -> LivePart<'_> {
+        LivePart(self)
+    }
+}
+
+/// A part's share of a [`Live`].
+pub(crate) struct LivePart<'a>(&'a Live);
+
+impl Drop for LivePart<'_> {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::Relaxed);
         LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
     }
 }

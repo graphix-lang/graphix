@@ -69,6 +69,10 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
+    if let Some(t) = std::env::var("GRAPHIX_PAR_T").ok().and_then(|t| t.parse().ok()) {
+        fix_calibration(t);
+        return CALIBRATION.get();
+    }
     if !STARTED.swap(true, Ordering::Relaxed) {
         std::thread::Builder::new()
             .name("graphix-par-calibrate".into())
@@ -97,6 +101,15 @@ pub fn calibration_for(n: usize, first: Duration) -> Option<&'static Calibration
             first.as_nanos().saturating_mul(n as u128) >= WAIT_FOR_CALIBRATION.as_nanos();
         (long && eval_pool().current_thread_index().is_none()).then(|| CALIBRATION.wait())
     })
+}
+
+/// Fix the fork threshold at `t` ticks for the process, in place of the
+/// measurement, unless one landed already. A tiny `t` makes every
+/// `Auto` site probe and then fork (the fuzzer's `Auto` runs).
+pub fn fix_calibration(t: u64) {
+    let t = t.max(1);
+    let shift = (63 - t.leading_zeros()).saturating_sub(T_BUCKET);
+    let _ = CALIBRATION.set(Calibration { t, shift });
 }
 
 /// The latency, in ticks, from handing an idle evaluation pool a job to

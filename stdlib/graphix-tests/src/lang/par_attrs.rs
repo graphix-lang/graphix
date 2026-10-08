@@ -287,3 +287,21 @@ async fn fork_keeps_the_other_attributes() {
         refusal("{ #[serial] let f = #[tail_recursive] (|x: i64| x + 1); f(1) }").await;
     assert!(e.contains("#[tail_recursive]"), "{e}");
 }
+
+// A block of self-calls is planned with its instance in the graph: the
+// recursive calls are not opaque, a self-call's reads of the activation's
+// own lets are the new activation's, so the two lets fork.
+#[tokio::test(flavor = "current_thread")]
+async fn self_calls_in_a_block_fork() -> Result<()> {
+    let code = r#"{
+        let rec fib = |n: i64| -> i64 select n < 2 {
+            true => n,
+            false => #[parallel] { let a = fib(n - 1); let b = fib(n - 2); a + b }
+        };
+        fib(10)
+    }"#;
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(55)));
+    assert!(ran.forks > 0, "the block of self-calls ran in order");
+    Ok(())
+}

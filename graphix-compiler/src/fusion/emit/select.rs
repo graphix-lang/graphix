@@ -889,8 +889,9 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 cx.b.switch_to_block(f);
                 cx.b.seal_block(f);
                 if is_last {
-                    // Unreachable: a valid scrutinee matches an exhaustive
-                    // chain; a terminator is still required.
+                    // a valid scrutinee matches an exhaustive chain: this is
+                    // a hole in the check, said as the node-walk says it
+                    cx.call_helper("graphix_select_no_match", &[])?;
                     cx.b.ins().jump(miss_bl, &[]);
                 }
             }

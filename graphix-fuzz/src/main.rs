@@ -270,6 +270,9 @@ async fn main() -> Result<()> {
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
+    // the JIT's parallel runs are the default mode at a threshold every
+    // fork point pays
+    graphix_compiler::cost::fix_calibration(graphix_fuzz::AUTO_T);
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");

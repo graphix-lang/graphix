@@ -2,8 +2,8 @@ use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
     ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
     UserEvent,
-    branch::{cut, fork_each, timed},
-    cost::{ForkSite, Meter, Plan},
+    branch::{fork_point, timed},
+    cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
     expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
@@ -35,7 +35,7 @@ use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::Cell, iter, mem};
+use std::{cell::Cell, iter, mem, sync::OnceLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -401,16 +401,6 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    // CR claude for claude: [structure] This Serial/Measure/Fork dispatch (the ranges,
-    // the `ranges.len() < 2` fallback, cut, fork_each and the merge) is written out
-    // again in update_run (line 880) and update_args (node/callsite.rs:2381).
-    // update_args also cuts its IndexMap slice by hand (callsite.rs:2393-2401) instead
-    // of calling branch::cut. join2 (branch.rs:887) repeats the plan match for two
-    // closures and re-checks, through Splits::fork, what plan just decided. One helper
-    // in branch.rs that owns the dispatch over a splittable slice, with each site
-    // passing its in-order update and its merge, would leave one place to change it,
-    // for example to add the independence check that field, argument and operand forks
-    // lack. (c-analysis-branch-09)
     // XCR claude for claude: [bug] This fork point decides on cost alone, and so do
     // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
     // operands). Only plan_block applies the rule that two children reaching an ordered
@@ -434,29 +424,10 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // check_parallel still accepts #[parallel] over such siblings, which then run in
     // order.
     site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
-    match site.plan(ctx, n) {
-        Plan::Serial => gather_in_order(ctx, nodes, None),
-        Plan::Measure(mut m) => {
-            let r = gather_in_order(ctx, nodes, Some(&mut m));
-            m.done(n);
-            r
-        }
-        Plan::Fork(s) => {
-            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
-            s.ranges(0, n, &mut ranges);
-            if ranges.len() < 2 {
-                return gather_in_order(ctx, nodes, None);
-            }
-            let parts = cut(nodes, &ranges);
-            let mut tag = Tag::STALE;
-            let mut prods = SmallVec::new();
-            for (t, p) in fork_each(ctx, parts, |c, p| gather_in_order(c, p, None)) {
-                tag = tag.join(t);
-                prods.extend(p);
-            }
-            (tag, prods)
-        }
-    }
+    fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
+        p0.extend(p1);
+        (t0.join(t1), p0)
+    })
 }
 
 fn gather_in_order<'a, R: Rt, E: UserEvent>(
@@ -724,16 +695,22 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// The block's production when it cannot hand back its last
     /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
-    /// The statements as runs for forking (`analysis::plan_block`), made
-    /// at the first update that may fork.
+    /// The statements as runs for forking, as the analysis planned them
+    /// (`analysis::plan_blocks`), which an image carries.
+    pub(crate) planned: OnceLock<Box<[(u32, u32)]>>,
+    /// The runs and their fork points, made at the first update that may
+    /// fork: from `planned`, or planned there for a block no analysis
+    /// reached.
     plan: Option<Box<[(u32, u32, ForkSite)]>>,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
     /// [`Update::update`] forking each run of its plan.
     fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let (children, catches, planned) = (&self.children, &self.catches, &self.planned);
         let plan = self.plan.get_or_insert_with(|| {
-            crate::analysis::plan_block(&self.children, &self.catches, ctx)
+            planned
+                .get_or_init(|| crate::analysis::plan_block(children, catches, ctx))
                 .iter()
                 .map(|&(a, b)| (a, b, ForkSite::default()))
                 .collect()
@@ -766,6 +743,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches: Box::default(),
             resident: TagValue::phantom(),
+            planned: OnceLock::new(),
             plan: None,
         })
     }
@@ -787,6 +765,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches,
             resident: TagValue::phantom(),
+            planned: OnceLock::new(),
             plan: None,
         }))
     }
@@ -947,26 +926,7 @@ fn update_run<'a, R: Rt, E: UserEvent>(
     nodes: &'a mut [Node<R, E>],
     site: &mut ForkSite,
 ) -> &'a TagValue {
-    let n = nodes.len();
-    match site.plan(ctx, n) {
-        Plan::Serial => update_in_order(ctx, nodes, None),
-        Plan::Measure(mut m) => {
-            let r = update_in_order(ctx, nodes, Some(&mut m));
-            m.done(n);
-            r
-        }
-        Plan::Fork(s) => {
-            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
-            s.ranges(0, n, &mut ranges);
-            if ranges.len() < 2 {
-                return update_in_order(ctx, nodes, None);
-            }
-            let parts = cut(nodes, &ranges);
-            fork_each(ctx, parts, |c, p| update_in_order(c, p, None))
-                .pop()
-                .expect("a part")
-        }
-    }
+    fork_point(ctx, nodes, site, update_in_order, |_, last| last)
 }
 
 fn update_in_order<'a, R: Rt, E: UserEvent>(
@@ -1246,12 +1206,17 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         let spec = Expr::decode(buf)?;
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
+        let planned = OnceLock::new();
+        if let Some(p) = Option::<Vec<(u32, u32)>>::decode(buf)? {
+            let _ = planned.set(p.into_boxed_slice());
+        }
         Ok(Node::new(Self {
             module,
             spec,
             children,
             catches,
             resident: TagValue::phantom(),
+            planned,
             plan: None,
         }))
     }
@@ -1263,7 +1228,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.module.encode(buf)?;
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
-        image::slice_encode(&self.catches, buf)
+        image::slice_encode(&self.catches, buf)?;
+        self.planned.get().map(|p| p.to_vec()).encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -2214,19 +2180,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
                 self.resident.set(tv)
             }
             None if bottomed => self.resident.set_bottom(true),
-            // CR claude for claude: [bug] At a wake this rides the value held from before
-            // the sleep, even when the input that produced it went bottom while the arm
-            // slept. That bottom is not a tracked fire (wake.rs observe skips bottoms),
-            // and the standing bottom seen at the wake is ignored. `let v0 = 10 / in1;
-            // select in0 { 0 => any(v0, never<i64>()), _ => -1 }` re-emits 5 when arm 0
-            // wakes after in1 = 0, where `v0 + 0` in the same arm is ⊥. CLAUDE.md says
-            // "an input that went bottom during the sleep is bottom at the wake", but
-            // design/wake_catchup.md still calls Any's ride correct, and `uniq` rides
-            // the same way. Fix the class, or name the exemption in CLAUDE.md. probe:
-            // design/review-2026-10-05/repro/c-node-mod-07.gx (c-node-mod-07)
-            // 2026-10-07 claude: Any keeps the child its resident came from and stands
-            // bottom at a wake where that child is bottom now (pin
-            // lang::dense_deltas::any_wakes_bottom). `uniq` still rides.
             None if lost => self.resident.set_bottom(false),
             None => self.resident.ride(),
         }

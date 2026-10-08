@@ -200,6 +200,16 @@ async fn any_wakes_bottom(mode: Mode) -> Result<()> {
 
 modes!(any_wakes_bottom);
 
+// So is a uniq: it holds nothing across a bottom.
+async fn uniq_wakes_bottom(mode: Mode) -> Result<()> {
+    let code = ANY_WAKES_BOTTOM.replace("any(v0, never<i64>())", "uniq(v0)");
+    let (values, _) = run_delta(&code, mode).await?;
+    assert_eq!(as_i64s(&values), vec![10, 5, -1]);
+    Ok(())
+}
+
+modes!(uniq_wakes_bottom);
+
 // A window with no arm (here a bottom scrutinee) pauses the selected
 // arm, which resumes with its state: presses goes on from where it
 // stood and entries counts the re-entry.

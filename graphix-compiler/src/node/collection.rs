@@ -9,8 +9,14 @@ use crate::{
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
-        emit::{self, BodyCx, CompiledExpr, CompositeSource, scaffold},
-        kernel_abi::{self, AbiKind, PrimType},
+        emit::{
+            self, BodyCx, CompiledExpr,
+            loops::{
+                FoldParts, callback_param, emit_filter_kind, emit_filter_map_kind,
+                emit_find_kind, emit_find_map_kind, emit_flat_map_kind, emit_fold_kind,
+                emit_init_kind, emit_map_kind,
+            },
+        },
         share::{self, SlotShare},
     },
     image::{
@@ -18,13 +24,12 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
         scope_decode, scope_encode,
     },
-    typ::{FnArgKind, FnType, Type},
+    typ::{FnType, Type},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::literal;
 use bytes::BufMut;
-use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
@@ -514,6 +519,83 @@ fn resize<R: Rt, E: UserEvent, S>(
     old != n
 }
 
+/// Run a check pass `f` over `nodes` in order, each error in its node's
+/// context.
+fn each<R: Rt, E: UserEvent, const N: usize>(
+    nodes: [&mut Node<R, E>; N],
+    mut f: impl FnMut(&mut Node<R, E>) -> Result<()>,
+) -> Result<()> {
+    nodes.into_iter().try_for_each(|n| {
+        let r = f(n);
+        wrap!(n, r)
+    })
+}
+
+/// A collection's source as one update read it.
+struct Sourced<C> {
+    tag: Tag,
+    /// `None` while the source is bottom or not a collection.
+    source: Option<C>,
+    /// The slot count changed.
+    resized: bool,
+    /// The source returned from bottom.
+    back: bool,
+    /// Its elements moved: it fired, or the collection woke.
+    moved: bool,
+}
+
+/// What a collection's slots are to [`take_source`].
+struct SlotKind<R: Rt, E: UserEvent, S> {
+    delete: fn(&mut S, &mut ExecCtx<'_, R, E>),
+    call: fn(&mut S) -> &mut Node<R, E>,
+    element: fn(&S) -> BindId,
+}
+
+/// Update a collection's source and, when it holds a collection, resize
+/// the slots to it (`make` builds a slot of the call kind the prototype
+/// settled on), build the fresh slots' instances where `build` says, and
+/// deliver each slot its element: a fresh slot always, any slot when the
+/// elements moved. A bottom source forgets the length; the slots stay.
+#[allow(clippy::too_many_arguments)]
+fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    source: &mut Node<R, E>,
+    prototype: &Node<R, E>,
+    slots: &mut Vec<S>,
+    src_bottom: &mut bool,
+    woke: bool,
+    build: &mut ProbeSite,
+    kind: SlotKind<R, E, S>,
+    mut make: impl FnMut(&mut ExecCtx<'_, R, E>, CallKind) -> S,
+) -> Sourced<C> {
+    let old_len = slots.len();
+    let (tag, sval) = {
+        let tv = source.update(ctx);
+        let tag = tv.tag();
+        (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+    };
+    let moved = tag.triggers() || woke;
+    let source = sval.and_then(|value| C::select(value, tag.triggers()));
+    let Some(source) = source else {
+        *src_bottom = true;
+        return Sourced { tag, source: None, resized: false, back: false, moved };
+    };
+    let back = std::mem::take(src_bottom);
+    // what a slot calls, decided once a slot is added
+    let mut call_kind = None;
+    let resized = resize(ctx, slots, source.len(), kind.delete, |ctx| {
+        let k = call_kind.get_or_insert_with(|| CallKind::slot(ctx, prototype)).clone();
+        make(ctx, k)
+    });
+    let fresh = old_len.min(slots.len());
+    build_fresh(ctx, &mut slots[fresh..], build, kind.call);
+    let from = if moved { 0 } else { fresh };
+    for (slot, value) in slots[from..].iter().zip(source.values().skip(from)) {
+        deliver(ctx, (kind.element)(slot), TagValue::tagged(value, tag));
+    }
+    Sourced { tag, source: Some(source), resized, back, moved }
+}
+
 #[derive(Debug)]
 struct Slot<R: Rt, E: UserEvent> {
     id: BindId,
@@ -546,143 +628,6 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
 }
 
 #[derive(Debug)]
-struct CallbackParam {
-    name: ArcStr,
-    id: Option<BindId>,
-    binds: Vec<(BindId, usize)>,
-}
-
-impl CallbackParam {
-    /// The loop's element bind for this parameter.
-    fn elem<'a>(
-        &'a self,
-        typ: &'a Type,
-        leaves: &'a [scaffold::Leaf],
-    ) -> scaffold::HofElem<'a> {
-        scaffold::HofElem { name: &self.name, id: self.id, typ, leaves }
-    }
-}
-
-/// The callback's `index`-th positional parameter; `None` for a
-/// callback with labeled parameters, which the collection interprets.
-fn callback_param<R: Rt, E: UserEvent>(
-    callback: &GXLambda<R, E>,
-    index: usize,
-    fallback: ArcStr,
-) -> Option<CallbackParam> {
-    if callback.typ().first_positional() > 0 {
-        return None;
-    }
-    match callback.args().get(index)?.tuple_leaves() {
-        Some(binds) => Some(CallbackParam { name: fallback, id: None, binds }),
-        None => {
-            let name = match &callback.typ().args.get(index)?.kind {
-                FnArgKind::Positional { name: Some(name) }
-                | FnArgKind::Labeled { name, .. } => name.clone(),
-                _ => return None,
-            };
-            Some(CallbackParam {
-                name,
-                id: callback.args()[index].single_bind_id(),
-                binds: Vec::new(),
-            })
-        }
-    }
-}
-
-fn bindable_array_element(
-    typ: &Type,
-    binds: &[(BindId, usize)],
-) -> Option<(Type, scaffold::Leaves)> {
-    let typ = kernel_abi::freeze_for_abi_normalized(typ)?;
-    let leaves = scaffold::elem_leaves(&typ, binds)?;
-    match kernel_abi::abi_kind(&typ) {
-        Some(
-            AbiKind::Scalar(_)
-            | AbiKind::Array
-            | AbiKind::Tuple
-            | AbiKind::Struct
-            | AbiKind::String
-            | AbiKind::Variant
-            | AbiKind::Nullable
-            | AbiKind::Value,
-        ) => Some((typ, leaves)),
-        _ => None,
-    }
-}
-
-fn is_unit_or_null(typ: &Type) -> bool {
-    matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
-}
-
-/// Whether a frozen type admits `null`, filter_map's drop marker.
-/// An unknown shape answers true, so the caller keeps interpreting.
-fn frozen_may_be_null(t: &Type) -> bool {
-    t.with_deref(|t| match t {
-        Some(Type::Primitive(p)) => p.contains(Typ::Null),
-        Some(Type::Set(ms)) => ms.iter().any(frozen_may_be_null),
-        Some(
-            Type::Array(_)
-            | Type::List(_)
-            | Type::Tuple(_)
-            | Type::Struct(_)
-            | Type::Variant(_, _, _)
-            | Type::Fn(_)
-            | Type::Error(_)
-            | Type::Map { .. }
-            | Type::Abstract { .. }
-            | Type::ByRef(..),
-        ) => false,
-        _ => true,
-    })
-}
-
-/// Fold the loop's [`scaffold::SlotFlags`] and the source's firing
-/// into the emitted result — the shared tail of every kind emitter.
-fn finish_loop_result(
-    cx: &mut BodyCx,
-    result: CompiledExpr,
-    flags: scaffold::SlotFlags,
-    source: &CompiledExpr,
-) -> CompiledExpr {
-    flags.apply(cx, result, source.disc)
-}
-
-/// Emit a List/Map HOF source: marshal the collection Value owned and
-/// flatten it to a fresh ValArray through `helper`, which consumes it.
-/// Returns the source's (disc, payload) and the [`scaffold::ArraySrc`]
-/// that owns the flattened array.
-fn emit_flattened_source<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    helper: &'static str,
-) -> Result<(CompiledExpr, scaffold::ArraySrc)> {
-    let value = emit::emit_owned_value_operand_node(cx, source)?;
-    let flatten = cx.helper(helper)?;
-    let call = cx.b.ins().call(flatten, &[value.disc, value.payload]);
-    let ptr = cx.b.inst_results(call)[0];
-    Ok((
-        value,
-        scaffold::ArraySrc { ptr, disc: value.disc, ownership: CompositeSource::Owned },
-    ))
-}
-
-/// The exit boundary for collection-returning loops: consume the
-/// loop's finalize'd ValArray and rebuild the collection Value
-/// (`graphix_valarray_into_list` / `graphix_valarray_into_cmap`).
-fn convert_collection_result(
-    cx: &mut BodyCx,
-    ptr: ClifValue,
-    helper: &'static str,
-) -> Result<CompiledExpr> {
-    let f = cx.helper(helper)?;
-    let call = cx.b.ins().call(f, &[ptr]);
-    let rs = cx.b.inst_results(call);
-    let (disc, payload) = (rs[0], rs[1]);
-    Ok(CompiledExpr::new(disc, payload))
-}
-
-#[derive(Debug)]
 pub struct MapQBase<R: Rt, E: UserEvent> {
     pub(crate) source: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
@@ -695,6 +640,11 @@ pub struct MapQBase<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> MapQBase<R, E> {
+    /// The source and the prototype, in check order.
+    fn nodes_mut(&mut self) -> [&mut Node<R, E>; 2] {
+        [&mut self.source, &mut self.prototype]
+    }
+
     /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
@@ -1060,80 +1010,31 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         let woke = self.slept.take();
         let old_len = self.slots.len();
         let mut production = None;
-        let (tag, sval) = {
-            let tv = self.base.source.update(ctx);
-            let tag = tv.tag();
-            (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
-        };
-        let src_trig = tag.triggers();
-        // A tainted or unselectable source is bottom and forgets the length;
-        // the slots stay retained (bottom is not a reset) and still run, so
-        // their internal state sees this cycle's events.
-        let source = sval.and_then(|value| C::select(value, src_trig));
+        let (callback, element_type) = (&self.callback, &self.base.element_type);
+        let Sourced { tag, source, resized, back, moved } = take_source::<_, _, C, _>(
+            ctx,
+            &mut self.base.source,
+            &self.base.prototype,
+            &mut self.slots,
+            &mut self.src_bottom,
+            woke,
+            &mut self.fork.build,
+            SlotKind { delete: Slot::delete, call: |s| &mut s.call, element: |s| s.id },
+            |ctx, kind| Slot::new(ctx, callback, element_type, kind),
+        );
         let source_ok = source.is_some();
-        match source {
-            None => self.src_bottom = true,
-            Some(source) => {
-                // what a slot calls, decided once a slot is added
-                let mut kind = None;
-                let resized =
-                    resize(ctx, &mut self.slots, source.len(), Slot::delete, |ctx| {
-                        let kind = kind
-                            .get_or_insert_with(|| {
-                                CallKind::slot(ctx, &self.base.prototype)
-                            })
-                            .clone();
-                        Slot::new(ctx, &self.callback, &self.base.element_type, kind)
-                    });
-                let fresh = old_len.min(self.slots.len());
-                build_fresh(ctx, &mut self.slots[fresh..], &mut self.fork.build, |s| {
-                    &mut s.call
-                });
-                // Elements move only on a fire or past a sleep; a fresh slot
-                // always takes its element.
-                let moved = src_trig || woke;
-                let from = if moved { 0 } else { old_len.min(self.slots.len()) };
-                for (slot, value) in
-                    self.slots[from..].iter().zip(source.values().skip(from))
-                {
-                    deliver(ctx, slot.id, TagValue::tagged(value, tag));
-                }
-                self.current = source;
-                // A resize or a source back from bottom changes the result
-                // whether or not a slot fires, and so do moved elements
-                // under a result that reads them.
-                let back = std::mem::take(&mut self.src_bottom);
-                // CR claude for claude: [bug] MapQ and FoldQ each carry a copy of the
-                // source/resize/deliver prologue (1018-1059, 1420-1456), and the firing
-                // rules after it have drifted from each other and from the JIT's exact
-                // SlotFlags rule, which fires on any resize and treats a source back
-                // from bottom as one. Here MapQ merges the source's tag, so a resize or
-                // a return that the source delivers STALE (an arm waking after another
-                // arm consumed the source's fire) does not fire, and the empty-source
-                // return at 1069 takes the source's tag alone; FoldQ fires on a resize
-                // but needs src_trig for a return (1522). graphix-fuzz check reports
-                // DIVERGENCE (interp 4:0, jit 4:4) for map on a shrink and for map and
-                // fold on a return; probe:
-                // design/review-2026-10-05/repro/c-collection-03.gx. One shared
-                // prologue with one rule (fire iff resized, back from bottom, a slot
-                // fired, or the source fired empty) closes it; typecheck*, delete,
-                // sleep, image and emit_clif_call are pairwise copies too.
-                // (c-collection-03)
-                // 2026-10-08 claude: the firing rule is the JIT's in both: a resize
-                // or a return from bottom fires whatever the source's tag (MapQ's
-                // empty return included), and FoldQ's return no longer needs
-                // src_trig. The pairwise copies of the prologue and the other
-                // methods remain.
-                // a resize or a return is a new result whatever the source's
-                // tag, a wake's own when the source's is
-                let tag = if resized || back { tag.as_fire() } else { tag };
-                if resized || back || (self.base.op.reads_elements() && moved) {
-                    production = merge_tag(production, tag);
-                }
-                if self.slots.is_empty() {
-                    let v = self.finish(ctx);
-                    return self.resident.set(TagValue::tagged(v, tag));
-                }
+        if let Some(source) = source {
+            self.current = source;
+            // a resize or a return is a new result whatever the source's
+            // tag, a wake's own when the source's is; so are moved
+            // elements under a result that reads them
+            let tag = if resized || back { tag.as_fire() } else { tag };
+            if resized || back || (self.base.op.reads_elements() && moved) {
+                production = merge_tag(production, tag);
+            }
+            if self.slots.is_empty() {
+                let v = self.finish(ctx);
+                return self.resident.set(TagValue::tagged(v, tag));
             }
         }
         let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len);
@@ -1182,8 +1083,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
+        each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
     }
 
     fn typecheck0_instance(
@@ -1191,13 +1091,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck0_instance(ctx, types))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck0_instance(ctx, types))
+        each(self.base.nodes_mut(), |n| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
+        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
 
     fn typ(&self) -> &Type {
@@ -1284,6 +1182,11 @@ pub struct FoldQBase<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
+    /// The source, the init and the prototype, in check order.
+    fn nodes_mut(&mut self) -> [&mut Node<R, E>; 3] {
+        [&mut self.source, &mut self.init, &mut self.prototype]
+    }
+
     /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
@@ -1481,47 +1384,24 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         let old_len = self.slots.len();
-        let (tag, sval) = {
-            let tv = self.base.source.update(ctx);
-            let tag = tv.tag();
-            (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
-        };
-        let src_trig = tag.triggers();
-        // A tainted or unselectable source is bottom and forgets the
-        // length; the slots stay retained and the slot walk still runs.
-        let source = sval.and_then(|value| C::select(value, src_trig));
+        let (callback, acc, elt) =
+            (&self.callback, &self.acc_type, &self.base.element_type);
+        let Sourced { tag, source, resized, back, moved: _ } = take_source::<_, _, C, _>(
+            ctx,
+            &mut self.base.source,
+            &self.base.prototype,
+            &mut self.slots,
+            &mut self.src_bottom,
+            woke,
+            &mut self.build,
+            SlotKind {
+                delete: FoldSlot::delete,
+                call: |s| &mut s.call,
+                element: |s| s.element_id,
+            },
+            |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
+        );
         let source_ok = source.is_some();
-        let (mut resized, mut back) = (false, false);
-        match source {
-            None => self.src_bottom = true,
-            Some(source) => {
-                back = std::mem::take(&mut self.src_bottom);
-                let mut kind = None;
-                resized =
-                    resize(ctx, &mut self.slots, source.len(), FoldSlot::delete, |ctx| {
-                        let kind = kind
-                            .get_or_insert_with(|| {
-                                CallKind::slot(ctx, &self.base.prototype)
-                            })
-                            .clone();
-                        let (acc, elt) = (&self.acc_type, &self.base.element_type);
-                        FoldSlot::new(ctx, &self.callback, acc, elt, kind)
-                    });
-                let fresh = old_len.min(self.slots.len());
-                build_fresh(ctx, &mut self.slots[fresh..], &mut self.build, |s| {
-                    &mut s.call
-                });
-                // Elements move only on a fire or past a sleep; a fresh slot
-                // always takes its element.
-                let moved = src_trig || woke;
-                let from = if moved { 0 } else { old_len.min(self.slots.len()) };
-                for (slot, value) in
-                    self.slots[from..].iter().zip(source.values().skip(from))
-                {
-                    deliver(ctx, slot.element_id, TagValue::tagged(value, tag));
-                }
-            }
-        }
         // A bottom init is a poisoned delivery to slot 0's acc, not a
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
@@ -1613,9 +1493,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
-        wrap!(self.base.init, self.base.init.typecheck0(ctx))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
+        each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
     }
 
     fn typecheck0_instance(
@@ -1623,15 +1501,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck0_instance(ctx, types))?;
-        wrap!(self.base.init, self.base.init.typecheck0_instance(ctx, types))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck0_instance(ctx, types))
+        each(self.base.nodes_mut(), |n| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
-        wrap!(self.base.init, self.base.init.typecheck1(ctx))?;
-        wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
+        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
 
     fn typ(&self) -> &Type {
@@ -1738,437 +1612,4 @@ impl Flavor {
             (Self::Array | Self::CMap, _) => (),
         }
     }
-
-    /// Emit the loop source as the scaffold's ValArray. Returns the
-    /// source's (disc, payload), whose disc drives the firing wrap,
-    /// plus the loop's [`scaffold::ArraySrc`].
-    // CR claude for claude: [structure] The fused-loop emission (514-648 and 1649-2072,
-    // about 550 lines: CallbackParam, the emit_*_kind gates,
-    // Flavor::emit_source/emit_result, emit_flattened_source) is the only cranelift
-    // code under node/; other nodes' emit_clif delegate to fusion/emit. Moving it
-    // beside scaffold.rs leaves this file the node-walk semantics. emit_source also
-    // returns a CompiledExpr whose payload the List/Map flatten helper has already
-    // consumed, kept only for the disc the ArraySrc carries: return the ArraySrc alone
-    // and call flags.apply directly in place of finish_loop_result, a one-line wrapper.
-    // (c-collection-06)
-    fn emit_source<R: Rt, E: UserEvent>(
-        self,
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-    ) -> Result<(CompiledExpr, scaffold::ArraySrc)> {
-        match self {
-            Self::Array => {
-                let ownership = emit::node_composite_source(source);
-                let array = source.emit_clif(cx)?;
-                let src = scaffold::ArraySrc {
-                    ptr: array.payload,
-                    disc: array.disc,
-                    ownership,
-                };
-                Ok((array, src))
-            }
-            Self::List => emit_flattened_source(cx, source, "graphix_list_to_valarray"),
-            Self::CMap => emit_flattened_source(cx, source, "graphix_cmap_to_pairs"),
-        }
-    }
-
-    /// The exit boundary for collection-returning loops: the loop's
-    /// finalized ValArray as this flavor's collection Value.
-    fn emit_result(self, cx: &mut BodyCx, ptr: ClifValue) -> Result<CompiledExpr> {
-        match self {
-            Self::Array => Ok(emit::array_result(cx, ptr)),
-            Self::List => {
-                convert_collection_result(cx, ptr, "graphix_valarray_into_list")
-            }
-            Self::CMap => {
-                convert_collection_result(cx, ptr, "graphix_valarray_into_cmap")
-            }
-        }
-    }
-}
-
-/// The filter/find gate: the callback must compile to a bool scalar.
-fn predicate_is_bool<R: Rt, E: UserEvent>(body: &Node<R, E>) -> bool {
-    kernel_abi::freeze_for_abi_normalized(body.typ())
-        .as_ref()
-        .and_then(|typ| kernel_abi::scalar_prim(typ))
-        == Some(PrimType::Bool)
-}
-
-/// Emit a loop over `source` built by `emit`, which gets the flattened
-/// source; the source's firing folds into the loop's result.
-fn emit_loop<'a, 'f, 'c, R: Rt, E: UserEvent>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
-    source: &Node<R, E>,
-    flavor: Flavor,
-    emit: impl FnOnce(
-        &mut BodyCx<'a, 'f, 'c>,
-        scaffold::ArraySrc,
-    ) -> Result<(CompiledExpr, scaffold::SlotFlags)>,
-) -> Result<Option<CompiledExpr>> {
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let (result, flags) = emit(cx, src)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value)))
-}
-
-fn emit_init_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    if !param.binds.is_empty() {
-        return Ok(None);
-    }
-    let count_prim = match kernel_abi::freeze_for_abi_normalized(source.typ())
-        .as_ref()
-        .and_then(|typ| kernel_abi::scalar_prim(typ))
-    {
-        Some(prim) if prim.is_integer() => prim,
-        _ => return Ok(None),
-    };
-    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
-        return Ok(None);
-    };
-    if is_unit_or_null(&output_type) {
-        return Ok(None);
-    }
-    let count = source.emit_clif(cx)?;
-    let output_source = emit::node_composite_source(body);
-    let sites = emit::slot_state_sites(cx, body);
-    let (ptr, flags, count_disc) = scaffold::emit_init_loop(
-        cx,
-        count.payload,
-        count.disc,
-        count_prim,
-        &param.name,
-        param.id,
-        &output_type,
-        output_source,
-        &sites,
-        |cx| body.emit_clif(cx),
-    )?;
-    let result = flavor.emit_result(cx, ptr)?;
-    // The firing wrap must see an over-limit count as a tainted source.
-    let count = CompiledExpr::new(count_disc, count.payload);
-    Ok(Some(finish_loop_result(cx, result, flags, &count)))
-}
-
-fn emit_map_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
-        return Ok(None);
-    };
-    if is_unit_or_null(&output_type) {
-        return Ok(None);
-    }
-    emit_loop(cx, source, flavor, |cx, src| {
-        let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
-        let (ptr, flags) = scaffold::emit_map_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            &output_type,
-            output_source,
-            &sites,
-            |cx| body.emit_clif(cx),
-        )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
-    })
-}
-
-fn emit_filter_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    if !predicate_is_bool(body) {
-        return Ok(None);
-    }
-    emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
-        let (ptr, flags) = scaffold::emit_filter_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            &sites,
-            |cx| body.emit_clif(cx),
-        )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
-    })
-}
-
-fn emit_filter_map_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some(output_type) = kernel_abi::freeze_for_abi_normalized(body.typ()) else {
-        return Ok(None);
-    };
-    let Some(output_element) = kernel_abi::nullable_inner(&output_type) else {
-        // A callback that can never return null makes filter_map a map.
-        if frozen_may_be_null(&output_type) {
-            return Ok(None);
-        }
-        return emit_map_kind(cx, source, body, param, element_type, flavor);
-    };
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    if is_unit_or_null(&output_element) {
-        return Ok(None);
-    }
-    emit_loop(cx, source, flavor, |cx, src| {
-        let output_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
-        let (ptr, flags) = scaffold::emit_filter_map_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            &output_element,
-            output_source,
-            &sites,
-            |cx| body.emit_clif(cx),
-        )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
-    })
-}
-
-fn emit_flat_map_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    // A List callback's return is an opaque Value; the extend helper walks
-    // it. No Map flat_map intrinsic exists.
-    let output_kind = kernel_abi::freeze_for_abi_normalized(body.typ())
-        .as_ref()
-        .and_then(|typ| kernel_abi::abi_kind(typ));
-    let extend = match (flavor, output_kind) {
-        (Flavor::Array, Some(AbiKind::Array)) => scaffold::FlatMapExtend::Array,
-        (Flavor::List, Some(AbiKind::Value)) => scaffold::FlatMapExtend::List,
-        _ => return Ok(None),
-    };
-    emit_loop(cx, source, flavor, |cx, src| {
-        let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
-        let (ptr, flags) = scaffold::emit_flat_map_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            extend,
-            &sites,
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                match extend {
-                    scaffold::FlatMapExtend::Array => {
-                        let payload = emit::ensure_owned_composite_src(
-                            cx,
-                            body_source,
-                            value.payload,
-                        )?;
-                        Ok(CompiledExpr::new(value.disc, payload))
-                    }
-                    scaffold::FlatMapExtend::List => {
-                        let (disc, payload) = emit::ensure_owned_value_src(
-                            cx,
-                            body_source,
-                            value.disc,
-                            value.payload,
-                        )?;
-                        Ok(CompiledExpr::new(disc, payload))
-                    }
-                }
-            },
-        )?;
-        Ok((flavor.emit_result(cx, ptr)?, flags))
-    })
-}
-
-fn emit_find_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    if !predicate_is_bool(body) {
-        return Ok(None);
-    }
-    emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
-        let ((disc, payload), flags) = scaffold::emit_find_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            &sites,
-            |cx| body.emit_clif(cx),
-        )?;
-        Ok((CompiledExpr::new(disc, payload), flags))
-    })
-}
-
-fn emit_find_map_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    body: &Node<R, E>,
-    param: &CallbackParam,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
-    else {
-        return Ok(None);
-    };
-    let output_is_nullable = matches!(
-        kernel_abi::freeze_for_abi_normalized(body.typ())
-            .as_ref()
-            .and_then(|typ| kernel_abi::abi_kind(typ)),
-        Some(AbiKind::Nullable)
-    );
-    if !output_is_nullable {
-        return Ok(None);
-    }
-    emit_loop(cx, source, flavor, |cx, src| {
-        let body_source = emit::node_composite_source(body);
-        let sites = emit::slot_state_sites(cx, body);
-        let ((disc, payload), flags) = scaffold::emit_find_map_loop(
-            cx,
-            src,
-            &param.elem(&element_type, &leaves),
-            &sites,
-            |cx| {
-                let value = body.emit_clif(cx)?;
-                emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
-            },
-        )?;
-        Ok((CompiledExpr::new(disc, payload), flags))
-    })
-}
-
-/// A fold's callback parts: its init, body and parameters.
-struct FoldParts<'a, R: Rt, E: UserEvent> {
-    init: &'a Node<R, E>,
-    body: &'a Node<R, E>,
-    acc: &'a CallbackParam,
-    element: &'a CallbackParam,
-}
-
-/// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
-/// carry and stays interpreted.
-fn emit_fold_kind<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    fold: FoldParts<R, E>,
-    acc_type: &Type,
-    element_type: &Type,
-    flavor: Flavor,
-) -> Result<Option<CompiledExpr>> {
-    let FoldParts { init, body, acc, element } = fold;
-    let Some((element_type, element_leaves)) =
-        bindable_array_element(element_type, &element.binds)
-    else {
-        return Ok(None);
-    };
-    let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(acc_type) else {
-        return Ok(None);
-    };
-    // A Bottom-typed body unifies with any acc type but emits a
-    // shapeless placeholder that violates the owned-acc discipline.
-    if emit::node_is_bottom(body) {
-        return Ok(None);
-    }
-    let acc_leaves;
-    let acc_shape = match kernel_abi::abi_kind(&acc_type) {
-        Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
-            scaffold::FoldAcc::Scalar(prim)
-        }
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let Some(leaves) = scaffold::elem_leaves(&acc_type, &acc.binds) else {
-                return Ok(None);
-            };
-            acc_leaves = leaves;
-            scaffold::FoldAcc::Composite {
-                init_src: emit::node_composite_source(init),
-                body_src: emit::node_composite_source(body),
-                leaves: &acc_leaves,
-            }
-        }
-        Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
-        // The init and body may emit narrower members of the acc union;
-        // `emit_owned_value_operand_node` normalizes them to an owned Value.
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-            if acc.binds.is_empty() =>
-        {
-            for n in [init, body] {
-                match kernel_abi::abi_kind(n.typ()) {
-                    Some(AbiKind::Unit) | None => return Ok(None),
-                    Some(_) => {}
-                }
-            }
-            scaffold::FoldAcc::Value {
-                init_src: CompositeSource::Owned,
-                body_src: CompositeSource::Owned,
-            }
-        }
-        _ => return Ok(None),
-    };
-    let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
-    let operand = move |cx: &mut BodyCx, n: &Node<R, E>| {
-        if value_acc {
-            emit::emit_owned_value_operand_node(cx, n)
-        } else {
-            n.emit_clif(cx)
-        }
-    };
-    emit_loop(cx, source, flavor, |cx, src| {
-        let sites = emit::slot_state_sites(cx, body);
-        scaffold::emit_fold_loop(
-            cx,
-            src,
-            acc_shape,
-            &acc.name,
-            acc.id,
-            &element.elem(&element_type, &element_leaves),
-            &sites,
-            |cx| operand(cx, init),
-            |cx| operand(cx, body),
-        )
-    })
 }

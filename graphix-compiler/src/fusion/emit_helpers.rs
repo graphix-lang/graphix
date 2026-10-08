@@ -428,6 +428,17 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
     )
 }
 
+/// A fused select matched no arm: a hole in the check's coverage. Said
+/// once per process.
+safe fn graphix_select_no_match() {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::node::error::report_coverage_hole(&"a fused select matched no arm");
+    } else if crate::dbgenv::graphix_abort_on_no_match() {
+        std::process::abort()
+    }
+}
+
 /// Rust's float `%`, which cranelift has no instruction for.
 safe fn graphix_f64_rem(a: f64, b: f64) -> f64 {
     a % b

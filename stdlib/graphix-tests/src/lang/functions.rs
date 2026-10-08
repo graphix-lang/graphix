@@ -2794,3 +2794,31 @@ async fn rebind_reads_quiet_args(mode: Mode) -> Result<()> {
 }
 
 modes!(rebind_reads_quiet_args);
+
+// A default whose parameter's type nests a declared variable fits some
+// instance of it; each omitting call checks it with its own.
+const NESTED_TVAR_DEFAULT: &str = r#"
+{
+  let f = |#x: Array<'a> = [1], y: 'a| -> 'a y;
+  let g = 'a: Number |#x: Array<'a> = [1], y: 'a| -> 'a array::fold(x, y, |a, b| a + b);
+  "[f(2)] [f(#x: ["s"], "t")] [g(3)] [g(#x: [1.5], 2.0)]"
+}
+"#;
+
+run!(nested_tvar_default, NESTED_TVAR_DEFAULT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "2 t 4 3.5")
+});
+
+const NESTED_TVAR_DEFAULT_REFUSED: &str = r#"
+{
+  let f = |#x: Array<'a> = [1], y: 'a| -> 'a y;
+  f("s")
+}
+"#;
+
+run!(
+    nested_tvar_default_refused,
+    NESTED_TVAR_DEFAULT_REFUSED,
+    refused("Array<'a: string> does not contain Array<i64>");
+    FuseExpect::None
+);

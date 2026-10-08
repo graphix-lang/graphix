@@ -72,26 +72,21 @@ impl Mode {
         matches!(self, Mode::Interp | Mode::Par)
     }
 
-    // CR claude for claude: [test-gap] Mode::par runs the parallel pairs at Force and the
-    // serial ones at Off, so no oracle ever runs Auto, the default mode. Auto's own
-    // fork shapes are compared against nothing: a ProbeSite running its first k items
-    // in the parent and forking the rest, a ForkSite's weighted multi-child ranges
-    // (Force always halves down to single children), and a LoopSite's one-slot probe
-    // runs followed by chunks from slot k. run!'s interp and jit fixtures run Auto but
-    // rarely fork and assert nothing about it, and par_attrs compares Auto's values
-    // without asserting that it forked. cost::tests pins ProbeSite and LoopSite but not
-    // the ForkSite/SlotSite state machines, which read the global calibration() and
-    // saturated() and so cannot be driven with a fixed Calibration. A merge bug on the
-    // probe-then-fork path would ship in the default mode with every gate green. A pair
-    // that runs Auto with a fixed tiny T (a GRAPHIX_PAR_T override, for example) would
-    // make every site probe and then fork along Auto's shapes. (c-cost-misc-05)
+    /// The node-walk's parallel runs fork every fork point; the JIT's run
+    /// the default mode over a tiny fixed threshold ([`AUTO_T`]), so every
+    /// site probes and then forks along `Auto`'s own shapes.
     pub fn par(self) -> ParMode {
         match self {
-            Mode::Par | Mode::JitPar => ParMode::Force,
+            Mode::Par => ParMode::Force,
+            Mode::JitPar => ParMode::Auto,
             Mode::Interp | Mode::Jit => ParMode::Off,
         }
     }
 }
+
+/// The fork threshold, in ticks, the fuzzer fixes for its `Auto` runs:
+/// small enough that every fork point pays.
+pub const AUTO_T: u64 = 4;
 
 /// `GRAPHIX_FUZZ_FORK=0` disables the forced-fork runs (default on).
 fn par_enabled() -> bool {
@@ -3893,6 +3888,8 @@ async fn run_child(
 /// unless the caller set them.
 fn child_command() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(child_exe());
+    // a select no arm matches is a hole in the check: a crash, a finding
+    cmd.env("GRAPHIX_ABORT_ON_NO_MATCH", "1");
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
         cmd.env("RAYON_NUM_THREADS", CHILD_COMPILE_THREADS);
     }

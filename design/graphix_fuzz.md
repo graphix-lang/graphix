@@ -239,9 +239,12 @@ the dispatch route compared at final-values strength like its engine
 pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
 Nth batched subject; the individual path always runs them.
 
-**Forked runs** (`Pair::Par`): each engine runs again with every fork
-point forked (`ParMode::Force`) and is compared with the serial
-node-walk.
+**Forked runs** (`Pair::Par`): each engine runs again forked and is
+compared with the serial node-walk: the node-walk with every fork point
+forked (`ParMode::Force`), the JIT in the default mode (`ParMode::Auto`)
+over a threshold the fuzzer fixes tiny (`cost::fix_calibration`,
+`AUTO_T`), so every site probes and then forks along `Auto`'s own shapes
+(a probe's first items in the parent, weighted ranges, a loop's chunks).
 `GRAPHIX_FUZZ_FORK=0` disables them. `GRAPHIX_FUZZ_PAR` is a different
 knob, the number of checks in flight (default 8 per core; `soak.sh` sets
 it to the memory-sized worker count).

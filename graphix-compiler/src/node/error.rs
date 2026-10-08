@@ -652,6 +652,16 @@ macro_rules! report_failure {
 }
 pub(crate) use report_failure;
 
+/// A select no arm matched, which exhaustiveness makes a hole in the
+/// check: reported as a failure, and under GRAPHIX_ABORT_ON_NO_MATCH (the
+/// fuzzer's children) the process aborts, so the hole is a finding.
+pub(crate) fn report_coverage_hole(what: &dyn fmt::Display) {
+    report_failure!(&format_compact!("{what}: a coverage hole in the check"));
+    if crate::dbgenv::graphix_abort_on_no_match() {
+        std::process::abort()
+    }
+}
+
 /// A `$` at `site` dropping the error payload `e`, logged from the
 /// calling module.
 macro_rules! report_ignored {

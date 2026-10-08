@@ -12,7 +12,7 @@ use crate::{
 };
 use graphix_types::{
     abstract_value,
-    stack::{Control, ParMode, with_control},
+    stack::{Control, ParMode},
 };
 use poolshark::local::LPooled;
 use rayon::prelude::*;
@@ -242,7 +242,7 @@ pub(crate) unsafe fn run(
             let live = Live::start(forked.len());
             branch::on_pool(control, || {
                 forked.par_iter_mut().with_max_len(1).for_each(|r| {
-                    with_control(control, || {
+                    branch::as_part(control, None, &live, || {
                         let prev_env = KERNEL_ENV.with(|c| c.replace(env as *const _));
                         let prev_gen = SELF_BLOCK_GEN.with(|c| c.replace(generation));
                         with_par_loan(Some(loan), || unsafe {
@@ -250,7 +250,6 @@ pub(crate) unsafe fn run(
                         });
                         SELF_BLOCK_GEN.with(|c| c.set(prev_gen));
                         KERNEL_ENV.with(|c| c.set(prev_env));
-                        live.done();
                     })
                 })
             });

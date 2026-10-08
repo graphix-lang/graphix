@@ -525,7 +525,8 @@ node graph IS the IR — there is no parallel typed IR
   environment, or an open gate's, is shared (`let t = |x| x + y` is
   monomorphic in `y`'s cell; design/tvar_constraints.md,
   Generalization); a labeled default is checked at the definition
-  against its parameter's type, or a declared tvar's constraints (`check_defaults`),
+  against its parameter's type, or a declared tvar's constraints, a
+  variable nested in the type taking any instance (`check_defaults`),
   and again at each omitting site by the check, where it may narrow
   that site's cells; a call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever
@@ -643,7 +644,9 @@ cycle, across workers; the compiler never pins threads.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs
   warm-image (`GRAPHIX_FUZZ_SESSIONS`) and forked against the serial
-  node-walk (`Pair::Par`), and a program both builds refuse
+  node-walk (`Pair::Par`: the node-walk at `Force`, the JIT at `Auto`
+  over a fixed tiny threshold, `cost::fix_calibration`), and a program
+  both builds refuse
   also against the check alone (`Pair::Check`: elaboration refused what
   the check passed); every run on the shell's script
   path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus
@@ -880,7 +883,9 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
 | `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types (A/B for instances by substitution) |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
+| `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
+| `GRAPHIX_PAR_T=<ticks>` | the fork threshold fixed in place of the calibration (a tiny one makes every `Auto` site probe and fork) |
 | `GRAPHIX_DBG_PAR=1` | the fork threshold's calibration and each kernel loop forked |
 | `GRAPHIX_NO_OUTLINE=1` | kernel loops emitted inline, never as chunks (A/B for the outlining) |
 | `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |

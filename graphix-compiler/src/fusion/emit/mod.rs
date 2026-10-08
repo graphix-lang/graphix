@@ -8,7 +8,8 @@
 //! cache), [`BodyCx`] / [`JitEnv`] / [`LowerCtx`] (the emission
 //! context), [`CompiledExpr`] (the SSA result shape), the `emit_*_node`
 //! helpers, and the scalar codegen primitives; HOF loops live in
-//! [`scaffold`].
+//! [`scaffold`], the collection intrinsics' gates over them in
+//! [`loops`].
 //!
 //! Calling convention: the platform's default C convention. Parameters
 //! come in source order from [`KernelSig::abi_params`], each a
@@ -22,6 +23,7 @@ mod body;
 mod call;
 mod flow;
 mod jit;
+pub(crate) mod loops;
 mod lower;
 mod nodes;
 mod outline;

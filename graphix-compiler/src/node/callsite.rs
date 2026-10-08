@@ -39,7 +39,7 @@ use crate::{
 };
 use crate::{
     branch::timed,
-    cost::{ForkSite, Meter, Plan},
+    cost::{ForkSite, Meter},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
@@ -1981,15 +1981,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Callee::Prebound { .. } | Callee::DynamicUnbound => Defaults::Skip,
             _ => Defaults::Update,
         };
-        let mut out = ArgsOut::default();
-        update_args(
-            ctx,
-            self.args.as_mut_slice(),
-            &mut self.fork,
-            Pass { keep, root, defaults },
-            &mut out,
-        );
-        let ArgsOut { fired: arg_fired, prods, mut set } = out;
+        let pass = Pass { keep, root, defaults };
+        let ArgsOut { fired: arg_fired, prods, mut set } =
+            update_args(ctx, self.args.as_mut_slice(), &mut self.fork, pass);
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
         let static_callee = matches!(self.callee, Callee::Static { .. });
@@ -2831,45 +2825,20 @@ fn update_args<R: Rt, E: UserEvent>(
     args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
     site: &mut ForkSite,
     pass: Pass,
-    out: &mut ArgsOut,
-) {
+) -> ArgsOut {
     let n = args.len();
     site.decide_siblings(ctx, n, || {
         crate::analysis::independent(args.values().filter_map(|a| a.node.as_ref()), ctx)
     });
-    match site.plan(ctx, n) {
-        Plan::Serial => update_args_in_order(ctx, args, None, pass, out),
-        Plan::Measure(mut m) => {
-            update_args_in_order(ctx, args, Some(&mut m), pass, out);
-            m.done(n)
-        }
-        Plan::Fork(s) => {
-            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
-            s.ranges(0, n, &mut ranges);
-            if ranges.len() < 2 {
-                return update_args_in_order(ctx, args, None, pass, out);
-            }
-            let mut rest = args;
-            let parts: SmallVec<[_; 16]> = ranges
-                .iter()
-                .map(|&(lo, hi)| {
-                    let (part, r) = std::mem::take(&mut rest).split_at_mut(hi - lo);
-                    rest = r;
-                    part
-                })
-                .collect();
-            let outs = crate::branch::fork_each(ctx, parts, |c, p| {
-                let mut o = ArgsOut::default();
-                update_args_in_order(c, p, None, pass, &mut o);
-                o
-            });
-            for o in outs {
-                out.fired |= o.fired;
-                out.prods.extend(o.prods);
-                out.set.extend(o.set.iter().copied());
-            }
-        }
-    }
+    let in_order = |c: &mut ExecCtx<'_, R, E>, p, m: Option<&mut Meter<'_>>| {
+        update_args_in_order(c, p, m, pass)
+    };
+    crate::branch::fork_point(ctx, args, site, in_order, |mut a, b| {
+        a.fired |= b.fired;
+        a.prods.extend(b.prods);
+        a.set.extend(b.set);
+        a
+    })
 }
 
 fn update_args_in_order<R: Rt, E: UserEvent>(
@@ -2877,8 +2846,8 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
     args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
     mut meter: Option<&mut Meter<'_>>,
     pass: Pass,
-    out: &mut ArgsOut,
-) {
+) -> ArgsOut {
+    let mut out = ArgsOut::default();
     let Pass { keep, root, defaults } = pass;
     for (i, arg) in args.values_mut().enumerate() {
         let Some(node) = &mut arg.node else { continue };
@@ -2900,6 +2869,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
             out.set.push(arg.id);
         }
     }
+    out
 }
 
 /// What a quiet production does; the store serves the value channel.
