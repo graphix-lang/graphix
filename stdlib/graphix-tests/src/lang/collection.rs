@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{FuseExpect, Mode, refused},
 };
 use netidx::publisher::Value;
 
@@ -436,3 +436,51 @@ run!(
         let result = a * 10 + b
     "#
 );
+
+// A collection fires when it resizes or its source comes back from bottom,
+// whatever tag the source arrives with (an arm waking after another arm
+// consumed the source's fire), as the fused loop does.
+async fn collection_fires_on_a_stale_resize(mode: Mode) -> Result<()> {
+    use super::dense_deltas::{as_i64s, run_delta};
+    let (values, _) = run_delta(
+        r#"{
+            let n = 0;
+            n <- select n { 8 => never(), v => v + 1 };
+            let k = uniq(select n { 0 => 0, 1 => 0, 2 => 0, 3 => 2, _ => 2 });
+            let s = uniq(select n { 0 => 1, 1 => 1, 2 => 0, 3 => 0, _ => 1 });
+            let xs = select k { 0 => [1, 2, 3], _ => [1] };
+            select s {
+                0 => array::len(xs) - 100,
+                _ => array::map(xs, |x| x) ~ n
+            }
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(as_i64s(&values), vec![0, -97, -99, 4]);
+    Ok(())
+}
+
+// What a slot's run-time callback reads is the collection's: a fire it
+// missed while its arm slept is raised at the wake.
+async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let a = 0;
+            let mode = 0;
+            let g = select mode { 0 => |x| a ~ x, _ => |x| x };
+            let n = 0;
+            let dummy = 0;
+            n <- select n { k if k < 12 => k + 1, _ => never() };
+            a <- select n { 6 => 7, _ => never() };
+            select n { 2 | 3 | 9 => { dummy <- n; array::map([n], g) }, _ => never() }
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(values, vec![Value::Array([Value::I64(9)].into())]);
+    Ok(())
+}
+
+modes!(collection_fires_on_a_stale_resize, collection_refs_reach_its_slots);

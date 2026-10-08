@@ -332,18 +332,11 @@ impl MapCollection for IndexRange {
 
 /// A slot's last production.
 #[derive(Debug, Default)]
-// CR claude for claude: [dead] SlotState::Empty is never observed: set() never writes it,
-// and every read follows a run of every slot (an interrupt returns ride() before any
-// read). So once poisoned is false every slot holds a value: the all(value().is_some())
-// tests at 1100 and 1109 are always true and the else at 1112-1114 is dead, as are
-// FoldQ's SlotState::Empty seed (1497) and its Some(SlotState::Empty) arm (1527). Drop
-// the variant (a slot holds its last value or bottom) and the dead arms.
-// (c-collection-04)
+/// A slot's last production. A fresh slot is bottom until its first
+/// run, which precedes every read of it.
 enum SlotState {
-    /// Never produced.
-    #[default]
-    Empty,
     Value(Value),
+    #[default]
     Bottom,
 }
 
@@ -361,7 +354,7 @@ impl SlotState {
     fn value(&self) -> Option<&Value> {
         match self {
             Self::Value(v) => Some(v),
-            Self::Empty | Self::Bottom => None,
+            Self::Bottom => None,
         }
     }
 
@@ -531,7 +524,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
     ) -> Self {
         let (id, element) = callback.arg(ctx, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![element], kind);
-        Self { id, call, state: SlotState::Empty }
+        Self { id, call, state: SlotState::Bottom }
     }
 
     /// The slot's value; `finish` runs only once every slot holds one.
@@ -966,19 +959,15 @@ fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
 /// ahead of their first updates, where `site` says the builds pay for
 /// it; a slot built in order binds at its first update. `call` is a
 /// slot's call.
-// CR claude for claude: [perf] build_fresh runs on every update with a valid source, as
-// does CallKind::slot (a lambda_defs lookup and a Value clone, 1035/1437), though both
-// matter only when slots were added. With nothing fresh, its apply_deferred still
-// drains pending_refs, and a hashbrown drain rewrites every control byte of a table
-// that keeps the capacity of the largest compile batch; in a forked branch the DerefMut
-// on ctx.cx also boxes a CompileCtx fork that the merge joins back. Return early when
-// fresh is empty, and build the CallKind inside resize's add closure. (c-collection-05)
 fn build_fresh<R: Rt, E: UserEvent, S: Send>(
     ctx: &mut ExecCtx<'_, R, E>,
     fresh: &mut [S],
     site: &mut ProbeSite,
     call: fn(&mut S) -> &mut Node<R, E>,
 ) {
+    if fresh.is_empty() {
+        return;
+    }
     let prebind = |ctx: &mut CompileCtx<R, E>, slots: &mut [S]| {
         for slot in slots {
             if let Some(cs) = call(slot).downcast_mut::<CallSite<R, E>>() {
@@ -1081,28 +1070,23 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         match source {
             None => self.src_bottom = true,
             Some(source) => {
-                let kind = CallKind::slot(ctx, &self.base.prototype);
+                // what a slot calls, decided once a slot is added
+                let mut kind = None;
                 let resized =
                     resize(ctx, &mut self.slots, source.len(), Slot::delete, |ctx| {
-                        Slot::new(
-                            ctx,
-                            &self.callback,
-                            &self.base.element_type,
-                            kind.clone(),
-                        )
+                        let kind = kind
+                            .get_or_insert_with(|| {
+                                CallKind::slot(ctx, &self.base.prototype)
+                            })
+                            .clone();
+                        Slot::new(ctx, &self.callback, &self.base.element_type, kind)
                     });
                 let fresh = old_len.min(self.slots.len());
                 build_fresh(ctx, &mut self.slots[fresh..], &mut self.fork.build, |s| {
                     &mut s.call
                 });
-                // Elements move only on a fire, in a frame (a rebound loop
-                // variable arrives stale) or past a sleep; a fresh slot
+                // Elements move only on a fire or past a sleep; a fresh slot
                 // always takes its element.
-                // CR claude for claude: [doc-drift] The comment above says elements also
-                // move 'in a frame (a rebound loop variable arrives stale)', but the
-                // node-walk has no frames (design/tail_calls_are_calls.md) and moved is
-                // src_trig || woke; FoldQ's copy at 1447 says the same. Drop the frame
-                // clause in both. (c-collection-07)
                 let moved = src_trig || woke;
                 let from = if moved { 0 } else { old_len.min(self.slots.len()) };
                 for (slot, value) in
@@ -1131,6 +1115,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // fired, or the source fired empty) closes it; typecheck*, delete,
                 // sleep, image and emit_clif_call are pairwise copies too.
                 // (c-collection-03)
+                // 2026-10-08 claude: the firing rule is the JIT's in both: a resize
+                // or a return from bottom fires whatever the source's tag (MapQ's
+                // empty return included), and FoldQ's return no longer needs
+                // src_trig. The pairwise copies of the prologue and the other
+                // methods remain.
+                // a resize or a return is a new result whatever the source's tag
+                let tag = if resized || back { tag.fresh() } else { tag };
                 if resized || back || (self.base.op.reads_elements() && moved) {
                     production = merge_tag(production, tag);
                 }
@@ -1166,22 +1157,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             None if poisoned => return self.resident.set_bottom(false),
             // After a sleep the resident may lag the stale-refreshed
             // slots; rebuild quietly (design/wake_catchup.md).
-            None if woke
-                && self.slots.iter().all(|slot| slot.state.value().is_some()) =>
-            {
-                Tag::STALE
-            }
+            None if woke => Tag::STALE,
             None => return self.resident.ride(),
         };
         if tag.is_bottom() || poisoned {
             return self.resident.set_bottom(tag.triggers());
         }
-        if self.slots.iter().all(|slot| slot.state.value().is_some()) {
-            let v = self.finish(ctx);
-            self.resident.set(TagValue::tagged(v, tag))
-        } else {
-            self.resident.set_bottom(tag.triggers())
-        }
+        let v = self.finish(ctx);
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -1218,23 +1201,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         &self.base.typ
     }
 
-    // CR claude for claude: [bug] MapQ::refs, and FoldQ::refs at line 1571, report the
-    // source and the prototype but not the slots, whose call sites hold the bound
-    // instances. When the callback is chosen at run time, or the callback calls a
-    // function chosen at run time, the prototype never binds. What the slot instances
-    // read is then missing from the refs that Select and the seq machine re-collect at
-    // each deselect, and from the refs Bind::input_fired reads at a wake. As a result,
-    // a fire that lands while the arm sleeps is not re-raised at the wake, and a live
-    // fire in the wake cycle is held back from a let that a connect writes; `[g(n)]` in
-    // place of `array::map([n], g)` handles both correctly. Probe:
-    // design/review-2026-10-05/repro/x-node-contract-04.gx (graphix-fuzz run gives
-    // Trace([]), expected 9:[i64:9]). Walking each slot's call with its arg ids bound
-    // (acc_id and element_id in FoldQ) would close it; slots are empty at compile time,
-    // so compile-time users see no change. (x-node-contract-04)
+    /// The source, the prototype and every slot's call, whose instance
+    /// a run-time callback binds: what it reads is the collection's.
     fn refs(&self, refs: &mut Refs) {
         self.base.source.refs(refs);
         refs.bound.insert(self.base.prototype_id);
         self.base.prototype.refs(refs);
+        for slot in self.slots.iter() {
+            refs.bound.insert(slot.id);
+            slot.call.refs(refs);
+        }
     }
 
     fn spec(&self) -> &Expr {
@@ -1280,7 +1256,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         let (acc_id, acc) = callback.arg(ctx, "collection_acc", acc_type);
         let (element_id, element) = callback.arg(ctx, "collection_element", element_type);
         let call = callback.call(ctx, smallvec![acc, element], kind);
-        Self { acc_id, element_id, call, state: SlotState::Empty }
+        Self { acc_id, element_id, call, state: SlotState::Bottom }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -1517,18 +1493,23 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             None => self.src_bottom = true,
             Some(source) => {
                 back = std::mem::take(&mut self.src_bottom);
-                let kind = CallKind::slot(ctx, &self.base.prototype);
+                let mut kind = None;
                 resized =
                     resize(ctx, &mut self.slots, source.len(), FoldSlot::delete, |ctx| {
+                        let kind = kind
+                            .get_or_insert_with(|| {
+                                CallKind::slot(ctx, &self.base.prototype)
+                            })
+                            .clone();
                         let (acc, elt) = (&self.acc_type, &self.base.element_type);
-                        FoldSlot::new(ctx, &self.callback, acc, elt, kind.clone())
+                        FoldSlot::new(ctx, &self.callback, acc, elt, kind)
                     });
                 let fresh = old_len.min(self.slots.len());
                 build_fresh(ctx, &mut self.slots[fresh..], &mut self.build, |s| {
                     &mut s.call
                 });
-                // Elements move only on a fire, in a frame or past a sleep; a
-                // fresh slot always takes its element.
+                // Elements move only on a fire or past a sleep; a fresh slot
+                // always takes its element.
                 let moved = src_trig || woke;
                 let from = if moved { 0 } else { old_len.min(self.slots.len()) };
                 for (slot, value) in
@@ -1546,20 +1527,10 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             deliver(ctx, slot.acc_id, init.clone());
         }
         if self.slots.is_empty() && source_ok {
+            // a resize or a return is a new result whatever the source's tag
+            let tag = if resized || back { tag.fresh() } else { tag };
             return match init.tag() {
-                // CR claude for claude: [bug] When the init is bottom, a fired empty
-                // source does not fire the fold. This arm takes its trigger from the
-                // init alone. The value arm below joins in the source's tag
-                // (`tag.join(t)`), and the kernel fires on a fired empty source
-                // (fusion/emit/scaffold.rs:602-604). So the node-walk returns a stale
-                // bottom where the JIT returns a fresh one. A fold whose callback
-                // ignores its acc misses the fire, and a `<-` target initialized by
-                // such a fold keeps same-cycle writes that the JIT re-publishes over
-                // (both engines do that with a valid init).
-                // `set_bottom(tag.join(t).triggers())` makes the two arms agree. probe:
-                // design/review-2026-10-05/repro/f-scaffold-body-05.gx
-                // (f-scaffold-body-05)
-                t if t.is_bottom() => self.resident.set_bottom(t.triggers()),
+                t if t.is_bottom() => self.resident.set_bottom(tag.join(t).triggers()),
                 t => {
                     self.resident.set(TagValue::tagged(init.value_cloned(), tag.join(t)))
                 }
@@ -1581,20 +1552,17 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 ctx.event.init = true;
                 let seed = match i {
                     0 if init.tag().is_bottom() => {
-                        Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                        TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
                     }
-                    0 => Some(TagValue::fired(init.value_cloned())),
+                    0 => TagValue::fired(init.value_cloned()),
                     _ => match &self.slots[i - 1].state {
                         SlotState::Bottom => {
-                            Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                            TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
                         }
-                        SlotState::Value(v) => Some(TagValue::fired(v.clone())),
-                        SlotState::Empty => None,
+                        SlotState::Value(v) => TagValue::fired(v.clone()),
                     },
                 };
-                if let Some(seed) = seed {
-                    deliver(ctx, self.slots[i].acc_id, seed);
-                }
+                deliver(ctx, self.slots[i].acc_id, seed);
             }
             let slot = &mut self.slots[i];
             let tv = slot.call.update(ctx).clone();
@@ -1610,16 +1578,18 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // callback consumes it; only the last slot's state is the result.
         match self.slots.last().map(|s| &s.state) {
             _ if !source_ok => self.resident.set_bottom(any_trig),
-            Some(SlotState::Bottom) => self.resident.set_bottom(any_trig || resized),
-            // A fold fires iff it resized, a slot fired, or the source
-            // fired back from bottom.
+            Some(SlotState::Bottom) => {
+                self.resident.set_bottom(any_trig || resized || back)
+            }
+            // A fold fires iff it resized, a slot fired, or the source came
+            // back from bottom.
             Some(SlotState::Value(v)) => {
-                let fired = resized || any_trig || (src_trig && back);
+                let fired = resized || any_trig || back;
                 let tag = if fired { Tag::FIRED } else { Tag::STALE };
                 let v = v.clone();
                 self.resident.set(TagValue::tagged(v, tag))
             }
-            Some(SlotState::Empty) | None => self.resident.ride(),
+            None => self.resident.ride(),
         }
     }
 
@@ -1663,11 +1633,17 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         &self.base.typ
     }
 
+    /// The source, the init, the prototype and every slot's call
+    /// ([`MapQ::refs`]).
     fn refs(&self, refs: &mut Refs) {
         self.base.source.refs(refs);
         self.base.init.refs(refs);
         refs.bound.extend(self.base.prototype_ids);
         self.base.prototype.refs(refs);
+        for slot in self.slots.iter() {
+            refs.bound.extend([slot.acc_id, slot.element_id]);
+            slot.call.refs(refs);
+        }
     }
 
     fn spec(&self) -> &Expr {

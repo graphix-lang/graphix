@@ -692,21 +692,13 @@ fn deselect<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     tracked: &mut TrackedFires,
     j: usize,
-    (pat, body): &mut (PatternNode<R, E>, Node<R, E>),
+    arm: &mut (PatternNode<R, E>, Node<R, E>),
     sleep: bool,
 ) {
     if sleep {
-        super::deselecting_arm(true, || body.sleep(ctx));
+        super::deselecting_arm(true, || arm.1.sleep(ctx));
     }
-    // CR claude for claude: [structure] This closure is arm_refs (:590) written out
-    // again, and Select::refs (:1086-1089) writes it out a third time (the body's refs,
-    // then bound_by spelled out). Pass the whole arm here and call arm_refs in both
-    // places, so an arm's reads are collected one way for the tracker's build, its
-    // refresh and the select's refs. (c-select-seq-11)
-    tracked.refresh(&ctx.env, j, |r| {
-        body.refs(r);
-        bound_by(pat, r)
-    });
+    tracked.refresh(&ctx.env, j, |r| arm_refs(arm, r));
 }
 
 /// An arm's free reads: its body's refs less its pattern's binds.
@@ -1275,12 +1267,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arm_facts: _,
         } = self;
         arg.node.refs(refs);
-        for (pat, arm) in arms {
-            arm.refs(refs);
-            pat.structure_predicate.ids(&mut |id| {
-                refs.bound.insert(id);
-            });
-            if let Some(n) = &pat.guard {
+        for arm in arms {
+            arm_refs(arm, refs);
+            if let Some(n) = &arm.0.guard {
                 n.node.refs(refs);
             }
         }
