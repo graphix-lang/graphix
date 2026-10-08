@@ -113,3 +113,25 @@ async fn builtin_bottom_propagates(mode: Mode) -> Result<()> {
 }
 
 modes!(builtin_bottom_propagates);
+
+// A dynamic call whose function is briefly bottom: the argument that
+// moved in the window reaches the instance when the same function
+// returns, which fires the call: [0, 14].
+const CALLEE_BACK_FROM_BOTTOM: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 4 => n + 1, _ => never() };
+  let g = |n: i64| n * 2;
+  let cb: [fn(n: i64) -> i64, null] = select ep { 2 | 3 => null, _ => g };
+  let x = 0;
+  x <- select ep { 2 => 7, _ => never() };
+  let f = |cb: [fn(n: i64) -> i64, null], x| cb$(x);
+  f(cb, x)
+}"#;
+
+async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(CALLEE_BACK_FROM_BOTTOM, mode).await?;
+    assert_eq!(as_i64s(&values), vec![0, 14]);
+    Ok(())
+}
+
+modes!(callee_back_from_bottom);

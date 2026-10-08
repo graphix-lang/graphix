@@ -670,6 +670,8 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// The check did not see every default this site omits: the cells
     /// they reach stay open for the bind.
     defaults_open: bool,
+    /// The bound callee's function went bottom and its instance sleeps.
+    callee_absent: bool,
     fork: ForkSite,
 }
 
@@ -704,6 +706,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resident: TagValue::phantom(),
             share: None,
             defaults_open: true,
+            callee_absent: false,
             fork: ForkSite::default(),
         }
     }
@@ -1838,20 +1841,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let tag = tv.tag();
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
-        // CR claude for claude: [bug] While a dynamic callee is bottom, this branch
-        // returns without updating or sleeping the bound instance. The instance
-        // therefore misses every argument fire and every `<-` that lands in the window.
-        // When the same function value returns, rebind sees the same def, the formals
-        // are not republished, and the body rides its pre-window residents, which
-        // breaks R1. `(cb$(x), t)` shows g(0) while x = 7 until x fires again, and a
-        // counter written in the window loses that increment for good. The select-arm
-        // twin of the same program catches up through the wake path, so the instance
-        // likely needs that path too: sleep it when the callee goes bottom, and wake it
-        // with the args stood when the same def returns. probe:
-        // design/review-2026-10-05/repro/x-engine-firing-03.gx (x-engine-firing-03)
         if fnode_tag.is_bottom() && !static_callee {
             for id in set.drain(..) {
                 ctx.event.variables.remove(&id);
+            }
+            // a bound instance sleeps while its callee is bottom, so it wakes
+            // with catch-up when the same function returns
+            if let Some(f) = self.callee.apply_mut() {
+                f.sleep(ctx);
+                self.slept.set();
+                self.callee_absent = true;
             }
             return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
         }
@@ -1914,6 +1913,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx.event.variables.remove(&id);
         }
         match res {
+            // a function back from bottom fires the call with its current
+            // value, as a scrutinee back from bottom fires its select
+            Some(tv) if mem::take(&mut self.callee_absent) => {
+                let tag = tv.tag().fresh();
+                self.resident.set(tv);
+                self.resident.retag(tag)
+            }
             Some(tv) => self.resident.set(tv),
             None if matches!(self.callee, Callee::Failed { .. }) => {
                 self.resident.set_bottom(fnode_tag.triggers() || arg_fired)
