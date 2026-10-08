@@ -431,7 +431,10 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             v => v,
         }),
         NodeView::Tuple(t) => const_valarray(&t.n),
-        NodeView::Map(m) => const_map(&m.entries),
+        NodeView::Map(m) => {
+            let (keys, values) = m.entries();
+            const_map(keys, values)
+        }
         _ => None,
     }
 }
@@ -449,10 +452,11 @@ fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
 /// Fold parallel key/value node slices into a constant `Value::Map`,
 /// or `None` if any entry isn't constant.
 pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    entries: &[(Node<R, E>, Node<R, E>)],
+    keys: &[Node<R, E>],
+    values: &[Node<R, E>],
 ) -> Option<Value> {
     let mut map = netidx_value::Map::new();
-    for (k, v) in entries.iter() {
+    for (k, v) in keys.iter().zip(values.iter()) {
         map.insert_cow(node_const_value(k)?, node_const_value(v)?);
     }
     Some(Value::Map(map))

@@ -342,10 +342,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Construct(n) => kids.push(&n.arg),
         V::Array(n) => kids.extend(n.n.iter()),
         V::ListLit(n) => kids.extend(n.n.iter()),
-        V::Map(n) => {
-            kids.extend(n.entries.iter().map(|(k, _)| k));
-            kids.extend(n.entries.iter().map(|(_, v)| v));
-        }
+        V::Map(n) => kids.extend(n.n.iter()),
         V::StructWith(n) => {
             kids.push(&n.source);
             kids.extend(n.replace.iter().map(|r| &r.n));

@@ -1,4 +1,4 @@
-use super::{WakeBit, compiler::compile, dense_gate, gather};
+use super::{WakeBit, compiler::compile, dense_gate};
 use crate::cost::ForkSite;
 use crate::{
     CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
@@ -77,13 +77,18 @@ macro_rules! composite_plumbing {
 macro_rules! gathered {
     ($self:ident, $ctx:ident, $empty:expr) => {{
         if $self.n.is_empty() {
-            return super::produce_constant($ctx.event, &mut $self.resident, || $empty);
+            return $crate::node::produce_constant(
+                $ctx.event,
+                &mut $self.resident,
+                || $empty,
+            );
         }
-        let (tag, prods) = gather($ctx, &mut $self.n, &mut $self.fork);
+        let (tag, prods) = $crate::node::gather($ctx, &mut $self.n, &mut $self.fork);
         dense_gate!($self, tag.triggers(), tag.is_bottom());
         (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
 }
+pub(super) use {composite_plumbing, gathered};
 
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {

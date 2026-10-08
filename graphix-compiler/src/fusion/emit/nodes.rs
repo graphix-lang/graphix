@@ -106,10 +106,11 @@ pub(crate) fn emit_const_node(
 /// an interned Value constant. A dynamic entry de-fuses.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    entries: &[(Node<R, E>, Node<R, E>)],
+    keys: &[Node<R, E>],
+    values: &[Node<R, E>],
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    let v = lowering::const_map(entries).ok_or_else(|| {
+    let v = lowering::const_map(keys, values).ok_or_else(|| {
         anyhow!(
             "emit_clif: map literal with non-constant entries — \
              subtree node-walks"

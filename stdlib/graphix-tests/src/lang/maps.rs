@@ -211,3 +211,15 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "r")
 );
+
+// A map literal's entries are a fork point like a tuple's elements.
+run!(
+    map_literal_forks,
+    r#"{
+    let f = |x: i64| x * 2;
+    let a = 3;
+    let m = #[parallel] {"x" => f(a), "y" => f(a + 1)};
+    m{"x"}$ + m{"y"}$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(14)))
+);

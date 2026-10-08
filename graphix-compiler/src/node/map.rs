@@ -1,7 +1,15 @@
-use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate};
+use super::{
+    WakeBit,
+    compiler::compile,
+    coretraits::with_hooks,
+    data::{composite_plumbing, gathered},
+    dense_gate,
+};
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, defetyp, err, errf,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    UserEvent,
+    cost::ForkSite,
+    defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::{
         self,
@@ -32,24 +40,28 @@ pub struct Map<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
-    /// The `key => value` entries, in written order.
-    pub entries: Box<[(Node<R, E>, Node<R, E>)]>,
+    /// Every key in written order, then every value: the order they
+    /// update in.
+    pub n: Box<[Node<R, E>]>,
     resident: TagValue,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
-    fn with(
-        spec: Expr,
-        typ: Type,
-        entries: Box<[(Node<R, E>, Node<R, E>)]>,
-    ) -> Node<R, E> {
+    fn with(spec: Expr, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
             typ,
-            entries,
+            n,
             resident: TagValue::phantom(),
+            fork: ForkSite::default(),
         })
+    }
+
+    /// The entries' keys and values, each in written order.
+    pub(crate) fn entries(&self) -> (&[Node<R, E>], &[Node<R, E>]) {
+        self.n.split_at(self.n.len() / 2)
     }
 
     pub(crate) fn image_decode(
@@ -59,10 +71,13 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let n = crate::image::count_decode(buf)?;
-        let entries = (0..n)
-            .map(|_| Ok((decode_node(ctx, buf)?, decode_node(ctx, buf)?)))
-            .collect::<Result<_, PackError>>()?;
-        Ok(Self::with(spec, typ, entries))
+        let (mut keys, mut values) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for _ in 0..n {
+            keys.push(decode_node(ctx, buf)?);
+            values.push(decode_node(ctx, buf)?);
+        }
+        keys.extend(values);
+        Ok(Self::with(spec, typ, keys.into_boxed_slice()))
     }
 
     pub(crate) fn compile(
@@ -73,29 +88,17 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         top_id: ExprId,
         args: &Arc<[(Expr, Expr)]>,
     ) -> Result<Node<R, E>> {
-        let entries = args
+        let n = args
             .iter()
-            .map(|(k, v)| {
-                let k = compile(ctx, flags, k.clone(), scope, top_id)?;
-                Ok((k, compile(ctx, flags, v.clone(), scope, top_id)?))
-            })
+            .map(|(k, _)| k)
+            .chain(args.iter().map(|(_, v)| v))
+            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<_>>()?;
         let typ = Type::Map {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Self::with(spec, typ, entries))
-    }
-
-    /// Every key, then every value: the order the entries update in.
-    fn each(&mut self, mut f: impl FnMut(&mut Node<R, E>) -> Result<()>) -> Result<()> {
-        for (k, _) in self.entries.iter_mut() {
-            f(k)?
-        }
-        for (_, v) in self.entries.iter_mut() {
-            f(v)?
-        }
-        Ok(())
+        Ok(Self::with(spec, typ, n))
     }
 }
 
@@ -104,85 +107,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        encode_varint(self.entries.len() as u64, buf);
-        for (k, v) in self.entries.iter() {
+        let (keys, values) = self.entries();
+        encode_varint(keys.len() as u64, buf);
+        for (k, v) in keys.iter().zip(values.iter()) {
             k.image_encode(buf)?;
             v.image_encode(buf)?;
         }
         Ok(())
     }
 
-    // CR claude for claude: [structure] This re-implements by hand what gather and
-    // gathered! do for Struct, Tuple and Variant: update every child, join the tags,
-    // apply the dense gate. The keys-then-values order is walked in four more places
-    // (each, refs, node_shape.rs:337, fusion/mod.rs:728). Unlike the other literals it
-    // has no ForkSite, so a map literal never forks: `#[parallel] {"x" => f(a), "y" =>
-    // f(a + 1)}` is refused ("has nothing to run in parallel") where `#[parallel]
-    // (f(a), f(a + 1))` runs. Store the entries flat, keys then values, with a
-    // ForkSite, and use gathered! and composite_plumbing! as the other constructors do.
-    // (c-data-map-08)
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        if self.entries.is_empty() {
-            return super::produce_constant(ctx.event, &mut self.resident, || {
-                Value::Map(CMap::new())
-            });
-        }
-        let (mut keys, mut vals): (SmallVec<[&mut Node<R, E>; 32]>, SmallVec<[_; 32]>) =
-            self.entries.iter_mut().map(|(k, v)| (k, v)).unzip();
-        let keys: SmallVec<[&TagValue; 32]> =
-            keys.iter_mut().map(|k| k.update(ctx)).collect();
-        let vals: SmallVec<[&TagValue; 32]> =
-            vals.iter_mut().map(|v| v.update(ctx)).collect();
-        let tag = keys.iter().chain(vals.iter()).fold(Tag::STALE, |t, p| t.join(p.tag()));
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        let (vals, tag) = gathered!(self, ctx, Value::Map(CMap::new()));
+        let vals: SmallVec<[Value; 32]> = vals.collect();
+        let (keys, values) = vals.split_at(vals.len() / 2);
         let m = with_hooks(ctx, || {
             let mut m = CMap::new();
-            for (k, v) in keys.iter().zip(vals.iter()) {
-                m.insert_cow(k.value_cloned(), v.value_cloned());
+            for (k, v) in keys.iter().zip(values.iter()) {
+                m.insert_cow(k.clone(), v.clone());
             }
             m
         });
         self.resident.set(TagValue::tagged(Value::Map(m), tag))
     }
 
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        let _ = self.each(|n| Ok(n.delete(ctx)));
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.slept.set();
-        let _ = self.each(|n| Ok(n.sleep(ctx)));
-    }
-
-    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fusion::fuse_parts(self.entries.iter_mut().flat_map(|(k, v)| [k, v]), ctx)
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.entries.iter().for_each(|(k, _)| k.refs(refs));
-        self.entries.iter().for_each(|(_, v)| v.refs(refs))
-    }
+    composite_plumbing!(Map);
 
     super::typed_by_row!();
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.each(|n| wrap!(n, n.typecheck1(ctx)))
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Map(self)
-    }
-
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map_new_node(cx, &self.entries, &self.typ)
+        let (keys, values) = self.entries();
+        emit_map_new_node(cx, keys, values, &self.typ)
     }
 }
 
@@ -193,7 +147,9 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         child: &mut super::Child<'_, R, E>,
         check: bool,
     ) -> Result<()> {
-        self.each(|n| wrap!(n, child(n, ctx)))?;
+        for n in self.n.iter_mut() {
+            wrap!(n, child(n, ctx))?
+        }
         if !check {
             return Ok(());
         }
@@ -202,10 +158,9 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let mut vts: LPooled<Vec<&Type>> = LPooled::take();
         kts.push(&bottom);
         vts.push(&bottom);
-        for (k, v) in self.entries.iter() {
-            kts.push(k.typ());
-            vts.push(v.typ());
-        }
+        let (keys, values) = self.entries();
+        kts.extend(keys.iter().map(|k| k.typ()));
+        vts.extend(values.iter().map(|v| v.typ()));
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         ktype.require_compared(&Type::Ordered);
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;

@@ -730,11 +730,8 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::Map(m) => {
-            for (k, _) in m.entries.iter() {
-                rec!(k)
-            }
-            for (_, v) in m.entries.iter() {
-                rec!(v)
+            for c in m.n.iter() {
+                rec!(c)
             }
         }
         NodeView::StructRef(s) => rec!(&s.source),
