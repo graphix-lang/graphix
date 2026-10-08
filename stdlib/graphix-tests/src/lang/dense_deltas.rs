@@ -135,3 +135,46 @@ async fn callee_back_from_bottom(mode: Mode) -> Result<()> {
 }
 
 modes!(callee_back_from_bottom);
+
+// A write through a moving reference lands once, where the reference
+// points when its value fires: a retarget writes nothing already
+// written, and a write after its arm wakes goes where the reference
+// points now.
+const MOVING_REFERENCE_WRITES_ONCE: &str = r#"{
+  let ep = 0;
+  ep <- select ep { n if n < 6 => n + 1, _ => never() };
+  let a = [1, 2, 3];
+  let i = 0;
+  let ra = &mut a[i];
+  let x = 1;
+  let y = 2;
+  let c = false;
+  let rx = select c { false => &mut x, true => &mut y };
+  let v = select ep { 1 => 99, _ => never() };
+  *ra <- v;
+  *rx <- v;
+  i <- select ep { 3 => 2, _ => never() };
+  c <- select ep { 3 => true, _ => never() };
+  let rows = [1, 2, 3];
+  let in0 = 0;
+  in0 <- select ep { 1 => 1, 2 => 0, 4 => 1, _ => never() };
+  let in1 = 0;
+  in1 <- select ep { 3 => 2, _ => never() };
+  let in2 = 0;
+  in2 <- select ep { 5 => 7, _ => never() };
+  let r = &mut rows[in1];
+  let o = select in0 { 1 => { *r <- in2; -1 }, _ => *r + in2 };
+  select ep { 6 => (a, x, y, rows, o), _ => never() }
+}"#;
+
+async fn moving_reference_writes_once(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(MOVING_REFERENCE_WRITES_ONCE, mode).await?;
+    let last = values.last().map(|v| v.to_string());
+    assert_eq!(
+        last.as_deref(),
+        Some("[[i64:99, i64:2, i64:3], i64:99, i64:2, [i64:1, i64:2, i64:7], i64:-1]")
+    );
+    Ok(())
+}
+
+modes!(moving_reference_writes_once);

@@ -1675,6 +1675,10 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) src_id: BindId,
     pub(super) target: Option<WriteTarget>,
     pub(super) top_id: ExprId,
+    /// The RHS fired while no target took its value: the next target
+    /// resolved lands it.
+    pending: bool,
+    slept: WakeBit,
 }
 
 impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
@@ -1687,7 +1691,15 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         let src_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.record_ref(src_id, top_id);
-        Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
+        Ok(Node::new(Self {
+            spec,
+            rhs,
+            src_id,
+            target: None,
+            top_id,
+            pending: false,
+            slept: WakeBit::default(),
+        }))
     }
 
     pub(crate) fn compile(
@@ -1716,13 +1728,21 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         }
         ctx.record_ref(src_id, top_id);
         let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
-        Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
+        Ok(Node::new(Self {
+            spec,
+            rhs,
+            src_id,
+            target: None,
+            top_id,
+            pending: false,
+            slept: WakeBit::default(),
+        }))
     }
 
     /// Resolve a reference value (the cell a `&` minted) to where a
     /// write lands: a place, when the cell stands for one, else the
-    /// referent through the byref chain. A chainless plain reference
-    /// (`&(a + b)`) has nowhere to write.
+    /// referent through the byref chain, else the cell itself (`&(a +
+    /// b)` is a fresh variable holding `a + b`).
     fn resolve(ctx: &ExecCtx<'_, R, E>, tv: &TagValue) -> Option<WriteTarget> {
         let cell = tv.with_value(|v| match v {
             Value::U64(id) => Some(BindId::from(*id)),
@@ -1731,26 +1751,14 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         if let Some((root, path)) = ctx.rt.ref_path(&cell) {
             return Some(WriteTarget::Place(*root, path.clone()));
         }
-        // CR claude for claude: [bug] A reference to anything but a name or a place
-        // (`&"top"`, `&never()`, `&f(x)`) has no byref_chain entry, so this returns
-        // None. `*r <- v` through it is then dropped with no log and no diagnostic. The
-        // book (udt/references.md:116-123) says `&(a + b)` is exactly `let tmp = a + b;
-        // tmp <- a + b; &tmp`, under which the write lands in tmp. queuefn's #count
-        // already writes this same cell (queuefn.rs:357). The drop kills tui::browser's
-        // #selected_path whenever #selected_row is left at its `&never()` default (the
-        // book's browser_basic.gx), and makes `line_edit::handle(&line_edit::state(..),
-        // e)` answer `Stop while losing the edit. Either fall back to
-        // `WriteTarget::Bind(cell)` here, or keep the drop, warn at the write and
-        // correct the book. probe: design/review-2026-10-05/repro/gx-ui.r2-05.gx
-        // (gx-ui.r2-05)
-        ctx.env.byref_chain.get(&cell).map(|id| WriteTarget::Bind(*id))
+        Some(WriteTarget::Bind(ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell)))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if self.target.is_some() {
+        if self.target.is_some() || self.pending {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         put_tag(NodeTag::ConnectDeref, buf);
@@ -1761,68 +1769,40 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        // a fired RHS writes; a retarget writes the RHS's current value;
-        // a bottom RHS never writes
+        // a fired RHS writes; a write no target took lands at the next
+        // target resolved; a bottom RHS never writes
+        let woke = self.slept.take();
         let (rhs_fired, rhs_val) = {
             let tv = self.rhs.update(ctx);
             let t = tv.tag();
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
-        let mut up = rhs_fired;
-        // CR claude for claude: [bug] `target` survives the arm's sleep and is
-        // re-resolved only when the reference is on the overlay. So if the reference
-        // moves while this arm sleeps and a sibling arm that reads it consumes the
-        // fire, the woken write keeps landing in the old place: an edit arm over
-        // `&rows[cursor]` writes the previous row after the cursor moved in the view
-        // arm. Going through a call does not help, because the CallSite's wake refresh
-        // only puts the formal in the store. The standing-store branch below also sets
-        // `up`, so the arm's first selection writes the RHS's consumed value; a plain
-        // `x <- v` never does that, and a re-entry does not either. It needs a slept
-        // bit: re-resolve from the present reference at a wake without writing, and
-        // write only for a fired RHS or a fired delivery of the reference. probe:
-        // design/review-2026-10-05/repro/c-node-mod-03.gx (graphix-fuzz run)
-        // (c-node-mod-03)
         if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
-            let t = Self::resolve(ctx, tv);
-            // CR claude for claude: [bug] A retarget sets `up` and writes the RHS's
-            // standing value even when that value already landed at the old target and
-            // the RHS has not fired since, so one write lands in every place a moving
-            // reference visits. `edit(&vals[focus], e)` with `*st <- e ~ ..` copies
-            // field 0's edited state over field 1 when the focus moves. `*r <- t ~ 99`
-            // with r switching from &x to &y writes 99 into both, while the equivalent
-            // `select c { false => x <- v, true => y <- v }` writes only x, as "a
-            // connect writes when its RHS fires" and wake catch-up require. A retarget
-            // should land only a write no target took, which is the pending write
-            // `place_bottom_key` and `place_through_bottom_deref` pin. probe:
-            // design/review-2026-10-05/repro/x-engine-seq-errors-09.gx
-            // (x-engine-seq-errors-09)
-            if self.target != t {
-                self.target = t;
-                up = true;
-            }
-        } else if self.target.is_none() {
-            // an instance created after the reference value was delivered
-            // finds it only in the standing store
+            self.target = Self::resolve(ctx, tv);
+        } else if self.target.is_none() || woke {
+            // an instance created after the reference value was
+            // delivered, or woken after it moved, finds it standing
             if let Some(read) = read_var(ctx, &self.src_id) {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
-                if let Some(t) = Self::resolve(ctx, tv) {
-                    self.target = Some(t);
-                    up = true;
-                }
+                self.target = Self::resolve(ctx, tv);
             }
         }
-        if up {
-            match (rhs_val, &self.target) {
-                (Some(v), Some(WriteTarget::Bind(id))) => ctx.rt.set_var(*id, v),
-                (Some(v), Some(WriteTarget::Place(root, path))) => {
+        self.pending |= rhs_fired;
+        if self.pending
+            && let Some(v) = rhs_val
+            && let Some(target) = &self.target
+        {
+            match target {
+                WriteTarget::Bind(id) => ctx.rt.set_var(*id, v),
+                WriteTarget::Place(root, path) => {
                     ctx.rt.patch_var(*root, path.clone(), v)
                 }
-                _ => (),
             }
+            self.pending = false;
         }
         TagValue::phantom_ref()
     }
@@ -1846,6 +1826,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.slept.set();
         self.rhs.sleep(ctx);
     }
 

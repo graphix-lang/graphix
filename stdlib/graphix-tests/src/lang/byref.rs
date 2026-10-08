@@ -608,3 +608,24 @@ const BYREF_UNIQ_COMPARES_TARGETS: &str = r#"
 run!(byref_uniq_compares_targets, BYREF_UNIQ_COMPARES_TARGETS, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if &**a == &[Value::I64(1), Value::I64(2)])
 }; FuseExpect::Jit);
+
+// A write through a reference to a value lands in the reference's own
+// cell: `&mut e` is a fresh variable holding `e`.
+const WRITE_THROUGH_A_VALUE_REFERENCE: &str = r#"
+{
+    let r0 = &mut "top";
+    *r0 <- "hello";
+    let f = |#row: &mut string = &mut never(), #path: &mut string = &mut never(), x: string| -> string {
+        *row <- x;
+        *path <- "[*row]/leaf";
+        x
+    };
+    let p: string = never();
+    f(#path: &mut p, "a");
+    (*r0, p)
+}
+"#;
+
+run!(write_through_a_value_reference, WRITE_THROUGH_A_VALUE_REFERENCE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::from("hello"), Value::from("a/leaf")])
+}; FuseExpect::None);
