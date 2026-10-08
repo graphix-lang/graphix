@@ -520,6 +520,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.pattern.ids(&mut |id| {
             ctx.bind_to_lambda.remove(&id);
             ctx.connect_targets.remove(&id);
+            ctx.batch_connect_targets.remove(&id);
         });
         if let Some(l) = lambda_value(&self.node)
             && let Some(lambda) = l.lambda_id::<R, E>()

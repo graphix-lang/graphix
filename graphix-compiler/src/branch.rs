@@ -331,6 +331,9 @@ impl<'a, R: Rt> RtView<'a, R> {
 /// A map a branch writes over its parent's: the parent's entries show
 /// through unless the branch wrote them or removed them (`removed`). A
 /// root map has no parent and no removals.
+/// A layer's capacity worth keeping whatever a cycle used.
+const SHRINK_FLOOR: usize = 1024;
+
 pub struct Layered<V> {
     map: IntMap<BindId, V>,
     removed: IntSet<BindId>,
@@ -445,8 +448,15 @@ impl<V: Clone> Layered<V> {
         self.map.is_empty() && self.removed.is_empty()
     }
 
+    /// Empty this layer. A table whose capacity far exceeds what this
+    /// cycle held shrinks: a clear scans every bucket, so one big cycle
+    /// would otherwise tax every later one.
     pub fn clear(&mut self) {
+        let used = self.map.len();
         self.map.clear();
+        if self.map.capacity() > SHRINK_FLOOR.max(used * 4) {
+            self.map.shrink_to(used * 2);
+        }
         self.removed.clear();
     }
 

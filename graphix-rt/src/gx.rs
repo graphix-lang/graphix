@@ -1106,7 +1106,14 @@ impl<X: GXExt> GX<X> {
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
         let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid);
         self.ctx.view().begin_runtime_node(eid);
-        graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)?;
+        if let Err(e) =
+            graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)
+        {
+            let mut ctx = self.ctx.view();
+            n.delete(&mut ctx);
+            ctx.drop_deferred();
+            return Err(e);
+        }
         // its init runs in the next cycle, as a compiled root's does
         self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();

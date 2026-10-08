@@ -125,7 +125,8 @@ impl<T> At for anyhow::Result<T> {
     }
 }
 
-/// Where a parse failed.
+/// Where in its source an error is: a parse's failure, or a check's
+/// finding that only a position carries.
 pub struct ParserContext {
     pub ori: Arc<Origin>,
     pub pos: SourcePosition,
@@ -139,7 +140,7 @@ impl fmt::Debug for ParserContext {
 
 impl fmt::Display for ParserContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "parse error at {}", self.pos)?;
+        write!(f, "at {}", self.pos)?;
         match &self.ori.source {
             Source::Internal(_) | Source::Unspecified => Ok(()),
             source => write!(f, " in {source}"),

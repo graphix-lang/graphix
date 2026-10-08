@@ -352,9 +352,6 @@ pub struct FusionCtx {
     /// waiting. Built with the JIT; a fusion task's is forked from its
     /// parent's ([`fuse_each`]).
     emission: parking_lot::Mutex<Option<emit::Emission>>,
-    /// Whether fusion is enabled for the current compile; set by
-    /// [`crate::compile`].
-    pub enabled: bool,
     /// Compile-time fusion outcome counters, accumulated across every
     /// `compile()` this context runs. See [`FusionStats`].
     pub stats: FusionStats,
@@ -374,7 +371,6 @@ impl FusionCtx {
         Self {
             jit: self.jit.clone(),
             emission: parking_lot::Mutex::new(None),
-            enabled: self.enabled,
             stats: FusionStats::default(),
             top_id: self.top_id,
             share: None,
@@ -468,7 +464,6 @@ impl FusionCtx {
         Ok(Self {
             jit: Arc::new(parking_lot::Mutex::new(None)),
             emission: parking_lot::Mutex::new(None),
-            enabled: true,
             stats: FusionStats::default(),
             top_id: None,
             share: None,

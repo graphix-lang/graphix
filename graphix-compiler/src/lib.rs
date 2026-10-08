@@ -222,15 +222,6 @@ impl<E: UserEvent> Event<E> {
         *init = false;
         *wake_init = false;
         wake_phantoms.clear();
-        // CR claude for claude: [perf] The overlay keeps the capacity of the cycle that
-        // delivered the most. A hashbrown clear of a non-empty table memsets every
-        // control byte and scans every bucket, so after one big fire every later cycle
-        // that delivers anything pays O(peak). Probe, --no-fusion, beside a 100us timer
-        // counter: `let size = select n { 0 => 100000, _ => 0 }; let xs =
-        // array::init(size, |i| i)`. Once the slots are gone, each cycle costs 0.22 ms
-        // of CPU against 0.16 ms with size 0 (0.19 ms after 25000 slots, 0.24 ms after
-        // 200000). Layered::clear (branch.rs:442) could shrink a map whose capacity far
-        // exceeds what the cycle used. (x-alloc-13)
         variables.clear();
         custom.lock().clear();
         user.clear();
@@ -347,20 +338,16 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
-    // CR claude for claude: [bug] Node has no inherent typecheck0_instance, so every
-    // child.typecheck0_instance call (op.rs:283, callsite.rs:2169, node/mod.rs:319, and
-    // lambda.rs:782 for the body) reaches the trait through DerefMut with no
-    // stack::ensure_sufficient. Checking an instance body is therefore a recursion as
-    // deep as the body, and the doc comment on Node above no longer holds. The parser
-    // does not bound that depth: every paren level may hold a 1000-operator chain, and
-    // --check accepts 300 such levels. A function whose body is 30 nested parenthesized
-    // 1000-term `+` chains passes --check, then aborts with a stack overflow when
-    // called or under --expand, while GRAPHIX_NO_SUBST=1 runs it. Add the guarded
-    // shadow here beside typecheck0, plus a deep_nesting case that builds instances
-    // (those cases run Mode::Check, which never elaborates). probe:
-    // design/review-2026-10-05/repro/x-stack-03.sh (x-stack-03)
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         stack::ensure_sufficient(|| self.0.typecheck0(ctx))
+    }
+
+    pub fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        stack::ensure_sufficient(|| self.0.typecheck0_instance(ctx, types))
     }
 
     pub fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -869,7 +856,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
-        // CR claude for claude: [bug] Any FusedKernel passes here, including one that
+        // CR claude for eric: [bug] Any FusedKernel passes here, including one that
         // try_fuse_feeding_args built around arguments left on the node-walk. So
         // `#[native] f(throttle(i64:5))` compiles, while `#[native] throttle(i64:5)`
         // and `#[native] { let a = throttle(i64:5); f(a) }` are refused. Feeding only
@@ -883,6 +870,8 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         // that pin's fed calls. The other: document that a call's arguments are inputs,
         // and feed every argument that does not fuse. probe:
         // design/review-2026-10-05/repro/f-mod-lowering-04.sh (f-mod-lowering-04)
+        // 2026-10-07 claude: re-addressed: it asks for a ruling on whether #[native]
+        // admits a call fed by node-walked arguments.
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
         }
@@ -1182,6 +1171,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // dynamic-module reloads do the same. probe:
     // design/review-2026-10-05/repro/c-lib-01.gx (RSS grows ~34 MB per 350 instances;
     // it levels off when the inner seq is moved above the try). (c-lib-01)
+    // 2026-10-07 claude: a failed compile now drops what it lowered (Saved, c-lib-07).
+    // The minted scopes remain: desugar reads the lexical scope, so keying by
+    // the expression alone needs the lowering to stop depending on it.
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1425,17 +1417,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
-        // CR claude for claude: [bug] At run time this set only grows. Every instance
-        // built after the batch (a collection slot, an activation, a seq machine's pc
-        // and result) inserts its fresh `<-` target ids here. Bind::delete prunes
-        // connect_targets and bind_to_lambda but not this set, and only the embedder's
-        // next compile or load clears it, so a script keeps one entry for every `<-` of
-        // every instance it ever built. Churning 60 instances, each with 20
-        // never-firing `<-`, every 10 ms grows a script from ~100 to ~310 MB in 60 s;
-        // the same `<-` aimed at one outer variable stays flat, and the first REPL line
-        // after the churn takes 0.41 s to walk the set. Remove the ids here in
-        // Bind::delete too, or drop this set and guard static resolution with
-        // connect_targets. probe: design/review-2026-10-05/repro/c-lib-02.py (c-lib-02)
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
     }
@@ -1658,25 +1639,15 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
-        // CR claude for claude: [perf] In a forked branch whose compile view has not
-        // forked yet, `get_mut` here goes through CxView::deref_mut. That boxes a whole
-        // CompileCtx::fork() (env, tracked maps, fusion), which the merge then joins
-        // back, only to find pending_refs empty: fork_each and fork_join assert that
-        // nothing is pending at a fork. ctx.unref_var runs on the update and sleep
-        // paths: the sleep of the array/list/map iter builtins, throttle's update, and
-        // Deref::release on a moving reference. Each such branch therefore pays an
-        // allocation and a fork/join per cycle where the serial walk pays one hash
-        // lookup, against parallel_eval.md's rule that a branch that compiles nothing
-        // pays nothing. Look the pair up through Deref first and call self.rt.unref_var
-        // directly when it is absent. (c-lib-08)
-        match self.cx.pending_refs.get_mut(&(id, top_id)) {
-            Some(n) => {
-                *n -= 1;
-                if *n == 0 {
-                    self.cx.pending_refs.remove(&(id, top_id));
-                }
-            }
-            None => self.rt.unref_var(id, top_id),
+        // read through the view first: a branch that compiled nothing
+        // must not fork its compile view to find nothing pending
+        if !self.cx.pending_refs.contains_key(&(id, top_id)) {
+            return self.rt.unref_var(id, top_id);
+        }
+        let n = self.cx.pending_refs.get_mut(&(id, top_id)).expect("checked above");
+        *n -= 1;
+        if *n == 0 {
+            self.cx.pending_refs.remove(&(id, top_id));
         }
     }
 
@@ -2149,18 +2120,17 @@ pub fn compile<R: Rt, E: UserEvent>(
 /// the check (typecheck0 and its settle), elaboration (typecheck1 and
 /// its settle), function-property analysis, typedef resolution-cell
 /// seeding (in both modes) and fusion; only the check under
-/// [`CFlag::CheckOnly`]. The caller restores its env on `Err`.
+/// [`CFlag::CheckOnly`]. On `Err` the caller unwinds: it deletes the
+/// node, whose references cancel what the compile deferred, then
+/// [`ExecCtx::drop_deferred`], then restores its env.
 pub fn check_and_fuse<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
-    let r = check_and_fuse_inner(ctx, flags, node);
-    match &r {
-        Ok(()) => ctx.apply_deferred(),
-        Err(_) => ctx.drop_deferred(),
-    }
-    r
+    check_and_fuse_inner(ctx, flags, node)?;
+    ctx.apply_deferred();
+    Ok(())
 }
 
 fn check_and_fuse_inner<R: Rt, E: UserEvent>(
@@ -2210,7 +2180,10 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     // FusionCtx::enabled (only lib.rs reads it). Open the compile frame for compile_top
     // and begin_runtime_node through one function, since today they reset different
     // scratch. (c-lib-09)
-    if ctx.fusion.enabled {
+    // 2026-10-07 claude: fusion is decided from `flags` (fusion_on) and
+    // FusionCtx::enabled is gone; one function opening the compile frame for both
+    // remains.
+    if fusion_on(flags) {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
         let fused = fusion::TypeMemo::scope(|| fusion::fuse(node, ctx));
@@ -2220,6 +2193,25 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
         info!("fusion time {:?}", st.elapsed());
     }
     Ok(())
+}
+
+/// Whether a compile under `flags` fuses.
+fn fusion_on(flags: BitFlags<CFlag>) -> bool {
+    // A malformed input only de-fuses. The JIT helpers' wire ABI is
+    // System V (a 16-byte `TagValue` is two
+    // registers); Win64 passes it by hidden pointer, so on Windows the
+    // graph is interpreted.
+    // CR claude for eric: [risk] `not(windows)` turns fusion on for every other
+    // cranelift host. The helper seam passes and returns the 16-byte TagValue by value,
+    // which matches the two-I64 CLIF signatures only where the C ABI uses two registers
+    // for it: SysV x86_64 and AAPCS64 (design/helper_abi_portability.md). On s390x
+    // Linux, which passes such a struct by reference and returns it through a hidden
+    // pointer, the first helper call that takes or returns a TagValue reads a word as a
+    // pointer. Until the out-pointer rule lands, gate on the hosts known to match:
+    // `all(any(target_arch = "x86_64", target_arch = "aarch64"), not(windows))`. The
+    // same doc's last paragraph says a registration image that fails to decode is
+    // fatal, but graphix-rt/src/gx.rs:300 warns and compiles cold. (f-helpers-08)
+    !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows))
 }
 
 /// Drain the deferred terminal settles ([`ExecCtx::pending_settles`])
@@ -2288,24 +2280,8 @@ pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
             continue;
         };
         if !ctx.env.import_target_exists(e) {
-            // CR claude for claude: [readability] This error and bind_sig's
-            // (graphix-compiler/src/node/module.rs:177) use ParserContext only to carry
-            // a position, and its Display prints "parse error at …". So `let x =
-            // 1;\nuse array::nosuch;\n1` reports "parse error at line: 2, column: 1 …
-            // use: no `nosuch` in `array` (checked again after the enclosing statement
-            // finished compiling)", and a second `type T` in a .gxi reports "parse
-            // error at line: 3 … T is already defined in scope m". A real parse error
-            // already says "Parse error at …" in its own message, so ParserContext's
-            // Display (graphix-types/src/expr/context.rs:124) can print just the
-            // position. The parenthetical describes the compiler, not the user's
-            // mistake: the message is "use: no `nosuch` in `array`". (x-errors-15)
-            return Err(::anyhow::anyhow!(
-                "use: no `{}` in `{}` (checked again after the enclosing \
-                 statement finished compiling)",
-                e.name,
-                e.scope
-            )
-            .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos }));
+            return Err(::anyhow::anyhow!("use: no `{}` in `{}`", e.name, e.scope)
+                .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos }));
         }
     }
     Ok(())
@@ -2388,6 +2364,8 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
 // holds. Group the forked-and-joined registries in one struct with fork, join and
 // Clone. Saved then becomes a clone of it and cannot drift, and fork, join and new each
 // handle it in one line. (c-lib-07)
+// 2026-10-07 claude: Saved now holds lowered_seqs, so a failed compile drops
+// the seqs it lowered. The grouping that would keep it from drifting again remains.
 pub(crate) struct Saved {
     env: Env,
     lambda_defs: TrackedMap<LambdaId, Value>,
@@ -2397,6 +2375,7 @@ pub(crate) struct Saved {
     connect_targets: TrackedSet<BindId>,
     batch_connect_targets: TrackedSet<BindId>,
     tags: TrackedSet<ArcStr>,
+    lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
 }
 
 impl Saved {
@@ -2410,6 +2389,7 @@ impl Saved {
             connect_targets: ctx.connect_targets.clone(),
             batch_connect_targets: ctx.batch_connect_targets.clone(),
             tags: ctx.tags.clone(),
+            lowered_seqs: ctx.lowered_seqs.clone(),
         }
     }
 
@@ -2423,6 +2403,7 @@ impl Saved {
             connect_targets,
             batch_connect_targets,
             tags,
+            lowered_seqs,
         } = self;
         ctx.env = env;
         ctx.lambda_defs = lambda_defs;
@@ -2432,6 +2413,7 @@ impl Saved {
         ctx.connect_targets = connect_targets;
         ctx.batch_connect_targets = batch_connect_targets;
         ctx.tags = tags;
+        ctx.lowered_seqs = lowered_seqs;
     }
 }
 
@@ -2445,21 +2427,6 @@ fn compile_top<R: Rt, E: UserEvent>(
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
-    // A malformed input only de-fuses. The JIT helpers' wire ABI is
-    // System V (a 16-byte `TagValue` is two
-    // registers); Win64 passes it by hidden pointer, so on Windows the
-    // graph is interpreted.
-    // CR claude for eric: [risk] `not(windows)` turns fusion on for every other
-    // cranelift host. The helper seam passes and returns the 16-byte TagValue by value,
-    // which matches the two-I64 CLIF signatures only where the C ABI uses two registers
-    // for it: SysV x86_64 and AAPCS64 (design/helper_abi_portability.md). On s390x
-    // Linux, which passes such a struct by reference and returns it through a hidden
-    // pointer, the first helper call that takes or returns a TagValue reads a word as a
-    // pointer. Until the out-pointer rule lands, gate on the hosts known to match:
-    // `all(any(target_arch = "x86_64", target_arch = "aarch64"), not(windows))`. The
-    // same doc's last paragraph says a registration image that fails to decode is
-    // fatal, but graphix-rt/src/gx.rs:300 warns and compiles cold. (f-helpers-08)
-    ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows));
     ctx.attr_census.lock().clear();
     ctx.attr_dispatched.lock().clear();
     ctx.attr_absorbed.lock().clear();
@@ -2492,7 +2459,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing; a check runs no fusion walk and
     // leaves the attributes to a build.
-    if ctx.fusion.enabled && !flags.contains(CFlag::CheckOnly) {
+    if fusion_on(flags) && !flags.contains(CFlag::CheckOnly) {
         let census = ctx.attr_census.lock();
         if !census.is_empty() {
             let dispatched = ctx.attr_dispatched.lock();
@@ -2525,20 +2492,8 @@ fn abandon_stmt<R: Rt, E: UserEvent>(
     saved: Saved,
     e: anyhow::Error,
 ) -> anyhow::Error {
-    // CR claude for claude: [risk] This drops the deferred references before deleting the
-    // node, and check_and_fuse has already dropped them on Err (line 1934). The failed
-    // statement's references therefore reach rt.unref_var as pairs the runtime never
-    // registered, instead of cancelling in pending_refs. Module::compile_source and
-    // read_registration delete first and then call drop_deferred, which is the order
-    // that is right when the top id is live. GXRt ignores an unknown pair and a
-    // statement's top id is fresh, so nothing shows today; an Rt that counts strictly,
-    // or a reused top id, would lose a live registration. Leave the Err cleanup to
-    // check_and_fuse's callers and unwind here as delete, drop_deferred, restore;
-    // compile_callable (gx.rs:946) should then delete `n` instead of dropping it with
-    // `?`. probe: design/review-2026-10-05/repro/c-lib-06.gx (with GRAPHIX_DBG_VARS=1
-    // it prints two UNREF_VAR lines and no matching REF_VAR). (c-lib-06)
-    ctx.drop_deferred();
     node.delete(ctx);
+    ctx.drop_deferred();
     saved.restore(ctx);
     e
 }
