@@ -6,7 +6,7 @@ Pins: `stdlib/graphix-tests/src/lang/seq_steps.rs` (each failure in §1,
 the wake re-raise, a same-cycle `until`, a `let`'s fire in a later
 cycle), the netidx-admin tests (`roster_adds_and_edits_an_admin` found
 the carried `let`), the seq suites listed in
-`seq_blocks.md`, `graphix-compiler/src/expr/seq.rs`
+`seq_blocks.md`, `graphix-types/src/expr/seq.rs`
 (`a_long_seq_lowers_flat`).
 
 **What each piece of code reads and writes, known after resolution.**
@@ -105,7 +105,7 @@ own). `node/seq_machine.rs` runs it:
   (overlay, store, `notify_set`, as a `Bind` publishes), so the atoms'
   entry event is `pc` in both cases. Entering wakes the step under the
   wake view with `Select`'s catch-up (`node/wake.rs::TrackedFires`,
-  moved out of `select.rs` and shared): one fire bit per step-body
+  shared with `Select`): one fire bit per step-body
   input per machine, consumed by whichever step reads it. After the
   steps it ran, the machine records the fires they made for the steps
   that did not run (`observe_except`); a step's own `let` is recorded
@@ -175,12 +175,13 @@ request.
 
 ## 6. Parallel evaluation
 
-What the summary provides: within a cycle, reads never conflict. A
-connect's write lands next cycle, and a `let`'s value delivered within
-the cycle is an edge of the graph, not shared state. Two subgraphs
-conflict over variables only when both write the same variable: the
-next cycle's queue for that variable is in evaluation order
-(CLAUDE.md, Runtime). Write sets decide that.
+What the summary provides: the read set of the independence rule
+(`parallel_eval.md` §3.2, `analysis::plan_block`). A later sibling
+depends on an earlier one iff it reads what the earlier one publishes
+within the cycle (a `let`, a pattern bind, a handler both reach). A
+connect's write lands next cycle, and the merge keeps the next cycle's
+queue in serial order, so writes never make siblings dependent and the
+plan does not consult write sets.
 
 What it doesn't provide:
 - the order of external effects (`println`, network writes);

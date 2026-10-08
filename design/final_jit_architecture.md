@@ -1,7 +1,7 @@
 # The fusion/JIT architecture: `Expr → node graph → CLIF`
 
 Status: current principle
-Pins: `stdlib/graphix-tests/src/lang/fusion.rs`, `stdlib/graphix-tests/src/lib_tests/native.rs`, `graphix-shell/tests/check_mode_parity.rs`, `graphix-fuzz/findings/` (the `regress` gate)
+Pins: `stdlib/graphix-tests/src/lang/fusion.rs`, `stdlib/graphix-tests/src/lib_tests/native.rs`, `stdlib/graphix-tests/src/lang/fusion_parity.rs`, `graphix-fuzz/findings/` (the `regress` gate)
 
 ## The pipeline
 

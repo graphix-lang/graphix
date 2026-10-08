@@ -1,9 +1,11 @@
-//! Compile-time function-property analysis, run after `typecheck1` in
-//! both fusion modes. Three passes over the reachable call graph:
-//! effect inference (a greatest fixpoint from `Sync` down to `Async`),
-//! the instance call graph, and recursion/tail marking (SCCs,
-//! `GXLambda::tail_loop`, `RecursionKind`). Both engines read the facts; the structural
-//! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
+//! Compile-time analysis, run after `typecheck1` in both fusion modes,
+//! over the reachable call graph: effect inference (a greatest fixpoint
+//! from `Sync` down to `Async`), recursion/tail marking (SCCs,
+//! `GXLambda::tail_loop`, `RecursionKind`), the definition assertions,
+//! and the dependency summaries that plan seq steps and block runs. Also
+//! the `#[parallel]` check and the arm-sleep rule. Both engines read the
+//! facts; the structural tail-loop predicate is
+//! `fusion::lowering::structural_tail_loop`.
 
 use crate::{
     ApplyView, BindId, CompileCtx, DefAssertionKind, LambdaId, LambdaInstanceId, Node,

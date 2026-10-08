@@ -74,8 +74,15 @@ mechanism.
 graphix package remove mypackage
 ```
 
-If other installed packages depend on the removed package via Cargo, the
-removed package's modules will still be available (since it remains a transitive
+Standard library packages can be removed too (all but `core`), and added
+back with `graphix package add`. Removing one also removes the installed
+standard library packages that depend on it: the command lists them and
+asks before going on. With `--yes` (or `-y`) it removes them without
+asking; without `--yes` and with stdin not a terminal, it removes
+nothing.
+
+If other installed packages depend on a removed third-party package via
+Cargo, its modules will still be available (since it remains a transitive
 dependency). This is by design -- Cargo manages the dependency graph.
 
 ## Listing Installed Packages
@@ -84,7 +91,8 @@ dependency). This is by design -- Cargo manages the dependency graph.
 graphix package list
 ```
 
-Shows all explicitly installed packages with their versions.
+Shows the installed standard library packages, the removed ones, and the
+third-party packages with their versions or paths.
 
 ## Rebuilding
 
@@ -100,18 +108,26 @@ the latest compatible version within each package's semver range.
 
 ## Updating
 
-To update graphix itself (and the standard library) to the latest version:
+To update graphix and your packages to their latest versions:
 
 ```
 graphix package update
 ```
 
-This queries crates.io for the latest `graphix-shell` version and the latest
-version of each standard library package, updates `packages.toml` accordingly,
-and triggers a full rebuild. Your third-party packages are left untouched.
+This queries crates.io for the latest `graphix-shell` and the latest version
+of each third-party package installed from crates.io, and lists the changes
+it found: a newer shell (the standard library comes with it), the standard
+library packages the newer shell ships that you have not installed or
+removed, and the third-party updates. It then asks `Apply all changes?
+[Y/e/n]`: `Y` applies them all, `e` lets you toggle items one by one, `n`
+cancels. Declining the shell update also declines the new standard library
+packages, which only build against it. With `--yes` (or `-y`) every change
+is applied without asking; without `--yes` the command refuses to run when
+stdin is not a terminal. `packages.toml` is written only after the rebuild
+succeeds.
 
-If you're already on the latest version, the command prints a message and
-exits without rebuilding.
+If nothing is newer, the command prints a message and exits without
+rebuilding.
 
 To update a third-party package to a new **major** version, edit the version
 in `packages.toml` directly and run `graphix package rebuild`.
@@ -127,44 +143,37 @@ directory:
 | macOS | `~/Library/Application Support/graphix/packages.toml` |
 | Windows | `%APPDATA%\graphix\packages.toml` |
 
-<!-- CR claude for claude: [doc-drift] This section shows the pre-v2 format (a bare
-[packages] table), but parse_packages reads any file without [stdlib] as legacy and
-migrate_old marks every stdlib package the file does not name as removed, so a file
-written from this example rebuilds a binary with core alone (probe: put this example in
-$XDG_DATA_HOME/graphix/packages.toml and run `graphix package list`; it rewrites the
-file with installed = ["core"] and the other 18 stdlib packages under removed). Updating
-(101-117) is stale too: update proposes external package updates (applied by --yes),
-prompts Y/e/n, refuses a non-terminal stdin without --yes, and queries no per-package
-stdlib version. Removing (71-79) omits the stdlib cascade prompt, step 3 of How the
-Rebuild Works (151) still generates deps.rs, and standalone.md:37 names the binary
-`graphix` where it is named after the package's short name. The doc comments at
-graphix-package/src/lib.rs:572 (the version comes from `graphix` on PATH, not the
-running binary), 1184 (deps.rs) and 1482 (package_dir/graphix) carry the same drift.
-(package-06) -->
-The file is a simple TOML map of package names to versions:
+The file has two tables. `[stdlib]` lists the standard library packages by
+name, the installed ones and the ones you removed (they track the shell's
+version, so they carry none). `[packages]` maps third-party package names to
+versions, or to a path with an inline table:
 
 ```toml
+[stdlib]
+installed = ["array", "core", "map", "str", "sys"]
+removed = ["gui", "tui"]
+
 [packages]
 mypackage = "1.2.0"
-another = "0.5.0"
+another = { path = "/home/user/another" }
 ```
 
-Path dependencies use an inline table:
-
-```toml
-[packages]
-mypackage = { path = "/home/user/mypackage" }
-```
+A file without a `[stdlib]` table is read in the older format, a single
+`[packages]` table naming every package, standard library ones included:
+any standard library package it does not name counts as removed. The
+package commands write the file back in the current format.
 
 ## How the Rebuild Works
 
 When you add or remove a package, the package manager:
 
-1. Unpacks the `graphix-shell` source from the Cargo cache
-2. Updates its `Cargo.toml` to include your packages as dependencies
-3. Generates a `deps.rs` that registers all packages
-4. Runs `cargo install --force` to build and install the new binary
-5. Backs up the previous binary with a timestamp
+1. Unpacks the `graphix-shell` source of the installed `graphix`'s version
+   from the Cargo cache, or downloads it from crates.io
+2. Adds your third-party packages to its `Cargo.toml` as dependencies (the
+   shell registers every package its manifest names)
+3. Backs up the previous binary with a timestamp
+4. Runs `cargo install --force`, the installed standard library packages
+   selected as Cargo features, to build and install the new binary
 
 This means you need a working Rust toolchain installed. The rebuild takes
 roughly the same time as compiling any Rust project of similar size.

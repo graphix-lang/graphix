@@ -14,7 +14,7 @@ Consequences:
 
 - **Select** emits whenever a consumed input fires — a scrutinee
   delivery, a CONSULTED guard's production, or the taken arm's own
-  production (`own_sound`/`own_anyfire` in `node/select.rs`; the kernel
+  production (`EmissionPlanes` in `node/select.rs`; the kernel
   folds the scrutinee and prologue-guard bits at every merge). The
   emission is the taken arm's current production: Fired if it holds a
   value, FreshBottom if it is bottom. Same-arm re-matches emit.

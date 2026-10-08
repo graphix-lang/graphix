@@ -1,7 +1,7 @@
 # Distributed JIT: `emit_clif` + `fuse` per node
 
 Status: built 2026-06
-Pins: `stdlib/graphix-tests/src/lang/fusion.rs`, `stdlib/graphix-tests/src/lib_tests/native.rs`, `stdlib/graphix-tests/src/lib_tests/lift.rs`, `graphix-shell/tests/check_mode_parity.rs`, `graphix-fuzz` `detcheck`, `graphix-fuzz/findings/dyncall-pending-taint-jul2026/`
+Pins: `stdlib/graphix-tests/src/lang/fusion.rs`, `stdlib/graphix-tests/src/lib_tests/native.rs`, `stdlib/graphix-tests/src/lib_tests/lift.rs`, `stdlib/graphix-tests/src/lang/fusion_parity.rs`, `graphix-fuzz` `detcheck`, `graphix-fuzz/findings/dyncall-pending-taint-jul2026/`
 Supersedes: fusion_lowering_split, composite_hof_fusion, clone_rebind_testing
 
 ## The architecture
@@ -80,8 +80,7 @@ happens in the analysis phase, before the builder opens.
 `pub b: &mut FunctionBuilder` (the raw CLIF escape hatch) plus the
 private `JitEnv` and `LowerCtx` — behind a small method set: `helper`/
 `call_helper`, the scope `mark`/`truncate`, the `bind_*` family, the
-context words (`init_flag`, `quiet_flag`, `state_ptr`,
-`claim_state_word`), and the interners (`interned_str`,
+context words (`init_flag`, `state_ptr`, `claim_state_word`), and the interners (`interned_str`,
 `interned_value`, `interned_type`, `interned_qop_site`). Interning is
 lazy at the emit site: a prewalk mirroring emission coverage would be a
 silent-drift dangling-pointer hazard. graphix-compiler re-exports
@@ -162,30 +161,14 @@ each was obvious in hindsight and invisible in advance.
 
 3. **First call is init.** A cross-kernel call site in a region's root
    body forces the callee's init view on its first call ever (a
-   first-call word in the instance state, shared across loop
-   iterations; `kernel_instance_state.md`); a callee body's own call
+   first-call word in the instance state, the slot's own in a loop;
+   `kernel_instance_state.md`); a callee body's own call
    sites pass their init view on. The symptom of forgetting it is a
    kernel that works when first fired at startup and pends forever when
    first fired by an async input.
 
 4. **Runtime wake-ups key on `(BindId, top_id)`.** Feeders register
-   <!-- CR claude for claude: [doc-drift] `ExecCtx::fuse_top_id` is now
-   `FusionCtx::top_id` (fusion/mod.rs:349), and the `quiet_flag` this doc lists among
-   BodyCx's words is gone. Other design docs also cite names the tree no longer has as
-   if they were current: the `Arc<Mutex<Option<Arc<ResolvedRef>>>>` cell and
-   `find_visible` (env_independent_typerefs.md; the cell holds a `Weak`,
-   typ/mod.rs:426), `restore_lexical_env` (module_system.md, program_image.md; now
-   `Env::swap_lexical` and the context's `with_restored`), `predeclared_mods`
-   (module_system.md), `own_sound`/`own_anyfire` (organic_firing.md), `to_define`
-   (kernel_instance_state.md), `jit::define_spill_thunk` (recursive_activations.md; now
-   the kernel's `self_thunk`), `seq_manual` (seq_blocks.md), `prototype_def`
-   (traits.md), `FnType::freeze_shared_tvars` (tvar_constraints.md),
-   `gen_expr`/`find_producers` (graphix_fuzz.md; now `gen_typed`/`gen_pinned`),
-   `update_many` (parallel_compile.md), `Delta`/`EffectLog` (parallel_eval.md; branch.rs
-   has `RtView`/`ForkRt`/`Layered`/`CxView`) and `BackendStub` (jit_startup.md). Anyone
-   who greps for one of these to find the mechanism finds nothing and cannot tell
-   whether the rule still holds. (x-doc-drift-11) -->
-   `ref_var` under the REAL top expression id (`ExecCtx::fuse_top_id`),
+   `ref_var` under the REAL top expression id (`FusionCtx::top_id`),
    never an interior `ExprId`: the runtime wakes a top only while its
    (id, top) ref count is nonzero, and an id no installed expression
    matches strands it at zero once the spliced original unrefs. The
@@ -226,7 +209,7 @@ each was obvious in hindsight and invisible in advance.
    same types with different callbacks are two kernels. A pass the
    fusion gate owns must never change what the typechecker sees
    (`Env::seed_typedef_refs` runs in both modes;
-   `check_mode_parity` pins mode-identical `--check`).
+   `lang::fusion_parity` pins identical refusals node-walked and fused).
 
 ## What was ruled out
 

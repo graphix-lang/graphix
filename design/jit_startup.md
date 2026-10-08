@@ -157,10 +157,10 @@ subset of `total_ns`.
 The probes cover source parsing, packed-AST decoding, graph construction,
 both typecheck passes, deferred settles, call-graph/effect/recursion
 analysis, typedef seeding, fusion discovery, ABI freezing and fallbacks,
-CLIF construction, backend body/wrapper/stub/spill compilation, and
-finalization. `Clif` includes body setup and Graphix analysis performed
-while constructing CLIF. `JitBuild` failures include their cleanup.
-`BackendStub` measures backend compilation of abandoned declarations.
+CLIF construction, the link (`Link`: backend compilation of the queued
+functions, `fusion/emit/jit.rs`), and finalization. `Clif` includes
+body setup and Graphix analysis performed while constructing CLIF.
+`JitBuild` failures include their cleanup.
 
 Run the built release test executable directly, with builds and other
 test runs finished:

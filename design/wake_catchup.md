@@ -142,21 +142,19 @@ is insufficient; the forced recompute republishes `p2` at the present
 
 ## Mechanics
 
-<!-- CR claude for claude: [doc-drift] The tracker lives in node/wake.rs, where Select and
-the seq machine share it, not in node/select.rs. The per_arm bullet below says pattern
-binds are dropped through Env::is_pattern_bind. In fact wake.rs:45-49 routes them into
-`consumes` through Env::pattern_inputs (the facet rule at :58-80), and nothing calls
-is_pattern_bind any more (graphix-types/src/env.rs:1671). The `slept: bool` at :171 is
-now `WakeBit`. dependency_summaries.md:107-108 says the tracker was "moved out of
-select.rs", which is history that an as-built doc should not carry. (c-select-seq-13)
--->
-### The tracker (`node/select.rs`, `TrackedFires`)
+### The tracker (`node/wake.rs`, `TrackedFires`)
+
+Select and the seq machine share it.
 
 - `per_arm`: each arm body's free refs (`Refs` referenced minus bound
-  within the arm, minus pattern binds — `Env::is_pattern_bind`, marked
-  at `Select::compile` for each arm's structure-predicate ids), keyed
-  by the input they are tracked under (`Env::facet_of` maps a
-  destructuring `let`'s siblings to the group's representative).
+  within the arm, minus pattern binds), keyed by the input they are
+  tracked under (`Env::facet_of` maps a destructuring `let`'s siblings
+  to the group's representative).
+- `consumes`: per arm, the inputs the pattern binds its body reads are
+  facets of (`Env::pattern_inputs`, marked at `Select::compile` for
+  each arm's structure-predicate ids: the inputs that reach the
+  scrutinee). Reading a pattern bind consumes its inputs' fires; the
+  bind itself is never delivered.
   Computed from compile-time refs at first update and REFRESHED AT
   EACH DESELECT — compile-time refs cannot see through a lambda literal
   into an instantiated body; deselect-time refs can.
@@ -176,12 +174,12 @@ select.rs", which is history that an as-built doc should not carry. (c-select-se
 State lives in nodes, never in an `ExecCtx` field (parallel
 module-level compilation is coming and a parallel evaluator must stay
 possible, so nothing may end up behind a lock). Every skip-owning
-node/Apply owns a `slept: bool` its own `sleep()` sets and its next
+node/Apply owns a `slept: WakeBit` its own `sleep()` sets and its next
 depth-0 update takes: the `dense_gate!` structs (the macro takes
 `$self.slept`, so the field is macro-enforced), the op macros,
 StringInterpolate, MapQ, Bind, CallSite, GXLambda, `CachedArgs`,
 `FusedKernel`, and Select. `Node` stays a bare 16-byte
-newtype; the bools hide in struct padding. Nodes that recompute
+newtype; the bits hide in struct padding. Nodes that recompute
 unconditionally need none; `~` rides correctly — it IS edge state;
 `Any` rides too, except that it stands bottom at a wake where the
 child its resident came from is bottom now; `Constant` fires at wake

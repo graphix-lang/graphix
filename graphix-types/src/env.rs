@@ -1874,10 +1874,6 @@ impl Env {
         }
     }
 
-    pub fn is_pattern_bind(&self, id: BindId) -> bool {
-        self.pattern_inputs(id).is_some()
-    }
-
     /// The inputs a pattern bind is a facet of: those whose fires reach
     /// its select's scrutinee, closed over enclosing pattern binds.
     /// `None` for any other bind.

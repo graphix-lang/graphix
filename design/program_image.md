@@ -173,8 +173,8 @@ the root scope (`image/registration.rs`). Ids relocate through
 keep their two-level sharing; handlers of the dynamic scope, module
 paths, origins and type-reference resolution cells are shared
 objects. A definition's or a module's snapshot carries only the four
-lexical fields, the only ones `restore_lexical_env` reads, which took
-the stdlib test image from 7.5 MB to 1.2 MB.
+lexical fields, the only ones `Env::swap_lexical` exchanges, which keeps
+the stdlib test image at 1.2 MB where the whole env made it 7.5 MB.
 
 A definition's check table (`node::lambda::DefTable`, what its
 instances substitute) is an object, and a restored definition keeps

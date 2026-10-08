@@ -34,9 +34,9 @@ cd graphix-package-mylib
 graphix package build-standalone
 ```
 
-This builds a release-optimized `graphix` binary in the current
-directory that includes your local package and all it's
-dependencies. The build enables the `standalone` cargo feature on your
+This builds a release-optimized binary named after your package's short
+name (`mylib` here) in the current directory that includes your local
+package and all its dependencies. The build enables the `standalone` cargo feature on your
 package, which causes the contents of `main.gx` to be appended to the
 root module as the entry point program.
 

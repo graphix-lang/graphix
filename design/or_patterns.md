@@ -1,7 +1,7 @@
 # Or-patterns
 
 Status: built 2026-08-31
-Pins: `stdlib/graphix-tests/src/lang/select.rs` (`or_*`: `or_first_match`, `or_same_binds_err`, `or_equal_types_err`, `or_dead_alt_err`, `or_dup_alt_err`, `or_slice_ladder`, `or_variant_exhaust`, `or_capture_union`, `or_payload_unequal_rejected`, `or_native`, `or_owned_binds`, `or_guard_prologue`), `graphix-compiler/src/expr/parser/test.rs` (`or_patterns_parse`)
+Pins: `stdlib/graphix-tests/src/lang/select.rs` (`or_*`: `or_first_match`, `or_same_binds_err`, `or_equal_types_err`, `or_dead_alt_err`, `or_dup_alt_err`, `or_slice_ladder`, `or_variant_exhaust`, `or_capture_union`, `or_payload_unequal_rejected`, `or_native`, `or_owned_binds`, `or_guard_prologue`), `graphix-types/src/expr/parser/test.rs` (`or_patterns_parse`)
 
 Functional-programming orthodoxy, no deviations: same binds, one guard,
 first structural match wins. Two Graphix-specific syntax rulings:

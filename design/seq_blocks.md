@@ -6,24 +6,11 @@ Status: built 2026-09-07 (straight-line, `until`, `try … with`, `seqq`;
 `flush(..)` and the reset on sleep built 2026-09-19; the machine node,
 steps decided by dependency summaries, built 2026-09-24
 (`dependency_summaries.md`).
-Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort,seq_let,seq_steps}.rs`,
+Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort,seq_let,seq_steps,seq_lowering}.rs`,
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
-`graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
-<!-- CR claude for claude: [doc-drift] `seq_do_statement_list_is_capped` was deleted along
-with `do` (4e254894), so this pin points at nothing. Two other pins are dead.
-env_independent_typerefs.md pins `check_mode_parity` in graphix-fuzz/src/lib.rs, which
-never existed; the gate is graphix-shell/tests/check_mode_parity.rs
-(`check_diagnostics_mode_identical`). recursive_activations.md files
-`jit_deep_nontail_probe` under lang/functions.rs, but it is at
-graphix-fuzz/src/lib.rs:5968. Ten pins still cite graphix-compiler/src for files now
-under graphix-types/src: expr/parser/test.rs (here, list_native, module_system,
-or_patterns), env.rs, expr/test.rs, expr/seq.rs, expr/resolver.rs, abstract_value.rs and
-shared_map.rs. list_native.md also puts the List rep in `node/list.rs`, which is now
-graphix-types/src/list.rs. Following one of these pins to verify a rule lands on a
-missing file or test. (x-doc-drift-10) -->
-`seq_do_statement_list_is_capped`), `expr/seq.rs` unit tests
-(`a_long_seq_lowers_flat`).
+`graphix-types/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`),
+`graphix-types/src/expr/seq.rs` unit tests (`a_long_seq_lowers_flat`).
 Supersedes: pure_select, pure_dataflow_plan, levels_and_events,
 seq_review_2026-09-04, seq_review_2026-09-06.
 
@@ -288,7 +275,7 @@ guards are compiler-only nodes and print as their operand.
   let pc: [`Idle, `S0, `S1, ..] = `Idle;
   let idle = select pc { `Idle => true, _ => false };
   let r = never();                          // the block's value
-  let x_c = never();                        // one cell per let read across arms
+  let t_c = never();                        // the trigger snapshot, each try's `e` and join cell
   catch(e) { pc <- `Idle; e? };             // the machine's handler + abort action
   <abort event>;                            // §9, when the seq has one
   let go = filter(<trigger>, |x| x ~ idle); // busy-drop
@@ -458,21 +445,13 @@ double delivery because the try consumed the original. No `finally`:
 success cleanup is the next statement, failure cleanup is the with
 body. `with(_)` is accepted.
 
-<!-- CR claude for claude: [doc-drift] This sentence is stale: the join cell takes the try
-body's type, so `seq { let v = try { x? } with(e) { "s" }; v }` over an i64 `x` is
-refused at the generated `seqj.. <- seqv..`, and only a single-name `let v: [i64,
-string] = try ..` annotation widens it, as §6.1 (line 297) says. The §6.1 skeleton's
-`let x_c = never(); // one cell per let read across arms` (line 279) shows per-let
-carried cells that no longer exist; the prelude's cells are the trigger snapshot, each
-try's `e` and its join cell. The pins at lines 12-13 name
-graphix-compiler/src/expr/parser/test.rs (now graphix-types/src/expr/parser/test.rs) and
-a test seq_do_statement_list_is_capped that no longer exists, and
-dependency_summaries.md:9 names graphix-compiler/src/expr/seq.rs (now under
-graphix-types). The same stale graphix-compiler/src/expr/ prefix is in list_native.md,
-or_patterns.md, tvar_constraints.md and netidx_extraction.md. (t-seq-13) -->
-The statement's value is the union of the two bodies' last values; a
-with body ending in `e?` has an uninhabited residual and types Bottom,
-so the union is the try body's type. `e` is typed as a `catch` bind is
+The statement's value is the try body's last value or the with
+body's, through a join cell whose type is the try body's (an
+unannotated `let` over `never()` takes its first writer's type): a with
+body must produce that type, or end in `e?`, whose uninhabited residual
+types Bottom. A union is spelled by annotating a single-name `let`
+(`let v: [i64, string] = try ..`), whose type passes to the join cell
+(§6.1). `e` is typed as a `catch` bind is
 — the union of the try body's throws, as `Error<ErrChain<..>>` — and
 `with(e: T)` follows `catch(e: T)`'s rule: `T` must cover that union.
 A `let` inside either body is scoped to that body; `e` to the with
@@ -670,7 +649,7 @@ ab;                                         // SeqAbort: fails the run
 
 `uniq` keeps a same-arm re-match from re-emitting the expression's
 standing value at each `pc` transition. The machine's `Catch` takes the
-event as `seq_manual`: a fire marks the abort action pending without an
+event as its action's `manual` event (`node/error.rs::CatchAction`): a fire marks the abort action pending without an
 error delivery, so the action (`pc <- \`Idle`, the `seqq` credit) still
 runs ONCE when an error and an abort meet, under the same
 received-equals-raised rule as §7.4.
@@ -679,7 +658,7 @@ The abort must win the cycle it fires in: a step completing in that
 cycle would queue its `pc` advance behind the reset and resume a dead
 run. A block updates its catches after the children they cover, which
 is too late, so the compiler-only `SeqAbort` node
-(`node/error.rs::SeqAbortEvent`) sits before the machine's select and
+(`node/error.rs::SeqAbort`) sits before the machine's select and
 advances the MACHINE handler's generation when the event fires. Every
 `SeqGuard` holds its machine's handler beside its nearest one (a
 try-body arm's nearest handler is its jump; `DynNode::machine` marks

@@ -744,7 +744,7 @@ fn version_gt(a: &str, b: &str) -> bool {
     }
 }
 
-/// Get the graphix version string from the running binary
+/// The version of the `graphix` on the PATH
 async fn graphix_version() -> Result<CompactString> {
     let graphix = which::which("graphix").context("can't find the graphix command")?;
     let c = Command::new(&graphix).arg("--version").stdout(Stdio::piped()).spawn()?;
@@ -1658,7 +1658,7 @@ impl GraphixPM {
 
     /// Build a standalone graphix binary from a local package directory.
     ///
-    /// The binary is placed in `package_dir/graphix`. Only the local
+    /// The binary is placed in `package_dir/<short name>`. Only the local
     /// package is included directly — cargo resolves its transitive
     /// dependencies (including stdlib packages) normally.
     pub async fn build_standalone(

@@ -1,17 +1,10 @@
 # Parallel and incremental compilation
 
-<!-- CR claude for claude: [doc-drift] The `parallel-compile` branch is merged into main,
-and this doc's own sections mark module checks, fusion tasks, compile tasks and
-instances by substitution BUILT. Yet this Status line says 'partly BUILT on branch' and
-'the phases and the caches are the plan', two later lines say 'BUILT on the branch', and
-design/README.md indexes the doc as 'the plan for instances and module bodies'. A reader
-of the index concludes that substitution and parallel module checks are proposals. The
-Status line should say what is built on main and what is open: the audits as fuzz
-findings, the instance cache and the per-unit image caches. (x-doc-drift-06) -->
-Status: partly BUILT on branch `parallel-compile` (2026-09-29): parallel
-code generation, the compile context split from the runtime, statement
+Status: BUILT: parallel code generation, the compile context split from
+the runtime, module checks and fusion in parallel tasks, statement
 elaboration in parallel compile tasks, and instances typed by
-substitution. The phases and the caches are the plan.
+substitution. Open: the audits as fuzz findings, the instance cache and
+the per-unit image caches (Steps).
 Pins: `lang::functions::same_named_tvar_in_callback_arg`,
 `lang::functions::monomorphic_flat_map_twice`; the `GRAPHIX_ELAB_AUDIT`
 probe (`node/lambda.rs::elab_audit`) and `GRAPHIX_TASK_AUDIT`
@@ -183,9 +176,10 @@ compile 222.7 -> 208.0 ms (serial mode of the same binary 223.5).
 ## Compile tasks (BUILT)
 
 Compiling and type checking take a `CompileCtx`: the registry, the
-program's state (the `Env` and the registries, tracked persistent maps)
-and the compile's scratch. The runtime (`rt`, `libstate`, `control`,
-`fusion`) is the rest of `ExecCtx`, which derefs to the `CompileCtx`.
+program's state (the `Env` and the registries, tracked persistent maps),
+the compile's scratch and fusion's state (`CompileCtx::fusion`). The
+runtime (`rt`, `libstate`, `control`, the cycle's `event`) is the rest of
+`ExecState`, which derefs to the `CompileCtx`.
 What compiling would ask of the runtime it records and the runtime
 replays at install (CLAUDE.md, "Compiling never reaches the runtime").
 
@@ -345,8 +339,9 @@ order (`typecheck0`), while elaboration forks each into a task
 - A builtin call site resolves its function by its `Ref`'s bind id,
   not by looking its name up (fusion discovery and analysis).
 - A compile task's join wrote back each key it touched, once per
-  write; the keys are deduplicated and written back in one
-  `update_many` (`tracked.rs`).
+  write; the keys are deduplicated and each written back once
+  (`merged_keys`, `graphix-types/src/tracked.rs`), and a join whose
+  parent has not moved since the fork takes the fork's map whole.
 - poolshark's pool registry hashed discriminants to their raw bits, so
   the table's tag bits were all equal and every lookup scanned its
   group.
@@ -361,7 +356,7 @@ id also fuses a trait method whose implementation is a fast builtin.
 
 ## The rule that makes it possible
 
-BUILT on the branch: the gate keeps what the body bound, and the check's
+BUILT: the gate keeps what the body bound, and the check's
 settle drains before elaboration (`design/tvar_constraints.md`).
 
 The definition check plus the call-site check are all of type checking.
@@ -404,16 +399,19 @@ must not change output. `detcheck` is the test for that.
 ## Units of work
 
 A unit (a module body, a statement, an instance) compiles in a fork of
-the `CompileCtx`: the `Env` and the registries are tracked maps a join
-merges, and the scratch (`bind_to_lambda`, `rec_defs`, `def_gate_*`,
-`resolving_lambdas`, `pending_settles`, `pending_imports`, `attr_*`,
-`def_assertions`, `batch_connect_targets`) is the fork's own.
+the `CompileCtx`: the `Env`, the registries, `bind_to_lambda` and
+`batch_connect_targets` are tracked maps a join merges; the deferred
+outputs (`pending_settles`, `pending_imports`, `pending_names`,
+`attr_*`, `def_assertions`, the recorded refs and discards) start empty
+in the fork and the join appends them; the resolution scratch
+(`rec_defs`, `def_gate_*`, `resolving_lambdas`) is copied into the fork
+and stays the parent's.
 `resolving_lambdas` must stay per unit: shared, a thread reaching a
 definition another thread is resolving would read it as recursion.
 
 ## Open design items
 
-**Type-directed builtins.** BUILT on the branch as the `Concrete`
+**Type-directed builtins.** BUILT as the `Concrete`
 conjunct (`design/tvar_constraints.md`). About 17 builtins have an `Apply::typecheck1`
 hook (`str::parse`; the json, toml, pack, sqlite, db and hbs reads). It
 both learns the builtin's target type and refuses one it cannot use. When

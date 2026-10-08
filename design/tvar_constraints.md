@@ -1,7 +1,7 @@
 # TVar cell constraints
 
 Status: built 2026-07-12
-Pins: `stdlib/graphix-tests/src/lang/select.rs` (`gated_scalar_unannotated`), `stdlib/graphix-tests/src/lang/types.rs` (`concrete_targets_are_known_where_they_settle`), `stdlib/graphix-tests/src/lang/functions.rs` (`same_named_tvar_in_callback_arg`), `stdlib/graphix-tests/src/lang/functions.rs` (`lazy_three_level`, `inlang_map`), `stdlib/graphix-package-rand/src/test.rs` (`rand_float_default`), `graphix-compiler/src/expr/test.rs` (the round-trip proptest), `graphix-fuzz/findings/{settle-order-jul2026,infinite-type-jul2026,tvar-alias-sever-jul2026,bound-cell-cycle-accepts-aug2026}/`
+Pins: `stdlib/graphix-tests/src/lang/select.rs` (`gated_scalar_unannotated`), `stdlib/graphix-tests/src/lang/types.rs` (`concrete_targets_are_known_where_they_settle`), `stdlib/graphix-tests/src/lang/functions.rs` (`same_named_tvar_in_callback_arg`), `stdlib/graphix-tests/src/lang/functions.rs` (`lazy_three_level`, `inlang_map`), `stdlib/graphix-package-rand/src/test.rs` (`rand_float_default`), `graphix-types/src/expr/test.rs` (the round-trip proptest), `graphix-fuzz/findings/{settle-order-jul2026,infinite-type-jul2026,tvar-alias-sever-jul2026,bound-cell-cycle-accepts-aug2026}/`
 
 ## The problem this solves
 
@@ -379,23 +379,14 @@ refused `f("s")` at elaboration.
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every
 former consumer derives from the cells:
 
-<!-- CR claude for claude: [doc-drift] Two statements in this doc disagree with the code.
-First, the contains bound check does not make 'a variable with one bound meet it (an
-open one binds to it)'. FnType::bounds_hold checks only variables that are already
-bound, whatever the bound count, as the 'Quantified function formals' section says:
-`apply(|x| x * x)` over `type F = fn<'b: Number>(x: 'b) -> 'b` checks because 'b stays
-open. Second, under 'Things deliberately left as they are',
-`FnType::freeze_shared_tvars` does not exist and reset_tvars freezes nothing;
-FnType::instantiate freezes the fresh cells that repeat. Delete the one-bound clause and
-point that sentence at FnType::instantiate. (t-fntyp-12) -->
 - `constraint_view()` — `(tvar, conjunct)` pairs, one per conjunct of
   each declared quantifier's cell, normalized, sorted by name then
   conjunct and deduped; a `+` bound prints as `fn<'a: A + B>`. Feeds
   Display, Eq/Ord/Hash (Hash reads the shape only), and the contains
-  bound check: a variable with one bound meets it (an open one binds to
-  it); with several, only a bound variable is checked, since an open
-  conjunction settles by a witness and the cell enforces it at every
-  binding meanwhile. On the wire a cell's conjuncts travel with the cell
+  bound check (`FnType::bounds_hold`): only a bound variable is
+  checked, whatever its bound count, since an open variable settles by
+  a witness and the cell enforces its bounds at every binding
+  meanwhile. On the wire a cell's conjuncts travel with the cell
   (each TVar writes its own, or the image's shared cell definition
   holds them); a fn type writes none of its own.
 - `FnType.quantifiers: Arc<[ArcStr]>` — the names the `fn<...>` header
@@ -441,8 +432,8 @@ point that sentence at FnType::instantiate. (t-fntyp-12) -->
   cross-scope class and genuine infinite types have IDENTICAL refusal
   channel profiles (positional `would_cycle` in argument acceptance
   walks, CallSite containment, instance checks). A fresh call signature
-  is never aliased by name: `reset_tvars` keeps its topology by cell and
-  only freezes the cells that repeat (`FnType::freeze_shared_tvars`), so
+  is never aliased by name: `FnType::instantiate` keeps its topology by
+  cell and freezes only the fresh cells that repeat, so
   a callback argument holding another function's `'b` stays apart from
   the callee's own. The only discriminator is the
   marked cell's STATE at terminal settle (open and unconstrained →

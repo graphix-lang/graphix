@@ -370,8 +370,8 @@ generated select de-fuses: coverage residue, `FuseExpect::None`). A
 trait method passed as a HOF argument registers the instance's
 parameter binding in `trait_methods` for the elaboration, and a
 collection's runtime slots call the prototype's resolved definition as
-a constant (`prototype_def`) rather than binding on the dispatcher's
-absent runtime value.
+a constant (`CallKind::slot` in `node/collection.rs`) rather than
+binding on the dispatcher's absent runtime value.
 
 **A value occurrence is a call site.** A reference to a GENERALIZED
 binding — a let-bound lambda, an interface `val`, a trait dispatcher,

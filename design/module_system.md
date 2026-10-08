@@ -5,8 +5,8 @@ Pins: `stdlib/graphix-tests/src/lang/modules.rs` (`sig_type_through_use_alias`,
 `private_type_in_public_body`, `imported_type_in_body`,
 `private_type_union_member`, `use_in_value_position_is_compile_error`,
 `declaration_in_value_position_is_compile_error`),
-`graphix-compiler/src/expr/parser/test.rs` (`use_groups`, `use_new_grammar`,
-`keyword_rooted_typath`), `graphix-compiler/src/env.rs` (`mod_root_strips_marked`).
+`graphix-types/src/expr/parser/test.rs` (`use_groups`, `use_new_grammar`,
+`keyword_rooted_typath`), `graphix-types/src/env.rs` (`mod_root_strips_marked`).
 
 ## The invariant
 
@@ -164,22 +164,12 @@ module's own business when the body is instance-elaborated elsewhere.
 ### The table
 
 `Env.names: Map<ModPath, ScopeNames>`, where a `ScopeNames` is
-<!-- CR claude for claude: [doc-drift] Out of date with the code. In this file: the field
-is keyword_anchored, not chain (here and at line 215); restore_lexical_env is now
-Env::swap_lexical (line 170, and also design/program_image.md:169); predeclared_mods no
-longer exists (line 226; compile_statement now passes a predeclared flag); and the Pins
-at lines 8-9 name graphix-compiler/src/expr/parser/test.rs and
-graphix-compiler/src/env.rs, which now live under graphix-types/src. In
-design/env_independent_typerefs.md: the cell holds a Weak, not an Arc (line 23);
-find_visible is now resolve_visible (line 25); the check_mode_parity pin no longer
-exists (line 4); and there is no #[pack(skip)] (lines 38-40): the syntax codec mints a
-fresh cell, while an image carries the cell (graphix-types/src/typ/mod.rs:451).
-(t-env-11) -->
-`imports: name → ImportEntry { scope, name, chain }` plus the scope's
+`imports: name → ImportEntry { scope, name, keyword_anchored }` plus the scope's
 glob source list in declaration order. Scope paths are globally
 unique, so `names` is a per-context registry of every module's and
-block's import table, and it is EXEMPT from `restore_lexical_env` —
-never rolled back by the module privacy swap. That exemption IS the
+block's import table, and it is EXEMPT from `Env::swap_lexical` (the
+context's `with_restored`) — never swapped out by the module privacy
+swap. That exemption IS the
 invariant: `ctx.env.names[def_scope]` equals a captured
 `f.env.names[def_scope]` by construction, which is what lets instance
 elaboration, `TypeRef::lookup_ref` and the interface bridging walks all
@@ -223,7 +213,7 @@ script's file-top `mod m` from any depth, in load mode as in check
 mode.
 `super` is SCOPE-relative, not module-relative: one `super` from module
 `M` anchors at `dirname(M)` and resolves along that anchor's chain (an
-entry carries `chain: true`; a `super::*` glob expands to one source
+entry carries `keyword_anchored: true`; a `super::*` glob expands to one source
 per chain level at use time). This is what makes script files work: a
 loaded file's top level is the `#do` block under root, and a
 submodule's `use super::x` must reach the file's top-level lets, which
@@ -234,8 +224,9 @@ root is an error. Check mode (statements at root) and load mode (the
 ### Headers
 
 Before compiling a block's children, `compile_block_children`
-pre-registers the block's `mod` NAMES (`predeclared_mods` keeps the
-duplicate-module guard honest), and `bind_sig` pre-registers sig `mod`
+pre-registers the block's `mod` NAMES (refusing a duplicate there; each
+`mod` statement then compiles with `predeclared` set, so its own
+duplicate guard does not trip), and `bind_sig` pre-registers sig `mod`
 items the same way, so declaration order carries no visibility meaning
 and a sibling submodule wins over a same-named package (`list::List`
 inside tui is the submodule). Values are NOT pre-registered: forward

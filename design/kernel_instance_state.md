@@ -137,8 +137,10 @@ pointer, uniform on every kernel signature:
   (`claim_site_word`), and its loop chains ANCHOR in the block
   (`claim_site_anchor`). The count, anchors and the words rooting
   per-activation trees are the kernel's `SiteLayout`, recorded at
-  definition. `to_define` is defined in REVERSE (deepest callees first,
-  parent last) so callers read their callees' layouts; a still-missing
+  definition. A region's fresh callee bodies are emitted in a
+  depth-first postorder over their static call edges (`jit::def_order`:
+  callees first, the parent last) so callers read their callees'
+  layouts; a still-missing
   layout IS the recursive back-edge discriminator and the call passes 0.
 - **The caller supplies the storage** (`emit_site_block`). At a root
   call site: a contiguous run in the caller's own space — instance

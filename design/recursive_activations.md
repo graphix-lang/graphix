@@ -8,8 +8,8 @@ Pins: `lang/functions.rs` (`tail_stateful_per_iteration`,
 `tail_stateful_scalar`, `fn_invariant_tail_loop`,
 `string_invariant_tail_loop`, `fn_formal_two_callbacks`,
 `fn_formal_rebound`, `fn_formal_forwarded`, `cps_wrapper_recursion`,
-`open_return_callee_in_callback`, `jit_deep_nontail_probe`,
-`deep_nontail_recursion_completes`), `lang/attributes.rs`
+`open_return_callee_in_callback`, `deep_nontail_recursion_completes`),
+`graphix-fuzz/src/lib.rs` (`jit_deep_nontail_probe`), `lang/attributes.rs`
 `tail_recursive_stateful`, `lang/errors.rs` (`catch_per_activation`,
 `catch_in_callee_stays_in_callee`, `catch_through_call`),
 `lang/collection.rs`, `lang/select.rs`
@@ -211,8 +211,8 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
   site spills its CLIF args to a stack slot at an 8-byte stride and
   calls `graphix_grow_stack(thunk, args, out)`, which runs the kernel's
   SPILL THUNK on a fresh 32MB segment (`stacker::grow`); the thunk
-  (`jit::define_spill_thunk`, one per recursion-target kernel, declared
-  before the body and defined after it) loads the params as the
+  (the kernel's `self_thunk`, one per self-calling kernel, named before
+  the body and emitted after it by `jit::emit_trampoline`) loads the params as the
   signature declares, calls the kernel, stores the two result words.
   Cross-kernel edges are acyclic (mutual recursion de-fuses), so only
   self-calls check. Measured: 2,000,000 deep in 1.4s and 507MB, ~250

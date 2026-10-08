@@ -74,15 +74,15 @@ A fork point is a node with several children it updates in sequence.
 
 | fork point | children | notes |
 |---|---|---|
-| the root loop (RT/gx.rs:475) | the roots scheduled this cycle | a root may be scheduled mid-cycle by an earlier one (`notify_set`); runs in waves (§4.3) |
 | `Block` (C/node/mod.rs:1021) | statements in `evaluation_order` | a block's catches run last, after a join of what they cover |
 | `CallSite::update_call` (C/node/callsite.rs:1549) | the arguments (`ArgMap`, an `IndexMap`: insertion order) | then the callee, which depends on all of them |
 | constructors: struct, tuple, variant, array, list literals, string interpolation (`gather`, C/node/mod.rs:398) | fields | |
 | binary operators (C/node/op.rs:173) | the two operands | |
 | `MapQ` (C/node/collection.rs:918) | slots, as a range | init, map, filter, filter_map, flat_map, find, find_map; `find` keeps the first match in index order at merge |
-| `FusedKernel` feeders (C/fusion/kernel.rs:311) | node-walked feeder subtrees | the kernel call depends on all of them |
 
-Not fork points: `Select` (the arm depends on the scrutinee; guards are
+Not fork points: the root loop (top-level roots are not planned, §4.3),
+a fused kernel's feeders (`FusedKernel::update` polls them in order),
+`Select` (the arm depends on the scrutinee; guards are
 consulted in order and a consulted bottom guard decides), the seq
 machine (its steps are its order), `FoldQ` (slot `i+1` reads slot `i`'s
 production; §12), `Any` and `Sample` (order is their meaning; `Any`
@@ -161,42 +161,40 @@ dependency.
 
 ### 4.1 Shape
 
-`ExecCtx` today is one exclusive context: compile state, runtime,
-library state, the event overlay. Under a fork, each side needs its own
-view. A shared `ExecCtx` (`dashmap` for the maps, a `Mutex` around the
-rest) would put a sharded lock on every variable read. The overlay is the hottest map in the engine: every `Ref` reads
-it. So the design keeps `&mut` on the hot path and makes the forked
-side's context a different value instead.
+Under a fork, each side needs its own view of the compile state, the
+runtime and the event overlay. A shared `ExecCtx` (`dashmap` for the
+maps, a `Mutex` around the rest) would put a sharded lock on every
+variable read, and the overlay is the hottest map in the engine: every
+`Ref` reads it. So `ExecCtx` keeps `&mut` on the hot path, and each of
+its views is the root's state or a forked branch's layer over its
+parent's.
 
 ```rust
 pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
-    shared: &'a Shared<R, E>,    // frozen while any branch below is live
-    base: Base<'a, R, E>,        // the root's exclusive state, or nothing
-    delta: Delta,                // this branch's overlay/store/ref-path delta
-    log: EffectLog,              // what it would have done to the runtime
-    init: bool, wake_init: bool, // the scoped flags
-    serial: bool,                // under #[serial] (§7)
+    pub cx: branch::CxView<'a, R, E>,   // the compile state: root, or a fork's view
+    pub rt: branch::RtView<'a, R>,      // the runtime: root, or a ForkRt
+    pub event: &'a mut Event<E>,        // its overlay a Layered map
+    pub libstate: &'a LibState,         // shared (§6)
+    pub control: &'a Arc<Control>,      // shared
+    fork_depth: u8, par: ParMode, fork: ForkFlags,
+    ..
 }
 ```
 
 - **Root branch.** The cycle's root holds the runtime and the compile
-  state exclusively (`Base::Root(&mut ..)`). It writes
-  through, exactly as today. An unforked program never builds a delta
-  or a log: that is the "serial path pays nothing" rule in the type.
-- **Forked branch.** `join` reborrows the parent's state as `&` for
-  both sides and gives each side an empty `Delta` and `EffectLog`
-  (pooled, `GPooled`, since they cross threads). Reads go: own delta,
-  then the parent chain (frozen for the join's duration), then the
-  store. Writes go to the delta or the log.
-- **Event.** `Event` dissolves into the branch: `variables` becomes the
-  delta chain over the root's overlay, `init`/`wake_init` become branch
-  fields, `user` and `custom` move to `Shared` (`custom` behind a
-  `Mutex`; it is taken a few times a cycle). `update`'s signature loses
-  its `event` argument.
-- **Bounds.** Sharing the runtime's read half across threads needs
-  `R: Sync` and `E: Sync`. `GXRt`'s non-`Sync` fields (the `SelectAll`
-  of watch streams) are touched only through `&mut` at merge, so they
-  sit in an exclusive-access wrapper.
+  state exclusively (`RtView::Root`, `CxView::Root`) and writes
+  through. An unforked program never builds a delta or a log: that is
+  the "serial path pays nothing" rule in the type.
+- **Forked branch.** `fork_join`/`fork_each` give each side a `ForkRt`
+  (store and reference-path deltas and a log of every other runtime
+  call, `RtOp`), a `ForkCx` and a forked `Event` over the parent's,
+  which is frozen for the join's duration. Reads go: own layer, then
+  the parent chain, then the store. Writes go to the deltas or the log.
+- **Event.** The event's overlay (`variables`) and `wake_phantoms` are
+  `Layered` maps; `init`/`wake_init` are copied per branch; `custom` is
+  one locked map every branch shares; `user` is copied.
+- **Bounds.** Sharing the parent's runtime with a forked branch needs
+  `R: Sync` (`ForkRt`'s `Send`).
 
 The alternative puts the runtime behind `&` with internal locks. This
 design buffers instead. A forked branch never calls a mutating `Rt`
@@ -214,40 +212,33 @@ the refactor alone before any thread exists.
 At a join, the right branch's results are appended after the left's,
 into the parent (a delta, a log, or the root's state):
 
-- **Delta.** Overlay, store and ref-path entries insert into the
-  parent. Two branches publishing the same id is an analysis bug,
-  except for error handlers. Here the serial rule is reproduced: the
-  left (earlier) delivery keeps the slot, and the right's becomes a
-  queued write, as `deliver_error`'s `Occupied` arm does
-  (C/node/error.rs:584). A tombstone removes the key.
+- **Deltas.** Overlay (`Layered::merge`), store and ref-path entries
+  (`RtView::merge`) insert into the parent. Two branches publishing the
+  same id is an analysis bug, except for error handlers. Here the
+  serial rule is reproduced: the left (earlier) delivery keeps the
+  slot, and the right's becomes a queued write (`fork_join`'s
+  `delivered_in_both`), as `deliver_error`'s `Occupied` arm does. A
+  removal removes the key.
 - **Log.** The right log concatenates after the left. At the root, the
-  log replays into `Rt` in order. That covers the queue order of
+  log (`RtOp`s) replays into `Rt` in order. That covers the queue order of
   writes, `ref_var`/`unref_var` pairs, timer and task spawns, and
   `notify_set`.
 - **Productions.** A fork point's own result is built after the join,
   as today, from its children's residents.
 
 Under `GRAPHIX_PAR_AUDIT=1` each branch also records the ids it read
-from outside its own delta. At a join, the right branch's reads must
-not meet the left branch's publications. A miss is an analysis bug, and
-the audit panics with both ids and both subtrees. That makes the
+(`ForkRt::note_read`). At a join, the right branch's reads must not
+meet what the left branch published (`branch::audit`). A miss is an
+analysis bug, and the audit panics naming the id. That makes the
 fuzzer's forced-parallel pair test the analysis itself, not only the
 outputs.
 
 ### 4.3 The root loop
 
-The root loop runs the scheduled roots in waves of the top-level fork
-plan. Before each wave it takes the roots scheduled so far, including
-any an earlier wave's `notify_set` scheduled. After the wave, the
-merged log applies, which may schedule more. A root scheduled by a
-later root in the same wave would not have run this cycle in the serial
-order either: the serial loop visits roots in `IndexMap` order and only
-sees marks set before its position.
-
-The cycle enters the rayon pool (`install`) only when a fork is
-expected: the cycle cost histogram (§5) says the last cycles were
-expensive, or a `#[parallel]` region is live. Otherwise it runs inline
-on the driver thread, as today, with no thread handoff.
+The root loop does not fork: it runs the scheduled roots in serial
+order on the runtime's thread. A script compiles as one block, whose
+plan forks (§3.3). No cycle-level decision enters the pool: a fork
+enters it where it is made (§4.5).
 
 ### 4.4 As built (phase 2)
 
@@ -342,57 +333,44 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   machine itself are ordered in the block plan: the abort must fail the
   guards before the machine updates.
 
-<!-- CR claude for claude: [doc-drift] §4.3 and §5 describe a cost model other than the
-one in cost.rs. :247-250 and :362-363 have a cycle-level histogram decide whether to
-enter the pool; none exists, and the pool is entered at the fork (§4.5). :351 and :358
-put bucket 0 near 16 ns; T_BUCKET = 6 puts it at T/128-T/64, about 0.3-1.1 us on this
-box. :371-384 pack members greedily largest-first into a join tree, halve slot ranges
-down to the grain, and use a construction histogram for growth. As built, a site splits
-contiguous ranges at the weighted midpoint (Splits::split), slots fork in flat ranges of
-the grain, and growth has two ProbeSites. :406 says the median wake where the code and
-:436-439 take the lower quartile, and :83 and :751 call FusedKernel feeders a fork
-point, though FusedKernel::update (fusion/kernel.rs:311) updates them in order and
-CLAUDE.md does not list them. (c-cost-misc-11) -->
 ## 5. The cost model
 
 The engine measures, and the measurements choose the fork points.
 
-**What is measured.** Each child of a fork point with a multi-member
-wave carries a coarse log2 histogram of its update cost: 16 buckets of
-saturating `u16` counts, 32 bytes, covering roughly 16 ns to 0.5 ms
-and up. A sample is two tick reads around the child's update and one
-increment of the bucket `log2(ticks) - k`, clamped to 0..15. A tick is
-the cheapest monotonic counter the platform has: `rdtsc` on x86_64
-(invariant on every current CPU, constant rate across cores and
+**What is measured.** Each child of a measured fork point carries a
+coarse log2 histogram of its update cost (`cost::Hist`): 16 buckets of
+`u16` counts. A sample is two tick reads around the child's update and
+one increment of the bucket `log2(ticks) - shift`, clamped to 0..15. A
+tick is the cheapest monotonic counter the platform has: `rdtsc` on
+x86_64 (invariant on every current CPU, constant rate across cores and
 frequency changes), `CNTVCT_EL0` on aarch64, `Instant` elsewhere.
 Nothing converts ticks to time: `T` below is calibrated in ticks too,
-and `k` is chosen at calibration so bucket 0 sits near 16 ns. The
-counter's not being serializing is lost in the log2 buckets.
-Collections keep one histogram for per-slot update cost and one for
-slot construction (a new slot builds and checks an instance: tens of
-microseconds), not one per slot. The cycle as a whole keeps one, which decides whether to enter
-the pool at all. A fork point that is a chain stores nothing.
+and `shift` puts `T` in bucket 6 (`T_BUCKET`), so bucket 0 starts
+between `T/128` and `T/64`. The counter's not being serializing is lost
+in the log2 buckets. Every 64 samples halve the counts, so old behavior
+fades. A collection keeps one histogram for its standing slots' per-slot
+cost, not one per slot, and its growth two `ProbeSite`s (below). A fork
+point that is a chain stores nothing.
 
-**When it is measured.** Every update while a child's decision is
-unsettled; then one update in N, with N doubling while the decision
-holds (to 1 in 256), and halving the counts as samples arrive so old
-behavior fades. A changed decision resets N. Sampling keeps the
-steady-state overhead to a branch and a counter.
+**When it is measured.** Every update while a site is unsettled (each
+child has fewer than four samples); then one update in N, with N
+doubling while the estimates hold (to 1 in 256) and reset when one
+moves (`cost::Sampler`). Sampling keeps the steady-state overhead to a
+branch and a counter.
 
-**What is decided.** For a wave, the estimate per member is a quantile
-of its histogram (p75 by default: a member that is usually cheap but
-sometimes huge should still fork). Members are packed into a balanced
-binary tree of joins by estimate, greedily largest first. A pair is
-joined only if both sides' estimates exceed `T`; members below `T` are
-grouped and run serially on one side. `T` is a multiple of the measured
-cost of a stolen job, calibrated when the pool starts (order of a few
-microseconds). An unstolen `join` costs much less, but `T` must cover
-the case where the steal happens.
+**What is decided.** A child's estimate is the floor of its
+histogram's p75 bucket (a child that is usually cheap but sometimes
+huge should still fork). A site cuts its children into contiguous
+ranges (`Splits::split`, `Splits::ranges`): a range of estimated total
+`2T` or more splits at its weighted midpoint when both halves reach
+`T`, and recursively; each final range is a sibling branch
+(`branch::fork_each`). `T` is a multiple of the measured cost of a
+stolen job (§5, as built). An unstolen `join` costs much less, but `T`
+must cover the case where the steal happens.
 
-For a collection, `grain = ceil(T / per_slot_estimate)`. The slot range
-splits in halves down to `grain`, as rayon's indexed iterators split,
-but cost-weighted. Growth uses the construction histogram for the new
-slots.
+For a collection's standing slots, the ranges are flat: slots of
+`ceil(T / per_slot_estimate)` (the grain), capped as phase 5 says.
+Growth is costed by two `ProbeSite`s (phase 5).
 
 **Measured time is wall time.** A child that forked internally reports
 less than its work, so the parent errs toward not forking it. That
@@ -400,20 +378,9 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
-<!-- CR claude for claude: [doc-drift] The next line says fork plans are imaged; §3.3 and
-Block::image_encode (graphix-compiler/src/node/mod.rs:1154) say they are not, and a warm
-start replans. §8 (lines 663-667 and 681-683) says the join asserts disjoint keys under
-GRAPHIX_PAR_AUDIT, and that a hook site built in a branch joins the registry at the
-merge with a duplicate deleted. In the code, TrackedMap::join asserts nothing, the audit
-(branch.rs:785) checks only a right branch's reads, and return_site
-(node/coretraits.rs:330) puts a site back in the shared pool at once, as §4.4 says.
-dependency_summaries.md §6 (lines 178-183) says write sets decide conflicts, while §3.2
-here and plan_block compare reads with publications and never consult writes. The
-analysis.rs module doc names three passes; the module also holds the dependency
-summaries, the seq and block plans, the #[parallel] check and arm_sleeps_on_deselect.
-(c-analysis-branch-10) -->
 **Not imaged.** Histograms are run-time state; a warm start relearns
-them. Fork plans (§3.3), which are static, are imaged.
+them. Fork plans (§3.3) are not imaged either: a block plans at its
+first update that may fork, cold or warm (`Block::image_encode`).
 
 **Before there is data,** a fork point runs serially, unless an
 attribute forces it.
@@ -426,8 +393,8 @@ every update until each child has four samples, then on the doubling
 schedule, and turns serial when no split reaches `T` on both sides. A
 `SlotSite` keeps one per-slot histogram (the measured loop's total over
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
-is four times the median latency of handing an idle pool a job,
-measured on a thread of its own at the first use (`Auto` forks nothing
+is four times the lower quartile of nine latencies of handing an idle
+pool a job, measured on a thread of its own at the first use (`Auto` forks nothing
 until then). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
 
 **As built (phase 5).**
@@ -635,7 +602,7 @@ paths compiles in a compile task forked from its parent's compile view.
 This is the machinery statement elaboration already uses
 (`parallel_compile.md`):
 
-- `CompileCtx::fork`/`join` (C/lib.rs:1163);
+- `CompileCtx::fork`/`join` (C/lib.rs);
 - a fresh `tvar::new_task()` per task, so a task never writes a cell an
   earlier task created (`tvar::decided`, refused under `OwnWrites`);
 - refs and discards deferred per task.
@@ -683,16 +650,6 @@ that safe: they are independent.
 - **Two shared resources keep their locks:** the JIT (a kernel install,
   C/fusion/emit/jit.rs:1263) and the image decoder
   (C/node/callsite.rs:1768). Both are taken once per first use.
-<!-- CR claude for claude: [doc-drift] Stale against the code: no join asserts disjoint
-keys under GRAPHIX_PAR_AUDIT, which only audits a branch's reads (branch.rs:783). The
-C/lib.rs:1163 citation for fork/join above is also stale (they are at 1230 and 1264).
-parallel_compile.md:180 puts `fusion` in ExecCtx's runtime half, but it is
-CompileCtx::fusion. Its lines 400-402 call bind_to_lambda and batch_connect_targets a
-fork's own scratch, but they are tracked maps forked and joined (lib.rs:1237-1238).
-graphix-shell/src/lsp_backend.rs:61 says lsp_mode forces fusion off, but nothing reads
-it for fusion; the LSP is fusion-free because its check runs CheckOnly. lib.rs:1611,
-1706, 1986 and 2016 link ExecCtx::pending_settles, pending_imports and pending_names,
-but those are CompileCtx fields. (c-lib-10) -->
 - **Joins touch disjoint keys.** `TrackedMap::join` keeps the last join
   per key and detects no conflict. Runtime binds write fresh ids
   (`by_id`, `bind_to_lambda` keyed by new `BindId`s) and balanced pairs
@@ -710,11 +667,12 @@ updates from inside `Value::eq`/`cmp`/`fmt`. The pointer is a loan to
 one thread, made by a frame that holds the context and waits inside the
 comparison, so under branches each job loans its own branch (§9) and
 the aliasing is today's, once per job. The hook call sites are stateful
-graphs pooled per (trait, type) in `core_hook_sites`. Two branches
-comparing the same abstract type need two sites, so spare sites and
-spare events become branch scratch. A site built in a branch's task
-joins the registry at the merge; one that two branches both built is
-kept once and the other deleted.
+graphs pooled per (trait, type) in `core_hook_sites`, one registry
+every branch shares (§4.4). Two branches comparing the same abstract
+type take two sites: a call takes a spare site from the pool or builds
+one in a task of its own (`build_site`), and puts it back in the shared
+pool when it returns (`return_site`); a site whose entry went stale
+meanwhile is deleted.
 
 **Ids.** Ids minted in parallel are unique (global atomics,
 T/ids.rs:138) but their values depend on scheduling. That is acceptable
@@ -782,8 +740,8 @@ it through its own `CURRENT`.
 ## 10. Fused kernels
 
 A kernel invocation is a leaf. Its state is node-owned (`state`/`site`
-blocks), its loans are per call, and its feeders are a fork point. So
-kernels need nothing for the node-level design.
+blocks), its loans are per call, and its feeders are polled in order,
+not forked. So kernels need nothing for the node-level design.
 
 Parallel loops inside kernels (§11 phase 6) are the second half.
 
@@ -874,7 +832,7 @@ semantics-touching ones soak before the next.
 |---|---|---|
 | 1 | The branch context, serial only: `ExecCtx` split into `Shared` + branch, `Event` folded in, every rt/libstate/compile write routed through the root's exclusive state, the `custom`/tombstone/id-order audits. No delta, no log, no thread. | The refactor is serial-equivalent and costs nothing: the gate, a fleet soak, and a GUI-suite and admin-TUI timing at parity. |
 | 2 | Deltas, logs and compile tasks with an artificial fork: under `GRAPHIX_PAR=force`, every legal fork point runs its two sides serially, but through separate branch contexts, separate compile tasks for runtime binds, and the merge. `LibState` through `&`; the stdlib audit for in-language shared state, `Ordered` declarations. | Merge correctness, runtime compiles included, without threads: the fuzzer pair serial vs. forced-merge; `run!` gains a `par` mode. |
-| 3 | Fork plans: `publishes`, the waves, imaging the plans, `GRAPHIX_PAR_AUDIT`. | The analysis finds what serial order needed; the audit runs under the fuzzer's forced mode. |
+| 3 | Fork plans: `publishes`, the runs, `GRAPHIX_PAR_AUDIT`. | The analysis finds what serial order needed; the audit runs under the fuzzer's forced mode. |
 | 4 | The pool, `par::join`, thread-locals, the per-cycle stack budget, the cost histograms and decisions, `#[parallel]`/`#[serial]`, `GRAPHIX_PAR`. | Real parallelism: a bench corpus of wide programs (§12), speedup per core count. |
 | 5 | Node-walk collections: slot ranges, and growth built in chunked compile tasks (§8). | Collection scaling, growth included. |
 | 6 | Parallel loops inside kernels. | Fused collection scaling. |

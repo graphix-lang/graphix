@@ -40,13 +40,8 @@ reserved marker names (`'array_map`, `'list_fold`, `'map_filter_map`,
 ...). During lambda construction `CollectionIntrinsic::from_name`
 intercepts each marker (before the registered `BuiltIn` table —
 `register_builtin` rejects them) and `GXLambda::new_collection` builds
-<!-- CR claude for claude: [doc-drift] 'The dispatch charges no call-depth unit; only the
-per-element callback dispatch does.' describes accounting that does not exist: neither
-engine counts call depth (recursive_activations.md: no call-depth limit on either
-engine), and nothing in the code does. Delete the sentence. (c-collection-08) -->
-the corresponding Node as the lambda's body. The dispatch charges no
-call-depth unit; only the per-element callback dispatch does. An
-unknown marker name is an ordinary builtin reference.
+the corresponding Node as the lambda's body. An unknown marker name is
+an ordinary builtin reference.
 
 The compiler therefore owns callback instantiation and every typecheck
 phase; source, callback and accumulator binding; slot identity, prefix

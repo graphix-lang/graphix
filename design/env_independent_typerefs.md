@@ -1,7 +1,7 @@
 # Env-independent TypeRefs: carried resolution cells
 
 Status: built 2026-07-14
-Pins: `stdlib/graphix-package-gui/src/test/data_table_test.rs` (`empty_table`), `stdlib/graphix-package-gui/src/test/widgets_test.rs` (`context_menu_renders`), `graphix-fuzz/src/lib.rs` (`check_mode_parity`)
+Pins: `stdlib/graphix-package-gui/src/test/data_table_test.rs` (`empty_table`), `stdlib/graphix-package-gui/src/test/widgets_test.rs` (`context_menu_renders`), `stdlib/graphix-tests/src/lang/fusion_parity.rs`
 
 ## The defect
 
@@ -20,9 +20,9 @@ and keep the *structure* lazy.
 
 ## The cell
 
-`TypeRef.resolved: Arc<Mutex<Option<Arc<ResolvedRef>>>>` (`typ/mod.rs`).
+`TypeRef.resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>` (`typ/mod.rs`).
 `ResolvedRef` snapshots exactly what `lookup_ref` reads from the env
-via `find_visible`: the def's formal params and constraints, the body
+via `resolve_visible`: the def's formal params and constraints, the body
 `Type`, the canonical scope, and the def's pos/ori (so `TypeRefSite`
 recording survives cache hits). Substitution (`replace_tvars`), the
 arity check and constraint registration stay per call — pure given the
@@ -35,9 +35,11 @@ snapshot.
   (resolution re-enters through constraint checking, and `deref_typ`
   holds TVar guards); compute, then lock-check-store.
 - **Identity-excluded**, like pos/ori (Eq/Hash/Ord untouched).
-  `#[pack(skip)]`: a decoded ref has an empty cell and re-resolves in
-  the loading env, which is correct — a packed interface's names mean
-  the public view there.
+  The syntax codec skips the cell: a decoded ref has an empty cell and
+  re-resolves in the loading env, which is correct — a packed
+  interface's names mean the public view there. A session image carries
+  the cell (`image::refcell_len`, `TypeRef`'s `PackTrait` under
+  `image::is_encoding`).
 - **Params-independent.** The cell caches the NAME resolution, so
   param-substituting rebuilds SHARE it (`TypeRef::with_params`, used by
   normalize/resolve_tvars/union and, load-bearing, by

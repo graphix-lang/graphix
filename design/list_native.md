@@ -1,7 +1,7 @@
 # Native List: slim representation, literals, patterns
 
 Status: built 2026-08-31
-Pins: `stdlib/graphix-tests/src/lang/lists.rs`, `graphix-compiler/src/expr/parser/test.rs` (`list_is_a_reserved_type_name`), `bench/collection/lfold_rec.gx`, `bench/collection/lfold_rec_100k.gx`
+Pins: `stdlib/graphix-tests/src/lang/lists.rs`, `graphix-types/src/expr/parser/test.rs` (`list_is_a_reserved_type_name`), `bench/collection/lfold_rec.gx`, `bench/collection/lfold_rec_100k.gx`
 
 ## Motivation
 

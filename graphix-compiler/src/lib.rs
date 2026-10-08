@@ -1716,7 +1716,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
 }
 
 /// What the check defers to its statement's settle; see
-/// [`ExecCtx::pending_settles`].
+/// [`CompileCtx::pending_settles`].
 pub(crate) enum PendingSettle {
     /// A call site's terminal settle.
     Site {
@@ -1914,7 +1914,7 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     })
 }
 
-/// A deferred import-existence check; see [`ExecCtx::pending_imports`].
+/// A deferred import-existence check; see [`CompileCtx::pending_imports`].
 #[derive(Debug)]
 pub(crate) struct PendingImport {
     pub(crate) scope: ModPath,
@@ -2227,7 +2227,7 @@ fn fusion_on(flags: BitFlags<CFlag>) -> bool {
     !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows))
 }
 
-/// Drain the deferred terminal settles ([`ExecCtx::pending_settles`])
+/// Drain the deferred terminal settles ([`CompileCtx::pending_settles`])
 /// after a top-level statement, once every writer for the drained
 /// sites has run.
 pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
@@ -2271,7 +2271,7 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
 }
 
 /// Record the names `t`, written at `spec`, holds that do not resolve
-/// yet ([`ExecCtx::pending_names`]).
+/// yet ([`CompileCtx::pending_names`]).
 pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     t: &Type,

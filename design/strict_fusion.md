@@ -129,8 +129,8 @@ through lambda callee bodies; a constant under an INNER select's arm
 is reconciled by that select's scrutinee fold and does not count). An
 input-derived raise fuses. A bottom-typed arm that can raise runs its
 body for the delivery instead of the bare `never()` placeholder, and a
-`?` over an always-error inner has its own emission
-(`emit_qop_always_error`: raise when fresh, yield a bottom). The
+`?` or `$` over an inner that is always what it strips has its own
+emission (`emit_qop_always_bad`: raise when fresh, yield a bottom). The
 alternative that would let these fuse — a per-select last-arm word,
 the same class as a first-call word — is selection memory, not taken.
 
@@ -145,17 +145,10 @@ words per-slot and per-activation multiplicity
 activations. No replay caches (every word a kernel keeps is semantic),
 no selection memory, no inner
 `Apply`s or `Node`s beyond its input feeders. The runtime loans an
-<!-- CR claude for claude: [doc-drift] This list is stale: kernels are also loaned the
-fork mode through `PAR_LOAN` (fusion/par_loop.rs:50), a fifth loan that CLAUDE.md
-already lists. Further down, 'fusion is an embedder switch (UIs run with it off)' is
-wrong: the shell fuses every program unless `--no-fusion` is given or the host is
-Windows (graphix-compiler/src/lib.rs:2179). Above, `emit_qop_always_error` is now
-`emit_qop_always_bad` (fusion/emit/flow.rs:567). Anyone checking a kernel's thread-local
-surface against this list misses the fork loan. Anyone reasoning about UI performance
-from here assumes UIs are node-walked. (x-doc-drift-05) -->
-invocation exactly four things through scoped thread-locals:
+invocation exactly five things through scoped thread-locals:
 `KERNEL_ABORT` (the interrupt / stack-budget / bottom-abort channel),
-`KERNEL_ENV`, `QOP_RAISES` and the core-trait value hooks. Wire slot 0
+`KERNEL_ENV`, `QOP_RAISES`, the core-trait value hooks and the fork
+mode (`par_loop::PAR_LOAN`, the invoking context's `ParLoan`). Wire slot 0
 bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
 STALE and a stateless re-eval's STALE result (`wake_catchup.md`).
 
@@ -206,8 +199,9 @@ semantics, engine-independent.
 - **Removing the JIT entirely** (the pure-dataflow arc): built and
   gated on a branch, but the node-walk alone cannot make hot pure
   loops fast, and predictable performance is a core value. Fusion
-  stays, narrowed to the regime where its rent is paid; fusion is an
-  embedder switch (UIs run with it off).
+  stays, narrowed to the regime where its rent is paid. The shell fuses
+  every program, UIs included, unless `--no-fusion` is given
+  (`CFlag::FusionDisabled`) or the host is Windows.
 - **Admitting stateful builtins as fast fns with per-site memory:** a
   fast fn that remembers is a DynCall slot by another name — the same
   multiplicity questions return.
