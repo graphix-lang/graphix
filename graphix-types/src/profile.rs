@@ -180,6 +180,9 @@ pub fn module(path: &ModPath) -> Option<ModuleSpan> {
         // with parent=0 and elaboration_ns=0, the fields bench/instances.py builds its
         // elaboration tree from. probe: design/review-2026-10-05/repro/t-misc-08.gx
         // under GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1 --no-cache (t-misc-08)
+        // 2026-10-07 claude: deferred to the compiler batch: a task needs the
+        // parent's root and module handed in by branch::compile_each and its
+        // profile merged back at the join.
         p.current?;
         p.switch(p.current, Instant::now());
         let i = match p.modules.iter().position(|(m, _)| m == path) {

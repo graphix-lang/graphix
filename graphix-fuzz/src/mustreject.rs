@@ -1214,7 +1214,7 @@ fn only_variants(t: &Type) -> bool {
 fn bool_arm(b: bool) -> Pattern {
     Pattern {
         type_predicate: None,
-        structure_predicate: StructurePattern::Literal(netidx_value::Value::Bool(b)),
+        structure_predicate: StructurePattern::literal(netidx_value::Value::Bool(b)),
         guard: None,
         pos: WrittenAt::NOWHERE,
         end: WrittenAt::NOWHERE,

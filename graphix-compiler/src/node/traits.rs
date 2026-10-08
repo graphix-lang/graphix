@@ -939,7 +939,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         body,
                     )
                 };
-                let lit = |b: bool| StructurePattern::Literal(Value::Bool(b));
+                let lit = |b: bool| StructurePattern::literal(Value::Bool(b));
                 let any = || StructurePattern::Ignore;
                 mk(ExprKind::Select(SelectExpr {
                     arg: Arc::new(scrutinee),

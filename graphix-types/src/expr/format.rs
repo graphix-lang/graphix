@@ -2,7 +2,7 @@ use crate::{
     PrintFlag,
     expr::{
         Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind, StrForm,
-        TraitExpr, TraitMethod, TryWithExpr, UseItem,
+        StructurePattern, TraitExpr, TraitMethod, TryWithExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
             PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
@@ -396,6 +396,16 @@ impl<'a> Ornaments<'a> {
         self.acc.push((self.node, o))
     }
 
+    /// A pattern's string literals' delimiters, in order.
+    fn pattern(&mut self, p: &'a StructurePattern) {
+        ensure_sufficient(|| {
+            if let StructurePattern::Literal(Value::String(_), form) = p {
+                self.push(Ornament::Delimiters(form.0))
+            }
+            p.for_each_sub(&mut |c| self.pattern(c))
+        })
+    }
+
     fn expr(&mut self, e: &'a Expr) {
         ensure_sufficient(|| {
             self.node += 1;
@@ -407,6 +417,14 @@ impl<'a> Ornaments<'a> {
                 | ExprKind::StringInterpolate { .. } => {
                     self.push(Ornament::Delimiters(e.str_form))
                 }
+                ExprKind::Bind(b) => self.pattern(&b.pattern),
+                ExprKind::Lambda(l) => {
+                    l.args.iter().for_each(|a| self.pattern(&a.pattern))
+                }
+                ExprKind::Select(sel) => sel
+                    .arms
+                    .iter()
+                    .for_each(|(p, _)| self.pattern(&p.structure_predicate)),
                 ExprKind::Trait(t) => {
                     for m in t.methods.iter() {
                         self.push(Ornament::Comments(m.comments.lines()))
@@ -564,6 +582,15 @@ mod tests {
     fn template_string_brackets_and_splices() {
         stable(SourceKind::Program, r#"println("\nneeds [req.what] for a\[0\]")"#);
         stable(SourceKind::Program, "println(\"\"\"a [plain] \\[x] \\\\[y]\nb\"\"\")");
+    }
+
+    #[test]
+    fn string_patterns_keep_their_delimiters() {
+        stable(
+            SourceKind::Program,
+            "select s { r\"C:\\p\\[x]\" => 1, \"\"\"t \"q\" [x]\"\"\" => 2, _ => 0 }",
+        );
+        stable(SourceKind::Program, "let `A(r\"a\\b\") = x; 1");
     }
 
     #[test]

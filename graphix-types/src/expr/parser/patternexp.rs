@@ -1,6 +1,6 @@
 use crate::{
     expr::{
-        Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt,
+        Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt, WrittenForm,
         parser::{
             csep, expr, fldname, fname_noting,
             grow::{grow, refusal, refuse},
@@ -235,8 +235,9 @@ where
         })
 }
 
-/// A string pattern, lexed as an expression's string is.
-fn string_pattern<I>() -> impl Parser<I, Output = Value>
+/// A string pattern, lexed as an expression's string is, and how it was
+/// delimited.
+fn string_pattern<I>() -> impl Parser<I, Output = (Value, WrittenForm)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -244,18 +245,9 @@ where
 {
     (choice((raw_string(), interpolated())), position()).then(|(e, end): (Expr, _)| {
         match &e.kind {
-            // CR claude for claude: [bug] A string pattern keeps the literal's Value and
-            // drops its StrForm, and StructurePattern::Literal has no place for one, so
-            // `graphix fmt` prints a raw or template string pattern as an escaped
-            // quoted string. The ornament walk (graphix-types/src/expr/format.rs:360)
-            // records delimiters only for expression constants, so the guard writes the
-            // change with exit 0, where CLAUDE.md says changed delimiters are refused;
-            // the value is kept, the author's form is lost. Carry the form beside the
-            // literal (always equal, like WrittenAt), print it under AsWritten, and add
-            // pattern literals to the ornament walk. probe:
-            // design/review-2026-10-05/repro/t-format-resolver-10.gx
-            // (t-format-resolver-10)
-            ExprKind::Constant(v @ Value::String(_)) => value(v.clone()).left(),
+            ExprKind::Constant(v @ Value::String(_)) => {
+                value((v.clone(), WrittenForm(e.str_form))).left()
+            }
             _ => refuse(end, "a string pattern cannot interpolate").right(),
         }
     })
@@ -269,10 +261,16 @@ where
 {
     (
         position(),
-        choice((string_pattern(), attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)))),
+        choice((
+            string_pattern(),
+            attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC))
+                .map(|v| (v, WrittenForm::default())),
+        )),
     )
         .skip(not_prefix())
-        .and_then(|(pos, v)| super::finite::<I>(pos, v).map(StructurePattern::Literal))
+        .and_then(|(pos, (v, form))| {
+            super::finite::<I>(pos, v).map(|v| StructurePattern::Literal(v, form))
+        })
 }
 
 fn all_pattern<I>() -> impl Parser<I, Output = Name>
@@ -310,7 +308,7 @@ parser! {
             )
                 .then(move |(pat, end)| match pat {
                     StructurePattern::Ignore
-                    | StructurePattern::Literal(_)
+                    | StructurePattern::Literal(..)
                     | StructurePattern::Bind(_)
                         if captures =>
                     {

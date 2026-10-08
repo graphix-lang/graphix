@@ -800,7 +800,7 @@ fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
             || binds.iter().any(|p| pattern_binds(p, name))
     };
     match p {
-        StructurePattern::Ignore | StructurePattern::Literal(_) => false,
+        StructurePattern::Ignore | StructurePattern::Literal(..) => false,
         StructurePattern::Bind(n) => &**n == name,
         StructurePattern::Slice { list: _, all, binds } => all_binds(all, binds),
         StructurePattern::SlicePrefix { list: _, all, prefix, tail } => {

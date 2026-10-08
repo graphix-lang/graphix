@@ -1,4 +1,4 @@
-use super::{Expr, ModPath, Name, WrittenAt, parser, print::Literal};
+use super::{Expr, ModPath, Name, WrittenAt, WrittenForm, parser, print::Literal};
 use crate::{env::Env, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -12,7 +12,8 @@ use triomphe::Arc;
 #[pack(unwrapped)]
 pub enum StructurePattern {
     Ignore,
-    Literal(Value),
+    /// A literal, and for a string how it was delimited.
+    Literal(Value, WrittenForm),
     Bind(Name),
     Slice {
         /// true = a list pattern `[<..>]` over the native List; false
@@ -61,11 +62,31 @@ pub enum StructurePattern {
 }
 
 impl StructurePattern {
+    /// A literal the compiler built.
+    pub fn literal(v: Value) -> Self {
+        Self::Literal(v, WrittenForm::default())
+    }
+
+    /// Each sub-pattern, in written order.
+    pub fn for_each_sub<'a>(&'a self, f: &mut impl FnMut(&'a Self)) {
+        match self {
+            Self::Ignore | Self::Literal(..) | Self::Bind(_) => (),
+            Self::Abstract { bind, .. } => f(bind),
+            Self::Struct { binds, .. } => binds.iter().for_each(|(_, p, _)| f(p)),
+            Self::Slice { binds: ps, .. }
+            | Self::Tuple { binds: ps, .. }
+            | Self::Variant { binds: ps, .. }
+            | Self::SlicePrefix { prefix: ps, .. }
+            | Self::SliceSuffix { suffix: ps, .. }
+            | Self::Or(ps) => ps.iter().for_each(|p| f(p)),
+        }
+    }
+
     pub fn single_bind(&self) -> Option<&ArcStr> {
         match self {
             Self::Bind(s) => Some(s),
             Self::Ignore
-            | Self::Literal(_)
+            | Self::Literal(..)
             | Self::Slice { .. }
             | Self::SlicePrefix { .. }
             | Self::SliceSuffix { .. }
@@ -91,7 +112,7 @@ impl StructurePattern {
             | Self::Variant { all, .. }
             | Self::Abstract { all, .. }
             | Self::Struct { all, .. } => all.as_ref(),
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or(_) => None,
+            Self::Ignore | Self::Literal(..) | Self::Bind(_) | Self::Or(_) => None,
         }
     }
 
@@ -101,7 +122,7 @@ impl StructurePattern {
         }
         let (rest, subs): (Option<&Name>, &[Self]) = match self {
             Self::Bind(n) => return f(n),
-            Self::Ignore | Self::Literal(_) => return,
+            Self::Ignore | Self::Literal(..) => return,
             Self::Abstract { bind, .. } => return bind.with_names(f),
             Self::Or(alts) => return alts[0].with_names(f),
             Self::Struct { binds, .. } => {
@@ -138,7 +159,7 @@ impl StructurePattern {
             // select unifies through `Type::any_as_tvar` to narrow past it.
             Self::Ignore => Ok(Type::Any),
             Self::Bind(_) => Ok(Type::empty_tvar()),
-            Self::Literal(v) => Ok(Type::Primitive(Typ::get(v).into())),
+            Self::Literal(v, _) => Ok(Type::Primitive(Typ::get(v).into())),
             Self::Tuple { all: _, binds } => {
                 let a = binds
                     .iter()
@@ -380,7 +401,7 @@ impl StructurePattern {
                 }
                 Ok(changed.then(|| Type::Set(Arc::from_iter(out))))
             }
-            Self::Abstract { .. } | Self::Ignore | Self::Bind(_) | Self::Literal(_) => {
+            Self::Abstract { .. } | Self::Ignore | Self::Bind(_) | Self::Literal(..) => {
                 Ok(None)
             }
         }
@@ -465,7 +486,12 @@ impl StructurePattern {
         }
         match self {
             StructurePattern::Ignore => write!(f, "_"),
-            StructurePattern::Literal(v) => write!(f, "{}", Literal(v)),
+            StructurePattern::Literal(v @ Value::String(s), form)
+                if print_as_written() =>
+            {
+                super::print::write_str_constant(f, v, s, form.0)
+            }
+            StructurePattern::Literal(v, _) => write!(f, "{}", Literal(v)),
             StructurePattern::Bind(n) => write!(f, "{n}"),
             StructurePattern::Slice { list, all: _, binds } => {
                 write!(f, "{}", if *list { "[<" } else { "[" })?;

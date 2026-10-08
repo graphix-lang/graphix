@@ -1063,7 +1063,7 @@ impl PrettyDisplay for StructurePattern {
         }
         let brackets = |list: bool| if list { ("[<", ">]") } else { ("[", "]") };
         match self {
-            P::Ignore | P::Literal(_) | P::Bind(_) => writeln!(buf, "{self}"),
+            P::Ignore | P::Literal(..) | P::Bind(_) => writeln!(buf, "{self}"),
             P::Slice { list, all: _, binds } => {
                 let (open, close) = brackets(*list);
                 pretty_pattern_elts(buf, open, &pats(binds), close)
@@ -2177,7 +2177,7 @@ fn write_template<'a>(
 
 /// A string literal, written in one piece: a layout indents only at the
 /// start of a write, never inside a multi-line literal.
-fn write_str_constant(
+pub(crate) fn write_str_constant(
     f: &mut Formatter<'_>,
     v: &Value,
     s: &str,

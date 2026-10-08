@@ -509,7 +509,7 @@ fn random_name() -> impl Strategy<Value = Name> {
 
 fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
     let leaf = prop_oneof![
-        value().prop_map(|v| StructurePattern::Literal(v)),
+        value().prop_map(StructurePattern::literal),
         option::of(random_name()).prop_map(|name| match name {
             None => StructurePattern::Ignore,
             Some(name) => StructurePattern::Bind(name),
@@ -1621,7 +1621,7 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
     match (pat0, pat1) {
         (StructurePattern::Bind(n0), StructurePattern::Bind(n1)) => n0 == n1,
         (StructurePattern::Ignore, StructurePattern::Ignore) => true,
-        (StructurePattern::Literal(v0), StructurePattern::Literal(v1)) => v0 == v1,
+        (StructurePattern::Literal(v0, _), StructurePattern::Literal(v1, _)) => v0 == v1,
         (
             StructurePattern::Slice { list: l0, all: a0, binds: p0 },
             StructurePattern::Slice { list: l1, all: a1, binds: p1 },

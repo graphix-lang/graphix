@@ -1114,80 +1114,70 @@ impl WrittenAt {
     }
 }
 
-impl PartialEq for WrittenAt {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
+/// Comparisons, hash and codec for metadata of how the author wrote
+/// something: equal to every other, hashes to nothing, packs to nothing
+/// and decodes to its default.
+macro_rules! decides_nothing {
+    ($t:ty) => {
+        impl PartialEq for $t {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+
+        impl Eq for $t {}
+
+        impl PartialOrd for $t {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Ord for $t {
+            fn cmp(&self, _: &Self) -> Ordering {
+                Ordering::Equal
+            }
+        }
+
+        impl std::hash::Hash for $t {
+            fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+        }
+
+        impl netidx_core::pack::Pack for $t {
+            fn encoded_len(&self) -> usize {
+                0
+            }
+
+            fn encode(
+                &self,
+                _: &mut impl bytes::BufMut,
+            ) -> result::Result<(), PackError> {
+                Ok(())
+            }
+
+            fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+                Ok(Self::default())
+            }
+        }
+    };
 }
 
-impl Eq for WrittenAt {}
-
-impl PartialOrd for WrittenAt {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for WrittenAt {
-    fn cmp(&self, _: &Self) -> Ordering {
-        Ordering::Equal
-    }
-}
-
-impl std::hash::Hash for WrittenAt {
-    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
-}
-
-impl netidx_core::pack::Pack for WrittenAt {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        Ok(())
-    }
-
-    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self::NOWHERE)
-    }
-}
+decides_nothing!(WrittenAt);
 
 /// Where each segment of a path was written. Like [`WrittenAt`], it
 /// decides nothing: equal to every other, hashes and packs to nothing.
 #[derive(Debug, Clone, Default)]
 pub struct WrittenPath(pub SmallVec<[SourcePosition; 4]>);
 
-impl PartialEq for WrittenPath {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
+decides_nothing!(WrittenPath);
 
-impl Eq for WrittenPath {}
+/// How a string literal in a pattern was delimited. Like [`WrittenAt`],
+/// it decides nothing: equal to every other, hashes and packs to
+/// nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WrittenForm(pub StrForm);
 
-impl PartialOrd for WrittenPath {
-    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
-        Some(Ordering::Equal)
-    }
-}
-
-impl std::hash::Hash for WrittenPath {
-    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
-}
-
-impl netidx_core::pack::Pack for WrittenPath {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        Ok(())
-    }
-
-    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self::default())
-    }
-}
+decides_nothing!(WrittenForm);
 
 /// A name where it is declared or selected: the identifier and where it
 /// was written. A `Name` is its identifier to every comparison, hash

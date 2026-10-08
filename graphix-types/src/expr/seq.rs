@@ -1750,7 +1750,7 @@ fn pat_wild() -> Pattern {
 fn pat_lit(v: Value) -> Pattern {
     Pattern {
         type_predicate: None,
-        structure_predicate: StructurePattern::Literal(v),
+        structure_predicate: StructurePattern::literal(v),
         guard: None,
         pos: WrittenAt::NOWHERE,
         end: WrittenAt::NOWHERE,

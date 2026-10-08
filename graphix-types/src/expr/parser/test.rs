@@ -874,9 +874,9 @@ fn select1() {
                     list: false,
                     all: None,
                     binds: Arc::from_iter([
-                        StructurePattern::Literal(Value::I64(1)),
-                        StructurePattern::Literal(Value::I64(2)),
-                        StructurePattern::Literal(Value::I64(42)),
+                        StructurePattern::literal(Value::I64(1)),
+                        StructurePattern::literal(Value::I64(2)),
+                        StructurePattern::literal(Value::I64(42)),
                         StructurePattern::Bind(literal!("a").into()),
                     ]),
                 },
@@ -905,7 +905,7 @@ fn select1() {
                         ),
                         (
                             literal!("foo"),
-                            StructurePattern::Literal(Value::I64(42)),
+                            StructurePattern::literal(Value::I64(42)),
                             WrittenAt::NOWHERE,
                         ),
                         (
@@ -2394,7 +2394,7 @@ fn a_pattern_string_lexes_as_an_expression_string() {
         .unwrap();
     let ExprKind::Select(SelectExpr { arms, .. }) = &e.kind else { panic!("{e:?}") };
     let lit = |i: usize| match &arms[i].0.structure_predicate {
-        StructurePattern::Literal(Value::String(s)) => s.clone(),
+        StructurePattern::Literal(Value::String(s), _) => s.clone(),
         p => panic!("{p:?}"),
     };
     assert_eq!(lit(0), "a[b");
