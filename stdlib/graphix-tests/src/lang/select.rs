@@ -3045,3 +3045,126 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2)))
 );
+
+// Each slice element, each or-alternative and a slice's rest is typed over
+// the scrutinee, as a separate arm would be.
+run!(
+    or_in_slice_element,
+    r#"{
+    let a: Array<[i64, null]> = [null, 2];
+    let b: Array<[`A, `B]> = [`B];
+    let x = select a { [x, 1 | 2] => select x { null => 10, i64 as n => n }, _ => 9 };
+    let y = select b { [`B | `A] => 1, _ => 0 };
+    x + y
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(11)))
+);
+
+run!(
+    slice_elements_typed_apart,
+    r#"{
+    type S = {a: i64, b: i64};
+    let f = |a: Array<i64>| select a { [x, _] => x + 1, _ => 0 };
+    let g = |a: Array<(i64, i64)>| select a { [_, (x, y)] => x + y, _ => 0 };
+    let h = |a: Array<[`A, `B]>| select a { [`A, `B] => 1, _ => 0 };
+    let i = |a: Array<(i64, i64)>| select a { [(1, x), (y, 2)] => x + y, _ => 0 };
+    let j = |a: Array<S>| select a { [{b, ..}, x] => b + x.a, _ => 0 };
+    let k = |a: List<i64>| select a { [<x, _, t..>] => x + 1, _ => 0 };
+    [f([4, 5]), g([(1, 2), (3, 4)]), h([`A, `B]), i([(1, 5), (6, 2)]), j([{a: 1, b: 2}, {a: 3, b: 4}]), k([<4, 5>])]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![5, 7, 1, 11, 5, 5]
+        }
+        _ => false,
+    }
+);
+
+run!(
+    slice_rest_scrutinee_type,
+    r#"{
+    type Tok = [`Open, `Close, `Num(i64)];
+    let f = |xs: Array<[i64, null]>| select xs { [0, rest..] => array::len(rest), _ => 0 - 1 };
+    let g = |xs: [Array<[i64, null]>, `A(i64)]| select xs { [0, rest..] => array::len(rest), _ => 0 - 1 };
+    let h = |ts: Array<Tok>| select ts {
+        [`Open, rest..] => select rest { [`Num(n), ..] => n, _ => 0 },
+        _ => 0 - 1
+    };
+    [f([0, 5, null, 7]), g([0, 5, null, 7]), h([`Open, `Num(4), `Close])]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![3, 3, 4]
+        }
+        _ => false,
+    }
+);
+
+run!(
+    or_wild_per_member,
+    r#"{
+    type U = [(i64, i64), (i64, i64, i64)];
+    let f = |t: U| select t { (x, _) | (x, _, _) => x };
+    f((5, 6)) + f((7, 8, 9))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(12)));
+    FuseExpect::None
+);
+
+run!(
+    or_capture_and_payload,
+    r#"{
+    let f = |v: [`A([i64, `B]), `B]| select v {
+        `A(x) | x@ `B => select x { `B => "b", i64 as n => "i" }
+    };
+    "[f(`A(5))][f(`B)][f(`A(`B))]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "ibb");
+    FuseExpect::None
+);
+
+#[tokio::test(flavor = "current_thread")]
+async fn pattern_typing_refusals() {
+    use graphix_package_core::testing::refusal;
+    for (src, why) in [
+        // a rest is typed from the scrutinee, not the elements beside it
+        (
+            "{ let f = |xs: Array<[i64, null]>| select xs { [0, rest..] => array::fold(rest, 0, |a, x| a + x), _ => 0 }; f([0, null]) }",
+            "cannot compute",
+        ),
+        // an element bind is the scrutinee's element type
+        (
+            "{ let f = |a: Array<[i64, string, f64]>| select a { [1, x] => select x { i64 as n => 0, f64 as d => 1 }, _ => 2 }; f([1, \"q\"]) }",
+            "missing match cases",
+        ),
+        // an alternative's cells are not decided by another's literals
+        (
+            "{ let f = |v: ([i64, null], [i64, null])| select v { p@ (0, y) | p@ (y, 0) => y + 1, _ => 0 }; f((0, null)) }",
+            "cannot compute",
+        ),
+        (
+            "{ let a: Array<[i64, null]> = [null, 1]; select a { [x, 1 | 2] => x + 1, _ => 0 } }",
+            "cannot compute",
+        ),
+        // alternatives agree on the scrutinee's types, not each other's
+        (
+            "{ let f = |v: [`A(i64, i64), `A(string, i64)]| -> i64 select v { `A(x, 1) | `A(_, x) => x }; f(`A(\"s\", 1)) }",
+            "exactly equal types",
+        ),
+        // an or-arm is a wildcard only through a bare name
+        (
+            "{ let f = |t: [(i64, i64), (i64, i64, i64)]| select t { (x, 0, _) | (x, _) => x }; f((7, 8, 9)) }",
+            "missing match cases",
+        ),
+        // an alternative is taken by its structure
+        (
+            "{ let f = |t: [(i64, i64), {x: i64, y: i64}]| select t { (x, _) | {x, ..} => x }; f({x: 1, y: 2}) }",
+            "can't tell",
+        ),
+    ] {
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(why), "{src}: {e}");
+    }
+}

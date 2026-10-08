@@ -708,16 +708,22 @@ cycle, across workers; the compiler never pins threads.
   Array<'b>`), so nothing splices by shape.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
-  `PatternNode::bind_captures` binds, after the select narrows the arm,
+  `PatternNode::bind_narrowed` binds, after the select narrows the arm,
   to its part of the narrowed predicate (a `_` slot, the fields a
   partial struct pattern leaves out and a slice's rest carry the
   scrutinee's types; shared
   or-alternative captures union). Never type a capture from
-  `infer_type_predicate`. Pins: `lang::select::capture_*`.
+  `infer_type_predicate`. A slice's inferred element type is a Set with
+  one member per element and a cell for the rest, so each element
+  narrows on its own. Pins: `lang::select::capture_*`,
+  `slice_elements_typed_apart`, `slice_rest_scrutinee_type`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
-  element positions; alternatives bind the same names at exactly equal
-  payload types; captures type as the union; one guard per arm; dead
-  alternatives are errors; they fuse natively.
+  element positions; each alternative is typed over the scrutinee as a
+  separate arm is, then alternatives bind the same names at exactly
+  equal payload types and captures type as the union; alternatives a
+  structure test cannot tell apart are refused
+  (`StructPatternNode::footprint`); one guard per arm; dead alternatives
+  are errors; they fuse natively.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep

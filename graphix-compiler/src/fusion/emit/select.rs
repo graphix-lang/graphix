@@ -9,7 +9,7 @@ use crate::{
     },
     node::{
         op::CmpOp,
-        pattern::{PatternNode, SliceKind, StructPatternNode},
+        pattern::{PatternNode, SliceKind, StructPatternNode, set_members},
         select::Select,
     },
     stack,
@@ -1923,10 +1923,9 @@ fn emit_or_chain(
     // primitive-union payloads (:1516-1531), and the STALE fold handed to emit_arm is
     // called `fires` (:249, :844) though it is STALE when nothing fired; flow.rs:254
     // already calls it `guards_stale`. (f-select-14)
-    let alt_types = pred_typ.with_deref(|t| match t {
-        Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
-        _ => None,
-    });
+    // 2026-10-08 claude: the pairing is node::pattern::set_members now; the two
+    // misleading names stand.
+    let alt_types = set_members(pred_typ, alts.len());
     let tests: SmallVec<[Block; 4]> =
         (0..alts.len()).map(|_| cx.b.create_block()).collect();
     let ph_bl = match nomatch {

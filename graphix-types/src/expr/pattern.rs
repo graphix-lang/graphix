@@ -184,12 +184,14 @@ impl StructurePattern {
                 let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));
                 Ok(Type::Abstract { id: *id, params })
             }
-            Self::Slice { list, all: _, binds }
-            | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
-                Self::infer_slice(env, scope, *list, binds)
+            Self::Slice { list, all: _, binds } => {
+                Self::infer_slice(env, scope, *list, false, binds)
+            }
+            Self::SlicePrefix { list, all: _, prefix, tail: _ } => {
+                Self::infer_slice(env, scope, *list, true, prefix)
             }
             Self::SliceSuffix { all: _, head: _, suffix } => {
-                Self::infer_slice(env, scope, false, suffix)
+                Self::infer_slice(env, scope, false, true, suffix)
             }
             Self::Struct { all: _, exhaustive: _, binds } => {
                 let mut typs = binds
@@ -214,38 +216,51 @@ impl StructurePattern {
         }
     }
 
-    /// The inferred type of a slice pattern over its element patterns.
+    // XCR claude for claude: [bug] The slice's element type is the union of what its
+    // element patterns infer, so `[0, rest..]` over Array<[i64, null]> infers
+    // Array<i64>, and the select's narrowing (select.rs:1260) never widens it to
+    // the scrutinee's element type. bind_captures then types `rest` and `all@` as
+    // Array<i64> (`[`Open, rest..]` over Array<Tok> gives Array<`Open>).
+    // compile_slice types every element bind with the shared union, and narrowing
+    // binds its cell to only one leftover member (`[1, x]` over Array<[i64, string,
+    // f64]> gives x: [i64, f64]). At run time the arm tests only Array<Any>
+    // (shallow_discriminant), so values outside those types reach the binds: the
+    // check passes ill-typed code, the JIT and the node-walk disagree, a select on
+    // x with no string arm passes as exhaustive and produces nothing, and `select
+    // rest { [`Num(n), ..] => n, _ => 0 }` is refused as dead. CLAUDE.md says a
+    // slice's rest carries the scrutinee's types, so each position, the rest and
+    // `all@` should be typed from the scrutinee. probe:
+    // design/review-2026-10-05/repro/c-pattern-01.gx (jit 12, node-walk "can't add
+    // null"). (c-pattern-01)
+    // 2026-10-08 claude: infer_slice gives the element type one Set member per element,
+    // plus a cell for the rest, and each narrows against the scrutinee's element type on
+    // its own; captures and rests take the narrowed type, normalized. The select's settle
+    // (Reach::new) no longer binds pattern cells against a scrutinee with no open cell.
+    // Pins: lang::select::slice_rest_scrutinee_type, slice_elements_typed_apart,
+    // pattern_typing_refusals.
+    /// The inferred type of a slice pattern: its element type is a Set
+    /// with one member per element pattern, in order, and with `rest` a
+    /// cell last for the elements the rest stands over, so each element
+    /// narrows against the scrutinee's element type on its own and the
+    /// rest takes it whole.
     fn infer_slice(
         env: &Env,
         scope: &ModPath,
         list: bool,
+        rest: bool,
         elems: &[Self],
     ) -> Result<Type> {
-        // CR claude for claude: [bug] The slice's element type is the union of what its
-        // element patterns infer, so `[0, rest..]` over Array<[i64, null]> infers
-        // Array<i64>, and the select's narrowing (select.rs:1260) never widens it to
-        // the scrutinee's element type. bind_captures then types `rest` and `all@` as
-        // Array<i64> (`[`Open, rest..]` over Array<Tok> gives Array<`Open>).
-        // compile_slice types every element bind with the shared union, and narrowing
-        // binds its cell to only one leftover member (`[1, x]` over Array<[i64, string,
-        // f64]> gives x: [i64, f64]). At run time the arm tests only Array<Any>
-        // (shallow_discriminant), so values outside those types reach the binds: the
-        // check passes ill-typed code, the JIT and the node-walk disagree, a select on
-        // x with no string arm passes as exhaustive and produces nothing, and `select
-        // rest { [`Num(n), ..] => n, _ => 0 }` is refused as dead. CLAUDE.md says a
-        // slice's rest carries the scrutinee's types, so each position, the rest and
-        // `all@` should be typed from the scrutinee. probe:
-        // design/review-2026-10-05/repro/c-pattern-01.gx (jit 12, node-walk "can't add
-        // null"). (c-pattern-01)
-        let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
+        if elems.is_empty() {
+            return Ok(slice_type(list, Type::empty_tvar()));
+        }
+        let mut ts: SmallVec<[Type; 8]> = SmallVec::new();
         for p in elems {
             ts.push(p.infer_type_predicate(env, scope)?);
         }
-        let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())? {
-            Type::Bottom => Type::empty_tvar(),
-            t => t,
-        };
-        Ok(slice_type(list, t))
+        if rest {
+            ts.push(Type::empty_tvar())
+        }
+        Ok(slice_type(list, Type::Set(Arc::from_iter(ts))))
     }
 
     /// Complete a partial struct pattern's inferred type (`{x, ..}` infers
@@ -407,8 +422,8 @@ impl StructurePattern {
         }
     }
 
-    /// A slice pattern's completion: the element type is the union of
-    /// the element patterns' completions.
+    /// A slice pattern's completion, member by member of its element
+    /// Set.
     fn complete_slice(
         &self,
         env: &Env,
@@ -421,21 +436,25 @@ impl StructurePattern {
             (true, Type::List(t)) | (false, Type::Array(t)) => Some(t.clone()),
             _ => None,
         };
-        let Some(pt) = elem(ptype) else { return Ok(None) };
+        let pts = match elem(ptype).as_deref() {
+            Some(Type::Set(pts)) if pts.len() >= elems.len() => pts.clone(),
+            _ => return Ok(None),
+        };
         self.unique_completion(env, scrutinee, |m| {
             let Some(st) = elem(m) else { return Ok(None) };
             let mut changed = false;
-            let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
-            for p in elems {
-                let (c, t) = p.complete_sub(env, &pt, &st)?;
-                changed |= c;
-                ts.push(t)
+            let mut ts: SmallVec<[Type; 8]> = SmallVec::new();
+            for (i, pt) in pts.iter().enumerate() {
+                match elems.get(i) {
+                    None => ts.push(pt.clone()),
+                    Some(p) => {
+                        let (c, t) = p.complete_sub(env, pt, &st)?;
+                        changed |= c;
+                        ts.push(t)
+                    }
+                }
             }
-            if !changed {
-                return Ok(None);
-            }
-            let t = Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?;
-            Ok(Some(slice_type(list, t)))
+            Ok(changed.then(|| slice_type(list, Type::Set(Arc::from_iter(ts)))))
         })
     }
 }

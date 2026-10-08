@@ -45,21 +45,39 @@ select x {
 
 - Alternatives try LEFT TO RIGHT; the first structural match selects,
   and only its binds deliver. One value channel per name.
+- **Each alternative is typed over the scrutinee, as a separate arm
+  is.** Under an inferred predicate the arm's predicate is a Set with
+  one member per alternative, and the select's narrowing (`reaching ⊇
+  predicate`) narrows each member against what reaches the arm on its
+  own: an alternative's binds hold every value of every scrutinee
+  member its type can match. Alternatives share nothing before that;
+  `StructPatternNode::leaves` judges them after it. The run time takes
+  the first alternative whose STRUCTURE matches, so a value of another
+  alternative's type that an earlier structure accepts binds through
+  it: that is sound because those binds were narrowed over the whole
+  scrutinee, unless the two types have one runtime form at the
+  positions the structure tests, which is refused
+  (`StructPatternNode::footprint`: `(x, _) | {x, ..}` over a tuple and
+  a struct; as separate arms each gets its deep type test and is
+  accepted).
 - **Same binds.** Every alternative binds exactly the same name set.
-  PAYLOAD binds must have EXACTLY EQUAL types (bidirectional
-  `contains` between the per-alternative inferred types) — the body
-  reads through the slot at one type. An `@`-capture types as the
-  UNION of its per-alternative narrowed types (`t: [`D(..), `E(..)]`
-  above): Graphix narrows captures where Rust binds at the enum type,
-  so exact equality refused ``kk@ `Up | kk@ `Char("k")``, the form
-  orthodox code writes; the capture is the whole matched value, so the
-  union is exact. Checked at pattern compile, before coverage math,
-  under an explicit type predicate; under an inferred one the same
-  mistake is refused first as an unreachable alternative.
+  PAYLOAD binds must have EXACTLY EQUAL types after narrowing (a
+  bidirectional `contains`, which unifies open cells) — the body reads
+  through the slot at one type. A name some alternative captures (an
+  `@`-capture or a slice rest) types as the UNION of its per-alternative
+  narrowed types (`t: [`D(..), `E(..)]` above): Graphix narrows captures
+  where Rust binds at the enum type, so exact equality refused
+  ``kk@ `Up | kk@ `Char("k")``, the form orthodox code writes; the
+  capture is the whole matched value, so the union is exact. Under an
+  explicit type predicate every alternative checks against the one
+  type, at pattern compile.
 - **A shadowed alternative is a dead-arm error** (the house select
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
-  `[x, r..] | [a, b, c]` are errors — the arm-level dead walk's
-  subtraction run over the alternative list.
+  `[x, r..] | [a, b, c]` are errors. At compile a duplicate, or any
+  alternative after a bare name or `_`, is refused (under an explicit
+  predicate, any after an alternative that matches anything); the rest
+  is `Reach::arm`'s walk, which subtracts each irrefutable alternative
+  from what reaches the next against its own member.
 - **Coverage is per coverage atom** (`PatternNode::atoms`, `node/pattern.rs`):
   an or-arm claims once per alternative against its own member of the
   raw inferred Set, so `true | false` completes bool and `[] | [_, ..]`
@@ -84,8 +102,9 @@ never itself an `Or` (the grammar cannot spell one). The printer emits
 `is_match(Or)` = any; `bind(Or)` = bind of the FIRST matching
 alternative; `ids`/`unbind`/`delete` walk alternative 0 only (the
 others share its ids — walking all would double-visit);
-`is_refutable(Or)` = true; `matches_anything(Or)` = any alternative
-does (its later alternatives are then dead, caught first).
+`is_refutable(Or)` = true; `matches_anything(Or)` = false: an
+alternative matches anything of its own member only, which the
+select's walk judges per alternative.
 `binds_uniq` applies within one alternative — the SAME name across
 alternatives is required, not a duplicate.
 
@@ -97,11 +116,16 @@ reborrowable `BindMode`: alternative 0 compiles under `Record`
 (allocating ids via `env.bind_variable` and recording `name → (id,
 type)`), later alternatives under `Reuse` (each leaf LOOKS UP the id
 instead of allocating and binds nothing in the env — no shadowing, no
-cleanup). Equal types enforce at each reused leaf: open cells unify
-(one cell serves every alternative), concrete mismatches err, captures
-widen to the union. A nested Or composes: under `Record` its first
-alternative records into the outer map; under `Reuse` every
-alternative reuses.
+cleanup). Under an explicit predicate equal types enforce at each
+reused leaf: open cells unify, concrete mismatches err, captures widen
+to the union. Under an inferred one a reused leaf only shares the id:
+alternative 0's cell is the bind's type, and the agreement is judged
+after narrowing (above), so no alternative's literal decides another's
+cell. A nested Or composes: under `Record` its first alternative
+records into the outer map; under `Reuse` every alternative reuses.
+An Or inside a slice element pairs with that element's own member of
+the slice's element Set (`infer_slice`: one member per element, then a
+cell for the rest).
 
 ## Engines
 

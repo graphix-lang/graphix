@@ -382,7 +382,7 @@ impl Reach {
         // 2026-10-08 claude: with that, the probe is accepted and `v1` holds the null
         // (2 in both engines); pinned by lang::select::coverage_guarded_nullable_payload.
         let informative = itype != Type::Primitive(BitFlags::empty());
-        if informative && !(wildcard && union_scrut) {
+        if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
             let _ = itype.contains(env, scrut);
         }
         let atype = scrut.normalize();
@@ -572,60 +572,6 @@ impl Reach {
             ))
         })
     }
-}
-
-/// An or-arm's alternatives bind each shared name at exactly equal
-/// types, judged on the scrutinee members each alternative can match,
-/// before one cell serves them all.
-fn or_binds_agree<R: Rt, E: UserEvent>(
-    env: &Env,
-    pat: &PatternNode<R, E>,
-    scrut: &Type,
-) -> Result<()> {
-    let atoms = pat.atoms();
-    if atoms.len() < 2 {
-        return Ok(());
-    }
-    let members: SmallVec<[Type; 8]> = match scrut.deref_cloned() {
-        Some(Type::Set(ref ms)) => ms.iter().cloned().collect(),
-        Some(t) => smallvec::smallvec![t],
-        None => return Ok(()),
-    };
-    let mut first: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
-    for (k, (sp, at)) in atoms.iter().enumerate() {
-        let mut matched: SmallVec<[&Type; 4]> = SmallVec::new();
-        for m in members.iter() {
-            if at.could_match(env, m)? {
-                matched.push(m)
-            }
-        }
-        let typ = match matched.len() {
-            0 => continue,
-            _ => Type::union(env, &matched)?,
-        };
-        let mut binds: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
-        sp.bind_types(env, &typ, &mut binds);
-        if k == 0 {
-            first = binds;
-            continue;
-        }
-        let probe = BitFlags::empty();
-        for (id, t) in binds.iter() {
-            let Some((_, t0)) = first.iter().find(|(i, _)| i == id) else { continue };
-            if !(t0.contains_with_flags(probe, env, t)?
-                && t.contains_with_flags(probe, env, t0)?)
-            {
-                let name = env.by_id.get(id).map(|b| b.name.clone()).unwrap_or_default();
-                return format_with_flags(PrintFlag::DerefTVars, || {
-                    Err(anyhow!(
-                        "or-pattern alternatives must bind {name} at exactly equal types \
-                         (first alternative: {t0}, here: {t})"
-                    ))
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The inputs whose fires reach a scrutinee, for the pattern binds it
@@ -1515,11 +1461,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // walk.
             let reaching = reach.atype.clone();
             let narrowed = pat.type_predicate.any_as_tvar();
-            if checking {
-                or_binds_agree(&ctx.env, pat, &reaching).at(n.spec())?;
-            }
             reaching.contains(&ctx.env, &narrowed)?;
-            pat.bind_captures(&ctx.env, &narrowed)?;
+            pat.bind_narrowed(&ctx.env, &narrowed, checking).at(n.spec())?;
             // a runtime test can't tell apart two types with one runtime form
             if checking
                 && let Ok(rest) = reaching.diff(&ctx.env, &pat.type_predicate)

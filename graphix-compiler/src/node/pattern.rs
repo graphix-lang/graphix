@@ -80,9 +80,10 @@ pub enum StructPatternNode {
 /// How pattern-leaf names bind during compile: `Fresh` allocates;
 /// `Record` allocates and records `name → (id, type)` (an or-pattern's
 /// first alternative); `Reuse` looks the id up instead of allocating and
-/// adds nothing to the env. A reused payload leaf must have exactly the
-/// first alternative's type (open cells unify); a reused `@`-capture
-/// widens to the union of the alternatives' types.
+/// adds nothing to the env. Under a written predicate a reused payload
+/// leaf must have exactly the first alternative's type (open cells
+/// unify), and a reused capture widens to the union of the alternatives'
+/// types; under an inferred one the select judges them after narrowing.
 enum BindMode<'a> {
     Fresh,
     Record(&'a mut AHashMap<ArcStr, (BindId, Type)>),
@@ -133,24 +134,32 @@ fn leaf_bind<R: Rt, E: UserEvent>(
             Ok(id)
         }
         BindMode::Reuse(map) => match map.get(name) {
+            // XCR claude for claude: [bug] Under an inferred predicate, this two-way
+            // contains binds the open cells inside both alternatives' inferred
+            // types. For a reused capture that binding is the only lasting effect,
+            // because PatternNode::compile retypes captures and bind_captures types
+            // them later. So `p@ (0, y) | p@ (y, 0) => y + 1` over `([i64, null],
+            // [i64, null])` binds both y cells to i64, taken from the other
+            // alternative's literal. The arm is accepted (without `p@` it is
+            // refused, and the correct `y$ + 1` is refused), and f((0, null))
+            // panics the JIT at fusion/kernel.rs:243 while the node-walk logs
+            // "can't add null". The same probe gives a name that is a payload in
+            // one alternative and a capture in the other the capture's type alone:
+            // `` `A(x) | x@ `B `` over `` [`A([i64, `B]), `B] `` makes x `` `B ``,
+            // so f(`A(5)) bottoms. A rest is compared here as a payload
+            // (capture=false at :417) but typed as a capture, so `[1, r..] | [r..,
+            // "a"]` over Array<[i64, string]> is refused; probe:
+            // design/review-2026-10-05/repro/c-pattern-04.gx (c-pattern-04)
+            // 2026-10-08 claude: under an inferred predicate a reused name only shares
+            // its id here; StructPatternNode::leaves judges the alternatives after the
+            // select narrows each over the scrutinee: plain binds must agree exactly, and
+            // a name some alternative captures (a rest included) takes the union. Pins:
+            // lang::select::or_capture_and_payload, pattern_typing_refusals.
+            // under an inferred predicate the alternatives' types are
+            // judged once the select narrows them (`leaves`)
+            Some((id, _)) if cx.inferred => Ok(*id),
             Some((id, t0)) => {
                 let id = *id;
-                // CR claude for claude: [bug] Under an inferred predicate, this two-way
-                // contains binds the open cells inside both alternatives' inferred
-                // types. For a reused capture that binding is the only lasting effect,
-                // because PatternNode::compile retypes captures and bind_captures types
-                // them later. So `p@ (0, y) | p@ (y, 0) => y + 1` over `([i64, null],
-                // [i64, null])` binds both y cells to i64, taken from the other
-                // alternative's literal. The arm is accepted (without `p@` it is
-                // refused, and the correct `y$ + 1` is refused), and f((0, null))
-                // panics the JIT at fusion/kernel.rs:243 while the node-walk logs
-                // "can't add null". The same probe gives a name that is a payload in
-                // one alternative and a capture in the other the capture's type alone:
-                // `` `A(x) | x@ `B `` over `` [`A([i64, `B]), `B] `` makes x `` `B ``,
-                // so f(`A(5)) bottoms. A rest is compared here as a payload
-                // (capture=false at :417) but typed as a capture, so `[1, r..] | [r..,
-                // "a"]` over Array<[i64, string]> is refused; probe:
-                // design/review-2026-10-05/repro/c-pattern-04.gx (c-pattern-04)
                 if !(t0.contains(&ctx.env, typ)? && typ.contains(&ctx.env, t0)?) {
                     if !capture {
                         format_with_flags(PrintFlag::DerefTVars, || {
@@ -185,10 +194,11 @@ fn bind_all<R: Rt, E: UserEvent>(
     all.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, mode, true)).transpose()
 }
 
-/// An inferred or-pattern predicate's members, one per alternative.
-pub(super) fn alt_types(typ: &Type, alts: usize) -> Option<Arc<[Type]>> {
+/// The members of an inferred Set, one per child: an or-pattern's
+/// alternatives, or a slice's elements followed by its rest.
+pub(crate) fn set_members(typ: &Type, n: usize) -> Option<Arc<[Type]>> {
     typ.with_deref(|t| match t {
-        Some(Type::Set(ts)) if ts.len() == alts => Some(ts.clone()),
+        Some(Type::Set(ts)) if ts.len() == n => Some(ts.clone()),
         _ => None,
     })
 }
@@ -204,32 +214,32 @@ fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)
     })
 }
 
+/// One leaf name of a pattern with the part of a type it stands over.
+/// A capture (`name@`, a slice's rest) stands over a whole position; a
+/// plain bind is the position's own cell.
+pub(super) struct Leaf {
+    pub(super) id: BindId,
+    pub(super) typ: Type,
+    pub(super) capture: bool,
+}
+
 impl StructPatternNode {
-    /// Every `name@` capture with the part of `typ` it stands over,
-    /// `typ` being a type of this pattern's shape. An or-pattern's
-    /// alternatives share their captures, so an id may come up once per
-    /// alternative.
-    pub(super) fn captures(
-        &self,
-        env: &Env,
-        typ: &Type,
-        out: &mut SmallVec<[(BindId, Type); 4]>,
-    ) {
-        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, false, out))
+    /// This pattern's children, in the order [`Self::child_types`]
+    /// gives their types.
+    fn children(&self) -> SmallVec<[&Self; 8]> {
+        match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) => SmallVec::new(),
+            Self::Or { alts: ps }
+            | Self::Variant { binds: ps, .. }
+            | Self::Slice { binds: ps, .. }
+            | Self::SlicePrefix { prefix: ps, .. }
+            | Self::SliceSuffix { suffix: ps, .. } => ps.iter().collect(),
+            Self::Struct { binds, .. } => binds.iter().map(|(_, _, p)| p).collect(),
+            Self::Abstract { bind, .. } => smallvec![&**bind],
+        }
     }
 
-    /// Every name this pattern binds plainly (no capture, no slice
-    /// rest), with the part of `typ` at its position.
-    pub(super) fn bind_types(
-        &self,
-        env: &Env,
-        typ: &Type,
-        out: &mut SmallVec<[(BindId, Type); 4]>,
-    ) {
-        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, true, out))
-    }
-
-    // CR claude for claude: [structure] captures_inner and realign_inner (:284) derive
+    // XCR claude for claude: [structure] captures_inner and realign_inner (:284) derive
     // the type at each child position with the same code: alt_types for an or,
     // struct_fields for a struct, with_deref for variant and tuple payloads and slice
     // elements, rep for an abstract. They differ only in what they do with each child
@@ -240,82 +250,268 @@ impl StructPatternNode {
     // a third time at fusion/emit/select.rs:1798. One helper that yields each child's
     // type, with a struct child's field index, would give both walks a single
     // derivation. (c-pattern-12)
-    fn captures_inner(
+    // 2026-10-08 claude: child_types is the one derivation: leaves, realign and footprint
+    // walk it, and fusion's or-chain calls set_members.
+    /// The part of `typ`, a type of this pattern's shape, each child
+    /// stands over, with a struct child's field index; `None` when `typ`
+    /// is not of the shape, and a `None` part for a field it lacks. Under
+    /// an inferred predicate an or-pattern's alternatives and a slice's
+    /// elements each stand over their own member of a Set; under a
+    /// written one, over the whole type or its element type.
+    fn child_types(
         &self,
         env: &Env,
         typ: &Type,
-        plain: bool,
-        out: &mut SmallVec<[(BindId, Type); 4]>,
-    ) {
-        let (all, subs): (&Option<BindId>, SmallVec<[(&Self, Type); 8]>) = match self {
-            Self::Bind(id) if plain => return out.push((*id, typ.clone())),
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) => return,
-            Self::Or { alts } => {
-                let ts = alt_types(typ, alts.len());
-                for (i, a) in alts.iter().enumerate() {
-                    let t = ts.as_ref().map_or(typ, |ts| &ts[i]);
-                    crate::stack::ensure_sufficient(|| {
-                        a.captures_inner(env, t, plain, out)
-                    })
+        inferred: bool,
+    ) -> Option<SmallVec<[Option<(Type, usize)>; 8]>> {
+        fn at(ts: &[Type]) -> SmallVec<[Option<(Type, usize)>; 8]> {
+            ts.iter().enumerate().map(|(i, t)| Some((t.clone(), i))).collect()
+        }
+        let payload = |n: usize| {
+            typ.with_deref(|t| match t {
+                Some(Type::Variant(_, ts, _) | Type::Tuple(ts)) if ts.len() == n => {
+                    Some(ts.clone())
                 }
-                return;
-            }
-            Self::Struct { all, binds } => {
-                let elts = struct_fields(env, typ);
-                let field = |name: &ArcStr| {
-                    let elts = elts.as_ref()?;
-                    elts.iter().find(|(n, _, _)| n == name).map(|(_, t, _)| t.clone())
-                };
-                let subs = binds.iter().filter_map(|(n, _, sub)| Some((sub, field(n)?)));
-                (all, subs.collect())
-            }
-            Self::Variant { all, binds, tag: _ } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Variant(_, ts, _)) if ts.len() == binds.len() => {
-                        Some(ts.clone())
-                    }
-                    _ => None,
-                });
-                let subs = ts.iter().flat_map(|ts| binds.iter().zip(ts.iter().cloned()));
-                (all, subs.collect())
-            }
-            Self::Slice { kind: SliceKind::Tuple, all, binds } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Tuple(ts)) if ts.len() == binds.len() => Some(ts.clone()),
-                    _ => None,
-                });
-                let subs = ts.iter().flat_map(|ts| binds.iter().zip(ts.iter().cloned()));
-                (all, subs.collect())
-            }
-            Self::Slice { kind: SliceKind::Array | SliceKind::List, all, binds }
-            | Self::SlicePrefix { prefix: binds, all, .. }
-            | Self::SliceSuffix { suffix: binds, all, .. } => {
-                // the rest of a prefix or suffix pattern is the slice's type
-                if let Self::SlicePrefix { tail: Some(id), .. }
-                | Self::SliceSuffix { head: Some(id), .. } = self
-                    && !plain
-                {
-                    out.push((*id, typ.clone()));
-                }
-                let et = typ.with_deref(|t| match t {
-                    Some(Type::Array(et) | Type::List(et)) => Some((**et).clone()),
-                    _ => None,
-                });
-                let subs = et.iter().flat_map(|et| binds.iter().map(|b| (b, et.clone())));
-                (all, subs.collect())
-            }
-            Self::Abstract { all, bind, rep, .. } => {
-                (all, smallvec![(&**bind, rep.clone())])
+                _ => None,
+            })
+        };
+        let elems = |n: usize, rest: bool| {
+            let et = typ.with_deref(|t| match t {
+                Some(Type::Array(et) | Type::List(et)) => Some((**et).clone()),
+                _ => None,
+            })?;
+            match inferred {
+                true => set_members(&et, n + rest as usize),
+                false => Some(Arc::from_iter((0..n).map(|_| et.clone()))),
             }
         };
-        if let Some(id) = all
-            && !plain
-        {
-            out.push((*id, typ.clone()));
+        match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) => Some(SmallVec::new()),
+            Self::Or { alts } => match inferred {
+                true => set_members(typ, alts.len()).map(|ts| at(&ts)),
+                false => Some(
+                    alts.iter()
+                        .enumerate()
+                        .map(|(i, _)| Some((typ.clone(), i)))
+                        .collect(),
+                ),
+            },
+            Self::Variant { binds, .. }
+            | Self::Slice { kind: SliceKind::Tuple, binds, .. } => {
+                payload(binds.len()).map(|ts| at(&ts))
+            }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, binds, .. } => {
+                elems(binds.len(), false).map(|ts| at(&ts[..binds.len()]))
+            }
+            Self::SlicePrefix { prefix: ps, .. }
+            | Self::SliceSuffix { suffix: ps, .. } => {
+                elems(ps.len(), true).map(|ts| at(&ts[..ps.len()]))
+            }
+            Self::Struct { binds, .. } => {
+                let fields = struct_fields(env, typ)?;
+                Some(
+                    binds
+                        .iter()
+                        .map(|(name, _, _)| {
+                            let i = fields.iter().position(|(n, _, _)| n == name)?;
+                            Some((fields[i].1.clone(), i))
+                        })
+                        .collect(),
+                )
+            }
+            Self::Abstract { rep, .. } => Some(smallvec![Some((rep.clone(), 0))]),
         }
-        for (sub, t) in subs {
-            crate::stack::ensure_sufficient(|| sub.captures_inner(env, &t, plain, out))
+    }
+
+    /// Whether this pattern's children stand over an inferred predicate,
+    /// given that it does: an abstract's payload checks against its
+    /// declared representation.
+    fn children_inferred(&self, inferred: bool) -> bool {
+        inferred && !matches!(self, Self::Abstract { .. })
+    }
+
+    /// The `all@` capture and the slice rest, each standing over the
+    /// whole of this pattern's type.
+    fn whole_binds(&self) -> impl Iterator<Item = BindId> {
+        let (all, rest) = match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or { .. } => {
+                (None, None)
+            }
+            Self::SlicePrefix { all, tail: rest, .. }
+            | Self::SliceSuffix { all, head: rest, .. } => (*all, *rest),
+            Self::Slice { all, .. }
+            | Self::Struct { all, .. }
+            | Self::Variant { all, .. }
+            | Self::Abstract { all, .. } => (*all, None),
+        };
+        all.into_iter().chain(rest)
+    }
+
+    /// Every leaf name with the part of `typ` it stands over, `typ`
+    /// being a type of this pattern's shape. An or-pattern's
+    /// alternatives share their names: they are reported once, a capture
+    /// as the union of the alternatives' parts, a plain bind at the part
+    /// every alternative must bind it at exactly, unified here; with
+    /// `checking`, alternatives a run-time test cannot tell apart are
+    /// refused, as separate arms would be.
+    pub(super) fn leaves(
+        &self,
+        env: &Env,
+        typ: &Type,
+        inferred: bool,
+        checking: bool,
+        out: &mut SmallVec<[Leaf; 4]>,
+    ) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            self.leaves_inner(env, typ, inferred, checking, out)
+        })
+    }
+
+    fn leaves_inner(
+        &self,
+        env: &Env,
+        typ: &Type,
+        inferred: bool,
+        checking: bool,
+        out: &mut SmallVec<[Leaf; 4]>,
+    ) -> Result<()> {
+        if let Self::Bind(id) = self {
+            out.push(Leaf { id: *id, typ: typ.clone(), capture: false });
+            return Ok(());
         }
+        for id in self.whole_binds() {
+            out.push(Leaf { id, typ: typ.normalize(), capture: true })
+        }
+        let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
+        let sub = self.children_inferred(inferred);
+        let Self::Or { alts } = self else {
+            for (c, t) in self.children().into_iter().zip(ts) {
+                if let Some((t, _)) = t {
+                    c.leaves(env, &t, sub, checking, out)?
+                }
+            }
+            return Ok(());
+        };
+        let ts: SmallVec<[Type; 4]> = ts.into_iter().flatten().map(|(t, _)| t).collect();
+        if checking {
+            for (i, a) in alts.iter().enumerate() {
+                let fp = a.footprint(env, &ts[i], sub);
+                for (j, b) in ts.iter().enumerate() {
+                    if i != j && fp.rep_collision(env, b).is_some() {
+                        let (a, b) = (ts[i].resolve_tvars(), b.resolve_tvars());
+                        return format_with_flags(PrintFlag::DerefTVars, || {
+                            bail!(
+                                "these or-pattern alternatives can't tell {a} from {b}: \
+                                 an alternative is taken by its structure, which a value \
+                                 of either type passes; write them as separate arms"
+                            )
+                        });
+                    }
+                }
+            }
+        }
+        let mut per: SmallVec<[SmallVec<[Leaf; 4]>; 4]> = SmallVec::new();
+        for (a, t) in alts.iter().zip(ts.iter()) {
+            let mut v = SmallVec::new();
+            a.leaves(env, t, sub, checking, &mut v)?;
+            per.push(v)
+        }
+        let Some((first, rest)) = per.split_first() else { return Ok(()) };
+        for l in first.iter() {
+            let others = rest.iter().flat_map(|v| v.iter().filter(|o| o.id == l.id));
+            if l.capture || others.clone().any(|o| o.capture) {
+                let ts: SmallVec<[&Type; 4]> =
+                    std::iter::once(&l.typ).chain(others.map(|o| &o.typ)).collect();
+                let typ = Type::union(env, &ts)?;
+                out.push(Leaf { id: l.id, typ, capture: true });
+                continue;
+            }
+            for o in others {
+                if !(l.typ.contains(env, &o.typ)? && o.typ.contains(env, &l.typ)?) {
+                    let name =
+                        env.by_id.get(&l.id).map(|b| b.name.clone()).unwrap_or_default();
+                    let (t0, t) = (&l.typ, &o.typ);
+                    return format_with_flags(PrintFlag::DerefTVars, || {
+                        bail!(
+                            "or-pattern alternatives must bind {name} at exactly equal \
+                             types (first alternative: {t0}, here: {t})"
+                        )
+                    });
+                }
+            }
+            out.push(Leaf { id: l.id, typ: l.typ.clone(), capture: false });
+        }
+        Ok(())
+    }
+
+    /// What this pattern's structure test admits over `typ`: `typ` with
+    /// every position the structure does not test as `Any`. An
+    /// or-alternative is taken by its structure alone, so a value of
+    /// another alternative's type this admits would bind through it.
+    fn footprint(&self, env: &Env, typ: &Type, inferred: bool) -> Type {
+        crate::stack::ensure_sufficient(|| {
+            let sub = self.children_inferred(inferred);
+            let parts = |ts: Option<SmallVec<[Option<(Type, usize)>; 8]>>| {
+                let ts = ts?;
+                let fps = self.children().into_iter().zip(ts).map(|(c, t)| match t {
+                    Some((t, _)) => c.footprint(env, &t, sub),
+                    None => Type::Any,
+                });
+                Some(fps.collect::<SmallVec<[Type; 8]>>())
+            };
+            match self {
+                Self::Ignore | Self::Bind(_) => Type::Any,
+                Self::Literal(_) | Self::Abstract { .. } => typ.clone(),
+                Self::Slice { kind: SliceKind::List, .. }
+                | Self::SlicePrefix { list: true, .. } => Type::List(Arc::new(Type::Any)),
+                Self::Slice { kind: SliceKind::Array, .. }
+                | Self::SlicePrefix { .. }
+                | Self::SliceSuffix { .. } => Type::Array(Arc::new(Type::Any)),
+                Self::Slice { kind: SliceKind::Tuple, .. } => {
+                    match parts(self.child_types(env, typ, inferred)) {
+                        Some(ps) => Type::Tuple(Arc::from_iter(ps)),
+                        None => typ.clone(),
+                    }
+                }
+                Self::Variant { tag, .. } => {
+                    match parts(self.child_types(env, typ, inferred)) {
+                        Some(ps) => Type::Variant(
+                            tag.clone(),
+                            Arc::from_iter(ps),
+                            WrittenAt::NOWHERE,
+                        ),
+                        None => typ.clone(),
+                    }
+                }
+                Self::Or { .. } => match parts(self.child_types(env, typ, inferred)) {
+                    Some(ps) => Type::Set(Arc::from_iter(ps)),
+                    None => typ.clone(),
+                },
+                Self::Struct { binds, .. } => {
+                    let Some(fields) = struct_fields(env, typ) else {
+                        return typ.clone();
+                    };
+                    let fields = fields.iter().map(|(n, t, at)| {
+                        let t = match binds.iter().find(|(bn, _, _)| bn == n) {
+                            Some((_, _, p)) => p.footprint(env, t, sub),
+                            None => Type::Any,
+                        };
+                        (n.clone(), t, *at)
+                    });
+                    Type::Struct(Arc::from_iter(fields))
+                }
+            }
+        })
+    }
+
+    /// Every capture's id: a name some position's whole value binds.
+    fn capture_ids(&self, f: &mut impl FnMut(BindId)) {
+        crate::stack::ensure_sufficient(|| {
+            self.whole_binds().for_each(&mut *f);
+            for c in self.children() {
+                c.capture_ids(f)
+            }
+        })
     }
 
     /// Re-derive the struct binders' field indexes from a completed
@@ -323,73 +519,43 @@ impl StructPatternNode {
     /// names, so its indexes are wrong once the select typecheck
     /// completes the predicate from the scrutinee.
     pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
-        crate::stack::ensure_sufficient(|| self.realign_inner(env, typ))
+        self.realign_with(env, typ, true)
     }
 
-    fn realign_inner(&mut self, env: &Env, typ: &Type) -> Result<()> {
-        match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
-            Self::Or { alts } => {
-                let ts = alt_types(typ, alts.len());
-                for (i, a) in alts.iter_mut().enumerate() {
-                    a.realign(env, ts.as_ref().map_or(typ, |ts| &ts[i]))?
+    fn realign_with(&mut self, env: &Env, typ: &Type, inferred: bool) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
+            let sub = self.children_inferred(inferred);
+            match self {
+                Self::Struct { binds, all: _ } => {
+                    for ((name, index, p), t) in binds.iter_mut().zip(ts) {
+                        let Some((t, i)) = t else {
+                            bail!("no such struct field {name} in {typ}")
+                        };
+                        *index = i;
+                        p.realign_with(env, &t, sub)?
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            Self::Struct { binds, all: _ } => {
-                let Some(elts) = struct_fields(env, typ) else { return Ok(()) };
-                for (name, index, sub) in binds.iter_mut() {
-                    match elts.iter().position(|(n, _, _)| n == name) {
-                        Some(i) => {
-                            *index = i;
-                            sub.realign(env, &elts[i].1)?
+                Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
+                Self::Or { alts: ps }
+                | Self::Variant { binds: ps, .. }
+                | Self::Slice { binds: ps, .. }
+                | Self::SlicePrefix { prefix: ps, .. }
+                | Self::SliceSuffix { suffix: ps, .. } => {
+                    for (p, t) in ps.iter_mut().zip(ts) {
+                        if let Some((t, _)) = t {
+                            p.realign_with(env, &t, sub)?
                         }
-                        None => bail!("no such struct field {name} in {typ}"),
                     }
+                    Ok(())
                 }
-                Ok(())
+                Self::Abstract { bind, .. } => match ts.into_iter().next().flatten() {
+                    Some((t, _)) => bind.realign_with(env, &t, sub),
+                    None => Ok(()),
+                },
             }
-            Self::Variant { binds, all: _, tag: _ } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Variant(_, ts, _)) if ts.len() == binds.len() => {
-                        Some(ts.clone())
-                    }
-                    _ => None,
-                });
-                for (b, t) in binds.iter_mut().zip(ts.iter().flat_map(|ts| ts.iter())) {
-                    b.realign(env, t)?
-                }
-                Ok(())
-            }
-            Self::Abstract { bind, rep, .. } => {
-                let rep = rep.clone();
-                bind.realign(env, &rep)
-            }
-            Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Tuple(ts)) if ts.len() == binds.len() => Some(ts.clone()),
-                    _ => None,
-                });
-                for (b, t) in binds.iter_mut().zip(ts.iter().flat_map(|ts| ts.iter())) {
-                    b.realign(env, t)?
-                }
-                Ok(())
-            }
-            Self::Slice { kind: SliceKind::Array | SliceKind::List, binds, all: _ }
-            | Self::SlicePrefix { prefix: binds, all: _, .. }
-            | Self::SliceSuffix { suffix: binds, all: _, .. } => {
-                let et = typ.with_deref(|t| match t {
-                    Some(Type::Array(et) | Type::List(et)) => Some(et.clone()),
-                    _ => None,
-                });
-                if let Some(et) = et {
-                    for b in binds.iter_mut() {
-                        b.realign(env, &et)?
-                    }
-                }
-                Ok(())
-            }
-        }
+        })
     }
 
     /// Compile `spec` against the explicit type `type_predicate` (a
@@ -431,12 +597,14 @@ impl StructPatternNode {
     }
 
     /// A slice pattern's parts against an `Array`/`List` type: the
-    /// `all@` capture, the `rest..` bind (array-typed) and the elements.
+    /// `all@` capture, the `rest..` bind (array-typed) and the elements,
+    /// each against its own member of an inferred element Set.
     fn compile_slice<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
         cx: PatCx,
         typ: &Type,
         list: bool,
+        open: bool,
         all: &Option<Name>,
         rest: &Option<Name>,
         elems: &[StructurePattern],
@@ -449,8 +617,8 @@ impl StructPatternNode {
         };
         typ.check_contains(&ctx.env, &want)?;
         let et = typ.with_deref(|t| match t {
-            Some(Type::Array(et)) if !list => Some(et.clone()),
-            Some(Type::List(et)) if list => Some(et.clone()),
+            Some(Type::Array(et)) if !list => Some((**et).clone()),
+            Some(Type::List(et)) if list => Some((**et).clone()),
             _ => None,
         });
         let Some(et) = et else {
@@ -458,9 +626,6 @@ impl StructPatternNode {
                 bail!("slice patterns can't match {typ}")
             });
         };
-        let all = bind_all(ctx, cx, all, typ, &mut mode)?;
-        let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, false));
-        let rest = rest.transpose()?;
         // CR claude for claude: [bug] Every element compiles against one element type.
         // Under an inferred predicate, that type is infer_slice's union of all the
         // element patterns (graphix-types/src/expr/pattern.rs:201). A `_` element makes
@@ -473,9 +638,28 @@ impl StructPatternNode {
         // exact-constructor rule refuses `Box(`A(x))` for `type Box =
         // Abstract<[`A(i64), `B(i64)]>`. probe:
         // design/review-2026-10-05/repro/c-pattern-08.sh (c-pattern-08)
+        // 2026-10-08 claude: under an inferred predicate each element compiles against
+        // its own member, so `[x, _]`, `[`A, `B]`, `[(1, x), (y, 2)]` and `[{b, ..}, x]`
+        // pass (lang::select::slice_elements_typed_apart). Open: a constructor pattern at
+        // a union position under a WRITTEN type, `Array<[`A, `B]> as [`A, `B]` and
+        // `Box(`A(x))` over a union representation, is still refused. Narrowing it to its
+        // member needs the node to carry its own refutable test: Variant/Tuple/Struct
+        // claim irrefutability because a type test decided their constructor, so `let
+        // `A(x) = v` over [`A(i64), `B] would be accepted and bind nothing.
+        let members = match cx.inferred {
+            true => set_members(&et, elems.len() + open as usize),
+            false => None,
+        };
+        let all = bind_all(ctx, cx, all, typ, &mut mode)?;
+        let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, true));
+        let rest = rest.transpose()?;
         let elems = elems
             .iter()
-            .map(|p| Self::compile_int(ctx, cx, &et, p, mode.reborrow()))
+            .enumerate()
+            .map(|(i, p)| {
+                let et = members.as_ref().map_or(&et, |ts| &ts[i]);
+                Self::compile_int(ctx, cx, et, p, mode.reborrow())
+            })
             .collect::<Result<Box<[Self]>>>()?;
         Ok((all, rest, elems))
     }
@@ -527,7 +711,7 @@ impl StructPatternNode {
                 // Each alternative compiles against its own member of an
                 // inferred predicate; under an explicit `T as p1 | p2`
                 // every alternative checks against T.
-                // CR claude for claude: [bug] A slice's element type is the union of
+                // XCR claude for claude: [bug] A slice's element type is the union of
                 // every element's inferred type (infer_slice). Through compile_slice
                 // (:421), this pairs an or-pattern's alternatives with that union's
                 // members whenever the counts happen to agree, and captures (:215) and
@@ -538,10 +722,13 @@ impl StructPatternNode {
                 // is accepted. Each alternative needs its own inferred type, or slice
                 // elements must compile with inferred false. probe:
                 // design/review-2026-10-05/repro/c-pattern-05.gx (c-pattern-05)
-                let alt_types = if cx.inferred {
-                    alt_types(type_predicate, alts.len())
-                } else {
-                    None
+                // 2026-10-08 claude: a slice's element type is a Set with one member per
+                // element (infer_slice) and each element compiles against its own, so an
+                // or-pattern in an element pairs with its own member. Pin:
+                // lang::select::or_in_slice_element.
+                let alt_types = match cx.inferred {
+                    true => set_members(type_predicate, alts.len()),
+                    false => None,
                 };
                 let mut local = AHashMap::default();
                 let (map, reuse_first) = match &mut mode {
@@ -562,8 +749,15 @@ impl StructPatternNode {
                         Self::compile_int(ctx, cx, typ, alt, mode)
                     })
                     .collect::<Result<Box<[Self]>>>()?;
+                // a bare name or `_` matches every value of every member; any
+                // other alternative only its own member's, judged by the
+                // select arm by arm
+                let wild = |p: &Self| match cx.inferred {
+                    true => matches!(p, Self::Bind(_) | Self::Ignore),
+                    false => p.matches_anything(),
+                };
                 for i in 1..compiled.len() {
-                    // CR claude for claude: [bug] An alternative that matches_anything()
+                    // XCR claude for claude: [bug] An alternative that matches_anything()
                     // only covers its own member of the inferred Set, but this refuses
                     // every later alternative whatever its member. So `(x, _) | (x, _,
                     // _)` over `[(i64, i64), (i64, i64, i64)]` is refused, while the
@@ -577,7 +771,13 @@ impl StructPatternNode {
                     // :787) pick an alternative by structure alone, so `(x, _)` would
                     // bind x to ["x", 1] for {x: 1, y: 2} in `(x, _) | {x, ..}`. probe:
                     // design/review-2026-10-05/repro/c-pattern-10.sh (c-pattern-10)
-                    if compiled[..i].iter().any(|p| p.matches_anything()) {
+                    // 2026-10-08 claude: under an inferred predicate only a bare name or
+                    // `_` kills the alternatives after it here; Reach::arm judges the rest
+                    // per alternative against what reaches the arm. matches_anything(Or) is
+                    // false, so an or-arm is never a wildcard. Alternatives with one runtime
+                    // form are refused (StructPatternNode::leaves), so `(x, _) | {x, ..}`
+                    // is refused as its two arms are. Pins: lang::select::or_wild_*.
+                    if compiled[..i].iter().any(wild) {
                         bail!(
                             "unreachable or-pattern alternative: an earlier \
                              alternative already matches anything"
@@ -601,6 +801,7 @@ impl StructPatternNode {
                     cx,
                     type_predicate,
                     *list,
+                    true,
                     all,
                     tail,
                     prefix,
@@ -614,6 +815,7 @@ impl StructPatternNode {
                     cx,
                     type_predicate,
                     false,
+                    true,
                     all,
                     head,
                     suffix,
@@ -627,6 +829,7 @@ impl StructPatternNode {
                     cx,
                     type_predicate,
                     *list,
+                    false,
                     all,
                     &None,
                     binds,
@@ -886,7 +1089,7 @@ impl StructPatternNode {
             // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
-                    // CR claude for claude: [bug] An or-arm picks its alternative by
+                    // XCR claude for claude: [bug] An or-arm picks its alternative by
                     // structure alone, here and in is_match; emit_or_chain in
                     // fusion/emit/select.rs does the same. But the check types each
                     // alternative's binds against its own member of the union. A value
@@ -901,6 +1104,14 @@ impl StructPatternNode {
                     // or type each alternative's binds over the whole scrutinee as
                     // separate arms are. probe:
                     // design/review-2026-10-05/repro/c-pattern-06.gx (c-pattern-06)
+                    // 2026-10-08 claude: ruled (Eric): type each alternative's binds over
+                    // the whole scrutinee, as separate arms. leaves does: a value an
+                    // earlier alternative's structure takes is within that alternative's
+                    // narrowed types, which the alternatives must agree on; alternatives
+                    // a structure test cannot tell apart (the footprint check) are
+                    // refused. The probe is refused: x is [i64, string] in one
+                    // alternative and i64 in the other. Pins:
+                    // lang::select::pattern_typing_refusals.
                     if a.is_match(v) {
                         return a.bind(v, f);
                     }
@@ -1164,8 +1375,11 @@ impl StructPatternNode {
     fn matches_anything_inner(&self) -> bool {
         match &self {
             Self::Bind(_) | Self::Ignore => true,
-            Self::Or { alts } => alts.iter().any(|a| a.matches_anything()),
-            Self::Literal(_) | Self::Variant { .. } | Self::Abstract { .. } => false,
+            // an alternative matches anything of its own member only
+            Self::Or { .. }
+            | Self::Literal(_)
+            | Self::Variant { .. }
+            | Self::Abstract { .. } => false,
             Self::Slice { kind: SliceKind::Tuple, all: _, binds } => {
                 binds.iter().all(|p| p.matches_anything())
             }
@@ -1245,7 +1459,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             StructPatternNode::Or { alts } => {
                 let ts = match self.explicit_type_predicate {
                     true => None,
-                    false => alt_types(&self.type_predicate, alts.len()),
+                    false => set_members(&self.type_predicate, alts.len()),
                 };
                 let typ = |i: usize| match &ts {
                     Some(ts) => ts[i].clone(),
@@ -1266,25 +1480,25 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             && self.type_predicate.contains_with_flags(BitFlags::empty(), env, scrut)?)
     }
 
-    /// Type the arm's `name@` captures from `narrowed`: the arm's
-    /// predicate as the select narrowed it against the scrutinee, where
-    /// a `_` slot and a field a partial pattern leaves out have the
-    /// scrutinee's type. A capture shared by or-alternatives is their
-    /// union.
-    pub(super) fn bind_captures(&self, env: &Env, narrowed: &Type) -> Result<()> {
+    /// Type the arm's binds from `narrowed`, the arm's predicate as the
+    /// select narrowed it against what reaches the arm: each capture
+    /// takes the part it stands over (a `_` slot and a field a partial
+    /// pattern leaves out have the scrutinee's type), and or-alternatives
+    /// agree on the names they share ([`StructPatternNode::leaves`]).
+    pub(super) fn bind_narrowed(
+        &self,
+        env: &Env,
+        narrowed: &Type,
+        checking: bool,
+    ) -> Result<()> {
         if self.explicit_type_predicate {
             return Ok(());
         }
-        let mut captures: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
-        self.structure_predicate.captures(env, narrowed, &mut captures);
-        while let Some((id, _)) = captures.first().cloned() {
-            let (same, rest): (SmallVec<[_; 4]>, SmallVec<[_; 4]>) =
-                captures.drain(..).partition(|(i, _)| *i == id);
-            captures = rest;
-            let ts: SmallVec<[&Type; 4]> = same.iter().map(|(_, t)| t).collect();
-            let typ = Type::union(env, &ts)?;
-            if let Some(b) = env.by_id.get(&id) {
-                b.typ.check_contains(env, &typ)?;
+        let mut leaves = SmallVec::new();
+        self.structure_predicate.leaves(env, narrowed, true, checking, &mut leaves)?;
+        for l in leaves.iter().filter(|l| l.capture) {
+            if let Some(b) = env.by_id.get(&l.id) {
+                b.typ.check_contains(env, &l.typ)?;
             }
         }
         Ok(())
@@ -1353,14 +1567,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         )?;
         // Under an inferred predicate a capture's type is unknown until
         // the select narrows the arm against its scrutinee
-        // (`bind_captures`); the guard and the arm body compile over the
+        // (`bind_narrowed`); the guard and the arm body compile over the
         // cell.
         if !explicit {
-            let mut captures = SmallVec::new();
-            structure_predicate.captures(&ctx.env, &type_predicate, &mut captures);
-            for (id, _) in captures {
-                ctx.env.retype(id, Type::empty_tvar());
-            }
+            structure_predicate
+                .capture_ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
         }
         let guard = spec
             .guard
