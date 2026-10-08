@@ -115,7 +115,7 @@ fn decode_tagged<R: Rt, E: UserEvent>(
         bind::{Bind, ByRef, Deref, Ref},
         callsite::CallSite,
         data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-        error::{Catch, OrNever, Qop, SeqAbortEvent, SeqGuard},
+        error::{Catch, OrNever, Qop, SeqAbort, SeqGuard},
         lambda::Lambda,
         map::{Map, MapRef},
         module::Module,
@@ -200,7 +200,7 @@ fn decode_tagged<R: Rt, E: UserEvent>(
         NodeTag::SeqCapture => {
             crate::node::seq_machine::SeqCapture::image_decode(ctx, buf)
         }
-        NodeTag::SeqAbort => SeqAbortEvent::image_decode(ctx, buf),
+        NodeTag::SeqAbort => SeqAbort::image_decode(ctx, buf),
         NodeTag::OrNever => OrNever::image_decode(ctx, buf),
         NodeTag::CallSite => CallSite::image_decode(ctx, buf),
         NodeTag::Select => Select::image_decode(ctx, buf),

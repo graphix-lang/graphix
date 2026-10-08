@@ -83,19 +83,6 @@ pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
     [
         (literal!("cause"), cause),
         (literal!("error"), error),
-        // CR claude for claude: [bug] `spec.ori.to_value()` puts `text`, the whole source
-        // file, into every link of the ErrChain, and `parent` adds the text of each
-        // including file. So the book's display idioms `catch(e) error_display <-
-        // "[e]"` (book/src/core/error.md:40) and `println("could not run: [e]")`
-        // (book/src/ui/tui/input.md:152) print the entire program once per chain link,
-        // in both engines. An embedded program's origin is `Source::Internal(text)`
-        // with the same text (graphix-rt/src/gx.rs:761), so it appears twice per link;
-        // the netidx browser puts that value in its title line
-        // (../netidx/netidx-tools/src/browser/browser.gx:34). This is
-        // `Origin::to_value`'s only caller, no Graphix code reads `ori.text`, and the
-        // Rust `Display` for `Origin` already leaves `text` out for files. probe:
-        // design/review-2026-10-05/repro/x-engine-seq-errors-11.gx (one rethrow prints
-        // the file twice). (x-engine-seq-errors-11)
         (literal!("ori"), spec.ori.to_value()),
         (literal!("pos"), pos),
     ]
@@ -106,7 +93,7 @@ pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
 pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub handler: Node<R, E>,
-    pub(crate) seq_abort: Option<SeqAbort<R, E>>,
+    pub(crate) action: Option<CatchAction<R, E>>,
     own_handler: ErrorHandler,
     /// Raises of `own_handler` acknowledged: delivered, a seq's abort
     /// event, or given up when the catch sleeps or goes away.
@@ -123,15 +110,7 @@ pub struct Catch<R: Rt, E: UserEvent> {
 /// A seq machine's handler, or a `try` body arm's jump: the action run
 /// once every error of a failure has arrived.
 #[derive(Debug)]
-// CR claude for claude: [readability] This struct is a catch's failure action: a seq
-// machine's handler, or a try arm's jump to its with branch. NodeView::SeqAbort and
-// NodeTag::SeqAbort, however, carry the abort(..) node, SeqAbortEvent (line 1043).
-// fusion/mod.rs:650-661 and node_shape.rs:309-325 use c.seq_abort and
-// NodeView::SeqAbort a few lines apart for two different types, and AbortRole::Try
-// calls a try's jump an abort. Name this struct after the AST's CatchRole action
-// (CatchAction, field action) and rename SeqAbortEvent to SeqAbort, so the struct,
-// ExprKind, NodeView and NodeTag agree. (c-error-op-11)
-pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
+pub(crate) struct CatchAction<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
     role: AbortRole<R, E>,
     pending: bool,
@@ -140,7 +119,7 @@ pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
 #[derive(Debug)]
 enum AbortRole<R: Rt, E: UserEvent> {
     Machine {
-        /// The `abort(..)` event, which a [`SeqAbortEvent`] counted into
+        /// The `abort(..)` event, which a [`SeqAbort`] counted into
         /// the handler's generation before the machine updated: a fired
         /// production runs `node` with no error in flight.
         manual: Option<Node<R, E>>,
@@ -152,7 +131,7 @@ enum AbortRole<R: Rt, E: UserEvent> {
     Try { capture: BindId },
 }
 
-impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
+impl<R: Rt, E: UserEvent> CatchAction<R, E> {
     pub(crate) fn manual(&self) -> Option<&Node<R, E>> {
         match &self.role {
             AbortRole::Machine { manual, .. } => manual.as_ref(),
@@ -193,6 +172,10 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     // already contain it and fail the load or the input otherwise (the REPL tail catch
     // must still cover later inputs, catch_repl_cross_input). probe:
     // design/review-2026-10-05/repro/c-error-op-02.gx (c-error-op-02)
+    // 2026-10-07 claude: open. Sealing a catch once its handler is checked needs
+    // a rule for the REPL's tail catch, whose handler may ignore `e` and must
+    // take later inputs' raises (catch_repl_cross_input): seal only a catch whose
+    // handler reads its bind.
     let joined = match tv.binding() {
         None => etyp.clone(),
         Some(t)
@@ -231,7 +214,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let handler = decode_node(ctx, buf)?;
-        let seq_abort = match opt_node_decode(ctx, buf)? {
+        let action = match opt_node_decode(ctx, buf)? {
             None => None,
             Some(node) => {
                 let role = if bool::decode(buf)? {
@@ -242,7 +225,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 } else {
                     AbortRole::Try { capture: BindId::decode(buf)? }
                 };
-                Some(SeqAbort { node, role, pending: false })
+                Some(CatchAction { node, role, pending: false })
             }
         };
         let own_handler = image::handler_decode(buf)?;
@@ -254,7 +237,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         Ok(Node::new(Self {
             spec,
             handler,
-            seq_abort,
+            action,
             own_handler,
             received: 0,
             last_cycle: None,
@@ -304,9 +287,9 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 None => bail!("BUG: seq cell {name} is not bound"),
             }
         };
-        let seq_abort = match &c.role {
+        let action = match &c.role {
             CatchRole::User => None,
-            CatchRole::Machine { action, manual, pc } => Some(SeqAbort {
+            CatchRole::Machine { action, manual, pc } => Some(CatchAction {
                 node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
                 role: AbortRole::Machine {
                     manual: manual
@@ -317,7 +300,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 },
                 pending: false,
             }),
-            CatchRole::Try { action, capture } => Some(SeqAbort {
+            CatchRole::Try { action, capture } => Some(CatchAction {
                 node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
                 role: AbortRole::Try { capture: lookup(ctx, capture)? },
                 pending: false,
@@ -327,7 +310,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let node = Node::new(Self {
             spec,
             handler,
-            seq_abort,
+            action,
             own_handler: covered.dynamic.handler().unwrap(),
             received: 0,
             last_cycle: None,
@@ -354,8 +337,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         put_tag(NodeTag::Catch, buf);
         self.spec.encode(buf)?;
         self.handler.image_encode(buf)?;
-        opt_node_encode(self.seq_abort.as_ref().map(|a| &a.node), buf)?;
-        match self.seq_abort.as_ref().map(|a| &a.role) {
+        opt_node_encode(self.action.as_ref().map(|a| &a.node), buf)?;
+        match self.action.as_ref().map(|a| &a.role) {
             None => (),
             Some(AbortRole::Machine { manual, pc }) => {
                 true.encode(buf)?;
@@ -378,7 +361,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         let _ = self.handler.update(ctx);
         let cycle = ctx.rt.cycle();
         let capture =
-            self.seq_abort.as_ref().and_then(|a| a.capture().filter(|_| !a.pending));
+            self.action.as_ref().and_then(|a| a.capture().filter(|_| !a.pending));
         // a delivery whose raise was given up while asleep is not counted again
         let delivered = match read_var(ctx, &self.bind_id) {
             Some(VarRead::Delivered(tv))
@@ -397,11 +380,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             if let Some((cap, v)) = captured {
                 ctx.rt.set_var(cap, v);
             }
-            if let Some(abort) = &mut self.seq_abort {
+            if let Some(abort) = &mut self.action {
                 abort.pending = true;
             }
         }
-        if let Some(abort) = &mut self.seq_abort {
+        if let Some(abort) = &mut self.action {
             if let Some(manual) = abort.manual_mut()
                 && manual.update(ctx).is_fired()
             {
@@ -453,7 +436,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         ctx.unref_var(self.bind_id, self.top_id);
         ctx.rt.store_remove(&self.bind_id);
         self.handler.delete(ctx);
-        if let Some(abort) = &mut self.seq_abort {
+        if let Some(abort) = &mut self.action {
             abort.node.delete(ctx);
             abort.manual_mut().into_iter().for_each(|n| n.delete(ctx));
         }
@@ -462,7 +445,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.give_up_in_flight();
         self.handler.sleep(ctx);
-        if let Some(abort) = &mut self.seq_abort {
+        if let Some(abort) = &mut self.action {
             abort.node.sleep(ctx);
             abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
             abort.pending = false;
@@ -497,7 +480,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                     }
                 }
                 wrap!(self.handler, self.handler.typecheck0_instance(ctx, types))?;
-                let Some(abort) = &mut self.seq_abort else { return Ok(()) };
+                let Some(abort) = &mut self.action else { return Ok(()) };
                 wrap!(abort.node, abort.node.typecheck0_instance(ctx, types))?;
                 match abort.manual_mut() {
                     Some(manual) => wrap!(manual, manual.typecheck0_instance(ctx, types)),
@@ -509,7 +492,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
-        if let Some(abort) = &mut self.seq_abort {
+        if let Some(abort) = &mut self.action {
             wrap!(abort.node, abort.node.typecheck1(ctx))?;
             if let Some(manual) = abort.manual_mut() {
                 wrap!(manual, manual.typecheck1(ctx))?;
@@ -529,7 +512,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn refs(&self, refs: &mut Refs) {
         refs.bound.insert(self.bind_id);
         self.handler.refs(refs);
-        if let Some(abort) = &self.seq_abort {
+        if let Some(abort) = &self.action {
             abort.node.refs(refs);
             abort.manual().into_iter().for_each(|n| n.refs(refs));
         }
@@ -542,7 +525,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // a catch is a fusion boundary; the handler's own subtrees fuse
         fuse(&mut self.handler, ctx)?;
-        if let Some(abort) = &mut self.seq_abort {
+        if let Some(abort) = &mut self.action {
             fuse(&mut abort.node, ctx)?;
             if let Some(manual) = abort.manual_mut() {
                 fuse(manual, ctx)?;
@@ -705,6 +688,9 @@ macro_rules! report_failure {
         // analysis.rs:265-266 repeats the same log::error! + eprintln! pair by hand.
         // probe: design/review-2026-10-05/repro/x-errors-09.sh (needs tmux).
         // (x-errors-09)
+        // 2026-10-07 claude: a TUI no longer garbles: the tui package holds fd 2 in a
+        // file while it owns the terminal and replays it after (StderrHeld). An
+        // embedder still cannot route this text.
         eprintln!("{msg}");
     }};
 }
@@ -909,18 +895,6 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let handler = scope.dynamic.handler();
-        // CR claude for claude: [bug] This warns on every compile of a ? under a scope
-        // with no catch, and an instance compiles under its call site's handlers. So
-        // the run repeats, once per instance, a warning the call site already gave
-        // (raise_throws in callsite.rs), and --check never shows these copies. Under
-        // the node-walk every collection slot is an instance, so a growing array prints
-        // one more copy for each new slot while the program runs. Probe:
-        // design/review-2026-10-05/repro/c-error-op-09.gx (--no-fusion: 22 copies).
-        // Warn from typecheck0_with when check holds, as the rethrow branch at line
-        // 1348 already does, and not here. (c-error-op-09)
-        if handler.is_none() && !matches!(spec.kind, ExprKind::Rethrow(_)) {
-            Self::check_unhandled(&ctx.env, flags, &spec, "error raised by ?")?;
-        }
         let typ = Type::empty_tvar();
         Ok(Node::new(Self {
             spec,
@@ -1234,13 +1208,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 /// under the machine passes a completion that cycle. A block updates its
 /// catches after their covered children, which is too late for that.
 #[derive(Debug)]
-pub struct SeqAbortEvent<R: Rt, E: UserEvent> {
+pub struct SeqAbort<R: Rt, E: UserEvent> {
     spec: Expr,
     pub(crate) n: Node<R, E>,
     machine: ErrorHandler,
 }
 
-impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
+impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
@@ -1269,7 +1243,7 @@ impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
+impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqAbort, buf);
         self.spec.encode(buf)?;
@@ -1435,7 +1409,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 impl<R: Rt, E: UserEvent> Catch<R, E> {
     /// The error bind, then a `try` arm's capture cell.
     fn bind_ids(&self) -> impl Iterator<Item = BindId> + use<R, E> {
-        let capture = self.seq_abort.as_ref().and_then(|a| a.capture());
+        let capture = self.action.as_ref().and_then(|a| a.capture());
         std::iter::once(self.bind_id).chain(capture)
     }
 
@@ -1484,7 +1458,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             }
         }
         wrap!(self.handler, child(&mut self.handler, ctx))?;
-        let Some(abort) = &mut self.seq_abort else { return Ok(()) };
+        let Some(abort) = &mut self.action else { return Ok(()) };
         wrap!(abort.node, child(&mut abort.node, ctx))?;
         if let Some(manual) = abort.manual_mut() {
             wrap!(manual, child(manual, ctx))?;
@@ -1539,14 +1513,11 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
                     false => Ok(()),
                 };
             }
-            if check && self.handler.is_none() {
-                Self::check_unhandled(
-                    &ctx.env,
-                    self.flags,
-                    &self.spec,
-                    "error raised by ?",
-                )?;
-            }
+        }
+        // warned once, at the definition's check: an instance compiles
+        // under its call site's handlers, which raise_throws judges
+        if check && self.handler.is_none() {
+            Self::check_unhandled(&ctx.env, self.flags, &self.spec, "error raised by ?")?;
         }
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
         self.strip = strip;
@@ -1577,7 +1548,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
+impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,

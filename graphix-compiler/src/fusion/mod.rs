@@ -654,7 +654,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         }
         NodeView::Catch(c) => {
             rec!(&c.handler);
-            if let Some(abort) = &c.seq_abort {
+            if let Some(abort) = &c.action {
                 rec!(&abort.node);
                 if let Some(manual) = abort.manual() {
                     rec!(manual);

@@ -5,7 +5,7 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    error::{Qop, SeqAbortEvent, SeqGuard},
+    error::{Qop, SeqAbort, SeqGuard},
     fork_control::{ForkControl, ForkKind},
     lambda::Lambda,
     module::Module,
@@ -456,7 +456,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             SeqGuard::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::SeqAbort(e) => {
-            SeqAbortEvent::compile(ctx, flags, spec.clone(), scope, top_id, e)
+            SeqAbort::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::SeqMachine(m) => {
             SeqMachine::compile(ctx, flags, spec.clone(), scope, top_id, m)

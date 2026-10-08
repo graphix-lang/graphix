@@ -1072,12 +1072,20 @@ impl fmt::Display for Origin {
 }
 
 impl Origin {
+    /// The value an `ErrChain` link carries. A source that names where
+    /// the text is (a file, a netidx path, an embedded module) carries
+    /// no copy of it: every link of every chain would hold the whole
+    /// program.
     pub fn to_value(&self) -> Value {
         let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
+        let text = match self.source {
+            Source::Unspecified => self.text.clone(),
+            Source::File(_) | Source::Netidx(_) | Source::Internal(_) => ArcStr::new(),
+        };
         [
             (literal!("parent"), p),
             (literal!("source"), self.source.to_value()),
-            (literal!("text"), Value::from(self.text.clone())),
+            (literal!("text"), Value::from(text)),
         ]
         .into()
     }

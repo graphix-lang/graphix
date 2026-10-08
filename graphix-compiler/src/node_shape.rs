@@ -329,7 +329,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Sample(n) => kids.extend([&n.trigger, &n.arg.node]),
         V::Catch(n) => {
             kids.push(&n.handler);
-            if let Some(abort) = &n.seq_abort {
+            if let Some(abort) = &n.action {
                 kids.push(&abort.node);
                 kids.extend(abort.manual());
             }
