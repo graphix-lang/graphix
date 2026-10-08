@@ -1,8 +1,7 @@
 use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue,
-    UserEvent,
+    BindId, CFlag, CompileCtx, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
     env::Env,
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
@@ -1411,10 +1410,37 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
-    pub(super) fn unbind_event(&self, event: &mut Event<E>) {
-        self.structure_predicate.ids(&mut |id| {
-            event.variables.remove(&id);
-        })
+    /// [`Self::bind_event`] for a guard's tick, returning the store
+    /// entries it replaced for [`Self::retract`].
+    pub(super) fn bind_tentative(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        v: &Value,
+        tag: crate::Tag,
+    ) -> SmallVec<[(BindId, Option<(TagValue, u64)>); 4]> {
+        let mut saved = SmallVec::new();
+        self.structure_predicate
+            .ids(&mut |id| saved.push((id, ctx.rt.store_get(&id).cloned())));
+        self.bind_event(ctx, v, tag);
+        saved
+    }
+
+    /// Undo a [`Self::bind_tentative`]: the overlay and the store as
+    /// they were, so an arm not taken leaves no value behind.
+    pub(super) fn retract(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        saved: SmallVec<[(BindId, Option<(TagValue, u64)>); 4]>,
+    ) {
+        let cycle = ctx.rt.cycle();
+        for (id, prev) in saved {
+            ctx.event.variables.remove(&id);
+            match prev {
+                None => ctx.rt.store_remove(&id),
+                Some((tv, at)) if at == cycle => ctx.rt.store_insert(id, tv),
+                Some((tv, _)) => ctx.rt.store_insert_standing(id, tv),
+            }
+        }
     }
 
     /// Tick the guard (it must see every cycle) and return its

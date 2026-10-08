@@ -199,3 +199,65 @@ async fn any_wakes_bottom(mode: Mode) -> Result<()> {
 }
 
 modes!(any_wakes_bottom);
+
+// A window with no arm (here a bottom scrutinee) pauses the selected
+// arm, which resumes with its state: presses goes on from where it
+// stood and entries counts the re-entry.
+const NO_ARM_WINDOW_PAUSES: &str = r#"{
+  let ev = 0;
+  ev <- select ev { k if k < 8 => k + 1, _ => never() };
+  let mode: [`Detail, `List] = `List;
+  let sel: [i64, null] = 1;
+  mode <- select ev { 2 => `Detail, 5 => `List, _ => never() };
+  sel <- select ev { 5 => null, 6 => 1, _ => never() };
+  let entries = 0;
+  select mode {
+    `List => select sel$ {
+      i => {
+        let presses = 0;
+        presses <- ev ~ presses + 1;
+        entries <- (1 ~ entries) + 1;
+        (i, entries, presses)
+      }
+    },
+    `Detail => never()
+  }
+}"#;
+
+async fn no_arm_window_pauses(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(NO_ARM_WINDOW_PAUSES, mode).await?;
+    let shown: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    assert_eq!(
+        shown,
+        [
+            "[i64:1, i64:0, i64:0]",
+            "[i64:1, i64:1, i64:1]",
+            "[i64:1, i64:1, i64:2]",
+            "[i64:1, i64:1, i64:3]",
+            "[i64:1, i64:2, i64:4]",
+            "[i64:1, i64:2, i64:5]"
+        ]
+    );
+    Ok(())
+}
+
+modes!(no_arm_window_pauses);
+
+// An untaken guarded arm's binds leave no value behind: a closure made
+// in the arm reads only what the arm matched, and fires once.
+const UNTAKEN_GUARD_BINDS_NOTHING: &str = r#"{
+  let n = 0;
+  n <- select n { k if k < 6 => k + 1, _ => never() };
+  let f: fn(u: i64) -> i64 = never();
+  f <- select (n, n == 2) { (k, b) if b => |u: i64| k * 100 + u, _ => never() };
+  (f(n), f(0), count(f(0)))
+}"#;
+
+async fn untaken_guard_binds_nothing(mode: Mode) -> Result<()> {
+    let (values, _) = run_delta(UNTAKEN_GUARD_BINDS_NOTHING, mode).await?;
+    let last = values.last().map(|v| v.to_string());
+    assert_eq!(last.as_deref(), Some("[i64:206, i64:200, i64:1]"));
+    Ok(())
+}
+
+modes!(untaken_guard_binds_nothing);

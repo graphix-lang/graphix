@@ -70,6 +70,8 @@ struct LazyArmFacts {
     sleep_on_deselect: Vec<bool>,
     /// Per arm: the shallow discriminator of an inferred predicate.
     shallow: Vec<Option<Type>>,
+    /// A value no arm matched was logged: once per select.
+    logged_no_match: bool,
 }
 
 impl LazyArmFacts {
@@ -90,6 +92,7 @@ impl LazyArmFacts {
                 .iter()
                 .map(|(pat, _)| pat.shallow_discriminant(&ctx.env, scrut))
                 .collect(),
+            logged_no_match: false,
         }
     }
 }
@@ -981,21 +984,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             slept,
             arm_facts,
         } = self;
-        let LazyArmFacts { tracked, sleep_on_deselect, shallow } =
+        let LazyArmFacts { tracked, sleep_on_deselect, shallow, logged_no_match } =
             arm_facts.as_mut().expect("arm facts built above");
-        // CR claude for claude: [bug] The wake bit is taken before the bottom-scrutinee
-        // and `ChainOut::Undet` early returns, so a select whose wake cycle is a no-arm
-        // window loses its wake. When the scrutinee or guard comes back with the same
-        // arm, the same-arm path runs it with init and wake_init false while the arm's
-        // nodes still hold their own slept bits. A `let x = 0; x <- ..` in the arm then
-        // republishes its initializer over its last write (Bind's wake_refresh without
-        // wake_phantom), and the arm's constants do not fire, so its entry actions are
-        // skipped. Whether arm state survives the sleep thus depends on whether a
-        // transient bottom lands exactly on the wake cycle; both engines agree, so the
-        // fuzzer cannot see it. Keep the bit until an arm is evaluated, and run a
-        // deferred-wake same-arm resumption under the wake view as the
-        // becoming-selected path does. probe:
-        // design/review-2026-10-05/repro/c-select-seq-04.gx (c-select-seq-04)
         let woke = slept.take();
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
@@ -1009,52 +999,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // shape, and a guard fused to the narrowing must never see the
         // value an earlier arm claimed.
         for ((pat, _), shallow) in arms.iter_mut().zip(shallow.iter()) {
-            let bound = match arg.value.as_ref() {
+            let saved = match arg.value.as_ref() {
                 Some(v)
                     if !arg.tag.is_bottom()
                         && pat.guard.is_some()
                         && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
                 {
-                    // CR claude for claude: [bug] The guard tick delivers the arm's binds
-                    // with bind_event, which writes the store as well as the overlay.
-                    // unbind_event below removes only the overlay, so an untaken
-                    // guarded arm's binds keep every scrutinee value its shape admits,
-                    // stamped this cycle with the scrutinee's tag. A closure or
-                    // reference made in the arm then reads values the arm never
-                    // matched, as fresh fires: `(k, b) if b => |u: i64| k * 100 + u`,
-                    // taken only at k = 2, gives 303 404 505 606 for f(n) and fires
-                    // f(0) on every n, while the same test written `(k, true)` gives
-                    // 203..206 and fires f(0) once. The store should change only when
-                    // the arm is taken. probe:
-                    // design/review-2026-10-05/repro/c-select-seq-05.gx
-                    // (c-select-seq-05)
-                    pat.bind_event(ctx, v, arg_prod);
-                    true
+                    Some(pat.bind_tentative(ctx, v, arg_prod))
                 }
-                _ => false,
+                _ => None,
             };
             guard_tags.push(pat.update(ctx));
-            if bound {
-                pat.unbind_event(ctx.event);
+            if let Some(saved) = saved {
+                pat.retract(ctx, saved);
             }
         }
         // Any guard fire drives a re-match; whether it affects the
         // emission is decided by the consulted set below.
         let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
         // A bottom scrutinee bottoms the select; it consults no guards.
-        // CR claude for claude: [bug] This return, and the ChainOut::Undet return below,
-        // leave the selected arm selected and awake, but it is neither updated nor
-        // slept. TrackedFires catches up the arm's free inputs, but anything that lands
-        // inside the arm during the window is lost for good. A timer tick is lost, so
-        // the Timer never re-arms. An async reply is lost, so a seq step waiting on it
-        // never completes and the machine drops every later trigger. An arm-local `<-`
-        // is lost: the node-walk then rides pre-window residents while a kernel reads
-        // the store, so the engines disagree. Pause the arm for the window as a
-        // deselect does, or keep running it with its output dropped (that breaks
-        // SELECT_UNDECIDABLE_QUIET). probe:
-        // design/review-2026-10-05/repro/c-select-seq-01.gx prints 1 2 3 4 4 and stops;
-        // with `2 => 1` it counts to 28. (c-select-seq-01)
+        // A window with no arm (a bottom scrutinee, an undecidable guard)
+        // pauses the selected arm as a deselect does, so it resumes with
+        // catch-up; a wake that lands in it waits for the next arm.
         if arg.tag.is_bottom() {
+            if woke {
+                slept.set();
+            }
+            if let Some(j) = selected.take() {
+                deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+            }
             return resident.set_bottom(arg_prod.triggers());
         }
         let v = arg.value.as_ref().expect("Held keeps every non-bottom production");
@@ -1107,7 +1080,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             chain => chain,
         };
         let tv = match chain {
-            ChainOut::Undet => return resident.set_bottom(planes.anyfire),
+            ChainOut::Undet => {
+                if woke {
+                    slept.set();
+                }
+                if let Some(j) = selected.take() {
+                    deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
+                }
+                return resident.set_bottom(planes.anyfire);
+            }
             ChainOut::Quiet(i) => {
                 let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
                 planes.emit(t, v)
@@ -1141,21 +1122,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     Tag::STALE
                 };
                 arms[i].0.bind_event(ctx, v, bind_tag);
-                // A slept arm resumes under the wake view; a
-                // skip-sleep arm was never updated, so this is its
-                // birth and gets `init` only.
+                // An arm that sleeps on deselect enters under the wake
+                // view, its first selection included; a pure
+                // non-recursive arm, with nothing to pause, enters under
+                // `init` alone.
                 let (init, wake) = (ctx.event.init, ctx.event.wake_init);
                 ctx.event.init = true;
-                // CR claude for claude: [readability] The comment at :1007-1009 misstates
-                // this rule. Every arm that sleeps on deselect enters under the wake
-                // view, including on its first selection, when it has never slept. A
-                // pure arm enters under `init` alone at every selection, not only at
-                // its birth, and it was updated each time it was selected before. A
-                // reader concludes that an impure arm's first selection takes the birth
-                // view, and it does not. State the rule instead: an arm that sleeps on
-                // deselect enters under the wake view, and a pure non-recursive arm,
-                // which has nothing to pause, enters under `init` alone.
-                // (c-select-seq-12)
                 if sleep_on_deselect[i] {
                     ctx.event.wake_init = true;
                 }
@@ -1176,7 +1148,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // uncovered values. Log a no-match at error level, once per select site and
             // in both engines, as a swallowed `$` is logged, and have the fuzzer count
             // that log as a single-run finding. (x-typecheck-patterns-09)
+            // 2026-10-07 claude: the node-walk logs a no-match once per select. The
+            // JIT's fall-through and the fuzzer's counting of the log remain.
             ChainOut::Taken(None) => {
+                // exhaustiveness makes this a checker bug: say so, once
+                if !std::mem::replace(logged_no_match, true) {
+                    log::error!(
+                        "{}: no arm matches {v}, a coverage hole in the check",
+                        spec
+                    );
+                }
                 if let Some(j) = selected.take() {
                     deselect(ctx, tracked, j, &mut arms[j], sleep_on_deselect[j]);
                 }
