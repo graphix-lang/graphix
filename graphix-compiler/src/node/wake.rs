@@ -3,7 +3,7 @@
 //! machine.
 
 use super::{VarRead, read_var};
-use crate::{BindId, Event, ExecCtx, Refs, Rt, TagValue, UserEvent, env::Env};
+use crate::{BindId, Event, ExecCtx, Refs, Rt, Tag, TagValue, UserEvent, env::Env};
 use nohash::{IntMap, IntSet};
 use smallvec::SmallVec;
 
@@ -26,8 +26,9 @@ pub(crate) struct TrackedFires {
     consumes: Vec<IntSet<BindId>>,
     /// The union of `per_arm`'s keys.
     all: IntSet<BindId>,
-    /// Sound fires no arm evaluation has consumed yet.
-    pending: IntSet<BindId>,
+    /// Sound fires no arm evaluation has consumed yet, each with its
+    /// tag: a real event, or a wake's own fire.
+    pending: IntMap<BindId, Tag>,
 }
 
 impl TrackedFires {
@@ -60,7 +61,7 @@ impl TrackedFires {
             per_arm: (0..n).map(|_| IntMap::default()).collect(),
             consumes: (0..n).map(|_| IntSet::default()).collect(),
             all: IntSet::default(),
-            pending: IntSet::default(),
+            pending: IntMap::default(),
         };
         for i in 0..n {
             let mut r = Refs::default();
@@ -80,7 +81,7 @@ impl TrackedFires {
         Self::arm_refs(env, &r, &mut per_arm[i], &mut consumes[i]);
         all.clear();
         all.extend(per_arm.iter().flat_map(|m| m.keys().copied()));
-        pending.retain(|id| all.contains(id));
+        pending.retain(|id, _| all.contains(id));
     }
 
     /// Record this cycle's sound fires of tracked inputs. Runs before
@@ -103,26 +104,32 @@ impl TrackedFires {
     ) {
         let Self { all, pending, per_arm, .. } = self;
         for id in all.iter() {
-            if !pending.contains(id)
-                && (carried.is_some_and(|c| c.contains(id))
-                    || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
-                // CR claude for claude: [bug] A wake phantom is recorded here as a sound
-                // fire. That is a let in ctx.event.wake_phantoms, republished at a wake
-                // from its constants alone. deliver later injects it as a plain FIRED
-                // catch-up in a cycle whose wake_phantoms no longer holds it, and
-                // Bind::input_fired counts it. So `let x = y` in an inner arm
-                // reselected a cycle after the outer arm's wake republishes the outer
-                // `let y = 5` over x's last write; reselected in the wake's own cycle,
-                // the same arm keeps it. Samplers tick on this fire in both timings, so
-                // the phantom mark has to travel with the pending bit and be re-marked
-                // on delivery; dropping the bit would split samplers between the two
-                // timings. probe: design/review-2026-10-05/repro/c-bind-07.gx prints
-                // (10, 55), expected (55, 55). (c-bind-07)
+            // XCR claude for claude: [bug] A wake phantom is recorded here as a sound
+            // fire. That is a let in ctx.event.wake_phantoms, republished at a wake
+            // from its constants alone. deliver later injects it as a plain FIRED
+            // catch-up in a cycle whose wake_phantoms no longer holds it, and
+            // Bind::input_fired counts it. So `let x = y` in an inner arm
+            // reselected a cycle after the outer arm's wake republishes the outer
+            // `let y = 5` over x's last write; reselected in the wake's own cycle,
+            // the same arm keeps it. Samplers tick on this fire in both timings, so
+            // the phantom mark has to travel with the pending bit and be re-marked
+            // on delivery; dropping the bit would split samplers between the two
+            // timings. probe: design/review-2026-10-05/repro/c-bind-07.gx prints
+            // (10, 55), expected (55, 55). (c-bind-07)
+            // 2026-10-08 claude: pending is a map to the fire's tag (a real fire
+            // overrides a wake's), and deliver injects at that tag, so the late catch-up
+            // stays the wake's own. The probe prints (55, 55). Pin:
+            // lang::select::wake_fire_caught_up_late.
+            if (carried.is_some_and(|c| c.contains(id))
+                || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
                 && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
-                && !tv.tag().is_bottom()
             {
-                pending.insert(*id);
+                let tag = tv.tag().fresh_or_wake();
+                let t = pending.entry(*id).or_insert(tag);
+                if !tag.is_wake() {
+                    *t = Tag::FIRED
+                }
             }
         }
     }
@@ -147,13 +154,17 @@ impl TrackedFires {
             }
         }
         let Some(set) = self.per_arm.get(i) else { return injected };
-        let keys: SmallVec<[BindId; 8]> =
-            self.pending.iter().filter(|id| set.contains_key(id)).copied().collect();
-        for key in keys {
+        let keys: SmallVec<[(BindId, Tag); 8]> = self
+            .pending
+            .iter()
+            .filter(|(id, _)| set.contains_key(id))
+            .map(|(id, t)| (*id, *t))
+            .collect();
+        for (key, tag) in keys {
             self.pending.remove(&key);
             for id in set[&key].iter().copied() {
                 let standing = match read_var(ctx, &id) {
-                    // CR claude for claude: [bug] This arm counts a STALE overlay entry
+                    // XCR claude for claude: [bug] This arm counts a STALE overlay entry
                     // as a live delivery, so the pending bit is spent and no catch-up
                     // fire is injected. A `let` inside a woken arm always leaves such
                     // an entry, because Bind::update's wake refresh republishes quietly
@@ -169,14 +180,20 @@ impl TrackedFires {
                     // design/review-2026-10-05/repro/c-select-seq-03.gx prints (0, 1,
                     // 1) where (1, 1, 1) is expected, in both engines.
                     // (c-select-seq-03)
-                    Some(VarRead::Delivered(_)) => None,
-                    Some(VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
+                    // 2026-10-08 claude: only a triggering delivery spends the bit
+                    // without injection; a quiet overlay entry is injected over (restore
+                    // puts it back). The probe prints (1, 1, 1) in both engines. Pin:
+                    // lang::select::wake_quiet_republish_catches_up.
+                    Some(VarRead::Delivered(tv)) if tv.tag().triggers() => None,
+                    Some(VarRead::Delivered(tv) | VarRead::Standing(tv))
+                        if !tv.tag().is_bottom() =>
+                    {
                         Some(tv.value_cloned())
                     }
                     _ => None,
                 };
                 if let Some(v) = standing {
-                    let prev = ctx.event.variables.insert(id, TagValue::fired(v));
+                    let prev = ctx.event.variables.insert(id, TagValue::tagged(v, tag));
                     injected.push((id, prev));
                 }
             }

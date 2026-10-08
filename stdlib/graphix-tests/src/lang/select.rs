@@ -3192,3 +3192,129 @@ async fn pattern_typing_refusals() {
         assert!(e.contains(why), "{src}: {e}");
     }
 }
+
+// A wake's own fire (a woken arm's constants, through any operator, call,
+// builtin, select or formal) never rewrites a `<-` target: each column is
+// a target written twice, then slept (n = 3) and woken (n = 4).
+const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
+{
+    let n = array::iter([0, 1, 2, 3, 4, 5]);
+    let tab = uniq(select n { 3 => `B, _ => `A });
+    let click = select n { 1 => null, 2 => null, _ => never() };
+    let f = |x: i64| x * 2;
+    let g = |#start: i64 = 2, ev: Any| -> i64 { let c = start; c <- ev ~ c + 10; c };
+    let r = select tab {
+        `A => [
+            { let c = 1 + 1; c <- click ~ c + 10; c },
+            { let c = f(1); c <- click ~ c + 10; c },
+            { let c = str::len("ab"); c <- click ~ c + 10; c },
+            { let c = {a: 2, b: 3}.a; c <- click ~ c + 10; c },
+            { let c = select 0 { 0 => 2, _ => 3 }; c <- click ~ c + 10; c },
+            { let c = array::len([1, 2]); c <- click ~ c + 10; c },
+            g(click),
+            select 2 { s => { let c = s; c <- click ~ c + 10; c } }
+        ],
+        `B => []
+    };
+    select n { 5 => r, _ => never() }
+}
+"#;
+
+run!(wake_fire_keeps_targets, WAKE_FIRE_KEEPS_TARGETS, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+            == vec![22; 8]
+    }
+    _ => false,
+});
+
+// The initializer's inputs that cannot reach its production this cycle
+// (an untaken arm's) do not make a wake's fire real.
+const WAKE_UNREACHED_INPUT_KEEPS_TARGET: &str = r#"
+{
+    let n = array::iter([0, 1, 2, 3, 4, 5]);
+    let o = uniq(select n { 2 => false, 3 => false, _ => true });
+    let c = true;
+    let ev = select n { 1 => 50, _ => never() };
+    let w = select n { 9 => 7, _ => never() };
+    let v = select n { 4 => 7, _ => never() };
+    let bot = select o { true => { let y = select c { true => 5, false => w }; y <- ev; y }, false => -1 };
+    let live = select o { true => { let y = select c { true => 5, false => v }; y <- ev; y }, false => -1 };
+    let ctl = select o { true => { let y = select c { true => 5, false => 6 }; y <- ev; y }, false => -1 };
+    select n { 5 => (bot, live, ctl), _ => never() }
+}
+"#;
+
+run!(
+    wake_unreached_input_keeps_target,
+    WAKE_UNREACHED_INPUT_KEEPS_TARGET,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:50, i64:50, i64:50]"
+);
+
+// A wake's fire that an inner arm catches up a cycle later is still the
+// wake's own.
+const WAKE_FIRE_CAUGHT_UP_LATE: &str = r#"
+{
+    let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+    let o = uniq(select n { 2 => false, 3 => false, _ => true });
+    let late = uniq(select n { 3 => false, 4 => false, _ => true });
+    let same = uniq(select n { 3 => false, _ => true });
+    let r_late = select o {
+        true => {
+            let y = 5;
+            select late { true => { let x = y; x <- select n { 1 => 50, _ => never() }; x + y }, false => 0 }
+        },
+        false => -1
+    };
+    let r_same = select o {
+        true => {
+            let y = 5;
+            select same { true => { let x = y; x <- select n { 1 => 50, _ => never() }; x + y }, false => 0 }
+        },
+        false => -1
+    };
+    select n { 6 => (r_late, r_same), _ => never() }
+}
+"#;
+
+run!(wake_fire_caught_up_late, WAKE_FIRE_CAUGHT_UP_LATE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:55, i64:55]"
+});
+
+// A woken arm's inner select catches up a fire its new arm never saw even
+// when the input's `let` republished quietly at the wake.
+const WAKE_QUIET_REPUBLISH_CATCHES_UP: &str = r#"
+{
+    let n = 0;
+    n <- select n { k if k < 12 => k + 1, _ => never() };
+    let x = 0;
+    x <- select n { 2 => 100, _ => never() };
+    let phase = select n { k if k < 5 => `X, k if k < 8 => `Y, _ => `X };
+    let t = select n { k if k < 7 => `A, _ => `B };
+    let inside = 0;
+    let a = select phase {
+        `X => {
+            let v = x * x;
+            select t { `A => 0, `B => inside <- v ~ (inside + 1) }
+        },
+        `Y => never()
+    };
+    let outside = 0;
+    let w = x * x;
+    let b = select phase {
+        `X => select t { `A => 0, `B => outside <- w ~ (outside + 1) },
+        `Y => never()
+    };
+    let formal = 0;
+    let f = |v| select t { `A => 0, `B => formal <- v ~ (formal + 1) };
+    let c = select phase { `X => f(x * x), `Y => never() };
+    select n { 12 => (inside, outside, formal), _ => never() }
+}
+"#;
+
+run!(wake_quiet_republish_catches_up, WAKE_QUIET_REPUBLISH_CATCHES_UP, |v: Result<
+    &Value,
+>| format!(
+    "{}",
+    v.unwrap()
+) == "[i64:1, i64:1, i64:1]");

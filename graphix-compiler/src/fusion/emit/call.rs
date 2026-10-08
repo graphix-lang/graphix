@@ -24,8 +24,9 @@ use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, clean_disc,
-        emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc, value_disc,
+        CompiledExpr, FIRE_TEST, JitEnv, LocalKind, STALE, TAINT, ValueVar, WAKE,
+        clean_disc, emit_untainted_i64, is_tainted, prim_to_value_disc, scalar_disc,
+        value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     flow::emit_scope_drops,
@@ -149,21 +150,34 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     // Bit `i` set = the arg is present but did not fire this cycle.
     // Suppressed under genuine init only (init minus wake): at init
     // every input is born; a wake delivers standing inputs stale.
+    let genuine = {
+        let (init, wake) = (cx.init_flag(), cx.ctx.wake_flag);
+        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+        let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
+        cx.b.ins().band(init_b, no_wake)
+    };
     let stale_mask = {
         let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
         for (i, d) in arg_discs.iter().enumerate() {
-            let s = cx.b.ins().band_imm(*d, STALE);
+            let s = cx.b.ins().band_imm(*d, FIRE_TEST);
             let sb = cx.b.ins().icmp_imm(IntCC::NotEqual, s, 0);
             let s64 = cx.b.ins().uextend(types::I64, sb);
             let bit = cx.b.ins().ishl_imm(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
-        let (init, wake) = (cx.init_flag(), cx.ctx.wake_flag);
-        let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
-        let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
-        let genuine = cx.b.ins().band(init_b, no_wake);
         let zero = cx.b.ins().iconst(types::I64, 0);
         cx.b.ins().select(genuine, zero, stale_mask)
+    };
+    // the result is a wake's own fire when every arg's is, outside a
+    // genuine init, as the node-walk's CachedArgs joins it
+    let wake_fold = {
+        let mut all = cx.b.ins().iconst(types::I64, WAKE);
+        for d in arg_discs.iter() {
+            let w = cx.b.ins().band_imm(*d, WAKE);
+            all = cx.b.ins().band(all, w);
+        }
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        cx.b.ins().select(genuine, zero, all)
     };
     let base = cx.b.ins().stack_addr(types::I64, slot, 0);
     let n = cx.b.ins().iconst(types::I64, args.len() as i64);
@@ -212,6 +226,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     cx.b.append_block_param(dmerge, pay_ty);
     // The returned disc's TAINT/STALE bits are the production's tag.
     let tagbits = cx.b.ins().band_imm(raw0, TAINT | STALE);
+    let tagbits = cx.b.ins().bor(tagbits, wake_fold);
     match ret_abi {
         Some(AbiKind::Scalar(p)) => {
             // A bottom's placeholder payload is harmless garbage, guarded
@@ -367,7 +382,7 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         }),
         _ => cx.slot_select_word(site),
     };
-    // CR claude for claude: [bug] The callee's context word carries only bit 0 (init |
+    // XCR claude for claude: [bug] The callee's context word carries only bit 0 (init |
     // first call), never bit 1 (wake), so inside every cross-kernel callee `genuine =
     // init & !wake` (line 151) is just `init`. Under an arm wake init is forced to 1,
     // the fastcall stale mask is zeroed, and a builtin over standing args returns
@@ -378,7 +393,12 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     // does for chunks: `bor(first_use(word), ishl_imm(wake_flag, 1))`. probe:
     // design/review-2026-10-05/repro/f-kernel-01.gx (graphix-fuzz check: DIVERGENCE).
     // (f-kernel-01)
-    cx.first_use(word)
+    // 2026-10-08 claude: forwarded, as outline.rs does for chunks; the wake bit also
+    // decides a constant's WAKE tag bit in the callee. Pins:
+    // lang::select::wake_fire_keeps_targets (the lambda-call column).
+    let init = cx.first_use(word);
+    let wake = cx.b.ins().ishl_imm(cx.ctx.wake_flag, 1);
+    cx.b.ins().bor(init, wake)
 }
 
 /// Claim a contiguous run of `layout.words` words from this body's own

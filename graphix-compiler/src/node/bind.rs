@@ -134,52 +134,6 @@ fn builtin_binding<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
-    /// Whether an input the initializer's fire can come through was
-    /// delivered fired this cycle, live or as a wake catch-up, and not
-    /// by a wake's constants.
-    // CR claude for claude: [bug] Only Bind::update marks a wake's constant fire in
-    // wake_phantoms, so this test cannot see the same fire when another republisher
-    // passes it on. CallSite::publish_production and the formal loop in
-    // GXLambda::update publish a formal FIRED, and PatternNode::bind_event publishes a
-    // pattern bind FIRED, without marking it. As a result, a `let c = start` in a
-    // function called with a constant or defaulted argument, or a `let c = s` under
-    // `select 0 { s => .. }`, republishes its seed over the target's last write at
-    // every wake of the arm, while the same code inline keeps it. Function-held state
-    // seeded from an argument resets instead of pausing (a counter in a tab restarts at
-    // its seed). Both engines agree, so the fuzzer cannot see it. probe:
-    // design/review-2026-10-05/repro/c-bind-02.gx (expected (2, 2, 2) at the wake,
-    // observed (2, 0, 0)). (c-bind-02)
-    fn input_fired(&self, ctx: &ExecCtx<'_, R, E>) -> bool {
-        // CR claude for claude: [perf] input_fired builds a fresh Refs and walks the
-        // whole initializer at every wake (each woken arm, each seq step entry).
-        // CallSite::refs descends into callee instance bodies (callsite.rs:2228), so a
-        // let over a call walks the callee's whole instance tree, and every let inside
-        // it walks its own subtree again. With `let s = f(k - 1)` in each activation, a
-        // recursion of depth D costs O(D^2) per wake: 10 wakes of f(1000) take 4.85 s,
-        // against 0.48 s for the same function without the let (debug build, default
-        // mode). Answer it from the delivery (see the wake_phantoms CR in Bind::update)
-        // or from a set computed once per instance, not by a walk per let per wake.
-        // probe: design/review-2026-10-05/repro/c-bind-12.gx (c-bind-12)
-        let mut refs = Refs::default();
-        self.node.refs(&mut refs);
-        // CR claude for claude: [bug] input_fired decides from the initializer's refs,
-        // not from its production: any triggering ref delivered with a tag that
-        // triggers() counts, a fresh bottom included, even where it cannot reach the
-        // value this cycle (an untaken select arm, an earlier block statement). The
-        // wake's constant, or wake_refresh's quiet republish of a stale initializer,
-        // then overwrites the `<-` target's last write, which the never-slept arm
-        // keeps. In a sleeping arm `let y = select c { true => 5, false => w }; y <-
-        // ev` goes from 50 back to 5 at the wake when w fires or fresh-bottoms in the
-        // wake cycle (the `select n { k => v, _ => never() }` idiom fresh-bottoms at
-        // every fire of n, even if it never had a value); with a constant in that arm y
-        // keeps 50. Both engines agree, so the fuzzer cannot see it. probe:
-        // design/review-2026-10-05/repro/c-bind-06.gx (c-bind-06)
-        refs.triggering.difference(&refs.bound).any(|id| {
-            !ctx.event.wake_phantoms.contains_key(id)
-                && matches!(read_var(ctx, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
-        })
-    }
-
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -403,7 +357,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let woke = self.slept.take();
         // At a wake the initializer's constants fire; the fire is the wake's,
         // not an event's, unless one of its inputs fired too.
-        // CR claude for claude: [structure] Whether a fire is the wake's own is a
+        // XCR claude for claude: [structure] Whether a fire is the wake's own is a
         // property of the delivery. It is kept instead in Event::wake_phantoms, a side
         // set that only this let writes (line 365) and reads (input_fired), re-derived
         // for each let by a ref walk. Every other republisher passes the wake's
@@ -416,9 +370,52 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // join, so every republisher passes it along, and delete wake_phantoms and
         // input_fired. probes: design/review-2026-10-05/repro/c-bind-02.gx,
         // c-bind-06.gx, c-bind-07.gx, c-bind-12.gx (c-bind-13)
-        let wake_phantom = ctx.event.wake_init && !self.input_fired(ctx);
+        // 2026-10-08 claude: done as asked: Tag::WAKE_BIT, set by a constant under a wake
+        // view in both engines (produce_constant, const_stale_gate), ANDs as STALE does
+        // (Tag::join; the kernel's STALE mask covers bits 61 and 60, FIRE_TEST is bit
+        // 61). wake_phantoms and input_fired are deleted; this let holds its targets when
+        // its production is no real event (Tag::is_event). Republishers keep the bit:
+        // publish_production (formals, results), bind_event, the let's overlay and store,
+        // `~`, CachedArgs, TrackedFires' pending tag. Callees now get the caller's wake
+        // bit (f-kernel-01). Pins: lang::select::wake_fire_keeps_targets,
+        // wake_unreached_input_keeps_target, wake_fire_caught_up_late,
+        // wake_quiet_republish_catches_up.
+        // XCR claude for claude: [bug] Only Bind::update marks a wake's constant fire in
+        // wake_phantoms, so this test cannot see the same fire when another republisher
+        // passes it on. CallSite::publish_production and the formal loop in
+        // GXLambda::update publish a formal FIRED, and PatternNode::bind_event publishes a
+        // pattern bind FIRED, without marking it. As a result, a `let c = start` in a
+        // function called with a constant or defaulted argument, or a `let c = s` under
+        // `select 0 { s => .. }`, republishes its seed over the target's last write at
+        // every wake of the arm, while the same code inline keeps it. Function-held state
+        // seeded from an argument resets instead of pausing (a counter in a tab restarts at
+        // its seed). Both engines agree, so the fuzzer cannot see it. probe:
+        // design/review-2026-10-05/repro/c-bind-02.gx (expected (2, 2, 2) at the wake,
+        // observed (2, 0, 0)). (c-bind-02)
+        // 2026-10-08 claude: the formal and the pattern bind carry the constant's WAKE
+        // bit, so the probe prints (2, 2, 2) then (3, 3, 3) in both engines. Pin:
+        // lang::select::wake_fire_keeps_targets (the defaulted-formal and pattern-bind
+        // columns).
+        // XCR claude for claude: [bug] input_fired decides from the initializer's refs,
+        // not from its production: any triggering ref delivered with a tag that
+        // triggers() counts, a fresh bottom included, even where it cannot reach the
+        // value this cycle (an untaken select arm, an earlier block statement). The
+        // wake's constant, or wake_refresh's quiet republish of a stale initializer,
+        // then overwrites the `<-` target's last write, which the never-slept arm
+        // keeps. In a sleeping arm `let y = select c { true => 5, false => w }; y <-
+        // ev` goes from 50 back to 5 at the wake when w fires or fresh-bottoms in the
+        // wake cycle (the `select n { k => v, _ => never() }` idiom fresh-bottoms at
+        // every fire of n, even if it never had a value); with a constant in that arm y
+        // keeps 50. Both engines agree, so the fuzzer cannot see it. probe:
+        // design/review-2026-10-05/repro/c-bind-06.gx (c-bind-06)
+        // 2026-10-08 claude: decided from the production's tag now: an untaken arm's
+        // input never joins it, a fresh bottom on it neither. The probe prints (50, 50,
+        // 50) in both engines. Pin: lang::select::wake_unreached_input_keeps_target.
         let tv = self.node.update(ctx);
         let tag = tv.tag();
+        // under a wake view, a production that is no real event leaves a
+        // `<-` target's last write
+        let wake_phantom = ctx.event.wake_init && !tag.is_event();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store. A connect target's value is its last
@@ -449,13 +446,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         }
         if publish {
             let quiet = !tag.triggers();
-            if wake_phantom && !quiet {
-                self.pattern.ids(&mut |id| {
-                    if !held.contains(&id) {
-                        ctx.event.wake_phantoms.insert(id, ());
-                    }
-                });
-            }
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
                     if held.contains(&id) {
@@ -477,7 +467,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                         return;
                     }
                     ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    ctx.rt.store_insert(id, TagValue::fired(v));
+                    ctx.rt.store_insert(id, TagValue::tagged(v, tag.fresh_or_wake()));
                     if !quiet {
                         ctx.rt.notify_set(id);
                     }

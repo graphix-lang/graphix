@@ -11,8 +11,8 @@ use crate::{
     expr::Expr,
     fusion::{
         emit::{
-            STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
-            record_decode, record_encode,
+            WrappedKernel, pack_value_to_u64, prim_to_value_disc, record_decode,
+            record_encode,
         },
         emit_helpers::{
             self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_REACHED, TagValue,
@@ -265,8 +265,8 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
                 "kernel param `{name}`: runtime {v:?} does not match the compiled {p:?} slot"
             )
         };
+        let flag = (tag.bits() as u64) << 56;
         if tag.is_bottom() {
-            let flag = TAINT as u64 | if tag.triggers() { 0 } else { STALE as u64 };
             let [disc, payload] = match p {
                 ParamKind::Scalar(prim) => [prim_to_value_disc(*prim) as u64, 0],
                 ParamKind::Array { .. }
@@ -279,7 +279,6 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             };
             return (disc | flag, payload);
         }
-        let flag = if tag.is_fired() { 0 } else { STALE as u64 };
         tv.with_value(|v| {
             let [disc, payload] = match (p, v) {
                 // A narrow Value's upper payload bytes are padding.

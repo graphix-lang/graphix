@@ -78,11 +78,19 @@ pub struct CompiledExpr {
 /// of [`STALE`]: a fresh bottom is an event.
 pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
-/// Disc bit 61: the value did not fire this cycle; when it is not
-/// tainted the payload is the standing value. Leaves set it, ops
-/// AND-reduce it ([`propagate_stale`]) while [`TAINT`] ORs, and only the
-/// kernel output forces freshness.
-pub(crate) const STALE: i64 = (crate::tval::Tag::STALE_BIT as i64) << 56;
+/// Disc bits 61 and 60: the value did not fire this cycle (bit 61), or
+/// is no real event (bit 60: stale, or a wake's own fire). When it is
+/// not tainted the payload is the standing value. Leaves set both, ops
+/// AND-reduce both ([`propagate_stale`]) while [`TAINT`] ORs; whether a
+/// value fired is bit 61 alone ([`FIRE_TEST`]).
+pub(crate) const STALE: i64 =
+    ((crate::tval::Tag::STALE_BIT | crate::tval::Tag::WAKE_BIT) as i64) << 56;
+
+/// Disc bit 61 alone: set when the value did not fire.
+pub(crate) const FIRE_TEST: i64 = (crate::tval::Tag::STALE_BIT as i64) << 56;
+
+/// Disc bit 60 alone: a fire that is a wake's own.
+pub(crate) const WAKE: i64 = (crate::tval::Tag::WAKE_BIT as i64) << 56;
 
 impl CompiledExpr {
     pub fn new(disc: ClifValue, payload: ClifValue) -> Self {
@@ -165,23 +173,27 @@ pub(super) fn emit_untainted_i64(b: &mut FunctionBuilder, disc: ClifValue) -> Cl
     b.ins().uextend(types::I64, v)
 }
 
-/// True (I8 bool) iff neither [`TAINT`] nor [`STALE`] is set: the value
-/// fired this cycle.
+/// True (I8 bool) iff neither [`TAINT`] nor [`FIRE_TEST`] is set: the
+/// value fired this cycle.
 pub(super) fn is_fresh(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
-    let m = b.ins().band_imm(disc, TAINT | STALE);
+    let m = b.ins().band_imm(disc, TAINT | FIRE_TEST);
     b.ins().icmp_imm(IntCC::Equal, m, 0)
 }
 
 /// OR [`STALE`] into a constant's `disc` when `init_flag` is 0: a
-/// constant fires only at init.
+/// constant fires only at init, and under a wake view (`wake_flag` 1)
+/// its fire is the wake's own.
 pub(super) fn const_stale_gate(
     b: &mut FunctionBuilder,
     init_flag: ClifValue,
+    wake_flag: ClifValue,
     disc: ClifValue,
 ) -> ClifValue {
     let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
     let staled = b.ins().bor_imm(disc, STALE);
-    b.ins().select(not_init, staled, disc)
+    let wake = b.ins().ishl_imm(wake_flag, 60);
+    let fired = b.ins().bor(disc, wake);
+    b.ins().select(not_init, staled, fired)
 }
 
 /// Strip [`TAINT`] and [`STALE`], leaving the netidx discriminant: a

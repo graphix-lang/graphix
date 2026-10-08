@@ -190,8 +190,7 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
   call, `RtOp`), a `ForkCx` and a forked `Event` over the parent's,
   which is frozen for the join's duration. Reads go: own layer, then
   the parent chain, then the store. Writes go to the deltas or the log.
-- **Event.** The event's overlay (`variables`) and `wake_phantoms` are
-  `Layered` maps; `init`/`wake_init` are copied per branch; `custom` is
+- **Event.** The event's overlay (`variables`) is a `Layered` map; `init`/`wake_init` are copied per branch; `custom` is
   one locked map every branch shares; `user` is copied.
 - **Bounds.** Sharing the parent's runtime with a forked branch needs
   `R: Sync` (`ForkRt`'s `Send`).
@@ -250,7 +249,7 @@ enters it where it is made (§4.5).
   `store_get`, and `spawn`/`spawn_var` return nothing (no caller kept
   the abort handle; async builtins drop stale results by minting a new
   id on sleep).
-- **`Layered`** maps (`ctx.event.variables`, `wake_phantoms`): a
+- **`Layered`** maps (`ctx.event.variables`): a
   branch's entries and removals over its parent's. Custom deliveries
   are one locked map every branch shares (`Event::take_custom`,
   `with_custom`).

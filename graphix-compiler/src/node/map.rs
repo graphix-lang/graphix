@@ -280,7 +280,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let s = self.source.update(ctx);
         let k = self.key.update(ctx);
         let tag = s.tag().join(k.tag());
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let v = with_hooks(ctx, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
         self.resident.set(TagValue::tagged(v, tag))
     }

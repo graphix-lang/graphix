@@ -60,7 +60,7 @@ pub(crate) fn emit_const_node(
     match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
             let disc = scalar_disc(cx.b, prim);
-            let disc = const_stale_gate(cx.b, init, disc);
+            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
             Ok(CompiledExpr::new(disc, compile_const(cx.b, value, prim)?))
         }
         Some(AbiKind::String) => {
@@ -75,7 +75,7 @@ pub(crate) fn emit_const_node(
             let call = cx.b.ins().call(clone, &[ptr]);
             let payload = cx.b.inst_results(call)[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
-            let disc = const_stale_gate(cx.b, init, disc);
+            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
@@ -86,12 +86,12 @@ pub(crate) fn emit_const_node(
                 let r = cx.b.inst_results(call);
                 (r[0], r[1])
             };
-            let disc = const_stale_gate(cx.b, init, r0);
+            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, r0);
             Ok(CompiledExpr::new(disc, r1))
         }
         Some(AbiKind::Null) => {
             let disc = cx.b.ins().iconst(types::I64, value_disc::NULL);
-            let disc = const_stale_gate(cx.b, init, disc);
+            let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
             let payload = cx.b.ins().iconst(types::I64, 0);
             Ok(CompiledExpr::new(disc, payload))
         }
@@ -721,7 +721,7 @@ fn producer_disc(
 ) -> ClifValue {
     if field_discs.is_empty() {
         let init = cx.init_flag();
-        const_stale_gate(cx.b, init, base)
+        const_stale_gate(cx.b, init, cx.ctx.wake_flag, base)
     } else {
         propagate_flags(cx.b, base, field_discs)
     }
@@ -894,7 +894,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
         // A nullary variant is a constant: fires at init only.
         let init = cx.init_flag();
-        let disc = const_stale_gate(cx.b, init, base);
+        let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, base);
         Ok(CompiledExpr::new(disc, bits))
     } else {
         let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);

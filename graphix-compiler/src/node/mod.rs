@@ -479,16 +479,18 @@ fn gather_in_order<'a, R: Rt, E: UserEvent>(
 
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
+/// `$tag` is the join of the consumed productions.
 macro_rules! dense_gate {
-    ($self:ident, $trig:expr, $bottom:expr) => {{
+    ($self:ident, $tag:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
-        $crate::node::dense_gate!($self.resident, $trig, $bottom, woke);
+        $crate::node::dense_gate!($self.resident, $tag, $bottom, woke);
     }};
-    ($resident:expr, $trig:expr, $bottom:expr, $woke:expr) => {{
+    ($resident:expr, $tag:expr, $bottom:expr, $woke:expr) => {{
+        let tag: $crate::Tag = $tag;
         if $bottom {
-            return $resident.set_bottom($trig);
+            return $resident.set_bottom_as(tag);
         }
-        if !($trig || $resident.tag().is_bottom() || $woke) {
+        if !(tag.triggers() || $resident.tag().is_bottom() || $woke) {
             return $resident.ride();
         }
     }};
@@ -657,7 +659,8 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
     // a constant's resident is bottom only before it produced: it
     // stands stale with its value off an init view, as a kernel's does
     if event.init {
-        resident.set(TagValue::fired(value()))
+        let tag = if event.wake_init { Tag::WAKE_FIRED } else { Tag::FIRED };
+        resident.set(TagValue::tagged(value(), tag))
     } else if resident.is_bottom() {
         resident.set(TagValue::stale(value()))
     } else {
@@ -1436,7 +1439,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
         let (tag, prods) = gather(ctx, &mut self.args, &mut self.fork);
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let mut buf: LPooled<String> = LPooled::take();
         coretraits::with_display_hooks(ctx, |env| {
             for (typ, tv) in self.typs.iter().zip(prods.iter()) {
@@ -1934,7 +1937,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let tv = self.n.update(ctx);
         let tag = tv.tag();
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let v = tv.value_cloned();
         let v = if self.src_ref {
             errf!(CAST_ERR_TAG, "can't cast a reference")
@@ -2379,12 +2382,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx);
         let fired = t.tag().is_fired();
+        let fire = t.tag().fresh_or_wake();
         self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
             Banking::Strict => {
                 return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
                     (true, Some(v), false) => {
-                        self.resident.set(TagValue::fired(v.clone()))
+                        self.resident.set(TagValue::tagged(v.clone(), fire))
                     }
                     (true, _, _) => self.resident.set_bottom(true),
                     (false, _, _) => self.resident.ride(),
@@ -2414,7 +2418,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
         match (answered, var) {
             (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
-            (Some(v), _) => self.resident.set(TagValue::fired(v.clone())),
+            (Some(v), _) => self.resident.set(TagValue::tagged(v.clone(), fire)),
             (None, Some(tv)) => self.resident.set(tv),
             (None, None) => self.resident.ride(),
         }

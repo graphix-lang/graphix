@@ -191,7 +191,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let s = self.source.update(ctx);
         let i = self.i.update(ctx);
         let tag = s.tag().join(i.tag());
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let v = s.with_value(|s| match (s, i.with_value(index_i64)) {
             (_, None) => err!(ERR_TAG, "expected an integer"),
             (Value::Array(elts), Some(i)) => array_index(elts, i),
@@ -338,7 +338,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         let start = self.start.as_mut().map(|n| n.update(ctx));
         let end = self.end.as_mut().map(|n| n.update(ctx));
         let tag = [start, end].iter().flatten().fold(s.tag(), |t, b| t.join(b.tag()));
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let bound = |b: Option<&TagValue>| {
             b.map(|b| b.with_value(index_i64).ok_or(())).transpose()
         };
@@ -583,7 +583,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
             return produce_constant(ctx.event, &mut self.resident, K::empty);
         }
         let (tag, prods) = gather(ctx, &mut self.n, &mut self.fork);
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let v = K::build(prods.into_iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))
     }

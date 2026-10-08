@@ -123,6 +123,8 @@ struct EmissionPlanes {
     guard_fire: bool,
     /// A non-bottom fire was consumed.
     sound: bool,
+    /// A sound fire was a real event, not only a wake's constants.
+    real: bool,
     /// Any consumed input fired, bottom or not.
     anyfire: bool,
     /// A consulted guard's current channel is bottom.
@@ -135,6 +137,7 @@ impl EmissionPlanes {
         let mut planes = EmissionPlanes {
             guard_fire: false,
             sound: arg_prod.triggers(),
+            real: arg_prod.triggers() && !arg_prod.is_wake(),
             anyfire: arg_prod.triggers(),
             consulted_bottom: false,
         };
@@ -144,6 +147,7 @@ impl EmissionPlanes {
                 planes.guard_fire = true;
                 planes.anyfire = true;
                 planes.sound |= !t.is_bottom();
+                planes.real |= !t.is_bottom() && !t.is_wake();
             }
             planes.consulted_bottom |= t.is_bottom();
         }
@@ -151,11 +155,15 @@ impl EmissionPlanes {
     }
 
     /// The taken arm's production `(t, v)` as the select's: a value
-    /// fires when the arm or a sound consumed input fired; a bottom arm
-    /// sets the select bottom, fresh on the same condition.
+    /// fires when the arm or a sound consumed input fired, a real event
+    /// when one of those was; a bottom arm sets the select bottom, fresh
+    /// on the same condition.
     fn emit(&self, t: Tag, v: Option<Value>) -> TagValue {
         match v {
-            Some(v) if t.is_fired() || self.sound => TagValue::fired(v),
+            Some(v) if t.is_fired() || self.sound => {
+                let real = self.real || (t.is_fired() && !t.is_wake());
+                TagValue::tagged(v, if real { Tag::FIRED } else { Tag::WAKE_FIRED })
+            }
             Some(v) => TagValue::stale(v),
             None if t.triggers() || self.sound => {
                 TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)

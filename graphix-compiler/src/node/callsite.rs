@@ -2896,7 +2896,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
     let bottom = tag.is_bottom();
     let delivered = if born && !bottom { Tag::FIRED } else { tag };
     let (store, overlay) = if tag.triggers() {
-        let store = if bottom { Tag::FRESH_BOTTOM } else { Tag::FIRED };
+        let store = if bottom { Tag::FRESH_BOTTOM } else { tag.fresh_or_wake() };
         (Some((store, false)), Some(tag))
     } else {
         match root {

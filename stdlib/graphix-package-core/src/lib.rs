@@ -1258,14 +1258,19 @@ impl<T> CachedArgs<T> {
     where
         T: EvalCached<R, E>,
     {
-        match cached.update_full(ctx, from) {
+        // a wake's own fire when every fired arg was, as a kernel's fast
+        // call folds it; under a genuine init every arg is born
+        let genuine = ctx.event.init && !ctx.event.wake_init;
+        let prod =
+            cached.update_full(ctx, from).map(|t| if genuine { t.real() } else { t });
+        match prod {
             None => last_result.ride(),
             // a bottom arg bottoms the invocation without calling eval
-            Some(t) if cached.any_bottom() => last_result.set_bottom(t.triggers()),
+            Some(t) if cached.any_bottom() => last_result.set_bottom_as(t),
             Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
-                Some(v) => last_result.set(TagValue::fired(v)),
+                Some(v) => last_result.set(TagValue::tagged(v, t)),
                 // no value this cycle, as a kernel's fast call reads it
-                None => last_result.set_bottom(true),
+                None => last_result.set_bottom_as(t),
             },
             Some(_) if !last_result.tag().is_bottom() => {
                 // Wake catch-up: args may have drifted while asleep. A

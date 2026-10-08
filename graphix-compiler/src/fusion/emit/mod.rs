@@ -32,8 +32,8 @@ pub mod scaffold;
 mod scalar;
 mod select;
 
+pub(crate) use self::abi::prim_to_value_disc;
 pub use self::abi::{CompiledExpr, array_result};
-pub(crate) use self::abi::{STALE, TAINT, prim_to_value_disc};
 pub use self::body::{
     BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
     node_is_bottom,

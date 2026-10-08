@@ -27,8 +27,9 @@ use smallvec::SmallVec;
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
-        CompiledExpr, STALE, TAINT, ValueVar, bind_local, bind_scalar_var_with_disc,
-        clean_disc, is_fresh, prim_to_value_disc, scalar_disc, value_disc,
+        CompiledExpr, FIRE_TEST, STALE, TAINT, ValueVar, bind_local,
+        bind_scalar_var_with_disc, clean_disc, is_fresh, prim_to_value_disc, scalar_disc,
+        value_disc,
     },
     body::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
@@ -418,7 +419,7 @@ impl Accs {
         let z = cx.b.ins().iconst(types::I64, 0);
         cx.b.def_var(taint, z);
         let stale = cx.b.declare_var(types::I64);
-        let st = cx.b.ins().iconst(types::I64, STALE);
+        let st = cx.b.ins().iconst(types::I64, FIRE_TEST);
         cx.b.def_var(stale, st);
         Accs { taint, stale }
     }
@@ -436,7 +437,7 @@ impl Accs {
     /// acc carry, so an acc-ignoring callback recovers.
     fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.stale);
-        let sb = cx.b.ins().band_imm(disc, STALE);
+        let sb = cx.b.ins().band_imm(disc, FIRE_TEST);
         let n = cx.b.ins().band(cur, sb);
         cx.b.def_var(self.stale, n);
     }
@@ -533,11 +534,11 @@ impl SlotFlags {
         let t = cx.b.use_var(self.accs.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
         let slots_word = cx.b.use_var(self.accs.stale);
-        let src_word = cx.b.ins().band_imm(src, STALE);
+        let src_word = cx.b.ins().band_imm(src, FIRE_TEST);
         let src_taint = cx.b.ins().band_imm(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
         let fired_word = if self.kind == LoopKind::Fold {
-            let rs = cx.b.ins().band_imm(r.disc, STALE);
+            let rs = cx.b.ins().band_imm(r.disc, FIRE_TEST);
             cx.b.ins().band(rs, slots_word)
         } else {
             slots_word
@@ -640,11 +641,15 @@ impl SlotFlags {
         fired_word: ClifValue,
         src_word: ClifValue,
     ) -> ClifValue {
-        if self.kind == LoopKind::Fold {
+        let word = if self.kind == LoopKind::Fold {
             fired_word
         } else {
             cx.b.ins().band(fired_word, src_word)
-        }
+        };
+        let fires = cx.b.ins().icmp_imm(IntCC::Equal, word, 0);
+        let quiet = cx.b.ins().iconst(types::I64, STALE);
+        let zero = cx.b.ins().iconst(types::I64, 0);
+        cx.b.ins().select(fires, zero, quiet)
     }
 }
 

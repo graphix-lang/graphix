@@ -1,7 +1,7 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, defetyp,
+    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    defetyp,
     env::Env,
     expr::{Expr, ExprId},
     fusion::{
@@ -204,10 +204,9 @@ macro_rules! gated_operands {
             |c| rhs.update(c),
         );
         let (lt, rt) = (l.tag(), r.tag());
-        let trig = lt.triggers() || rt.triggers();
-        dense_gate!($self.resident, trig, lt.is_bottom() || rt.is_bottom(), woke);
-        let tag = if lt.is_fired() || rt.is_fired() { Tag::FIRED } else { Tag::STALE };
-        (l, r, trig, tag)
+        let tag = lt.join(rt);
+        dense_gate!($self.resident, tag, tag.is_bottom(), woke);
+        (l, r, tag.triggers(), tag)
     }};
 }
 
@@ -482,7 +481,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let tv = self.n.update(ctx);
         let tag = tv.tag();
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         match tv.with_value(|v| match v {
             Value::Bool(b) => Some(!*b),
             _ => None,
@@ -603,7 +602,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx);
         let tag = tv.tag();
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let neg = tv.with_value(|v| match v {
             Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
             Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
@@ -858,7 +857,7 @@ macro_rules! arith_op {
                             let site = diagnostic_site(&self.spec);
                             report_failure!(&format_compact!("arith error {site} {e}"));
                         }
-                        self.resident.set_bottom(trig)
+                        self.resident.set_bottom_as(tag)
                     }
                     v => self.resident.set(TagValue::tagged(v, tag)),
                 }

@@ -447,7 +447,11 @@ node graph IS the IR — there is no parallel typed IR
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
   orthogonal fired×bottom algebra. A standing bottom re-delivers
   `StaleBottom` and never re-fires consumers; bottomness ORs over
-  consumed productions. In the JIT the bits ride each param's disc.
+  consumed productions. A third bit, WAKE, marks a fire only a woken
+  arm's constants caused (and every stale tag): it ANDs as STALE does,
+  and only a `<-` target's `let` reads it (`design/wake_catchup.md`). In
+  the JIT the bits ride each param's disc (`STALE` masks bits 61 and 60,
+  `FIRE_TEST` bit 61 alone).
 - **Organic firing** (`design/organic_firing.md`): a node fires iff a
   consumed input fires; nothing stores a previous value or selection to
   decide a tag; `uniq`/`filter`/`~` are the cadence tools. A select emits

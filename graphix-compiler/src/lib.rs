@@ -159,9 +159,6 @@ pub struct Event<E: UserEvent> {
     /// wake rather than a birth: a `<-` target that already holds a
     /// value keeps it instead of being reseeded.
     pub wake_init: bool,
-    /// The binds a wake republished fired only because the woken arm's
-    /// constants fired, not an input.
-    pub wake_phantoms: branch::Layered<()>,
     /// The overlay: this cycle's transient deliveries. Not the value
     /// store: reads fall through to [`Rt::store_get`].
     pub variables: branch::Layered<TagValue>,
@@ -176,7 +173,6 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             wake_init: false,
-            wake_phantoms: branch::Layered::default(),
             variables: branch::Layered::default(),
             custom: Arc::new(Mutex::new(IntMap::default())),
             user,
@@ -202,7 +198,6 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: self.init,
             wake_init: self.wake_init,
-            wake_phantoms: self.wake_phantoms.fork(),
             variables: self.variables.fork(),
             custom: self.custom.clone(),
             user: self.user.clone(),
@@ -211,17 +206,14 @@ impl<E: UserEvent> Event<E> {
 
     /// Apply what the forked branch's event `child` delivered.
     pub(crate) fn merge(&mut self, child: Self) {
-        let Self { init: _, wake_init: _, wake_phantoms, variables, custom: _, user: _ } =
-            child;
-        self.wake_phantoms.merge(wake_phantoms);
+        let Self { init: _, wake_init: _, variables, custom: _, user: _ } = child;
         self.variables.merge(variables);
     }
 
     pub fn clear(&mut self) {
-        let Self { init, wake_init, wake_phantoms, variables, custom, user } = self;
+        let Self { init, wake_init, variables, custom, user } = self;
         *init = false;
         *wake_init = false;
-        wake_phantoms.clear();
         variables.clear();
         custom.lock().clear();
         user.clear();

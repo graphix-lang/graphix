@@ -84,7 +84,7 @@ macro_rules! gathered {
             );
         }
         let (tag, prods) = $crate::node::gather($ctx, &mut $self.n, &mut $self.fork);
-        dense_gate!($self, tag.triggers(), tag.is_bottom());
+        dense_gate!($self, tag, tag.is_bottom());
         (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
 }
@@ -298,7 +298,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
         // an unshaped (non-struct-rep) source is bottom
         let shaped = src.with_value(|v| matches!(v, Value::Array(_)));
-        dense_gate!(self, tag.triggers(), tag.is_bottom() || !shaped);
+        dense_gate!(self, tag, tag.is_bottom() || !shaped);
         let v = src.with_value(|src| {
             let Value::Array(src) = src else { unreachable!("gated on the shape") };
             let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
@@ -763,7 +763,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let tv = self.arg.update(ctx);
         let tag = tv.tag();
-        dense_gate!(self, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag, tag.is_bottom());
         let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),
