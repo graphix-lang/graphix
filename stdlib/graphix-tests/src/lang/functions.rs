@@ -2718,3 +2718,35 @@ const BUILTIN_VARIADIC_TRAIT: &str = r#"
 run!(builtin_variadic_trait, BUILTIN_VARIADIC_TRAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(0)))
 }; FuseExpect::Jit);
+
+// A labeled default is checked against its parameter's bounds by
+// narrowing its cells, never by deciding them.
+const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
+{
+    let scale = |k| {
+        let mul = |#by = k, x| x * by;
+        mul(3)
+    };
+    scale(2)
+}
+"#;
+
+run!(default_of_a_bounded_parameter, DEFAULT_OF_A_BOUNDED_PARAMETER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(6)))
+}; FuseExpect::Jit);
+
+const DEFAULT_FROM_THE_ENVIRONMENT: &str = r#"
+{
+    let d = never();
+    let f = 'a: Number |#x: 'a = d, y: 'a| [x, y];
+    d <- 2;
+    (f(3), d + 1)
+}
+"#;
+
+run!(default_from_the_environment, DEFAULT_FROM_THE_ENVIRONMENT, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => a.len() == 2
+        && a[0] == Value::Array([Value::I64(2), Value::I64(3)].into())
+        && a[1] == Value::I64(3),
+    _ => false,
+}; FuseExpect::Jit);

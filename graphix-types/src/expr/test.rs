@@ -496,7 +496,7 @@ fn typexp() -> impl Strategy<Value = Type> {
                         .into_iter()
                         .map(|(a, t)| (TVar::empty_named(a), t))
                         .collect();
-                    let ft = parser::declared_fn_type(ft, &constraints);
+                    let ft = ft.declaring(&constraints);
                     Type::Fn(Arc::new(ft))
                 })
         ]

@@ -29,7 +29,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{CoreTrait, FnArgKind, FnType, TVar, Type, TypeRef},
+    typ::{CoreTrait, FnArgKind, FnType, TVar, Type, TypeRef, seed_conjuncts},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -473,11 +473,10 @@ pub(crate) fn impl_head(
         }
     }
     target.alias_tvars(&mut known);
-    for (tv, tc) in im.constraints.iter() {
-        let tc = tc.scope_refs(scope);
-        tc.alias_tvars(&mut known);
-        known[&tv.name].add_cell_constraint(tc);
-    }
+    seed_conjuncts(
+        &mut known,
+        im.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
+    );
     let holes = target.holes();
     if trait_def.hole {
         if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {

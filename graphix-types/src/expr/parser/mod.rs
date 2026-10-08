@@ -51,9 +51,6 @@ mod modexp;
 use modexp::{module, sig_item, use_module};
 
 mod typexp;
-#[cfg(test)]
-pub(crate) use typexp::declared_fn_type;
-pub use typexp::quantifier_names;
 use typexp::{fntype, typ, typedef};
 
 mod traitexp;

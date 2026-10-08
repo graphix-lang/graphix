@@ -46,7 +46,7 @@ pub(crate) mod tval;
 #[doc(hidden)]
 pub mod tvar;
 
-pub use fntyp::{FnArgKind, FnArgType, FnType};
+pub use fntyp::{FnArgKind, FnArgType, FnType, seed_conjuncts};
 pub use tval::TVal;
 pub use tvar::TVar;
 

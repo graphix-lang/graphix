@@ -10,7 +10,6 @@ use crate::{
     expr::{ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, get_origin},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
-use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
@@ -253,42 +252,8 @@ where
                 explicit_throws,
                 ..Default::default()
             };
-            value(declared_fn_type(ft, &constraints)).right()
+            value(ft.declaring(&constraints)).right()
         })
-}
-
-/// `ft` declaring `constraints`: its quantifiers are their names in source
-/// order, and every same-named tvar of the signature and of a conjunct is
-/// the quantifier's, whose cell holds the conjuncts.
-pub(crate) fn declared_fn_type(mut ft: FnType, constraints: &[(TVar, Type)]) -> FnType {
-    ft.quantifiers = quantifier_names(constraints.iter().map(|(tv, _)| tv));
-    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    for (tv, _) in constraints.iter() {
-        known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
-    }
-    ft.alias_tvars(&mut known);
-    for (tv, tc) in constraints.iter() {
-        // a conjunct may name its own quantifier (`'a: [i64, Array<'a>]`), so
-        // the cell holds a type holding the cell: a walk over cell
-        // constraints guards the cycle
-        tc.alias_tvars(&mut known);
-        known[&tv.name].add_cell_constraint(tc.clone());
-    }
-    ft
-}
-
-/// The declared quantifier names of a signature, in source order,
-/// deduplicated: a `+`-bound variable appears once per conjunct in the
-/// constraint list but is one quantifier.
-#[doc(hidden)]
-pub fn quantifier_names<'a>(tvs: impl Iterator<Item = &'a TVar>) -> Arc<[ArcStr]> {
-    let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
-    for tv in tvs {
-        if !names.contains(&tv.name) {
-            names.push(tv.name.clone());
-        }
-    }
-    Arc::from_iter(names.drain(..))
 }
 
 pub(super) fn tvar<I>() -> impl Parser<I, Output = TVar>

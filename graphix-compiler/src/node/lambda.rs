@@ -28,7 +28,6 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
-        fntyp::LambdaIds,
         tvar::{AtLevel, InTask, Level, RigidGate},
     },
     wrap,
@@ -990,6 +989,9 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 argspec.len()
             )
         }
+        // the instance's env is read for type names alone: the binds from
+        // before the formals are the definition's, shared by every instance
+        let binds = ctx.env.binds.clone();
         let mut argpats: LPooled<Vec<StructPatternNode>> = LPooled::take();
         for (a, atyp) in argspec.iter().zip(typ.args.iter()) {
             let pattern = StructPatternNode::compile(
@@ -1025,17 +1027,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_bind: Mutex::new(None),
             resident: TagValue::phantom(),
             first_dispatch: true,
-            // CR claude for claude: [perf] This snapshot is taken after the formals are
-            // bound, so each instance pins its own version of the binds trie's path to
-            // the definition's scope, the copy bind_variable made to bind them. That is
-            // about 1.4 KB per instance: 8.5 MB of the 69 MB peak for 6000 trivial
-            // array::init/array::map slots (--no-fusion, massif). The instance's checks
-            // use this env only for type names (per the field's doc, typedefs the
-            // caller may lack); no value name is looked up in it after compile. Taking
-            // `binds` from before the formals (the definition's version, an Arc bump)
-            // and the rest after the body (which may define types) lets every instance
-            // share it. (x-alloc-04)
-            env: ctx.env.lexical(),
+            env: Env { binds, ..ctx.env.lexical() },
             typing,
         })
     }
@@ -1519,42 +1511,16 @@ impl Lambda {
             let rtype = rtype.clone().unwrap_or_else(|| Type::empty_tvar());
             let explicit_throws = throws.is_some();
             let throws = throws.clone().unwrap_or_else(|| Type::empty_tvar());
-            Arc::new(FnType {
+            let ft = FnType {
                 args,
                 vargs,
                 rtype,
                 throws,
                 explicit_throws,
-                quantifiers: crate::expr::parser::quantifier_names(
-                    constraints.iter().map(|(tv, _)| tv),
-                ),
-                lambda_ids: LambdaIds::default(),
-            })
+                ..FnType::default()
+            };
+            Arc::new(ft.declaring(&constraints))
         };
-        // alias same-named leaves onto the declared quantifier tvars first
-        // so each constraint lands in the one cell every occurrence shares
-        {
-            // CR claude for claude: [structure] This block and the quantifiers field
-            // above re-implement declared_fn_type
-            // (graphix-types/src/expr/parser/typexp.rs:259-274): quantifier names,
-            // same-named tvars aliased across the signature, and each conjunct seeded
-            // on its quantifier's cell. The two copies already differ (insert vs
-            // or_insert_with, tv vs known[&tv.name]); they agree only because `scoped`
-            // above gave every same-named constraint tvar one TVar. Make the rule an
-            // FnType constructor in typ/fntyp.rs, call it here and from fntype(), and
-            // drop the parser's #[doc(hidden)] pub quantifier_names. impl_head runs the
-            // same alias-and-seed loop over an impl target (traits.rs:425-430).
-            // (t-parser-b-09)
-            let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            for (tv, _) in constraints.iter() {
-                known.insert(tv.name.clone(), tv.clone());
-            }
-            typ.alias_tvars(&mut known);
-            for (tv, tc) in constraints.iter() {
-                tc.alias_tvars(&mut known);
-                tv.add_cell_constraint(tc.clone());
-            }
-        }
         typ.lambda_ids.set_id(id);
         typ.claim(level);
         let table = SArc::new(DefTables::default());
@@ -1776,10 +1742,17 @@ fn check_defaults<R: Rt, E: UserEvent>(
                 // would check them without deciding the cell. probe:
                 // design/review-2026-10-05/repro/x-typecheck-generics-F11.gx
                 // (x-typecheck-generics-F11)
+                // 2026-10-08 claude: a parameter that is a declared or inferred
+                // variable now narrows the default's cells by each conjunct
+                // (op::constrain_operand): `scale` and the `d` case check. Open: a
+                // declared variable nested in the parameter type (`|#x: Array<'a> =
+                // [1], y: 'a|`) is still held rigid against the default.
+                // each conjunct narrows the default's open cells, which
+                // may be the environment's, rather than deciding them
                 Type::TVar(tv) if !tv.is_bound() => tv
                     .cell_constraints()
                     .iter()
-                    .try_for_each(|c| c.check_contains(&ctx.env, &typ)),
+                    .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
                 t => t.check_contains(&ctx.env, &typ),
             }
         });

@@ -317,7 +317,40 @@ impl Drop for Walking {
     }
 }
 
+/// Seed each conjunct on its quantifier's cell in `known`, aliasing the
+/// conjunct's own variables onto the quantifiers first. A conjunct may
+/// name its own quantifier (`'a: [i64, Array<'a>]`), so the cell holds a
+/// type holding the cell: a walk over cell constraints guards the cycle.
+pub fn seed_conjuncts<'a>(
+    known: &mut AHashMap<ArcStr, TVar>,
+    constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
+) {
+    for (tv, tc) in constraints {
+        tc.alias_tvars(known);
+        known[&tv.name].add_cell_constraint(tc);
+    }
+}
+
 impl FnType {
+    /// `self` declaring `constraints`: its quantifiers are their names
+    /// in source order (a `+`-bound variable is one quantifier), and every
+    /// same-named tvar of the signature and of a conjunct is the
+    /// quantifier's, whose cell holds the conjuncts.
+    pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Self {
+        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
+        for (tv, _) in constraints.iter() {
+            if !known.contains_key(&tv.name) {
+                names.push(tv.name.clone());
+                known.insert(tv.name.clone(), tv.clone());
+            }
+        }
+        self.quantifiers = Arc::from_iter(names.drain(..));
+        self.alias_tvars(&mut known);
+        seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())));
+        self
+    }
+
     /// The tvar cells reachable from args / vargs / rtype / throws,
     /// by name.
     pub(crate) fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
