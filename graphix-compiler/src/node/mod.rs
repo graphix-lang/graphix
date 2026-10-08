@@ -649,21 +649,20 @@ impl Constant {
 
 /// A constant's production: fired at an init view, standing otherwise.
 /// Every argument-less literal is a constant.
-// CR claude for claude: [risk] Off an init view this re-delivers the caller's stored
-// resident, and callers start that resident two ways. Constant and Lambda start it
-// stale with their value (:597, lambda.rs:1552). A no-argument Variant, `{}` and `[]`
-// start it phantom, a standing bottom (data.rs:610, map.rs:51, array.rs:541). A fresh
-// node first updated off an init view would give Stale(1) for `1` but StaleBottom for
-// `` `A ``, while a kernel stales every constant (const_stale_gate), so the engines
-// would disagree. No path does that today, because every fresh bind, slot and arm entry
-// forces the init view. Start the argument-less literals stale with their value, as
-// Constant does, so the rule holds by construction. (c-data-map-11)
 pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,
     value: impl FnOnce() -> Value,
 ) -> &'a TagValue {
-    if event.init { resident.set(TagValue::fired(value())) } else { resident.ride() }
+    // a constant's resident is bottom only before it produced: it
+    // stands stale with its value off an init view, as a kernel's does
+    if event.init {
+        resident.set(TagValue::fired(value()))
+    } else if resident.is_bottom() {
+        resident.set(TagValue::stale(value()))
+    } else {
+        resident.ride()
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
