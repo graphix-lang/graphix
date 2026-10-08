@@ -255,22 +255,12 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
-        // CR claude for claude: [bug] Map containment is covariant in the key, so this
-        // check requires the key's type to contain the map's key type. As a result a
-        // key narrower than the map's key is refused, and a wider one is accepted. `let
-        // m = {`Red => "r", `Green => "g"}; m{`Red}` is refused (Map<`Red, ..> does not
-        // contain Map<[`Green, `Red], ..>), and so are `m{1}` over Map<[i64, string],
-        // i64> and `m{"a"}` over Map<[string, null], i64>. `map::get(m, `Red)` checks
-        // and returns "r". Place::elem_type (bind.rs:1058) makes the same check, so
-        // `&m{`Red}` is refused too; the fix is to check the key against the source's
-        // key cell (map key contains key). probe:
-        // design/review-2026-10-05/repro/c-data-map-01.gx (c-data-map-01)
-        let mt = Type::Map {
-            key: Arc::new(self.key.typ().clone()),
-            value: Arc::new(self.vtyp.clone()),
-        };
+        // the map's key type holds the key, not the other way around
+        let kt = Type::empty_tvar();
+        let mt =
+            Type::Map { key: Arc::new(kt.clone()), value: Arc::new(self.vtyp.clone()) };
         wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
-        Ok(())
+        wrap!(self.key, kt.check_contains(&ctx.env, self.key.typ()))
     }
 
     pub(crate) fn image_decode(

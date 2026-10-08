@@ -275,3 +275,15 @@ async fn parallel_where_nothing_forks() {
     .await;
     assert!(e.contains("#[parallel] under #[serial] never forks"), "{e}");
 }
+
+// A fork attribute leaves the expression's other attributes in force: a
+// definition assertion beside it is checked, and #[native] on a body a
+// fork governs is checked on the body.
+#[tokio::test(flavor = "current_thread")]
+async fn fork_keeps_the_other_attributes() {
+    let e = refusal("{ let g = #[serial] #[tail_recursive] |x: i64| x + 1; g(1) }").await;
+    assert!(e.contains("#[tail_recursive]"), "{e}");
+    let e =
+        refusal("{ #[serial] let f = #[tail_recursive] (|x: i64| x + 1); f(1) }").await;
+    assert!(e.contains("#[tail_recursive]"), "{e}");
+}

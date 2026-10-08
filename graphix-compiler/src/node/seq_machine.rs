@@ -25,7 +25,7 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
@@ -130,15 +130,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         });
         let at = pc.update(ctx);
         let target = match at.is_fired().then(|| at.value_cloned()) {
-            // CR claude for claude: [structure] The idle label is spelled four times
-            // across two crates: the desugar's private IDLE
-            // (graphix-types/src/expr/seq.rs:35), this match, the write at :163 and
-            // Catch::sleep's reset (error.rs:371). Renaming it in the desugar still
-            // compiles. After that, the end of every run writes a label that the
-            // desugar's idle test (idle_of) never matches, so every seq wedges after
-            // its first run. Make seq::IDLE pub and use it in all three places.
-            // (c-select-seq-10)
-            Some(Value::String(l)) if l == "Idle" => Some(None),
+            Some(Value::String(l)) if *l == crate::expr::seq::IDLE => Some(None),
             Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
             _ => None,
         };
@@ -168,7 +160,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
             deselect(ctx, tracked, k, &mut steps[k]);
             *current = None;
             let Some(n) = steps[k].next else {
-                ctx.rt.set_var(*pc_id, Value::String(literal!("Idle")));
+                ctx.rt.set_var(*pc_id, Value::String(crate::expr::seq::IDLE.clone()));
                 break;
             };
             let at = Value::String(steps[n].label.clone());

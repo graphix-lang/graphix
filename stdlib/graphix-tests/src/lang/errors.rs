@@ -667,3 +667,9 @@ const RAISE_CHAINS_BY_SHAPE: &str = r#"
 run!(raise_chains_by_shape, RAISE_CHAINS_BY_SHAPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(41)))
 }; FuseExpect::Jit);
+
+// An `error:` literal is an error of its payload's type.
+run!(error_literal_has_its_payload_type, r#"{
+    let f = |e: Error<string>| e.0;
+    f(error:"boom")
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "boom"); FuseExpect::None);

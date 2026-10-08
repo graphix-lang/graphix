@@ -1130,12 +1130,13 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     et
                 }
                 PlaceStep::Key(k) => {
-                    let vt = Type::empty_tvar();
+                    let (kt, vt) = (Type::empty_tvar(), Type::empty_tvar());
                     let mt = Type::Map {
-                        key: Arc::new(k.typ().clone()),
+                        key: Arc::new(kt.clone()),
                         value: Arc::new(vt.clone()),
                     };
                     mt.check_contains(&ctx.env, &cur)?;
+                    kt.check_contains(&ctx.env, k.typ())?;
                     vt
                 }
                 PlaceStep::Tuple(i) => tuple_field_type(ctx, &self.scope, &cur, *i)?,

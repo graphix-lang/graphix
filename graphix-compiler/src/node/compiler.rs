@@ -17,9 +17,9 @@ use crate::{
     CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
     UserEvent, bailat,
     expr::{
-        ApplyExpr, Arg, ArgKind, Decorations, Expr, ExprId, ExprKind, LambdaBody,
-        LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr, StructWithExpr,
-        StructurePattern, print::PrettyDisplay,
+        ApplyExpr, Arg, ArgKind, At, Attr, Decorations, Expr, ExprId, ExprKind,
+        LambdaBody, LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr,
+        StructWithExpr, StructurePattern, print::PrettyDisplay,
     },
     ide::{ModuleRefSite, ScopeMapEntry},
     node::{
@@ -32,7 +32,7 @@ use crate::{
     typ::{TVar, Type},
 };
 use ahash::AHashMap;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
@@ -98,48 +98,87 @@ fn fork_kind(spec: &Expr, attr: &crate::expr::Attr) -> Result<Option<ForkKind>> 
     Ok(ForkKind::of(&attr.name, grain))
 }
 
-/// `spec`, a `let` carrying a fork-control attribute, with the attribute
-/// moved onto its value, or onto the body of the lambda it defines;
-/// `None` if it is no `let`.
-fn fork_on_body(spec: &Expr) -> Option<Expr> {
-    let ExprKind::Bind(b) = &spec.kind else { return None };
-    let dec = spec.dec.as_ref()?;
-    let (moved, kept): (SmallVec<[_; 2]>, SmallVec<[_; 2]>) =
+/// `spec`'s decorations split in two: the fork-control attributes, and
+/// everything else.
+fn split_fork(dec: &Decorations) -> (SmallVec<[Attr; 2]>, Decorations) {
+    let (fork, kept): (SmallVec<[_; 2]>, SmallVec<[_; 2]>) =
         dec.attrs.iter().cloned().partition(|a| ForkKind::of(&a.name, None).is_some());
-    let decorate = |e: &Expr| {
-        let mut e = e.clone();
-        let mut dec = e.dec.as_deref().cloned().unwrap_or_else(|| Decorations {
-            comments: Arc::from_iter([]),
-            attrs: Arc::from_iter([]),
-        });
-        dec.attrs = dec.attrs.iter().cloned().chain(moved.iter().cloned()).collect();
-        e.dec = Some(Arc::new(dec));
-        e
-    };
-    let mut lambda = &b.value;
-    while let ExprKind::ExplicitParens(inner) = &lambda.kind {
-        lambda = inner;
+    (
+        fork,
+        Decorations { comments: dec.comments.clone(), attrs: kept.into_iter().collect() },
+    )
+}
+
+/// `e` with `attrs` added to its decorations.
+fn decorated(e: &Expr, attrs: impl IntoIterator<Item = Attr>) -> Expr {
+    let mut e = e.clone();
+    let mut dec = e.dec.as_deref().cloned().unwrap_or_else(|| Decorations {
+        comments: Arc::from_iter([]),
+        attrs: Arc::from_iter([]),
+    });
+    dec.attrs = dec.attrs.iter().cloned().chain(attrs).collect();
+    e.dec = Some(Arc::new(dec));
+    e
+}
+
+/// A lambda literal, under any parens, with the fork-control attributes
+/// `fork` moved onto its body: they apply to every instance's body. The
+/// parens' own attributes stay on the lambda.
+fn fork_on_lambda(e: &Expr, fork: &[Attr]) -> Option<Expr> {
+    let mut lambda = e;
+    let mut outer: SmallVec<[Attr; 2]> = SmallVec::new();
+    loop {
+        if let Some(dec) = &lambda.dec {
+            outer.extend(dec.attrs.iter().cloned());
+        }
+        match &lambda.kind {
+            ExprKind::ExplicitParens(inner) => lambda = inner,
+            _ => break,
+        }
     }
-    let value = match &lambda.kind {
-        ExprKind::Lambda(l) => match &l.body {
-            LambdaBody::Expr(body) => {
-                let mut l = (**l).clone();
-                l.body = LambdaBody::Expr(decorate(body));
-                let mut value = lambda.clone();
-                value.kind = ExprKind::Lambda(Arc::new(l));
-                value
-            }
-            LambdaBody::Builtin(_) => decorate(&b.value),
-        },
-        _ => decorate(&b.value),
+    let ExprKind::Lambda(l) = &lambda.kind else { return None };
+    let LambdaBody::Expr(body) = &l.body else { return None };
+    let mut l = (**l).clone();
+    l.body = LambdaBody::Expr(decorated(body, fork.iter().cloned()));
+    let mut value = lambda.clone();
+    value.kind = ExprKind::Lambda(Arc::new(l));
+    value.dec = None;
+    Some(decorated(&value, outer))
+}
+
+/// `spec`, carrying a fork-control attribute, with the attribute moved
+/// where it governs: onto a `let`'s value, or onto the body of the
+/// lambda a `let` defines or `spec` is; `None` for anything else.
+fn fork_on_body(spec: &Expr) -> Option<Expr> {
+    let dec = spec.dec.as_ref()?;
+    let (fork, kept) = split_fork(dec);
+    let mut spec = match &spec.kind {
+        ExprKind::Bind(b) => {
+            let value = fork_on_lambda(&b.value, &fork)
+                .unwrap_or_else(|| decorated(&b.value, fork.iter().cloned()));
+            let mut bind = (**b).clone();
+            bind.value = value;
+            let mut spec = spec.clone();
+            spec.kind = ExprKind::Bind(Arc::new(bind));
+            spec.dec = None;
+            spec
+        }
+        ExprKind::Lambda(_) => {
+            let mut bare = spec.clone();
+            bare.dec = None;
+            fork_on_lambda(&bare, &fork)?
+        }
+        _ => return None,
     };
-    let mut bind = (**b).clone();
-    bind.value = value;
-    let mut spec = spec.clone();
-    spec.kind = ExprKind::Bind(Arc::new(bind));
+    let attrs: SmallVec<[Attr; 2]> = kept
+        .attrs
+        .iter()
+        .cloned()
+        .chain(spec.dec.iter().flat_map(|d| d.attrs.iter().cloned()))
+        .collect();
     spec.dec = Some(Arc::new(Decorations {
-        comments: dec.comments.clone(),
-        attrs: kept.into_iter().collect(),
+        comments: kept.comments.clone(),
+        attrs: attrs.into_iter().collect(),
     }));
     Some(spec)
 }
@@ -189,34 +228,25 @@ fn compile_inner<R: Rt, E: UserEvent>(
             }
         }
     }
-    // CR claude for claude: [bug] A fork attribute stops the other attributes on its
-    // expression from being checked. This branch returns before `def_asserts` are
-    // registered, so `let rec f = #[serial] #[tail_recursive] |n: i64, acc: i64| ..`
-    // compiles even with a non-tail self-call. A fix here also needs annotated_lambda
-    // to see through ForkControl. On a decorated `let`, fork_on_body (:116-127) strips
-    // the parens around the lambda and their decorations with them, so `#[serial] let f
-    // = #[tail_recursive] (|x| x + 1)` runs and `#[serial] let f = #[bogus] (|x| x +
-    // 1)` passes even --check. probe: design/review-2026-10-05/repro/c-data-map-03.gx
-    // (prints 4; deleting #[serial] from either line makes that line be refused).
-    // (c-data-map-03)
     if let Some(kind) = fork {
         // on a definition it applies to the body of every instance
         if let Some(spec) = fork_on_body(&spec) {
             return compile_inner(ctx, flags, spec, scope, top_id, statement);
         }
-        let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
-        // CR claude for claude: [bug] The wrapper gets the decorated spec itself, so it
-        // shares the child's id and carries the child's other attributes. #[native] is
-        // then dispatched on the ForkControl, which never emits, and is refused ("fork
-        // control runs its child under flags of its own") even though the child fused.
-        // `#[parallel] let f = |xs: Array<i64>| -> Array<i64> #[native] array::map(xs,
-        // |x| x * 2)` and `|x: i64| -> i64 #[serial] #[native] (x * 2 + 1)` are
-        // refused, while `#[parallel] (#[native] array::map(..))` passes. The shared id
-        // also makes DefTable::record drop both nodes' rows (lambda.rs:161), so every
-        // instance checks that node itself instead of substituting. Give the wrapper a
-        // spec of its own that carries only the fork attribute. probe:
-        // design/review-2026-10-05/repro/c-data-map-06.gx (c-data-map-06)
-        return Ok(ForkControl::new(spec, kind, node));
+        // the child keeps its id and every other attribute; the wrapper is
+        // an expression of its own carrying the fork alone
+        let dec = spec.dec.as_ref().expect("a fork attribute decorates");
+        let (fork, kept) = split_fork(dec);
+        let mut child = spec.clone();
+        child.dec = Some(Arc::new(kept));
+        let mut wrapper = spec.clone();
+        wrapper.id = ExprId::new();
+        wrapper.dec = Some(Arc::new(Decorations {
+            comments: Arc::from_iter([]),
+            attrs: fork.into_iter().collect(),
+        }));
+        let node = compile_inner(ctx, flags, child, scope, top_id, statement)?;
+        return Ok(ForkControl::new(wrapper, kind, node));
     }
     if !def_asserts.is_empty() {
         let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
@@ -330,6 +360,22 @@ fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Nod
     )
 }
 
+/// The type of a literal value: its primitive, or for `error:<v>` the
+/// error of its payload's type. A literal no type names (`abstract:..`)
+/// is refused.
+fn constant_type(v: &Value) -> Result<Type> {
+    ensure_sufficient(|| match v {
+        Value::Error(p) => Ok(Type::Error(Arc::new(constant_type(p)?))),
+        Value::Abstract(_) => {
+            bail!("an abstract value literal has no type: build it with its constructor")
+        }
+        Value::Array(_) | Value::Map(_) => {
+            bail!("a collection value literal has no type: write it as an expression")
+        }
+        v => Ok(Type::Primitive(Typ::get(v).into())),
+    })
+}
+
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -353,22 +399,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
             scope,
             top_id,
         ),
-        // CR claude for claude: [bug] Every Constant is typed
-        // Type::Primitive(Typ::get(v)), but the literal parser (netidx's parse_value,
-        // graphix-types/src/expr/parser/mod.rs:660) also yields `error:<v>` and
-        // `abstract:<base64>` values. So `error:"boom"`, exactly how the shell prints
-        // an Error<string>, is typed bare `error`, which no Error<T> contains except
-        // Error<Any>. `let f = |e: Error<string>| e.0; f(error:"boom")` is refused
-        // ("Error<string> does not contain error"), and `.0` on the literal gives
-        // "expected tuple not error". Type an error constant as Error<type of its
-        // payload>, or refuse the non-primitive forms in the parser and point at
-        // error(..). probe: design/review-2026-10-05/repro/c-data-map-09.gx
-        // (c-data-map-09)
-        ExprKind::Constant(v) => Ok(Constant::new(
-            v.clone(),
-            Type::Primitive(Typ::get(v).into()),
-            spec.clone(),
-        )),
+        ExprKind::Constant(v) => {
+            let typ = constant_type(v).at(spec)?;
+            Ok(Constant::new(v.clone(), typ, spec.clone()))
+        }
         ExprKind::Block { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)

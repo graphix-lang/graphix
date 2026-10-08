@@ -118,7 +118,6 @@ fn offset(len: usize, i: i64) -> Option<usize> {
     usize::try_from(if i < 0 { len as i64 + i } else { i }).ok()
 }
 
-/// The position index `i` names in a sequence of `len` elements.
 /// An indexed or sliced source is bytes only when its type says so; a
 /// source not known yet (an open cell) is assumed to be an array.
 fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
@@ -127,10 +126,7 @@ fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
         && bytes.contains_with_flags(BitFlags::empty(), env, source)?)
 }
 
-// CR claude for claude: [readability] index has no doc; its line, 'The position index `i`
-// names in a sequence of `len` elements.', sits at 121 as the first line of
-// known_bytes' doc, so known_bytes is summarized by a sentence about index. Move it
-// here. (c-collection-09)
+/// The position index `i` names in a sequence of `len` elements.
 pub(crate) fn index(len: usize, i: i64) -> Option<usize> {
     offset(len, i).filter(|j| *j < len)
 }

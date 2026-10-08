@@ -145,7 +145,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("does not contain Map<"); FuseExpect::None);
+run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("i64 does not contain string"); FuseExpect::None);
 
 const MAP_NESTED: &str = r#"
 {
@@ -200,3 +200,14 @@ run!(map_with_arrays, MAP_WITH_ARRAYS, |v: Result<&Value>| match v {
     }
     _ => false,
 }; FuseExpect::Jit);
+
+// A key narrower than the map's key type reads; the map's key type holds
+// the key, not the other way around.
+run!(
+    map_ref_narrower_key,
+    r#"{
+    let m = {`Red => "r", `Green => "g"};
+    m{`Red}$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "r")
+);

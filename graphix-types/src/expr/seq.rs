@@ -33,7 +33,8 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
-static IDLE: ArcStr = literal!("Idle");
+/// The label of a machine with no run in progress.
+pub static IDLE: ArcStr = literal!("Idle");
 
 /// Where the rewrite sends a name. A cell (a `seq let` trigger's name, a
 /// try's `e`) takes every use; a snapshot (a trigger's value, a `seqq`
