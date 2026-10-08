@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b896bb5b.js";
+            window.path_to_searchindex_js = "../searchindex-ef34b2fe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -195,9 +195,9 @@ binary. This is very similar to Python’s</p>
 <pre><code>cd graphix-package-mylib
 graphix package build-standalone
 </code></pre>
-<p>This builds a release-optimized <code>graphix</code> binary in the current
-directory that includes your local package and all it’s
-dependencies. The build enables the <code>standalone</code> cargo feature on your
+<p>This builds a release-optimized binary named after your package’s short
+name (<code>mylib</code> here) in the current directory that includes your local
+package and all its dependencies. The build enables the <code>standalone</code> cargo feature on your
 package, which causes the contents of <code>main.gx</code> to be appended to the
 root module as the entry point program.</p>
 <p>Scaffolded packages already include <code>[features] standalone = []</code> in their

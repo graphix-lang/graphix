@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b896bb5b.js";
+            window.path_to_searchindex_js = "searchindex-ef34b2fe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -15434,13 +15434,20 @@ mechanism.</p>
 <h2 id="removing-packages"><a class="header" href="#removing-packages">Removing Packages</a></h2>
 <pre><code>graphix package remove mypackage
 </code></pre>
-<p>If other installed packages depend on the removed package via Cargo, the
-removed package’s modules will still be available (since it remains a transitive
+<p>Standard library packages can be removed too (all but <code>core</code>), and added
+back with <code>graphix package add</code>. Removing one also removes the installed
+standard library packages that depend on it: the command lists them and
+asks before going on. With <code>--yes</code> (or <code>-y</code>) it removes them without
+asking; without <code>--yes</code> and with stdin not a terminal, it removes
+nothing.</p>
+<p>If other installed packages depend on a removed third-party package via
+Cargo, its modules will still be available (since it remains a transitive
 dependency). This is by design – Cargo manages the dependency graph.</p>
 <h2 id="listing-installed-packages"><a class="header" href="#listing-installed-packages">Listing Installed Packages</a></h2>
 <pre><code>graphix package list
 </code></pre>
-<p>Shows all explicitly installed packages with their versions.</p>
+<p>Shows the installed standard library packages, the removed ones, and the
+third-party packages with their versions or paths.</p>
 <h2 id="rebuilding"><a class="header" href="#rebuilding">Rebuilding</a></h2>
 <p>If you manually edit the packages file, you can trigger a rebuild:</p>
 <pre><code>graphix package rebuild
@@ -15449,14 +15456,21 @@ dependency). This is by design – Cargo manages the dependency graph.</p>
 packages automatically, since no <code>Cargo.lock</code> is generated – Cargo resolves
 the latest compatible version within each package’s semver range.</p>
 <h2 id="updating"><a class="header" href="#updating">Updating</a></h2>
-<p>To update graphix itself (and the standard library) to the latest version:</p>
+<p>To update graphix and your packages to their latest versions:</p>
 <pre><code>graphix package update
 </code></pre>
-<p>This queries crates.io for the latest <code>graphix-shell</code> version and the latest
-version of each standard library package, updates <code>packages.toml</code> accordingly,
-and triggers a full rebuild. Your third-party packages are left untouched.</p>
-<p>If you’re already on the latest version, the command prints a message and
-exits without rebuilding.</p>
+<p>This queries crates.io for the latest <code>graphix-shell</code> and the latest version
+of each third-party package installed from crates.io, and lists the changes
+it found: a newer shell (the standard library comes with it), the standard
+library packages the newer shell ships that you have not installed or
+removed, and the third-party updates. It then asks <code>Apply all changes? [Y/e/n]</code>: <code>Y</code> applies them all, <code>e</code> lets you toggle items one by one, <code>n</code>
+cancels. Declining the shell update also declines the new standard library
+packages, which only build against it. With <code>--yes</code> (or <code>-y</code>) every change
+is applied without asking; without <code>--yes</code> the command refuses to run when
+stdin is not a terminal. <code>packages.toml</code> is written only after the rebuild
+succeeds.</p>
+<p>If nothing is newer, the command prints a message and exits without
+rebuilding.</p>
 <p>To update a third-party package to a new <strong>major</strong> version, edit the version
 in <code>packages.toml</code> directly and run <code>graphix package rebuild</code>.</p>
 <h2 id="package-storage"><a class="header" href="#package-storage">Package Storage</a></h2>
@@ -15474,37 +15488,32 @@ directory:</p>
 </tbody>
 </table>
 </div>
-<!-- CR claude for claude: [doc-drift] This section shows the pre-v2 format (a bare
-[packages] table), but parse_packages reads any file without [stdlib] as legacy and
-migrate_old marks every stdlib package the file does not name as removed, so a file
-written from this example rebuilds a binary with core alone (probe: put this example in
-$XDG_DATA_HOME/graphix/packages.toml and run `graphix package list`; it rewrites the
-file with installed = ["core"] and the other 18 stdlib packages under removed). Updating
-(101-117) is stale too: update proposes external package updates (applied by --yes),
-prompts Y/e/n, refuses a non-terminal stdin without --yes, and queries no per-package
-stdlib version. Removing (71-79) omits the stdlib cascade prompt, step 3 of How the
-Rebuild Works (151) still generates deps.rs, and standalone.md:37 names the binary
-`graphix` where it is named after the package's short name. The doc comments at
-graphix-package/src/lib.rs:572 (the version comes from `graphix` on PATH, not the
-running binary), 1184 (deps.rs) and 1482 (package_dir/graphix) carry the same drift.
-(package-06) -->
-<p>The file is a simple TOML map of package names to versions:</p>
-<pre><code class="language-toml">[packages]
+<p>The file has two tables. <code>[stdlib]</code> lists the standard library packages by
+name, the installed ones and the ones you removed (they track the shell’s
+version, so they carry none). <code>[packages]</code> maps third-party package names to
+versions, or to a path with an inline table:</p>
+<pre><code class="language-toml">[stdlib]
+installed = ["array", "core", "map", "str", "sys"]
+removed = ["gui", "tui"]
+
+[packages]
 mypackage = "1.2.0"
-another = "0.5.0"
+another = { path = "/home/user/another" }
 </code></pre>
-<p>Path dependencies use an inline table:</p>
-<pre><code class="language-toml">[packages]
-mypackage = { path = "/home/user/mypackage" }
-</code></pre>
+<p>A file without a <code>[stdlib]</code> table is read in the older format, a single
+<code>[packages]</code> table naming every package, standard library ones included:
+any standard library package it does not name counts as removed. The
+package commands write the file back in the current format.</p>
 <h2 id="how-the-rebuild-works"><a class="header" href="#how-the-rebuild-works">How the Rebuild Works</a></h2>
 <p>When you add or remove a package, the package manager:</p>
 <ol>
-<li>Unpacks the <code>graphix-shell</code> source from the Cargo cache</li>
-<li>Updates its <code>Cargo.toml</code> to include your packages as dependencies</li>
-<li>Generates a <code>deps.rs</code> that registers all packages</li>
-<li>Runs <code>cargo install --force</code> to build and install the new binary</li>
+<li>Unpacks the <code>graphix-shell</code> source of the installed <code>graphix</code>’s version
+from the Cargo cache, or downloads it from crates.io</li>
+<li>Adds your third-party packages to its <code>Cargo.toml</code> as dependencies (the
+shell registers every package its manifest names)</li>
 <li>Backs up the previous binary with a timestamp</li>
+<li>Runs <code>cargo install --force</code>, the installed standard library packages
+selected as Cargo features, to build and install the new binary</li>
 </ol>
 <p>This means you need a working Rust toolchain installed. The rebuild takes
 roughly the same time as compiling any Rust project of similar size.</p>
@@ -15889,9 +15898,9 @@ binary. This is very similar to Python’s</p>
 <pre><code>cd graphix-package-mylib
 graphix package build-standalone
 </code></pre>
-<p>This builds a release-optimized <code>graphix</code> binary in the current
-directory that includes your local package and all it’s
-dependencies. The build enables the <code>standalone</code> cargo feature on your
+<p>This builds a release-optimized binary named after your package’s short
+name (<code>mylib</code> here) in the current directory that includes your local
+package and all its dependencies. The build enables the <code>standalone</code> cargo feature on your
 package, which causes the contents of <code>main.gx</code> to be appended to the
 root module as the entry point program.</p>
 <p>Scaffolded packages already include <code>[features] standalone = []</code> in their
