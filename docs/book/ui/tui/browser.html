@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -194,15 +194,16 @@ val browser: fn(
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
-    s: string
+    path: string
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
+<li><strong>path</strong> - The netidx path whose children are listed. The listing is fetched once each time <code>path</code> changes, so rows published later appear when the path next changes</li>
 <li><strong>cursor</strong> - Programmatic cursor movement: <code>Left(n)</code>, <code>Right(n)</code>, <code>Up(n)</code>, <code>Down(n)</code></li>
-<li><strong>selected_row</strong> (output) - Display name of the selected row</li>
-<li><strong>selected_path</strong> (output, required) - Full path of the currently selected item</li>
-<li><strong>size</strong> (output) - Rendered size of the browser</li>
+<li><strong>selected_row</strong> (output) - Full path of the selected row (e.g. <code>/t/r1</code>)</li>
+<li><strong>selected_path</strong> (output) - Full path of the selected cell: the row in a list, the row and column in a table</li>
+<li><strong>size</strong> (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block’s <code>#size</code> output</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>

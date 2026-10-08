@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -213,7 +213,7 @@ graphix netidx:/path/to/my/program
 </ul>
 </li>
 <li><code>Ctrl+C</code> exits the program</li>
-<li>Warnings are enabled by default (unused variables, unhandled errors)</li>
+<li>Warnings about unhandled errors are enabled by default</li>
 </ul>
 <p>Script mode is for running complete programs. The shell stays running to
 handle the reactive graph’s ongoing updates.</p>
@@ -520,17 +520,11 @@ graphix -W unhandled ./myprogram
 # Disable warning about unhandled errors
 graphix -W no-unhandled myapp.gx
 
-# Warn about unused variables - default in script mode
-graphix -W unused ./myproject
-
-# Disable unused variable warnings
-graphix -W no-unused myprogram.gx
-
 # Make all warnings into errors
 graphix -W error ./myapp
 </code></pre>
 <p>Multiple warning flags can be combined:</p>
-<pre><code class="language-bash">graphix -W unused -W unhandled -W error myprogram
+<pre><code class="language-bash">graphix -W unhandled -W error myprogram
 </code></pre>
 <p>If you specify both a flag and its negation (e.g., <code>unhandled</code> and <code>no-unhandled</code>), the <code>no-</code> variant always wins.</p>
 <h3 id="logging"><a class="header" href="#logging">Logging</a></h3>

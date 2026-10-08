@@ -20,6 +20,8 @@ scroll_pos <- select selected {
 
 scrollbar(
     #position: &scroll_pos,
+    #content_length: &array::len(items),
+    #viewport_length: &visible,
     &list(
         #scroll: &scroll_pos,
         #selected: &selected,

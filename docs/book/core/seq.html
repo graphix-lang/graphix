@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -280,6 +280,11 @@ back in ordinary Graphix: a statement that reads a variable a sibling
 wrote sees the old value, and an error in one statement does not
 retract a write a sibling already issued. <code>until</code> and <code>try</code> are refused
 inside a block.</p>
+<p>A declaration (<code>use</code>, <code>type</code>, <code>trait</code>, <code>impl</code>, <code>mod</code>) is not a step: write
+it in a block with the code that uses it, or outside the seq. An
+attribute on a statement annotates the statement’s computation, as it
+would outside a seq (<code>#[native] let y = x * 2;</code>); a <code>try</code> statement takes
+none.</p>
 <p><strong><code>try { steps } with(e) { steps }</code></strong> is the sequence’s error handling.
 An error raised in the try body transfers control to the with body; see
 <a href="#errors">Errors</a>.</p>

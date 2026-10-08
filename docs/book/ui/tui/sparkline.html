@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -196,7 +196,7 @@ val sparkline: fn(
   ?#absent_value_style: &amp;[Style, null],
   ?#absent_value_symbol: &amp;[string, null],
   ?#direction: &amp;[RenderDirection, null],
-  ?#max: &amp;[i64, null],
+  ?#max: &amp;[f64, null],
   ?#style: &amp;[Style, null],
   a: &amp;Array&lt;[SparklineBar, f64, null]&gt;
 ) -&gt; Tui;
@@ -218,7 +218,7 @@ val sparkline: fn(
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 
-sparkline(#max: &amp;100, &amp;data)
+sparkline(#max: &amp;100.0, &amp;data)
 </code></pre>
 <p><img src="./media/sparkline_basic.png" alt="Basic Sparkline"></p>
 <h3 id="threshold-based-coloring"><a class="header" href="#threshold-based-coloring">Threshold-based Coloring</a></h3>
@@ -243,7 +243,7 @@ block(
     #title: &amp;line("Network Traffic Rate"),
     &amp;sparkline(
         #style: &amp;style(#fg: `Green),
-        #max: &amp;100,
+        #max: &amp;100.0,
         &amp;data
     )
 )
@@ -261,11 +261,11 @@ layout(
     &amp;[
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("CPU"),
-            &amp;sparkline(#style: &amp;style(#fg: `Red), #max: &amp;100, &amp;cpu_data)
+            &amp;sparkline(#style: &amp;style(#fg: `Red), #max: &amp;100.0, &amp;cpu_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("Memory"),
-            &amp;sparkline(#style: &amp;style(#fg: `Yellow), #max: &amp;100, &amp;mem_data)
+            &amp;sparkline(#style: &amp;style(#fg: `Yellow), #max: &amp;100.0, &amp;mem_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("Network"),
@@ -307,7 +307,7 @@ data &lt;- array::window(
     new_value
 );
 
-sparkline(#max: &amp;100, &amp;data)
+sparkline(#max: &amp;100.0, &amp;data)
 </code></pre>
 <p><img src="./media/sparkline_rolling.gif" alt="Rolling Sparkline"></p>
 <h2 id="use-cases"><a class="header" href="#use-cases">Use Cases</a></h2>

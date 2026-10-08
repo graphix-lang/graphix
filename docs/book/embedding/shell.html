@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -312,7 +312,7 @@ your additional modules available.</p>
 </span>use graphix_compiler::CFlag;
 
 ShellBuilder::&lt;NoExt&gt;::default()
-    .enable_flags(CFlag::WarnUnused | CFlag::WarnUnhandled)
+    .enable_flags(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
     .mode(Mode::Repl)
     // ...
 <span class="boring">}</span></code></pre>

@@ -19,7 +19,7 @@ block(
     #title: &line("Network Traffic Rate"),
     &sparkline(
         #style: &style(#fg: `Green),
-        #max: &100,
+        #max: &100.0,
         &data
     )
 )

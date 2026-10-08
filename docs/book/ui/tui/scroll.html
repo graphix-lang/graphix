@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -204,23 +204,25 @@ val scrollbar: fn(
 </code></pre>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <ul>
-<li><strong>position</strong> (required) - Current scroll position (typically the Y offset)</li>
-<li><strong>content_length</strong> - Total length of the content (auto-detected if not specified)</li>
+<li><strong>position</strong> - Current scroll position, typically the Y offset (default: 0)</li>
+<li><strong>content_length</strong> - The number of scroll positions in the content; nothing measures the child, so a scrollbar without one draws no bar (default: 0)</li>
+<li><strong>viewport_length</strong> - How many positions the view shows at once, which sizes the thumb (default: the bar’s own length)</li>
 <li><strong>size</strong> (output) - Rendered size of the scrollbar area</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::{paragraph::paragraph, scrollbar::scrollbar};
+<pre><code class="language-graphix">use tui::{line, paragraph::paragraph, scrollbar::scrollbar};
 
-let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
+let lines = array::init(50, |i| line("Line [i]"));
 let position = 0;
 let content = paragraph(
     #scroll: &amp;{x: 0, y: position},
-    &amp;long_text
+    &amp;lines
 );
 
 scrollbar(
     #position: &amp;position,
+    #content_length: &amp;array::len(lines),
     &amp;content
 )
 </code></pre>
@@ -297,6 +299,8 @@ scroll_pos &lt;- select selected {
 
 scrollbar(
     #position: &amp;scroll_pos,
+    #content_length: &amp;array::len(items),
+    #viewport_length: &amp;visible,
     &amp;list(
         #scroll: &amp;scroll_pos,
         #selected: &amp;selected,

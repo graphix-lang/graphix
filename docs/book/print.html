@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2229,6 +2229,11 @@ back in ordinary Graphix: a statement that reads a variable a sibling
 wrote sees the old value, and an error in one statement does not
 retract a write a sibling already issued. <code>until</code> and <code>try</code> are refused
 inside a block.</p>
+<p>A declaration (<code>use</code>, <code>type</code>, <code>trait</code>, <code>impl</code>, <code>mod</code>) is not a step: write
+it in a block with the code that uses it, or outside the seq. An
+attribute on a statement annotates the statement’s computation, as it
+would outside a seq (<code>#[native] let y = x * 2;</code>); a <code>try</code> statement takes
+none.</p>
 <p><strong><code>try { steps } with(e) { steps }</code></strong> is the sequence’s error handling.
 An error raised in the try body transfers control to the with body; see
 <a href="#errors">Errors</a>.</p>
@@ -4627,7 +4632,7 @@ graphix netidx:/path/to/my/program
 </ul>
 </li>
 <li><code>Ctrl+C</code> exits the program</li>
-<li>Warnings are enabled by default (unused variables, unhandled errors)</li>
+<li>Warnings about unhandled errors are enabled by default</li>
 </ul>
 <p>Script mode is for running complete programs. The shell stays running to
 handle the reactive graph’s ongoing updates.</p>
@@ -4934,17 +4939,11 @@ graphix -W unhandled ./myprogram
 # Disable warning about unhandled errors
 graphix -W no-unhandled myapp.gx
 
-# Warn about unused variables - default in script mode
-graphix -W unused ./myproject
-
-# Disable unused variable warnings
-graphix -W no-unused myprogram.gx
-
 # Make all warnings into errors
 graphix -W error ./myapp
 </code></pre>
 <p>Multiple warning flags can be combined:</p>
-<pre><code class="language-bash">graphix -W unused -W unhandled -W error myprogram
+<pre><code class="language-bash">graphix -W unhandled -W error myprogram
 </code></pre>
 <p>If you specify both a flag and its negation (e.g., <code>unhandled</code> and <code>no-unhandled</code>), the <code>no-</code> variant always wins.</p>
 <h3 id="logging"><a class="header" href="#logging">Logging</a></h3>
@@ -8063,15 +8062,16 @@ val browser: fn(
     ?#flex: Flex,
     ?#rate: duration,
     #size: Size,
-    s: string
+    path: string
 ) -&gt; Tui;
 </code></pre>
 <h2 id="parameters-2"><a class="header" href="#parameters-2">Parameters</a></h2>
 <ul>
+<li><strong>path</strong> - The netidx path whose children are listed. The listing is fetched once each time <code>path</code> changes, so rows published later appear when the path next changes</li>
 <li><strong>cursor</strong> - Programmatic cursor movement: <code>Left(n)</code>, <code>Right(n)</code>, <code>Up(n)</code>, <code>Down(n)</code></li>
-<li><strong>selected_row</strong> (output) - Display name of the selected row</li>
-<li><strong>selected_path</strong> (output, required) - Full path of the currently selected item</li>
-<li><strong>size</strong> (output) - Rendered size of the browser</li>
+<li><strong>selected_row</strong> (output) - Full path of the selected row (e.g. <code>/t/r1</code>)</li>
+<li><strong>selected_path</strong> (output) - Full path of the selected cell: the row in a list, the row and column in a table</li>
+<li><strong>size</strong> (input) - The area the browser is drawn in, which sizes its viewport; pass the enclosing block’s <code>#size</code> output</li>
 </ul>
 <h2 id="examples-2"><a class="header" href="#examples-2">Examples</a></h2>
 <h3 id="basic-usage-2"><a class="header" href="#basic-usage-2">Basic Usage</a></h3>
@@ -8792,6 +8792,7 @@ text(&amp;[
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
   ?#scroll: &amp;{x: i64, y: i64},
+  ?#wrap: &amp;bool,
   ?#trim: &amp;bool,
   v: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
@@ -8800,6 +8801,7 @@ text(&amp;[
 <ul>
 <li><strong>scroll</strong> - Record with <code>x</code> and <code>y</code> fields for scroll position</li>
 <li><strong>alignment</strong> - <code>Left</code>, <code>Center</code>, or <code>Right</code></li>
+<li><strong>wrap</strong> - Break long lines at the paragraph’s width (default: true); <code>scroll.x</code> applies only when this is false</li>
 <li><strong>trim</strong> - Trim leading whitespace when wrapping (default: true)</li>
 </ul>
 <h2 id="examples-7"><a class="header" href="#examples-7">Examples</a></h2>
@@ -9872,23 +9874,25 @@ val scrollbar: fn(
 </code></pre>
 <h2 id="parameters-12"><a class="header" href="#parameters-12">Parameters</a></h2>
 <ul>
-<li><strong>position</strong> (required) - Current scroll position (typically the Y offset)</li>
-<li><strong>content_length</strong> - Total length of the content (auto-detected if not specified)</li>
+<li><strong>position</strong> - Current scroll position, typically the Y offset (default: 0)</li>
+<li><strong>content_length</strong> - The number of scroll positions in the content; nothing measures the child, so a scrollbar without one draws no bar (default: 0)</li>
+<li><strong>viewport_length</strong> - How many positions the view shows at once, which sizes the thumb (default: the bar’s own length)</li>
 <li><strong>size</strong> (output) - Rendered size of the scrollbar area</li>
 </ul>
 <h2 id="examples-12"><a class="header" href="#examples-12">Examples</a></h2>
 <h3 id="basic-usage-11"><a class="header" href="#basic-usage-11">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::{paragraph::paragraph, scrollbar::scrollbar};
+<pre><code class="language-graphix">use tui::{line, paragraph::paragraph, scrollbar::scrollbar};
 
-let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
+let lines = array::init(50, |i| line("Line [i]"));
 let position = 0;
 let content = paragraph(
     #scroll: &amp;{x: 0, y: position},
-    &amp;long_text
+    &amp;lines
 );
 
 scrollbar(
     #position: &amp;position,
+    #content_length: &amp;array::len(lines),
     &amp;content
 )
 </code></pre>
@@ -9965,6 +9969,8 @@ scroll_pos &lt;- select selected {
 
 scrollbar(
     #position: &amp;scroll_pos,
+    #content_length: &amp;array::len(items),
+    #viewport_length: &amp;visible,
     &amp;list(
         #scroll: &amp;scroll_pos,
         #selected: &amp;selected,
@@ -10003,7 +10009,7 @@ val sparkline: fn(
   ?#absent_value_style: &amp;[Style, null],
   ?#absent_value_symbol: &amp;[string, null],
   ?#direction: &amp;[RenderDirection, null],
-  ?#max: &amp;[i64, null],
+  ?#max: &amp;[f64, null],
   ?#style: &amp;[Style, null],
   a: &amp;Array&lt;[SparklineBar, f64, null]&gt;
 ) -&gt; Tui;
@@ -10025,7 +10031,7 @@ val sparkline: fn(
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 
-sparkline(#max: &amp;100, &amp;data)
+sparkline(#max: &amp;100.0, &amp;data)
 </code></pre>
 <p><img src="ui/tui/media/sparkline_basic.png" alt="Basic Sparkline"></p>
 <h3 id="threshold-based-coloring"><a class="header" href="#threshold-based-coloring">Threshold-based Coloring</a></h3>
@@ -10050,7 +10056,7 @@ block(
     #title: &amp;line("Network Traffic Rate"),
     &amp;sparkline(
         #style: &amp;style(#fg: `Green),
-        #max: &amp;100,
+        #max: &amp;100.0,
         &amp;data
     )
 )
@@ -10068,11 +10074,11 @@ layout(
     &amp;[
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("CPU"),
-            &amp;sparkline(#style: &amp;style(#fg: `Red), #max: &amp;100, &amp;cpu_data)
+            &amp;sparkline(#style: &amp;style(#fg: `Red), #max: &amp;100.0, &amp;cpu_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("Memory"),
-            &amp;sparkline(#style: &amp;style(#fg: `Yellow), #max: &amp;100, &amp;mem_data)
+            &amp;sparkline(#style: &amp;style(#fg: `Yellow), #max: &amp;100.0, &amp;mem_data)
         )),
         child(#constraint: `Percentage(33), block(
             #title: &amp;line("Network"),
@@ -10114,7 +10120,7 @@ data &lt;- array::window(
     new_value
 );
 
-sparkline(#max: &amp;100, &amp;data)
+sparkline(#max: &amp;100.0, &amp;data)
 </code></pre>
 <p><img src="ui/tui/media/sparkline_rolling.gif" alt="Rolling Sparkline"></p>
 <h2 id="use-cases-1"><a class="header" href="#use-cases-1">Use Cases</a></h2>
@@ -16478,7 +16484,7 @@ your additional modules available.</p>
 </span>use graphix_compiler::CFlag;
 
 ShellBuilder::&lt;NoExt&gt;::default()
-    .enable_flags(CFlag::WarnUnused | CFlag::WarnUnhandled)
+    .enable_flags(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
     .mode(Mode::Repl)
     // ...
 <span class="boring">}</span></code></pre>

@@ -2,4 +2,4 @@ use tui::sparkline::sparkline;
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 
-sparkline(#max: &100, &data)
+sparkline(#max: &100.0, &data)

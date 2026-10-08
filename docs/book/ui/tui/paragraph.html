@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9f5ddc0b.js";
+            window.path_to_searchindex_js = "../../searchindex-7d3d7981.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -181,6 +181,7 @@
   ?#style: &amp;Style,
   ?#alignment: &amp;[Alignment, null],
   ?#scroll: &amp;{x: i64, y: i64},
+  ?#wrap: &amp;bool,
   ?#trim: &amp;bool,
   v: &amp;[Array&lt;Line&gt;, string]
 ) -&gt; Tui;
@@ -189,6 +190,7 @@
 <ul>
 <li><strong>scroll</strong> - Record with <code>x</code> and <code>y</code> fields for scroll position</li>
 <li><strong>alignment</strong> - <code>Left</code>, <code>Center</code>, or <code>Right</code></li>
+<li><strong>wrap</strong> - Break long lines at the paragraph’s width (default: true); <code>scroll.x</code> applies only when this is false</li>
 <li><strong>trim</strong> - Trim leading whitespace when wrapping (default: true)</li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
