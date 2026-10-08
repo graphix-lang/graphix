@@ -16,11 +16,14 @@ use crate::{
     },
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
-    typ::{AbstractId, Type},
+    typ::{
+        AbstractId, FnArgKind, FnArgType, FnType, Type,
+        tvar::{AtLevel, Level},
+    },
     wrap,
 };
-use ahash::AHashSet;
-use anyhow::{Context, Result, bail};
+use ahash::{AHashMap, AHashSet};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
@@ -404,6 +407,20 @@ struct Proxy {
     private_inner: bool,
 }
 
+/// An impl head as the type of a function over it, quantified by the
+/// head's variables, so a declaration and its implementation compare by
+/// [`FnType::sig_matches`]: shape, variables and bounds.
+fn head_sig(im: &ImplDef) -> FnType {
+    FnType {
+        args: Arc::from_iter([FnArgType {
+            kind: FnArgKind::Positional { name: None },
+            typ: im.target.clone(),
+        }]),
+        quantifiers: Arc::from_iter(im.params.iter().map(|tv| tv.name.clone())),
+        ..FnType::default()
+    }
+}
+
 fn check_sig<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     top_id: ExprId,
@@ -416,160 +433,170 @@ fn check_sig<R: Rt, E: UserEvent>(
     let first_proxy = proxy.len();
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    // a name a later `let` shadows is not the one the interface exports
+    let mut effective: LPooled<AHashMap<CompactString, BindId>> = LPooled::take();
     for n in nodes {
-        if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
-            && let Some(binds) = ctx.env.binds.get(&scope.lexical)
-        {
-            // every name the `let` binds, each with its own binding; a
-            // single name's type is the whole pattern's
-            let single = bind.pattern.single_bind_id();
-            let mut ids: LPooled<Vec<BindId>> = LPooled::take();
-            bind.pattern.ids(&mut |id| ids.push(id));
-            for id in ids.drain(..) {
-                let Some(inner) = ctx.env.by_id.get(&id) else { continue };
-                let name = inner.name.clone();
-                // CR claude for claude: [bug] Every top-level `let` of a name is paired
-                // with the interface `val` of that name. So a body that shadows an
-                // exported name (`let x = ..; let x = ..`) proxies both bindings to the
-                // one exported id. The export then carries whichever binding fired
-                // last, and a write to it also reaches the shadowed binding.
-                // proxy_lambda_defs resolves `m::f(..)` to the shadowed lambda when the
-                // last `f` is not a lambda literal, and the sig is also checked against
-                // the shadowed binding's type, which gives a spurious mismatch. Only
-                // the effective (last) binding of each name should be proxied and
-                // checked. probe: design/review-2026-10-05/repro/c-module-traits-03.sh
-                // (`val f: fn(x: i64) -> i64` over `let f = |x: i64| -> i64 x + 1; let
-                // g = |x: i64| -> i64 x + 100; let f = g`: `m::f(1)` is 2, and 101
-                // without the gxi). (c-module-traits-03)
-                let Some(proxy_id) = binds.get(&name) else { continue };
-                let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
-                let typ = if single.is_some() { bind.typ() } else { &inner.typ };
-                proxy_bind.typ.unbind_tvars();
-                // CR claude for claude: [bug] check_sig attaches no site to any of its
-                // errors: this val mismatch, the typedef bails (440-480), the trait
-                // bail (563) and "sig item .. is missing an implementation" (589). So
-                // every interface conformance error is placed at the parent's `mod m`
-                // statement in the parent's file. The implementing let/type/trait
-                // (n.spec()) and the .gxi item (si.pos/si.ori) are both in hand. The
-                // LSP shows the diagnostic at that `mod` line with only the chain leaf,
-                // which here is 'type mismatch: signature has i64, implementation has
-                // string': the val's name is only in this `.with_context` string, and
-                // nothing appears in m.gx or m.gxi. An ordinary body error in the same
-                // module is placed in m.gx (case 5 of the probe). probe:
-                // design/review-2026-10-05/repro/x-errors-06.py (x-errors-06)
-                proxy_bind.typ.sig_matches(&ctx.env, typ).with_context(|| {
-                    format_compact!(
-                        "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
-                        proxy_bind.typ,
-                        typ
-                    )
-                })?;
-                proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
-                if ctx.env.ide.is_lsp() {
-                    ctx.env.push_sig_link(SigImplLink {
-                        scope: scope.lexical.clone(),
-                        name: name.clone(),
-                        sig_id: *proxy_id,
-                        impl_id: id,
-                    });
+        if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>() {
+            bind.pattern.ids(&mut |id| {
+                if let Some(b) = ctx.env.by_id.get(&id) {
+                    effective.insert(b.name.clone(), id);
                 }
-                has_bind.insert(name);
-            }
-        }
-        if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
-            && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
-            && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
-        {
-            let sig_td = TypeDefExpr {
-                name: td.name.clone(),
-                params: sig_td.params().clone(),
-                body: match (sig_td.typ(), &sig_td.rep) {
-                    (Type::Abstract { .. }, rep) => TypeDefBody::Abstract(rep.clone()),
-                    (typ, _) => TypeDefBody::Alias(typ.clone()),
-                },
-            };
-            let impl_params = scope_params(&td.params, &scope.lexical);
-            match &sig_td.body {
-                TypeDefBody::Abstract(None) => {
-                    for (tv0, con0) in impl_params.iter() {
-                        match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
-                            Some((_, con1)) if con0 != con1 => {
-                                let con0 = match con0 {
-                                    None => "missing",
-                                    Some(t) => &format_compact!("{t}"),
-                                };
-                                let con1 = match con1 {
-                                    None => "missing",
-                                    Some(t) => &format_compact!("{t}"),
-                                };
-                                bail!(
-                                    "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
-                                    td.name,
-                                    tv0.name
-                                )
-                            }
-                            None => bail!(
-                                "signature mismatch in {}, missing parameter {}",
-                                sig_td.name,
-                                tv0.name
-                            ),
-                            Some(_) => (),
-                        }
-                    }
-                    let TypeDefBody::Abstract(_) = &td.body else {
-                        bail!(
-                            "{} is hidden by the interface, so its definition must be \
-                             `type {} = Abstract<..>` (a Rust-backed type declares \
-                             `type {};`)",
-                            td.name,
-                            td.name,
-                            td.name
-                        )
-                    };
-                    defined_abstracts.insert(td.name.name.clone());
-                }
-                _ => {
-                    let impl_body = match &td.body {
-                        TypeDefBody::Alias(t) => {
-                            TypeDefBody::Alias(t.scope_refs(&scope.lexical))
-                        }
-                        TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
-                            rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
-                        ),
-                    };
-                    // a ground union has several normal forms: one type is
-                    // one by mutual containment
-                    let one_type = |t0: &Type, t1: &Type| {
-                        let f = BitFlags::empty();
-                        !t0.has_unbound()
-                            && !t1.has_unbound()
-                            && t0.contains_with_flags(f, &ctx.env, t1).unwrap_or(false)
-                            && t1.contains_with_flags(f, &ctx.env, t0).unwrap_or(false)
-                    };
-                    let same_body = sig_td.body == impl_body
-                        || match (&sig_td.body, &impl_body) {
-                            (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => {
-                                one_type(t0, t1)
-                            }
-                            _ => false,
-                        };
-                    if sig_td.name != td.name
-                        || sig_td.params != impl_params
-                        || !same_body
-                    {
-                        bail!(
-                            "signature mismatch in {}, expected {}, found {}",
-                            td.name,
-                            sig_td,
-                            td
-                        )
-                    }
-                }
-            }
+            });
         }
     }
+    for n in nodes {
+        let mut check_node = || -> Result<()> {
+            if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
+                && let Some(binds) = ctx.env.binds.get(&scope.lexical)
+            {
+                // every name the `let` binds, each with its own binding; a
+                // single name's type is the whole pattern's
+                let single = bind.pattern.single_bind_id();
+                let mut ids: LPooled<Vec<BindId>> = LPooled::take();
+                bind.pattern.ids(&mut |id| ids.push(id));
+                for id in ids.drain(..) {
+                    let Some(inner) = ctx.env.by_id.get(&id) else { continue };
+                    let name = inner.name.clone();
+                    if effective.get(&name) != Some(&id) {
+                        continue;
+                    }
+                    let Some(proxy_id) = binds.get(&name) else { continue };
+                    let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
+                    let typ = if single.is_some() { bind.typ() } else { &inner.typ };
+                    proxy_bind.typ.unbind_tvars();
+                    if let Err(e) = proxy_bind.typ.sig_matches(&ctx.env, typ) {
+                        bail!(
+                            "val {name} is declared {} but implemented {typ}: {e:#}",
+                            proxy_bind.typ
+                        )
+                    }
+                    proxy.push(Proxy {
+                        inner: id,
+                        outer: *proxy_id,
+                        private_inner: true,
+                    });
+                    if ctx.env.ide.is_lsp() {
+                        ctx.env.push_sig_link(SigImplLink {
+                            scope: scope.lexical.clone(),
+                            name: name.clone(),
+                            sig_id: *proxy_id,
+                            impl_id: id,
+                        });
+                    }
+                    has_bind.insert(name);
+                }
+            }
+            if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
+                && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
+                && let Some(sig_td) = defs.get(&CompactString::from(td.name.as_str()))
+            {
+                let sig_td = TypeDefExpr {
+                    name: td.name.clone(),
+                    params: sig_td.params().clone(),
+                    body: match (sig_td.typ(), &sig_td.rep) {
+                        (Type::Abstract { .. }, rep) => {
+                            TypeDefBody::Abstract(rep.clone())
+                        }
+                        (typ, _) => TypeDefBody::Alias(typ.clone()),
+                    },
+                };
+                let impl_params = scope_params(&td.params, &scope.lexical);
+                match &sig_td.body {
+                    TypeDefBody::Abstract(None) => {
+                        for (tv0, con0) in impl_params.iter() {
+                            match sig_td
+                                .params
+                                .iter()
+                                .find(|(tv1, _)| tv0.name == tv1.name)
+                            {
+                                Some((_, con1)) if con0 != con1 => {
+                                    let con0 = match con0 {
+                                        None => "missing",
+                                        Some(t) => &format_compact!("{t}"),
+                                    };
+                                    let con1 = match con1 {
+                                        None => "missing",
+                                        Some(t) => &format_compact!("{t}"),
+                                    };
+                                    bail!(
+                                        "signature mismatch in {}, constraint mismatch on {}, signature constraint {con1} vs implementation constraint {con0}",
+                                        td.name,
+                                        tv0.name
+                                    )
+                                }
+                                None => bail!(
+                                    "signature mismatch in {}, missing parameter {}",
+                                    sig_td.name,
+                                    tv0.name
+                                ),
+                                Some(_) => (),
+                            }
+                        }
+                        let TypeDefBody::Abstract(_) = &td.body else {
+                            bail!(
+                                "{} is hidden by the interface, so its definition must be \
+                             `type {} = Abstract<..>` (a Rust-backed type declares \
+                             `type {};`)",
+                                td.name,
+                                td.name,
+                                td.name
+                            )
+                        };
+                        defined_abstracts.insert(td.name.name.clone());
+                    }
+                    _ => {
+                        let impl_body = match &td.body {
+                            TypeDefBody::Alias(t) => {
+                                TypeDefBody::Alias(t.scope_refs(&scope.lexical))
+                            }
+                            TypeDefBody::Abstract(rep) => TypeDefBody::Abstract(
+                                rep.as_ref().map(|r| r.scope_refs(&scope.lexical)),
+                            ),
+                        };
+                        // a ground union has several normal forms: one type is
+                        // one by mutual containment
+                        let one_type = |t0: &Type, t1: &Type| {
+                            let f = BitFlags::empty();
+                            !t0.has_unbound()
+                                && !t1.has_unbound()
+                                && t0
+                                    .contains_with_flags(f, &ctx.env, t1)
+                                    .unwrap_or(false)
+                                && t1
+                                    .contains_with_flags(f, &ctx.env, t0)
+                                    .unwrap_or(false)
+                        };
+                        let same_body = sig_td.body == impl_body
+                            || match (&sig_td.body, &impl_body) {
+                                (TypeDefBody::Alias(t0), TypeDefBody::Alias(t1)) => {
+                                    one_type(t0, t1)
+                                }
+                                _ => false,
+                            };
+                        if sig_td.name != td.name
+                            || sig_td.params != impl_params
+                            || !same_body
+                        {
+                            bail!(
+                                "signature mismatch in {}, expected {}, found {}",
+                                td.name,
+                                sig_td,
+                                td
+                            )
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
+        check_node().at(n.spec())?;
+    }
     for si in sig.items.iter() {
-        let missing = match &si.kind {
+        let at = |e: anyhow::Error| {
+            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            e.context(ParserContext { ori, pos: si.pos })
+        };
+        let missing = (|| -> Result<bool> { Ok(match &si.kind {
             SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name.name.as_str()),
             SigKind::Impl(im) => {
                 let trait_id = ctx
@@ -597,24 +624,17 @@ fn check_sig<R: Rt, E: UserEvent>(
                             .trait_def(trait_id)
                             .cloned()
                             .expect("bound by bind_sig");
-                        // CR claude for claude: [bug] An implementation fulfils this
-                        // declaration whenever its head merely overlaps it
-                        // (register_impl pairs by heads_overlap). The declared method
-                        // bindings are then proxied here without comparing the
-                        // implementation's head, bounds or method types to the
-                        // declaration's, as the `val` arm does with sig_matches. So
-                        // `impl<'a> Show for Box<'a>;` in the gxi is fulfilled by `impl
-                        // Show for Box<i64> { .. }`, consumers are typed against the
-                        // wider declaration, and `--check` accepts
-                        // `Show::show(m::Box("hello"))`. A static module is then
-                        // refused at elaboration (an instance at Box<string> of a
-                        // definition typed Box<i64>). A dynamic module runs the
-                        // Box<i64> body on a Box<string> and returns a string typed
-                        // i64, and a fused consumer panics at fusion/kernel.rs:243.
-                        // Require the implementation's head and bounds to be equivalent
-                        // to the declared ones before the proxies are wired; probe:
-                        // design/review-2026-10-05/repro/c-module-traits-04.sh
-                        // (c-module-traits-04)
+                        head_sig(&declared)
+                            .sig_matches(&ctx.env, &head_sig(&i.def))
+                            .map_err(|e| {
+                                anyhow!(
+                                    "impl {} for {} does not implement the declared impl {} for {target}: {e:#}",
+                                    im.trait_name,
+                                    i.def.target,
+                                    im.trait_name
+                                )
+                                .at(i.spec())
+                            })?;
                         for (name, outer) in declared.methods.into_iter() {
                             let (inner, private_inner) = match i.def.methods.get(name) {
                                 Some(id) => (*id, true),
@@ -683,9 +703,10 @@ fn check_sig<R: Rt, E: UserEvent>(
             SigKind::Module(_)
             | SigKind::Use { .. }
             | SigKind::TypeDef(TypeDefExpr { .. }) => false,
-        };
+        }) })()
+        .map_err(at)?;
         if missing {
-            bail!("sig item {si} is missing an implementation")
+            return Err(at(anyhow!("sig item {si} is missing an implementation")));
         }
     }
     for Proxy { inner, outer, .. } in proxy[first_proxy..].iter() {
@@ -768,7 +789,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             0 => Body::Static,
             1 => Body::Dynamic {
                 source: decode_node(ctx, buf)?,
-                sig_env: Env::decode(buf)?,
+                sig_env: image::lexical_decode(buf)?,
             },
             _ => return Err(PackError::UnknownTag),
         };
@@ -830,9 +851,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         Ok(Node::new(Self {
             spec,
             flags,
-            env,
+            env: env.lexical(),
             sig,
-            body: Body::Dynamic { source, sig_env: ctx.env.clone() },
+            body: Body::Dynamic { source, sig_env: ctx.env.lexical() },
             scope: scope.clone(),
             proxy: Vec::new(),
             nodes: Box::new([]),
@@ -854,16 +875,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let task = crate::typ::tvar::new_task();
         let _task = crate::typ::tvar::InTask::enter(task);
-        // CR claude for claude: [perf] The module keeps a whole clone of ctx.env, but
-        // only its lexical fields are ever read: with_restored_mut swaps them,
-        // export_sig reads them, the image writes them with lexical_encode, and a warm
-        // start runs on a lexical-only decode. The clone's global maps (by_id, names,
-        // trait_defs, impls, ...) pin this version for the module's lifetime, so every
-        // later write to a node they still share copies that node. Env::lexical()
-        // exists to avoid exactly this cost, and lambda definitions already use it. Use
-        // ctx.env.lexical() here. sig_env (line 727) has the same problem, and the
-        // image writes it as a whole Env (line 927). (t-env-10)
-        let mut env = ctx.env.clone();
+        let mut env = ctx.env.lexical();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
         bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
@@ -913,48 +925,20 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             Body::Dynamic { sig_env, .. } => Some(sig_env.clone()),
         };
         let pending = mem::take(&mut ctx.pending_imports);
+        let names = mem::take(&mut ctx.pending_names);
         let census = ctx.attr_census.lock().len();
-        // CR claude for claude: [bug] The loaded body compiles and checks here without
-        // entering Level::TOP, so every cell it creates takes the thread's default
-        // Level::GENERIC (tvar.rs:141); only compile_top and check_and_fuse enter TOP.
-        // A top-level `let z = never()` is then a scheme cell, tvar::lower claims
-        // nothing into it, and a definition that writes z is generalized and copied at
-        // every call instead of staying monomorphic in it. A body the static check
-        // refuses (`let f = |x| { z <- x; x }; f("s"); f(1)`, exported as `val w: i64`)
-        // loads: the JIT panics at fusion/kernel.rs:243 and the runtime dies, the
-        // node-walk delivers "s" as an i64, and an annotated variant gets the internal
-        // "an instance at ... of a definition typed ..." error. Enter
-        // `AtLevel::enter(Level::TOP)` around the compile and check, as compile_top
-        // does. probe: design/review-2026-10-05/repro/t-tvar-04.gx (t-tvar-04)
-        // CR claude for claude: [bug] A loaded body never gets its check's
-        // statement-boundary checks: neither drain_pending_settles nor
-        // check_pending_names runs here. With two or more statements (the one-statement
-        // path drains, after typecheck1), a catch(e: T) that does not cover its region
-        // loads and its handler receives errors outside T, and an undefined type name
-        // in a typedef loads. The undrained settles stay in the root settle frame, and
-        // the next one-statement load drains them, refusing a valid module with the
-        // earlier module's error. A forked cycle does not see that frame, so serial and
-        // forked runs diverge (graphix-fuzz check reports it). The check's settles
-        // should drain after check_body and before typecheck1, in a settle frame of the
-        // load's own, followed by the name check. probe:
-        // design/review-2026-10-05/repro/c-module-traits-02.gx (c-module-traits-02)
-        // CR claude for claude: [bug] A reload accepts a hidden abstract type (`type C;`
-        // in the sig) whose `Abstract<..>` differs from the previous load's. AbstractId
-        // comes from the path alone, so a value the consumer minted under the old
-        // source reaches the new code, which treats its payload as the new type. The
-        // node-walk then gets wrong values or bottoms silently: `str::len(c.0)` on an
-        // old i64 payload never produces and logs nothing. When the new code hands such
-        // a payload back to a consumer's fused kernel, FusedKernel::stage panics and
-        // the runtime dies. Either refuse a reload that changes a hidden
-        // representation, or derive the id from the path and the representation. probe:
-        // design/review-2026-10-05/repro/x-engine-seq-errors-10.gx
-        // (x-engine-seq-errors-10)
+        // the body is a program of its own: top-level cells, and a check
+        // that settles what it deferred before it elaborates
+        let _level = AtLevel::enter(Level::TOP);
+        ctx.pending_settles.push(Vec::new());
         let res = self.compile_inner(ctx, &exprs).and_then(|()| {
             crate::check_pending_imports(ctx)?;
             self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx))
         });
+        ctx.pending_settles.pop().expect("load settle frame");
         ctx.attr_census.lock().truncate(census);
         ctx.pending_imports = pending;
+        ctx.pending_names = names;
         if res.is_err() {
             // before `drop_deferred`: a reference the body took under the
             // module's statement cancels while it is still pending
@@ -978,37 +962,28 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx: &mut CompileCtx<R, E>,
         exprs: &[Expr],
     ) -> Result<()> {
-        let builtins_allowed =
-            mem::replace(&mut ctx.builtins_allowed, matches!(self.body, Body::Static));
+        let flags = match self.body {
+            Body::Static => self.flags,
+            Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
+        };
         let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
             crate::node::compile_block_children(
                 ctx,
-                self.flags,
+                flags,
                 &self.scope,
                 self.top_id,
                 true,
                 exprs.iter(),
             )
         });
-        // CR claude for claude: [bug] This restores builtins_allowed before check_body,
-        // so the sandbox flag only covers the loaded source's top-level statements.
-        // Every lambda body and labeled default is compiled later with builtins
-        // allowed: at its definition check (Lambda::typecheck0), in check_defaults,
-        // when an instance elaborates, and at run-time binds. So a module under
-        // `sandbox whitelist [core]` or `sandbox blacklist [sys]` can define and call
-        // any host builtin by putting the stub in a lambda: `let outer = |p: string| ->
-        // string { let rd = |path: string| -> Result<string, `IOError(string)>
-        // 'sys_fs_read_all; rd(p)$ }` reads files, and the same wrapper around
-        // 'sys_fs_write_all writes them. The permission has to follow the definition,
-        // not this compile window: for example, record it where the lambda literal is
-        // compiled and hold it around every compile of its body and defaults. probe:
-        // design/review-2026-10-05/repro/c-module-traits-01.gx (c-module-traits-01)
-        ctx.builtins_allowed = builtins_allowed;
         (self.nodes, self.catches) = compiled?;
         if let Body::Dynamic { .. } = &self.body {
             self.check_body(ctx)?;
+            crate::drain_pending_settles(ctx)?;
+            crate::check_pending_names(ctx)?;
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
+            crate::drain_pending_settles(ctx)?;
         }
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
@@ -1089,7 +1064,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             Body::Dynamic { source, sig_env } => {
                 1u8.encode(buf)?;
                 source.image_encode(buf)?;
-                sig_env.encode(buf)?;
+                image::lexical_encode(sig_env, buf)?;
             }
         }
         image::lexical_encode(&self.env, buf)?;

@@ -1514,7 +1514,7 @@ impl Lambda {
             ctx.env.warn(flags, &spec, pos, end, msg)?;
         }
         if let Some(builtin) = builtin {
-            if !ctx.builtins_allowed {
+            if flags.contains(CFlag::NoBuiltins) {
                 bail!("defining builtins is not allowed in this context")
             }
             for a in argspec.iter() {

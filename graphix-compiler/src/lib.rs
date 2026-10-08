@@ -1146,8 +1146,6 @@ struct Registry<R: Rt, E: UserEvent> {
 /// compile in progress. The runtime half is [`ExecCtx`].
 pub struct CompileCtx<R: Rt, E: UserEvent> {
     registry: Arc<Registry<R, E>>,
-    // Sandboxing.
-    builtins_allowed: bool,
     tags: TrackedSet<ArcStr>,
     /// The language environment: typedefs, binds, lambdas.
     pub env: Env,
@@ -1322,7 +1320,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn fork(&self) -> Self {
         Self {
             registry: self.registry.clone(),
-            builtins_allowed: self.builtins_allowed,
             tags: self.tags.fork(),
             env: self.env.fork(),
             lambda_defs: self.lambda_defs.fork(),
@@ -1356,7 +1353,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     pub(crate) fn join(&mut self, fork: Self) {
         let Self {
             registry: _,
-            builtins_allowed: _,
             tags,
             env,
             lambda_defs,
@@ -1532,7 +1528,6 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                     builtins: AHashMap::default(),
                     attributes: AHashMap::default(),
                 }),
-                builtins_allowed: true,
                 tags: TrackedSet::default(),
                 env: Env::default(),
                 lambda_defs: TrackedMap::default(),
@@ -2266,7 +2261,7 @@ pub(crate) enum Pending {
 }
 
 pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<'_, R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
     use expr::At;
     for p in mem::take(&mut ctx.pending_names) {

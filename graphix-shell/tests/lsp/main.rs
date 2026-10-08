@@ -658,3 +658,23 @@ fn columns_count_utf16_units() {
     assert_eq!(c.definition("main.gx", "let t = |s"), Some(c.site("main.gx", "let |s")));
     hover_is(&mut c, "let |t", "t: string");
 }
+
+#[test]
+fn an_interface_mismatch_is_reported_where_it_is() {
+    let mut c = Client::start(&[
+        ("main.gx", "mod api;\napi::x\n"),
+        ("api.gxi", "val x: i64;\nval y: i64;\n"),
+        ("api.gx", "let x = \"s\"\n"),
+    ]);
+    for f in ["main.gx", "api.gxi", "api.gx"] {
+        c.open(f);
+    }
+    let d = c.diagnostics("api.gx");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].0, c.at("api.gx", "|let x").line);
+    assert!(d[0].2.contains("val x"), "{d:?}");
+    c.edit("api.gx", "let x = 1\n");
+    let d = c.diagnostics("api.gxi");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].0, c.at("api.gxi", "|val y").line);
+}

@@ -409,7 +409,8 @@ impl Type {
             (Self::TVar(sig_tv), impl_type) => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(
-                        "signature has type variable '{sig_tv} where implementation has {impl_type}"
+                        "signature has type variable '{} where implementation has {impl_type}",
+                        sig_tv.name
                     )
                 })
             }

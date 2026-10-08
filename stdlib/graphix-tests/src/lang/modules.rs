@@ -804,3 +804,132 @@ run!(
     "/test/m.gx" => "let f = |x| { let y = x[0]$; [y + y] }";
     FuseExpect::None
 );
+
+/// A dynamic module's load failed with `phrase` in its error.
+fn load_refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
+    move |v| matches!(v, Ok(Value::Error(e)) if format!("{e}").contains(phrase))
+}
+
+// The sandbox follows a definition into every later compile of its body.
+const LOADED_BUILTIN_IN_A_LAMBDA: &str = r#"
+{
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val n: i64 };
+        source """
+            let outer = |s: string| -> i64 {
+                let len = |s: string| -> i64 'str_len;
+                len(s)
+            };
+            let n = outer("abc")
+        """
+    };
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(loaded_builtin_in_a_lambda, LOADED_BUILTIN_IN_A_LAMBDA,
+    load_refused("defining builtins is not allowed"); FuseExpect::Jit);
+
+// A loaded body's top-level cells are monomorphic: a function writing one
+// is not generalized over it.
+const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
+{
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val w: i64 };
+        source """
+            let z = never();
+            let f = |x| { z <- x; x };
+            let a = f("s");
+            let w = f(1)
+        """
+    };
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(loaded_body_is_top_level, LOADED_BODY_IS_TOP_LEVEL,
+    load_refused("type mismatch"); FuseExpect::Jit);
+
+// A loaded body settles what its check deferred before it elaborates.
+const LOADED_BODY_SETTLES: &str = r#"
+{
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val a: i64; val w: i64 };
+        source """
+            let a = 1;
+            let w = { catch(e: Error<`A>) println("[e]"); error(`B)?; 1 }
+        """
+    };
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(loaded_body_settles, LOADED_BODY_SETTLES,
+    load_refused("does not contain"); FuseExpect::Jit);
+
+// The interface exports the last binding of a name.
+const EXPORT_IS_THE_LAST_BINDING: &str = r#"
+{
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { val f: fn(x: i64) -> i64 };
+        source """
+            let f = |x: i64| -> i64 x + 1;
+            let g = |x: i64| -> i64 x + 100;
+            let f = g
+        """
+    };
+    select status { error as e => never(dbg(e)), null as _ => foo::f(1) }
+}
+"#;
+
+run!(export_is_the_last_binding, EXPORT_IS_THE_LAST_BINDING, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(101)))
+}; FuseExpect::None);
+
+// An implementation fulfils a declared impl only at the declared head.
+const IMPL_NARROWER_THAN_DECLARED: &str = r#"
+{
+    trait Val { val v: fn(self) -> i64 };
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig {
+            use super::Val;
+            type Box<'a>;
+            impl<'a> Val for Box<'a>;
+            val make: fn(x: 'a) -> Box<'a>
+        };
+        source """
+            type Box<'a> = Abstract<'a>;
+            impl Val for Box<i64> { let v = |b| b.0 };
+            let make = |x| Box(x)
+        """
+    };
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(impl_narrower_than_declared, IMPL_NARROWER_THAN_DECLARED,
+    load_refused("does not implement the declared impl"); FuseExpect::Jit);
+
+// A reload may not change a hidden type's representation: a value of
+// the old one may still be held.
+const RELOAD_CHANGES_A_REPRESENTATION: &str = r#"
+{
+    let source = """type C = Abstract<string>; let make = |x: i64| C("v")""";
+    sys::net::publish("/local/reprchange", source)?;
+    let status = mod foo dynamic {
+        sandbox whitelist [core];
+        sig { type C; val make: fn(x: i64) -> C };
+        source sys::net::subscribe("/local/reprchange")?
+    };
+    source <- once(status) ~ """type C = Abstract<i64>; let make = |x: i64| C(x)""";
+    select status { error as e => e, null as _ => never() }
+}
+"#;
+
+run!(reload_changes_a_representation, RELOAD_CHANGES_A_REPRESENTATION,
+    load_refused("representation cannot change"); FuseExpect::Jit);

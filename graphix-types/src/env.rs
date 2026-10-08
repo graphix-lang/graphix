@@ -1579,6 +1579,30 @@ impl Env {
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);
         }
+        if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep)
+            && let Some(old) = self.abstract_reps.get(id)
+        {
+            // the formals by position, then the body
+            let shape = |params: &[(TVar, Option<Type>)], rep: &Type| {
+                Type::Tuple(Arc::from_iter(
+                    params
+                        .iter()
+                        .map(|(tv, _)| Type::TVar(tv.clone()))
+                        .chain([rep.clone()]),
+                ))
+            };
+            let (was, now) = (shape(&old.params, &old.rep), shape(&params, rep));
+            if old.params.len() != params.len()
+                || was.sig_matches(self, &now).is_err()
+                || now.sig_matches(self, &was).is_err()
+            {
+                bail!(
+                    "{name} is already defined as Abstract<{}>: a value of it may still \
+                     be held, so its representation cannot change",
+                    old.rep
+                )
+            }
+        }
         if let (Type::Abstract { id, .. }, Some(rep)) = (&typ, &rep) {
             // A re-registration never hides a published definition.
             let public =

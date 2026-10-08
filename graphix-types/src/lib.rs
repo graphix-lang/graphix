@@ -60,6 +60,10 @@ pub enum CFlag {
     /// elaboration, analysis or fusion. The nodes compiled this way are
     /// only for inspection, never for running.
     CheckOnly,
+    /// Refuse a lambda that names a builtin. A loaded module's body
+    /// compiles under it, and its definitions carry it into every
+    /// later compile of their bodies and defaults.
+    NoBuiltins,
 }
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value
