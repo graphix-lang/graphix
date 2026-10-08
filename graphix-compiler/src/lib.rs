@@ -1020,9 +1020,50 @@ pub(crate) struct ResolvingLambda {
     pub identity: FnArgIdentity,
 }
 
-/// The active instantiations of one def, innermost last. A stack: a
-/// site inside `h(k)` may reach a still-resolving `h(g)`.
-pub(crate) type ResolvingStack = SmallVec<[ResolvingLambda; 2]>;
+/// The active instantiations of every def, innermost first: a site
+/// inside `h(k)` may reach a still-resolving `h(g)`. Persistent, so a
+/// compile task's fork shares its parent's in O(1).
+#[derive(Clone, Default)]
+pub(crate) struct Resolving(Option<Arc<ResolvingFrame>>);
+
+struct ResolvingFrame {
+    def: LambdaId,
+    r: ResolvingLambda,
+    next: Resolving,
+}
+
+impl Resolving {
+    fn iter(&self) -> impl Iterator<Item = &ResolvingFrame> {
+        std::iter::successors(self.0.as_deref(), |f| f.next.0.as_deref())
+    }
+
+    fn push(&mut self, def: LambdaId, r: ResolvingLambda) {
+        let next = mem::take(self);
+        self.0 = Some(Arc::new(ResolvingFrame { def, r, next }));
+    }
+
+    /// Remove the innermost frame of `def` for `instance`.
+    fn remove(&mut self, def: LambdaId, instance: LambdaInstanceId) {
+        let mut above: SmallVec<[(LambdaId, ResolvingLambda); 4]> = SmallVec::new();
+        let mut at = self.clone();
+        while let Some(f) = at.0.clone() {
+            if f.def == def && f.r.instance == instance {
+                at = f.next.clone();
+                for (d, r) in above.drain(..).rev() {
+                    at.push(d, r);
+                }
+                *self = at;
+                return;
+            }
+            above.push((f.def, f.r.clone()));
+            at = f.next.clone();
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+}
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// The active instantiation of `def` with exactly this identity.
@@ -1031,37 +1072,28 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         def: LambdaId,
         identity: &FnArgIdentity,
     ) -> Option<ResolvingLambda> {
-        self.resolving_lambdas
-            .lock()
-            .get(&def)?
+        let stack = self.resolving_lambdas.lock();
+        stack
             .iter()
-            .rev()
-            .find(|r| r.identity == *identity)
-            .cloned()
+            .find(|f| f.def == def && f.r.identity == *identity)
+            .map(|f| f.r.clone())
     }
 
     /// The innermost active instantiation of `def`, whatever its
     /// identity: what a bare value reference inside a resolving body
     /// refers to.
     pub(crate) fn resolving_innermost(&self, def: LambdaId) -> Option<ResolvingLambda> {
-        self.resolving_lambdas.lock().get(&def)?.last().cloned()
+        let stack = self.resolving_lambdas.lock();
+        stack.iter().find(|f| f.def == def).map(|f| f.r.clone())
     }
 
     pub(crate) fn push_resolving(&self, def: LambdaId, r: ResolvingLambda) {
-        self.resolving_lambdas.lock().entry(def).or_default().push(r)
+        self.resolving_lambdas.lock().push(def, r)
     }
 
     /// Retire the innermost entry `push_resolving` made for `instance`.
     pub(crate) fn pop_resolving(&self, def: LambdaId, instance: LambdaInstanceId) {
-        let mut map = self.resolving_lambdas.lock();
-        if let Some(stack) = map.get_mut(&def) {
-            if let Some(i) = stack.iter().rposition(|r| r.instance == instance) {
-                stack.remove(i);
-            }
-            if stack.is_empty() {
-                map.remove(&def);
-            }
-        }
+        self.resolving_lambdas.lock().remove(def, instance)
     }
 }
 
@@ -1150,7 +1182,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
-    pub(crate) resolving_lambdas: Mutex<IntMap<LambdaId, ResolvingStack>>,
+    pub(crate) resolving_lambdas: Mutex<Resolving>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1301,19 +1333,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
             def_gate_depth: self.def_gate_depth,
-            // CR claude for claude: [perf] Every statically resolved call site forks the
-            // context (callsite.rs:1287), and each fork copies resolving_lambdas whole:
-            // an IntMap holding an FnType by value for every instantiation still
-            // resolving. The forks nest along a static call chain and each lives until
-            // its child returns, so elaborating a chain of depth N holds O(N^2) copies;
-            // TrackedMap::join (graphix-types/src/tracked.rs:150) also re-appends the
-            // whole subtree's touched keys at every level. For `f_i = |a| f_{i-1}(a) +
-            // 1`, peak RSS (debug, --no-fusion) is 169 MB at N=500, 478 MB at 1000 and
-            // 967 MB at 1500, against 73 MB for a flat program of 1000 lambdas and 75
-            // MB under --check; N=4000 is killed at a 6 GB cap. A resolution stack
-            // shared by forks (a persistent list, each task pushing its own entry)
-            // makes a fork O(1). probe: design/review-2026-10-05/repro/f-jit-04.sh
-            // (f-jit-04)
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             lowered_seqs: self.lowered_seqs.fork(),
@@ -1524,7 +1543,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 rec_defs: nohash::IntSet::default(),
                 def_gate_params: nohash::IntSet::default(),
                 def_gate_depth: 0,
-                resolving_lambdas: Mutex::new(IntMap::default()),
+                resolving_lambdas: Mutex::new(Resolving::default()),
                 fn_forward_resolutions: TrackedMap::default(),
                 lowered_seqs: TrackedMap::default(),
                 pending_settles: vec![Vec::new()],
