@@ -999,7 +999,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let woke = slept.take();
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
-        let mut guard_tags: SmallVec<[Option<Tag>; 8]> =
+        let mut guard_tags: SmallVec<[Option<Tag>; 32]> =
             SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx);
         tracked.observe(ctx);

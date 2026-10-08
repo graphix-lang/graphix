@@ -232,3 +232,29 @@ run!(mul_div_mod_left, MUL_DIV_MOD_LEFT, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 }; FuseExpect::Jit);
+
+// A catch in a block's value slot would cover nothing: refused.
+const CATCH_IN_A_VALUE_SLOT: &str = r#"
+{
+    let x = { let a: i64 = 1; catch(e) println("inner") };
+    x
+}
+"#;
+
+run!(catch_in_a_value_slot, CATCH_IN_A_VALUE_SLOT, |v: Result<&Value>| {
+    refused("it would cover nothing")(v)
+}; FuseExpect::None);
+
+// An attribute on a declaration decorates nothing: refused.
+const ATTRIBUTE_ON_A_DECLARATION: &str = r#"
+{
+    #[bogus]
+    type T = i64;
+    let x: T = 1;
+    x
+}
+"#;
+
+run!(attribute_on_a_declaration, ATTRIBUTE_ON_A_DECLARATION, |v: Result<&Value>| {
+    refused("on a declaration")(v)
+}; FuseExpect::None);

@@ -1,9 +1,10 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
-    ParMode, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, UserEvent,
+    ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
+    UserEvent,
     branch::{cut, fork_each, timed},
     cost::{ForkSite, Meter, Plan},
-    env, errf,
+    defer_unresolved_names, env, errf,
     expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
     fusion::{
@@ -19,7 +20,10 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    typ::{Mutability, TVal, TVar, Type, TypeMismatch},
+    typ::{
+        Mutability, TVal, TVar, Type, TypeMismatch,
+        tvar::{AtLevel, InTask, current_level, new_task},
+    },
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -395,14 +399,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
     site: &mut ForkSite,
-    // CR claude for claude: [perf] gather collects every child's production into a SmallVec
-    // of 8. So a struct, tuple, variant or array literal, or an interpolation with more
-    // than 8 parts, mallocs and frees on every update, quiet cycles included, before the
-    // dense gate can ride. Select::update's guard tags (select.rs:890) and the map
-    // literal's four vectors (map.rs:124-130) spill the same way past 8 arms or entries.
-    // The elements are pointers and 2-byte tags, so an inline capacity of 32 keeps
-    // realistic literals and selects on the stack. (x-alloc-08)
-) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
+) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
     // CR claude for claude: [structure] This Serial/Measure/Fork dispatch (the ranges,
     // the `ranges.len() < 2` fallback, cut, fork_each and the merge) is written out
@@ -466,7 +463,7 @@ fn gather_in_order<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
     mut meter: Option<&mut Meter<'_>>,
-) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
+) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let mut tag = Tag::STALE;
     let prods = nodes
         .iter_mut()
@@ -722,15 +719,8 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// reverse syntactic order: an inner handler's rethrow delivers to
     /// its predecessor, which only sees it if it updates after.
     pub(crate) catches: Box<[usize]>,
-    /// Production slot for the catch-bearing path: the last covered
-    /// child's borrow can't be held across the catches pass.
-    // CR claude for claude: [doc-drift] This doc is stale. Under the default
-    // GRAPHIX_PAR=auto every block of two or more statements updates through
-    // update_forking, which stores each production here (708), not only the
-    // catch-bearing path. Say it holds the block's production when the block cannot
-    // hand back its last child's borrow: after a catch pass or a forked run.
-    // Block::new's doc (714) still says "a `do` block", which is ExprKind::Block now;
-    // write "a non-module block's value is its last child's". (c-node-mod-11)
+    /// The block's production when it cannot hand back its last
+    /// child's borrow: after a catch pass or a forked run.
     resident: TagValue,
     /// The statements as runs for forking (`analysis::plan_block`), made
     /// at the first update that may fork.
@@ -766,7 +756,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 
     /// Build a `Block` from compiled children. A module produces no
-    /// value; a `do` block's value is its last child's.
+    /// value; a non-module block's value is its last child's.
     pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Expr) -> Node<R, E> {
         Node::new(Self {
             module,
@@ -812,7 +802,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     module: bool,
     exprs: impl Iterator<Item = &'a Expr>,
 ) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
-    let exprs: smallvec::SmallVec<[&'a Expr; 32]> = exprs.collect();
+    let exprs: SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
     // of declaration order; the `Module` arm is told, so its own
     // duplicate guard does not trip
@@ -820,7 +810,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         if let ExprKind::Module { name, .. } = &e.kind {
             let p = ModPath(scope.lexical.append(name));
             if ctx.env.modules.contains(&p) {
-                return Err(anyhow::anyhow!("duplicate module definition {p}").at(&(*e)));
+                return Err(anyhow!("duplicate module definition {p}").at(&(*e)));
             }
             ctx.env.modules.insert_cow(p);
         }
@@ -864,7 +854,7 @@ pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
         .chain(def.params().iter().filter_map(|(_, c)| c.clone()))
         .collect();
     for t in written.iter() {
-        crate::defer_unresolved_names(ctx, t, &td.spec);
+        defer_unresolved_names(ctx, t, &td.spec);
     }
 }
 
@@ -891,26 +881,31 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     at: StmtAt,
 ) -> Result<(Node<R, E>, Scope)> {
     let predeclared = matches!(at, StmtAt::Block { .. });
-    // CR claude for claude: [bug] Catch, use, mod, type, trait and impl statements
-    // compile here without passing through compile_inner (compiler.rs:160). That is the
-    // only place that refuses an unknown attribute or applies a fork or definition
-    // attribute, so every such attribute on these statements is silently ignored.
-    // `#[bogus] type T = i64`, `#[serial] mod m;`, `#[bogus] impl Show for Counter { ..
-    // }`, `#[parallel] trait Show { .. }` and `#[tail_recursive] use array::map` all
-    // pass --check and run, while `#[bogus] let x = 1` is refused as an unknown
-    // attribute. Run the same attribute scan for every statement kind, and refuse an
-    // attribute that means nothing on a declaration. probe:
-    // design/review-2026-10-05/repro/c-data-map-04.gx (c-data-map-04)
+    // an attribute decorates a computation; a declaration has none
+    let declaration = match &e.kind {
+        ExprKind::Catch(_)
+        | ExprKind::Use { .. }
+        | ExprKind::TypeDef(_)
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_) => true,
+        ExprKind::Module { value, .. } => !matches!(value, ModuleKind::Dynamic { .. }),
+        _ => false,
+    };
+    if declaration && let Some(attr) = e.dec.as_ref().and_then(|d| d.attrs.first()) {
+        bailat!(
+            e,
+            "#[{}] on a declaration: an attribute decorates a computation",
+            attr.name
+        )
+    }
     let node = match &e.kind {
-        // CR claude for claude: [bug] A `catch` in a block's value slot matches here,
-        // before the value-slot guard below. So it is accepted, although the doc above
-        // says a declaration other than `let` is refused there, as `use` and `type`
-        // are. The handler covers nothing and the block never produces: in `let x = {
-        // let a: i64 = error(`Boom)?; catch(e) println("inner") }` an outer catch takes
-        // the error and x stays ⊥. A user reading the catch as try/catch gets no
-        // warning. Refuse it with a message of its own (compile()'s "only valid in
-        // statement position" would mislead here), or change the doc. probe:
-        // design/review-2026-10-05/repro/c-node-mod-06.gx (c-node-mod-06)
+        ExprKind::Catch(_) if matches!(at, StmtAt::Block { value: true }) => {
+            bailat!(
+                e,
+                "a catch covers the statements after it, and the last statement of a \
+                 block has none: it would cover nothing"
+            )
+        }
         ExprKind::Catch(c) => {
             return error::Catch::compile(ctx, flags, e.clone(), scope, top_id, c);
         }
@@ -1110,27 +1105,18 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
         );
         task.env.hidden_impls = Arc::new(hidden);
     }
-    // CR claude for claude: [style] `crate::typ::tvar::{current_level, AtLevel, InTask,
-    // new_task}` is spelled out on seven lines (1017, 1021, 1046, 1105, 1109, 1113,
-    // 1114). `crate::PendingSettle` is spelled out on two (1054, 1066), and so is
-    // `crate::defer_unresolved_names` (812, 1955). `anyhow::anyhow!` (768, 1526) and
-    // `smallvec::SmallVec` (760) are written in full though the file already imports
-    // both. Add the first three to the top `use crate::{..}` group and use the existing
-    // imports for the other two. `results` here and at 1110 is the only plain Vec
-    // beside the pooled `work`, `order` and `slots`; use collect_into_vec into an
-    // LPooled Vec. (c-node-mod-10)
-    let level = crate::typ::tvar::current_level();
-    let mut results: Vec<Result<()>> = work
-        .par_iter_mut()
+    let level = current_level();
+    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
+    work.par_iter_mut()
         .map(|(n, task)| {
-            let _level = crate::typ::tvar::AtLevel::enter(level);
+            let _level = AtLevel::enter(level);
             let r = wrap!(n, n.typecheck0(task));
             match module {
                 true => r.with_context(|| n.spec().ori.clone()),
                 false => r,
             }
         })
-        .collect();
+        .collect_into_vec(&mut results);
     for (_, task) in work.drain(..) {
         ctx.join(task);
     }
@@ -1148,7 +1134,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
 ) -> Result<T> {
     ctx.pending_settles.push(Vec::new());
     let names = ctx.pending_names.len();
-    let _task = crate::typ::tvar::InTask::enter(crate::typ::tvar::new_task());
+    let _task = InTask::enter(new_task());
     let res = {
         let _restore = Restore::replace(&RUNTIME_BIND, true);
         f(ctx)
@@ -1156,7 +1142,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
-    let _ = crate::PendingSettle::drain(&pending, &ctx.env, |spec, e| {
+    let _ = PendingSettle::drain(&pending, &ctx.env, |spec, e| {
         log::error!("a run-time bind's settle at {spec} refused: {e:#}");
         Ok(())
     });
@@ -1168,7 +1154,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
 /// settled by each call.
 pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
-    settle: impl FnOnce() -> crate::PendingSettle,
+    settle: impl FnOnce() -> PendingSettle,
 ) {
     if ctx.def_gate_depth == 0 {
         ctx.pending_settles.last_mut().expect("settle frame").push(settle())
@@ -1180,7 +1166,7 @@ pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
 /// any type, and a later instance's types are its definition's.
 pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
-    judgment: crate::PendingSettle,
+    judgment: PendingSettle,
 ) {
     ctx.pending_settles.last_mut().expect("settle frame").push(judgment)
 }
@@ -1217,23 +1203,23 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
         .iter()
         .map(|i| {
             let mut task = ctx.fork();
-            task.task = crate::typ::tvar::new_task();
+            task.task = new_task();
             (slots[*i].take().expect("an order visits each once"), task)
         })
         .collect();
-    let level = crate::typ::tvar::current_level();
-    let mut results: Vec<Result<()>> = work
-        .par_iter_mut()
+    let level = current_level();
+    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
+    work.par_iter_mut()
         .map(|(n, task)| {
-            let _level = crate::typ::tvar::AtLevel::enter(level);
-            let _task = crate::typ::tvar::InTask::enter(task.task);
+            let _level = AtLevel::enter(level);
+            let _task = InTask::enter(task.task);
             let r = wrap!(n, typecheck1_settled(n, task));
             match module {
                 true => r.with_context(|| n.spec().ori.clone()),
                 false => r,
             }
         })
-        .collect();
+        .collect_into_vec(&mut results);
     for (_, task) in work.drain(..) {
         ctx.join(task);
     }
@@ -1638,7 +1624,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     }
 
     fn emit_clif(&self, _cx: &mut BodyCx) -> Result<CompiledExpr> {
-        Err(anyhow::anyhow!("emit_clif: connect is an effect — node-walks"))
+        Err(anyhow!("emit_clif: connect is an effect — node-walks"))
     }
 }
 
@@ -2122,7 +2108,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         // position; `let x = never<Nope>(); x` also reports `undefined type Nope`
         // unpositioned. Probe: design/review-2026-10-05/repro/x-diff-types-06.gx.
         // (x-diff-types-06)
-        crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
+        defer_unresolved_names(ctx, &self.typ, &self.spec);
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
 

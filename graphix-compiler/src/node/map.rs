@@ -130,11 +130,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
                 Value::Map(CMap::new())
             });
         }
-        let (mut keys, mut vals): (SmallVec<[&mut Node<R, E>; 8]>, SmallVec<[_; 8]>) =
+        let (mut keys, mut vals): (SmallVec<[&mut Node<R, E>; 32]>, SmallVec<[_; 32]>) =
             self.entries.iter_mut().map(|(k, v)| (k, v)).unzip();
-        let keys: SmallVec<[&TagValue; 8]> =
+        let keys: SmallVec<[&TagValue; 32]> =
             keys.iter_mut().map(|k| k.update(ctx)).collect();
-        let vals: SmallVec<[&TagValue; 8]> =
+        let vals: SmallVec<[&TagValue; 32]> =
             vals.iter_mut().map(|v| v.update(ctx)).collect();
         let tag = keys.iter().chain(vals.iter()).fold(Tag::STALE, |t, p| t.join(p.tag()));
         dense_gate!(self, tag.triggers(), tag.is_bottom());
