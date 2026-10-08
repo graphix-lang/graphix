@@ -648,3 +648,22 @@ const TWO_RAISES_ONE_HANDLER: &str = r#"
 run!(two_raises_one_handler, TWO_RAISES_ONE_HANDLER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 });
+
+// A `?` chains a payload whose type has a chain's shape, an alias of one
+// included, and the check types it so: the handler reads the chained
+// error.
+const RAISE_CHAINS_BY_SHAPE: &str = r#"
+{
+    let f = |x: i64| x * 2 + 1;
+    let r: i64 = never();
+    let shape = {
+        catch(e) r <- f((e.0).error);
+        error({cause: 1, error: 20, ori: 3, pos: 4})?
+    };
+    r
+}
+"#;
+
+run!(raise_chains_by_shape, RAISE_CHAINS_BY_SHAPE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(41)))
+}; FuseExpect::Jit);

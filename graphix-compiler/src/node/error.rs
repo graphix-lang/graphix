@@ -48,36 +48,37 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
         && NAMES.iter().all(|n| fields.iter().any(|(f, _, _)| f.as_str() == *n))
 }
 
-pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
+/// A raised value that is a chain already, by its top-level shape alone
+/// (the check decides by the same shape, [`fix_echain_typ`]): its
+/// `error` field.
+fn chain_error(e: &Value) -> Option<Value> {
+    const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
+    let Value::Array(fields) = e else { return None };
+    if fields.len() != NAMES.len() {
+        return None;
+    }
+    let mut error = None;
+    for (f, name) in fields.iter().zip(NAMES) {
+        match f {
+            Value::Array(kv)
+                if kv.len() == 2 && matches!(&kv[0], Value::String(n) if n == name) =>
+            {
+                if name == "error" {
+                    error = Some(kv[1].clone())
+                }
+            }
+            _ => return None,
+        }
+    }
+    error
+}
+
+pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
-    // CR claude for claude: [perf] Every raise runs is_a over the whole cause chain (a
-    // lookup_ref of ErrChain, Ori and Pos at each level) after allocating a fresh TVar
-    // and TypeRef. Raising a chain of depth D therefore costs O(D), and rethrowing one
-    // chain at each of N levels costs O(N²) inside one cycle. Probe:
-    // design/review-2026-10-05/repro/c-error-op-03.gx (N = 2000: about 4.5 s, against
-    // 0.35 s when each level raises a fresh error; N = 4000: 19 s). 2000 raises of a
-    // depth-4000 chain take 24 s; the same chain wrapped in a variant takes 0.26 s. The
-    // check already decides chain-ness from the type, by field names (fix_echain_typ).
-    // Decide it from the site's checked type, or test only the top-level shape here.
-    // (c-error-op-03)
-    // CR claude for claude: [bug] Whether a `?` chains its payload or wraps it is decided
-    // twice: here by value (is_a, which checks every field type) and in fix_echain_typ
-    // by type (a struct with these four field names counts as a chain, an alias is
-    // expanded one level only, a union is wrapped whole). Where the two disagree, the
-    // handler's e holds a value outside its checked type: an `Error<MyChain>` alias or
-    // a payload of type [`B, ErrChain<`A>] is typed wrapped but chained at run time,
-    // and `error({cause: 1, error: 20, ori: 3, pos: 4})?` is typed chained but wrapped.
-    // The JIT then panics at fusion/kernel.rs:243 and the runtime dies; the node-walk
-    // computes on the wrong value, and an exhaustive select over (e.0).error matches no
-    // arm. Decide it once at the check and pass that decision to delivery. probe:
-    // design/review-2026-10-05/repro/c-error-op-01.gx (c-error-op-01)
-    let (cause, error) = if typ_echain(Type::empty_tvar()).is_a(env, &e) {
-        let fields = e.clone().cast_to::<[(ArcStr, Value); 4]>().unwrap();
-        let error = fields.into_iter().find(|(n, _)| n == "error").unwrap().1;
-        (e, error)
-    } else {
-        (Value::Null, e)
+    let (cause, error) = match chain_error(&e) {
+        Some(error) => (e, error),
+        None => (Value::Null, e),
     };
     [
         (literal!("cause"), cause),
@@ -731,7 +732,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     e: Value,
 ) {
     let (id, handler_top) = handler.id();
-    let e = wrap_error(&ctx.env, spec, e);
+    let e = wrap_error(spec, e);
     let v = Value::Error(e.into());
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
@@ -787,20 +788,33 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
                 Ok(etyp.clone())
             }
             Some(Type::Struct(fields)) if is_echain_shape(fields) => Ok(etyp.clone()),
+            // a payload chains by the shape of each value's own type, as
+            // delivery decides (`chain_error`): the chain members of a
+            // union stay, the others wrap together
             Some(et) => {
-                // the chain may arrive as a Ref from another scope
-                let expanded = match et {
-                    Type::Ref(_) => Some(et.lookup_ref(&ctx.env)?),
-                    _ => None,
+                let members: LPooled<Vec<Type>> = match expand(&ctx.env, et)? {
+                    Type::Set(ref ms) => ms.iter().cloned().collect(),
+                    t => [t].into_iter().collect(),
                 };
-                let chain = matches!(
-                    expanded.as_ref().unwrap_or(et),
-                    Type::Struct(fields) if is_echain_shape(fields)
-                );
-                if chain {
-                    Ok(etyp.clone())
-                } else {
-                    Ok(Type::Error(Arc::new(typ_echain(et.clone()))))
+                let mut chains: LPooled<Vec<Type>> = LPooled::take();
+                let mut wrapped: LPooled<Vec<Type>> = LPooled::take();
+                for m in members.iter() {
+                    match is_chain_type(&ctx.env, m)? {
+                        true => chains.push(Type::Error(Arc::new(m.clone()))),
+                        false => wrapped.push(m.clone()),
+                    }
+                }
+                if wrapped.is_empty() {
+                    return Ok(etyp.clone());
+                }
+                let rest = match &wrapped[..] {
+                    [one] => one.clone(),
+                    _ => Type::Set(Arc::from_iter(wrapped.drain(..))),
+                };
+                let wrap = Type::Error(Arc::new(typ_echain(rest)));
+                match chains.is_empty() {
+                    true => Ok(wrap),
+                    false => Ok(Type::Set(Arc::from_iter(chains.drain(..).chain([wrap])))),
                 }
             }
         }),
@@ -812,6 +826,27 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             Ok(Type::Set(Arc::from_iter(res.drain(..))))
         }
     )
+}
+
+/// `t` with every alias expanded, through chains of them.
+fn expand(env: &Env, t: &Type) -> Result<Type> {
+    let mut t = t.clone();
+    while let Type::Ref(_) = &t {
+        t = t.lookup_ref(env)?;
+    }
+    Ok(t)
+}
+
+/// Whether values of `t` are chains by their shape: the `ErrChain`
+/// definition, or a struct with exactly its field names.
+fn is_chain_type(env: &Env, t: &Type) -> Result<bool> {
+    if let Type::Ref(tr) = t
+        && tr.scope == ModPath::root()
+        && tr.name == *ECHAIN
+    {
+        return Ok(true);
+    }
+    Ok(matches!(expand(env, t)?, Type::Struct(ref fields) if is_echain_shape(fields)))
 }
 
 /// A fused handler-ful `?` site: what the kernel's delivery drain needs
