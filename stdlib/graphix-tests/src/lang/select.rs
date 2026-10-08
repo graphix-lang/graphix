@@ -3194,8 +3194,9 @@ async fn pattern_typing_refusals() {
 }
 
 // A wake's own fire (a woken arm's constants, through any operator, call,
-// builtin, select or formal) never rewrites a `<-` target: each column is
-// a target written twice, then slept (n = 3) and woken (n = 4).
+// builtin, select, formal or collection loop) never rewrites a `<-`
+// target: each column is a target written twice, then slept (n = 3) and
+// woken (n = 4).
 const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
 {
     let n = array::iter([0, 1, 2, 3, 4, 5]);
@@ -3203,8 +3204,23 @@ const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
     let click = select n { 1 => null, 2 => null, _ => never() };
     let f = |x: i64| x * 2;
     let g = |#start: i64 = 2, ev: Any| -> i64 { let c = start; c <- ev ~ c + 10; c };
+    let h = |ev: Any| -> i64 {
+        let c = array::fold([1, 1], 0, |a, x| a + x);
+        c <- ev ~ c + 10;
+        c
+    };
     let r = select tab {
         `A => [
+            { let c = array::len(array::map([1, 2], |x| x)); c <- click ~ c + 10; c },
+            { let c = array::fold([1, 1], 0, |a, x| a + x); c <- click ~ c + 10; c },
+            { let c = array::len(array::filter([1, 2, 3], |x| x > 1)); c <- click ~ c + 10; c },
+            { let c = array::find([2, 3], |x| x > 1)$; c <- click ~ c + 10; c },
+            {
+                let c = array::fold(array::map([[1], [1]], |a| array::len(a)), 0, |a, x| a + x);
+                c <- click ~ c + 10;
+                c
+            },
+            h(click),
             { let c = 1 + 1; c <- click ~ c + 10; c },
             { let c = f(1); c <- click ~ c + 10; c },
             { let c = str::len("ab"); c <- click ~ c + 10; c },
@@ -3223,7 +3239,7 @@ const WAKE_FIRE_KEEPS_TARGETS: &str = r#"
 run!(wake_fire_keeps_targets, WAKE_FIRE_KEEPS_TARGETS, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
         a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
-            == vec![22; 8]
+            == vec![22; 14]
     }
     _ => false,
 });

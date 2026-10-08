@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, STALE, TAINT, ValueVar, bind_local,
+        CompiledExpr, FIRE_TEST, STALE, TAINT, ValueVar, WAKE, bind_local,
         bind_scalar_var_with_disc, clean_disc, is_fresh, prim_to_value_disc, scalar_disc,
         value_disc,
     },
@@ -419,7 +419,7 @@ impl Accs {
         let z = cx.b.ins().iconst(types::I64, 0);
         cx.b.def_var(taint, z);
         let stale = cx.b.declare_var(types::I64);
-        let st = cx.b.ins().iconst(types::I64, FIRE_TEST);
+        let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
         Accs { taint, stale }
     }
@@ -437,7 +437,7 @@ impl Accs {
     /// acc carry, so an acc-ignoring callback recovers.
     fn fold_stale(&self, cx: &mut BodyCx, disc: ClifValue) {
         let cur = cx.b.use_var(self.stale);
-        let sb = cx.b.ins().band_imm(disc, FIRE_TEST);
+        let sb = cx.b.ins().band_imm(disc, STALE);
         let n = cx.b.ins().band(cur, sb);
         cx.b.def_var(self.stale, n);
     }
@@ -533,18 +533,23 @@ impl SlotFlags {
     ) -> CompiledExpr {
         let t = cx.b.use_var(self.accs.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        let slots_word = cx.b.use_var(self.accs.stale);
+        // the slots' fold carries both bits: bit 61 says whether a slot
+        // fired, bit 60 whether every fire was a wake's own
+        let slots_acc = cx.b.use_var(self.accs.stale);
         let src_word = cx.b.ins().band_imm(src, FIRE_TEST);
+        let src_wake = cx.b.ins().band_imm(src, WAKE);
         let src_taint = cx.b.ins().band_imm(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
-        let fired_word = if self.kind == LoopKind::Fold {
-            let rs = cx.b.ins().band_imm(r.disc, FIRE_TEST);
-            cx.b.ins().band(rs, slots_word)
+        let acc = if self.kind == LoopKind::Fold {
+            let rs = cx.b.ins().band_imm(r.disc, STALE);
+            cx.b.ins().band(rs, slots_acc)
         } else {
-            slots_word
+            slots_acc
         };
+        let fired_word = cx.b.ins().band_imm(acc, FIRE_TEST);
+        let slots_wake = cx.b.ins().band_imm(acc, WAKE);
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        let stale = match self.word {
+        let (stale, src_counts) = match self.word {
             None => self.conservative_stale(cx, fired_word, src_word),
             Some(SelWord::Sure(addr)) => {
                 self.exact_stale(cx, addr, fired_word, src_word, src_taint)
@@ -561,6 +566,13 @@ impl SlotFlags {
         let zero = cx.b.ins().iconst(types::I64, 0);
         let stale = cx.b.ins().select(fresh_taint, zero, stale);
         r.disc = cx.b.ins().bor(r.disc, stale);
+        // a wake's own fire when every fire that made it was: the slots'
+        // and, where it counts, the source's
+        let src_counts = cx.b.ins().bor(src_counts, fresh_taint);
+        let all = cx.b.ins().iconst(types::I64, WAKE);
+        let src_wake = cx.b.ins().select(src_counts, src_wake, all);
+        let wake = cx.b.ins().band(slots_wake, src_wake);
+        r.disc = cx.b.ins().bor(r.disc, wake);
         r
     }
 
@@ -574,29 +586,32 @@ impl SlotFlags {
         fired_word: ClifValue,
         src_word: ClifValue,
         src_taint: ClifValue,
-    ) -> ClifValue {
+    ) -> (ClifValue, ClifValue) {
         let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
         let exact_bl = cx.b.create_block();
         let cons_bl = cx.b.create_block();
         let merge = cx.b.create_block();
         cx.b.append_block_param(merge, types::I64);
+        cx.b.append_block_param(merge, types::I8);
         cx.b.ins().brif(has, exact_bl, &[], cons_bl, &[]);
         cx.b.seal_block(exact_bl);
         cx.b.seal_block(cons_bl);
         cx.b.switch_to_block(exact_bl);
-        let stale = self.exact_stale(cx, addr, fired_word, src_word, src_taint);
-        cx.b.ins().jump(merge, &[BlockArg::Value(stale)]);
+        let (stale, counts) = self.exact_stale(cx, addr, fired_word, src_word, src_taint);
+        cx.b.ins().jump(merge, &[BlockArg::Value(stale), BlockArg::Value(counts)]);
         cx.b.switch_to_block(cons_bl);
-        let stale = self.conservative_stale(cx, fired_word, src_word);
-        cx.b.ins().jump(merge, &[BlockArg::Value(stale)]);
+        let (stale, counts) = self.conservative_stale(cx, fired_word, src_word);
+        cx.b.ins().jump(merge, &[BlockArg::Value(stale), BlockArg::Value(counts)]);
         cx.b.seal_block(merge);
         cx.b.switch_to_block(merge);
-        cx.b.block_params(merge)[0]
+        let ps = cx.b.block_params(merge);
+        (ps[0], ps[1])
     }
 
     /// The exact firing rule's STALE contribution: fires iff resized, a
     /// slot fired, or the source fired empty, against the prev-length
-    /// word at `addr` (stored `len + 1`; 0 = no previous observation).
+    /// word at `addr` (stored `len + 1`; 0 = no previous observation);
+    /// and whether the source's fire is one that made it.
     fn exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -604,7 +619,7 @@ impl SlotFlags {
         fired_word: ClifValue,
         src_word: ClifValue,
         src_taint: ClifValue,
-    ) -> ClifValue {
+    ) -> (ClifValue, ClifValue) {
         let len = self.len;
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
@@ -621,35 +636,36 @@ impl SlotFlags {
         let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
         let empty = cx.b.ins().icmp_imm(IntCC::Equal, len, 0);
         let src_empty = cx.b.ins().band(src_fired, empty);
-        let fires = cx.b.ins().bor(resized, slot_fired);
-        let fires = cx.b.ins().bor(fires, src_empty);
-        let fires = if self.kind == LoopKind::PassThrough {
-            cx.b.ins().bor(fires, src_fired)
+        let src_counts = cx.b.ins().bor(resized, src_empty);
+        let src_counts = if self.kind == LoopKind::PassThrough {
+            cx.b.ins().bor(src_counts, src_fired)
         } else {
-            fires
+            src_counts
         };
+        let fires = cx.b.ins().bor(src_counts, slot_fired);
         let quiet = cx.b.ins().iconst(types::I64, STALE);
         let zero = cx.b.ins().iconst(types::I64, 0);
-        cx.b.ins().select(fires, zero, quiet)
+        (cx.b.ins().select(fires, zero, quiet), src_counts)
     }
 
     /// The conservative STALE contribution (no prev-length word): fired
-    /// when a slot or the source fired.
+    /// when a slot or the source fired; and whether the source's fire
+    /// is one that made it.
     fn conservative_stale(
         &self,
         cx: &mut BodyCx,
         fired_word: ClifValue,
         src_word: ClifValue,
-    ) -> ClifValue {
-        let word = if self.kind == LoopKind::Fold {
-            fired_word
-        } else {
-            cx.b.ins().band(fired_word, src_word)
+    ) -> (ClifValue, ClifValue) {
+        let src_counts = match self.kind {
+            LoopKind::Fold => cx.b.ins().iconst(types::I8, 0),
+            _ => cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0),
         };
-        let fires = cx.b.ins().icmp_imm(IntCC::Equal, word, 0);
+        let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
+        let fires = cx.b.ins().bor(slot_fired, src_counts);
         let quiet = cx.b.ins().iconst(types::I64, STALE);
         let zero = cx.b.ins().iconst(types::I64, 0);
-        cx.b.ins().select(fires, zero, quiet)
+        (cx.b.ins().select(fires, zero, quiet), src_counts)
     }
 }
 

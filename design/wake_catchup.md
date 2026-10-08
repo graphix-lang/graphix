@@ -210,7 +210,12 @@ writes (`Bind::update`); anything that republishes a production keeps the
 bit (a call's formals and result, a pattern bind, a let's overlay and
 store entries, a sample, a stateless builtin outside a genuine init, a
 pending catch-up, which `TrackedFires` keeps with its bit). A collection
-loop's fire is real in both engines. Pins:
+loop's fire is the wake's own when every fire that made it was: each
+slot's, a fold's carry, and the source's where the source counts (a
+resize or a return from bottom, which carry the source's bit, so a stale
+source makes them a wake's fire; a fired empty source; a filter's or a
+find's fired source). The kernel's slot accumulator carries bits 61 and
+60 together, so outlined and forked chunks fold it unchanged. Pins:
 `lang::select::wake_input_fire_reaches_target`,
 `wake_constant_keeps_target`, `wake_fire_keeps_targets`,
 `wake_unreached_input_keeps_target`, `wake_fire_caught_up_late`. `CallSite` refreshes its arg ids' standing

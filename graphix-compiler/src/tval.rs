@@ -103,6 +103,12 @@ impl Tag {
         Tag(self.0 & !(Self::STALE_BIT | Self::WAKE_BIT))
     }
 
+    /// This production counted as a fire: STALE cleared, so a stale one
+    /// becomes a wake's own fire and a real one stays real.
+    pub fn as_fire(self) -> Tag {
+        Tag(self.0 & !Self::STALE_BIT)
+    }
+
     /// A fire made a real event; a stale tag is unchanged.
     pub fn real(self) -> Tag {
         if self.triggers() { Tag(self.0 & !Self::WAKE_BIT) } else { self }
