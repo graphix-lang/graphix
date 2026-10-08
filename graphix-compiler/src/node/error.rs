@@ -551,35 +551,18 @@ impl Strip {
         op: char,
         typ: &Type,
     ) -> Result<Self> {
+        // an open operand would take the error form here and fail an
+        // instance whose type has neither: its type must be known
+        if typ.with_deref(|t| t.is_none()) {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "the operand of {op} has type {typ}, not known here: annotate it \
+                     with a type that holds an error or null"
+                )
+            })?
+        }
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
-        // CR claude for claude: [bug] An unbound operand cell passes this probe without
-        // being bound. So `let f = |x| x?` takes the error form, its result is x's own
-        // cell, and the raised type (line 1365) is that cell minus itself, the empty
-        // set, which fix_echain_typ reports as "expected error not []" (line 619)
-        // without naming x or the annotation it needs. An unbound operand should be
-        // decided here: refuse it with a message that names it and asks for its type,
-        // as settle's not_concrete does. The same unbound case lets `|x| x$` pass the
-        // check and fail elaboration (x-typecheck-generics-F1). Separately, `|b: bool,
-        // x: 'a| -> 'a select b { true => x, false => 1 }` is refused as an infinite
-        // type ("declare a named recursive type"), because open_cell_reaches
-        // (graphix-types/src/typ/contains.rs:169) counts the rigid 'a inside ['a, i64]
-        // as a cycle, while `|x: 'a| -> 'a 1` gets the plain mismatch. probe:
-        // design/review-2026-10-05/repro/x-typecheck-generics-F2.gx
-        // (x-typecheck-generics-F2)
-        // CR claude for claude: [bug] This probe binds nothing and answers true for an
-        // open or declared cell. So at the definition's check, `x$` over an untyped or
-        // `'a` parameter becomes Strip::Error, its type is the operand's own cell (f:
-        // fn(x: 'a) -> 'a), and 'a gets no constraint. An instance then recomputes the
-        // strip from the substituted type and refuses it. Result: --check and the LSP
-        // accept `let f = |x| x$; f(1)` but the build fails with "cannot use the $
-        // operator on i64, it has no error and no null". GRAPHIX_ELAB_AUDIT and
-        // graphix-fuzz's check pair both report it, and a call through a function value
-        // logs "a run-time bind did not type" and runs anyway. The check should either
-        // refuse `$` over an open operand or constrain the cell so every instance has
-        // an error or a null; probe:
-        // design/review-2026-10-05/repro/x-typecheck-generics-F1.gx
-        // (x-typecheck-generics-F1)
         if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
             Ok(Self::Error)
         } else if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &null)? {

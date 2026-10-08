@@ -129,6 +129,17 @@ async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
     Ok(())
 }
 
+/// `?` and `$` over an operand whose type is open: its type is asked for.
+const STRIP_OVER_AN_OPEN_OPERAND: &str = r#"{
+    let f = |x| x$;
+    f(1)
+}"#;
+
+const RAISE_OVER_AN_OPEN_OPERAND: &str = r#"{
+    let f = |x| x?;
+    f(1)
+}"#;
+
 /// A writer wider than a `let` typed by its initializer: no "inferred".
 const WRITER_WIDER_THAN_INITIALIZER: &str = r#"{
     let y = 1;
@@ -161,6 +172,8 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
             "x is i64 and cannot hold string; declare x: [i64, string] where it is bound",
         ),
         (WRITER_WIDER_THAN_TVAR, "x is 'a: unbound within Number and cannot hold string"),
+        (STRIP_OVER_AN_OPEN_OPERAND, "the operand of $ has type"),
+        (RAISE_OVER_AN_OPEN_OPERAND, "the operand of ? has type"),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),
