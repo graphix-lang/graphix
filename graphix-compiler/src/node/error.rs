@@ -206,6 +206,23 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     Ok(())
 }
 
+/// Join an open raised type (a callback's `throws 'e`) into `catch`: two
+/// open cells are one (a gate's `'e` and a call's instantiation of it),
+/// anything else joins as a union member.
+pub(crate) fn join_open_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
+    let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
+        bail!("BUG: catch {catch:?} has no inferred bind")
+    };
+    match tv.binding() {
+        Some(t @ Type::TVar(_))
+            if t.deref_cloned().is_none() && t.contains(env, etyp)? =>
+        {
+            Ok(())
+        }
+        _ => join_raised(env, catch, etyp),
+    }
+}
+
 impl<R: Rt, E: UserEvent> Catch<R, E> {
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,

@@ -2538,3 +2538,51 @@ const LAMBDA_ALIAS_WRITTEN: &str = r#"
 "#;
 
 run!(lambda_alias_written, LAMBDA_ALIAS_WRITTEN, |v: Result<&Value>| matches!(v, Ok(Value::I64(20))); FuseExpect::None);
+
+// A fresh bind runs each omitted default once: a counting default in a
+// collection callback reads 1 in every slot, in every mode.
+const DEFAULT_RUNS_ONCE_PER_BIND: &str = r#"
+{
+    let f = |#n = count(1), x: i64| (x, n);
+    array::map([1, 2, 3], f)
+}
+"#;
+
+run!(default_runs_once_per_bind, DEFAULT_RUNS_ONCE_PER_BIND, |v: Result<&Value>| {
+    let pair = |x: i64| Value::Array([Value::I64(x), Value::I64(1)].into_iter().collect());
+    matches!(v, Ok(Value::Array(a)) if a[..] == [pair(1), pair(2), pair(3)])
+}; FuseExpect::None);
+
+// A default that calls a trait method resolves in its definition's
+// environment and is elaborated at every bind: a slot's and a recursive
+// activation's.
+const TRAIT_CALL_IN_A_DEFAULT: &str = r#"
+{
+    trait Show { val show: fn(self) -> string };
+    impl Show for i64 { let show = |x| "int [x]" };
+    let f = |#s = Show::show(5), x: i64| "[s]:[x]";
+    let rec g = |#s = Show::show(5), x: i64| -> string select x { 0 => s, x => g(x - 1) };
+    (array::map([1, 2], f), g(#s: "top", 1))
+}
+"#;
+
+run!(trait_call_in_a_default, TRAIT_CALL_IN_A_DEFAULT, |v: Result<&Value>| {
+    let s = |s: &str| Value::String(s.into());
+    matches!(v, Ok(Value::Array(a))
+        if a[0] == Value::Array([s("int 5:1"), s("int 5:2")].into_iter().collect())
+            && a[1] == s("int 5"))
+}; FuseExpect::None);
+
+// A variable settles to the widest argument whatever the order, a
+// formal holding two of them included.
+const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
+{
+    let g = |a: ('x, 'y), b: ('x, 'y), c: ('x, 'y)| (a, b, c);
+    let i: [i64, f64] = 1;
+    g((1, 1), (i, 2.0), (3, i))
+}
+"#;
+
+run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 3)
+}; FuseExpect::Jit);

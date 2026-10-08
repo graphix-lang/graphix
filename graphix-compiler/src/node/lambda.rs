@@ -1710,12 +1710,14 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     }
 
     /// The error type the body raised to the gate's catch.
+    /// What the body raised: ⊥ when nothing joined the faux catch; an
+    /// open callback's `throws 'e` stays the cell.
     fn thrown(&self, ctx: &CompileCtx<R, E>) -> Type {
-        ctx.env
-            .by_id
-            .get(&self.faux_id)
-            .and_then(|b| b.typ.deref_cloned())
-            .unwrap_or(Type::Bottom)
+        match ctx.env.by_id.get(&self.faux_id).map(|b| &b.typ) {
+            Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
+            Some(t) => t.clone(),
+            None => Type::Bottom,
+        }
     }
 
     /// The body's sites settle with the enclosing statement, all but the
