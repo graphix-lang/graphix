@@ -213,7 +213,7 @@ fn match_at<'a, R: Rt, E: UserEvent>(
             {
                 return Err(Mismatch::here(Why::Kind { expected, got }));
             }
-            let kids = node_children(&view);
+            let kids = node_children(node);
             if kids.len() != children.len() {
                 return Err(Mismatch::here(Why::Children {
                     kind: got,
@@ -237,7 +237,7 @@ fn match_at<'a, R: Rt, E: UserEvent>(
 fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool {
     stack::ensure_sufficient(|| {
         match_at(node, spec).is_ok()
-            || node_children(&node.view()).iter().any(|c| find_match(c, spec))
+            || node_children(node).iter().any(|c| find_match(c, spec))
     })
 }
 
@@ -263,7 +263,7 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
             out.push_str("])");
         }
         out.push('\n');
-        for c in node_children(&view) {
+        for c in node_children(node) {
             describe_at(c, depth + 1, out);
         }
     })
@@ -271,147 +271,15 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
 
 /// The child nodes of a view in a deterministic order; a kernel's are
 /// its input feeders.
-// CR claude for claude: [structure] node_children is a second exhaustive NodeView child
-// walk beside fusion::for_each_node_inner (fusion/mod.rs:602-780), and the two have
-// drifted. This one skips a static module's statements (m.nodes; source() is None for
-// Body::Static), select guards and impl prototype sites. So NodeShape::contains(..)
-// cannot find a kernel inside a module with an interface, a guard or an impl's
-// prototypes, and describe_node prints such a module as a leaf. One child step on
-// NodeView, with a kernel's feeders as the only difference between the walks, would
-// serve both. binary_operands, which analysis.rs:1320 uses, belongs beside that step
-// rather than in this test module. (c-cost-misc-08)
 fn node_children<'a, R: Rt, E: UserEvent>(
-    view: &NodeView<'a, R, E>,
+    node: &'a Node<R, E>,
 ) -> SmallVec<[&'a Node<R, E>; 4]> {
-    use NodeView as V;
     let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
-    if let Some((l, r)) = binary_operands(view) {
-        kids.extend([l, r]);
-        return kids;
-    }
-    match view {
-        V::Block(b) => kids.extend(b.children.iter()),
-        V::Bind(b) => kids.push(&b.node),
-        V::MapQ(m) => kids.extend([&m.source, &m.prototype]),
-        V::FoldQ(m) => kids.extend([&m.source, &m.init, &m.prototype]),
-        V::Module(m) => kids.extend(m.source()),
-        V::CallSite(cs) => {
-            kids.push(cs.fnode());
-            // Sorted by key for a stable child order.
-            let mut entries: SmallVec<[(_, &'a Node<R, E>); 4]> = cs
-                .args
-                .iter()
-                .filter_map(|(k, a)| a.node.as_ref().map(|n| (k, n)))
-                .collect();
-            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-            kids.extend(entries.into_iter().map(|(_, n)| n));
-        }
-        V::Select(s) => {
-            kids.push(&s.arg.node);
-            kids.extend(s.arms.iter().map(|(_, c)| c));
-        }
-        V::ExplicitParens(n) => kids.push(&n.n),
-        V::ForkControl(n) => kids.push(&n.n),
-        V::TypeCast(n) => kids.push(&n.n),
-        V::Qop(n) => kids.push(&n.n),
-        V::SeqGuard(n) => kids.push(&n.n),
-        V::SeqAbort(n) => kids.push(&n.n),
-        V::SeqCapture(c) => kids.extend([&c.snapshot, &c.live]),
-        V::SeqMachine(m) => {
-            kids.push(&m.pc);
-            kids.extend(m.steps.iter().flat_map(|s| s.nodes.iter()));
-        }
-        V::OrNever(n) => kids.push(&n.n),
-        V::Not(n) => kids.push(&n.n),
-        V::Neg(n) => kids.push(&n.n),
-        V::Connect(n) => kids.push(&n.node),
-        V::ConnectDeref(n) => kids.push(&n.rhs),
-        V::Sample(n) => kids.extend([&n.trigger, &n.arg.node]),
-        V::Catch(n) => {
-            kids.push(&n.handler);
-            if let Some(abort) = &n.action {
-                kids.push(&abort.node);
-                kids.extend(abort.manual());
-            }
-        }
-        V::ByRef(n) => n.for_each_child(&mut |c| kids.push(c)),
-        V::Deref(n) => kids.push(&n.child),
-        V::Struct(n) => kids.extend(n.n.iter()),
-        V::Tuple(n) => kids.extend(n.n.iter()),
-        V::Variant(n) => kids.extend(n.n.iter()),
-        V::Construct(n) => kids.push(&n.arg),
-        V::Array(n) => kids.extend(n.n.iter()),
-        V::ListLit(n) => kids.extend(n.n.iter()),
-        V::Map(n) => kids.extend(n.n.iter()),
-        V::StructWith(n) => {
-            kids.push(&n.source);
-            kids.extend(n.replace.iter().map(|r| &r.n));
-        }
-        V::StringInterpolate(n) => kids.extend(n.args.iter()),
-        V::Any(n) => kids.extend(n.n.iter()),
-        V::Never(n) => kids.extend(n.n.iter()),
-        V::StructRef(n) => kids.push(&n.source),
-        V::TupleRef(n) => kids.push(&n.source),
-        V::ArrayRef(n) => kids.extend([&n.source, &n.i]),
-        V::ArraySlice(n) => {
-            kids.push(&n.source);
-            kids.extend(n.start.iter());
-            kids.extend(n.end.iter());
-        }
-        V::MapRef(n) => kids.extend([&n.source, &n.key]),
-        V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
-        V::Impl(i) => kids.push(&i.body),
-        V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
-        V::Add(_)
-        | V::Sub(_)
-        | V::Mul(_)
-        | V::Div(_)
-        | V::Mod(_)
-        | V::CheckedAdd(_)
-        | V::CheckedSub(_)
-        | V::CheckedMul(_)
-        | V::CheckedDiv(_)
-        | V::CheckedMod(_)
-        | V::Eq(_)
-        | V::Ne(_)
-        | V::Lt(_)
-        | V::Gt(_)
-        | V::Lte(_)
-        | V::Gte(_)
-        | V::And(_)
-        | V::Or(_) => {
-            unreachable!("binary operands")
-        }
+    match node.view() {
+        NodeView::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
+        _ => crate::fusion::for_each_child(node, &mut |c| kids.push(c)),
     }
     kids
-}
-
-/// A binary operator's operands.
-pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
-    view: &NodeView<'a, R, E>,
-) -> Option<(&'a Node<R, E>, &'a Node<R, E>)> {
-    use NodeView as V;
-    Some(match view {
-        V::Add(n) => (&n.lhs, &n.rhs),
-        V::Sub(n) => (&n.lhs, &n.rhs),
-        V::Mul(n) => (&n.lhs, &n.rhs),
-        V::Div(n) => (&n.lhs, &n.rhs),
-        V::Mod(n) => (&n.lhs, &n.rhs),
-        V::CheckedAdd(n) => (&n.lhs, &n.rhs),
-        V::CheckedSub(n) => (&n.lhs, &n.rhs),
-        V::CheckedMul(n) => (&n.lhs, &n.rhs),
-        V::CheckedDiv(n) => (&n.lhs, &n.rhs),
-        V::CheckedMod(n) => (&n.lhs, &n.rhs),
-        V::Eq(n) => (&n.lhs, &n.rhs),
-        V::Ne(n) => (&n.lhs, &n.rhs),
-        V::Lt(n) => (&n.lhs, &n.rhs),
-        V::Gt(n) => (&n.lhs, &n.rhs),
-        V::Lte(n) => (&n.lhs, &n.rhs),
-        V::Gte(n) => (&n.lhs, &n.rhs),
-        V::And(n) => (&n.lhs, &n.rhs),
-        V::Or(n) => (&n.lhs, &n.rhs),
-        _ => return None,
-    })
 }
 
 /// The name a [`NodeShape::Node`] kind matches: the `NodeView` variant

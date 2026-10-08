@@ -1463,8 +1463,7 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
                 NodeView::ListLit(c) => two(&mut c.n.iter()),
                 NodeView::Map(c) => two(&mut c.n.iter()),
                 NodeView::StringInterpolate(c) => two(&mut c.args.iter()),
-                v => crate::node_shape::binary_operands(&v)
-                    .is_some_and(|(l, r)| work(l) && work(r)),
+                v => fusion::binary_operands(&v).is_some_and(|(l, r)| work(l) && work(r)),
             }
     });
     if !forks {

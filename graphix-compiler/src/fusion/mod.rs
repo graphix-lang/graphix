@@ -599,26 +599,56 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
     f: &mut dyn FnMut(&'a Node<R, E>),
 ) {
     f(node);
-    macro_rules! rec {
-        ($($n:expr),*) => {{ $(for_each_node::<R, E>($n, f);)* }};
+    for_each_child(node, &mut |c| for_each_node::<R, E>(c, f));
+}
+
+/// A binary operator's operands.
+pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
+    view: &NodeView<'a, R, E>,
+) -> Option<(&'a Node<R, E>, &'a Node<R, E>)> {
+    use NodeView as V;
+    Some(match view {
+        V::Add(n) => (&n.lhs, &n.rhs),
+        V::Sub(n) => (&n.lhs, &n.rhs),
+        V::Mul(n) => (&n.lhs, &n.rhs),
+        V::Div(n) => (&n.lhs, &n.rhs),
+        V::Mod(n) => (&n.lhs, &n.rhs),
+        V::CheckedAdd(n) => (&n.lhs, &n.rhs),
+        V::CheckedSub(n) => (&n.lhs, &n.rhs),
+        V::CheckedMul(n) => (&n.lhs, &n.rhs),
+        V::CheckedDiv(n) => (&n.lhs, &n.rhs),
+        V::CheckedMod(n) => (&n.lhs, &n.rhs),
+        V::Eq(n) => (&n.lhs, &n.rhs),
+        V::Ne(n) => (&n.lhs, &n.rhs),
+        V::Lt(n) => (&n.lhs, &n.rhs),
+        V::Gt(n) => (&n.lhs, &n.rhs),
+        V::Lte(n) => (&n.lhs, &n.rhs),
+        V::Gte(n) => (&n.lhs, &n.rhs),
+        V::And(n) => (&n.lhs, &n.rhs),
+        V::Or(n) => (&n.lhs, &n.rhs),
+        _ => return None,
+    })
+}
+
+/// The children of `node`, the one child step every walk takes, in a
+/// deterministic order. A kernel has none: its feeders are outside its
+/// region.
+pub(crate) fn for_each_child<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    f: &mut dyn FnMut(&'a Node<R, E>),
+) {
+    use NodeView as V;
+    let view = node.view();
+    if let Some((l, r)) = binary_operands(&view) {
+        f(l);
+        return f(r);
     }
-    match node.view() {
-        NodeView::Bind(b) => rec!(&b.node),
-        NodeView::MapQ(m) => rec!(&m.source, &m.prototype),
-        NodeView::FoldQ(m) => rec!(&m.source, &m.init, &m.prototype),
-        NodeView::Module(m) => {
-            if let Some(s) = m.source() {
-                rec!(s);
-            }
-            for child in m.nodes.iter() {
-                rec!(child)
-            }
-        }
-        NodeView::Block(blk) => {
-            for child in blk.children.iter() {
-                rec!(child)
-            }
-        }
+    match view {
+        V::Bind(b) => f(&b.node),
+        V::MapQ(m) => [&m.source, &m.prototype].into_iter().for_each(f),
+        V::FoldQ(m) => [&m.source, &m.init, &m.prototype].into_iter().for_each(f),
+        V::Module(m) => m.source().into_iter().chain(m.nodes.iter()).for_each(f),
+        V::Block(b) => b.children.iter().for_each(f),
         // CR claude for claude: [readability] The comment below is wrong. `ArgMap` is an
         // IndexMap that iterates in source order (callsite.rs:146-149), not a hash map.
         // The ArgKey sort it justifies puts positional args before named ones and
@@ -629,7 +659,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         // a.node.as_ref())` and drop the comment. `CallSite::fuse`
         // (callsite.rs:2259-2266) carries the same comment and sort.
         // (f-mod-lowering-10)
-        NodeView::CallSite(cs) => {
+        V::CallSite(cs) => {
             // The args map is hash-ordered; walk in ArgKey order so the
             // downstream discovery order is deterministic.
             let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
@@ -639,146 +669,95 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                     .collect();
             args.sort_by(|(a, _), (b, _)| a.cmp(b));
             for (_, n) in args.drain(..) {
-                rec!(n)
+                f(n)
             }
-            rec!(&cs.fnode)
+            f(&cs.fnode)
         }
-        NodeView::Select(s) => {
-            rec!(&s.arg.node);
+        V::Select(s) => {
+            f(&s.arg.node);
             for (pat, body) in s.arms.iter() {
                 if let Some(g) = &pat.guard {
-                    rec!(&g.node)
+                    f(&g.node)
                 }
-                rec!(body)
+                f(body)
             }
         }
-        NodeView::Catch(c) => {
-            rec!(&c.handler);
+        V::Catch(c) => {
+            f(&c.handler);
             if let Some(abort) = &c.action {
-                rec!(&abort.node);
-                if let Some(manual) = abort.manual() {
-                    rec!(manual);
-                }
+                f(&abort.node);
+                abort.manual().into_iter().for_each(f);
             }
         }
-        NodeView::Qop(q) => rec!(&q.n),
-        NodeView::SeqGuard(g) => rec!(&g.n),
-        NodeView::SeqAbort(a) => rec!(&a.n),
-        NodeView::SeqCapture(c) => rec!(&c.snapshot, &c.live),
-        NodeView::SeqMachine(m) => {
-            rec!(&m.pc);
-            for s in m.steps.iter() {
-                for n in s.nodes.iter() {
-                    rec!(n)
-                }
-            }
+        V::Qop(q) => f(&q.n),
+        V::SeqGuard(g) => f(&g.n),
+        V::SeqAbort(a) => f(&a.n),
+        V::SeqCapture(c) => [&c.snapshot, &c.live].into_iter().for_each(f),
+        V::SeqMachine(m) => {
+            f(&m.pc);
+            m.steps.iter().flat_map(|s| s.nodes.iter()).for_each(f)
         }
-        NodeView::OrNever(o) => rec!(&o.n),
-        NodeView::ExplicitParens(p) => rec!(&p.n),
-        NodeView::ForkControl(p) => rec!(&p.n),
-        NodeView::TypeCast(t) => rec!(&t.n),
-        NodeView::Not(n) => rec!(&n.n),
-        NodeView::Neg(n) => rec!(&n.n),
-        NodeView::Connect(c) => rec!(&c.node),
-        NodeView::ConnectDeref(c) => rec!(&c.rhs),
-        NodeView::StringInterpolate(s) => {
-            for a in s.args.iter() {
-                rec!(a)
-            }
+        V::OrNever(o) => f(&o.n),
+        V::ExplicitParens(p) => f(&p.n),
+        V::ForkControl(p) => f(&p.n),
+        V::TypeCast(t) => f(&t.n),
+        V::Not(n) => f(&n.n),
+        V::Neg(n) => f(&n.n),
+        V::Connect(c) => f(&c.node),
+        V::ConnectDeref(c) => f(&c.rhs),
+        V::StringInterpolate(s) => s.args.iter().for_each(f),
+        V::Any(a) => a.n.iter().for_each(f),
+        V::Never(a) => a.n.iter().for_each(f),
+        V::Sample(s) => [&s.trigger, &s.arg.node].into_iter().for_each(f),
+        V::Struct(s) => s.n.iter().for_each(f),
+        V::StructWith(s) => {
+            f(&s.source);
+            s.replace.iter().for_each(|r| f(&r.n))
         }
-        NodeView::Any(a) => {
-            for n in a.n.iter() {
-                rec!(n)
-            }
+        V::Tuple(t) => t.n.iter().for_each(f),
+        V::Variant(v) => v.n.iter().for_each(f),
+        V::Construct(c) => f(&c.arg),
+        V::Array(a) => a.n.iter().for_each(f),
+        V::ListLit(a) => a.n.iter().for_each(f),
+        V::Map(m) => m.n.iter().for_each(f),
+        V::StructRef(s) => f(&s.source),
+        V::TupleRef(t) => f(&t.source),
+        V::ArrayRef(a) => [&a.source, &a.i].into_iter().for_each(f),
+        V::ArraySlice(a) => {
+            f(&a.source);
+            a.start.iter().chain(a.end.iter()).for_each(f)
         }
-        NodeView::Never(a) => {
-            for n in a.n.iter() {
-                rec!(n)
-            }
+        V::MapRef(m) => [&m.source, &m.key].into_iter().for_each(f),
+        V::ByRef(b) => b.for_each_child(f),
+        V::Deref(d) => f(&d.child),
+        V::Impl(i) => {
+            f(&i.body);
+            i.prototypes.iter().for_each(|p| f(&p.site))
         }
-        NodeView::Sample(s) => rec!(&s.trigger, &s.arg.node),
-        NodeView::Struct(s) => {
-            for c in s.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::StructWith(s) => {
-            rec!(&s.source);
-            for r in s.replace.iter() {
-                rec!(&r.n)
-            }
-        }
-        NodeView::Tuple(t) => {
-            for c in t.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::Variant(v) => {
-            for c in v.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::Construct(c) => rec!(&c.arg),
-        NodeView::Array(a) => {
-            for c in a.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::ListLit(a) => {
-            for c in a.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::Map(m) => {
-            for c in m.n.iter() {
-                rec!(c)
-            }
-        }
-        NodeView::StructRef(s) => rec!(&s.source),
-        NodeView::TupleRef(t) => rec!(&t.source),
-        NodeView::ArrayRef(a) => rec!(&a.source, &a.i),
-        NodeView::ArraySlice(a) => {
-            rec!(&a.source);
-            if let Some(s) = &a.start {
-                rec!(s)
-            }
-            if let Some(e) = &a.end {
-                rec!(e)
-            }
-        }
-        NodeView::MapRef(m) => rec!(&m.source, &m.key),
-        NodeView::ByRef(b) => b.for_each_child(&mut |c| rec!(c)),
-        NodeView::Deref(d) => rec!(&d.child),
-        NodeView::Add(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Sub(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Mul(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Div(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Mod(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::CheckedAdd(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::CheckedSub(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::CheckedMul(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::CheckedDiv(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::CheckedMod(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Eq(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Ne(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Lt(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Gt(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Lte(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Gte(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::And(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Or(o) => rec!(&o.lhs, &o.rhs),
-        NodeView::Lambda(_) => {}
-        NodeView::Impl(i) => {
-            rec!(&i.body);
-            for p in i.prototypes.iter() {
-                rec!(&p.site)
-            }
-        }
-        NodeView::Ref(_)
-        | NodeView::Constant(_)
-        | NodeView::TypeDef(_)
-        | NodeView::Nop(_) => {}
-        NodeView::FusedKernel(_) => {}
+        V::Lambda(_)
+        | V::Ref(_)
+        | V::Constant(_)
+        | V::TypeDef(_)
+        | V::Nop(_)
+        | V::FusedKernel(_) => (),
+        V::Add(_)
+        | V::Sub(_)
+        | V::Mul(_)
+        | V::Div(_)
+        | V::Mod(_)
+        | V::CheckedAdd(_)
+        | V::CheckedSub(_)
+        | V::CheckedMul(_)
+        | V::CheckedDiv(_)
+        | V::CheckedMod(_)
+        | V::Eq(_)
+        | V::Ne(_)
+        | V::Lt(_)
+        | V::Gt(_)
+        | V::Lte(_)
+        | V::Gte(_)
+        | V::And(_)
+        | V::Or(_) => unreachable!("binary operands"),
     }
 }
 
