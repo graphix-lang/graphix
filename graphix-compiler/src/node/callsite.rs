@@ -1025,22 +1025,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut flags = self.flags;
         flags.remove(CFlag::WarnUnhandled);
-        // CR claude for claude: [bug] Under a restored registration image an interface
-        // `val`'s type has no lambda ids. The image writes only a function type's own
-        // id (graphix-types/src/typ/fntyp.rs:1501), and a `val` gets its ids only from
-        // the links check_sig's `contains` makes. So for a call through any package
-        // interface this finds no definition, and `known` is false. The omitted
-        // defaults are then left to the bind, after the check has decided the cells,
-        // even though the restored `bind_to_lambda` names the definition. A warm
-        // `graphix --check` accepts `rand::rand(#clock: null) + 1`, which `--no-cache
-        // --check` refuses. A warm build refuses the well-typed `let x = never(); x <-
-        // rand::rand(#clock: null); x` ("'a: _ does not contain f64"), which
-        // `--no-cache` runs. probe:
-        // design/review-2026-10-05/repro/x-builtin-effects-09.gx (x-builtin-effects-09)
+        // the definitions the callee may be: by its type's lambda ids, else
+        // (a restored interface `val`'s type carries none) by the binding
+        // the function names
         let ids = ftype.lambda_ids.ids();
-        let mut known = !ids.is_empty();
-        for id in ids.iter() {
-            let def = ctx.lambda_defs.get(id).cloned();
+        let mut defs: SmallVec<[Option<Value>; 2]> =
+            ids.iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+        if defs.is_empty()
+            && let NodeView::Ref(r) = self.fnode.view()
+            && let Some(fv) = ctx.bind_to_lambda.get(&r.id)
+        {
+            defs.push(Some(fv.clone()));
+        }
+        let mut known = !defs.is_empty();
+        for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
             else {
                 known = false;
