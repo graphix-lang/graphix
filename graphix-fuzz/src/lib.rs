@@ -1719,11 +1719,14 @@ impl<'a> Oracle<'a> {
     /// nothing to values, so an excluded program is checked too.
     async fn check_pair(&self) -> Option<Divergence> {
         let (a, b) = Pair::Engine.runs()?;
-        let (Outcome::CompileErr(_), jit @ Outcome::CompileErr(_)) =
+        let (Outcome::CompileErr(_), jit @ Outcome::CompileErr(e)) =
             (self.get(a), self.get(b))
         else {
             return None;
         };
+        if graphix_compiler::analysis::build_only_refusal(e) {
+            return None;
+        }
         check_only(self.code, self.timeout).await.ok()?;
         Some(Divergence {
             code: self.code.to_string(),

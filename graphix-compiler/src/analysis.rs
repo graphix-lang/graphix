@@ -320,6 +320,22 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// The heads of the refusals only a build makes: a definition
+/// assertion (`assertion_failure`) or `#[native]`, which `--check`
+/// (`CFlag::CheckOnly`) leaves unverified.
+const BUILD_ONLY_REFUSALS: [&str; 4] = [
+    "#[sync]:",
+    "#[async]:",
+    "#[tail_recursive]:",
+    "#[native] expression did not fully fuse",
+];
+
+/// Whether `msg`, a compile error's text with its context chain, holds a
+/// refusal only a build makes.
+pub fn build_only_refusal(msg: &str) -> bool {
+    BUILD_ONLY_REFUSALS.iter().any(|h| msg.contains(h))
+}
+
 fn assertion_failure<R: Rt, E: UserEvent>(
     kind: DefAssertionKind,
     d: &LambdaDef<R, E>,
