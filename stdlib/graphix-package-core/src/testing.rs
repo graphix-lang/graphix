@@ -933,6 +933,9 @@ macro_rules! run_with_tempdir {
                 $code,
                 $crate::testing::escape_path(test_file.display())
             );
+            // an error the fixture raises and does not catch is printed, so a
+            // failing operation names itself beside the timeout
+            let code = format!("{{ catch(e) println(\"uncaught: [e]\"); {code} }}");
             let compiled = ctx.rt.compile(::arcstr::ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 

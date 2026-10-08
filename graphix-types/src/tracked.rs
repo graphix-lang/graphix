@@ -143,7 +143,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 
     /// Write back what `fork` wrote. A map written nowhere since the
     /// fork takes the fork's whole.
-    // CR claude for claude: [risk] join writes back the fork's value of every key it
+    // XCR claude for claude: [risk] join writes back the fork's value of every key it
     // touched, so it matches serial order only while sibling forks touch disjoint keys.
     // A breach is silent: two siblings calling register_impl on one trait keep only the
     // later impl, because impls holds the whole list per key. design/parallel_eval.md
@@ -156,6 +156,10 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     // built: forks that insert and remove one key (resolving_lambdas) both touch
     // it, so telling a conflict needs the fork-time value, which V does not
     // compare; design/parallel_eval.md now says the join detects nothing.
+    // 2026-10-08 claude: unreachable today: impls register while compiling, which runs in
+    // order; the parallel tasks only check and elaborate, and an impl in a fn body is
+    // refused. Pin lang::modules::sibling_modules_implement_one_trait guards the module
+    // case (undeclared impls in two siblings).
     pub fn join(&mut self, fork: Self) {
         let Self { map, touched, generation, forked_at } = fork;
         if self.generation == forked_at {

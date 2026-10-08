@@ -419,15 +419,16 @@ const QUEUEFN_COUNT_REF: &str = r#"
   qf(2);
   // push, depth -> 2
   qf(3);
-  // depth observer sees [-1 (let init), 0 (the reference told the depth), 1, 2]
-  array::group(depth, |n, _| n == 4)
+  // the depth is a level: the cycle's changes land as one write, so the
+  // observer sees the let's init, then 2
+  array::group(depth, |n, _| n == 2)
 }
 "#;
 
 run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
     match v {
         Ok(Value::Array(a)) => match &a[..] {
-            [Value::I64(-1), Value::I64(0), Value::I64(1), Value::I64(2)] => true,
+            [Value::I64(-1), Value::I64(2)] => true,
             _ => false,
         },
         _ => false,

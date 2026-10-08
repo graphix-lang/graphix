@@ -31,7 +31,7 @@ use netidx_value::{ValArray, Value};
 use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
-use std::{fmt, future, sync::Arc};
+use std::{fmt, future, path::PathBuf, sync::Arc};
 use tokio::{
     sync::{
         mpsc::{self as tmpsc},
@@ -1025,6 +1025,15 @@ pub fn search_path(
         res.push(graphix_compiler::expr::FilesResolver::new(dd.join("graphix"), None));
     }
     Ok(res)
+}
+
+/// The directories [`search_path`] searches, in order, for its file
+/// entries.
+pub fn search_dirs() -> Vec<PathBuf> {
+    let mp = std::env::var("GRAPHIX_MODPATH").unwrap_or_default();
+    let mut res: Vec<PathBuf> = graphix_compiler::expr::modpath_dirs(&mp).collect();
+    res.extend(dirs::data_dir().map(|dd| dd.join("graphix")));
+    res
 }
 
 /// What a runtime does about its session image: restore the first of

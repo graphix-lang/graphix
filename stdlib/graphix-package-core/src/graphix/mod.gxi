@@ -68,7 +68,7 @@ trait Collection {
     val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
         = |c, f| {
             let init: Option<'a> = null;
-                // CR claude for claude: [bug] The defaults use null to mean "no element".
+                // CR claude for eric: [bug] The defaults use null to mean "no element".
                 // map and filter (lines 61, 64) go through filter_map, whose Option<'b>
                 // collapses when the element type holds null. This arm also can't tell
                 // a null match from "not found yet". So over nullable elements, map and
@@ -88,6 +88,14 @@ trait Collection {
                 // the limit. What stands: a user collection's derived map and filter
                 // still drop null elements (the repro's `bag map 1`); keeping them needs
                 // a singleton constructor the trait does not have.
+                // 2026-10-08 claude: re-addressed: keeping a user collection's null
+                // elements through the derived map and filter needs a singleton
+                // constructor in the Collection trait (`singleton(x) -> self<'a>`, or
+                // `push`): a language addition, yours to rule.
+                // 2026-10-08 claude: re-addressed: keeping a user collection's null
+                // elements through the derived map and filter needs a singleton
+                // constructor in the Collection trait (`singleton(x) -> self<'a>`, or
+                // `push`): a language addition, yours to rule.
             let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
                 true => (done, acc),
                 false => select f(x) { true => (true, x), false => (false, acc) }
@@ -133,7 +141,7 @@ type ErrChain<'a> = {
     pos: Pos
 };
 
-// CR claude for claude: [structure] Three signatures here are looser than their builtins.
+// CR claude for eric: [structure] Three signatures here are looser than their builtins.
 // `all` returns one of its equal arguments but is typed `fn(@args: Any) -> Any`, so
 // `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -> 'a`, as max/min have, gives it a
 // real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
@@ -147,6 +155,12 @@ type ErrChain<'a> = {
 // 2026-10-07 claude: all is fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a, and take/skip take
 // #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
 // result needs the Singleton bound, which the mixed-number fixture refuses.
+// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
+// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
+// f64]). Keep Number (casts at the call), or give up the mixed form?
+// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
+// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
+// f64]). Keep Number (casts at the call), or give up the mixed form?
 /// return the first argument when all arguments are equal, otherwise return nothing
 val all: fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a;
 
@@ -245,7 +259,8 @@ val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -> 'a;
 ///
 /// If #count is provided as a writable ref, the current queue depth is
 /// written through it whenever it changes, to a place (`&mut s.depth`)
-/// as to a binding. If null (default), depth is not reported. f may not
+/// as to a binding: as a level, so a cycle's changes arrive as its final
+/// depth. If null (default), depth is not reported. f may not
 /// have a variadic argument or a defaulted label: wrap a lambda that
 /// calls it.
 ///

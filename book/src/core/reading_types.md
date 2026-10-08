@@ -127,6 +127,9 @@ val max: fn(first: 'a, @args: 'a) -> 'a
 
 The first `'a` is required, then any number of additional arguments of the same type.
 
+Only a builtin takes a variadic argument: a lambda written in Graphix
+with an `@args` parameter is refused.
+
 ## Reference Types
 
 An ampersand `&` before a type means "reference to" rather than the value itself:

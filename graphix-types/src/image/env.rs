@@ -89,7 +89,8 @@ impl Pack for TypeDef {
 
 impl Pack for ImportEntry {
     fn encoded_len(&self) -> usize {
-        let ImportEntry { scope, name, keyword_anchored, pos, ori } = self;
+        let ImportEntry { scope, name, keyword_anchored, pos, ori, name_at: _, used: _ } =
+            self;
         scope.encoded_len()
             + name.encoded_len()
             + keyword_anchored.encoded_len()
@@ -98,7 +99,8 @@ impl Pack for ImportEntry {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let ImportEntry { scope, name, keyword_anchored, pos, ori } = self;
+        let ImportEntry { scope, name, keyword_anchored, pos, ori, name_at: _, used: _ } =
+            self;
         scope.encode(buf)?;
         name.encode(buf)?;
         keyword_anchored.encode(buf)?;
@@ -113,6 +115,8 @@ impl Pack for ImportEntry {
             keyword_anchored: Pack::decode(buf)?,
             pos: pos_decode(buf)?,
             ori: origin_decode(buf)?,
+            name_at: crate::expr::WrittenAt::NOWHERE.0,
+            used: Arc::new(AtomicBool::new(false)),
         })
     }
 }

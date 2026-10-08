@@ -506,7 +506,7 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
-    // CR claude for claude: [readability] When a trait bound refuses a type, the error is
+    // CR claude for eric: [readability] When a trait bound refuses a type, the error is
     // a bare mismatch against the bounded cell. With no `impl Show for i64`,
     // `Show::show(2)` gives "type mismatch 'self: unbound within Show does not contain
     // i64", which never says that i64 lacks an impl. When the impl exists in a sibling
@@ -521,6 +521,9 @@ impl Type {
     // 2026-10-07 claude: trait_refusal names the member without an impl and a hidden
     // impl's module (pinned in lang::traits). The run-mode module name ("#do..::b")
     // still differs from --check's; that is c-analysis-branch-11's naming.
+    // 2026-10-08 claude: re-addressed: what remains is the run-mode module name
+    // (`#do..::b` where --check says `b`), which is c-analysis-branch-11's naming, yours
+    // to rule.
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -740,7 +743,7 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for claude: [bug] This memo keys a reference on its
+                // CR claude for eric: [bug] This memo keys a reference on its
                 // definition and its params. A typedef whose params grow as it recurses
                 // never meets a repeated pair, so comparing two different
                 // instantiations of it unfolds forever. Example: `type N<'a> = [null,
@@ -756,6 +759,11 @@ impl Type {
                 // one definition on a path the comparison is refused ("cannot compare
                 // two instances of N"). The valid widening N<[i64, string]> := N<i64>
                 // is refused that way too; deciding it needs the parameters' variance.
+                // 2026-10-08 claude: re-addressed: deciding the valid widening N<[i64,
+                // string]> := N<i64> needs a variance rule for typedef parameters
+                // (compare same-definition instances parameter-wise when every occurrence
+                // is covariant), which pairs with t-contains-07's ruling on abstract
+                // parameters.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 // one entry per definition, at its larger params
                 let defs = match [t0, t1].map(|t| match t {
@@ -1160,7 +1168,7 @@ impl Type {
                         continue;
                     }
                     let mut covered = false;
-                    // CR claude for claude: [bug] This loop commits the first
+                    // CR claude for eric: [bug] This loop commits the first
                     // non-variable member that covers an rhs member before the residue
                     // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
                     // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
@@ -1184,6 +1192,12 @@ impl Type {
                     // stands for a union a program writes with a bare variable beside a constructor of
                     // it; fixing it needs the commit to try the bare member before the constructor
                     // when the constructor's binding cannot place the rest.
+                    // 2026-10-08 claude: re-addressed: a rule choice. Not committing a
+                    // constructor member that mentions a bare member's own variable (send
+                    // it to the residue) makes ['b, Array<'b>] place both, but changes
+                    // what `['b, Array<'b>] ⊇ Array<i64>` infers ('b := Array<i64>
+                    // instead of i64); trying both needs a rollback contains does not
+                    // have. Which solution should inference prefer?
                     for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                         if c.contains_int(probe, env, hist, m)? {
                             if !c.contains_int(flags, env, hist, m)? {
@@ -1897,7 +1911,7 @@ impl Type {
     }
 }
 
-// CR claude for claude: [test-gap] These three tests are the only direct pins of
+// CR claude for eric: [test-gap] These three tests are the only direct pins of
 // Type::contains. No graphix-tests pin covers the rules broken by the accepted
 // ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
 // (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
@@ -1919,6 +1933,9 @@ impl Type {
 // still stand, and so do the variance must-reject families.
 // 2026-10-06 claude: the reference part is done: `&T`/`&mut T` rules are pinned in
 // lang::byref and by must-reject family 9 (ref-write, ref-widen). The rest stands.
+// 2026-10-08 claude: re-addressed: the remaining pins come with your rulings on
+// c-node-mod-01 (XCR), t-contains-07 and t-tvar-02, and the variance must-reject families
+// with t-contains-07's.
 #[cfg(test)]
 mod tests {
     use super::*;

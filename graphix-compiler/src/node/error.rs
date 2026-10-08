@@ -623,7 +623,9 @@ fn strip_production<'a>(
 /// operand.
 pub(crate) fn null_error(spec: &Expr) -> Value {
     let operand = match &spec.kind {
-        ExprKind::Qop(e) => format_compact!("{e}"),
+        ExprKind::Qop { arg, written } => {
+            format_compact!("{}", written.as_ref().unwrap_or(arg))
+        }
         _ => format_compact!("{spec}"),
     };
     let tag = Value::String(NULL_ERR_TAG.clone());

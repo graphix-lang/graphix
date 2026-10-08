@@ -1665,7 +1665,7 @@ run!(
 #[tokio::test(flavor = "current_thread")]
 async fn trait_method_variadic_value_refused() {
     use graphix_package_core::testing::refusal;
-    let src = "{ trait V { val v: fn(self, @args: i64) -> i64 }; impl V for i64 { let v = |a, @args: i64| a }; let f = V::v; f(1) }";
+    let src = "{ trait V { val v: fn(self, @args: i64) -> i64 }; impl V for i64 { let v = |a: i64, @args: i64| -> i64 'core_max }; let f = V::v; f(1) }";
     let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
     assert!(e.contains("can be called, not used as a value"), "{e}");
 }

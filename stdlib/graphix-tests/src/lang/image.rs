@@ -310,7 +310,7 @@ async fn program_image_restores_kernels() -> Result<()> {
 async fn session(
     program: &str,
     image: Option<Bytes>,
-) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool)> {
+) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
@@ -332,8 +332,9 @@ async fn session(
     let compiled = ctx.rt.program().await?.expect("the program compiled or restored");
     let values = first_values(&mut rx).await;
     let restored = ctx.rt.env_stats().await?.restored;
+    let forks = ctx.rt.control().forks();
     ctx.shutdown().await;
-    Ok((compiled, values, written, restored))
+    Ok((compiled, values, written, restored, forks))
 }
 
 /// `program` compiled cold, writing its image, and restored from it:
@@ -341,9 +342,10 @@ async fn session(
 async fn cold_and_warm(
     program: &str,
 ) -> Result<((CompRes<NoExt>, Vec<Value>), (CompRes<NoExt>, Vec<Value>))> {
-    let (cold_program, cold_values, image, _) = session(program, None).await?;
+    let (cold_program, cold_values, image, _, _) = session(program, None).await?;
     let image = image.expect("the cold run wrote its image");
-    let (warm_program, warm_values, _, restored) = session(program, Some(image)).await?;
+    let (warm_program, warm_values, _, restored, _) =
+        session(program, Some(image)).await?;
     assert!(restored, "the warm runtime compiled cold");
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
 }
@@ -425,19 +427,32 @@ async fn program_image_restores_fork_control() -> Result<()> {
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
-    // CR claude for claude: [test-gap] This pin cannot fail: fork control never changes a
-    // value, and it checks only the output flag and that cold and warm values agree, so
-    // a restore that drops every ForkControl still passes. Every decorated `let` here
-    // is at top level, which restores; a `#[serial]`/`#[parallel]` let inside a
-    // function, whose instances bind at run time, comes back without its attribute
-    // (design/review-2026-10-05/repro/t-image-01.sh), and `graphix-fuzz check` prints
-    // AGREE on that program because it compares values too. Read `control().forks()` on
-    // both runtimes as par_attrs.rs does, equal under Force for `#[serial]` and above
-    // zero under Auto for `#[parallel]`, over such a nested let whose collection grows
-    // after start. (t-image-04)
-    // 2026-10-07 claude: deferred to batch 9 with t-image-01: the nested-let pin
-    // fails until a run-time bind keeps its attribute.
     assert_eq!(cold_values, warm_values);
+    Ok(())
+}
+
+/// A `#[parallel]` let inside a function, whose instances bind at run
+/// time as its collection grows, keeps its attribute through the image:
+/// the warm runtime forks as the cold one does.
+#[tokio::test]
+async fn program_image_restores_nested_fork_control() -> Result<()> {
+    let program = r#"
+        let n = 0;
+        n <- select n { k if k < 6 => k + 1, _ => never() };
+        let f = |xs: Array<i64>| {
+            #[parallel]
+            let ys = array::map(xs, |x| x * 2);
+            array::fold(ys, 0, |a, b| a + b)
+        };
+        f(array::init(n * 20, |i| i))
+    "#;
+    let (_, cold_values, image, _, cold_forks) = session(program, None).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (_, warm_values, _, restored, warm_forks) = session(program, Some(image)).await?;
+    assert!(restored, "the warm runtime compiled cold");
+    assert_eq!(cold_values, warm_values);
+    assert!(cold_forks > 0, "the cold run forked nothing");
+    assert!(warm_forks > 0, "the warm run lost the nested #[parallel]");
     Ok(())
 }
 
@@ -445,11 +460,11 @@ async fn program_image_restores_fork_control() -> Result<()> {
 /// it is read, so the session runs cold rather than fail a first call.
 #[tokio::test]
 async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
-    let (_, cold_values, image, _) = session(PROGRAM, None).await?;
+    let (_, cold_values, image, _, _) = session(PROGRAM, None).await?;
     let image = image.expect("the cold run wrote its image");
     let past_the_end = image.len() as u64 + 1000;
     let bad = with_first_instance_at(&image, past_the_end);
-    let (_, values, _, restored) = session(PROGRAM, Some(bad)).await?;
+    let (_, values, _, restored, _) = session(PROGRAM, Some(bad)).await?;
     assert!(!restored, "an image with an instance past its end restored");
     assert_eq!(cold_values, values);
     Ok(())

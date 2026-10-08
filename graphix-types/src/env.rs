@@ -172,6 +172,10 @@ pub struct ImportEntry {
     /// Position/origin of the `use`, for diagnostics and IDE tooling.
     pub pos: SourcePosition,
     pub ori: Arc<Origin>,
+    /// Where the imported name is written in the use tree.
+    pub name_at: SourcePosition,
+    /// Set by the first lookup that goes through the import.
+    pub used: Arc<AtomicBool>,
 }
 
 /// A scope's explicit namespace: what its `use` declarations
@@ -626,16 +630,43 @@ impl Env {
         if flags.contains(CFlag::WarningsAreErrors) {
             return Err(anyhow!("{message}").at(spec));
         }
+        self.publish_warning(&spec.ori, pos, end, message);
+        Ok(())
+    }
+
+    /// [`Self::warn`] about a position no expression stands at.
+    pub fn warn_at(
+        &self,
+        flags: BitFlags<CFlag>,
+        ori: &Arc<Origin>,
+        pos: SourcePosition,
+        end: SourcePosition,
+        message: impl fmt::Display,
+    ) -> Result<()> {
+        if flags.contains(CFlag::WarningsAreErrors) {
+            return Err(anyhow!("{message}")
+                .context(crate::expr::ParserContext { ori: ori.clone(), pos }));
+        }
+        self.publish_warning(ori, pos, end, message);
+        Ok(())
+    }
+
+    fn publish_warning(
+        &self,
+        ori: &Arc<Origin>,
+        pos: SourcePosition,
+        end: SourcePosition,
+        message: impl fmt::Display,
+    ) {
         match self.ide.sink() {
-            None => eprintln!("WARNING: {} at {pos} {message}", spec.ori),
+            None => eprintln!("WARNING: {ori} at {pos} {message}"),
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
                 end,
-                ori: spec.ori.clone(),
+                ori: ori.clone(),
                 message: format_compact!("{message}").as_str().into(),
             }),
         }
-        Ok(())
     }
 
     pub fn push_field_ref(&self, site: FieldRefSite) {
@@ -820,6 +851,7 @@ impl Env {
                 self.lookup_at(origin, &e.scope, &e.name, depth + 1, f)?
             };
             if let Some(t) = hit {
+                e.used.store(true, Ordering::Relaxed);
                 return Ok(Some(t));
             }
             // A kind-miss on an import falls through to globs
@@ -1497,6 +1529,23 @@ impl Env {
         Ok(())
     }
 
+    /// The imports this env holds that `before` does not and that no
+    /// lookup went through, with their keys.
+    pub fn unused_imports_since<'a>(
+        &'a self,
+        before: &'a Env,
+    ) -> impl Iterator<Item = (&'a CompactString, &'a ImportEntry)> {
+        self.names.iter().flat_map(move |(scope, sn)| {
+            let old = before.names.get(scope);
+            sn.imports.iter().filter(move |(key, e)| {
+                !e.used.load(Ordering::Relaxed)
+                    && !old
+                        .and_then(|o| o.imports.get(key.as_str()))
+                        .is_some_and(|o| Arc::ptr_eq(&o.used, &e.used))
+            })
+        })
+    }
+
     /// Register a glob (`use m::*`) source module at `scope`.
     /// Idempotent.
     pub fn import_glob(&mut self, scope: &ModPath, src: Glob) {
@@ -2141,6 +2190,8 @@ mod test {
             keyword_anchored: false,
             pos: SourcePosition::default(),
             ori: Arc::new(Origin::default()),
+            name_at: SourcePosition::default(),
+            used: Default::default(),
         };
         let root = ModPath::root();
         env.import(&root, "mval", import("val"), false).unwrap();

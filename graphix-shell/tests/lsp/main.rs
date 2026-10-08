@@ -322,6 +322,34 @@ fn an_uncaught_error_is_a_warning() {
     assert_eq!(c.warnings("a.gx"), vec![]);
 }
 
+/// An import nothing looks a name up through is a warning at the name; a
+/// module's interface imports count, and so does a use through `as`.
+#[test]
+fn an_unused_import_is_a_warning() {
+    let mut c = Client::start(&[
+        ("a.gx", "mod m;\nuse array::{len, map as amap};\nlen(m::xs)\n"),
+        ("m.gx", "let xs = [1, 2]"),
+        ("m.gxi", "use str::len;\nuse array::len as alen;\nval xs: Array<i64>;\n"),
+    ]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    assert_eq!(c.warnings("a.gx"), [("amap".into(), "unused import `amap`".into())]);
+    let mut m = c.warnings("m.gxi");
+    m.sort();
+    assert_eq!(
+        m,
+        [
+            ("alen".into(), "unused import `alen`".into()),
+            ("len".into(), "unused import `len`".into())
+        ]
+    );
+    c.edit(
+        "a.gx",
+        "mod m;\nuse array::{len, map as amap};\namap(m::xs, |x| x + len(m::xs))\n",
+    );
+    assert_eq!(c.warnings("a.gx"), vec![]);
+}
+
 #[test]
 fn a_field_shows_its_type() {
     let mut c = two_files();

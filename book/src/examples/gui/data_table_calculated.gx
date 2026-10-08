@@ -1,5 +1,5 @@
 use gui::{
-  row, window,
+  window,
   column::column,
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text

@@ -1452,7 +1452,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }
         let rtypes: LPooled<Vec<&Type>> =
             self.arms.iter().map(|(_, n)| n.typ()).collect();
-        self.typ = Type::union(&ctx.env, &rtypes)?;
+        self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         Ok(())
     }
 
@@ -1521,7 +1521,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             rtypes.push(n.typ());
             reach.arm(&ctx.env, &scrut, pat, n.spec(), checking)?;
         }
-        self.typ = Type::union(&ctx.env, &rtypes)?;
+        self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         drop(rtypes);
         match checking {
             true => {

@@ -157,6 +157,141 @@ pub fn phase(phase: Phase) -> Option<Span> {
     })
 }
 
+/// A compile task's share of its parent's profile: what was open where it
+/// forked (the phase, the module, the instance being elaborated), entered
+/// on the thread that runs the task, and its costs merged back at the
+/// join, so a task's spans count under the parent's root and module.
+#[derive(Default)]
+pub struct Task {
+    fork: Option<(Phase, Option<ModPath>, Option<LambdaInstanceId>, bool)>,
+    done: Option<TaskCosts>,
+}
+
+struct TaskCosts {
+    metrics: [Metric; PHASES.len()],
+    modules: Vec<(ModPath, [u64; PHASES.len()])>,
+    /// The task's census, its rows numbering signatures and callbacks
+    /// in its own interning.
+    census: Option<(
+        Vec<(LambdaInstanceId, Instance)>,
+        Vec<(Arc<FnType>, usize)>,
+        Vec<(u64, usize)>,
+    )>,
+}
+
+impl Task {
+    /// Where a task forks from this thread's open profile.
+    pub fn fork() -> Self {
+        if !graphix_profile() {
+            return Self::default();
+        }
+        PROFILE.with_borrow(|p| {
+            let fork = p.current.map(|phase| {
+                let module = p.module.map(|m| p.modules[m].0.clone());
+                let census = p.census.as_ref();
+                let elaborating = census.and_then(|c| c.elaborating.last().copied());
+                (phase, module, elaborating, census.is_some())
+            });
+            Self { fork, done: None }
+        })
+    }
+
+    /// Run `f`, the task, on this thread under the profile it forked.
+    pub fn run<T>(&mut self, f: impl FnOnce() -> T) -> T {
+        let Some((phase, module, elaborating, census)) = self.fork.clone() else {
+            return f();
+        };
+        let now = Instant::now();
+        let fresh = Profile {
+            current: Some(phase),
+            origin: now,
+            last: now,
+            epoch_ns: 0,
+            metrics: [Metric::default(); PHASES.len()],
+            census: census.then(|| Census {
+                elaborating: elaborating.into_iter().collect(),
+                ..Census::default()
+            }),
+            module: module.is_some().then_some(0),
+            modules: module.into_iter().map(|m| (m, [0; PHASES.len()])).collect(),
+        };
+        let saved = PROFILE.with_borrow_mut(|p| std::mem::replace(p, fresh));
+        let r = f();
+        let mut ran = PROFILE.with_borrow_mut(|p| std::mem::replace(p, saved));
+        ran.switch(None, Instant::now());
+        let census = ran.census.as_mut().map(|c| {
+            (
+                c.instances.drain().collect(),
+                c.signatures.drain().collect(),
+                c.callbacks.drain().collect(),
+            )
+        });
+        self.done = Some(TaskCosts {
+            metrics: ran.metrics,
+            modules: std::mem::take(&mut ran.modules),
+            census,
+        });
+        r
+    }
+
+    /// Merge what the task `self` cost into this thread's profile.
+    pub fn join(self) {
+        let Some(t) = self.done else { return };
+        PROFILE.with_borrow_mut(|p| {
+            if p.current.is_none() {
+                return;
+            }
+            p.switch(p.current, Instant::now());
+            for (m, tm) in p.metrics.iter_mut().zip(t.metrics.iter()) {
+                m.calls += tm.calls;
+                // a task's time is a finished descendant of whatever is open
+                m.self_ns += tm.self_ns;
+                m.completed_self_ns += tm.self_ns;
+                m.total_ns += tm.total_ns;
+                m.failed_calls += tm.failed_calls;
+                m.failed_ns += tm.failed_ns;
+            }
+            for (path, costs) in t.modules {
+                match p.modules.iter_mut().find(|(m, _)| *m == path) {
+                    Some((_, c)) => c.iter_mut().zip(costs).for_each(|(a, b)| *a += b),
+                    None => p.modules.push((path, costs)),
+                }
+            }
+            if let (Some(c), Some((rows, sigs, cbs))) = (p.census.as_mut(), t.census) {
+                let mut sig: IntMap<usize, usize> = IntMap::default();
+                for (typ, i) in sigs {
+                    let next = c.signatures.len() + 1;
+                    sig.insert(i, *c.signatures.entry(typ).or_insert(next));
+                }
+                let mut cb: IntMap<usize, usize> = IntMap::default();
+                for (identity, i) in cbs {
+                    let next = c.callbacks.len() + 1;
+                    cb.insert(i, *c.callbacks.entry(identity).or_insert(next));
+                }
+                for (id, t) in rows {
+                    let row = c.instances.entry(id).or_default();
+                    if row.definition.is_none() {
+                        row.definition = t.definition;
+                        row.label = t.label;
+                        row.parent = t.parent;
+                    }
+                    row.graph_ns += t.graph_ns;
+                    row.check_ns += t.check_ns;
+                    row.graph_calls += t.graph_calls;
+                    row.check_calls += t.check_calls;
+                    row.elaboration_ns += t.elaboration_ns;
+                    if let Some(s) = sig.get(&t.signature) {
+                        row.signature = *s;
+                    }
+                    if let Some(c) = cb.get(&t.callbacks) {
+                        row.callbacks = *c;
+                    }
+                }
+            }
+        });
+    }
+}
+
 /// Attributes the time until the guard drops to the module `path`
 /// (innermost wins), inside a root span only.
 pub struct ModuleSpan {
@@ -170,19 +305,6 @@ pub fn module(path: &ModPath) -> Option<ModuleSpan> {
         return None;
     }
     PROFILE.with_borrow_mut(|p| {
-        // CR claude for claude: [bug] Compile tasks run on rayon workers with no open
-        // span, so module() returns None here and the task's first span opens a root of
-        // its own (line 137). Each interface module of a parallel run
-        // (graphix-compiler/src/node/mod.rs:996-1037) prints as an anonymous
-        // root=ModuleCheck on a worker, and the enclosing module's mphase=ModuleCheck
-        // holds the wait, so bench/profile.py --modules misreports exactly the parallel
-        // checks. Instances elaborated in statement tasks are split over per-span roots
-        // with parent=0 and elaboration_ns=0, the fields bench/instances.py builds its
-        // elaboration tree from. probe: design/review-2026-10-05/repro/t-misc-08.gx
-        // under GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1 --no-cache (t-misc-08)
-        // 2026-10-07 claude: deferred to the compiler batch: a task needs the
-        // parent's root and module handed in by branch::compile_each and its
-        // profile merged back at the join.
         p.current?;
         p.switch(p.current, Instant::now());
         let i = match p.modules.iter().position(|(m, _)| m == path) {

@@ -538,7 +538,7 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
     }
 }
 
-// CR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
+// XCR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
 // here for until, try-let, let and connect statements: the rebuilt guard, sink
 // write, let_pat and connect_path carry no dec. lower_block drops them the same way
 // for a block's lets and connects. Only an expression statement keeps its
@@ -555,6 +555,10 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
 // the step's let dispatches dynamically, so the compile's analysis never
 // covers the def and check_def_assertions (analysis.rs) leaves it pending
 // for an instance analysis, which logs instead of refusing.
+// 2026-10-08 claude: the remainder is the documented rule for every dynamically reached
+// definition, not a seq one: an assertion no static analysis reaches is checked at the
+// definition's first runtime bind (analysis::analyze_bound_callee), which logs. Refusing
+// it at compile would need the definition analyzed without an instance.
 /// `value` carrying a statement's decorations too: an attribute on a
 /// seq statement annotates its computation, where the compiler applies
 /// or refuses it.
@@ -1531,40 +1535,23 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let body = rewrite_stmts(body, &inner, mode.deferred());
             ExprKind::Seq { kind, trigger, abort, body }
         }
-        // CR claude for claude: [bug] In a seq step this arm replaces the `?`'s operand
-        // with lowered code: `seqpc<id> ~! x`, a seqq capture `seqqcap<id>_0`, or a
-        // call's whole issue block. null_error (graphix-compiler/src/node/error.rs:544)
-        // prints that operand into the program-visible `NullError` string. So `try { x?
-        // } with(e)` sees `NullError("seqpc4611686018427394755 ~! x")`, where the book
-        // and the same `?` outside a seq give `NullError("x")`, and a handler matching
-        // `` `NullError("x") `` takes the wrong arm. The id comes from the
-        // process-global ExprId counter, so the value differs between --no-cache and a
-        // registration-warm start, and from run to run when modules with interfaces
-        // load in parallel. Both engines share null_error, so graphix-fuzz reports
-        // AGREE. The NullError text needs the operand as written, carried past this
-        // rewrite; separately, the printers write `?` over this unparenthesized operand
-        // bare (expr/print.rs:1614, :2233), so --expand shows `seqpc.. ~! x?`. probe:
-        // design/review-2026-10-05/repro/t-print-01.sh (t-print-01)
-        // 2026-10-07 claude: not fixed. The rewrite keeps the Qop's id, pos and end,
-        // so two routes are open: an operand-as-written slot in ExprKind::Qop (every
-        // Qop match, the AST pack format and the fuzzer's preorder change with it),
-        // or null_error slicing the operand's text out of the origin by the Qop's
-        // span, which makes NullError's text the written form, spacing included,
-        // instead of today's printed form. Decide which before fixing.
-        ExprKind::Qop(x) => {
+        ExprKind::Qop { arg: x, written } => {
+            let original = written.clone().unwrap_or_else(|| x.clone());
             let x = rewrite(x, map);
-            match mode {
+            let arg = match mode {
                 // A `?` over a level reads it as it stands at entry, so a
                 // carried error raises at every entry.
-                Rewrite::Issue(issue) if !has_call(&x) => ExprKind::Qop(Arc::new(
+                Rewrite::Issue(issue) if !has_call(&x) => Arc::new(
                     ExprKind::StrictSample {
                         lhs: Arc::new(r#ref(x.pos, issue.pc)),
                         rhs: Arc::new(x),
                     }
                     .to_expr(e.pos),
-                )),
-                _ => ExprKind::Qop(Arc::new(x)),
-            }
+                ),
+                _ => Arc::new(x),
+            };
+            let written = (arg != original).then_some(original);
+            ExprKind::Qop { arg, written }
         }
         // a reference is to the variable, never to a snapshot of it
         ExprKind::ByRef(m, x) => {

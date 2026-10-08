@@ -18,8 +18,8 @@ use poolshark::local::LPooled;
 pub use resolver::{
     BufferOverrides, FilesResolver, MODULE_LAYOUTS, ModuleResolver, Resolution,
     ResolverFactory, ResolverRef, Resolvers, RootFile, VfsEntry, VfsResolver,
-    add_interface_modules, parse_modpath, read_optional, read_to_arcstr, split_escaped,
-    submodule_base,
+    add_interface_modules, modpath_dirs, parse_modpath, read_optional, read_to_arcstr,
+    split_escaped, submodule_base,
 };
 use smallvec::SmallVec;
 use std::{
@@ -726,7 +726,12 @@ pub enum ExprKind {
     Until(Arc<Expr>),
     /// `try { stmts } with(e) { stmts }` — legal only as a seq step.
     TryWith(Arc<TryWithExpr>),
-    Qop(Arc<Expr>),
+    /// `arg?`. `written` is the operand as written when a seq lowering
+    /// replaced `arg`: the text a `NullError` carries. Not a child.
+    Qop {
+        arg: Arc<Expr>,
+        written: Option<Arc<Expr>>,
+    },
     /// Compiler-generated forwarding; a nonthrowing region supplies bottom.
     Rethrow(Arc<Expr>),
     /// Compiler-generated sequence completion boundary.
@@ -849,7 +854,7 @@ impl ExprKind {
             Module { value: ModuleKind::Dynamic { source, .. }, .. } => f(source),
             Module { value: ModuleKind::Unresolved { .. }, .. } => (),
             ExplicitParens(x)
-            | Qop(x)
+            | Qop { arg: x, .. }
             | Rethrow(x)
             | SeqGuard(x)
             | SeqAbort(x)
@@ -1538,7 +1543,7 @@ impl Expr {
                 }
             }
             ExplicitParens(x) => ExplicitParens(a(f, x)),
-            Qop(x) => Qop(a(f, x)),
+            Qop { arg, written } => Qop { arg: a(f, arg), written: written.clone() },
             Rethrow(x) => Rethrow(a(f, x)),
             SeqGuard(x) => SeqGuard(a(f, x)),
             SeqAbort(x) => SeqAbort(a(f, x)),

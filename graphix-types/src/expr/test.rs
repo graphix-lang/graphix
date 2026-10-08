@@ -869,12 +869,12 @@ macro_rules! qop {
             | ExprKind::ArrayRef { .. }
             | ExprKind::ArraySlice { .. }
             | ExprKind::MapRef { .. }
-            | ExprKind::Qop(_)
+            | ExprKind::Qop { .. }
             | ExprKind::OrNever(_)
             | ExprKind::TupleRef { .. }
             | ExprKind::StructRef { .. } => {
                 if qop {
-                    ExprKind::Qop(Arc::new(e)).to_expr_nopos()
+                    ExprKind::Qop { written: None, arg: Arc::new(e) }.to_expr_nopos()
                 } else {
                     ExprKind::OrNever(Arc::new(e)).to_expr_nopos()
                 }
@@ -2050,7 +2050,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::Connect { name: name0, value: value0, deref: d0 },
             ExprKind::Connect { name: name1, value: value1, deref: d1 },
         ) => (d0 == d1) && (name0 == name1) && (check(value0, value1)),
-        (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
+        (ExprKind::Qop { arg: e0, .. }, ExprKind::Qop { arg: e1, .. }) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
         (ExprKind::Catch(c0), ExprKind::Catch(c1)) => {
             let CatchExpr { bind: b0, constraint: c0, handler: h0, role: r0 } = &**c0;

@@ -42,7 +42,7 @@ fn bare_postfix_source(e: &ExprKind) -> Option<&Expr> {
         | ArraySlice { source, .. }
         | MapRef { source, .. } => source,
         Apply(a) => &a.function,
-        Qop(e) | OrNever(e) => e,
+        Qop { arg: e, .. } | OrNever(e) => e,
         _ => return None,
     };
     prints_as_bare_postfix(source).then_some(&**source)
@@ -95,7 +95,7 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
                         | ArrayRef { .. }
                         | ArraySlice { .. }
                         | Apply(_)
-                        | Qop(_)
+                        | Qop { .. }
                         | OrNever(_)
                 ),
             },
@@ -203,9 +203,12 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | ExplicitParens(_)
         | Module { value: ModuleKind::Dynamic { .. }, .. } => true,
         Variant { args, .. } => !args.is_empty(),
-        Qop(e) | OrNever(e) | Rethrow(e) | ByRef(_, e) | Deref(e) | Neg(e) => {
-            opens_with_bracket(&e.kind)
-        }
+        Qop { arg: e, .. }
+        | OrNever(e)
+        | Rethrow(e)
+        | ByRef(_, e)
+        | Deref(e)
+        | Neg(e) => opens_with_bracket(&e.kind),
         Not { expr } => opens_with_bracket(&expr.kind),
         _ => false,
     }
@@ -282,7 +285,7 @@ fn head_min(e: &ExprKind) -> usize {
             _ => 1,
         },
         Module { name, .. } => "mod  dynamic {".len() + name.chars().count(),
-        Qop(e) | OrNever(e) | Rethrow(e) => head_min(&e.kind),
+        Qop { arg: e, .. } | OrNever(e) | Rethrow(e) => head_min(&e.kind),
         ByRef(m, e) => m.prefix().len() + head_min(&e.kind),
         Deref(e) | Neg(e) | Not { expr: e } => 1 + head_min(&e.kind),
         _ => 1,
@@ -1183,7 +1186,7 @@ impl StructWithExpr {
         fn chain_on_name(e: &Expr) -> bool {
             match &e.kind {
                 ExprKind::Ref { .. } => e.dec.is_none(),
-                ExprKind::Qop(s) | ExprKind::OrNever(s) => {
+                ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => {
                     e.dec.is_none() && chain_on_name(s)
                 }
                 _ => false,
@@ -1273,7 +1276,7 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
                 | ArraySlice { .. }
                 | MapRef { .. }
                 | Apply(_)
-                | Qop(_)
+                | Qop { .. }
                 | OrNever(_)
                 | Tuple { .. }
                 | Array { .. }
@@ -1777,7 +1780,7 @@ impl PrettyDisplay for ExprKind {
                 pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",", true)
             }
             Struct(st) => st.fmt_pretty_inner(buf),
-            Qop(e) => pretty_operand(buf, e, suffixed(e), "?"),
+            Qop { arg: e, .. } => pretty_operand(buf, e, suffixed(e), "?"),
             Rethrow(e) => {
                 write!(buf, "rethrow(")?;
                 e.fmt_pretty(buf)?;
@@ -2440,7 +2443,7 @@ impl ExprKind {
             }
             ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
-            ExprKind::Qop(e) => write!(f, "{}?", Operand(e, suffixed(e))),
+            ExprKind::Qop { arg: e, .. } => write!(f, "{}?", Operand(e, suffixed(e))),
             ExprKind::Rethrow(e) => write!(f, "rethrow({e})"),
             ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
             ExprKind::SeqCapture(c) => {

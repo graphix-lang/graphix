@@ -1385,14 +1385,17 @@ fn arrayref4() {
 
 #[test]
 fn qop() {
-    let e = ExprKind::Qop(Arc::new(
-        ExprKind::ArraySlice {
-            source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
-            start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
-            end: Some(Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos())),
-        }
-        .to_expr_nopos(),
-    ))
+    let e = ExprKind::Qop {
+        written: None,
+        arg: Arc::new(
+            ExprKind::ArraySlice {
+                source: Arc::new(ExprKind::Ref { name: ["foo"].into() }.to_expr_nopos()),
+                start: Some(Arc::new(ExprKind::Constant(Value::I64(1)).to_expr_nopos())),
+                end: Some(Arc::new(ExprKind::Constant(Value::I64(10)).to_expr_nopos())),
+            }
+            .to_expr_nopos(),
+        ),
+    }
     .to_expr_nopos();
     let s = "foo[1..10]?";
     let pe = parse_one(s).unwrap();
@@ -1677,7 +1680,7 @@ fn qop_wraps_whole_chain() {
     let ab =
         ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b").into() }
             .to_expr_nopos();
-    let q = ExprKind::Qop(Arc::new(ab)).to_expr_nopos();
+    let q = ExprKind::Qop { written: None, arg: Arc::new(ab) }.to_expr_nopos();
     assert_eq!(q, parse_one("a.b?").unwrap());
 }
 

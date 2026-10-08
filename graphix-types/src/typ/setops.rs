@@ -1,14 +1,14 @@
 use crate::{
     env::Env,
     stack::ensure_sufficient,
-    typ::{RefHist, RefPair, TVar, Type, TypeRef},
+    typ::{FnType, RefHist, RefPair, TVar, Type, TypeRef},
 };
 use ahash::AHashMap;
 use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use std::iter;
 use triomphe::Arc;
 
@@ -421,6 +421,19 @@ impl Type {
         Self::union_with(env, Merge::Exact, ts)
     }
 
+    /// The union of a select's alternatives, which a call through the
+    /// select must accept alike: function members meet first
+    /// ([`Self::meet_open_fns`]).
+    pub fn union_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
+        match Self::meet_open_fns(env, ts)? {
+            None => Self::union(env, ts),
+            Some(met) => {
+                let met: LPooled<Vec<&Type>> = met.iter().collect();
+                Self::union(env, &met)
+            }
+        }
+    }
+
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
         let mut iter = ts.iter().copied();
         let Some(first) = iter.next() else {
@@ -432,6 +445,56 @@ impl Type {
             acc = acc.union_int(env, &mut hist, merge, t)?;
         }
         Ok(acc.normalize())
+    }
+
+    /// Function members that meet both ways, one with open cells, are one
+    /// member: calling either takes the same arguments, and the union's
+    /// call needs one signature. A generic member meets through a fresh
+    /// instance; an occurrence's own cells bind, as the call would bind
+    /// them. `None` when no member changes.
+    fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+        let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                t.with_deref(|t| match t {
+                    Some(Type::Fn(f)) => Some((i, f.clone())),
+                    _ => None,
+                })
+            })
+            .collect();
+        if fns.len() < 2 {
+            return Ok(None);
+        }
+        let open = nohash::IntSet::default();
+        let mut out: Option<LPooled<Vec<Type>>> = None;
+        let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
+        let probe = BitFlags::empty();
+        for (k, (i, f)) in fns.iter().enumerate() {
+            if Type::Fn(f.clone()).tvar_free() {
+                continue;
+            }
+            let inst = Type::Fn(Arc::new(f.instantiate(&open)));
+            for (j, (_, g)) in fns.iter().enumerate() {
+                if j == k || met[j] {
+                    continue;
+                }
+                let g = Type::Fn(g.clone());
+                if inst.contains_with_flags(probe, env, &g)?
+                    && g.contains_with_flags(probe, env, &inst)?
+                    && inst.contains(env, &g)?
+                    && g.contains(env, &inst)?
+                {
+                    // the member it meets stands for it, so the union holds one
+                    let out = out
+                        .get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
+                    out[*i] = g;
+                    met[k] = true;
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn diff_int(
@@ -719,7 +782,10 @@ fn same_resolved<'a, 'b>(
         match (t0.next(), t1.next()) {
             (None, None) => return true,
             (Some(a), Some(b)) => {
-                if a != b && *b != Type::Any && a.resolve_tvars() != b.resolve_tvars() {
+                if a != b
+                    && *b != Type::Any
+                    && a.resolve_tvars().normalize() != b.resolve_tvars().normalize()
+                {
                     return false;
                 }
             }

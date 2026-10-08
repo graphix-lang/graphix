@@ -2432,3 +2432,30 @@ run!(
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(111)))
 );
+
+// A generic function beside a monomorphic one in a union meets it: the
+// select of the two is callable, and the generic stays generic.
+run!(
+    fn_members_meet_a_generic,
+    r#"{
+    let b = true;
+    let g = |x| x;
+    let h = |x: i64| x + 1;
+    let f = select b { true => g, false => h };
+    "[f(1)] [g("s")]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 s")
+);
+
+// A `?` under a catch raises the operand less its success type; a variant
+// whose payload is a union through a call's type variable is that success
+// type, whatever order its members print in.
+run!(
+    raise_through_generic_union_payload,
+    r#"{
+    let cas = |old: ['v, null]| -> Result<`M(['v, null]), `E> `M(old);
+    catch(e) never(e);
+    cas(42)?
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2 && a[1] == Value::I64(42))
+);

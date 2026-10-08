@@ -919,6 +919,10 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// variables are delivered in one event; a second write to the same
     /// variable waits a cycle. The event must not change mid-cycle.
     fn set_var(&mut self, id: BindId, value: Value);
+    /// [`Self::set_var`] for a level whose intermediate values nobody
+    /// needs: it replaces the variable's last waiting level write, so the
+    /// changes a cycle makes cost one delivery.
+    fn set_level(&mut self, id: BindId, value: Value);
     /// Queue a write through a path: at delivery the variable's value as
     /// it then stands is rebuilt along `path` with `value` at the end.
     /// Deferred exactly like `set_var`.
@@ -1217,6 +1221,8 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
     pub(crate) task: u32,
+    /// This task's share of the compile's profile ([`profile::Task`]).
+    profile: profile::Task,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
 }
@@ -1326,8 +1332,18 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             pending_refs: AHashMap::default(),
             discarded: Vec::new(),
             task: self.task,
+            profile: profile::Task::fork(),
             fusion: self.fusion.fork(),
         }
+    }
+
+    /// Run `f`, a forked task's work, on this thread under the profile
+    /// it forked with.
+    pub(crate) fn run_task<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let mut profile = mem::take(&mut self.profile);
+        let r = profile.run(|| f(self));
+        self.profile = profile;
+        r
     }
 
     /// Take back what the task `fork` produced: its writes to the
@@ -1359,6 +1375,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             pending_refs,
             discarded,
             task: _,
+            profile,
             fusion,
         } = fork;
         self.tags.join(tags);
@@ -1385,6 +1402,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             *self.pending_refs.entry(k).or_default() += n;
         }
         self.discarded.extend(discarded);
+        profile.join();
         self.fusion.join(fusion);
     }
 
@@ -1534,6 +1552,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
                 task: 0,
+                profile: profile::Task::default(),
                 fusion: fusion::FusionCtx::new()?,
             },
             image_decoder: std::sync::OnceLock::new(),

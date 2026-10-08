@@ -732,3 +732,20 @@ async fn until_last_refused() -> Result<()> {
     assert_eq!(v, Value::I64(5));
     Ok(())
 }
+
+// A `?` in a seq step raises the NullError of its operand as written, as
+// the same `?` outside a seq does.
+run!(
+    seq_null_error_names_the_operand,
+    r#"{
+    let x: [i64, null] = null;
+    let go = sys::time::timer(duration:10.ms, false);
+    seq go {
+        let v = try { let y = x?; "[y]" } with(e) {
+            select (e.0).error { `NullError("x") => "x was null", `NullError(s) => "names [s]" }
+        };
+        v
+    }
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x was null")
+);

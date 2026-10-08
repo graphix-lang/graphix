@@ -560,12 +560,27 @@ pub(crate) fn write_through<R: Rt, E: UserEvent>(
     r: BindId,
     v: Value,
 ) {
+    match write_target(ctx, r) {
+        WriteTarget::Place(root, path) => ctx.rt.patch_var(root, path, v),
+        WriteTarget::Var(target) => ctx.rt.set_var(target, v),
+    }
+}
+
+/// Where a write through the reference cell `r` lands.
+pub(crate) enum WriteTarget {
+    /// The place `r` stands for: its root and the path in it.
+    Place(BindId, graphix_compiler::node::place::Path),
+    /// The variable `r`'s byref chain reaches.
+    Var(BindId),
+}
+
+pub(crate) fn write_target<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<'_, R, E>,
+    r: BindId,
+) -> WriteTarget {
     match ctx.rt.ref_path(&r).cloned() {
-        Some((root, path)) => ctx.rt.patch_var(root, path, v),
-        None => {
-            let target = ctx.env.byref_chain.get(&r).copied().unwrap_or(r);
-            ctx.rt.set_var(target, v)
-        }
+        Some((root, path)) => WriteTarget::Place(root, path),
+        None => WriteTarget::Var(ctx.env.byref_chain.get(&r).copied().unwrap_or(r)),
     }
 }
 
@@ -923,18 +938,6 @@ impl CachedVals {
             if tag.is_bottom() {
                 self.1[i] = Tag::STALE_BOTTOM;
             } else {
-                // CR claude for claude: [perf] Every update stores a fresh clone of each
-                // argument that is not bottom, stale ones included. So in a quiet cycle
-                // every builtin call bumps and drops the refcount of each string, bytes
-                // or array argument just to store the value its slot already holds. A
-                // stale production whose value_words (graphix-compiler/src/tval.rs:104)
-                // equal the slot's can leave the slot alone. fast_eval then clones
-                // every slot once more into an LPooled<Vec<Value>> on each eval
-                // (fast_args, line 524), because the slots are Option<Value> and a fast
-                // fn takes &[Value]. (x-alloc-10)
-                // 2026-10-07 claude: a slot whose value has the same words keeps
-                // its value, so a quiet cycle clones nothing here. fast_eval's
-                // second clone stands: it needs slots a fast fn can borrow.
                 let slot = &mut self.0[i];
                 tv.with_value(|v| {
                     let same = |old: &Value| {

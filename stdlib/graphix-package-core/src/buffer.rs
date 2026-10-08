@@ -318,7 +318,7 @@ pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    // CR claude for claude: [bug] core_buffer_decode is Stateless(None), but its eval
+    // CR claude for eric: [bug] core_buffer_decode is Stateless(None), but its eval
     // writes every target with set_var. An arm holding it is judged pure, so each
     // re-selection runs it as a birth with the standing buf and spec read FIRED. In an
     // arm that sleeps, CachedArgs re-runs a stateless eval at the wake. Either way
@@ -336,6 +336,12 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
     // invocation only is the open part: Sync leaves a stale remainder at a wake and
     // Stateless re-writes at a re-entry; it needs the effect class the dbg/print pair
     // (x-builtin-effects-05, core-lib-09) does.
+    // 2026-10-08 claude: re-addressed: the open part is the effect class that writes only
+    // on a fired invocation, the one x-builtin-effects-05 and core-lib-09 ask for
+    // (dbg/print). One ruling covers all three.
+    // 2026-10-08 claude: re-addressed: the open part is the effect class that writes only
+    // on a fired invocation, the one x-builtin-effects-05 and core-lib-09 ask for
+    // (dbg/print). One ruling covers all three.
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_buffer_decode";
 

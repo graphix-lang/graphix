@@ -2,8 +2,8 @@
 //! [`emit`], which parses every module under `src/graphix/*` and writes
 //! `OUT_DIR/graphix_ast.pack`, a blob of `(vfs_path, source, packed_ast)`
 //! entries that `defpackage!` embeds and decodes at `register` time.
-//! The blob is produced by the same compiler that consumes it, so it
-//! carries no version field.
+//! The blob carries the writing graphix-types' version, and a reader of
+//! another version refuses it (`serialize`'s header).
 
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -97,16 +97,6 @@ pub fn emit() -> Result<()> {
         entries.push((ArcStr::from(key), source, packed));
     }
 
-    // CR claude for claude: [risk] The blob's only header is the magic `GXAS`
-    // (graphix-types/src/expr/serialize.rs:32). This rests on the crate doc's premise
-    // that the compiler that writes a blob is the one that reads it, and cargo does not
-    // ensure that. This build-dependency's graphix-types and the one graphix-compiler
-    // brings resolve separately. A package that moves graphix-compiler to a new minor
-    // version and leaves graphix-ast-pack behind builds with two graphix-types. Its
-    // modules then fail to decode at registration, or, where an encoding shifted
-    // without failing, decode to a different AST. Write graphix-types'
-    // CARGO_PKG_VERSION after the magic and refuse a mismatch naming both versions, or
-    // parse the source each entry already carries. (shell-16)
     let blob = serialize::pack_index(&entries)?;
     fs::write(&blob_path, &blob).with_context(|| format!("writing {blob_path:?}"))?;
     Ok(())

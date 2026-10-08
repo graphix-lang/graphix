@@ -92,12 +92,18 @@ fn resolve_use_item(
             }
         }
     };
+    let name_at = match &item.rename {
+        Some(n) => n.pos_or(pos),
+        None => item.at.0.last().copied().unwrap_or(pos),
+    };
     let entry = ImportEntry {
         scope: target,
         name: base.into(),
         keyword_anchored,
         pos,
         ori: ori.clone(),
+        name_at,
+        used: Default::default(),
     };
     // the prelude already provides every package name as a path root
     if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {

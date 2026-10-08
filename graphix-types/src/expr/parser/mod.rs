@@ -1189,7 +1189,7 @@ where
         fn chain_on_name(e: &Expr) -> bool {
             match &e.kind {
                 ExprKind::Ref { .. } => true,
-                ExprKind::Qop(s) | ExprKind::OrNever(s) => chain_on_name(s),
+                ExprKind::Qop { arg: s, .. } | ExprKind::OrNever(s) => chain_on_name(s),
                 _ => false,
             }
         }

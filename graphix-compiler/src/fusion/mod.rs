@@ -1141,7 +1141,9 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     drop(emission);
     let mut results: Vec<anyhow::Result<()>> = work
         .par_iter_mut()
-        .map(|(n, task)| TypeMemo::enter(memo.clone(), || visit(n, task)))
+        .map(|(n, task)| {
+            task.run_task(|task| TypeMemo::enter(memo.clone(), || visit(n, task)))
+        })
         .collect();
     for (_, task) in work.drain(..) {
         task.attr_census.lock().clear();

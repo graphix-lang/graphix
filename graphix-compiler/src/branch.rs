@@ -46,6 +46,7 @@ enum RtOp {
     RefVar(BindId, ExprId),
     UnrefVar(BindId, ExprId),
     SetVar(BindId, Value),
+    SetLevel(BindId, Value),
     PatchVar(BindId, Path, Value),
     NotifySet(BindId),
     SetTimer(BindId, Duration),
@@ -146,6 +147,10 @@ impl<'a, R: Rt> RtView<'a, R> {
     #[inline]
     pub fn set_var(&mut self, id: BindId, value: Value) {
         logged!(self, set_var(id, value), RtOp::SetVar(id, value))
+    }
+
+    pub fn set_level(&mut self, id: BindId, value: Value) {
+        logged!(self, set_level(id, value), RtOp::SetLevel(id, value))
     }
 
     pub fn patch_var(&mut self, id: BindId, path: Path, value: Value) {
@@ -313,6 +318,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::RefVar(id, by) => r.ref_var(id, by),
                         RtOp::UnrefVar(id, by) => r.unref_var(id, by),
                         RtOp::SetVar(id, v) => r.set_var(id, v),
+                        RtOp::SetLevel(id, v) => r.set_level(id, v),
                         RtOp::PatchVar(id, p, v) => r.patch_var(id, p, v),
                         RtOp::NotifySet(id) => r.notify_set(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),
@@ -719,7 +725,7 @@ pub(crate) fn compile_each<R, E, P, F>(
             with_control(control, || {
                 let _tokio = tokio.as_ref().map(|h| h.enter());
                 let _level = crate::typ::tvar::AtLevel::enter(level);
-                f(task, p.take().expect("a part"));
+                task.run_task(|task| f(task, p.take().expect("a part")));
                 live.done();
             })
         })

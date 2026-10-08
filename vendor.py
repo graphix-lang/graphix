@@ -38,7 +38,8 @@ def read_workspace():
 
 def format_toml_value(v):
     if isinstance(v, str):
-        return f'"{v}"'
+        # JSON's escapes are TOML basic-string escapes
+        return json.dumps(v)
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, int):
@@ -54,12 +55,13 @@ def format_toml_value(v):
     return str(v)
 
 
-def resolve_deps(deps, ws_deps, crate_dir):
+def resolve_deps(deps, ws_deps, ws_root, crate_dir):
     """Resolve workspace refs and strip path keys from a deps table.
 
-    `crate_dir` is the directory of the crate that owns `deps` — used to
-    resolve `path = "..."` entries when we need to read a version from
-    the target crate's Cargo.toml.
+    `crate_dir` is the directory of the crate that owns `deps` and
+    `ws_root` its workspace's: a `path = "..."` entry is resolved against
+    the one that wrote it when we need to read a version from the target
+    crate's Cargo.toml.
     """
     resolved = {}
     for name, dep in deps.items():
@@ -68,30 +70,27 @@ def resolve_deps(deps, ws_deps, crate_dir):
             if ws_val is None:
                 print(f"  warning: {name} not in workspace deps", file=sys.stderr)
                 continue
-            # CR claude for claude: [bug] This replaces a member's `{ workspace = true,
-            # ... }` with the workspace entry and drops the member's own keys. Cargo
-            # adds the member's `features` to the workspace's and takes `optional` from
-            # the member. As a result, the vendored netidx-tpm loses
-            # `Win32_System_TpmBaseServices` on `windows`, which
-            # netidx-tpm/src/lib.rs:598 imports, so every Windows build from vendor/
-            # fails to compile netidx-tpm (the graphix-package slow tests included). The
-            # same function resolves an inherited version-less `path` against the member
-            # directory instead of the workspace root (lines 75-76, FileNotFoundError),
-            # and format_toml_value (line 41) writes strings unescaped, so a `"` or `\`
-            # yields invalid TOML. Step 4 of the docstring, and the comment at
-            # graphix-package/src/test.rs:228, still say the script writes
-            # .cargo/config.toml, but it only prints it. probe:
-            # design/review-2026-10-05/repro/ide-tooling-06.py (ide-tooling-06)
-            # 2026-10-07 claude: the docstring and Step 4 now say the script prints
-            # the snippet, and test.rs no longer deletes .cargo/config.toml
-            # (package-08); the windows feature, the path resolution and the
-            # escaping remain.
-            dep = dict(ws_val) if isinstance(ws_val, dict) else ws_val
+            # the workspace entry, with the member's features added and its
+            # `optional` taken, as cargo merges them; a path in it is the
+            # workspace root's
+            merged = dict(ws_val) if isinstance(ws_val, dict) else {"version": ws_val}
+            features = list(merged.get("features", []))
+            for f in dep.get("features", []):
+                if f not in features:
+                    features.append(f)
+            if features:
+                merged["features"] = features
+            if "optional" in dep:
+                merged["optional"] = dep["optional"]
+            dep = merged
+            base = ws_root
+        else:
+            base = crate_dir
         if isinstance(dep, dict):
             # If stripping `path` would leave us with no version, recover
             # the version from the path target's Cargo.toml first.
             if "path" in dep and "version" not in dep:
-                target = (crate_dir / dep["path"]).resolve()
+                target = (base / dep["path"]).resolve()
                 with open(target / "Cargo.toml", "rb") as f:
                     target_pkg = tomllib.load(f)["package"]
                 dep = dict(dep)
@@ -106,7 +105,7 @@ def resolve_deps(deps, ws_deps, crate_dir):
     return resolved
 
 
-def write_cargo_toml(parsed, ws_deps, crate_dir, dest):
+def write_cargo_toml(parsed, ws_deps, ws_root, crate_dir, dest):
     """Write a resolved Cargo.toml to dest. `crate_dir` is the crate's
     original source directory, used to resolve any `path = "..."` deps."""
     lines = []
@@ -141,21 +140,21 @@ def write_cargo_toml(parsed, ws_deps, crate_dir, dest):
     if "dependencies" in parsed:
         lines.append("")
         lines.append("[dependencies]")
-        for name, dep in resolve_deps(parsed["dependencies"], ws_deps, crate_dir).items():
+        for name, dep in resolve_deps(parsed["dependencies"], ws_deps, ws_root, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [dev-dependencies]
     if "dev-dependencies" in parsed:
         lines.append("")
         lines.append("[dev-dependencies]")
-        for name, dep in resolve_deps(parsed["dev-dependencies"], ws_deps, crate_dir).items():
+        for name, dep in resolve_deps(parsed["dev-dependencies"], ws_deps, ws_root, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [build-dependencies]
     if "build-dependencies" in parsed:
         lines.append("")
         lines.append("[build-dependencies]")
-        for name, dep in resolve_deps(parsed["build-dependencies"], ws_deps, crate_dir).items():
+        for name, dep in resolve_deps(parsed["build-dependencies"], ws_deps, ws_root, crate_dir).items():
             lines.append(f"{name} = {format_toml_value(dep)}")
 
     # [target.'cfg(...)'.dependencies] sections
@@ -167,7 +166,7 @@ def write_cargo_toml(parsed, ws_deps, crate_dir, dest):
                         if section_name in sections:
                             lines.append("")
                             lines.append(f"[target.'{target}'.{section_name}]")
-                            for name, dep in resolve_deps(sections[section_name], ws_deps, crate_dir).items():
+                            for name, dep in resolve_deps(sections[section_name], ws_deps, ws_root, crate_dir).items():
                                 lines.append(f"{name} = {format_toml_value(dep)}")
 
     with open(dest, "w") as f:
@@ -202,7 +201,7 @@ def vendor_workspace_member(member_path, ws_deps, vendor_dir):
     )
 
     # Overwrite Cargo.toml with resolved version
-    write_cargo_toml(parsed, ws_deps, ROOT / member_path, dest / "Cargo.toml")
+    write_cargo_toml(parsed, ws_deps, ROOT, ROOT / member_path, dest / "Cargo.toml")
 
     # Write dummy .cargo-checksum.json (required by cargo vendor source)
     with open(dest / ".cargo-checksum.json", "w") as f:
@@ -279,7 +278,7 @@ def vendor_external_path_deps(ws_deps, vendor_dir):
             shutil.rmtree(dest)
 
         shutil.copytree(crate_path, dest, ignore=shutil.ignore_patterns("target", ".#*"))
-        write_cargo_toml(parsed, ext_ws_deps, crate_path, dest / "Cargo.toml")
+        write_cargo_toml(parsed, ext_ws_deps, ws_root or crate_path, crate_path, dest / "Cargo.toml")
         with open(dest / ".cargo-checksum.json", "w") as f:
             json.dump({"files": {}}, f)
         print(f"  {name}-{version}")

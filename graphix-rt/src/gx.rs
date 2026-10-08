@@ -878,7 +878,7 @@ impl<X: GXExt> GX<X> {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref()).await?;
-                // CR claude for claude: [bug] A script root's .gxi is only half applied.
+                // CR claude for eric: [bug] A script root's .gxi is only half applied.
                 // RootFile::load splices its types, uses, mods and traits into the
                 // script, but this line drops root.sig, so the vals are never checked.
                 // `graphix --check foo.gx` and the LSP check a lone module (one that no
@@ -893,6 +893,14 @@ impl<X: GXExt> GX<X> {
                 // 2026-10-08 claude: the check compiles a lone root with an interface as `mod
                 // <stem>`, as a package root, so the whole interface applies there; a run
                 // still splices it (a script is not a module).
+                // 2026-10-08 claude: re-addressed, a rule: `graphix foo.gx` where foo.gxi
+                // exists. The check now treats foo.gx as `mod foo` (the interface applies
+                // whole); the run treats it as a script (its last value is the output)
+                // and splices the interface, so its vals go unchecked. Options: (a) a run
+                // compiles it as `mod foo` too, with no output value; (b) a run stays a
+                // script but checks the vals against its top-level names; (c) refuse to
+                // run a file that has an interface. I lean to (b): the run and the check
+                // agree on the verdict and a script keeps its output.
                 (root.ori, root.exprs)
             }
             source @ Source::Netidx(_) => {
@@ -1048,6 +1056,19 @@ impl<X: GXExt> GX<X> {
                     .map(|n| nodes.push(n))
                 }
             };
+            let res = res.and_then(|()| {
+                self.ctx.env.unused_imports_since(&env).try_for_each(|(key, e)| {
+                    let mut end = e.name_at;
+                    end.column += key.chars().count() as i32;
+                    self.ctx.env.warn_at(
+                        flags,
+                        &e.ori,
+                        e.name_at,
+                        end,
+                        format_args!("unused import `{key}`"),
+                    )
+                })
+            });
             if let Err(e) = res.with_context(|| ori.clone()) {
                 for mut n in nodes.drain(..) {
                     n.delete(&mut self.ctx.view());

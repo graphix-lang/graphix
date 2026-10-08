@@ -1,4 +1,4 @@
-// CR claude for claude: [test-gap] These pins, and the other sys::net uses under
+// CR claude for eric: [test-gap] These pins, and the other sys::net uses under
 // stdlib/graphix-tests, cover successful deliveries only. No test fails if any of these
 // breaks: a write's select arm sleeping and waking, a publisher going away under a
 // subscriber, an rpc server failing or its path missing, a written value or call
@@ -14,6 +14,8 @@
 // moving while the value is bottom (net_publish_path_moves_while_bottom). Still
 // unpinned: a publisher going away, an rpc server failing or missing, and rpc
 // replies out of order (sys-net-09, Eric's).
+// 2026-10-08 claude: re-addressed: what is unpinned (a publisher going away, an rpc
+// server failing or missing, rpc replies out of order) waits on your sys-net-09.
 use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;

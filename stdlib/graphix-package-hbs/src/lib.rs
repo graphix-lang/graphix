@@ -97,7 +97,7 @@ fn fc_render(args: &[Value]) -> Option<Value> {
                     .with(
                         &key,
                         || build_registry(*strict, partials, template),
-                        // CR claude for claude: [bug] Handlebars::render has no depth
+                        // CR claude for eric: [bug] Handlebars::render has no depth
                         // bound. handlebars only refuses a partial that includes itself
                         // while it is the current template, so these all recurse until
                         // the worker's stack overflows, and the whole process aborts
@@ -113,6 +113,16 @@ fn fc_render(args: &[Value]) -> Option<Value> {
                         // 2026-10-07 claude: open. handlebars 6.4 has no recursion limit and no hook on a
                         // partial's render to count depth through; an inline or data-named partial
                         // escapes any guard set from here. Needs an upstream limit or a vendored patch.
+                        // 2026-10-08 claude: re-addressed: handlebars 6.4 has no
+                        // recursion limit and no per-partial hook, and inline or
+                        // data-named partials escape any guard from here. Options: vendor
+                        // a patched handlebars with a depth bound, or upstream one; a
+                        // dependency-policy call.
+                        // 2026-10-08 claude: re-addressed: handlebars 6.4 has no
+                        // recursion limit and no per-partial hook, and inline or
+                        // data-named partials escape any guard from here. Options: vendor
+                        // a patched handlebars with a depth bound, or upstream one; a
+                        // dependency-policy call.
                         |registry| match registry.render("main", &json_data) {
                             Ok(s) => Value::String(ArcStr::from(s.as_str())),
                             Err(e) => errf!("HbsErr", "{e}"),

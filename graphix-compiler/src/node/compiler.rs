@@ -477,7 +477,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Bind::compile(ctx, flags, spec.clone(), scope, top_id, b)
         }
         ExprKind::Bind(_) => not_an_expression(spec, "a let binding"),
-        ExprKind::Qop(e) | ExprKind::Rethrow(e) => {
+        ExprKind::Qop { arg: e, .. } | ExprKind::Rethrow(e) => {
             Qop::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::SeqGuard(e) => {

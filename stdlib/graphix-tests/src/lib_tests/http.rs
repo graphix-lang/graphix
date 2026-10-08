@@ -2,7 +2,7 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-// CR claude for claude: [test-gap] All five http tests send one request to a synchronous
+// CR claude for eric: [test-gap] All five http tests send one request to a synchronous
 // handler that reads req.method, the one shape under which the server's reply-pairing,
 // wedge, restart and TLS-accept bugs cannot show. Add pins for: two sequential requests
 // through a handler with two async lookups (each body must match its path), concurrent
@@ -14,6 +14,12 @@ use netidx::subscriber::Value;
 // (http_restart_same_address), #max_body, raw bodies and rest::post. Two async
 // lookups in sequence and concurrent requests wait on the pairing (db1-01); the
 // HTTPS-beside-an-idle-connection case has only its repro (x-panics-09.py).
+// 2026-10-08 claude: re-addressed: the remaining pins (two async lookups in sequence,
+// concurrent requests) wait on your db1-01 (reply pairing), and HTTPS beside an idle
+// connection on x-panics-09.
+// 2026-10-08 claude: re-addressed: the remaining pins (two async lookups in sequence,
+// concurrent requests) wait on your db1-01 (reply pairing), and HTTPS beside an idle
+// connection on x-panics-09.
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",

@@ -1001,15 +1001,45 @@ pub(crate) type Child<'a, R, E> =
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
 /// body's errors also carry each statement's origin, the file it is in.
-// CR claude for claude: [structure] The statement walkers repeat two rules by hand.
-// Wrapping a statement's error with its spec, plus its origin when the body is a
-// module's, is written four times (942-946, 984-988, 1022-1026, 1115-1119).
-// typecheck0_modules (1000-1033) and typecheck1_statements (1099-1125) both fork a
-// CompileCtx per statement, check under AtLevel in par_iter, join the tasks in order
-// and return the first error in order. Use one helper for a statement's result and one
-// for the fork-check-join loop, with each caller keeping its own task setup (hidden
-// impls for modules, a fresh task for statements). The typecheck0_with impls at
-// 2292-2425 belong beside their nodes. (c-node-mod-09)
+/// A statement's check result: its errors carry the statement, and in a
+/// module's body the module's origin.
+fn statement_result<R: Rt, E: UserEvent>(
+    r: Result<()>,
+    n: &Node<R, E>,
+    module: bool,
+) -> Result<()> {
+    let r = wrap!(n, r);
+    match module {
+        true => r.with_context(|| n.spec().ori.clone()),
+        false => r,
+    }
+}
+
+/// Run `check` over each statement of `work` in its compile task, in
+/// parallel, and join the tasks in order: the first error in order is
+/// the body's.
+fn check_in_tasks<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>>,
+    module: bool,
+    check: impl Fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()> + Sync,
+) -> Result<()> {
+    let level = current_level();
+    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
+    work.par_iter_mut()
+        .map(|(n, task)| {
+            let _level = AtLevel::enter(level);
+            let _task = InTask::enter(task.task);
+            let r = task.run_task(|task| check(n, task));
+            statement_result(r, n, module)
+        })
+        .collect_into_vec(&mut results);
+    for (_, task) in work.drain(..) {
+        ctx.join(task);
+    }
+    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+}
+
 pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     nodes: &mut [Node<R, E>],
@@ -1019,11 +1049,8 @@ pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     for i in evaluation_order(nodes.len(), catches) {
         let n = &mut nodes[i];
-        let r = wrap!(n, pass(n, ctx));
-        match module {
-            true => r.with_context(|| n.spec().ori.clone())?,
-            false => r?,
-        }
+        let r = pass(n, ctx);
+        statement_result(r, n, module)?
     }
     Ok(())
 }
@@ -1075,12 +1102,9 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
                 let own = m.scope.lexical.clone();
                 ctx.env.hidden_impls = Arc::new(hide_siblings(&prev, &siblings, &own));
             }
-            let r = wrap!(n, n.typecheck0(ctx));
+            let r = n.typecheck0(ctx);
             ctx.env.hidden_impls = prev;
-            match module {
-                true => r.with_context(|| n.spec().ori.clone())?,
-                false => r?,
-            }
+            statement_result(r, n, module)?;
             at += 1;
         }
     }
@@ -1118,22 +1142,7 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
         task.env.hidden_impls =
             Arc::new(hide_siblings(&task.env.hidden_impls, siblings, &own));
     }
-    let level = current_level();
-    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
-    work.par_iter_mut()
-        .map(|(n, task)| {
-            let _level = AtLevel::enter(level);
-            let r = wrap!(n, n.typecheck0(task));
-            match module {
-                true => r.with_context(|| n.spec().ori.clone()),
-                false => r,
-            }
-        })
-        .collect_into_vec(&mut results);
-    for (_, task) in work.drain(..) {
-        ctx.join(task);
-    }
-    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+    check_in_tasks(ctx, work, module, |n, task| n.typecheck0(task))
 }
 
 /// Run a runtime bind `f` as a compile task of its own, in a settle
@@ -1212,7 +1221,7 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     }
     let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
         nodes.iter_mut().map(Some).collect();
-    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = order
+    let work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = order
         .iter()
         .map(|i| {
             let mut task = ctx.fork();
@@ -1220,23 +1229,7 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
             (slots[*i].take().expect("an order visits each once"), task)
         })
         .collect();
-    let level = current_level();
-    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
-    work.par_iter_mut()
-        .map(|(n, task)| {
-            let _level = AtLevel::enter(level);
-            let _task = InTask::enter(task.task);
-            let r = wrap!(n, typecheck1_settled(n, task));
-            match module {
-                true => r.with_context(|| n.spec().ori.clone()),
-                false => r,
-            }
-        })
-        .collect_into_vec(&mut results);
-    for (_, task) in work.drain(..) {
-        ctx.join(task);
-    }
-    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+    check_in_tasks(ctx, work, module, typecheck1_settled)
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {

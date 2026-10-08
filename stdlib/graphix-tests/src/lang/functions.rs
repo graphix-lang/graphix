@@ -2087,7 +2087,7 @@ run!(rec_annotation_trait_param, REC_ANNOTATION_TRAIT_PARAM, |v: Result<&Value>|
 const BUILTIN_BINDING_SHADOWED: &str = r#"
 {
   let f = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_sum;
-  let f = |@args: i64| -> i64 42;
+  let f = || -> i64 42;
   f()
 }
 "#;
@@ -2095,6 +2095,16 @@ const BUILTIN_BINDING_SHADOWED: &str = r#"
 run!(builtin_binding_shadowed, BUILTIN_BINDING_SHADOWED, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; FuseExpect::Jit);
+
+// Only a builtin takes a variadic argument.
+const USER_VARIADIC: &str = r#"
+{
+  let rec f = |@args: i64| -> i64 0;
+  f(0, 0)
+}
+"#;
+
+run!(user_variadic_refused, USER_VARIADIC, refused("is for builtins only"); FuseExpect::None);
 
 // A type variable only data arguments hold settles to the widest
 // argument, whatever the order.

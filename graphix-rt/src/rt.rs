@@ -33,6 +33,9 @@ pub(super) enum Via {
     /// A task's or a watch's reply, dropped when nothing references its
     /// variable any more.
     Reply,
+    /// A level's write ([`Rt::set_level`]): a later one replaces it while
+    /// it waits.
+    Level,
     /// A member of a set that lands in one cycle (`set_many`, a
     /// callable's arguments): the set's variables.
     Set(Arc<[BindId]>),
@@ -64,6 +67,15 @@ impl<T> Waiting<T> {
             self.ids.push_back(id);
         }
         q.push_back((t, via));
+    }
+
+    /// Push a level's write, replacing the variable's last waiting write
+    /// when that is a level's too.
+    pub(super) fn push_level(&mut self, id: BindId, t: T) {
+        match self.by_id.get_mut(&id).and_then(|q| q.back_mut()) {
+            Some((last, Via::Level)) => *last = t,
+            _ => self.push(id, t, Via::Level),
+        }
     }
 
     pub(super) fn has(&self, id: &BindId) -> bool {
@@ -109,7 +121,7 @@ impl<T> Waiting<T> {
                             }
                         }
                     }
-                    Via::Write | Via::Reply => {
+                    Via::Write | Via::Reply | Via::Level => {
                         let (t, via) = self.pop(&id);
                         self.taken.insert(id);
                         out.push((id, t, via));
@@ -276,6 +288,13 @@ impl<X: GXExt> Rt for GXRt<X> {
             eprintln!("SET_VAR {id:?} = {value}");
         }
         self.var_updates.push(id, VarUpdate::Set(value), Via::Write);
+    }
+
+    fn set_level(&mut self, id: BindId, value: Value) {
+        if dbg_vars() {
+            eprintln!("SET_LEVEL {id:?} = {value}");
+        }
+        self.var_updates.push_level(id, VarUpdate::Set(value));
     }
 
     fn patch_var(&mut self, id: BindId, path: Path, value: Value) {

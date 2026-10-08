@@ -320,7 +320,9 @@ check and an unknown builtin is a WARNING at its `'name`
 (`node/lambda.rs::UnknownBuiltIn` stands in: typed by the declared
 signature like any builtin, never produces); without `lsp_mode` it
 stays an error. Warnings go through `Env::warn`: to `Ide.warnings`
-under a check with a sink, else to stderr as before. The server
+under a check with a sink, else to stderr as before. A check ends by
+warning on each import it added that no lookup went through
+(`Env::unused_imports_since`; `Env::lookup_at` marks them). The server
 publishes the warnings of a root's last SUCCESSFUL check and, when the
 current one failed, the error beside them. An error's position is its `ErrorSite`, the innermost wrap: contexts are
 attached with `.at(&spec)` (`expr::At`), `wrap!` or `bailat!`, never

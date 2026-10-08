@@ -207,12 +207,7 @@ pub fn parse_modpath(
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
-    for l in split_escaped(s, '\\', ',', usize::MAX) {
-        // only the separator is escaped: a Windows path keeps its `\`
-        let l = l.trim().replace("\\,", ",");
-        if l.is_empty() {
-            continue;
-        }
+    for l in modpath_entries(s) {
         let scheme = l
             .split_once(':')
             .and_then(|(scheme, rest)| factories.get(scheme).map(|f| f(libstate, rest)));
@@ -225,6 +220,22 @@ pub fn parse_modpath(
         }
     }
     Ok(res)
+}
+
+/// The entries of a GRAPHIX_MODPATH-style list, unescaped, empty ones
+/// dropped.
+fn modpath_entries(s: &str) -> impl Iterator<Item = String> + '_ {
+    split_escaped(s, '\\', ',', usize::MAX)
+        // only the separator is escaped: a Windows path keeps its `\`
+        .map(|l| l.trim().replace("\\,", ","))
+        .filter(|l| !l.is_empty())
+}
+
+/// The directory each entry of a GRAPHIX_MODPATH-style list searches when
+/// it is a file path. An entry of another scheme yields a path no file is
+/// at.
+pub fn modpath_dirs(s: &str) -> impl Iterator<Item = PathBuf> + '_ {
+    modpath_entries(s).map(|l| PathBuf::from(l.strip_prefix("file:").unwrap_or(&l)))
 }
 
 /// `GRAPHIX_DISABLE_PACKED_AST=1` forces module resolution to parse source

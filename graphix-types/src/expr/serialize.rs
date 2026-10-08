@@ -6,8 +6,9 @@
 //! `pack_module`/`unpack_module` (and `_sig`) entry points; `TVar`'s and
 //! `FnType`'s live beside their types, `AbstractId`'s is `uuid_id_codec!`.
 //!
-//! There is no version field and no parse fallback: the same compiler
-//! build writes and reads a blob, so a decode error is an internal bug.
+//! Every blob starts with the magic and the writing graphix-types'
+//! version, and a reader of another version refuses it: a package's
+//! AST-packing build-dependency and its compiler resolve separately.
 
 use crate::{
     SourcePosition,
@@ -133,18 +134,39 @@ fn codec_error(e: PackError) -> anyhow::Error {
     anyhow::anyhow!("packed AST codec error: {e:?}")
 }
 
+/// The graphix-types version that writes and reads blobs.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn put_header(buf: &mut BytesMut) {
+    buf.put_slice(MAGIC);
+    pack::encode_varint(VERSION.len() as u64, buf);
+    buf.put_slice(VERSION.as_bytes());
+}
+
 fn check_magic(bytes: &mut &[u8]) -> Result<()> {
     if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
         bail!("packed AST: bad magic header");
     }
     bytes.advance(MAGIC.len());
+    let n = pack::decode_varint(bytes).map_err(codec_error)? as usize;
+    if bytes.len() < n {
+        bail!("packed AST: truncated header");
+    }
+    let theirs = String::from_utf8_lossy(&bytes[..n]).into_owned();
+    bytes.advance(n);
+    if theirs != VERSION {
+        bail!(
+            "packed AST written by graphix-types {theirs}, read by {VERSION}: rebuild \
+             the package with this compiler"
+        )
+    }
     Ok(())
 }
 
 /// Serialize a module's top-level expressions to a packed blob.
 pub fn pack_module(exprs: &[Expr]) -> Result<Bytes> {
     let mut buf = BytesMut::new();
-    buf.put_slice(MAGIC);
+    put_header(&mut buf);
     pack::encode_varint(exprs.len() as u64, &mut buf);
     for e in exprs {
         e.encode(&mut buf).map_err(codec_error)?;
@@ -170,7 +192,7 @@ pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> 
 /// Serialize a module interface (`.gxi`) signature to a packed blob.
 pub fn pack_sig(sig: &Sig) -> Result<Bytes> {
     let mut buf = BytesMut::new();
-    buf.put_slice(MAGIC);
+    put_header(&mut buf);
     sig.encode(&mut buf).map_err(codec_error)?;
     Ok(buf.freeze())
 }
@@ -188,7 +210,7 @@ pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
 /// `pack_module`/`pack_sig` blob decoded lazily at module resolution.
 pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
     let mut buf = BytesMut::new();
-    buf.put_slice(MAGIC);
+    put_header(&mut buf);
     pack::encode_varint(entries.len() as u64, &mut buf);
     for (path, source, ast) in entries {
         path.encode(&mut buf).map_err(codec_error)?;

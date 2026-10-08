@@ -633,7 +633,7 @@ impl Type {
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 if union_identical(self, t) { Some(self.clone()) } else { None }
             }
-            // CR claude for claude: [bug] Two fn types merge only when `==`, and `==`
+            // XCR claude for claude: [bug] Two fn types merge only when `==`, and `==`
             // never equates a bound cell with its binding, though the TVar arms below
             // look through it. So `|x: i64| x * 2` and `|x: i64| -> i64 x + 1`, both
             // fn(x: i64) -> i64, stay two union members, and a call through `select b {
@@ -650,6 +650,11 @@ impl Type {
             // looks through a bound cell, so g and h are one member (pin
             // lang::types::fn_members_merge_through_bindings). Still open: `|x| x`
             // beside `|x: i64| x + 1` stays two members and the call is refused.
+            // 2026-10-08 claude: done: Type::union meets function members first
+            // (setops.rs meet_open_fns): one with open cells meets another both ways, a
+            // generic one through a fresh instance, so `|x| x` beside `|x: i64| x + 1` is
+            // one member and the select's call is accepted; the generic stays generic.
+            // Pin lang::types::fn_members_meet_a_generic.
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

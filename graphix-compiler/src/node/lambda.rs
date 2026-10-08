@@ -1397,6 +1397,9 @@ impl Lambda {
                 .rewrite_trait_args(env)?
                 .apply_ctor_quantifiers(&ctors))
         };
+        if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
+            bail!("a variadic argument (`@args`) is for builtins only")
+        }
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),

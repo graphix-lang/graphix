@@ -1024,3 +1024,34 @@ async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
 }
 
 modes!(loads_leave_no_primes);
+
+// Sibling modules checked in parallel each implementing one trait
+// undeclared: both impls survive the join.
+run!(
+sibling_modules_implement_one_trait,
+|v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a1 b2"),
+"/test.gx" => r#"
+trait Show { val show: fn(self) -> string };
+mod a;
+mod b;
+let result = "[Show::show(a::v)] [Show::show(b::v)]"
+"#,
+"/test/a.gxi" => r#"
+type A = Abstract<i64>;
+val v: A;
+"#,
+"/test/a.gx" => r#"
+type A = Abstract<i64>;
+let v = A(1);
+impl super::Show for A { let show = |a| "a[a.0]" }
+"#,
+"/test/b.gxi" => r#"
+type B = Abstract<i64>;
+val v: B;
+"#,
+"/test/b.gx" => r#"
+type B = Abstract<i64>;
+let v = B(2);
+impl super::Show for B { let show = |b| "b[b.0]" }
+"#
+);

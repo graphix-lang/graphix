@@ -135,7 +135,7 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
             args: Arc::from_iter(args.drain(..)),
         })
         .to_expr(pos),
-        Post::Qop => ExprKind::Qop(Arc::new(src)).to_expr(pos),
+        Post::Qop => ExprKind::Qop { written: None, arg: Arc::new(src) }.to_expr(pos),
         Post::OrNever => ExprKind::OrNever(Arc::new(src)).to_expr(pos),
     }
 }

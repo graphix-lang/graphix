@@ -311,7 +311,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             // a value that can raise must not move past a `catch`, whose
             // handler would take its raise
             let raises = b.value.fold(false, &mut |a, n| {
-                a || matches!(n.kind, ExprKind::Qop(_) | ExprKind::Apply(_))
+                a || matches!(n.kind, ExprKind::Qop { .. } | ExprKind::Apply(_))
             });
             let catch_between = (offsets[si] + sizes[offsets[si]]..gi)
                 .any(|j| matches!(pre[j].kind, ExprKind::Catch(_)));
