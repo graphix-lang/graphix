@@ -769,3 +769,25 @@ async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
     warm.shutdown().await;
     Ok(())
 }
+
+/// A variable only an imaged instance body reads, in an arm still
+/// asleep, schedules its statement on a warm start as on a cold one: the
+/// arm wakes with its catch-up.
+#[tokio::test]
+async fn imaged_body_reads_are_registered() -> Result<()> {
+    let program = r#"
+        let to_b = sys::time::timer(duration:300.ms, false);
+        let sel = 0;
+        sel <- to_b ~ 1;
+        let gt = sys::time::timer(duration:150.ms, false);
+        let g: i64 = never();
+        g <- gt ~ 42;
+        let f = |x: i64| -> string "[x] [count(g)]";
+        select sel { 0 => "A", _ => f(sel) }
+    "#;
+    let ((_, cold_values), (_, warm_values)) = cold_and_warm(program).await?;
+    let shown = |vs: &[Value]| vs.iter().map(|v| format!("{v}")).collect::<Vec<_>>();
+    assert_eq!(shown(&cold_values), ["\"A\"", "\"1 1\""]);
+    assert_eq!(cold_values, warm_values);
+    Ok(())
+}

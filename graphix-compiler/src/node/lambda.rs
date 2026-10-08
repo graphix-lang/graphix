@@ -140,7 +140,7 @@ impl DefTable {
             match n.view() {
                 NodeView::CallSite(cs) => {
                     if let Some(ft) = cs.ftype.as_ref() {
-                        table.ftypes.insert(id, ft.clone());
+                        table.ftypes.insert(id, (**ft).clone());
                     }
                 }
                 NodeView::Lambda(l) => {

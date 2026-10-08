@@ -583,7 +583,7 @@ pub(crate) struct RefsSummary {
 pub(crate) struct StaticCallTarget {
     pub definition: LambdaId,
     pub instance: LambdaInstanceId,
-    pub ftype: FnType,
+    pub ftype: TArc<FnType>,
 }
 
 impl<R: Rt, E: UserEvent> Callee<R, E> {
@@ -639,7 +639,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     // copies Expr specs: arg_ref's TArc::new(n.spec().clone()) per argument (0.9 MB
     // here) and genn::apply_inner's synthesized ApplyExpr per slot (2 x 0.96 MB).
     // (x-alloc-06)
-    pub(super) ftype: Option<FnType>,
+    // 2026-10-07 claude: both fn types are Arc'd now. The spec copies (arg_ref's
+    // TArc::new(n.spec().clone()) and genn's synthesized ApplyExpr) remain.
+    pub(super) ftype: Option<TArc<FnType>>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
     pub(crate) args: ArgMap<R, E>,
@@ -687,7 +689,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Self {
             slept: WakeBit::default(),
             spec,
-            ftype,
+            ftype: ftype.map(TArc::new),
             rtype,
             fnode,
             args,
@@ -709,13 +711,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The function type at this call site with the site's tvars unified
     /// in. `None` before typecheck, or if this site errored first.
     pub fn ftype(&self) -> Option<&FnType> {
-        self.ftype.as_ref()
+        self.ftype.as_deref()
     }
 
     /// The detached, resolved function type owned by a statically-bound
     /// callee instance.
     pub fn resolved_ftype(&self) -> Option<&FnType> {
-        self.static_target.as_ref().map(|target| &target.ftype)
+        self.static_target.as_ref().map(|target| &*target.ftype)
     }
 
     pub(crate) fn static_target(&self) -> Option<&StaticCallTarget> {
@@ -1172,7 +1174,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn refresh_static_ftype(&mut self) -> Option<FnType> {
         let ftype = self.instance_ftype()?;
         if let Some(target) = &mut self.static_target {
-            target.ftype = ftype.clone();
+            target.ftype = TArc::new(ftype.clone());
         }
         Some(ftype)
     }
@@ -1472,7 +1474,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.static_target = Some(StaticCallTarget {
                 definition: def.id,
                 instance: active.instance,
-                ftype: active.ftype.resolve_tvars(),
+                ftype: TArc::new(active.ftype.resolve_tvars()),
             });
             return Ok(());
         }
@@ -1504,7 +1506,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.static_target = Some(StaticCallTarget {
                 definition: def.id,
                 instance,
-                ftype: instance_ftype.clone(),
+                ftype: TArc::new(instance_ftype.clone()),
             });
         }
         self.callee = Callee::Static { apply, first_update: true };
@@ -1799,6 +1801,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             && let Err(e) = self.materialize(ctx)
         {
             warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
+            let top_id = self.top_id;
+            self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
             self.callee = Callee::DynamicUnbound;
         }
         // a bound callee rebinds only when its function yields another
@@ -2050,6 +2054,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Decode the instance the image holds for this site and bind it.
+    /// Each variable an imaged body reads that it does not bind, from its
+    /// summary.
+    fn imaged_refs(&self, mut f: impl FnMut(BindId)) {
+        if let Callee::Imaged { summary, .. } = &self.callee {
+            for id in summary.refed.iter().filter(|id| !summary.bound.contains(id)) {
+                f(*id)
+            }
+        }
+    }
+
     fn materialize(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
@@ -2078,6 +2092,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let apply: Box<dyn Apply<R, E>> = match decoded {
             Ok(g) => {
                 ctx.apply_deferred();
+                let top_id = self.top_id;
+                self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
                 Box::new(g)
             }
             Err(e) => {
@@ -2121,21 +2137,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             Box::new(GXLambda::image_decode(ctx, buf)?);
                         Callee::Static { apply, first_update: bool::decode(buf)? }
                     }
-                    // CR claude for claude: [bug] An imaged callee registers none of its
-                    // body's reads with the runtime. They are registered only when
-                    // `materialize` decodes the body at the site's first dispatch,
-                    // while a cold compile registers them before the first cycle. So a
-                    // variable that only such a body reads, in a sleeping select arm or
-                    // a seq step not yet entered, schedules nothing when it is written
-                    // alone in its cycle. `TrackedFires::observe` never sees the fire
-                    // and the arm wakes without its catch-up, on warm starts only: a
-                    // seq waiting on `until` whose next step calls a function that
-                    // samples a reply never completes. Register the summary's `refed`
-                    // minus `bound` for `top_id` here, and release them when the site
-                    // materializes or is deleted while still imaged; the fuzzer cannot
-                    // see this, so the pin is a shell cold-vs-warm run. probe:
-                    // design/review-2026-10-05/repro/x-image-02.sh (select: cold "A" "1
-                    // 1", warm "A"; seq: cold "got: pong", warm nothing). (x-image-02)
                     true => Callee::Imaged {
                         instance: LambdaInstanceId::decode(buf)?,
                         first_update: bool::decode(buf)?,
@@ -2165,6 +2166,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.static_target = static_target;
         site.lowered = lowered;
         site.recursive_edge = AtomicBool::new(recursive_edge);
+        // an imaged body's reads schedule this statement before the body
+        // decodes, as a cold compile's registrations do
+        site.imaged_refs(|id| ctx.rt.ref_var(id, top_id));
         Ok(Node::new(site))
     }
 }
@@ -2238,6 +2242,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             n.delete(ctx);
             return;
         }
+        let top_id = self.top_id;
+        self.imaged_refs(|id| ctx.rt.unref_var(id, top_id));
         if let Some(mut f) = self.callee.take_apply() {
             f.delete(ctx)
         }
@@ -2329,7 +2335,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     ftype.instantiate(&ctx.rec_defs)
                 };
                 fill_omitted(&mut self.args, &ftype)?;
-                self.ftype = Some(ftype);
+                self.ftype = Some(TArc::new(ftype));
                 self.ftype.as_ref().unwrap()
             }
         };
@@ -2455,7 +2461,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if !wrap!(self, types.settle(self.spec.id, &self.rtype))? {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }
-        self.ftype = Some(ftype);
+        self.ftype = Some(TArc::new(ftype));
         Ok(())
     }
 
