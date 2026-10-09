@@ -814,20 +814,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 self_t = self_t.lookup_ref(&ctx.env)?;
             }
         }
-        // XCR claude for eric: [bug/medium] A call whose self argument is only ever
-        // bottom, `csize(never())` for `let csize = 'c: Collection |c: 'c|
-        // Collection::fold(c, 0, |acc, x| acc)`, passes the check (the gate defers it) but
-        // its instance refuses it here, because 'c<_> stays open. So --check and the LSP
-        // accept a program the build refuses, which the fuzzer's check pair flags. Which
-        // is the rule: refuse it at the check (the settle sees the open self and asks for
-        // an annotation), or accept it at elaboration (a self that is never produced
-        // dispatches nothing; lower to a bottom)? The second matches how a ⊥ operand
-        // takes the other's type elsewhere. probe:
-        // design/review-2026-10-05/repro/trait-bottom-self-01.gx (trait-bottom-self-01)
-        // 2026-10-08 claude: ruled (Eric): accept at the build. contains marks a
-        // constructor application's open cells fed ⊥, so the settle makes such a
-        // self ⊥ (or ⊥ applied), and the call lowers to `never(<args>)`
-        // (CallSite::lower_bottom_self). Pin: lang::traits::trait_call_over_bottom_self.
         if self_t.has_unbound() {
             if ctx.def_gate_depth > 0 {
                 return Ok(None);
