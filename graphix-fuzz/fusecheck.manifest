@@ -182,6 +182,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 1	framed-formal-seed-aug2026/02_found_form_min_element.gx
 0	function-bound-oct2026/00_queuefn_non_function.gx
+0	function-bound-oct2026/01_queuefn_defaulted_label.gx
 2	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx
 1	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 0	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx

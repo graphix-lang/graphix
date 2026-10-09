@@ -152,6 +152,29 @@ run!(http_abandoned_request_then_good, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "200 hi bob")
 }; FuseExpect::Jit);
 
+// A request that raises as it is dispatched, in the cycle the one before
+// it was answered with its own error, is answered with its own.
+run!(http_raises_answer_their_own_requests, r#"{
+    let handler = |req: http::Request| {
+        let late = sys::time::after_idle(duration:300.ms, req.path);
+        let p = select req.path { "/a" => late, p => p };
+        let e: Result<string, `Bad(string)> = error(`Bad(p));
+        { body: e?, headers: [], status: u16:200, url: "" }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let a = http::request(client, "http://[addr]/a")$;
+    let b = http::request(sys::time::after_idle(duration:100.ms, client), "http://[addr]/b")$;
+    let both = (a.body, b.body);
+    select (str::contains(#part: "/a", both.0), str::contains(#part: "/b", both.1)) {
+        (true, true) => "own errors",
+        _ => "crossed: [both]"
+    }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "own errors")
+}; FuseExpect::Jit);
+
 // A reply that waits on an async value is sent when the value arrives.
 run!(http_async_handler_answers, r#"{
     let handler = |req: http::Request| {

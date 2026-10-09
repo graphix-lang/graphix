@@ -1570,6 +1570,9 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 pub struct ErrorRelay {
     handler: ErrorHandler,
     received: u64,
+    /// The cycle whose delivery was taken: a later raise that cycle
+    /// arrives the next.
+    last_cycle: Option<u64>,
 }
 
 impl ErrorRelay {
@@ -1598,7 +1601,7 @@ impl ErrorRelay {
         ctx.record_ref(bind_id, top_id);
         let covered = scope.with_catch((bind_id, top_id), false);
         let handler = covered.dynamic.handler().unwrap();
-        (Self { handler, received: 0 }, covered)
+        (Self { handler, received: 0, last_cycle: None }, covered)
     }
 
     /// The error the function raised this cycle, which also goes on.
@@ -1607,14 +1610,18 @@ impl ErrorRelay {
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Option<Value> {
         let (bind_id, _) = self.handler.id();
+        let cycle = ctx.rt.cycle();
         let e = match read_var(ctx, &bind_id) {
             Some(VarRead::Delivered(tv))
-                if tv.tag().is_fired() && self.received != self.handler.generation() =>
+                if self.last_cycle != Some(cycle)
+                    && tv.tag().is_fired()
+                    && self.received != self.handler.generation() =>
             {
                 tv.value_cloned()
             }
             _ => return None,
         };
+        self.last_cycle = Some(cycle);
         self.received = self.received.wrapping_add(1);
         self.handler.handled();
         match self.handler.parent().handler() {
@@ -1655,6 +1662,6 @@ impl ErrorRelay {
         let handler = image::handler_decode(buf)?;
         let (bind_id, top_id) = handler.id();
         ctx.record_ref(bind_id, top_id);
-        Ok(Self { handler, received: 0 })
+        Ok(Self { handler, received: 0, last_cycle: None })
     }
 }

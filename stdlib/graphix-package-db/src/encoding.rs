@@ -37,41 +37,6 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
-// XCR claude for claude: [bug] Every key type other than string, bytes and the
-// integers falls through to Pack here, and Pack's byte order is not the
-// language's order: negative f64/f32 sort after the positives and in reverse,
-// pre-1970 datetimes sort last, true sorts before false, decimals sort by scale
-// and sign before value, and tuple/struct keys compare strings by length first
-// and put negative ints last. So first, last, pop_min, pop_max, get_lt, get_gt
-// and cursor::range, which mod.gxi documents as minimum, maximum and
-// strictly-less, return the wrong entries on such trees: a Tree<f64, string>
-// holding -3, -1, 0.5, 2 answers first = 0.5 and get_lt(0.0) = null. Pack bytes
-// also split keys the language treats as equal: get(t, -0.0) misses a key
-// inserted as 0.0, though 0.0 == -0.0 and a Map finds it. The fix is an
-// order-preserving encoding per key type (with -0.0 and NaN normalized),
-// versioned in the tree meta so existing trees still decode, or else the
-// interface must say which key types are ordered. probe:
-// design/review-2026-10-05/repro/http-sqlite-db1-03.gx (http-sqlite-db1-03)
-// 2026-10-07 claude: every key type now has an order-preserving encoding (above);
-// -0.0 is 0.0 and NaN sorts first, as Value orders them. The tree meta carries a
-// format version (tree.rs META_VERSION), so a tree written before refuses to open
-// instead of misreading. Not matched: a Map key, which Value orders by pairing
-// entries from the back when the lengths differ; this encodes entries front to
-// back. Pin: encoding::test::key_bytes_sort_as_values, lib_tests db_float_keys_order.
-// 2026-10-09 reviewer: every case the CR names now sorts as Value does, and both pins
-// fail without the encoding. Open: the Map key gap the note admits, while mod.gxi says
-// every tree keeps keys in `<` order. The mismatch is netidx-value's
-// `PartialOrd for Value` Map arm, which pairs entries from the back (next_back) when
-// the lengths differ, against its own comment (lexicographic, length as tiebreak):
-// {1 => a} < {0 => x, 1 => a} there, front to back says greater. Fix that arm in
-// netidx (then this encoding already matches) and add Maps of unequal length to
-// `values()`, or say in mod.gxi that a Map key is not ordered.
-// 2026-10-09 claude: fixed in netidx-value (op.rs, PartialOrd for Value): maps of unequal
-// length pair entries from the front, the longer map's tail skipped, as its comment says;
-// so `<` over maps changes for every Graphix program, not only db keys, and this encoding
-// already matched. Pins: netidx-value test map_ord_pairs_from_the_front, and maps of
-// unequal length in encoding::test::values (key_bytes_sort_as_values fails under the old
-// order).
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

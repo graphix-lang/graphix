@@ -15,6 +15,7 @@ use graphix_compiler::{
     expr::{
         ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
+        parser,
     },
     ide::ExprTypeSite,
     typ::{FnArgType, FnType, Mutability, Type},
@@ -645,8 +646,9 @@ fn shared_var(
 }
 
 /// Family 8. A call argument whose parameter is `'a: Function` (a builtin
-/// that wraps a function) replaced by a literal: the bound admits only a
-/// function type (`Type::Function`). Right site: the call.
+/// that wraps a function) replaced by a literal, or by a function with a
+/// defaulted label: the bound admits only a function type a generated call
+/// passes every argument of (`Type::function_holds`). Right site: the call.
 fn function_bound(
     root: &Expr,
     pre: &[Expr],
@@ -674,10 +676,13 @@ fn function_bound(
         });
         let Some((at, _, _)) = found else { continue };
         let lit = ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
-        let cand = mutate::replace(root, at, &lit);
-        out.extend(finish(Family::FunctionBound, i, &cand, |_, pre| {
-            vec![pre.get(i).and_then(span)]
-        }));
+        let defaulted = parser::parse_one("|#d: i64 = 0| d").expect("a lambda");
+        for arg in [lit, defaulted] {
+            let cand = mutate::replace(root, at, &arg);
+            out.extend(finish(Family::FunctionBound, i, &cand, |_, pre| {
+                vec![pre.get(i).and_then(span)]
+            }));
+        }
         taken += 1;
     }
 }

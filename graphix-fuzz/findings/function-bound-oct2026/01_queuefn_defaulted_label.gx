@@ -1,0 +1,4 @@
+// expect: reject
+// queuefn's wrapper passes every formal and no more, so it cannot wrap a
+// function with a defaulted label: `Function` refuses it at the check.
+queuefn(#trigger: 0, |#d: i64 = 0, x: i64| -> i64 x + d)(1)

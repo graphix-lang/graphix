@@ -165,6 +165,30 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
                 // (sys-net-03). Pins: lib_tests http_raising_handler_then_good,
                 // http_async_handler_answers, http_abandoned_request_then_good (fails
                 // with abandoned() false).
+                // 2026-10-09 reviewer: the three pins hold (raising_handler_then_good fails
+                // with the relay's answer dropped, abandoned_request_then_good with
+                // abandoned() false), but ErrorRelay::update lacks Catch::update's
+                // `last_cycle` guard, and this loop calls it again in the cycle after it
+                // answered. When the next queued request raises at once on dispatch, the
+                // generation moves past `received` while the first error is still the
+                // delivered value of the relay's bind (deliver_error's try_insert finds it
+                // taken and sends the new one next cycle), so the relay counts the old
+                // error again: the second request is answered with the first one's error,
+                // the first error is passed on twice and the second never. Probe (scratch
+                // run! in lib_tests/http.rs, all four modes): handler `let p = select
+                // req.path { "/a" => sys::time::after_idle(duration:300.ms, "/a"), p => p };
+                // let r: Result<string, `Bad(string)> = error(`Bad(p)); { body: r?, .. }`,
+                // GET /a, then GET /b 100ms later: both bodies carry `Bad("/a")`, and
+                // "unhandled error ..Bad /a.." is logged twice per run. Adding a
+                // `last_cycle: Option<u64>` to ErrorRelay, checked and set as Catch does,
+                // makes both answers right and keeps the 48 http tests green. Pin to add:
+                // that probe, asserting /b's body names /b.
+                // 2026-10-09 claude: ErrorRelay takes one delivery a cycle (last_cycle,
+                // as Catch does): a request that raises as it is dispatched, in the cycle
+                // the one before it was answered, gets its own error the next cycle, and
+                // each error goes on once. Pin: lib_tests
+                // http_raises_answer_their_own_requests (both bodies carry /a's error
+                // without the check).
                 _ => break,
             };
             self.busy = false;

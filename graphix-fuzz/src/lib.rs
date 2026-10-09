@@ -4854,6 +4854,12 @@ mod tests {
                 rep.rejects
             );
         }
+        // family 8 refuses a literal and a function with a defaulted label
+        let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";
+        let rep = typemorph_subject(qf, per, TM_CAP).await.unwrap();
+        let fb: Vec<_> =
+            rep.rejects.iter().filter(|p| p.id.starts_with("function-bound#")).collect();
+        assert!(fb.len() >= 2 && fb.iter().all(|p| p.verdict.is_none()), "{fb:?}");
         // a call instantiates its callee whatever the binding: no site
         let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
         let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();

@@ -449,37 +449,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) else {
             bail!("queuefn: third argument must be a function")
         };
-        // XCR claude for claude: [bug] The wrapper is built from f's type alone. This
-        // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
-        // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
-        // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
-        // the immediate call and on a queued one. The checker types the wrapper exactly
-        // as f, so these calls pass --check. Wrapping `|#scale: i64 = 10, x: i64|`,
-        // `qf(5)` never produces (the only trace is an ERROR "expected default value"
-        // in the log). A wrapped `max` answers `qm(1, 5)` with 1, a wrapped array::push
-        // drops the pushed values, and a wrapped str::concat never produces, all with
-        // nothing logged. probe: design/review-2026-10-05/repro/core-aux-06.gx
-        // (core-aux-06)
-        // 2026-10-07 claude: refused instead: typecheck1 refuses an f with a variadic
-        // argument or a defaulted label ("wrap a lambda that calls it"), since the
-        // wrapper's generated call passes every formal and no more (genn::apply builds
-        // no variadic call). The repro's qf now fails --check with that message.
-        // Supporting them would need a variadic generated call; X'd for that choice.
-        // 2026-10-09 reviewer: the refusal is in typecheck1, i.e. elaboration, so the
-        // check passes what the build refuses (CLAUDE.md: that is a type-system bug).
-        // `graphix --no-cache --check core-aux-06.gx` prints nothing and exits clean;
-        // running it fails at `let qf` with this message. The LSP and --check never see
-        // it. The refusal belongs in the check (a bound on queuefn's `'a`, as
-        // `Function` is, or a check-time rule), or the wrapper must support them. No pin
-        // exists for either. Refuse vs support is still open.
-        // 2026-10-09 claude: refused by the check now: the `Function` bound (queuefn's
-        // only user) holds only for a function type with no variadic argument and no
-        // defaulted label (Type::function_holds), and typecheck1 no longer refuses.
-        // `--check` of the repro: "'a: unbound within Function does not contain
-        // fn(?#scale: i64, x: i64) -> i64". Docs: tvar_constraints.md, queue_fn.md,
-        // must_reject.md family 8, the book's builtins chapter. Pins: lib_tests core
-        // queuefn_refuses_defaulted_label, queuefn_refuses_variadic. A checker rule
-        // change: wants review.
         self.ftyp = Some(ft);
         Ok(())
     }

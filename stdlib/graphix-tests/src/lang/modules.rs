@@ -1135,7 +1135,9 @@ async fn instances_share_their_lowerings() -> Result<()> {
             r#"{{
                 let f = |x: i64| {{
                     let g = |y: i64| seq {{ let a = y; a + 1 }};
-                    seq {{ try {{ let b = [g(x)][0]?; b }} with(e) {{ 0 }} }}
+                    seq {{
+                        try {{ let b = [g(x)][0]?; seq {{ let c = b; c }} }} with(e) {{ 0 }}
+                    }}
                 }};
                 array::fold(array::init({n}, f), 0, |acc, v| acc + v)
             }}"#

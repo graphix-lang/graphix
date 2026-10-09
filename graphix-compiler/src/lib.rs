@@ -1240,6 +1240,30 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // runtime instances; 5 vs 33 with a fresh body scope per instance). A REPL line's
     // lowering stays, as its bindings in the env do: it grows with what is typed, not
     // with what runs.
+    // 2026-10-09 reviewer: the reload drop holds and its pin fails without it (3 vs 31,
+    // retain disabled in a scratch worktree), and the lambda-literal half is pinned (5 vs
+    // 33 with def_scope named by ExprId::new() in lambda_init). Back to CR: the try/with
+    // half is not pinned. instances_share_their_lowerings has no seq INSIDE its try body
+    // (one wraps the try, the other is in g), so naming SeqMachine::compile's nested
+    // scopes by ExprId::new() again leaves both pins green, while
+    // `|x: i64| seq { try { let b = seq { let c = [x][0]?; c + 1 }; b } with(e) { 0 } }`
+    // over 20 instances then lowers 21 times (2 with the fix): put a seq in the pin's try
+    // body. Also: the scope-prefix drop removes a lowering a definition still live after
+    // the reload uses: an old `f` held by `once(foo::f)` and called from new array slots
+    // after a reload lowers its seq again under fresh ids (seen with a SEQMISS print in
+    // the compiler's Seq arm), so those nodes find no DefTable row and derive their own
+    // types; values stay right, and the entry is kept until the next reload. Tying a
+    // lowering's life to its definition (its DefTables) would close that. The REPL
+    // judgement is fair for the shell; an embedder calling GXHandle::compile in a loop
+    // grows the same way, and lowered_seqs_len can be `lowered_seqs.len()`.
+    // 2026-10-09 claude: the try/with half is pinned now: instances_share_their_lowerings
+    // puts a seq inside the try body (6 vs 34 with SeqMachine's nested scopes minted
+    // fresh). A definition from a dynamic module held across its reload (once(foo::f))
+    // lowers its seq once more under fresh ids when a new instance binds; its instances
+    // then check instead of substituting, values unchanged, and that one entry lasts
+    // until the next reload: bounded, performance only. Tying a lowering to its
+    // definition would close it, at the cost of carrying the lowering in LambdaDef.
+    // lowered_seqs_len uses len().
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1354,7 +1378,7 @@ impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// The seq lowerings the context keeps.
     pub fn lowered_seqs_len(&self) -> usize {
-        self.lowered_seqs.iter().count()
+        self.lowered_seqs.len()
     }
 
     /// A context for a compile task: it shares the registry, starts from
