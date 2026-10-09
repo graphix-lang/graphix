@@ -425,7 +425,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
-                // CR claude for eric: [bug] Every fire of `path` or `args` spawns
+                // XCR claude for claude: [bug] Every fire of `path` or `args` spawns
                 // another call onto the same `self.id` while earlier calls are still in
                 // flight. The runtime delivers the replies in completion order, so a
                 // slow reply to an abandoned request that lands after the current
@@ -437,7 +437,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                 // CachedArgsAsync does, or re-mint the delivery id per request, as
                 // `sleep` already does, so a stale reply lands nowhere. probe:
                 // design/review-2026-10-05/repro/sys-net-09.gx (sys-net-09)
-                Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
+                // 2026-10-09 claude: Eric ruled 10-09: latest wins. Each call takes a
+                // fresh delivery id (RpcCall::remint, which sleep shares), so a reply to
+                // an earlier call lands nowhere. Pin: lib_tests net_rpc_latest_call_wins
+                // (settles on the slow proc's 1 without the re-mint).
+                Ok((path, args)) => {
+                    self.remint(ctx);
+                    NetState::get(ctx).call_rpc(ctx, path, args, self.id)
+                }
             }
         }
         let res = ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
@@ -473,10 +480,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.remint(ctx);
+        self.out = TagValue::phantom();
+    }
+}
+
+impl RpcCall {
+    /// A fresh delivery id: a reply to an earlier call lands nowhere.
+    fn remint<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
-        self.out = TagValue::phantom();
     }
 }
 
@@ -861,6 +875,17 @@ impl Reply for RpcReply {
     }
 }
 
+/// Named arguments as a struct value, sorted by name; none is null.
+fn args_struct(args: &mut LPooled<Vec<(ArcStr, Value)>>) -> Value {
+    if args.is_empty() {
+        return Value::Null;
+    }
+    args.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Value::Array(ValArray::from_iter_exact(
+        args.drain(..).map(|(n, v)| Value::Array(ValArray::from([Value::String(n), v]))),
+    ))
+}
+
 /// An rpc's spec, from `#spec`: each field's `{default, doc}`.
 fn parse_spec(spec: &Value) -> Result<Vec<ArgSpec>> {
     #[derive(FromValue)]
@@ -898,6 +923,8 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     current: Option<(Path, server::Proc)>,
     /// The handler's argument type, which a call's arguments are cast to.
     cast_typ: Option<Type>,
+    /// The published spec's defaults, which a call's arguments override.
+    defaults: Vec<(ArcStr, Value)>,
     out: TagValue,
 }
 
@@ -909,16 +936,18 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         }
     }
 
-    /// The call's arguments as the handler takes them: sorted into a
-    /// struct and cast to its argument type.
+    /// The call's arguments as the handler takes them: the spec's
+    /// defaults under the arguments given, sorted into a struct and cast to
+    /// its argument type.
     fn arg(&self, ctx: &ExecCtx<'_, R, E>, call: &server::RpcCall) -> Value {
-        let mut args: LPooled<Vec<(ArcStr, Value)>> =
-            call.args.iter().map(|(n, v)| (n.clone(), v.clone())).collect();
-        args.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let args = Value::Array(ValArray::from_iter_exact(
-            args.drain(..)
-                .map(|(n, v)| Value::Array(ValArray::from([Value::String(n), v]))),
-        ));
+        let mut args: LPooled<Vec<(ArcStr, Value)>> = self
+            .defaults
+            .iter()
+            .filter(|(n, _)| !call.args.contains_key(n))
+            .cloned()
+            .chain(call.args.iter().map(|(n, v)| (n.clone(), v.clone())))
+            .collect();
+        let args = args_struct(&mut args);
         match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, args),
             None => args,
@@ -934,19 +963,13 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     ) -> Result<()> {
         let path = as_path(path.clone()).ok_or_else(|| anyhow!("invalid path {path}"))?;
         let spec = parse_spec(spec)?;
+        self.defaults =
+            spec.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
         if let Some(typ) = &self.cast_typ {
             let mut defaults: LPooled<Vec<(ArcStr, Value)>> =
-                spec.iter().map(|a| (a.name.clone(), a.default_value.clone())).collect();
-            defaults.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            let defaults = match defaults.is_empty() {
-                true => Value::Null,
-                false => {
-                    Value::Array(ValArray::from_iter_exact(defaults.drain(..).map(
-                        |(n, v)| Value::Array(ValArray::from([Value::String(n), v])),
-                    )))
-                }
-            };
-            if let Value::Error(e) = typ.cast_value(&ctx.env, defaults) {
+                self.defaults.iter().cloned().collect();
+            if let Value::Error(e) = typ.cast_value(&ctx.env, args_struct(&mut defaults))
+            {
                 bail!("rpc #spec does not fit #f's argument {typ}: {e}")
             }
         }
@@ -986,6 +1009,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             handler,
             current: None,
             cast_typ: resolved.and_then(Self::handler_arg),
+            defaults: Vec::new(),
             out: TagValue::phantom(),
         }))
     }
@@ -1008,6 +1032,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             handler,
             current: None,
             cast_typ,
+            defaults: Vec::new(),
             out: TagValue::phantom(),
         }))
     }
@@ -1059,7 +1084,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             && let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>()
             && let Some(c) = c.0.take()
         {
-            // CR claude for eric: [bug] Calls are answered strictly in order, and only a
+            // XCR claude for claude: [bug] Calls are answered strictly in order, and only a
             // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
             // every later call is blocked forever: they pile up in `queue` without bound,
             // and their callers hang because netidx's client call has no timeout. Any
@@ -1079,8 +1104,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             // raises on is answered with the error; one it is bottom for is no longer
             // answered (a fresh bottom may be an async value still coming), and an rpc reply
             // cannot tell that its caller gave up, so such a call holds up the queue again.
-            let arg = self.arg(ctx, &c);
-            self.handler.push(arg, RpcReply(c));
+            // 2026-10-09 claude: Eric ruled 10-09. Calls run in an instance each through
+            // the Handler (http-sqlite-db1-01), so one unanswered call holds up nothing.
+            // A call's arguments take the spec's defaults under those given, and a call
+            // whose arguments fail the cast is answered with the error and never
+            // dispatched (args_struct; no arguments is null). Pins: lib_tests
+            // net_rpc_defaults (fails without the defaults),
+            // net_rpc_refused_cast_answered.
+            match self.arg(ctx, &c) {
+                e @ Value::Error(_) => RpcReply(c).reply(e),
+                arg => self.handler.push(arg, RpcReply(c)),
+            }
         }
         self.handler.update(ctx);
         match failed {

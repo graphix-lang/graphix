@@ -79,6 +79,7 @@ A fork point is a node with several children it updates in sequence.
 | constructors: struct, tuple, variant, array, list literals, string interpolation (`gather`, C/node/mod.rs:398) | fields | |
 | binary operators (C/node/op.rs:173) | the two operands | |
 | `MapQ` (C/node/collection.rs:918) | slots, as a range | init, map, filter, filter_map, flat_map, find, find_map; `find` keeps the first match in index order at merge |
+| a server's `Handler` (graphix-package-core handler.rs) | the instances of the handler running a request each | `branch::fork_instances`: forked whenever two are running and independent, unmeasured (a request's own cost dwarfs a fork); each instance binds before the fork |
 
 Not fork points: the root loop (top-level roots are not planned, §4.3),
 a fused kernel's feeders (`FusedKernel::update` polls them in order),

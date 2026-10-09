@@ -800,8 +800,11 @@ not a gap count.
 `design/parallel_eval.md`. A cycle's update pass forks independent
 subtrees onto the process's evaluation pool (`branch::eval_pool`,
 `GRAPHIX_EVAL_THREADS` workers): a block's runs, a call's arguments, a
-constructor's fields, an operator's operands, a collection's slots and a
-kernel's top-level map-family loops (chunks, `fusion/par_loop.rs`).
+constructor's fields, an operator's operands, a collection's slots, a
+server's requests (`http::serve`, `sys::net` rpc: an instance of the
+handler per request, `branch::fork_instances`, forked whenever two are
+independent, whatever their cost) and a kernel's top-level map-family
+loops (chunks, `fusion/par_loop.rs`).
 Branches see the runtime through branch views (`RtView`/`ForkRt`,
 `Layered`, `CxView`) and merge back in program order, so a forked cycle
 computes what the serial node-walk does. Siblings are independent iff

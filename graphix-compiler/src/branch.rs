@@ -6,13 +6,13 @@
 //! a parent is suspended in the join until both of its branches return.
 
 use crate::{
-    BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Rt, TagValue, UserEvent,
+    BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue, UserEvent,
     cost::{ForkSite, Meter, Plan},
     expr::ExprId,
-    node::place::Path,
+    node::{callsite::CallNode, place::Path},
 };
 use futures::channel::mpsc;
-use graphix_types::stack::{Control, with_control};
+use graphix_types::stack::{Control, ParMode, with_control};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -835,6 +835,43 @@ where
     });
     merge_in_order(ctx, parts);
     out
+}
+
+/// Update `items`, instances of functions the runtime started (a
+/// server's requests), each on a branch of its own when there are two or
+/// more and [`crate::analysis::independent`] finds them so, else in
+/// order. A fresh instance's call binds here first, so no branch
+/// compiles; `call` is an item's call.
+pub fn fork_instances<R, E, T, O, F>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    items: &mut [T],
+    call: for<'a> fn(&'a mut T) -> &'a mut Node<R, E>,
+    f: F,
+) -> Vec<O>
+where
+    R: Rt,
+    E: UserEvent,
+    T: Send,
+    O: Send,
+    F: Fn(&mut ExecCtx<'_, R, E>, &mut T) -> O + Sync,
+{
+    for item in items.iter_mut() {
+        if let Some(cs) =
+            call(item).downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)
+        {
+            cs.prebind(ctx)
+        }
+    }
+    ctx.apply_deferred();
+    let fork = items.len() >= 2 && ctx.fork_mode() != ParMode::Off && {
+        let calls: LPooled<Vec<&Node<R, E>>> =
+            items.iter_mut().map(|i| &*call(i)).collect();
+        crate::analysis::independent(calls.iter().copied(), ctx)
+    };
+    match fork {
+        true => fork_each(ctx, items.iter_mut(), |c, item| f(c, item)),
+        false => items.iter_mut().map(|item| f(ctx, item)).collect(),
+    }
 }
 
 /// Run `f` over each of `parts` in a compile task of its own, every task

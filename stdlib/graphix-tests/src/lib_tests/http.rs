@@ -23,6 +23,9 @@ use netidx::subscriber::Value;
 // 2026-10-09 claude: http_bottom_handler_then_good is now http_raising_handler_then_good
 // (a `?` raise answers 500); http_abandoned_request_then_good and
 // http_async_handler_answers are new.
+// 2026-10-09 claude: concurrent requests and sequential requests through an async lookup
+// are pinned now (http_concurrent_requests_pair, http_sequential_requests_pair, with
+// db1-01); HTTPS beside an idle connection remains on x-panics-09.
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
@@ -173,6 +176,43 @@ run!(http_raises_answer_their_own_requests, r#"{
     }
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "own errors")
+}; FuseExpect::Jit);
+
+// Concurrent requests each get their own instance's answer.
+run!(http_concurrent_requests_pair, r#"{
+    let handler = |req: http::Request| {
+        let page = sys::time::after_idle(duration:50.ms, "page [req.path]");
+        { body: page, headers: [], status: u16:200, url: "" }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let a = http::request(client, "http://[addr]/a")$;
+    let b = http::request(client, "http://[addr]/b")$;
+    let c = http::request(client, "http://[addr]/c")$;
+    "[a.body] [b.body] [c.body]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "page /a page /b page /c")
+}; FuseExpect::Jit);
+
+// A fire the request did not cause (a shared counter's write) answers
+// nothing: each sequential request gets its own page.
+run!(http_sequential_requests_pair, r#"{
+    let hits = 0;
+    let handler = |req: http::Request| {
+        hits <- req ~ hits + 1;
+        let page = sys::time::after_idle(duration:50.ms, "page [req.path]");
+        { body: page, headers: [("x-hits", "[hits]")], status: u16:200, url: "" }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let a = http::request(client, "http://[addr]/a")$;
+    let b = http::request(a ~ client, "http://[addr]/b")$;
+    let c = http::request(b ~ client, "http://[addr]/c")$;
+    "[a.body] [b.body] [c.body]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "page /a page /b page /c")
 }; FuseExpect::Jit);
 
 // A reply that waits on an async value is sent when the value arrives.

@@ -70,6 +70,19 @@ pub fn apply<R: Rt, E: UserEvent>(
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
 }
 
+/// A call of the function value `f` over `args`: bound at its first
+/// update, or ahead of it by [`crate::branch::fork_instances`].
+pub fn apply_value<R: Rt, E: UserEvent>(
+    f: Value,
+    scope: Scope,
+    args: SmallVec<[Node<R, E>; 2]>,
+    typ: &Arc<FnType>,
+    top_id: ExprId,
+) -> Node<R, E> {
+    let fnode = Constant::new(f, Type::Fn(typ.clone()), crate::expr::Expr::clone(&NOP));
+    apply(fnode, scope, args, typ, top_id)
+}
+
 pub(crate) fn apply_prototype<R: Rt, E: UserEvent>(
     fnode: Node<R, E>,
     scope: Scope,

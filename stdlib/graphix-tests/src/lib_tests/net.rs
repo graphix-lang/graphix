@@ -16,6 +16,8 @@
 // replies out of order (sys-net-09, Eric's).
 // 2026-10-08 claude: re-addressed: what is unpinned (a publisher going away, an rpc
 // server failing or missing, rpc replies out of order) waits on your sys-net-09.
+// 2026-10-09 claude: rpc replies out of order are pinned now (net_rpc_latest_call_wins,
+// with sys-net-09); a publisher going away and an rpc server failing or missing remain.
 use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
@@ -149,6 +151,48 @@ run!(net_rpc0, NET_RPC0, |v: Result<&Value>| {
         _ => false,
     }
 }; FuseExpect::Jit);
+
+// An argument a call omits takes the spec's default.
+run!(net_rpc_defaults, r#"{
+  let p = "/local/rpc_defaults";
+  sys::net::rpc(
+    #path: p,
+    #doc: "add",
+    #spec: {a: {default: 1, doc: "a"}, b: {default: 2, doc: "b"}},
+    #f: |args: {a: i64, b: i64}| args.a + args.b);
+  let r: i64 = sys::net::call(p, {a: 10})?;
+  r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(12))); FuseExpect::Jit);
+
+// A call whose arguments fail the cast is answered with the error and
+// never reaches the handler; the next call is served.
+run!(net_rpc_refused_cast_answered, r#"{
+  let p = "/local/rpc_cast";
+  sys::net::rpc(
+    #path: p,
+    #doc: "add",
+    #spec: {a: {default: 1, doc: "a"}, b: {default: 2, doc: "b"}},
+    #f: |args: {a: i64, b: i64}| args.a + args.b);
+  let bad: [i64, Error<[`RpcError(string), `InvalidCast(string)]>] =
+    sys::net::call(p, {a: "x", b: 1});
+  let good: i64 = sys::net::call(bad ~ p, {a: 3, b: 4})?;
+  (is_err(bad), good)
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::I64(7)])
+}; FuseExpect::Jit);
+
+// A reply to a call the client moved on from lands nowhere: the value
+// settles on the latest call's answer.
+run!(net_rpc_latest_call_wins, r#"{
+  sys::net::rpc(#path: "/local/rpc_slow", #doc: "slow", #spec: null,
+    #f: |a: null| sys::time::after_idle(duration:300.ms, a ~ 1));
+  sys::net::rpc(#path: "/local/rpc_fast", #doc: "fast", #spec: null,
+    #f: |a: null| a ~ 2);
+  let p = "/local/rpc_slow";
+  p <- sys::time::timer(duration:50.ms, false) ~ "/local/rpc_fast";
+  let r: i64 = sys::net::call(p, null)?;
+  sys::time::after_idle(duration:600.ms, r)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); FuseExpect::Jit);
 
 // A re-woken arm's subscribe re-establishes from the present path (the
 // path is a binding). The matcher wants a delivery, a sleep marker (-1),
