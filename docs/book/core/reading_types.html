@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f7316388.js";
+            window.path_to_searchindex_js = "../searchindex-c7227323.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -364,11 +364,12 @@ over <code>v: [`Green, `Red]</code> are refused; select on the value instead
 type compares, unions included: two <code>[</code>Green, <code>Red]</code> values, two
 <code>[string, i64]</code> values, and two <code>[i64, f64]</code> values, whose different
 types order by type before value (<code>i64:3 == f64:3.0</code> is false).</p>
-<p>Because unchecked arithmetic operators like <code>+</code> log errors and return
-bottom on overflow rather than throwing, there is no <code>throws</code> clause
-in the type signature. (The log message is an interpreter debugging
-aid — JIT compiled code, the default, returns bottom without logging.
-Run with <code>--no-fusion</code> to see the diagnostics when debugging.)</p>
+<p>Because unchecked arithmetic operators like <code>+</code> wrap on overflow, and
+<code>/</code> and <code>%</code> return bottom on a zero divisor, rather than throwing, there
+is no <code>throws</code> clause in the type signature. (A bottomed division is
+logged by the interpreter; JIT compiled code, the default, returns
+bottom without logging. Run with <code>--no-fusion</code> to see the diagnostics
+when debugging.)</p>
 <p>In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or
 <code>unbound</code> if they aren’t bound. So in the shell this pops out as,</p>

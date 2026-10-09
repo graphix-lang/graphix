@@ -649,9 +649,10 @@ fn wrap_arith_error(result: Value) -> Value {
 
 /// `l op r` for a same-variant integer pair, in that variant (netidx's
 /// operators fold `v32`/`z32`/`v64`/`z64` into their fixed-width twins).
-/// Unchecked `+ - *` wrap, matching the JIT; any other overflow and a
-/// zero divisor are an error value. `None` for every other shape.
-// CR claude for eric: [doc-drift] The docs disagree with this function. CLAUDE.md says
+/// Unchecked `+ - *` wrap, matching the JIT; `x % -1` is 0; any other
+/// overflow and a zero divisor are an error value naming the failure.
+/// `None` for every other shape.
+// XCR claude for claude: [doc-drift] The docs disagree with this function. CLAUDE.md says
 // "unchecked wraps, integer div0 bottoms", but unchecked / and % also bottom on MIN /
 // -1 and MIN % -1 (checked_div/checked_rem below; the JIT tests for this case in
 // fusion/emit/nodes.rs). book/src/core/fundamental_types.md:28 and :56 say unchecked
@@ -661,18 +662,35 @@ fn wrap_arith_error(result: Value) -> Value {
 // error.md:93) are produced nowhere: every integer failure is "arithmetic error" (line
 // 669), which names neither cause. Fix the three docs, or decide that unchecked / and %
 // wrap too. Either way, have line 669 say which failure happened. (c-error-op-06)
+// 2026-10-09 claude: Eric ruled 10-09 (with x-engine-collections-07): + - * wrap; /
+// bottoms on a zero divisor and on MIN / -1; x % -1 is 0, MIN included, checked and
+// unchecked, and % bottoms only on a zero divisor; every failure names its cause (attempt
+// to add with overflow, .. divide by zero, .. divide with overflow, .. calculate the
+// remainder with a divisor of zero). Both engines share op::arith; the JIT's inline guard
+// divides by 1 for a -1 divisor of %. The book (fundamental_types, polymorphism,
+// reading_types) and CLAUDE.md say so. Pins:
+// lang::errors::checked_failures_name_their_cause, checked_div0, rem_by_neg_one_is_zero
+// (its jit modes fail with the JIT guard undone).
+const ADD_OVERFLOW: ArcStr = literal!("attempt to add with overflow");
+const SUB_OVERFLOW: ArcStr = literal!("attempt to subtract with overflow");
+const MUL_OVERFLOW: ArcStr = literal!("attempt to multiply with overflow");
+const DIV_ZERO: ArcStr = literal!("attempt to divide by zero");
+const DIV_OVERFLOW: ArcStr = literal!("attempt to divide with overflow");
+const REM_ZERO: ArcStr =
+    literal!("attempt to calculate the remainder with a divisor of zero");
+
 fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
     macro_rules! int {
         ($va:ident, $a:expr, $b:expr) => {{
             let (a, b) = ($a, $b);
             let v = match (op, checked) {
-                (BinOp::Add, false) => Some(a.wrapping_add(b)),
-                (BinOp::Sub, false) => Some(a.wrapping_sub(b)),
-                (BinOp::Mul, false) => Some(a.wrapping_mul(b)),
-                (BinOp::Add, true) => a.checked_add(b),
-                (BinOp::Sub, true) => a.checked_sub(b),
-                (BinOp::Mul, true) => a.checked_mul(b),
-                // CR claude for eric: [doc-drift] Unchecked / and % bottom on MIN / -1
+                (BinOp::Add, false) => Ok(a.wrapping_add(b)),
+                (BinOp::Sub, false) => Ok(a.wrapping_sub(b)),
+                (BinOp::Mul, false) => Ok(a.wrapping_mul(b)),
+                (BinOp::Add, true) => a.checked_add(b).ok_or(ADD_OVERFLOW),
+                (BinOp::Sub, true) => a.checked_sub(b).ok_or(SUB_OVERFLOW),
+                (BinOp::Mul, true) => a.checked_mul(b).ok_or(MUL_OVERFLOW),
+                // XCR claude for claude: [doc-drift] Unchecked / and % bottom on MIN / -1
                 // here and in the JIT guard (fusion/emit/nodes.rs:262-276).
                 // CLAUDE.md:518 says unchecked arithmetic wraps. The book says
                 // unchecked + bottoms on overflow (core/fundamental_types.md:28 and
@@ -684,12 +702,17 @@ fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
                 // CLAUDE.md and the book. probe:
                 // design/review-2026-10-05/repro/x-engine-collections-07.gx
                 // (x-engine-collections-07)
-                (BinOp::Div, _) => a.checked_div(b),
-                (BinOp::Mod, _) => a.checked_rem(b),
+                // 2026-10-09 claude: fixed with c-error-op-06's ruling above: MIN % -1
+                // and MIN %? -1 are 0 in both engines. Pin:
+                // lang::errors::rem_by_neg_one_is_zero.
+                (BinOp::Div, _) if b == 0 => Err(DIV_ZERO),
+                (BinOp::Div, _) => a.checked_div(b).ok_or(DIV_OVERFLOW),
+                (BinOp::Mod, _) if b == 0 => Err(REM_ZERO),
+                (BinOp::Mod, _) => Ok(a.wrapping_rem(b)),
             };
             Some(match v {
-                Some(v) => Value::$va(v),
-                None => Value::error(literal!("arithmetic error")),
+                Ok(v) => Value::$va(v),
+                Err(msg) => Value::error(msg),
             })
         }};
     }

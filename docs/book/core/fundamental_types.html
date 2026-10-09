@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f7316388.js";
+            window.path_to_searchindex_js = "../searchindex-c7227323.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -201,9 +201,12 @@ the other number types.</p>
 </tbody>
 </table>
 </div>
-<p>Unchecked operators log an error and return bottom (no value) on
-overflow, underflow, or division by zero. The expression simply stops
-updating until the inputs change to values that produce a valid result.</p>
+<p>Unchecked integer <code>+</code>, <code>-</code> and <code>*</code> wrap on overflow (`i64:9223372036854775807</p>
+<ul>
+<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>log an error and return bottom (no value) on a zero divisor, and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
+-1<code>is</code>0`. A bottomed expression simply stops updating until its inputs
+change to values that produce a valid result.</li>
+</ul>
 <p>Checked operators return a union type <code>[T, Error&lt;</code>ArithError(string)&gt;]<code>, allowing you to handle arithmetic errors explicitly using </code>?<code>, </code>$<code>, or </code>select`.</p>
 <p>The compiler will let you do arithmetic on different types of numbers directly
 without casting, however the return type of the operation will be the set of all
@@ -222,7 +225,7 @@ Caused by:
     1: at: line: 1, column: 3, in: (f64:1. + i64:1)
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 </code></pre>
-<p>With unchecked operators, division by zero and overflow log an error and return bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
+<p>With unchecked operators, a division by zero logs an error and returns bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
 -: i64
 </code></pre>

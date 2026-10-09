@@ -25,9 +25,12 @@ the other number types.
 | Divide    |     /     |   /?    |
 | Mod       |     %     |   %?    |
 
-Unchecked operators log an error and return bottom (no value) on
-overflow, underflow, or division by zero. The expression simply stops
-updating until the inputs change to values that produce a valid result.
+Unchecked integer `+`, `-` and `*` wrap on overflow (`i64:9223372036854775807
++ 1` is the smallest `i64`). Unchecked `/` and `%` log an error and
+return bottom (no value) on a zero divisor, and `/` also on the one
+quotient that overflows, the smallest signed value divided by `-1`; `x %
+-1` is `0`. A bottomed expression simply stops updating until its inputs
+change to values that produce a valid result.
 
 Checked operators return a union type `[T, Error<`ArithError(string)>]`,
 allowing you to handle arithmetic errors explicitly using `?`, `$`, or
@@ -53,7 +56,7 @@ Caused by:
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 ```
 
-With unchecked operators, division by zero and overflow log an error and return bottom -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
+With unchecked operators, a division by zero logs an error and returns bottom -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
 
 ```graphix
 〉0 / 0

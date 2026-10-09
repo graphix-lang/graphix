@@ -316,11 +316,12 @@ type compares, unions included: two `[`Green, `Red]` values, two
 `[string, i64]` values, and two `[i64, f64]` values, whose different
 types order by type before value (`i64:3 == f64:3.0` is false).
 
-Because unchecked arithmetic operators like `+` log errors and return
-bottom on overflow rather than throwing, there is no `throws` clause
-in the type signature. (The log message is an interpreter debugging
-aid — JIT compiled code, the default, returns bottom without logging.
-Run with `--no-fusion` to see the diagnostics when debugging.)
+Because unchecked arithmetic operators like `+` wrap on overflow, and
+`/` and `%` return bottom on a zero divisor, rather than throwing, there
+is no `throws` clause in the type signature. (A bottomed division is
+logged by the interpreter; JIT compiled code, the default, returns
+bottom without logging. Run with `--no-fusion` to see the diagnostics
+when debugging.)
 
 In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or

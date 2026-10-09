@@ -242,22 +242,29 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
         && node_int_div_may_bottom(lhs, rhs)
     {
         let is_zero = cx.b.ins().icmp_imm(IntCC::Equal, r, 0);
-        let bad = if prim.is_signed() {
-            let min: i64 = match prim {
-                PrimType::I8 => i8::MIN as i64,
-                PrimType::I16 => i16::MIN as i64,
-                PrimType::I32 => i32::MIN as i64,
-                _ => i64::MIN,
-            };
-            let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
-            let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
-            let overflow = cx.b.ins().band(is_min, is_neg1);
-            cx.b.ins().bor(is_zero, overflow)
-        } else {
-            is_zero
+        // `x % -1` is `x % 1`, 0, without the MIN ÷ -1 the hardware traps on
+        let (bad, divisor_one) = match (prim.is_signed(), op) {
+            (false, _) => (is_zero, is_zero),
+            (true, BinOp::Mod) => {
+                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                (is_zero, cx.b.ins().bor(is_zero, is_neg1))
+            }
+            (true, _) => {
+                let min: i64 = match prim {
+                    PrimType::I8 => i8::MIN as i64,
+                    PrimType::I16 => i16::MIN as i64,
+                    PrimType::I32 => i32::MIN as i64,
+                    _ => i64::MIN,
+                };
+                let is_min = cx.b.ins().icmp_imm(IntCC::Equal, l, min);
+                let is_neg1 = cx.b.ins().icmp_imm(IntCC::Equal, r, -1);
+                let overflow = cx.b.ins().band(is_min, is_neg1);
+                let bad = cx.b.ins().bor(is_zero, overflow);
+                (bad, bad)
+            }
         };
         let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
-        let safe_r = cx.b.ins().select(bad, one, r);
+        let safe_r = cx.b.ins().select(divisor_one, one, r);
         let value = compile_bin(cx.b, op, prim, l, safe_r)?;
         // A div0 / signed MIN÷-1 taints the result, as does a tainted operand.
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
@@ -1252,9 +1259,9 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// Whether an integer `/` or `%` may bottom: false only when the
-/// divisor is a constant that provably cannot. Sees through
-/// `ExplicitParens`.
+/// Whether an integer `/` or `%` needs its divisor guarded: false only
+/// when the divisor is a constant that provably cannot be zero or meet
+/// a MIN dividend as -1. Sees through `ExplicitParens`.
 fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,

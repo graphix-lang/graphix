@@ -58,8 +58,8 @@ let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x
 ```
 
 which takes an `[i64, null]` or an `[f64, null]`, and refuses an
-`[i64, f64, null]`. Because unchecked `+` returns bottom on overflow
-rather than throwing, there is no `throws` clause. We can
+`[i64, f64, null]`. Because unchecked `+` wraps on overflow rather
+than throwing, there is no `throws` clause. We can
 still call this `f` with any number type,
 
 ```graphix
@@ -210,8 +210,8 @@ So in plain English this says that the arguments to the function can by any type
 as long as it is a number, and the function will return some type which is a
 number. None of the three numbers need to be the same type of number.
 
-Because unchecked `+` returns bottom on overflow rather than throwing,
-there is no `throws` clause in the type. If you want arithmetic errors
+Because unchecked `+` wraps on overflow rather than throwing, there is
+no `throws` clause in the type. If you want arithmetic errors
 to be part of the type, use the checked operator `+?` instead, which
 returns `[T, Error<`ArithError(string)>]`.
 

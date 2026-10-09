@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f7316388.js";
+            window.path_to_searchindex_js = "searchindex-c7227323.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -773,9 +773,12 @@ the other number types.</p>
 </tbody>
 </table>
 </div>
-<p>Unchecked operators log an error and return bottom (no value) on
-overflow, underflow, or division by zero. The expression simply stops
-updating until the inputs change to values that produce a valid result.</p>
+<p>Unchecked integer <code>+</code>, <code>-</code> and <code>*</code> wrap on overflow (`i64:9223372036854775807</p>
+<ul>
+<li>1<code>is the smallest</code>i64<code>). Unchecked </code>/<code>and</code>%<code>log an error and return bottom (no value) on a zero divisor, and</code>/<code>also on the one quotient that overflows, the smallest signed value divided by</code>-1<code>; </code>x %
+-1<code>is</code>0`. A bottomed expression simply stops updating until its inputs
+change to values that produce a valid result.</li>
+</ul>
 <p>Checked operators return a union type <code>[T, Error&lt;</code>ArithError(string)&gt;]<code>, allowing you to handle arithmetic errors explicitly using </code>?<code>, </code>$<code>, or </code>select`.</p>
 <p>The compiler will let you do arithmetic on different types of numbers directly
 without casting, however the return type of the operation will be the set of all
@@ -794,7 +797,7 @@ Caused by:
     1: at: line: 1, column: 3, in: (f64:1. + i64:1)
     2: type mismatch '_1046: i64 does not contain [i64, f64]
 </code></pre>
-<p>With unchecked operators, division by zero and overflow log an error and return bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
+<p>With unchecked operators, a division by zero logs an error and returns bottom – the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.</p>
 <pre><code class="language-graphix">〉0 / 0
 -: i64
 </code></pre>
@@ -1323,11 +1326,12 @@ over <code>v: [`Green, `Red]</code> are refused; select on the value instead
 type compares, unions included: two <code>[</code>Green, <code>Red]</code> values, two
 <code>[string, i64]</code> values, and two <code>[i64, f64]</code> values, whose different
 types order by type before value (<code>i64:3 == f64:3.0</code> is false).</p>
-<p>Because unchecked arithmetic operators like <code>+</code> log errors and return
-bottom on overflow rather than throwing, there is no <code>throws</code> clause
-in the type signature. (The log message is an interpreter debugging
-aid — JIT compiled code, the default, returns bottom without logging.
-Run with <code>--no-fusion</code> to see the diagnostics when debugging.)</p>
+<p>Because unchecked arithmetic operators like <code>+</code> wrap on overflow, and
+<code>/</code> and <code>%</code> return bottom on a zero divisor, rather than throwing, there
+is no <code>throws</code> clause in the type signature. (A bottomed division is
+logged by the interpreter; JIT compiled code, the default, returns
+bottom without logging. Run with <code>--no-fusion</code> to see the diagnostics
+when debugging.)</p>
 <p>In the shell this type signature is made a bit more complex by the
 shell also telling you what type variables are currently bound to, or
 <code>unbound</code> if they aren’t bound. So in the shell this pops out as,</p>
@@ -2755,8 +2759,8 @@ numeric type, so a nullable number of one numeric type is</p>
 <pre><code class="language-graphix">let f = 'a: [Number, null] + OneNumber |x: 'a| -&gt; 'a x
 </code></pre>
 <p>which takes an <code>[i64, null]</code> or an <code>[f64, null]</code>, and refuses an
-<code>[i64, f64, null]</code>. Because unchecked <code>+</code> returns bottom on overflow
-rather than throwing, there is no <code>throws</code> clause. We can
+<code>[i64, f64, null]</code>. Because unchecked <code>+</code> wraps on overflow rather
+than throwing, there is no <code>throws</code> clause. We can
 still call this <code>f</code> with any number type,</p>
 <pre><code class="language-graphix">〉f(1.212, 2.0)
 -: f64
@@ -2866,8 +2870,8 @@ args and the return type.</p>
 <p>So in plain English this says that the arguments to the function can by any type
 as long as it is a number, and the function will return some type which is a
 number. None of the three numbers need to be the same type of number.</p>
-<p>Because unchecked <code>+</code> returns bottom on overflow rather than throwing,
-there is no <code>throws</code> clause in the type. If you want arithmetic errors
+<p>Because unchecked <code>+</code> wraps on overflow rather than throwing, there is
+no <code>throws</code> clause in the type. If you want arithmetic errors
 to be part of the type, use the checked operator <code>+?</code> instead, which
 returns <code>[T, Error&lt;</code>ArithError(string)&gt;]`.</p>
 <p>We can indeed call <code>f</code> with different number types, and it works just fine,</p>

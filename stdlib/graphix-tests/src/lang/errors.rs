@@ -34,9 +34,58 @@ const CHECKED_DIV0: &str = r#"
 "#;
 
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
-    Ok(Value::String(s)) => s == "arithmetic error",
+    Ok(Value::String(s)) => s == "attempt to divide by zero",
     _ => false,
 });
+
+// `x % -1` is 0 for every x, MIN included, checked or not; `%` fails
+// only on a zero divisor. The divisor is a parameter, so the kernel
+// guards it at run time.
+const REM_BY_NEG_ONE_IS_ZERO: &str = r#"
+{
+    let rem = |a: i64, b: i64| -> i64 a % b;
+    let rem8 = |a: i8, b: i8| -> i8 a % b;
+    let mn = -9223372036854775807 - 1;
+    let n1 = -1;
+    (#[native] rem(mn, n1), #[native] rem(7, n1), #[native] rem8(i8:-128, i8:-1), (mn %? n1)$)
+}
+"#;
+
+run!(rem_by_neg_one_is_zero, REM_BY_NEG_ONE_IS_ZERO, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        matches!(&a[..], [Value::I64(0), Value::I64(0), Value::I8(0), Value::I64(0)])
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+// Each checked failure names its cause.
+const CHECKED_FAILURES_NAME_THEIR_CAUSE: &str = r#"
+{
+    let mx = 9223372036854775807;
+    let mn = -9223372036854775807 - 1;
+    let z = 0;
+    [mx +? 1, mn -? 1, mx *? 2, 1 /? z, mn /? -1, 1 %? z]
+}
+"#;
+
+run!(
+    checked_failures_name_their_cause,
+    CHECKED_FAILURES_NAME_THEIR_CAUSE,
+    |v: Result<&Value>| {
+        let cause = |c: &str| format!(r#"error:["ArithError", "attempt to {c}"]"#);
+        let want = [
+            "add with overflow",
+            "subtract with overflow",
+            "multiply with overflow",
+            "divide by zero",
+            "divide with overflow",
+            "calculate the remainder with a divisor of zero",
+        ]
+        .map(cause)
+        .join(", ");
+        format!("{}", v.unwrap()) == format!("[{want}]")
+    }
+);
 
 // A handler-ful `?` in a fused region raises its error onto the
 // invocation's queue and the handler counts it.
