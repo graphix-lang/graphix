@@ -1626,34 +1626,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// the arm's shallow discriminator. The checker narrows the arm's
     /// binds by exactly this, so a value that fails it is never
     /// delivered to them.
-    // XCR claude for eric: [bug] This test cannot tell apart union members that share a
-    // runtime representation: a nullary variant `A is the string "A", and tuples,
-    // structs, payload variants and List cells are all arrays. The checker keeps those
-    // members apart and requires an arm for each. At run time the first arm whose shape
-    // fits wins: over [string, `A] an `A value takes a `string as s` arm and the string
-    // "A" takes an `A arm; a (i64, i64) takes an Array<i64> arm; an empty List takes an
-    // Array arm. Union trait dispatch lowers to this select, so Show::show over
-    // [string, `A] runs the string impl for `A, and == over that union says "A" == `A.
-    // Both engines agree, so the fuzzer cannot see it; either refuse a type-tested or
-    // compared union whose members overlap in runtime footprint, or give those members
-    // distinct representations. probe:
-    // design/review-2026-10-05/repro/x-typecheck-patterns-04.gx
-    // (x-typecheck-patterns-04)
-    // 2026-10-06 claude: selects and union trait dispatch are done: an arm that would
-    // tell apart two types with one runtime form is refused (Type::rep_collision in
-    // Select::typecheck0_with; pins lang::select::same_form_*, must-reject family 10).
-    // `==` and map keys over such a union are not: "A" == `A is still true. The probe's
-    // f, g, h, l and d are refused.
-    // 2026-10-06 claude: `==`, the other comparisons and map keys are refused too
-    // (PendingSettle::SameForm: Type::rep_ambiguity over a compared type,
-    // Type::map_key_ambiguity over a map literal's type and every call's return type).
-    // Pinned by lang::select::same_form_compare_refused and same_form_map_key_refused.
-    // 2026-10-06 claude: the rule is now the `Discernible` bound
-    // (PendingSettle::SameForm became PendingSettle::Discernible): comparisons, map
-    // literals and the stdlib functions that compare or hash carry it, a generic
-    // definition's variable takes it from its body and each call checks it, and a
-    // call's member left open is judged at the settle. Pins:
-    // lang::types::discernible_refuses_one_runtime_form, discernible_accepts.
     pub(super) fn shape_matches(
         &self,
         env: &Env,
