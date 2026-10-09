@@ -50,6 +50,19 @@ use triomphe::Arc;
 // the bind ids it registers; then see what can be shared with its definition or not
 // kept at all. Containment of a runaway recursion is folded into t-misc-01.
 // (runtime-heap-01)
+// 2026-10-09 claude: Eric folded x-alloc-06 and c-cost-misc-06 into this; scheduled
+// after the CR walk and the combined soak. What they measured (massif, debug,
+// --no-fusion, GRAPHIX_PAR=off; probe design/review-2026-10-05/repro/c-cost-misc-06.gx):
+// 100 slots of f(2, x) vs f(4, x) peak at 41.9 vs 79.2 MB, 15.5 KB per instance. Per
+// instance, by allocation site: fresh type cells made at each node's compile and then
+// replaced by the substitution (Type::empty_tvar, TVar::default, empty_generic) ~2.5
+// KB; Ref nodes (Ref::compile, with_signature) ~2.2 KB; the call site (compile,
+// prepare_bind, resolve_static, arg_ref) ~1.8 KB, a few hundred bytes of it the spec
+// copies (arg_ref's TArc::new(n.spec().clone()) per argument and genn::apply_inner's
+// synthesized ApplyExpr per slot; the call site's two FnTypes are already Arc'd); the
+// arm's pattern nodes ~0.7 KB; Constant/Add/Sub/Select nodes ~2.4 KB. The large lever
+// is an instance building its nodes from its definition's types, with no placeholder
+// cells.
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
 pub use error::ErrorRelay;

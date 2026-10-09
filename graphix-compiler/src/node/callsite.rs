@@ -722,21 +722,6 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
-    // CR claude for eric: [perf] A CallSite holds two FnTypes inline, this one and
-    // static_target's, 240 bytes each beside rtype's 64. So every call site, and every
-    // collection slot's synthesized one, is about 890 bytes: 5.3 MB of the 69 MB peak
-    // for 6000 trivial array::init/array::map slots (massif, --no-fusion). Both are set
-    // at a check or a bind and read afterwards, and the instance already holds its type
-    // as an Arc<FnType>, so Arc<FnType> in both places halves the site. Each bind also
-    // copies Expr specs: arg_ref's TArc::new(n.spec().clone()) per argument (0.9 MB
-    // here) and genn::apply_inner's synthesized ApplyExpr per slot (2 x 0.96 MB).
-    // (x-alloc-06)
-    // 2026-10-07 claude: both fn types are Arc'd now. The spec copies (arg_ref's
-    // TArc::new(n.spec().clone()) and genn's synthesized ApplyExpr) remain.
-    // 2026-10-08 claude: measured with c-cost-misc-06: the call site's share of an
-    // instance is ~1.8 KB, these spec copies a few hundred bytes of it; folded into that
-    // work.
-    // 2026-10-08 claude: re-addressed with c-cost-misc-06 above.
     pub(super) ftype: Option<TArc<FnType>>,
     pub(super) rtype: Type,
     pub(crate) fnode: Node<R, E>,
@@ -1450,29 +1435,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `fv`) as a run-time bind, a compile task of its own, leaving it
     /// `DynamicBound`: the outer variables its compiled defaults read,
     /// for [`Self::prime_bound`].
-    // CR claude for eric: [perf] The node-walk keeps about 21 KB per instance of a
-    // 22-node body (about 1 KB per node) and still holds it after the cycle. Since
-    // every call is a retained activation, this footprint sets how far a node-walked
-    // program can go. Probe: design/review-2026-10-05/repro/c-cost-misc-06.gx under
-    // --no-fusion, 1000 slots of a depth-6 binary recursion (127k activations): 2.79 GB
-    // peak against 69 MB fused. Depths 0, 1, 3 and 4 give 106, 147, 409 and 754 MB, or
-    // 20.4-21.6 KB per activation, so a 20000-slot map at depth 6 would need about 53
-    // GB. Small callbacks cost the same way: map(init(n, |i| i), |x| x * 2 + 1) with
-    // its fold takes about 25 KB per slot node-walked. The first step is to measure
-    // what one instance holds: its nodes, its per-instance types and env entries, and
-    // its call-site state. (c-cost-misc-06)
-    // 2026-10-08 claude: measured (massif, debug, --no-fusion, GRAPHIX_PAR=off): 100
-    // slots of f(2, x) vs f(4, x), peak heap 41.9 vs 79.2 MB, so 15.5 KB per instance. By
-    // allocation site, per instance: fresh type cells made at each node's compile and
-    // then replaced by the substitution (Type::empty_tvar, TVar::default, empty_generic)
-    // ~2.5 KB; Ref nodes (Ref::compile, with_signature) ~2.2 KB; the call site (compile,
-    // prepare_bind, resolve_static, arg_ref) ~1.8 KB; the arm's pattern nodes ~0.7 KB;
-    // Constant/Add/Sub/Select nodes ~2.4 KB. The large lever is an instance building its
-    // nodes from its definition's types, with no placeholder cells; x-alloc-06's
-    // remaining spec copies are part of the call-site share.
-    // 2026-10-08 claude: re-addressed, a scope call: the measurement above points at
-    // instances building their nodes without placeholder type cells, a compiler project
-    // of its own (days, and a soak). Schedule it, or close this as measured?
     fn build_bound(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
