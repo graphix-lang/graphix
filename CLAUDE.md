@@ -365,6 +365,10 @@ function. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
 sound.
+A struct cast reads a field the data omits as null wherever null casts
+to the field's type (`typ/cast.rs`), and netidx-value casts an RFC3339
+string to a datetime and an array of numbers to bytes, so what the
+json and toml writers emit reads back into its type.
 A reference is not a number: a cast whose source can hold one is
 refused (`Type::holds_ref`), and where only an instance knows the
 source, the cast yields its `InvalidCast` error; a reference prints as
