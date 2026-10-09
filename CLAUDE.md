@@ -480,7 +480,10 @@ node graph IS the IR — there is no parallel typed IR
   (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
   resize, a fired slot, a fired empty source, a fired fold carry, or a
-  source back from bottom (a bottom source forgets the length).
+  source back from bottom. A bottom source forgets the length and runs
+  no slot: its slots pause as a deselected arm does and wake, caught up,
+  when it returns; a kernel loop runs no iteration over a tainted source
+  (`scaffold::slots_run`).
 - **Bottom scrutinee ⇒ bottom select.** No stored-selection ride of any
   kind; `hold` on the scrutinee is the tool. A STALE-PRESENT scrutinee
   still routes the taken arm's own fires. **Consulted-guard rule**: arms

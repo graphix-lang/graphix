@@ -483,4 +483,43 @@ async fn collection_refs_reach_its_slots(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-modes!(collection_fires_on_a_stale_resize, collection_refs_reach_its_slots);
+// A bottom source runs no slot: its slots pause until it returns, so a
+// raise only a slot under the bottom source would make never happens, and
+// a kernel runs no phantom slot over the source's placeholder.
+async fn bottom_source_runs_no_slot(mode: Mode) -> Result<()> {
+    use super::dense_deltas::run_delta;
+    let (values, _) = run_delta(
+        r#"{
+            let t = array::iter([0, 1, 2]);
+            let phantom = 0;
+            let retained = 0;
+            let a = {
+                catch(e) phantom <- e ~ phantom + 1;
+                array::map(array::map([1, 2], |z| z + t), |x| {
+                    let e: [i64, Error<`E>] = error(`E);
+                    e? + x
+                })
+            };
+            let b = {
+                catch(e) retained <- e ~ retained + 1;
+                let src = select t { 1 => never<Array<i64>>(), _ => [1, 2] };
+                array::map(src, |x| {
+                    let e: [i64, Error<`E>] = select t { 1 => error(`E), n => n };
+                    e? + x
+                })
+            };
+            (phantom, retained)
+        }"#,
+        mode,
+    )
+    .await?;
+    let pair = |a, b| Value::Array([Value::I64(a), Value::I64(b)].into());
+    assert_eq!(values.last(), Some(&pair(2, 0)), "{values:?}");
+    Ok(())
+}
+
+modes!(
+    collection_fires_on_a_stale_resize,
+    collection_refs_reach_its_slots,
+    bottom_source_runs_no_slot
+);

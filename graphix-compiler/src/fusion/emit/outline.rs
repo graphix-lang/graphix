@@ -119,8 +119,9 @@ pub(super) fn emit_outlined(
         kind |= ROOT;
     }
     let kind = cx.b.ins().iconst(types::I64, kind as i64);
+    let run = super::scaffold::slots_run(cx, lp.len, lp.src_disc);
     let call =
-        cx.call_helper("graphix_par_loop", &[chunk, fbase, lp.len, site, kind, obase])?;
+        cx.call_helper("graphix_par_loop", &[chunk, fbase, run, site, kind, obase])?;
     let aborted = cx.b.inst_results(call)[0];
     let abort_bl = cx.b.create_block();
     let cont_bl = cx.b.create_block();

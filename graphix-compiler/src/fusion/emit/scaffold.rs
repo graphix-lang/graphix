@@ -29,8 +29,8 @@ pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
         CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, WAKE, bind_local,
-        bind_scalar_var_with_disc, clean_disc, is_fresh, owned_words, prim_to_value_disc,
-        scalar_disc, value_disc,
+        bind_scalar_var_with_disc, clean_disc, is_fresh, is_tainted, owned_words,
+        prim_to_value_disc, scalar_disc, value_disc,
     },
     body::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
@@ -256,7 +256,20 @@ fn open_loop(
     let zero = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(i_var, zero);
     cx.open_slot_tables(state_sites, len, src_disc, i_var)?;
-    Ok(LoopFrame::blocks(cx, i_var, len, entered))
+    let run = slots_run(cx, len, src_disc);
+    Ok(LoopFrame::blocks(cx, i_var, run, entered))
+}
+
+/// The slots a loop runs: none under a bottom source, whose slots pause
+/// until it returns (their tables are kept, sized by `len`).
+pub(super) fn slots_run(
+    cx: &mut BodyCx,
+    len: ClifValue,
+    src_disc: ClifValue,
+) -> ClifValue {
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    let tainted = is_tainted(cx.b, src_disc);
+    cx.b.ins().select(tainted, zero, len)
 }
 
 impl LoopFrame {
@@ -743,7 +756,7 @@ fn emit_slots(
     state_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
-    // CR claude for eric: [bug] Under a tainted source this runs `len` iterations over
+    // XCR claude for claude: [bug] Under a tainted source this runs `len` iterations over
     // the source's placeholder. emit_fold_loop (line 1160) does the same, and so does
     // emit_init_loop, which clamps only an oversize count (795). The node-walk builds
     // no slot under a bottom source and runs exactly the slots it kept
@@ -765,6 +778,14 @@ fn emit_slots(
     // this also settles the MapQ/FoldQ firing-rule split, since no slot fires; (b)
     // kernels keep each slot's element, which is state a pure kernel does not have today.
     // I lean (a), which matches 'bottom scrutinee => bottom select'.
+    // 2026-10-09 claude: Eric ruled 10-09: (a). A bottom source runs no slot in either
+    // engine: the node-walk pauses its slots when the source turns bottom (take_source
+    // sleeps them as a deselected arm's, under deselecting_arm) and updates none while it
+    // stays bottom; they wake caught up when it returns, so the MapQ/FoldQ firing split
+    // is gone. A kernel loop runs no iteration over a tainted source (slots_run, inline
+    // and outlined; the slot tables keep their size). The repro gives (2, 0) in both
+    // engines. CLAUDE.md says so. Pin: lang::collection::bottom_source_runs_no_slot
+    // (fails in all four modes on the old code). A semantics change: wants the soak.
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
         let lp = outline::Loop { kind, src, src_disc, len, entered, state_sites };

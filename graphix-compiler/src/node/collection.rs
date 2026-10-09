@@ -541,7 +541,9 @@ struct SlotKind<R: Rt, E: UserEvent, S> {
 /// the slots to it (`make` builds a slot of the call kind the prototype
 /// settled on), build the fresh slots' instances where `build` says, and
 /// deliver each slot its element: a fresh slot always, any slot when the
-/// elements moved. A bottom source forgets the length; the slots stay.
+/// elements moved. A bottom source forgets the length; the slots stay,
+/// paused when it turns bottom (`kind.call`'s sleep, as a deselected arm's)
+/// and run again, caught up, when it returns.
 #[allow(clippy::too_many_arguments)]
 fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     ctx: &mut ExecCtx<'_, R, E>,
@@ -563,7 +565,11 @@ fn take_source<R: Rt, E: UserEvent, C: MapCollection, S: Send>(
     let moved = tag.triggers() || woke;
     let source = sval.and_then(|value| C::select(value, tag.triggers()));
     let Some(source) = source else {
-        *src_bottom = true;
+        if !std::mem::replace(src_bottom, true) {
+            for slot in slots.iter_mut() {
+                super::deselecting_arm(true, || (kind.call)(slot).sleep(ctx));
+            }
+        }
         return Sourced { tag, source: None, resized: false, back: false, moved };
     };
     let back = std::mem::take(src_bottom);
@@ -1010,9 +1016,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             SlotKind { delete: Slot::delete, call: |s| &mut s.call, element: |s| s.id },
             |ctx, kind| Slot::new(ctx, callback, element_type, kind),
         );
-        let source_ok = source.is_some();
-        if let Some(source) = source {
-            self.current = source;
+        let Some(source) = source else {
+            return self.resident.set_bottom_as(tag);
+        };
+        self.current = source;
+        {
             // a resize or a return is a new result whatever the source's
             // tag, a wake's own when the source's is; so are moved
             // elements under a result that reads them
@@ -1030,9 +1038,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             None => return self.resident.ride(),
             Some(Some(tag)) => production = merge_tag(production, tag),
             Some(None) => (),
-        }
-        if !source_ok {
-            return self.resident.set_bottom_as(tag);
         }
         // Bottomness is a question about the slots now; the production
         // tag decides only the fired bit.
@@ -1389,15 +1394,17 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
             },
             |ctx, kind| FoldSlot::new(ctx, callback, acc, elt, kind),
         );
-        let source_ok = source.is_some();
         // A bottom init is a poisoned delivery to slot 0's acc, not a
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
         let init = self.base.init.update(ctx).clone();
+        if source.is_none() {
+            return self.resident.set_bottom_as(tag);
+        }
         if let Some(slot) = self.slots.first() {
             deliver(ctx, slot.acc_id, init.clone());
         }
-        if self.slots.is_empty() && source_ok {
+        if self.slots.is_empty() {
             // a resize or a return is a new result whatever the source's
             // tag, a wake's own when the source's is
             let tag = if resized || back { tag.as_fire() } else { tag };
@@ -1413,9 +1420,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // consumes it, past a resize or a return. A triggering taint still
         // counts, for the bottom arm.
         let mut prod: Option<Tag> = None;
-        if !source_ok {
-            prod = merge_tag(prod, tag);
-        } else if resized || back {
+        if resized || back {
             prod = merge_tag(prod, tag.as_fire());
         }
         for i in 0..self.slots.len() {
@@ -1453,7 +1458,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // callback consumes it; only the last slot's state is the result.
         let prod = prod.unwrap_or(Tag::STALE);
         match self.slots.last().map(|s| &s.state) {
-            _ if !source_ok => self.resident.set_bottom_as(prod),
             Some(SlotState::Bottom) => self.resident.set_bottom_as(prod),
             // A fold fires iff it resized, a slot fired, or the source came
             // back from bottom: a wake's own fire when each of those was.
