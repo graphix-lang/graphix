@@ -912,27 +912,6 @@ impl Type {
                 Value::Error(v) => e.is_a_int(env, hist, flags, v),
                 _ => false,
             },
-            // XCR claude for eric: [bug] A reference type test matches any u64 or v64
-            // and never sees the referent, yet the select narrows the arm's bind to
-            // `&T` and subtracts `&T` from the later arms (setops.rs:574;
-            // pattern.rs:1215 admits the predicate). Over `r: [&string, &i64]`,
-            // `&string as s` takes a reference to an i64: `*s` hands an i64 to string
-            // code (the JIT panics at kernel.rs:243 and the runtime dies; the node-walk
-            // loses the value), and `*s <- "x"` writes a string into an i64 variable. A
-            // `u64 as n` arm before a reference arm reads the session's bind id as a
-            // number (cold and warm images differ), and the reverse turns a u64 into a
-            // reference to any variable. A reference type test can only answer "is a
-            // reference": refuse a predicate that would narrow a referent, and a
-            // scrutinee that mixes references with u64/v64. probe:
-            // design/review-2026-10-05/repro/x-typecheck-patterns-01.gx
-            // (x-typecheck-patterns-01)
-            // 2026-10-06 claude: refused now by the one-runtime-form rule
-            // (Type::rep_collision, checked per arm in Select::typecheck0_with): a
-            // reference collides with u64/v64 and with a reference to another type, so
-            // `&string as s` over [&string, &i64] and `u64 as n` over [&i64, u64] are
-            // refused. A reference test that can't be mistaken, like `&T as r` over [&T,
-            // null], stays legal. Pinned by lang::select::same_form_references_refused
-            // and must-reject family 10.
             Type::ByRef(..) => matches!(v, Value::U64(_) | Value::V64(_)),
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {
