@@ -1802,6 +1802,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
+    // CR claude for claude: [bug] The check accepts a lambda literal with its own
+    // quantifier returned as a callback's value, and the build refuses the callee's
+    // instance: elaboration refusing what the check passed is a type-system bug.
+    // `{ let rows: Array<{ n: i64, t: [null, duration] }> = [{ n: 1, t: null }, { n: 2,
+    // t: null }]; let b = array::map(rows, |r| 'a: [Float, Int] |#start: 'a = 0, x: 'a|
+    // -> 'a start) }`: --check passes; a run fails in the instance of array::map with
+    // "fn<'a: [Float, Int]>(?#start: 'a: unbound within [Float, Int], ..) -> 'a .. does
+    // not contain fn<'a: [Float, Int]>(?#start: 'a: [Float, Int], ..) -> 'a: [Float,
+    // Int]" (a mutant of it: "unsatisfiable constraints on 'a: [Float, Int] &
+    // Singleton"). The instance's copy of the literal's signature keeps the bound as a
+    // set where the check's has an open cell under it. Found by a 10-09 gate fuzz run
+    // (divergence_000005, key Check); the same on the commit before that day's
+    // union-containment change. (generic-lambda-value-01)
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let def = self
             .def
