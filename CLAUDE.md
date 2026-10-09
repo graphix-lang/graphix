@@ -458,7 +458,9 @@ node graph IS the IR — there is no parallel typed IR
   runs as chunks of its slots, in order or forked
   (`design/parallel_eval.md` §10).
   `#[native]` asserts zero node-walk residue at a source location and is
-  THE advertised performance model; `#[sync]`/`#[async]`/
+  THE advertised performance model (an argument a fused call is fed by
+  the node-walk is residue; bound outside the annotation it is an
+  input); `#[sync]`/`#[async]`/
   `#[tail_recursive]` assert analysis facts.
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`

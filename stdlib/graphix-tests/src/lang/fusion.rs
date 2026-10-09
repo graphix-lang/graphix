@@ -1578,8 +1578,8 @@ run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, |v: Result<&Value
 const CALL_FED_BY_NODE_WALKED_ARGS: &str = r#"
 {
   let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) };
-  let a = #[native] f(10, { let s = 0; s <- 1; s });
-  let b = #[native] f(10, count(a));
+  let a = f(10, { let s = 0; s <- 1; s });
+  let b = f(10, count(a));
   select count(a) { 2 => (a, b), _ => never() }
 }
 "#;
@@ -1850,7 +1850,7 @@ run!(fold_callback_regions_fuse_in_slots, FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS, |
 const FED_CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
 array::map([1, 2, 3], |x| {
   let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
-  #[native] lp(10, count(x) + x)
+  lp(10, count(x) + x)
 })
 "#;
 

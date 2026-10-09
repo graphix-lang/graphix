@@ -45,6 +45,35 @@ async fn native_on_unfusable_is_error() {
     assert!(e.contains("did not fully fuse"), "{e}");
 }
 
+// A call whose argument the node-walk computes is residue: the argument
+// is under the annotation, so `#[native]` refuses it and names why.
+#[tokio::test]
+async fn native_call_fed_by_node_walk_is_error() {
+    let e = refusal(
+        "{ let f = |x: i64| -> i64 x + 1; #[native] f(throttle(i64:5)) }",
+        crate::TEST_REGISTER,
+    )
+    .await
+    .unwrap();
+    assert!(e.contains("did not fully fuse") && e.contains("throttle"), "{e}");
+}
+
+// The same argument bound outside the annotation is an input: the call
+// is native.
+#[tokio::test]
+async fn native_call_over_bound_argument_ok() {
+    let r = eval(
+        "{ let f = |x: i64| -> i64 x + 1; let a = throttle(i64:5); #[native] f(a) }",
+        crate::TEST_REGISTER,
+    )
+    .await;
+    assert!(
+        matches!(r.as_ref().map(|(v, _)| v), Ok(Value::I64(6))),
+        "{:?}",
+        r.map(|(v, _)| v)
+    );
+}
+
 // An unregistered attribute name is a compile error.
 #[tokio::test]
 async fn unknown_attribute_is_error() {

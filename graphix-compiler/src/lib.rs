@@ -907,7 +907,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
-        // CR claude for eric: [bug] Any FusedKernel passes here, including one that
+        // XCR claude for claude: [bug] Any FusedKernel passes here, including one that
         // try_fuse_feeding_args built around arguments left on the node-walk. So
         // `#[native] f(throttle(i64:5))` compiles, while `#[native] throttle(i64:5)`
         // and `#[native] { let a = throttle(i64:5); f(a) }` are refused. Feeding only
@@ -923,40 +923,24 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         // design/review-2026-10-05/repro/f-mod-lowering-04.sh (f-mod-lowering-04)
         // 2026-10-07 claude: re-addressed: it asks for a ruling on whether #[native]
         // admits a call fed by node-walked arguments.
-        if let NodeView::FusedKernel(_) = node.view() {
-            return Ok(());
-        }
-        // Report only the leaf-most failures whose subtree contains no
-        // fused region: `try_fuse` records a failure for every region
-        // root it tries, containers included.
+        // 2026-10-09 claude: Eric ruled 10-09 option 1, once the workaround held: a value
+        // bound outside the annotation is an input, so #[native] f(a) over let a =
+        // throttle(..) is native. Native's check now descends into a kernel's feeders and
+        // reports the blockers of every one that is more than a variable read
+        // (native_residue). call_fed_by_node_walked_args keeps the feeding, without
+        // #[native]. Pins: lib_tests::native::native_call_fed_by_node_walk_is_error
+        // (fails with the fix undone: the probe compiled) and
+        // native_call_over_bound_argument_ok.
         let mut report: Vec<&fusion::FusionFailure> = Vec::new();
-        fusion::for_each_node(node, &mut |n| {
-            let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
-                return;
-            };
-            let mut subtree_fused = false;
-            let mut has_failed_desc = false;
-            let mut root = true;
-            fusion::for_each_node(n, &mut |desc| {
-                if root {
-                    root = false;
-                    return;
-                }
-                subtree_fused |= ctx.fusion.stats.source_fused(desc.spec());
-                has_failed_desc |=
-                    ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
-            });
-            if !subtree_fused
-                && !has_failed_desc
-                && !report.iter().any(|prior| prior.id == failure.id)
-            {
-                report.push(failure);
-            }
-        });
+        let mut walked = false;
+        native_residue(ctx, node, &mut report, &mut walked);
         if crate::dbgenv::gxdbg_native_all() {
             for failure in ctx.fusion.stats.failed.iter() {
                 eprintln!("NATIVE-ALL {:?}: {}", failure.id, failure.reason);
             }
+        }
+        if report.is_empty() && !walked {
+            return Ok(());
         }
         let mut reasons = CompactString::new("");
         for failure in &report {
@@ -974,6 +958,52 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
             "#[native] expression did not fully fuse to native code:{reasons}"
         );
     }
+}
+
+/// The failures behind the node-walk residue under `node`, into `report`;
+/// `walked` when some residue has none recorded. A kernel's feeder that is
+/// more than a variable read is an argument the node-walk computes for it.
+fn native_residue<'a, R: Rt, E: UserEvent>(
+    ctx: &'a CompileCtx<R, E>,
+    node: &Node<R, E>,
+    report: &mut Vec<&'a fusion::FusionFailure>,
+    walked: &mut bool,
+) {
+    if let NodeView::FusedKernel(k) = node.view() {
+        for feeder in k.feeders() {
+            if !matches!(feeder.view(), NodeView::Ref(_)) {
+                native_residue(ctx, feeder, report, walked)
+            }
+        }
+        return;
+    }
+    // Report only the leaf-most failures whose subtree contains no
+    // fused region: `try_fuse` records a failure for every region
+    // root it tries, containers included.
+    let before = report.len();
+    fusion::for_each_node(node, &mut |n| {
+        let Some(failure) = ctx.fusion.stats.failure_for_source(n.spec()) else {
+            return;
+        };
+        let mut subtree_fused = false;
+        let mut has_failed_desc = false;
+        let mut root = true;
+        fusion::for_each_node(n, &mut |desc| {
+            if root {
+                root = false;
+                return;
+            }
+            subtree_fused |= ctx.fusion.stats.source_fused(desc.spec());
+            has_failed_desc |= ctx.fusion.stats.failure_for_source(desc.spec()).is_some();
+        });
+        if !subtree_fused
+            && !has_failed_desc
+            && !report.iter().any(|prior| prior.id == failure.id)
+        {
+            report.push(failure);
+        }
+    });
+    *walked |= report.len() == before;
 }
 
 /// The log target of a running program's failures: an error nothing
