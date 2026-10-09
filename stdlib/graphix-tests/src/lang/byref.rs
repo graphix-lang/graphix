@@ -143,8 +143,8 @@ run!(place_read_write, PLACE_READ_WRITE, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // A moving reference points where its key says when it fires; two
-// writes to one root in one cycle both land; a write into a missing
-// place is dropped and the root is untouched.
+// writes to one root in one cycle both land; a write past an array's
+// end is dropped and the root is untouched.
 const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 {
   let a = [1, 2, 3];
@@ -169,6 +169,25 @@ const PLACE_MOVE_SIBLINGS_BAD: &str = r#"
 
 run!(place_move_siblings_bad, PLACE_MOVE_SIBLINGS_BAD, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:1, [i64:100, i64:2, i64:300], i64:300]"
+}; FuseExpect::Jit);
+
+// A write to a key the map lacks inserts it; a write through a path
+// below a missing key has no entry to patch and is dropped.
+const PLACE_MISSING_KEY: &str = r#"
+{
+  let m = {"a" => {x: 1, y: 2}};
+  let ins = &mut m{"b"};
+  let below = &mut m{"c"}.x;
+  let t1 = sys::time::timer(duration:0.05s, false);
+  *ins <- t1 ~ {x: 3, y: 4};
+  *below <- t1 ~ 5;
+  let t2 = sys::time::timer(duration:0.2s, false);
+  t2 ~ m
+}
+"#;
+
+run!(place_missing_key, PLACE_MISSING_KEY, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"{"a" => [["x", i64:1], ["y", i64:2]], "b" => [["x", i64:3], ["y", i64:4]]}"#
 }; FuseExpect::Jit);
 
 // A lambda over `&State` reaches an editor held in an array through a

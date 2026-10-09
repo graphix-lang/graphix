@@ -19,8 +19,10 @@ whatever the key names when it fires, reads and writes there, and
 re-fires its readers when the key moves.
 
 Failures are runtime facts, as for indexing: a read of a place that
-does not exist bottoms (warned); a write into one is dropped and logged
-(`error!`), the root untouched. Arrays are immutable values, so a write
+does not exist bottoms (warned). A write to a key a map lacks inserts
+it, as `map::insert` would; any other write into a place that does not
+exist (an index past the end, a path below a missing key) is dropped
+and logged as a failure (`FAILURE_TARGET`), the root untouched. Arrays are immutable values, so a write
 is a copy along the path — O(n) for an array, fine for a form, not for
 a hot loop.
 

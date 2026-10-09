@@ -5,7 +5,8 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Saved, Scope, View, compile,
+    BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
+    View, compile,
     expr::{
         self, Expr, ExprId, ExprKind, ModPath, ModuleKind, Origin, ResolverRef,
         Resolvers, RootFile, Source,
@@ -575,7 +576,10 @@ impl<X: GXExt> GX<X> {
             VarUpdate::Set(v) => v,
             VarUpdate::Patch(path, v) => {
                 let Some(cur) = self.ctx.rt.store_value(&id) else {
-                    error!("write through a reference into {id:?}: no value to update");
+                    error!(
+                        target: FAILURE_TARGET,
+                        "a write through a reference was dropped: its root has no value"
+                    );
                     return;
                 };
                 let written = coretraits::with_hooks(&mut self.ctx.view(), || {
@@ -584,7 +588,10 @@ impl<X: GXExt> GX<X> {
                 match written {
                     Ok(nv) => nv,
                     Err(err) => {
-                        error!("write through a reference into {id:?}: {err}");
+                        error!(
+                            target: FAILURE_TARGET,
+                            "a write through a reference was dropped: {err}"
+                        );
                         return;
                     }
                 }
