@@ -16,7 +16,7 @@ use super::{
     lambda::LambdaDef,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, SourcePosition,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, SourcePosition,
     TagValue, Update, UserEvent, bailat,
     env::{Env, Glob, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
@@ -248,6 +248,23 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
+    /// An instance checks this node as its definition's check did.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        _types: &mut crate::node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0(ctx)
+    }
+
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.defaults)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.defaults)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Trait, buf);
         self.spec.encode(buf)?;
@@ -277,14 +294,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.defaults, self.defaults.typecheck1(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.defaults.refs(refs)
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -292,10 +301,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.defaults.delete(ctx);
         ctx.env.undeftrait(&self.def);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.defaults.sleep(ctx)
     }
 
     fn typ(&self) -> &Type {
@@ -673,6 +678,25 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
+    /// An instance checks this node as its definition's check did.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        _types: &mut crate::node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0(ctx)
+    }
+
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.body);
+        self.prototypes.iter().for_each(|p| f(&p.site))
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.body);
+        self.prototypes.iter_mut().for_each(|p| f(&mut p.site))
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Impl, buf);
         self.spec.encode(buf)?;
@@ -724,13 +748,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             wrap!(self.body, self.build_prototypes(ctx))?;
         }
         Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.body.refs(refs);
-        for p in self.prototypes.iter() {
-            p.site.refs(refs)
-        }
     }
 
     fn spec(&self) -> &Expr {

@@ -222,6 +222,14 @@ impl Nop {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        let _ = f;
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        let _ = f;
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Nop, buf);
         self.typ.encode(buf)
@@ -231,18 +239,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
     fn spec(&self) -> &Expr {
         &NOP
     }
@@ -250,8 +246,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
     fn typ(&self) -> &Type {
         &self.typ
     }
-
-    fn refs(&self, _refs: &mut Refs) {}
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Nop(self)
@@ -290,6 +284,14 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ExplicitParens, buf);
         self.spec.encode(buf)?;
@@ -306,14 +308,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.update(ctx)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.sleep(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
@@ -326,20 +320,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
 
     fn typ(&self) -> &Type {
         &self.n.typ()
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -541,6 +527,14 @@ impl TypeDef {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        let _ = f;
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        let _ = f;
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeDef, buf);
         self.spec.encode(buf)?;
@@ -552,16 +546,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
-    fn refs(&self, _refs: &mut Refs) {}
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -569,8 +553,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.env.undeftype(&self.scope, &self.name)
     }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typ(&self) -> &Type {
         Type::BOTTOM
@@ -631,6 +613,14 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        let _ = f;
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        let _ = f;
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Constant, buf);
         self.spec.encode(buf)?;
@@ -642,22 +632,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         produce_constant(ctx.event, &mut self.resident, || self.value.clone())
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn refs(&self, _refs: &mut Refs) {}
-
     fn typ(&self) -> &Type {
         &self.typ
-    }
-
-    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        Ok(())
     }
 
     fn spec(&self) -> &Expr {
@@ -1214,6 +1190,14 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.children.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.children.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Block, buf);
         self.module.encode(buf)?;
@@ -1247,24 +1231,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             Some(tv) if !self.module => self.resident.set(tv),
             _ if self.module => TagValue::phantom_ref(),
             _ => self.resident.ride(),
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        for n in &mut self.children {
-            n.delete(ctx)
-        }
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        for n in &mut self.children {
-            n.sleep(ctx)
-        }
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for n in &self.children {
-            n.refs(refs)
         }
     }
 
@@ -1376,6 +1342,14 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.args.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.args.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StringInterpolate, buf);
         self.spec.encode(buf)?;
@@ -1409,18 +1383,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
 
     fn typ(&self) -> &Type {
         &self.typ
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for a in &self.args {
-            a.refs(refs)
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        for n in &mut self.args {
-            n.delete(ctx)
-        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -1523,6 +1485,14 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.node)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.node)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Connect, buf);
         self.spec.encode(buf)?;
@@ -1547,18 +1517,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         Type::BOTTOM
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.node.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.node.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.node.sleep(ctx);
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.node], ctx)
     }
@@ -1575,11 +1533,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.node, self.node.typecheck1(ctx))?;
-        Ok(())
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -1717,6 +1670,14 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.rhs)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.rhs)
+    }
+
     /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.target.is_some() || self.pending {
@@ -1805,11 +1766,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-        Ok(())
-    }
-
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ConnectDeref(self)
     }
@@ -1876,6 +1832,14 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeCast, buf);
         self.spec.encode(buf)?;
@@ -1905,10 +1869,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx)
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
@@ -1916,10 +1876,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs)
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -2002,6 +1958,14 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.n.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.n.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Never, buf);
         self.spec.encode(buf)?;
@@ -2024,20 +1988,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -2069,13 +2021,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -2136,6 +2081,14 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.n.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.n.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Any, buf);
         self.spec.encode(buf)?;
@@ -2184,10 +2137,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
@@ -2197,18 +2146,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
-    }
-
     typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Any(self)
@@ -2305,6 +2243,16 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.trigger);
+        f(&self.arg.node)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.trigger);
+        f(&mut self.arg.node)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Sample, buf);
         self.spec.encode(buf)?;
@@ -2407,12 +2355,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.trigger, self.trigger.typecheck1(ctx))?;
-        wrap!(self.arg.node, self.arg.node.typecheck1(ctx))?;
-        Ok(())
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

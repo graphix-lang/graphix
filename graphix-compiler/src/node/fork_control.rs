@@ -2,7 +2,7 @@
 //! that runs its child under fork flags of its own.
 
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, TagValue, Update, UserEvent,
+    CompileCtx, ExecCtx, Node, NodeView, Rt, TagValue, Update, UserEvent,
     branch::ForkFlags,
     expr::Expr,
     fusion::{
@@ -13,7 +13,6 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    node::lambda,
     typ::Type,
     wrap,
 };
@@ -76,6 +75,14 @@ impl<R: Rt, E: UserEvent> ForkControl<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ForkControl, buf);
         self.spec.encode(buf)?;
@@ -97,24 +104,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
         ctx.with_fork_flags(flags, |ctx| self.n.update(ctx))
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.sleep(ctx)
-    }
-
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -146,10 +137,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
 
     fn typ(&self) -> &Type {
         self.n.typ()
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs)
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

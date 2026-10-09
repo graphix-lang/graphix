@@ -323,6 +323,16 @@ fn evaluate<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.pc);
+        self.steps.iter().flat_map(|s| s.nodes.iter()).for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.pc);
+        self.steps.iter_mut().flat_map(|s| s.nodes.iter_mut()).for_each(f)
+    }
+
     /// The awake step and the tracker exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.current.is_some() || self.tracked.is_some() {
@@ -347,15 +357,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let flags = crate::branch::ForkFlags { seq: true, ..ctx.fork };
         ctx.with_fork_flags(flags, |ctx| self.update_serial(ctx))
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.pc.delete(ctx);
-        for s in self.steps.iter_mut() {
-            for n in s.nodes.iter_mut() {
-                n.delete(ctx)
-            }
-        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -482,6 +483,16 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.snapshot);
+        f(&self.live)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.snapshot);
+        f(&mut self.live)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqCapture, buf);
         self.spec.encode(buf)?;
@@ -495,21 +506,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         self.chosen().update(ctx)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.snapshot.delete(ctx);
-        self.live.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.snapshot.sleep(ctx);
-        self.live.sleep(ctx);
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.snapshot.refs(refs);
-        self.live.refs(refs);
-    }
-
     fn typ(&self) -> &Type {
         self.snapshot.typ()
     }
@@ -517,20 +513,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.snapshot.typecheck0(ctx)?;
         self.live.typecheck0(ctx)
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.snapshot.typecheck0_instance(ctx, types)?;
-        self.live.typecheck0_instance(ctx, types)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.snapshot.typecheck1(ctx)?;
-        self.live.typecheck1(ctx)
     }
 
     fn spec(&self) -> &Expr {

@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, NodeView, Rt, Update, UserEvent,
     analysis::RegionFacts,
     cost::ForkSite,
     expr::Expr,
@@ -261,6 +261,23 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
+    /// An instance checks this node as its definition's check did.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        _types: &mut crate::node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0(ctx)
+    }
+
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.feeders.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.feeders.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.quiescent() || !self.redirects.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
@@ -459,12 +476,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        for feeder in self.feeders.iter_mut() {
-            feeder.delete(ctx);
-        }
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
@@ -486,12 +497,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
 
     fn typ(&self) -> &Type {
         &self.typ.typ
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        for feeder in self.feeders.iter() {
-            feeder.refs(refs);
-        }
     }
 
     fn spec(&self) -> &Expr {

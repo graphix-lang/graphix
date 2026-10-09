@@ -334,6 +334,22 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.handler);
+        if let Some(abort) = &self.action {
+            f(&abort.node);
+            abort.manual().into_iter().for_each(f)
+        }
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.handler);
+        if let Some(abort) = &mut self.action {
+            f(&mut abort.node);
+            abort.manual_mut().into_iter().for_each(f)
+        }
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Catch, buf);
         self.spec.encode(buf)?;
@@ -473,17 +489,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 }
             }
         }
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.handler, self.handler.typecheck1(ctx))?;
-        if let Some(abort) = &mut self.action {
-            wrap!(abort.node, abort.node.typecheck1(ctx))?;
-            if let Some(manual) = abort.manual_mut() {
-                wrap!(manual, manual.typecheck1(ctx))?;
-            }
-        }
-        Ok(())
     }
 
     fn spec(&self) -> &Expr {
@@ -916,6 +921,14 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Qop, buf);
         self.spec.encode(buf)?;
@@ -955,28 +968,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         &self.spec
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.sleep(ctx);
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))?;
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Qop(self)
@@ -1078,6 +1074,14 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqGuard, buf);
         self.spec.encode(buf)?;
@@ -1144,10 +1148,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.resident.set_bottom(true)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx);
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.state = GuardState::Sleeping;
         self.n.sleep(ctx);
@@ -1165,20 +1165,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.n.typecheck1(ctx)
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
 
     fn typ(&self) -> &Type {
         self.n.typ()
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -1232,6 +1224,14 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqAbort, buf);
         self.spec.encode(buf)?;
@@ -1246,14 +1246,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.sleep(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
@@ -1266,20 +1258,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.n.typecheck1(ctx)
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
 
     fn typ(&self) -> &Type {
         Type::BOTTOM
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -1329,6 +1313,14 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::OrNever, buf);
         self.spec.encode(buf)?;
@@ -1355,28 +1347,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         &self.spec
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.sleep(ctx);
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))?;
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::OrNever(self)

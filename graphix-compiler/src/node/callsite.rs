@@ -2335,6 +2335,26 @@ impl<R: Rt, E: UserEvent> CallNode<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallNode<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        match self {
+            Self::Call(c) => {
+                c.args.values().filter_map(|a| a.node.as_ref()).for_each(&mut *f);
+                f(&c.fnode)
+            }
+            Self::Lowered(n) => n.for_each_child(f),
+        }
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        match self {
+            Self::Call(c) => {
+                c.args.values_mut().filter_map(|a| a.node.as_mut()).for_each(&mut *f);
+                f(&mut c.fnode)
+            }
+            Self::Lowered(n) => n.for_each_child_mut(f),
+        }
+    }
+
     /// A lowered call is imaged as its lowering, which decodes as itself.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {

@@ -6,8 +6,7 @@ use super::{
     dense_gate,
 };
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
     cost::ForkSite,
     defetyp, err, errf,
     expr::{Expr, ExprId},
@@ -267,6 +266,16 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source);
+        f(&self.key)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source);
+        f(&mut self.key)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::MapRef, buf);
         self.source.image_encode(buf)?;
@@ -297,22 +306,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        wrap!(self.key, self.key.typecheck1(ctx))?;
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs);
-        self.key.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx);
-        self.key.delete(ctx);
     }
 
     fn typ(&self) -> &Type {

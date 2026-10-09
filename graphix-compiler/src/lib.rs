@@ -607,7 +607,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 }
 
 /// A regular graph node, as opposed to a function application (Apply).
-// CR claude for eric: [structure] Node has no child enumeration, unlike Expr's
+// XCR claude for claude: [structure] Node has no child enumeration, unlike Expr's
 // for_each_child/map_children. Every Update impl lists its children again by hand in
 // refs, delete, sleep, fuse, typecheck0/1 and the image codecs (Not and Neg in
 // node/op.rs, and Qop and OrNever in node/error.rs, are line-for-line copies), so a
@@ -626,6 +626,14 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 // node impls, and most do more than forward (sleep sets bits, delete unbinds), so the
 // default would serve only the pure forwarders (Not, Neg, Qop, OrNever, ...). Worth a
 // pass of its own, or close as accepted?
+// 2026-10-09 claude: Eric ruled 10-09: Update::for_each_child/for_each_child_mut,
+// required, are the one child enumeration; refs, delete, sleep, typecheck0,
+// typecheck0_instance and typecheck1 default to walking them, and a node overrides only
+// what does more (19 files, about 220 lines fewer). fusion::for_each_child and
+// node_shape's walker delegate to it (a kernel stays opaque to fusion's). The five nodes
+// that relied on typecheck0_instance defaulting to the check (FusedKernel, Ref, Module,
+// Trait, Impl) say so explicitly. Pins: the whole gate (every node's refs, sleep, delete
+// and checks now ride the walk).
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// Update the node with the event and return its production,
     /// borrowed from the node's own resident slot. Every awake node
@@ -633,42 +641,77 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// [`TagView`].
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue;
 
+    /// Every child node, the one child enumeration: a callee's instance
+    /// and a lambda's body are not children (each is per call site).
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>));
+
+    /// [`Self::for_each_child`], mutably.
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>));
+
     /// Delete the node and its children from the context.
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>);
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.for_each_child_mut(&mut |c| c.delete(ctx))
+    }
 
     /// First typecheck pass: structural checking. Each node checks
     /// itself and recurses into its children.
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()>;
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let mut res = Ok(());
+        self.for_each_child_mut(&mut |c| {
+            if res.is_ok() {
+                res = wrap!(c, c.typecheck0(ctx))
+            }
+        });
+        res
+    }
 
     /// `typecheck0` for a node of an instance, whose definition's check
     /// settled its types ([`node::lambda::InstanceTypes`]): an impl takes
     /// its types from there and does only the part of `typecheck0` that
-    /// is state. The default checks.
+    /// is state.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
-        _types: &mut node::lambda::InstanceTypes,
+        types: &mut node::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0(ctx)
+        let mut res = Ok(());
+        self.for_each_child_mut(&mut |c| {
+            if res.is_ok() {
+                res = wrap!(c, c.typecheck0_instance(ctx, types))
+            }
+        });
+        res
     }
 
     /// Second typecheck pass, after `typecheck0` finished the whole
     /// tree: `lambda_ids` are final, so call sites can resolve
-    /// statically. No default: every node must recurse into its children.
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()>;
+    /// statically.
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let mut res = Ok(());
+        self.for_each_child_mut(&mut |c| {
+            if res.is_ok() {
+                res = wrap!(c, c.typecheck1(ctx))
+            }
+        });
+        res
+    }
 
     /// The node's type.
     fn typ(&self) -> &Type;
 
     /// Record every bind id referenced or bound by the node and its
     /// children.
-    fn refs(&self, refs: &mut Refs);
+    fn refs(&self, refs: &mut Refs) {
+        self.for_each_child(&mut |c| c.refs(refs))
+    }
 
     /// The expression this node was compiled from.
     fn spec(&self) -> &Expr;
 
     /// Pause the node (an unselected arm).
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>);
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.for_each_child_mut(&mut |c| c.sleep(ctx))
+    }
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;

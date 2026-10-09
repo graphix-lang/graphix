@@ -1039,6 +1039,26 @@ impl PoolGroup {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.arg.node);
+        for (pat, body) in self.arms.iter() {
+            if let Some(g) = &pat.guard {
+                f(&g.node)
+            }
+            f(body)
+        }
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.arg.node);
+        for (pat, body) in self.arms.iter_mut() {
+            if let Some(g) = &mut pat.guard {
+                f(&mut g.node)
+            }
+            f(body)
+        }
+    }
+
     /// The selection, the consulted mask and the tracker exist only once
     /// a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

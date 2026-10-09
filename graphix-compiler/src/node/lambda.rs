@@ -1770,6 +1770,14 @@ fn check_defaults<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        let _ = f;
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        let _ = f;
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Lambda, buf);
         self.spec.encode(buf)?;
@@ -1786,8 +1794,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.spec
     }
 
-    fn refs(&self, _refs: &mut Refs) {}
-
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // a retained def keeps its `LambdaIds` link-graph nodes alive, and
         // `typecheck1`'s `ids()` walks grow with them
@@ -1795,8 +1801,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             ctx.lambda_defs.remove(&def.id);
         }
     }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typ(&self) -> &Type {
         &self.typ
@@ -1913,12 +1917,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         def.typ.generalize(def.level.depth());
         def.join_facts(tables.table.facts);
         def.table.set(tables);
-        Ok(())
-    }
-
-    /// A definition has no children here; the body is checked per call
-    /// site through `GXLambda::typecheck1`.
-    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 

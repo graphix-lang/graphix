@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, list, produce_constant};
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent, defetyp,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
+    defetyp,
     env::Env,
     err,
     expr::{Expr, ExprId},
@@ -178,6 +178,16 @@ pub(crate) fn array_slice(src: &Value, start: Option<i64>, end: Option<i64>) -> 
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source);
+        f(&self.i)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source);
+        f(&mut self.i)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArrayRef, buf);
         self.source.image_encode(buf)?;
@@ -213,22 +223,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        wrap!(self.i, self.i.typecheck1(ctx))?;
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs);
-        self.i.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx);
-        self.i.delete(ctx);
     }
 
     fn typ(&self) -> &Type {
@@ -324,6 +318,16 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source);
+        self.start.iter().chain(self.end.iter()).for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source);
+        self.start.iter_mut().chain(self.end.iter_mut()).for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArraySlice, buf);
         self.source.image_encode(buf)?;
@@ -361,37 +365,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        if let Some(start) = self.start.as_mut() {
-            wrap!(start, start.typecheck1(ctx))?;
-        }
-        if let Some(end) = self.end.as_mut() {
-            wrap!(end, end.typecheck1(ctx))?;
-        }
-        Ok(())
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs);
-        if let Some(start) = &self.start {
-            start.refs(refs)
-        }
-        if let Some(end) = &self.end {
-            end.refs(refs)
-        }
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx);
-        if let Some(start) = &mut self.start {
-            start.delete(ctx);
-        }
-        if let Some(end) = &mut self.end {
-            end.delete(ctx);
-        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -571,6 +544,14 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.n.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        self.n.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(if K::LIST { NodeTag::ListLit } else { NodeTag::Array }, buf);
         self.spec.encode(buf)?;
@@ -596,10 +577,6 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
@@ -609,18 +586,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
-    }
-
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         K::view(self)

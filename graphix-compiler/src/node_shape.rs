@@ -275,10 +275,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
 ) -> SmallVec<[&'a Node<R, E>; 4]> {
     let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
-    match node.view() {
-        NodeView::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
-        _ => crate::fusion::for_each_child(node, &mut |c| kids.push(c)),
-    }
+    node.for_each_child(&mut |c| kids.push(c));
     kids
 }
 

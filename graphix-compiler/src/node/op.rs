@@ -1,7 +1,6 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    defetyp,
+    CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent, defetyp,
     env::Env,
     expr::{Expr, ExprId},
     fusion::{
@@ -152,19 +151,14 @@ macro_rules! binary_node {
                 Ok(())
             }
 
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+            fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+                f(&self.lhs);
+                f(&self.rhs)
             }
 
-            fn refs(&self, refs: &mut Refs) {
-                self.lhs.refs(refs);
-                self.rhs.refs(refs);
-            }
-
-            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-                self.lhs.delete(ctx);
-                self.rhs.delete(ctx);
+            fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+                f(&mut self.lhs);
+                f(&mut self.rhs)
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -445,6 +439,14 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Not, buf);
         self.spec.encode(buf)?;
@@ -473,14 +475,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         &self.typ
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx);
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
@@ -493,18 +487,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0_instance(ctx, types))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -565,6 +547,14 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.n)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.n)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Neg, buf);
         self.spec.encode(buf)?;
@@ -603,14 +593,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         &self.typ
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.n.delete(ctx);
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
@@ -636,10 +618,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
             true => Ok(()),
             false => self.typecheck_own(ctx),
         }
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

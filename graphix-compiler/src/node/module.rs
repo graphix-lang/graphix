@@ -792,14 +792,6 @@ fn store_production<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Module<R, E> {
-    /// A dynamic module's loader expression.
-    pub(crate) fn source(&self) -> Option<&Node<R, E>> {
-        match &self.body {
-            Body::Static => None,
-            Body::Dynamic { source, .. } => Some(source),
-        }
-    }
-
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
@@ -1080,6 +1072,29 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
+    /// An instance checks this node as its definition's check did.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        _types: &mut crate::node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0(ctx)
+    }
+
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        if let Body::Dynamic { source, .. } = &self.body {
+            f(source)
+        }
+        self.nodes.iter().for_each(f)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            f(source)
+        }
+        self.nodes.iter_mut().for_each(f)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Module, buf);
         self.spec.encode(buf)?;
@@ -1206,15 +1221,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             source.delete(ctx);
         }
         self.clear_compiled(ctx);
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        if let Body::Dynamic { source, .. } = &self.body {
-            source.refs(refs);
-        }
-        for n in &self.nodes {
-            n.refs(refs)
-        }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {

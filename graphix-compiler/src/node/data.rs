@@ -1,8 +1,8 @@
 use super::{WakeBit, compiler::compile, dense_gate};
 use crate::cost::ForkSite;
 use crate::{
-    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent, abstract_value, bailat, deref_typ,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update, UserEvent,
+    abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::{
         self,
@@ -41,8 +41,12 @@ macro_rules! composite_plumbing {
             &self.typ
         }
 
-        fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-            self.n.iter_mut().for_each(|n| n.delete(ctx))
+        fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+            self.n.iter().for_each(f)
+        }
+
+        fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+            self.n.iter_mut().for_each(f)
         }
 
         fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
@@ -52,17 +56,6 @@ macro_rules! composite_plumbing {
 
         fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
             fusion::fuse_parts(self.n.iter_mut(), ctx)
-        }
-
-        fn refs(&self, refs: &mut Refs) {
-            self.n.iter().for_each(|n| n.refs(refs))
-        }
-
-        fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-            for n in self.n.iter_mut() {
-                wrap!(n, n.typecheck1(ctx))?
-            }
-            Ok(())
         }
 
         fn view(&self) -> NodeView<'_, R, E> {
@@ -277,6 +270,16 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source);
+        self.replace.iter().for_each(|r| f(&r.n))
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source);
+        self.replace.iter_mut().for_each(|r| f(&mut r.n))
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructWith, buf);
         self.spec.encode(buf)?;
@@ -324,11 +327,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx);
-        self.replace.iter_mut().for_each(|r| r.n.delete(ctx))
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.source.sleep(ctx);
@@ -342,20 +340,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         )
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs);
-        self.replace.iter().for_each(|r| r.n.refs(refs))
-    }
-
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        for rep in self.replace.iter_mut() {
-            wrap!(rep.n, rep.n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::StructWith(self)
@@ -430,6 +415,14 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructRef, buf);
         self.spec.encode(buf)?;
@@ -458,18 +451,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         }
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.sleep(ctx)
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
@@ -483,11 +464,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     }
 
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::StructRef(self)
@@ -750,6 +726,14 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.arg)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.arg)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Construct, buf);
         self.spec.encode(buf)?;
@@ -785,14 +769,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         &self.typ
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.arg.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.arg.delete(ctx)
-    }
-
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.arg.sleep(ctx)
@@ -803,10 +779,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     }
 
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.arg, self.arg.typecheck1(ctx))
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Construct(self)
@@ -935,6 +907,14 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.source)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.source)
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TupleRef, buf);
         self.spec.encode(buf)?;
@@ -973,28 +953,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         &self.typ
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs)
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.delete(ctx)
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.source.sleep(ctx);
-    }
-
     fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
     super::typed_by_row!();
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
-        Ok(())
-    }
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::TupleRef(self)

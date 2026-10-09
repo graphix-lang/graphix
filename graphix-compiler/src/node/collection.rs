@@ -979,6 +979,16 @@ fn update_slots_in_order<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.base.source);
+        f(&self.base.prototype)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.base.source);
+        f(&mut self.base.prototype)
+    }
+
     /// The slots and the current collection exist only once a cycle has
     /// run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1077,18 +1087,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        each(self.base.nodes_mut(), |n| n.typecheck0_instance(ctx, types))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
 
     fn typ(&self) -> &Type {
@@ -1351,6 +1349,18 @@ fn deliver<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, tv: Tag
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
+    fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.base.source);
+        f(&self.base.init);
+        f(&self.base.prototype)
+    }
+
+    fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        f(&mut self.base.source);
+        f(&mut self.base.init);
+        f(&mut self.base.prototype)
+    }
+
     /// The slots exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.slots.is_empty() {
@@ -1486,18 +1496,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         each(self.base.nodes_mut(), |n| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        each(self.base.nodes_mut(), |n| n.typecheck0_instance(ctx, types))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        each(self.base.nodes_mut(), |n| n.typecheck1(ctx))
     }
 
     fn typ(&self) -> &Type {
