@@ -682,23 +682,6 @@ impl Type {
                     None
                 }
             }
-            // XCR claude for eric: [bug] Merging two references' targets types `select c
-            // { true => &x, false => &y }` (x: i64, y: string) as `&[i64, string]`, a
-            // reference to a variable that exists nowhere. So `*r <- "s"` passes the
-            // check and stores a string in the i64 `x`. The fused read of `x` then
-            // panics at fusion/kernel.rs:243 and the runtime dies. A reference is
-            // written through, so its target must not widen, here or in
-            // contains.rs:717. Not merging is not enough on its own:
-            // ConnectDeref::typecheck0_with (node/mod.rs:2361) accepts a write when any
-            // member of r's type contains `&typeof(v)`, so the unmerged `[&i64,
-            // &Array<i64>]` lets `*r <- [2, 3]` write into `x` too; a write has to fit
-            // every referent. probe: design/review-2026-10-05/repro/t-fntyp-01.gx
-            // (t-fntyp-01)
-            // 2026-10-06 claude: only two `&T` merge their referents; two `&mut` merge
-            // only when equal, and a write must be `&mut` and fit every member
-            // (ConnectDeref::typecheck0_with). The probe is refused.
-            // Reading either of two references reads the union of their
-            // referents; a writable one only merges with itself.
             (
                 Type::ByRef(Mutability::Shared, t0),
                 Type::ByRef(Mutability::Shared, t1),
