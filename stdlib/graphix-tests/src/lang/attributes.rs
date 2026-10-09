@@ -129,6 +129,31 @@ const SYNC_ON_ASYNC_UNDER_REF: &str = r#"
 
 run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, refused("#[sync]: this function is async"); FuseExpect::None);
 
+// A builtin's callbacks join its call's facts: an async callback makes
+// the caller async, a sync one leaves it sync, and a function handing a
+// builtin its own parameter leaves the effect to its caller's argument.
+run!(sync_on_async_builtin_callback, r#"{
+    #[sync]
+    let g = |v: [i64, null]| opt::map(v, |x| sys::time::after_idle(duration:10.ms, x));
+    g(1)
+}"#, refused("#[sync]: this function is async"); FuseExpect::None);
+
+run!(sync_on_async_filter_callback, r#"{
+    #[sync]
+    let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms, x > 0));
+    g(1)
+}"#, refused("#[sync]: this function is async"); FuseExpect::None);
+
+run!(sync_builtin_callbacks_stay_sync, r#"{
+    #[sync]
+    let g = |v: [i64, null]| opt::map(v, |x| x + 1);
+    #[sync]
+    let ap = |v: [i64, null], f: fn(x: i64) -> i64| opt::map(v, f);
+    (g(1), ap(2, |x| x * 10))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(20)])
+}; FuseExpect::None);
+
 // A dynamic module runs code its source delivers at run time.
 const SYNC_ON_DYNAMIC_MODULE: &str = r#"
 {

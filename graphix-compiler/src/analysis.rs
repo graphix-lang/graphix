@@ -24,6 +24,7 @@ use crate::{
         seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
+    typ::Type,
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
@@ -448,10 +449,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
     for (iid, b) in bodies.iter() {
         if let Some(d) = lambda_def(ctx, b.lambda) {
-            // joined under the lock: binds in forked branches join here
-            // at once, and the facts only ever degrade
-            let mut facts = d.facts.lock();
-            *facts = facts.join(eff[iid]);
+            d.join_facts(eff[iid]);
         }
     }
     eff
@@ -469,6 +467,44 @@ fn body_facts<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
 ) -> BodyFacts {
+    let mut callees = SmallVec::new();
+    let known = walk_body(g, &mut |cs| {
+        let unresolved = Unresolved::ASYNC;
+        callee_facts(cs, Some(graph), ctx, &unresolved, &mut |iid| callees.push(iid))
+    });
+    BodyFacts { lambda: g.id(), known, callees }
+}
+
+/// The facts a definition's check gives its body before any instance is
+/// analyzed: what it knows. A call through one of the definition's own
+/// function parameters, or a builtin handed one, contributes nothing,
+/// since the caller's argument joins at the call, nor does a call not
+/// resolved yet (a `let rec`'s own), which an instance's analysis judges.
+pub(crate) fn def_body_facts<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> LambdaFacts {
+    let mut params: LPooled<IntSet<BindId>> = LPooled::take();
+    for p in g.args().iter() {
+        p.ids(&mut |id| {
+            params.insert(id);
+        });
+    }
+    let own = |id: BindId| params.contains(&id);
+    let unresolved = Unresolved { params: &own, facts: LambdaFacts::PURE };
+    walk_body(g, &mut |cs| match cs.fnode().view() {
+        NodeView::Ref(r) if own(r.id) => LambdaFacts::PURE,
+        _ => callee_facts(cs, None, ctx, &unresolved, &mut |_| ()),
+    })
+}
+
+/// One body's facts, nested lambda bodies excluded, a call's from
+/// `call`. A `<-` counts as state only when its target is one of the
+/// body's own bindings.
+fn walk_body<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    call: &mut dyn FnMut(&CallSite<R, E>) -> LambdaFacts,
+) -> LambdaFacts {
     let body = g.body();
     let local: OnceCell<LPooled<IntSet<BindId>>> = OnceCell::new();
     let is_local = |id: BindId| {
@@ -485,12 +521,9 @@ fn body_facts<R: Rt, E: UserEvent>(
             })
             .contains(&id)
     };
-    let mut res =
-        BodyFacts { lambda: g.id(), known: LambdaFacts::PURE, callees: SmallVec::new() };
+    let mut known = LambdaFacts::PURE;
     fusion::for_each_node(body, &mut |n| {
-        let e = node_facts(n, OwnTargets::Bound(&is_local), &mut |cs| {
-            callee_facts(cs, Some(graph), ctx, &mut |iid| res.callees.push(iid))
-        });
+        let e = node_facts(n, OwnTargets::Bound(&is_local), call);
         if gxdbg_effect() {
             if e.effect.is_async() {
                 eprintln!("EFFECT-ASYNC-NODE node={}", n.spec());
@@ -499,9 +532,9 @@ fn body_facts<R: Rt, E: UserEvent>(
                 eprintln!("EFFECT-STATEFUL-NODE node={}", n.spec());
             }
         }
-        res.known = res.known.join(e);
+        known = known.join(e);
     });
-    res
+    known
 }
 
 /// A dynamic module runs code its source delivers at run time, whose
@@ -627,7 +660,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
 /// facts, a builtin its declared `EFFECT`, anything else `Async`.
-// CR claude for eric: [bug] A builtin call contributes only its declared EFFECT, and a
+// XCR claude for claude: [bug] A builtin call contributes only its declared EFFECT, and a
 // lambda passed to it counts as a PURE literal, so the effect of a callback the builtin
 // calls (filter's predicate, opt::map's f, array::group's f) never reaches the caller's
 // facts. `#[sync] let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms,
@@ -648,14 +681,111 @@ fn node_facts<R: Rt, E: UserEvent>(
 // core-aux-11's map of len 1); (c) treat every function argument of a builtin as async
 // unless it is a known pure definition (cheap, but de-classifies today's sync uses of
 // opt::map and filter). I lean to (b).
+// 2026-10-09 claude: Eric ruled 10-09: (b) without a declaration. A builtin call joins
+// the facts of each function-typed argument (callee_facts → callback_facts): a lambda
+// literal's or a resolved name's definition facts, else async (in an instance analysis).
+// A definition's check now records its body's own facts (def_body_facts, carried in its
+// DefTable and the image) so a definition no instance reaches starts honest; that walk
+// counts calls through its own parameters, and calls not resolved yet, as nothing,
+// leaving them to the instance analysis. Pins: lang::attributes
+// sync_on_async_builtin_callback, sync_on_async_filter_callback (both fail without the
+// join), sync_builtin_callbacks_stay_sync; the repro is refused.
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
     ctx: &CompileCtx<R, E>,
+    unresolved: &Unresolved,
+    pending: &mut dyn FnMut(LambdaInstanceId),
+) -> LambdaFacts {
+    let facts = callee_own_facts(cs, graph, ctx, unresolved.facts, pending);
+    match calls_builtin(cs, ctx) {
+        true => facts.join(callback_facts(cs, ctx, unresolved)),
+        false => facts,
+    }
+}
+
+/// What a callee or a callback no analysis resolves contributes.
+struct Unresolved<'a> {
+    /// The parameters of the definition being checked: the caller's.
+    params: &'a dyn Fn(BindId) -> bool,
+    facts: LambdaFacts,
+}
+
+impl Unresolved<'_> {
+    /// An analysis of instances: anything unresolved may be async.
+    const ASYNC: Unresolved<'static> =
+        Unresolved { params: &|_| false, facts: LambdaFacts::ASYNC };
+}
+
+/// Whether `cs` calls a builtin, which calls back the functions it is
+/// handed at run time, where no analysis sees them.
+fn calls_builtin<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> bool {
+    let fref = match cs.fnode().view() {
+        NodeView::Ref(r) => Some(r.id),
+        _ => None,
+    };
+    let def = cs
+        .static_target()
+        .map(|t| t.definition)
+        .or_else(|| match cs.resolved_apply() {
+            Some(ApplyView::Lambda(g)) => Some(g.id()),
+            _ => None,
+        })
+        .or_else(|| {
+            let v = ctx.bind_to_lambda.get(&fref?)?;
+            v.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+        });
+    match def {
+        Some(lid) => lambda_def(ctx, lid).is_some_and(|d| d.builtin_check().is_some()),
+        None => fref.and_then(|id| ctx.env.by_id.get(&id)).is_some_and(|b| {
+            ctx.builtin_bindings.contains_key(&(b.scope.clone(), b.name.clone()))
+        }),
+    }
+}
+
+/// The facts of the functions a builtin call is handed: each argument of
+/// function type, by the definition it is, else `unresolved`'s.
+fn callback_facts<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+    unresolved: &Unresolved,
+) -> LambdaFacts {
+    let function = |n: &Node<R, E>| -> LambdaFacts {
+        let lid = match n.view() {
+            NodeView::Lambda(l) => {
+                l.def_value().downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
+            }
+            NodeView::Ref(r) if (unresolved.params)(r.id) => return LambdaFacts::PURE,
+            NodeView::Ref(r) => ctx
+                .bind_to_lambda
+                .get(&r.id)
+                .and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+                .map(|d| d.id)
+                .or_else(|| ctx.fn_forward_resolutions.get(&r.id).copied()),
+            _ => None,
+        };
+        lid.and_then(|lid| lambda_def(ctx, lid)).map_or(unresolved.facts, def_facts)
+    };
+    cs.args
+        .values()
+        .filter_map(|a| a.node.as_ref())
+        .filter(|n| n.typ().with_deref(|t| matches!(t, Some(Type::Fn(_)))))
+        .fold(LambdaFacts::PURE, |acc, n| acc.join(function(n)))
+}
+
+/// A call's facts by its callee alone.
+fn callee_own_facts<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    graph: Option<&StaticCallGraph<'_, R, E>>,
+    ctx: &CompileCtx<R, E>,
+    unresolved: LambdaFacts,
     pending: &mut dyn FnMut(LambdaInstanceId),
 ) -> LambdaFacts {
     let of_def = |lid: LambdaId| -> LambdaFacts {
-        lambda_def(ctx, lid).map(def_facts).unwrap_or(LambdaFacts::ASYNC)
+        lambda_def(ctx, lid).map(def_facts).unwrap_or(unresolved)
     };
     let mut instance = |iid: LambdaInstanceId, lid: LambdaId| match graph {
         Some(graph) if graph.instances.contains_key(&iid) => {
@@ -670,7 +800,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return instance(g.instance_id(), g.id());
     }
-    // CR claude for eric: [bug] A call to a builtin contributes only the builtin's
+    // XCR claude for claude: [bug] A call to a builtin contributes only the builtin's
     // declared EFFECT, either through the builtin-bodied def that bind_to_lambda names
     // (opt::map takes this branch) or through builtin_bindings below. The functions
     // handed to the builtin are never consulted, and a lambda literal argument counts
@@ -683,6 +813,10 @@ fn callee_facts<R: Rt, E: UserEvent>(
     // and a map of three distinct keys of that type has len 1. probe:
     // design/review-2026-10-05/repro/core-aux-11.gx (core-aux-11)
     // 2026-10-08 claude: re-addressed with core-lib-08 above: one ruling covers both.
+    // 2026-10-09 claude: built with core-lib-08 (Eric's ruling, 10-09): a builtin call
+    // joins its callbacks' facts, so the repro's opt::map with an after_idle callback is
+    // refused under #[sync], and the core-trait method's implicit #[sync] with it. Pins
+    // as core-lib-08's.
     if let NodeView::Ref(r) = cs.fnode().view() {
         if let Some(ids) = graph.and_then(|graph| graph.self_binds.get(&r.id)) {
             ids.iter().for_each(|iid| pending(*iid));
@@ -709,7 +843,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if gxdbg_effect() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());
     }
-    LambdaFacts::ASYNC
+    unresolved
 }
 
 fn mark_recursion<R: Rt, E: UserEvent>(
@@ -880,7 +1014,7 @@ fn arm_sleeps<R: Rt, E: UserEvent>(
             }
             _ => {
                 let facts = node_facts(n, OwnTargets::All, &mut |cs| {
-                    callee_facts(cs, None, ctx, &mut |_| ())
+                    callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
                 });
                 *sleeps =
                     !facts.is_pure() || raises_to_handler(n) || calls_recursive(n, ctx);

@@ -583,7 +583,11 @@ but keeps cross-invocation state, or depends on WHICH args arrived), or
 `Stateless(Option<FastCall>)` (a pure function of its args; the payload
 is the direct-call entry the JIT uses, `Plain` or `Typed` by the site's
 resolved return type; `None` for effects and partial-delivery
-producers). A wrong `Stateless` is a semantics bug (the JIT's native
+producers). A builtin call's facts also join those of every function
+argument it is handed (it may call any back at run time, where no
+analysis sees it): a definition's own, which its check records from
+its body (`analysis::def_body_facts`, carried in its `DefTable`), else
+async. A wrong `Stateless` is a semantics bug (the JIT's native
 tail loop shares state across iterations); a wrong `Sync` is one too
 where it skips a wake's recompute (`CachedArgs` re-runs only a
 `Stateless` eval), and otherwise costs the loop. Bottom never reaches builtin authors: a bottomed arg bottoms the

@@ -71,6 +71,9 @@ pub struct DefTable {
     /// The typedefs the rows name, owned here: one the body declares
     /// is in the env only while the body compiles.
     typedefs: Vec<SArc<ResolvedRef>>,
+    /// The body's own effect facts (`analysis::def_body_facts`), which
+    /// every definition this table types starts from.
+    facts: LambdaFacts,
 }
 
 /// One instance's cell map, shared with the lambdas its body defines:
@@ -129,8 +132,13 @@ impl DefTable {
     /// a name up by a scope only this check had (an image relocates the
     /// ids a block's scope is named by, never the names). The body's own
     /// binds are in `checked`, the check's environment.
-    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>, env: &Env, checked: &Env) -> Self {
-        let mut table = Self::default();
+    fn record<R: Rt, E: UserEvent>(
+        body: &Node<R, E>,
+        env: &Env,
+        checked: &Env,
+        facts: LambdaFacts,
+    ) -> Self {
+        let mut table = Self { facts, ..Self::default() };
         let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
         fusion::for_each_node(body, &mut |n| {
             let id = n.spec().id;
@@ -228,6 +236,7 @@ impl DefTable {
                     .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
                     .collect(),
                 typedefs: vec![],
+                facts: self.facts,
             };
             table.own_typedefs();
             table
@@ -272,7 +281,7 @@ impl DefTable {
                 for r in table.typedefs.iter() {
                     image::resolved_encode(r, buf)?;
                 }
-                Ok(())
+                table.facts.encode(buf)
             },
         )
     }
@@ -309,7 +318,8 @@ impl DefTable {
                 let typedefs = (0..n)
                     .map(|_| image::resolved_decode(sub))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(SArc::new(DefTable { types, ftypes, aux, lambdas, typedefs }))
+                let facts = LambdaFacts::decode(sub)?;
+                Ok(SArc::new(DefTable { types, ftypes, aux, lambdas, typedefs, facts }))
             },
             |b| Self::image_decode(b),
         )
@@ -535,6 +545,12 @@ impl DefBody {
 }
 
 impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
+    /// Degrade the facts by `facts`; they never improve.
+    pub(crate) fn join_facts(&self, facts: LambdaFacts) {
+        let mut f = self.facts.lock();
+        *f = f.join(facts);
+    }
+
     /// The check `Apply` of a builtin definition; `None` for any other.
     /// It holds `None` until the definition gate builds it, and for a
     /// definition restored from an image until its first call site
@@ -1829,7 +1845,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             if res.is_ok()
                 && let ApplyView::Lambda(g) = f.view()
             {
-                let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env));
+                let facts = crate::analysis::def_body_facts(g, ctx);
+                def.join_facts(facts);
+                let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env, facts));
                 def.table.set(Tables { table, outer: None });
             }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
@@ -1880,6 +1898,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level.depth());
+        def.join_facts(tables.table.facts);
         def.table.set(tables);
         Ok(())
     }

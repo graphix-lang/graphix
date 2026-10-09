@@ -9,10 +9,17 @@
 /// start: `effect` (`Sync` degrading to `Async`) and `stateless` (no
 /// per-activation state: every builtin reached is `Effect::Stateless`,
 /// no `<-` targets an own binding, every callee is stateless).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub struct LambdaFacts {
     pub effect: EffectKind,
     pub stateless: bool,
+}
+
+/// Pure: facts only degrade, and nothing has yet.
+impl Default for LambdaFacts {
+    fn default() -> Self {
+        Self::PURE
+    }
 }
 
 impl LambdaFacts {
