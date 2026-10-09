@@ -616,6 +616,8 @@ fn eta_dispatcher<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     let ft = &m.typ;
+    // its names mean what they meant where the trait wrote them
+    Type::Fn(ft.clone()).seed_refs(&ctx.env);
     if ft.vargs.is_some() {
         bailat!(
             spec,

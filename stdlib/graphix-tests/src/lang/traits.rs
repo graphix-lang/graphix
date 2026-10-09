@@ -249,6 +249,29 @@ run!(
     "#
 );
 
+// A method named as a value outside the trait's module: its signature's
+// names resolve where the trait wrote them, not where it is named.
+run!(
+    trait_method_value_from_another_module,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(9)"),
+    "/test.gx" => r#"
+        mod m;
+        let show = m::Show::show;
+        let result = show(m::make(9))
+    "#,
+    "/test/m.gxi" => r#"
+        trait Show { val show: fn(self) -> string };
+        type Counter;
+        impl Show for Counter;
+        val make: fn(x: i64) -> Counter
+    "#,
+    "/test/m.gx" => r#"
+        type Counter = Abstract<i64>;
+        impl Show for Counter { let show = |c| "Counter([c.0])" };
+        let make = |x| Counter(x)
+    "#
+);
+
 // A program is one package: a sibling module may implement the trait
 // for a primitive.
 run!(

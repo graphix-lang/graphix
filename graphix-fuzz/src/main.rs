@@ -3,6 +3,7 @@
 //! mode's outcome; the rest are campaigns, gates and hidden workers
 //! (see the usage string). See design/graphix_fuzz.md.
 
+use ahash::AHashMap;
 use anyhow::{Result, bail};
 use graphix_fuzz::{
     CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, OUTCOME_MANIFEST, Outcome, Regression,
@@ -734,9 +735,15 @@ async fn main() -> Result<()> {
                 programs.push((format!("gen#{i}"), gen_one(&mut rng)));
             }
             let total = programs.len();
+            let generated: AHashMap<String, String> =
+                programs[corpus_n..].iter().cloned().collect();
             let flips = graphix_fuzz::typemorph_scan(programs, timeout()).await;
             for (name, detail) in &flips {
                 println!("TYPEFLIP {name}: {detail}");
+                let subject = name.split(':').next().unwrap_or(name);
+                if let Some(prog) = generated.get(subject) {
+                    println!("    subject: {}", prog.replace('\n', "\\n"));
+                }
             }
             println!(
                 "typemorph-scan: {total} programs ({corpus_n} corpus + {n} generated), {} flips",
