@@ -1579,25 +1579,6 @@ impl Flavor {
     /// Append a flat_map callback's result: its elements when it is this
     /// flavor's collection, else itself.
     pub(crate) fn extend(self, elems: &mut LPooled<Vec<Value>>, v: &Value) {
-        // XCR claude for eric: [bug] flat_map chooses between splicing and pushing by
-        // looking at the value, but its callback may return a bare 'b (`['b,
-        // Array<'b>]`, `['b, List<'b>]`). A tuple, struct, payload variant or list 'b
-        // is an array at run time, and any empty or 2-slot array passes list::is_list.
-        // So `array::flat_map([1, 2], |x| (x, x * 10))` checks as Array<(i64, i64)> but
-        // is [1, 10, 2, 20] in both engines, `list::flat_map` with the same callback
-        // drops every second component, and code that reads the result by its type then
-        // diverges (the node-walk bottoms, kernels read 0).
-        // graphix_value_buf_extend_from_list in fusion/emit_helpers.rs makes the same
-        // value test. The splice has to follow the callback's resolved return type, or
-        // the signatures become `-> Array<'b>` / `-> List<'b>` like
-        // Collection::flat_map's (lang::functions::flat_map_declared_union pins the
-        // bare form). probe: design/review-2026-10-05/repro/c-collection-01.gx
-        // (c-collection-01)
-        // 2026-10-06 claude: Eric ruled for the signature change: array::flat_map's
-        // callback is `fn(x: 'a) -> Array<'b>` and list::flat_map's `fn(x: 'a) ->
-        // List<'b>`, so the result is always spliced and nothing is decided by the
-        // value's shape. The push arm is gone. The probe is now refused (its callback
-        // returns a tuple).
         match (self, v) {
             (Self::Array, Value::Array(a)) => elems.extend(a.iter().cloned()),
             (Self::List, v) => elems.extend(list::Iter::new(v.clone())),
