@@ -1029,34 +1029,6 @@ pub fn decode_at<T>(
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
-        // CR claude for claude: [bug] This guard refuses re-entry of `ord` only when
-        // `prev == built`, i.e. only when nothing was entered since this ordinal's last
-        // entry. But enter() (l.396) does `self.built += 1` on every call, so a corrupt
-        // image whose misframed decode enters at least one object per round (the Type
-        // -> TypeRef params(Vec<Type>) -> Type -> REF ord path does) advances `built`
-        // each round and the same ordinals recurse without bound; each level mmaps a 32
-        // MB stacker segment. design/program_image.md promises "entered at most twice;
-        // a third entry is a corrupt image and fails the read" and CLAUDE.md promises a
-        // cold fallback -- neither holds: one bit flipped in a cached program image
-        // OOM-kills the session (uncapped) or aborts with "channel closed"/exit 1
-        // (capped), a registration entry aborts with "memory allocation ... failed"
-        // (SIGABRT), never cold. Enforce the documented bound (a per-ordinal entry
-        // count, fail the third) and count only enters that fill an empty slot. probe:
-        // design/review-2026-10-05/repro/x-image-04.sh (x-image-04)
-        // 2026-10-07 claude: an ordinal is entered at most twice while open, and
-        // `built` counts only enters that fill an empty slot. The probe exits 0
-        // with the program's output (no unit pin: it needs a cyclic image).
-        // 2026-10-09 reviewer: the guard reads right (an ordinal open twice fails a
-        // third entry, a second needs a slot filled since, and `built` counts only
-        // fills), but nothing exercises it. The probe's exit 0 says nothing: its fixture
-        // x-image-04.img.gz carries format byte 25 and REGISTRATION_FORMAT is now 41, so
-        // the header refuses it and the run is a plain cold start; it exits 0 the same
-        // way with or without the fix. A pin needs a cyclic image built for the current
-        // format: a graphix-types unit test that hand-writes a definition reaching its
-        // own ordinal through an entering object (the Type -> TypeRef params -> REF ord
-        // path) and expects InvalidFormat, or a fixture regenerated with the review's
-        // corrupt.py and a script that checks its format byte before trusting a clean
-        // exit.
         let open = match d.active.get(&ord) {
             None => 0,
             Some((at, open)) if *at != built && *open < 2 => *open,
@@ -1660,6 +1632,38 @@ mod tests {
             }
             assert!(b.is_empty());
         });
+    }
+
+    /// A corrupt image decodes to an answer, never an unbounded
+    /// recursion: every byte of a type's image rewritten to every small
+    /// value, some of which make a definition reach back into its own
+    /// decode.
+    #[test]
+    fn a_corrupt_image_fails_the_read() {
+        use crate::expr::parser::parse_type;
+        let t = parse_type(
+            "Array<(Array<string>, Foo<(Array<u8>, Bar<Array<bool>>, Array<i32>)>, Array<i64>)>",
+        )
+        .unwrap();
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[t.clone()], &mut enc);
+        let ords = packed.offsets.len() as u8;
+        let mut refused = 0;
+        for at in 0..packed.image.len() {
+            for v in 0..ords + 4 {
+                let mut image = packed.image.to_vec();
+                image[at] = v;
+                let bad = Packed {
+                    image: Bytes::from(image),
+                    body: packed.body,
+                    offsets: packed.offsets.clone(),
+                };
+                let mut dec = bad.decoder(&enc);
+                let r = DecodeImage::with(&mut dec, || Type::decode(&mut bad.body()));
+                refused += r.is_err() as usize;
+            }
+        }
+        assert!(refused > 0, "no rewrite was refused");
     }
 
     /// An input address reused for a different expression within a

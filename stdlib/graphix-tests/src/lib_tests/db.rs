@@ -1166,3 +1166,114 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// The last handle of one database drops while a transaction on another is
+// open: the drop must not wait on the transaction's lock in the cycle.
+run_with_tempdir!(
+    name: db_drop_under_open_txn,
+    code: r#"{{
+        let dba = db::open("{0}/a.db")$;
+        let ta: db::Tree<string, i64> = db::tree(dba, "a")$;
+        let pre = db::insert(ta, "x", 1)$;
+        let txn = db::txn::begin(pre ~ dba)$;
+        let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+        let ins = db::txn::insert(tt, "k", 7)$;
+        let pb = "{0}/b1.db";
+        pb <- ins ~ "{0}/b2.db";
+        let opened = count(db::open(pb)$);
+        let c = db::txn::commit(select opened {{ 2 => txn, _ => never() }})$;
+        c ~ "committed"
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::String("committed".into()));
+        Ok(())
+    }
+);
+
+// A commit is on disk when it answers: a copy of the files taken then holds it.
+run_with_tempdir!(
+    name: db_commit_is_durable,
+    code: r#"{{
+        let db = db::open("{0}/db")$;
+        let t: db::Tree<string, i64> = db::tree(db, "t")$;
+        let txn = db::txn::begin(t ~ db)$;
+        let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "t")$;
+        db::txn::commit(db::txn::insert(tt, "k", 42)$ ~ txn)
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::Null);
+        Ok(())
+    },
+    verify: |td| {
+        let src = td.path().join("db");
+        let dst = td.path().join("copy");
+        copy_dir(&src, &dst)?;
+        let t = sled::open(&dst)?.open_tree("t")?;
+        assert_eq!(t.len(), 1, "the commit is not in the files");
+    }
+);
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let to = dst.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &to)?;
+        } else {
+            std::fs::copy(e.path(), to)?;
+        }
+    }
+    Ok(())
+}
+
+// A subscription read in an arm that sleeps and wakes, or made in one,
+// delivers the inserts after the wake.
+run_with_tempdir!(
+    name: db_subscription_hears_after_a_wake,
+    code: r#"{{
+        let db = db::open("{0}/db")$;
+        let t: db::Tree<string, i64> = db::tree(db, "a")?;
+        let sub = db::subscription::new(t);
+        let on = true;
+        on <- sys::time::timer(duration:200.ms, false) ~ false;
+        on <- sys::time::timer(duration:400.ms, false) ~ true;
+        let i1 = db::insert(t, sys::time::timer(duration:100.ms, false) ~ "a", 1)$;
+        let i2 = db::insert(t, sys::time::timer(duration:600.ms, false) ~ "b", 2)$;
+        let hits = select on {{ true => db::subscription::on_insert(sub)?, false => [] }};
+        let b = array::filter(hits, |e| e.key == "b");
+        select array::len(b) {{ 0 => never(), _ => b[0]$.value }}
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::I64(2));
+        Ok(())
+    }
+);
+
+run_with_tempdir!(
+    name: db_subscription_made_in_an_arm_hears_after_a_wake,
+    code: r#"{{
+        let db = db::open("{0}/db")$;
+        let t: db::Tree<string, i64> = db::tree(db, "a")?;
+        let pre: [string, null] = null;
+        let on = true;
+        on <- sys::time::timer(duration:200.ms, false) ~ false;
+        on <- sys::time::timer(duration:400.ms, false) ~ true;
+        let i1 = db::insert(t, sys::time::timer(duration:100.ms, false) ~ "a", 1)$;
+        let i2 = db::insert(t, sys::time::timer(duration:600.ms, false) ~ "b", 2)$;
+        let hits = select on {{
+            true => db::subscription::on_insert(db::subscription::new(#prefix: pre, t))?,
+            false => []
+        }};
+        let b = array::filter(hits, |e| e.key == "b");
+        select array::len(b) {{ 0 => never(), _ => b[0]$.value }}
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, Value::I64(2));
+        Ok(())
+    }
+);

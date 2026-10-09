@@ -1251,27 +1251,6 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// select, block or cast as a source), and so is a decorated source, whose
 /// decorations would otherwise stand above the whole chain.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
-    // CR claude for claude: [readability] This admits only names and postfix chains, but
-    // the parser reads any bracket-delimited primary bare as a postfix source and drops
-    // parens around one. So the formatter adds a pair it does not need: `(1, 2).0`
-    // becomes `((1, 2)).0`, `[1, 2][0]` becomes `([1, 2])[0]`, `{ a: 1 }.a` becomes `({
-    // a: 1 }).a` and `select v { .. }.0` becomes `(select v { .. }).0`.
-    // StructWithExpr::write_head has the same gap against the parser's with_source: `{
-    // u$ with b: 5 }` becomes `{ (u$) with b: 5 }`. Numeric constants (`(42).0`) and
-    // ExplicitParens still need the parens. (t-print-13)
-    // 2026-10-07 claude: every bracketed primary but a select, a block and a cast now
-    // prints bare (prints_as_bare_postfix), and a struct-with head takes a `?`/`$`
-    // chain on a name bare. A select, block or cast keeps its parens: the tree-sitter
-    // grammar reads none of them as a postfix source, and ts_expr refuses the bare
-    // form. A decorated source keeps its parens too (t-format-resolver-14). Pinned by
-    // the print proptests and ts_expr.
-    // 2026-10-09 reviewer: the fix itself holds: `graphix fmt --stdout` prints `(1,
-    // 2).0`, `[1, 2][0]`, `{ a: 1 }.a`, `{ a: 1, b: 2 }.b`, `[<1, 2>][0]`, `{ u$ with b:
-    // 5 }`, `{ u? with b: 5 }` bare and keeps `(42).0`, `(select ..).0` and `{ (u.a) with
-    // .. }`. But no named pin can fail if it is undone: the proptests and ts_expr check
-    // that the output reparses, which the old extra parens also did. To close: add the
-    // bare cases above to parser/test.rs print_bare_chains_round_trip, which already
-    // asserts exact output for `(a + b).c` and `(42).0`.
     use ExprKind::*;
     e.dec.is_none()
         && matches!(

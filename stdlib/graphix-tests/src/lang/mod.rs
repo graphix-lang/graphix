@@ -14,6 +14,7 @@ mod fusion;
 mod fusion_parity;
 mod image;
 mod inference;
+
 mod interfaces;
 mod lists;
 mod maps;
@@ -33,6 +34,7 @@ mod seq_shadow;
 mod seq_steps;
 mod seq_try;
 mod seqq;
+mod test_builtins;
 mod traits;
 mod tuples_structs;
 mod types;

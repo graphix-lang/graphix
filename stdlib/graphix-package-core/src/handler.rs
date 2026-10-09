@@ -1,11 +1,10 @@
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, CompileCtx, ExecCtx, LambdaId, Node, Refs, Rt, Scope, TagValue, TagView,
-    UserEvent, errf,
+    UserEvent,
     expr::ExprId,
     image::{self, ImageBuf},
-    node::genn,
+    node::{ErrorRelay, genn},
     typ::Type,
 };
 use netidx::subscriber::Value;
@@ -15,22 +14,33 @@ use std::collections::VecDeque;
 /// Where a request's answer goes.
 pub trait Reply: Send + 'static {
     fn reply(self, v: Value);
+
+    /// The asker stopped waiting.
+    fn abandoned(&self) -> bool {
+        false
+    }
 }
 
 impl Reply for tokio::sync::oneshot::Sender<Value> {
     fn reply(self, v: Value) {
         let _ = self.send(v);
     }
+
+    fn abandoned(&self) -> bool {
+        self.is_closed()
+    }
 }
 
 /// A Graphix function answering requests for a builtin (an http server,
 /// a published rpc): one instance of the function, the requests queued
 /// and handed to it one at a time, each answered by its next fire. A
-/// request it answers with a fresh bottom (it raised, or has no value for
-/// that request) is answered with an error, so it never holds up the rest.
+/// request it raised on is answered with the error, which also goes on to
+/// the handler covering the builtin; one whose asker stopped waiting is
+/// dropped.
 #[derive(Debug)]
 pub struct Handler<R: Rt, E: UserEvent, Q> {
     f: Node<R, E>,
+    relay: ErrorRelay,
     /// The function's value.
     pid: BindId,
     /// The request the function is answering.
@@ -53,12 +63,13 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             t => bail!("expected a function of one argument not {t}"),
         };
         let scope = scope.append_block("fn", LambdaId::new().inner());
+        let (relay, scope) = ErrorRelay::new(ctx, &scope, top_id);
         let (x, xn) =
             genn::bind(ctx, &scope.lexical, "x", ftyp.args[0].typ.clone(), top_id);
         let pid = BindId::new();
         let fnode = genn::reference(ctx, pid, Type::Fn(ftyp.clone()), top_id);
         let f = genn::apply(fnode, scope, smallvec::smallvec![xn], &ftyp, top_id);
-        Ok(Self { f, pid, x, queue: VecDeque::new(), busy: false })
+        Ok(Self { f, relay, pid, x, queue: VecDeque::new(), busy: false })
     }
 
     /// Take the function's value when its argument fires.
@@ -74,6 +85,11 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     }
 
     fn dispatch(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if self.busy && self.queue.front().is_some_and(|(_, q)| q.abandoned()) {
+            self.queue.pop_front();
+            self.busy = false;
+        }
+        self.queue.retain(|(_, q)| !q.abandoned());
         if let Some((req, _)) = self.queue.front()
             && !self.busy
         {
@@ -103,9 +119,14 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         // 2026-10-07 claude: moved with the loop from HttpServe::update, which
         // PublishRpc now shares through this Handler; the pairing is unchanged.
         loop {
-            let answer = match self.f.update(ctx).view() {
-                TagView::Fired(tv) => tv.value_cloned(),
-                // CR claude for claude: [bug] `ready` is cleared when a request goes to the
+            let out = match self.f.update(ctx).view() {
+                TagView::Fired(tv) => Some(tv.value_cloned()),
+                _ => None,
+            };
+            let answer = match (out, self.relay.update(ctx)) {
+                (Some(v), _) => v,
+                (None, Some(e)) if self.busy => e,
+                // XCR claude for claude: [bug] `ready` is cleared when a request goes to the
                 // handler and set again only when the handler's output fires (871). Some
                 // handlers never fire for a request: one that raises with `?` (the error goes
                 // to the serve site's catch through `throws 'e`), or one that is bottom for it
@@ -133,9 +154,17 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
                 // 200. A fresh bottom is not "no value for this request" while an async part
                 // is pending; the wedge needs another signal (the raise itself, or a timeout).
                 // Pin to add: a handler of that shape answering 200.
-                TagView::FreshBottom if self.busy => {
-                    errf!("HandlerError", "the handler has no value for this request")
-                }
+                // 2026-10-09 claude: a raise inside the handler now reaches an ErrorRelay
+                // (node/error.rs) that Handler installs over it: the request is answered
+                // with the error (http: 500) and the error goes on to the catch covering
+                // serve, or is logged. A fresh bottom no longer answers anything, so a
+                // handler waiting on an async value answers when it arrives. A request
+                // that is bottom for good (`req.body$` on a GET) stays unanswered until
+                // its client gives up; a closed oneshot (Reply::abandoned) then drops it
+                // from the queue. rpc replies cannot tell, so an rpc call stays queued
+                // (sys-net-03). Pins: lib_tests http_raising_handler_then_good,
+                // http_async_handler_answers, http_abandoned_request_then_good (fails
+                // with abandoned() false).
                 _ => break,
             };
             self.busy = false;
@@ -162,6 +191,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
     pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.queue.clear();
         self.busy = false;
+        self.relay.give_up_in_flight();
         self.f.sleep(ctx);
     }
 
@@ -169,6 +199,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         ctx.rt.store_remove(&self.pid);
+        self.relay.delete(ctx);
         self.f.delete(ctx);
     }
 
@@ -178,6 +209,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.f.image_encode(buf)?;
+        self.relay.image_encode(buf)?;
         self.pid.encode(buf)?;
         self.x.encode(buf)
     }
@@ -187,8 +219,9 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let f = image::decode_node(ctx, buf)?;
+        let relay = ErrorRelay::image_decode(ctx, buf)?;
         let pid = BindId::decode(buf)?;
         let x = BindId::decode(buf)?;
-        Ok(Self { f, pid, x, queue: VecDeque::new(), busy: false })
+        Ok(Self { f, relay, pid, x, queue: VecDeque::new(), busy: false })
     }
 }

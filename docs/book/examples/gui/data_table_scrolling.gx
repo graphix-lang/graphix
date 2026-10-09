@@ -5,7 +5,6 @@ use gui::{
   text::text
 };
 use sys::{time, net};
-use rand::rand;
 mod icon;
 
 // Enough rows and columns that both the vertical and horizontal

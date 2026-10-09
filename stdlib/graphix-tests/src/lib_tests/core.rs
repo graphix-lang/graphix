@@ -344,6 +344,22 @@ run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
     }
 }; FuseExpect::None);
 
+// The wrapper's call passes every formal and no more: a function with a
+// defaulted label or a variadic argument is refused by the check.
+run!(
+    queuefn_refuses_defaulted_label,
+    "queuefn(#trigger: never(), |#scale: i64 = 10, x: i64| -> i64 x * scale)(5)",
+    refused("within Function does not contain");
+    FuseExpect::None
+);
+
+run!(
+    queuefn_refuses_variadic,
+    "queuefn(#trigger: never(), max)(1, 5)",
+    refused("within Function does not contain");
+    FuseExpect::None
+);
+
 const QUEUEFN_QUEUE_POP: &str = r#"
 {
   let feedback: Any = never();

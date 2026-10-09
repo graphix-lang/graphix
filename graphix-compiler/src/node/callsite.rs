@@ -1222,42 +1222,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
-        // CR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
-        // at 1196, is only logged: the instance is installed and dispatched anyway,
-        // though design/parallel_compile.md says an instance whose signature its
-        // definition's does not hold is refused. Any checker gap that lets a mistyped
-        // function value reach a dynamic site then runs the callee on values of the
-        // wrong type. In the probe an i64 function reaches an f64 site: the fused run
-        // dies at fusion/kernel.rs:243 (`runtime I64(7) does not match the compiled
-        // Scalar(F64) slot`), and --no-fusion puts an i64 in an f64 tuple slot. Refuse
-        // it the way the site's other bind errors are refused (discard the apply,
-        // return the error, Callee::Failed). The rebind refusal branch (1722-1726) then
-        // has to apply its discards in the same cycle: today it leaves them to the next
-        // one, and a debug build panics with 'compiled references left unreplayed'.
-        // probe: design/review-2026-10-05/repro/x-typecheck-generics-F10.gx
-        // (x-typecheck-generics-F10)
-        // 2026-10-07 claude: a failed typecheck0 is refused now (the instance is
-        // discarded, Callee::Failed) and a failed bind drops what it deferred. A
-        // failed typecheck1 still only logs: refusing it broke netidx-admin, whose
-        // run-time binds of on_press's handlers fail elaboration with "type must be
-        // known" at a seq-lowered field read (`seqt.._r.path`, admin line 852) yet
-        // run right. That elaboration refusal is a checker bug to find first.
-        // an instance its definition's signature does not hold is refused
-        // 2026-10-08 claude: a failed elaboration is refused too: the instance is
-        // discarded and the site is Callee::Failed (CallSite::build_bound). The admin
-        // refusal the earlier note names no longer occurs: admin's tests and
-        // graphix-tests pass with the refusal in place, and the probe is now refused by
-        // the check itself. What would catch a regression: the soak (a checker gap would
-        // surface as a failed bind).
-        // 2026-10-09 reviewer: the refusals read right: a failed typecheck0 discards the
-        // apply, build_bound discards it on a failed elaboration and leaves
-        // Callee::Failed, and rebind drops what the failed bind deferred. Back to CR for
-        // the pin only: the probe is refused by the check now and no test reaches a
-        // refused run-time bind (no test looks for "did not type" or "did not
-        // elaborate"), so undoing either refusal fails nothing but the soak. A pin needs
-        // a function value of the wrong type at a dynamic site (a test-only builtin
-        // returning one would do), asserting the site bottoms and logs instead of running
-        // the callee.
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             ctx.discard_apply(apply);
             return Err(

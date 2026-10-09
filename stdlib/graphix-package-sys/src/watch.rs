@@ -551,6 +551,8 @@ pub(crate) struct WatchStream<K: WatchKind> {
     bind_ids: IntSet<BindId>,
     id: BindId,
     out: TagValue,
+    /// Asleep since the last update: the first update after watches again.
+    slept: bool,
     kind: PhantomData<K>,
 }
 
@@ -574,6 +576,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
             bind_ids: IntSet::default(),
             id,
             out: TagValue::phantom(),
+            slept: false,
             kind: PhantomData,
         }))
     }
@@ -593,6 +596,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
             bind_ids: IntSet::default(),
             id,
             out: TagValue::phantom(),
+            slept: false,
             kind: PhantomData,
         }))
     }
@@ -626,7 +630,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
         if let Invocation::Bottom { fresh } = invocation {
             return self.out.set_bottom(fresh);
         }
-        if invocation == Invocation::Fired {
+        if invocation == Invocation::Fired || std::mem::take(&mut self.slept) {
             self.unwatch(ctx);
             for v in self.cached.0.iter().flatten() {
                 extract_bind_ids(v, &mut self.bind_ids);
@@ -656,7 +660,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.unwatch(ctx);
-        self.cached.clear();
+        self.slept = true;
         self.out = TagValue::phantom();
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();

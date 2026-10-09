@@ -449,7 +449,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) else {
             bail!("queuefn: third argument must be a function")
         };
-        // CR claude for claude: [bug] The wrapper is built from f's type alone. This
+        // XCR claude for claude: [bug] The wrapper is built from f's type alone. This
         // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
         // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
         // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
@@ -472,13 +472,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // it. The refusal belongs in the check (a bound on queuefn's `'a`, as
         // `Function` is, or a check-time rule), or the wrapper must support them. No pin
         // exists for either. Refuse vs support is still open.
-        // the wrapper's call passes every formal and no more
-        if ft.vargs.is_some() || ft.args.iter().any(|a| a.has_default()) {
-            bail!(
-                "queuefn can't wrap a function with a variadic argument or a defaulted \
-                 label; wrap a lambda that calls it"
-            )
-        }
+        // 2026-10-09 claude: refused by the check now: the `Function` bound (queuefn's
+        // only user) holds only for a function type with no variadic argument and no
+        // defaulted label (Type::function_holds), and typecheck1 no longer refuses.
+        // `--check` of the repro: "'a: unbound within Function does not contain
+        // fn(?#scale: i64, x: i64) -> i64". Docs: tvar_constraints.md, queue_fn.md,
+        // must_reject.md family 8, the book's builtins chapter. Pins: lib_tests core
+        // queuefn_refuses_defaulted_label, queuefn_refuses_variadic. A checker rule
+        // change: wants review.
         self.ftyp = Some(ft);
         Ok(())
     }

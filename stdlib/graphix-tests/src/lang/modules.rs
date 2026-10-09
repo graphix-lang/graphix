@@ -996,9 +996,8 @@ run!(
     "#
 );
 
-// A loaded body's primes are its own: two modules loading in one cycle in
-// forked branches requeue nothing, and nothing later in the cycle fires
-// from a prime.
+// A loaded body's primes are its own: two modules loading in one cycle
+// requeue nothing, and nothing later in the cycle fires from a prime.
 async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
@@ -1008,7 +1007,7 @@ async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
             k <- select k { x if x < 3 => x + 1, _ => never() };
             let src = never();
             src <- select k { 2 => "let v = super::y + 1", _ => never() };
-            let r = #[parallel] (
+            let r = (
                 mod a dynamic { sandbox unrestricted; sig { val v: i64 }; source src },
                 mod b dynamic { sandbox unrestricted; sig { val v: i64 }; source src }
             );
@@ -1075,3 +1074,74 @@ run!(
         if format!("{v}").contains("handler was checked to take Error<ErrChain<i64>>"));
     FuseExpect::None
 );
+
+/// The seq lowerings a program leaves once `code` settles on `last`.
+async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
+    use graphix_package_core::testing::{
+        compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    use std::time::Duration;
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(code))],
+        &crate::TEST_REGISTER,
+        Mode::Interp,
+        |_| (),
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let values = updates_until_quiet(
+        &mut rx,
+        res.exprs[0].id,
+        Duration::from_millis(500),
+        deadline,
+    )
+    .await?;
+    assert_eq!(values.last(), Some(&last), "{values:?}");
+    let kept = ctx.rt.env_stats().await?.lowered_seqs_len;
+    ctx.shutdown().await;
+    Ok(kept)
+}
+
+/// A dynamic module reloaded with a seq in its body keeps no lowering of
+/// the bodies it replaced.
+#[tokio::test(flavor = "current_thread")]
+async fn reloads_keep_no_old_lowerings() -> Result<()> {
+    async fn kept(reloads: i64) -> Result<usize> {
+        let code = format!(
+            r#"{{
+                let k = 0;
+                k <- select k {{ x if x < {reloads} => x + 1, _ => never() }};
+                let status = mod foo dynamic {{
+                    sandbox whitelist [core];
+                    sig {{ val v: i64 }};
+                    source "let v = seq {{ let a = [k]; a + 1 }}"
+                }};
+                select status {{ error as e => never(dbg(e)), null as _ => foo::v }}
+            }}"#
+        );
+        lowerings_kept(&code, Value::I64(reloads + 1)).await
+    }
+    assert_eq!(kept(2).await?, kept(30).await?);
+    Ok(())
+}
+
+/// Instances of a function whose seqs sit in a try body and in a lambda
+/// literal share one lowering of each.
+#[tokio::test(flavor = "current_thread")]
+async fn instances_share_their_lowerings() -> Result<()> {
+    async fn kept(n: i64) -> Result<usize> {
+        let code = format!(
+            r#"{{
+                let f = |x: i64| {{
+                    let g = |y: i64| seq {{ let a = y; a + 1 }};
+                    seq {{ try {{ let b = [g(x)][0]?; b }} with(e) {{ 0 }} }}
+                }};
+                array::fold(array::init({n}, f), 0, |acc, v| acc + v)
+            }}"#
+        );
+        lowerings_kept(&code, Value::I64(n * (n + 1) / 2)).await
+    }
+    assert_eq!(kept(2).await?, kept(30).await?);
+    Ok(())
+}

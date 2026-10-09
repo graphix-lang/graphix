@@ -647,3 +647,54 @@ run!(
     |v: Result<&Value>| { matches!(v, Ok(Value::Bool(true))) }
     ; FuseExpect::Jit
 );
+
+/// A watch read in an arm that sleeps and wakes hears the events after
+/// the wake.
+#[tokio::test(flavor = "current_thread")]
+async fn watch_hears_after_a_wake() -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    };
+    let dir = tempfile::tempdir()?;
+    let d = escape_path(dir.path().display());
+    let code = format!(
+        r#"{{
+            use sys::fs::watch::{{self, *}};
+            let w = create(null)?;
+            let wd = watch(#interest: [`Create], w, "{d}")?;
+            let on = true;
+            on <- sys::time::timer(duration:300.ms, false) ~ false;
+            on <- sys::time::timer(duration:600.ms, false) ~ true;
+            let wrote = sys::fs::write_all(
+                #path: sys::time::timer(duration:1000.ms, false) ~ "{d}/b",
+                "x"
+            )$;
+            select on {{ true => path(wd)?, false => "off" }}
+        }}"#
+    );
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(&code))],
+        &crate::TEST_REGISTER,
+        Mode::Interp,
+        |_| (),
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let values = updates_until_quiet(
+        &mut rx,
+        res.exprs[0].id,
+        Duration::from_millis(1500),
+        deadline,
+    )
+    .await?;
+    ctx.shutdown().await;
+    let b = dir.path().join("b");
+    assert!(
+        values
+            .iter()
+            .any(|v| matches!(v, Value::String(s) if std::path::Path::new(&**s) == b)),
+        "{values:?}"
+    );
+    Ok(())
+}

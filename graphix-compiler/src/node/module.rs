@@ -1055,6 +1055,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Body::Dynamic { .. } = &self.body {
+            let scope = &self.scope.lexical.0;
+            ctx.lowered_seqs.retain(|(_, s), _| !Path::is_parent(scope, &s.0));
+        }
         for Proxy { inner, outer, .. } in self.proxy.drain(..) {
             ctx.unref_var(inner, self.top_id);
             ctx.unref_var(outer, self.top_id);

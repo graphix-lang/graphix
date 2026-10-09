@@ -1467,32 +1467,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.clear();
     }
 
-    // CR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
-    // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
-    // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
-    // fires again, while `timer(duration:3.ms, true)` restarts because constants fire
-    // at the wake. AfterIdle::sleep (line 144) and CachedArgsAsync::sleep
-    // (graphix-package-core/src/lib.rs:936) have the same hole: they reset their output
-    // on the premise that the operation restarts on wake, nothing restarts it over
-    // level arguments, and the arm stays bottom for good (json::read(doc),
-    // sys::fs::read_all(p), after_idle(d, v)). Subscribe and Publish handle this with a
-    // slept bit that makes the first update after sleep act on the present arguments;
-    // these three need the same. Both engines agree, so the fuzzer cannot see it.
-    // Probe: design/review-2026-10-05/repro/x-engine-firing-04.gx. (x-engine-firing-04)
-    // 2026-10-07 claude: a slept bit in all three makes the first update after a wake
-    // act on the present arguments: Timer starts a run, AfterIdle starts its wait, and
-    // CachedArgsAsync runs the operation again (an effect too: a write in a reselected
-    // arm writes again). design/async_sleep_outputs.md and CLAUDE.md say so. The repro
-    // prints every arm again after Paused -> Live; the wake tests in lang/async_restart
-    // pass unchanged, so a pin for the level-argument case is still owed.
-    // 2026-10-08 claude: pinned by lang::async_restart::wake_reissues_standing_async (an async builtin over a standing path answers again at the wake).
-    // 2026-10-09 reviewer: the fix holds: the repro (quick build, --no-cache, fusion on
-    // and off) prints "json level 3" again after Paused -> Live and "timer level" counts
-    // on. The pin covers CachedArgsAsync only (is_file over a let-bound path). Timer and
-    // AfterIdle over a level argument (sys/src/time.rs, their `woke` paths) have no
-    // test: no fixture runs `timer(level, ..)` or `after_idle(level, ..)` in a
-    // re-selected arm, so taking out either `woke` passes the gate. Add a run! for each
-    // (the repro's `count(timer(interval, true))` arm is the shape).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.slept = true;
@@ -2509,32 +2483,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
-        // re-selected arm's input does not fire at the wake, the arm emits the previous
-        // activation's count, and the next fire counts 1, so the arm shows 2 and then
-        // 1. Once, Take, Skip, Uniq and Hold do the same in their sleep: a woken
-        // once(x) emits the old value and then the next x, and a woken uniq(x) emits a
-        // duplicate. A fresh count in the same position shows nothing, so a restarted
-        // builtin is not a fresh one; this goes against wake_catchup.md (at a wake,
-        // residents are refreshed, not surfaced) and against the reasoning of
-        // async_sleep_outputs.md. Either clear `out` to TagValue::phantom() in each
-        // restart builtin's sleep (check the seq lowering's once, uniq and hold first),
-        // or rule the surfacing intended in CLAUDE.md. probe:
-        // design/review-2026-10-05/repro/x-engine-firing-07.gx (x-engine-firing-07)
-        // 2026-10-07 claude: count, once, take, skip, uniq and hold set `out` to the
-        // phantom in sleep(), so a woken arm shows what a fresh one would (the repro:
-        // 1 at the first fire after the wake, never the old 2). The seq lowering's
-        // once, uniq and hold sit inside a machine that resets on its arm's sleep.
-        // No pin checks the values; a semantics change: wants review and a soak.
-        // 2026-10-08 claude: pinned by lang::async_restart::wake_restarts_a_count (a woken count delivers 1, not its pre-sleep total).
-        // 2026-10-09 reviewer: the fix holds (graphix-fuzz run of the repro, every
-        // mode: Trace([-1]; [1]; [2]; []; []; [1])), but the pin cannot fail for it.
-        // In wake_restarts_a_count the arm wakes in the cycle `n` fires, so the woken
-        // count counts that fire and sets `out` to 1 whether or not sleep() cleared it;
-        // only `count = 0` is exercised. The bug needs an input that does NOT fire at
-        // the wake (the repro's in0/in1 schedule: the selector changes, the counted
-        // input stays stale). Pin that shape for count, and for once/uniq/take/hold,
-        // whose `out` resets are unpinned too.
         self.count = 0;
         self.out = TagValue::phantom();
     }

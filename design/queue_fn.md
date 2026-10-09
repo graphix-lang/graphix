@@ -26,7 +26,8 @@ val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger: Any, f: 'a) -
 ```
 
 - `f: 'a` — the function to wrap; the `Function` bound refuses
-  anything else at the call.
+  anything else at the call, a function with a variadic argument or a
+  defaulted label included (wrap a lambda that calls it).
 - `#trigger: Any` — each update releases one queued invocation, or
   banks a pop.
 - `#count: [&mut i64, null]` — optional writable ref; when non-null the

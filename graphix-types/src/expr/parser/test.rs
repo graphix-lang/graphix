@@ -1696,6 +1696,14 @@ fn print_bare_chains_round_trip() {
         ("f(x){k}", "f(x){k}"),
         ("(a + b).c", "(a + b).c"), // non-chain source stays parenthesized
         ("(42).0", "(42).0"),       // constant source stays parenthesized
+        ("(1, 2).0", "(1, 2).0"),
+        ("[1, 2][0]", "[1, 2][0]"),
+        ("[<1, 2>][0]", "[<1, 2>][0]"),
+        ("{a: 1}.a", "{ a: 1 }.a"),
+        ("{ u$ with b: 5 }", "{ u$ with b: 5 }"),
+        ("{ u? with b: 5 }", "{ u? with b: 5 }"),
+        ("{ (u.a) with b: 5 }", "{ (u.a) with b: 5 }"),
+        ("(select v { _ => (1, 2) }).0", "(select v { _ => (1, 2) }).0"),
     ] {
         let e = parse_one(src).unwrap();
         let printed = format!("{e}");

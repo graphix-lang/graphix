@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ef34b2fe.js";
+            window.path_to_searchindex_js = "searchindex-21da47b5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -1210,6 +1210,8 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 <pre><code class="language-graphix">val max: fn(first: 'a, @args: 'a) -&gt; 'a
 </code></pre>
 <p>The first <code>'a</code> is required, then any number of additional arguments of the same type.</p>
+<p>Only a builtin takes a variadic argument: a lambda written in Graphix
+with an <code>@args</code> parameter is refused.</p>
 <h2 id="reference-types"><a class="header" href="#reference-types">Reference Types</a></h2>
 <p>An ampersand <code>&amp;</code> before a type means “reference to” rather than the value itself:</p>
 <pre><code class="language-graphix">val text: fn(content: &amp;string) -&gt; Widget
@@ -2926,7 +2928,9 @@ let total = #[native] sum_to(1000000, 0)
 <p><code>#[tail_recursive]</code> asserts the shape and <code>#[native]</code> that the call
 compiles to native code. <code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if a parameter
-is labeled or variadic (the loop rebinds positional parameters), if the
+is labeled (the loop rebinds positional parameters), if the body holds
+memory of its own per call (a collection operation, or a call to a
+function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile.</p>
 <p>Two related assertions document a function’s timing: <code>#[sync]</code> asserts that
@@ -5065,7 +5069,7 @@ trait Collection {
     val find: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e
         = |c, f| {
             let init: Option&lt;'a&gt; = null;
-                // CR claude for claude: [bug] The defaults use null to mean "no element".
+                // CR claude for eric: [bug] The defaults use null to mean "no element".
                 // map and filter (lines 61, 64) go through filter_map, whose Option&lt;'b&gt;
                 // collapses when the element type holds null. This arm also can't tell
                 // a null match from "not found yet". So over nullable elements, map and
@@ -5085,6 +5089,14 @@ trait Collection {
                 // the limit. What stands: a user collection's derived map and filter
                 // still drop null elements (the repro's `bag map 1`); keeping them needs
                 // a singleton constructor the trait does not have.
+                // 2026-10-08 claude: re-addressed: keeping a user collection's null
+                // elements through the derived map and filter needs a singleton
+                // constructor in the Collection trait (`singleton(x) -&gt; self&lt;'a&gt;`, or
+                // `push`): a language addition, yours to rule.
+                // 2026-10-08 claude: re-addressed: keeping a user collection's null
+                // elements through the derived map and filter needs a singleton
+                // constructor in the Collection trait (`singleton(x) -&gt; self&lt;'a&gt;`, or
+                // `push`): a language addition, yours to rule.
             let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
                 true =&gt; (done, acc),
                 false =&gt; select f(x) { true =&gt; (true, x), false =&gt; (false, acc) }
@@ -5130,7 +5142,7 @@ type ErrChain&lt;'a&gt; = {
     pos: Pos
 };
 
-// CR claude for claude: [structure] Three signatures here are looser than their builtins.
+// CR claude for eric: [structure] Three signatures here are looser than their builtins.
 // `all` returns one of its equal arguments but is typed `fn(@args: Any) -&gt; Any`, so
 // `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -&gt; 'a`, as max/min have, gives it a
 // real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
@@ -5144,6 +5156,12 @@ type ErrChain&lt;'a&gt; = {
 // 2026-10-07 claude: all is fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a, and take/skip take
 // #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
 // result needs the Singleton bound, which the mixed-number fixture refuses.
+// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
+// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
+// f64]). Keep Number (casts at the call), or give up the mixed form?
+// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
+// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
+// f64]). Keep Number (casts at the call), or give up the mixed form?
 /// return the first argument when all arguments are equal, otherwise return nothing
 val all: fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
@@ -5242,7 +5260,8 @@ val queue: fn(#clock:Any, ?#flush:Any, v: 'a) -&gt; 'a;
 ///
 /// If #count is provided as a writable ref, the current queue depth is
 /// written through it whenever it changes, to a place (`&amp;mut s.depth`)
-/// as to a binding. If null (default), depth is not reported. f may not
+/// as to a binding: as a level, so a cycle's changes arrive as its final
+/// depth. If null (default), depth is not reported. f may not
 /// have a variadic argument or a defaulted label: wrap a lambda that
 /// calls it.
 ///
@@ -14647,7 +14666,7 @@ let layout = column(
 rebuilt whenever any subscribed cell updates. Demonstrates deriving
 per-row aggregates (here, sums) without touching netidx.</p>
 <pre><code class="language-graphix">use gui::{
-  row, window,
+  window,
   column::column,
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text
@@ -15074,7 +15093,6 @@ leave it.</p>
   text::text
 };
 use sys::{time, net};
-use rand::rand;
 mod icon;
 
 // Enough rows and columns that both the vertical and horizontal
@@ -16311,8 +16329,10 @@ program that type checked has a known type there.</p>
 val queuefn: fn&lt;'a: Function&gt;(?#count: [&amp;mut i64, null], #trigger:Any, f: 'a) -&gt; 'a;
 </code></pre>
 <p>The type checker refuses every program that passes something else
-there, a value that is not a function or one whose type stays unknown,
-and the builtin’s <code>typecheck1</code> reads the signature from the resolved
+there: a value that is not a function, a function with a variadic
+argument or a defaulted label (the wrapper’s generated call passes every
+formal and no more), or one whose type stays unknown. The builtin’s
+<code>typecheck1</code> reads the signature from the resolved
 argument (through type references) without refusing.</p>
 <h3 id="bindids-and-refs"><a class="header" href="#bindids-and-refs">BindIds and Refs</a></h3>
 <p><code>BindId</code> is a very fundamental type in compiler guts. The

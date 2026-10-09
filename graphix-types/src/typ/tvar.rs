@@ -1218,11 +1218,14 @@ impl TVar {
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
     /// Whether `Function ⊇ self` holds as the type stands: a function
-    /// type, through bindings and type references; an open cell is
-    /// admitted, the terminal settle refuses it open.
+    /// type a generated call passes every argument of (no variadic, no
+    /// defaulted label), through bindings and type references; an open
+    /// cell is admitted, the terminal settle refuses it open.
     pub(crate) fn function_holds(&self, env: &Env, commit: bool) -> Result<bool> {
         ensure_sufficient(|| match self {
-            Type::Fn(_) => Ok(true),
+            Type::Fn(ft) => {
+                Ok(ft.vargs.is_none() && !ft.args.iter().any(|a| a.has_default()))
+            }
             Type::TVar(tv) => match tv.binding() {
                 None => Ok(true),
                 Some(b) => b.function_holds(env, commit),

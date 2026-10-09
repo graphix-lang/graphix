@@ -132,37 +132,6 @@ fn leaf_bind<R: Rt, E: UserEvent>(
             Ok(id)
         }
         BindMode::Reuse(map) => match map.get(name) {
-            // CR claude for claude: [bug] Under an inferred predicate, this two-way
-            // contains binds the open cells inside both alternatives' inferred
-            // types. For a reused capture that binding is the only lasting effect,
-            // because PatternNode::compile retypes captures and bind_captures types
-            // them later. So `p@ (0, y) | p@ (y, 0) => y + 1` over `([i64, null],
-            // [i64, null])` binds both y cells to i64, taken from the other
-            // alternative's literal. The arm is accepted (without `p@` it is
-            // refused, and the correct `y$ + 1` is refused), and f((0, null))
-            // panics the JIT at fusion/kernel.rs:243 while the node-walk logs
-            // "can't add null". The same probe gives a name that is a payload in
-            // one alternative and a capture in the other the capture's type alone:
-            // `` `A(x) | x@ `B `` over `` [`A([i64, `B]), `B] `` makes x `` `B ``,
-            // so f(`A(5)) bottoms. A rest is compared here as a payload
-            // (capture=false at :417) but typed as a capture, so `[1, r..] | [r..,
-            // "a"]` over Array<[i64, string]> is refused; probe:
-            // design/review-2026-10-05/repro/c-pattern-04.gx (c-pattern-04)
-            // 2026-10-08 claude: under an inferred predicate a reused name only shares
-            // its id here; StructPatternNode::leaves judges the alternatives after the
-            // select narrows each over the scrutinee: plain binds must agree exactly, and
-            // a name some alternative captures (a rest included) takes the union. Pins:
-            // lang::select::or_capture_and_payload, pattern_typing_refusals.
-            // 2026-10-08 claude: Eric ruled: a name or-alternatives share is always the
-            // union of their narrowed types, plain binds included (no exact-equality
-            // rule). Pin: lang::select::or_binds_union.
-            // 2026-10-09 reviewer: the capture and payload/capture cases hold and are
-            // pinned (the probe is refused, "cannot compute [i64, null] + i64";
-            // or_capture_and_payload). Back to CR for the rest case the CR names: `[1,
-            // r..] | [r.., "a"]` over Array<[i64, string]> is accepted now and runs right
-            // (f([1, 2]) = 1, f(["x", "a"]) = 1, both engines), but no test has a rest in
-            // an or-alternative, so a return of the refusal, or a rest typed from one
-            // alternative, fails nothing. Pin it beside or_capture_and_payload.
             // under an inferred predicate the alternatives' types are
             // judged once the select narrows them (`leaves`)
             Some((id, _)) if cx.inferred => Ok(*id),

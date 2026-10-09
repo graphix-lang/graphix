@@ -1205,7 +1205,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
-    // CR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
+    // XCR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
     // key's scope is minted fresh on many compiles: a try/with body scope is named by
     // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
     // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
@@ -1233,6 +1233,13 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // old lowerings, which the CR names, and nothing pins the rest. A test that builds
     // many instances of a function holding a seq in a try/with body and in a lambda
     // literal and asserts lowered_seqs.len() stays put would.
+    // 2026-10-09 claude: a dynamic module's reload now drops the lowerings under its
+    // scope (Module::clear_compiled), and EnvStats reports lowered_seqs_len. Pins:
+    // lang::modules::reloads_keep_no_old_lowerings (3 vs 31 without the drop) and
+    // instances_share_their_lowerings (seqs in a try body and a lambda literal across 30
+    // runtime instances; 5 vs 33 with a fresh body scope per instance). A REPL line's
+    // lowering stays, as its bindings in the env do: it grows with what is typed, not
+    // with what runs.
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -1345,6 +1352,11 @@ impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
+    /// The seq lowerings the context keeps.
+    pub fn lowered_seqs_len(&self) -> usize {
+        self.lowered_seqs.iter().count()
+    }
+
     /// A context for a compile task: it shares the registry, starts from
     /// this program's state, recording what it writes, and inherits the
     /// resolution in progress; its scratch outputs start empty.

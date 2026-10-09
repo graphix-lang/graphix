@@ -257,13 +257,16 @@ types at once.
 ### `Function`: a conjunct that is a predicate
 
 `'a: Function` (`Type::Function`, parsed only as a bound) says whatever
-binds the cell is a function type. A builtin that wraps a function and
-reads its signature declares it (`queuefn`); its `typecheck1` reads the
-signature through type references and never refuses.
+binds the cell is a function type a generated call can pass every
+argument of: no variadic argument and no defaulted label. A builtin that
+wraps a function and reads its signature declares it (`queuefn`); its
+`typecheck1` reads the signature through type references and never
+refuses.
 
-- `Function ⊇ t` holds for a function type, through bindings and type
-  references (`Type::function_holds`), and for an open cell; ⊥ and a
-  union are not functions. It is not hereditary.
+- `Function ⊇ t` holds for such a function type, through bindings and
+  type references (`Type::function_holds`), and for an open cell; ⊥, a
+  union and a function with a variadic argument or a defaulted label are
+  not. It is not hereditary.
 - Like `Concrete`, it is never a witness, travels as a conjunct, and a
   cell that stays open to the terminal settle at a position of the
   signature is refused ("the type 'a must be a function here"): ⊥ binds

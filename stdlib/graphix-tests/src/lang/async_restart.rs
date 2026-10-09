@@ -263,6 +263,63 @@ async fn wake_restarts_a_count(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// A timer and an idle wait over a standing argument start again at the wake.
+async fn wake_restarts_standing_timers(mode: Mode) -> Result<()> {
+    for expr in
+        ["sys::time::timer(interval, once)?", "sys::time::after_idle(interval, seven)"]
+    {
+        let code = format!(
+            r#"{{
+                let interval = duration:10.ms;
+                let once = false;
+                let seven = 7;
+                let on = true;
+                let r = select on {{ true => {expr}, false => never() }};
+                let n = 0;
+                n <- r ~ n + 1;
+                let t = 0;
+                t <- select on {{
+                    false => select t {{ x if x < 3 => x + 1, _ => never() }},
+                    true => never()
+                }};
+                on <- select n {{ 1 => false, _ => never() }};
+                on <- select t {{ 3 => true, _ => never() }};
+                n
+            }}"#
+        );
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [0, 1, 2], "{expr}");
+    }
+    Ok(())
+}
+
+// A restart builtin woken while its input stands shows nothing until the
+// input fires again, as a fresh one would.
+async fn wake_restarts_quietly(mode: Mode) -> Result<()> {
+    for (expr, expect) in [
+        ("count(x)", &[1, 2, -1, -1, 1, 1][..]),
+        ("once(x)", &[5, 5, -1, -1, 7, 7]),
+        ("uniq(x)", &[5, 6, -1, -1, 7, 7]),
+        ("take(#n: 1, x)", &[5, 5, -1, -1, 7, 7]),
+        ("skip(#n: 1, x)", &[6, -1, -1]),
+        ("hold(#clock: x, x)", &[5, 6, -1, -1, 7, 7]),
+    ] {
+        let code = format!(
+            r#"{{
+                let n = 0;
+                n <- select n {{ k if k < 6 => k + 1, _ => never() }};
+                let x = 5;
+                x <- select n {{ 0 => 6, 4 => 7, _ => never() }};
+                let in0 = select n {{ 2 | 3 => 0, _ => 1 }};
+                select in0 {{ 0 => -1, _ => {expr} }}
+            }}"#
+        );
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), expect, "{expr}");
+    }
+    Ok(())
+}
+
 // A range waits for a late bound instead of refusing it.
 async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
     let code = r#"{
@@ -279,5 +336,7 @@ modes!(
     wake_reissues_standing_async,
     wake_keeps_a_standing_count,
     wake_restarts_a_count,
+    wake_restarts_quietly,
+    wake_restarts_standing_timers,
     range_over_a_late_bound
 );

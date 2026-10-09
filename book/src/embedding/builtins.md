@@ -358,8 +358,10 @@ val queuefn: fn<'a: Function>(?#count: [&mut i64, null], #trigger:Any, f: 'a) ->
 ```
 
 The type checker refuses every program that passes something else
-there, a value that is not a function or one whose type stays unknown,
-and the builtin's `typecheck1` reads the signature from the resolved
+there: a value that is not a function, a function with a variadic
+argument or a defaulted label (the wrapper's generated call passes every
+formal and no more), or one whose type stays unknown. The builtin's
+`typecheck1` reads the signature from the resolved
 argument (through type references) without refusing.
 
 ### BindIds and Refs

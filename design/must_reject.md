@@ -194,7 +194,8 @@ twice, the disjoint labeled argument, the explicit disjoint default.
 **8. Function bounds.** Site: a call argument whose parameter type is a
 cell with the `Function` conjunct (`queuefn`'s `f`). Mutation: the
 argument replaced with a literal. Rule: `'a: Function` admits only a
-function type (`Type::function_holds`). Built (`function-bound`), right
+function type with no variadic argument and no defaulted label
+(`Type::function_holds`). Built (`function-bound`), right
 site the call.
 
 **9. Writable references.** Site: `let r = &mut x` over a binding.

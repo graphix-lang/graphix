@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ef34b2fe.js";
+            window.path_to_searchindex_js = "../../searchindex-21da47b5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -825,7 +825,7 @@ let layout = column(
 rebuilt whenever any subscribed cell updates. Demonstrates deriving
 per-row aggregates (here, sums) without touching netidx.</p>
 <pre><code class="language-graphix">use gui::{
-  row, window,
+  window,
   column::column,
   data_table::{ColumnSpec, Table, data_table, text_column},
   text::text
@@ -1252,7 +1252,6 @@ leave it.</p>
   text::text
 };
 use sys::{time, net};
-use rand::rand;
 mod icon;
 
 // Enough rows and columns that both the vertical and horizontal

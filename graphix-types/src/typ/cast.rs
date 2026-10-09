@@ -16,7 +16,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{fmt, mem};
+use std::{borrow::Cow, fmt, mem};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -1228,11 +1228,12 @@ fn flatten_union_members(
 /// What a runtime test sees of `t` at its head: cells, filled
 /// applications and typedefs expanded; `None` for what it can't see into
 /// (an open cell, `Any`, a constructor), which takes any value.
-fn rep_head(env: &Env, t: &Type) -> Option<Type> {
+fn rep_head<'a>(env: &Env, t: &'a Type) -> Option<Cow<'a, Type>> {
+    let owned = |t: Type| rep_head(env, &t).map(|h| Cow::Owned(h.into_owned()));
     ensure_sufficient(|| match t {
-        Type::TVar(_) => t.deref_cloned().and_then(|t| rep_head(env, &t)),
-        Type::App(c, a) => Type::app_filled(c, a).and_then(|t| rep_head(env, &t)),
-        Type::Ref(_) => t.lookup_ref(env).ok().and_then(|t| rep_head(env, &t)),
+        Type::TVar(_) => t.deref_cloned().and_then(owned),
+        Type::App(c, a) => Type::app_filled(c, a).and_then(owned),
+        Type::Ref(_) => t.lookup_ref(env).ok().and_then(owned),
         Type::Any
         | Type::Hole
         | Type::Concrete
@@ -1241,7 +1242,7 @@ fn rep_head(env: &Env, t: &Type) -> Option<Type> {
         | Type::Discernible
         | Type::Ordered
         | Type::OneNumber => None,
-        t => Some(t.clone()),
+        t => Some(Cow::Borrowed(t)),
     })
 }
 
@@ -1251,7 +1252,7 @@ const SHARED_PRIMS: BitFlags<Typ> =
 
 /// Whether a value of `t` may also be a value of a type `t` doesn't hold.
 fn shares_form(env: &Env, t: &Type) -> bool {
-    ensure_sufficient(|| match &rep_head(env, t) {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
         None | Some(Type::Bottom | Type::Abstract { .. }) => false,
         Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
         Some(Type::Set(ts)) => ts.iter().any(|t| shares_form(env, t)),
@@ -1342,7 +1343,8 @@ fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
         let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
             return true;
         };
-        match (&a, &b) {
+        let (a, b) = (&*a, &*b);
+        match (a, b) {
             (Type::Bottom, _) | (_, Type::Bottom) => false,
             (Type::Set(ts), _) => ts.iter().any(|t| rep_overlaps(env, seen, t, &b)),
             (_, Type::Set(ts)) => ts.iter().any(|t| rep_overlaps(env, seen, &a, t)),
@@ -1406,16 +1408,16 @@ fn rep_collision(
                 Open::Unknown => open_collision(env, a, b),
             };
         };
-        let (a, b) = (ha, hb);
+        let (a, b) = (&*ha, &*hb);
         let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
             xs.map(|(x, y)| rep_collision(env, seen, open, x, y))
                 .find(Option::is_some)
                 .flatten()
         };
-        match (&a, &b) {
+        match (a, b) {
             (Type::Bottom, _) | (_, Type::Bottom) => None,
-            (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, &b))),
-            (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (&a, t))),
+            (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
+            (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
             (Type::Primitive(_), Type::Primitive(_)) => None,
             (Type::Array(x), Type::Array(y))
             | (Type::List(x), Type::List(y))
@@ -1439,6 +1441,8 @@ fn rep_collision(
             {
                 pairs(&mut xa.iter().zip(ya.iter()))
             }
+            // the tag tells them apart
+            (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
             // a Graphix-minted value carries its params and the test compares
             // them; a Rust-backed one carries only its id, so two of its
             // instantiations share one runtime form
@@ -1492,6 +1496,7 @@ fn rep_ambiguity(
             return None;
         }
         let t = rep_head(env, t)?;
+        let t = &*t;
         let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
             ts.map(|t| rep_ambiguity(env, seen, open, keys_only, refs, t))
                 .find(Option::is_some)
@@ -1615,10 +1620,11 @@ fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
             return false;
         }
         let Some(t) = rep_head(env, t) else { return false };
+        let t = &*t;
         let mut any = |ts: &mut dyn Iterator<Item = &Type>| {
             Iterator::any(&mut &mut *ts, |t| compared_ref(env, seen, t))
         };
-        match &t {
+        match t {
             Type::ByRef(..) => true,
             Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
                 any(&mut ts.iter())
@@ -1639,12 +1645,13 @@ fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) 
             return v.clone();
         }
         let Some(t) = rep_head(env, t) else { return v.clone() };
+        let t = &*t;
         let mut each = |ts: &mut dyn Iterator<Item = (&Type, &Value)>| {
             let mut vs: LPooled<Vec<Value>> =
                 Iterator::map(&mut &mut *ts, |(t, v)| map_refs(env, t, v, f)).collect();
             Value::Array(ValArray::from_iter_exact(vs.drain(..)))
         };
-        match (&t, v) {
+        match (t, v) {
             (Type::ByRef(..), v) => f(v),
             (Type::Set(ts), v) => match ts.iter().find(|m| m.is_a(env, v)) {
                 Some(m) => map_refs(env, m, v, f),

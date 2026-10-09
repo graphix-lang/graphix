@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ef34b2fe.js";
+            window.path_to_searchindex_js = "../searchindex-21da47b5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -221,7 +221,9 @@ let total = #[native] sum_to(1000000, 0)
 <p><code>#[tail_recursive]</code> asserts the shape and <code>#[native]</code> that the call
 compiles to native code. <code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if a parameter
-is labeled or variadic (the loop rebinds positional parameters), if the
+is labeled (the loop rebinds positional parameters), if the body holds
+memory of its own per call (a collection operation, or a call to a
+function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile.</p>
 <p>Two related assertions document a function’s timing: <code>#[sync]</code> asserts that

@@ -594,32 +594,6 @@ unsafe fn graphix_typedcall(
 
 }
 
-// CR claude for claude: [risk] This is the only panic catch in the helpers.
-// graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap also run Graphix
-// code: Value eq/cmp on an abstract value calls its Eq/Ord impl through the hooks
-// FusedKernel::update loans (node/coretraits.rs dispatch_eq, dispatch_cmp). A panic in
-// that code unwinds into the extern "C" frame and aborts the process, where the
-// node-walk unwinds and fast_dispatch's panics are resumed after the run.
-// FusedKernel::update also clears KERNEL_ABORT (fusion/kernel.rs:368, 419) and takes
-// KERNEL_PANIC (454) without saving the enclosing run's values. So a kernel run nested
-// on the same thread (a pool job stolen by a worker waiting in par_loop) takes an outer
-// kernel's pending fast-fn panic and resumes it in the wrong branch. Catch panics in
-// the hook-capable helpers as this function does, and save and restore both
-// thread-locals around a run, as the other kernel loans are. (f-helpers-06)
-// 2026-10-08 claude: guard_panic now wraps fast_dispatch's call and the three
-// hook-capable helpers (graphix_value_eq, graphix_map_ref, graphix_valarray_into_cmap),
-// and FusedKernel::update saves and restores KERNEL_ABORT, KERNEL_PANIC and the
-// self-block counters around every run. Nothing pins it: no test reaches a panicking
-// value hook from a kernel. Review the mechanism.
-// 2026-10-09 reviewer: the mechanism reads right: guard_panic wraps fast_dispatch,
-// graphix_value_cmp, graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap (no
-// other helper reaches a value hook), and FusedKernel::update saves KERNEL_ABORT,
-// KERNEL_PANIC and the SELF_BLOCK_* counters before the run and restores them before it
-// resumes the panic. Back to CR for the pin only: no test reaches a panicking fast fn or
-// value hook from a kernel, so removing any guard_panic or the save/restore fails
-// nothing. A test builtin whose fast fn panics, called from a fused kernel and from an
-// abstract's Eq impl compared in one, asserting the panic resumes at the caller in jit
-// and jit_par, would pin it.
 /// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
 /// impl): a panic there aborts the kernel, `placeholder` stands for the
 /// result, and the panic resumes after the run.

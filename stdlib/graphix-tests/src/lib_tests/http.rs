@@ -20,6 +20,9 @@ use netidx::subscriber::Value;
 // 2026-10-08 claude: re-addressed: the remaining pins (two async lookups in sequence,
 // concurrent requests) wait on your db1-01 (reply pairing), and HTTPS beside an idle
 // connection on x-panics-09.
+// 2026-10-09 claude: http_bottom_handler_then_good is now http_raising_handler_then_good
+// (a `?` raise answers 500); http_abandoned_request_then_good and
+// http_async_handler_answers are new.
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
@@ -113,9 +116,9 @@ run!(http_invalid_header_is_500, r#"{
 
 // A request the handler has no value for is answered 500 and does not
 // hold up the next.
-run!(http_bottom_handler_then_good, r#"{
+run!(http_raising_handler_then_good, r#"{
     let handler = |req: http::Request| {
-        body: "hi [req.body$]",
+        body: "hi [req.body?]",
         headers: [],
         status: u16:200,
         url: ""
@@ -128,6 +131,40 @@ run!(http_bottom_handler_then_good, r#"{
     "[r1.status] [r2.status] [r2.body]"
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "500 200 hi bob")
+}; FuseExpect::Jit);
+
+// A handler with no value for a request leaves it unanswered; once its
+// client gives up, the next request is served.
+run!(http_abandoned_request_then_good, r#"{
+    let handler = |req: http::Request| {
+        body: "hi [req.body$]",
+        headers: [],
+        status: u16:200,
+        url: ""
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let r1 = http::request(#timeout: duration:200.ms, client, "http://[addr]/");
+    let r2 = http::request(#method: `POST, #body: "bob", r1 ~ client, "http://[addr]/")$;
+    "[r2.status] [r2.body]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "200 hi bob")
+}; FuseExpect::Jit);
+
+// A reply that waits on an async value is sent when the value arrives.
+run!(http_async_handler_answers, r#"{
+    let handler = |req: http::Request| {
+        let page = sys::time::after_idle(duration:50.ms, "p [req.path]");
+        { body: "[req.method] [page]", headers: [], status: u16:200, url: "" }
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let r = http::request(client, "http://[addr]/a")$;
+    "[r.status] [r.body]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "200 GET p /a")
 }; FuseExpect::Jit);
 
 // A restart on the same address keeps the socket: the port is the same and

@@ -305,3 +305,17 @@ async fn self_calls_in_a_block_fork() -> Result<()> {
     assert!(ran.forks > 0, "the block of self-calls ran in order");
     Ok(())
 }
+
+// Fields, arguments and operands that reach one ordered queuefn wrapper
+// do not fork, so #[parallel] over them has nothing to run in parallel.
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_refuses_ordered_siblings() {
+    for e in ["(qf(1), qf(2), qf(3))", "g(qf(1), qf(2))", "qf(1) + qf(2)"] {
+        let code = format!(
+            "{{ let qf = queuefn(#trigger: 1, |x: i64| -> i64 x); \
+             let g = |a: i64, b: i64| a + b; #[parallel] {e} }}"
+        );
+        let err = refusal(&code).await;
+        assert!(err.contains("#[parallel] has nothing to run in parallel"), "{e}: {err}");
+    }
+}

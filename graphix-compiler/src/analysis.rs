@@ -1476,6 +1476,32 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>, env: &E
 /// a `let`'s value) needs a run of two statements, and the error names
 /// why its first break was made; anything else needs a fork point with
 /// two children that are more than a constant or a variable read.
+/// Whether `n` is work to run beside something else: not a constant, a
+/// variable read, a function literal or a declaration.
+fn is_work<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+    let n = match n.view() {
+        NodeView::Bind(b) => &b.node,
+        _ => n,
+    };
+    !matches!(
+        n.view(),
+        NodeView::Constant(_)
+            | NodeView::Ref(_)
+            | NodeView::Lambda(_)
+            | NodeView::TypeDef(_)
+            | NodeView::Nop(_)
+    )
+}
+
+/// Whether siblings fork: two of them are work, and the runtime finds
+/// them [`independent`].
+fn forks_two<'a, R: Rt, E: UserEvent>(
+    ns: impl Iterator<Item = &'a Node<R, E>> + Clone,
+    ctx: &CompileCtx<R, E>,
+) -> bool {
+    ns.clone().filter(|n| is_work(n)).count() >= 2 && independent(ns, ctx)
+}
+
 pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
     spec: &crate::expr::Expr,
     node: &Node<R, E>,
@@ -1489,25 +1515,9 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
             _ => break,
         }
     }
-    // a constant, a variable read, a function literal or a declaration
-    // is nothing to run beside something else
-    let work = |n: &Node<R, E>| {
-        let n = match n.view() {
-            NodeView::Bind(b) => &b.node,
-            _ => n,
-        };
-        !matches!(
-            n.view(),
-            NodeView::Constant(_)
-                | NodeView::Ref(_)
-                | NodeView::Lambda(_)
-                | NodeView::TypeDef(_)
-                | NodeView::Nop(_)
-        )
-    };
     if let NodeView::Block(b) = target.view() {
         let two = |&(a, z): &(u32, u32)| {
-            (a..z).filter(|i| work(&b.children[*i as usize])).count() >= 2
+            (a..z).filter(|i| is_work(&b.children[*i as usize])).count() >= 2
         };
         if b.planned.get().is_some_and(|runs| runs.iter().any(two)) {
             return Ok(());
@@ -1546,8 +1556,6 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
             i + 1
         )
     }
-    let two =
-        |ns: &mut dyn Iterator<Item = &Node<R, E>>| ns.filter(|n| work(n)).count() >= 2;
     let mut forks = false;
     fusion::for_each_node(target, &mut |n| {
         forks = forks
@@ -1566,16 +1574,21 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
                         cs.resolved_apply(),
                         Some(ApplyView::Lambda(g)) if matches!(g.body().view(), NodeView::MapQ(_))
                     );
-                    slots || two(&mut cs.args.values().filter_map(|a| a.node.as_ref()))
+                    slots
+                        || forks_two(
+                            cs.args.values().filter_map(|a| a.node.as_ref()),
+                            ctx,
+                        )
                 }
-                NodeView::Struct(c) => two(&mut c.n.iter()),
-                NodeView::Tuple(c) => two(&mut c.n.iter()),
-                NodeView::Variant(c) => two(&mut c.n.iter()),
-                NodeView::Array(c) => two(&mut c.n.iter()),
-                NodeView::ListLit(c) => two(&mut c.n.iter()),
-                NodeView::Map(c) => two(&mut c.n.iter()),
-                NodeView::StringInterpolate(c) => two(&mut c.args.iter()),
-                v => fusion::binary_operands(&v).is_some_and(|(l, r)| work(l) && work(r)),
+                NodeView::Struct(c) => forks_two(c.n.iter(), ctx),
+                NodeView::Tuple(c) => forks_two(c.n.iter(), ctx),
+                NodeView::Variant(c) => forks_two(c.n.iter(), ctx),
+                NodeView::Array(c) => forks_two(c.n.iter(), ctx),
+                NodeView::ListLit(c) => forks_two(c.n.iter(), ctx),
+                NodeView::Map(c) => forks_two(c.n.iter(), ctx),
+                NodeView::StringInterpolate(c) => forks_two(c.args.iter(), ctx),
+                v => fusion::binary_operands(&v)
+                    .is_some_and(|(l, r)| forks_two([l, r].into_iter(), ctx)),
             }
     });
     if !forks {

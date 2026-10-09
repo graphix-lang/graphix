@@ -34,24 +34,6 @@ use crate::encoding::{
 /// A sled handle whose drop runs on a blocking thread: dropping the last
 /// handle flushes the log and joins sled's flusher, which can wait for a
 /// transaction's lock, and must never stall the runtime.
-// CR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
-// wherever its last Value does, usually in GX::update_nodes on the runtime thread.
-// TreeInner's sled::Tree, CursorInner's sled::Iter and the subscription task's
-// Arc<TreeInner> work the same way. sled's TreeInner::drop then flushes the log in a
-// loop, and the Db's drop joins the flusher thread and fsyncs, all synchronously inside
-// a cycle. Under an open db::txn, which holds sled's process-global lock (db2-01), the
-// flush waits in concurrency_control::read forever and the whole runtime freezes,
-// because only the runtime can send the commit. Hand the sled handles to a blocking
-// thread on drop (spawn_blocking or a reaper channel). probe:
-// design/review-2026-10-05/repro/db2-06.gx (db2-06)
-// 2026-10-07 claude: Reaped hands the last Db, Tree and Iter handle to
-// spawn_blocking. No test holds a txn across a drop; the repro
-// design/review-2026-10-05/repro/db2-06.gx now ticks through to the commit.
-// 2026-10-09 reviewer: the fix holds (the repro, quick build, --no-cache: "opened B:
-// .../b2.db", the ticks, "committed", exit 0; Db, Tree and cursor Iter are all Reaped),
-// but nothing in the gate fails if Reaped is undone. Owed: the repro as a lib test in
-// lib_tests/db.rs (a txn held open across the last drop of another db's handle; a
-// regression hangs it, which is a result).
 pub(crate) struct Reaped<T: Send + 'static>(ManuallyDrop<T>);
 
 impl<T: Send + 'static> Reaped<T> {

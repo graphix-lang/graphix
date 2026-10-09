@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ef34b2fe.js";
+            window.path_to_searchindex_js = "../searchindex-21da47b5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -251,6 +251,8 @@ sum(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 <pre><code class="language-graphix">val max: fn(first: 'a, @args: 'a) -&gt; 'a
 </code></pre>
 <p>The first <code>'a</code> is required, then any number of additional arguments of the same type.</p>
+<p>Only a builtin takes a variadic argument: a lambda written in Graphix
+with an <code>@args</code> parameter is refused.</p>
 <h2 id="reference-types"><a class="header" href="#reference-types">Reference Types</a></h2>
 <p>An ampersand <code>&amp;</code> before a type means “reference to” rather than the value itself:</p>
 <pre><code class="language-graphix">val text: fn(content: &amp;string) -&gt; Widget

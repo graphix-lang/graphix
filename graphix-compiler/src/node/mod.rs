@@ -40,6 +40,7 @@ use triomphe::Arc;
 
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
+pub use error::ErrorRelay;
 pub(crate) mod bind;
 pub mod callsite;
 pub mod collection;
@@ -401,37 +402,6 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    // CR claude for claude: [bug] This fork point decides on cost alone, and so do
-    // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
-    // operands). Only plan_block applies the rule that two children reaching an ordered
-    // call keep their serial order (design/parallel_eval.md §3.2, §6). So two calls of
-    // one queuefn wrapper in forked fields, arguments or operands push into its queue
-    // in thread order, and in the default Auto mode, under #[parallel] or once the
-    // children cost enough, which call runs at once and the release order change from
-    // run to run. check_parallel (analysis.rs:1247) also accepts #[parallel] over such
-    // a tuple, call or operator, though it refuses the same calls written as a block. A
-    // bound wrapper call reports ApplyView::BuiltIn(""), which local_summary counts as
-    // neither ordered nor opaque, so a child's ordered fact must be taken before the
-    // wrapper calls bind. Probe: design/review-2026-10-05/repro/x-parallel-01.gx prints
-    // three [1, 2, 3, 4, 5, 6] logs under GRAPHIX_PAR=off and a new permutation on
-    // every default run; graphix-fuzz check on `(q(10), q(20), .., q(60))` with
-    // `#trigger: in0` reports a parallel-evaluation DIVERGENCE. (x-parallel-01)
-    // 2026-10-07 claude: every ForkSite and SlotSite decides once, before binds,
-    // whether its children are independent (analysis::independent: no child reads
-    // what an earlier one publishes, no two make ordered calls; an unresolved call
-    // is opaque) and runs dependent ones in order. Pins:
-    // lang::functions::ordered_siblings_stay_serial, ordered_slots_stay_serial.
-    // check_parallel still accepts #[parallel] over such siblings, which then run in
-    // order.
-    // 2026-10-09 reviewer: the runtime half holds: with both decide_siblings forced to
-    // Independent, ordered_siblings_stay_serial and ordered_slots_stay_serial fail in par
-    // and jit_par on three runs of three. Back to CR for the check half the CR names:
-    // `let t = #[parallel] (qf(1), qf(2), qf(3));` over one queuefn wrapper `qf` builds
-    // and runs serially ([1, 2, 3]), though CLAUDE.md makes #[parallel] a compile error
-    // where nothing forks, while `#[parallel] { qf(1); qf(2); qf(3) }` is refused
-    // ("statement 2 reads through a reference or a call the compiler cannot resolve").
-    // check_parallel should refuse a tuple, call or operator whose children
-    // analysis::independent rejects, with a pin.
     site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);

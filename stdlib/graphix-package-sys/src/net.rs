@@ -1075,6 +1075,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             // Handler now, shared with http::serve: a handler that raises or bottoms on a
             // call answers it with an error and no longer holds up the rest. A call whose
             // cast fails is still dispatched, and an omitted argument still fails it.
+            // 2026-10-09 claude: with http-sqlite-db1-02's second fix a call the handler
+            // raises on is answered with the error; one it is bottom for is no longer
+            // answered (a fresh bottom may be an async value still coming), and an rpc reply
+            // cannot tell that its caller gave up, so such a call holds up the queue again.
             let arg = self.arg(ctx, &c);
             self.handler.push(arg, RpcReply(c));
         }

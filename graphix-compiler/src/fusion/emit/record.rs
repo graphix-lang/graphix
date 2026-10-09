@@ -304,6 +304,23 @@ fn reloc_fits(r: &RecordReloc, len: usize) -> bool {
     (r.offset as usize).checked_add(width).is_some_and(|end| end <= len)
 }
 
+/// A record's relocations, each one [`reloc_fits`] its `len` bytes of code.
+fn relocs_decode(buf: &mut impl Buf, len: usize) -> Result<Vec<RecordReloc>, PackError> {
+    let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
+    match relocs.iter().all(|r| reloc_fits(r, len)) {
+        true => Ok(relocs),
+        false => Err(PackError::InvalidFormat),
+    }
+}
+
+/// A record's code alignment: a power of two no larger than a page.
+fn align_decode(buf: &mut impl Buf) -> Result<u64, PackError> {
+    match decode_varint(buf)? {
+        a if a.is_power_of_two() && a <= 4096 => Ok(a),
+        _ => Err(PackError::InvalidFormat),
+    }
+}
+
 fn reloc_of(tag: u8) -> Result<Reloc, PackError> {
     Ok(match tag {
         0 => Reloc::Abs4,
@@ -567,46 +584,8 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             }
             let mut bytes = vec![0u8; n];
             buf.copy_to_slice(&mut bytes);
-            let align = decode_varint(buf)?;
-            // CR claude for claude: [risk] A decoded relocation's offset, kind and
-            // addend, and the record's align, reach cranelift-jit unchecked.
-            // perform_relocations only debug_asserts offset < size before writing, so
-            // an offset past the code is an out-of-bounds write in release. A bad
-            // addend leaves the code calling a garbage address, and kind tags 4 and 5
-            // (GOT/PLT, never emitted with is_pic=false) panic at finalize.
-            // FusedKernel::image_decode trusts state_words and the site layouts the
-            // same way, while the code indexes its blocks at offsets fixed at emission,
-            // so a corrupt entry crashes the shell or corrupts memory instead of
-            // failing the read and starting cold (a corrupted first relocation offset
-            // of a region wrapper gives the panic at compiled_blob.rs:122 in a debug
-            // build). Refuse here a relocation whose offset plus write width exceeds
-            // bytes.len(), a kind this host never emits, and an align that is not a
-            // power of two no larger than a page; define_record already checks callee,
-            // chunk and const indices. These checks only harden the structure: the code
-            // bytes run unverified too, so the real fix is an integrity check on the
-            // entry (see registration.rs:313). (x-image-05)
-            // 2026-10-08 claude: record_decode now refuses an align that is not a power
-            // of two up to a page, and a relocation (reloc_fits) whose kind this host
-            // does not emit (GOT/PLT always, and the other architecture's) or whose write
-            // runs past the code. A warm start of the 512-region arena program still
-            // restores (49 ms against 551 ms cold). state_words and the site layouts are
-            // still trusted, as is the code itself: that waits on the entry integrity
-            // check this CR points to. Nothing pins the refusals; a corrupted-record test
-            // would.
-            // 2026-10-09 reviewer: the checks read right: reloc_fits takes each kind's
-            // write width and refuses GOT/PLT and the other architecture's kinds, and the
-            // align is checked before use; what else the CR names (state_words, site
-            // layouts, the code itself) is x-image-03's checksum. Back to CR for the pin
-            // only, as the note says: removing the checks fails nothing. A test that
-            // corrupts a warm entry's relocation offset, kind tag and align and asserts
-            // the read fails and the run starts cold would pin it.
-            let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
-            if !align.is_power_of_two() || align > 4096 {
-                return Err(PackError::InvalidFormat);
-            }
-            if relocs.iter().any(|r| !reloc_fits(r, bytes.len())) {
-                return Err(PackError::InvalidFormat);
-            }
+            let align = align_decode(buf)?;
+            let relocs = relocs_decode(buf, bytes.len())?;
             let n = decode_varint(buf)? as usize;
             let mut callees = Vec::with_capacity(n.min(64));
             for _ in 0..n {
@@ -655,4 +634,52 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
         },
         |b| record_decode(b),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+
+    fn reloc(offset: u32, kind: Reloc) -> RecordReloc {
+        RecordReloc { offset, kind, target: RelocTarget::Owner, addend: 0 }
+    }
+
+    fn relocs(rs: &[RecordReloc], len: usize) -> Result<Vec<RecordReloc>, PackError> {
+        let mut buf = BytesMut::new();
+        rs.to_vec().encode(&mut buf)?;
+        relocs_decode(&mut buf.freeze(), len)
+    }
+
+    /// A corrupt record's relocations and align fail the read.
+    #[test]
+    fn corrupt_layouts_are_refused() {
+        let (native, foreign) = match cfg!(target_arch = "x86_64") {
+            true => (Reloc::X86CallPCRel4, Reloc::Arm64Call),
+            false => (Reloc::Arm64Call, Reloc::X86CallPCRel4),
+        };
+        assert!(relocs(&[reloc(0, Reloc::Abs8), reloc(8, native)], 12).is_ok());
+        for bad in [
+            reloc(5, Reloc::Abs8),
+            reloc(9, native),
+            reloc(u32::MAX, Reloc::Abs4),
+            reloc(0, foreign),
+            reloc(0, Reloc::X86CallPLTRel4),
+            reloc(0, Reloc::X86GOTPCRel4),
+        ] {
+            assert!(
+                relocs(&[reloc(0, Reloc::Abs4), bad.clone()], 12).is_err(),
+                "{bad:?}"
+            );
+        }
+        let align = |a: u64| {
+            let mut buf = BytesMut::new();
+            encode_varint(a, &mut buf);
+            align_decode(&mut buf.freeze())
+        };
+        assert!(align(1).is_ok() && align(16).is_ok() && align(4096).is_ok());
+        for bad in [0, 3, 24, 8192, u64::MAX] {
+            assert!(align(bad).is_err(), "{bad}");
+        }
+    }
 }

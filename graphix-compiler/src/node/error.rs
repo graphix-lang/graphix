@@ -1562,3 +1562,99 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
         }
     }
 }
+
+/// A catch a builtin puts over a function it calls (a request handler):
+/// it tells the builtin when the function raised, and passes each error
+/// on to the handler covering the builtin, or logs it where none does.
+#[derive(Debug)]
+pub struct ErrorRelay {
+    handler: ErrorHandler,
+    received: u64,
+}
+
+impl ErrorRelay {
+    /// The relay, and the scope the function it covers compiles under.
+    pub fn new<R: Rt, E: UserEvent>(
+        ctx: &mut CompileCtx<R, E>,
+        scope: &Scope,
+        top_id: ExprId,
+    ) -> (Self, Scope) {
+        let typ = Type::empty_tvar();
+        if let Type::TVar(tv) = &typ {
+            tv.freeze();
+            tv.bind(Type::Bottom);
+        }
+        let lexical = scope.append_block("ca", top_id.inner()).lexical;
+        let bind_id = ctx
+            .env
+            .bind_variable(
+                &lexical,
+                "e",
+                typ,
+                Default::default(),
+                crate::node::genn::SYNTHETIC.clone(),
+            )
+            .id;
+        ctx.record_ref(bind_id, top_id);
+        let covered = scope.with_catch((bind_id, top_id), false);
+        let handler = covered.dynamic.handler().unwrap();
+        (Self { handler, received: 0 }, covered)
+    }
+
+    /// The error the function raised this cycle, which also goes on.
+    pub fn update<R: Rt, E: UserEvent>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+    ) -> Option<Value> {
+        let (bind_id, _) = self.handler.id();
+        let e = match read_var(ctx, &bind_id) {
+            Some(VarRead::Delivered(tv))
+                if tv.tag().is_fired() && self.received != self.handler.generation() =>
+            {
+                tv.value_cloned()
+            }
+            _ => return None,
+        };
+        self.received = self.received.wrapping_add(1);
+        self.handler.handled();
+        match self.handler.parent().handler() {
+            Some(parent) => {
+                parent.raise();
+                let (id, _) = parent.id();
+                ctx.rt.set_var(id, e.clone())
+            }
+            None => report_failure!(&format_compact!("unhandled error {e}")),
+        }
+        Some(e)
+    }
+
+    /// Raises in flight when the function sleeps or is deleted are
+    /// acknowledged, so no enclosing handler waits on them.
+    pub fn give_up_in_flight(&mut self) {
+        while self.received != self.handler.generation() {
+            self.received = self.received.wrapping_add(1);
+            self.handler.handled();
+        }
+    }
+
+    pub fn delete<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.give_up_in_flight();
+        let (bind_id, top_id) = self.handler.id();
+        ctx.release_var(bind_id, top_id);
+        ctx.env.unbind_variable(bind_id);
+    }
+
+    pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        image::handler_encode(&self.handler, buf)
+    }
+
+    pub fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let handler = image::handler_decode(buf)?;
+        let (bind_id, top_id) = handler.id();
+        ctx.record_ref(bind_id, top_id);
+        Ok(Self { handler, received: 0 })
+    }
+}

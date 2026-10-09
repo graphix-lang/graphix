@@ -19,7 +19,8 @@ use triomphe::Arc;
 
 /// The origin of every synthetic binding: default positions mark the
 /// bind as synthetic for IDE tooling.
-static SYNTHETIC: LazyLock<Arc<Origin>> = LazyLock::new(|| Arc::new(Origin::default()));
+pub(crate) static SYNTHETIC: LazyLock<Arc<Origin>> =
+    LazyLock::new(|| Arc::new(Origin::default()));
 
 /// bind a variable and return a node referencing it
 pub fn bind<R: Rt, E: UserEvent>(

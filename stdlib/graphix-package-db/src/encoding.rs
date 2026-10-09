@@ -37,7 +37,7 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
-// CR claude for claude: [bug] Every key type other than string, bytes and the
+// XCR claude for claude: [bug] Every key type other than string, bytes and the
 // integers falls through to Pack here, and Pack's byte order is not the
 // language's order: negative f64/f32 sort after the positives and in reverse,
 // pre-1970 datetimes sort last, true sorts before false, decimals sort by scale
@@ -66,6 +66,12 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // {1 => a} < {0 => x, 1 => a} there, front to back says greater. Fix that arm in
 // netidx (then this encoding already matches) and add Maps of unequal length to
 // `values()`, or say in mod.gxi that a Map key is not ordered.
+// 2026-10-09 claude: fixed in netidx-value (op.rs, PartialOrd for Value): maps of unequal
+// length pair entries from the front, the longer map's tail skipped, as its comment says;
+// so `<` over maps changes for every Graphix program, not only db keys, and this encoding
+// already matched. Pins: netidx-value test map_ord_pairs_from_the_front, and maps of
+// unequal length in encoding::test::values (key_bytes_sort_as_values fails under the old
+// order).
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {
@@ -438,7 +444,18 @@ mod test {
             Value::Array(ValArray::from([Value::I64(2)])),
             Value::Array(ValArray::from([Value::String("ab".into())])),
             Value::Array(ValArray::from([Value::String("b".into())])),
+            map(&[]),
+            map(&[(0, "x"), (1, "a")]),
+            map(&[(1, "a")]),
+            map(&[(1, "a"), (2, "b")]),
+            map(&[(1, "b")]),
         ]
+    }
+
+    fn map(kvs: &[(i64, &str)]) -> Value {
+        Value::Map(netidx_value::Map::from_iter(
+            kvs.iter().map(|(k, v)| (Value::I64(*k), Value::String(ArcStr::from(*v)))),
+        ))
     }
 
     #[test]

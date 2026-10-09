@@ -206,7 +206,7 @@ impl Type {
                         // `acc` is merge-saturated, so only the incoming
                         // element (or its merge result) can enable a new
                         // merge.
-                        // CR claude for claude: [perf] Each incoming member is tried
+                        // CR claude for eric: [perf] Each incoming member is tried
                         // against every kept one, so normalizing an N-member union
                         // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
                         // union that its idle select normalizes in check_dead_arms, so
@@ -237,6 +237,22 @@ impl Type {
                         // quadratic, and slower than the debug numbers above). The
                         // note blames check_dead_arms without a profile. Stays a CR until
                         // that path is measured and fixed or split into its own finding.
+                        // 2026-10-09 claude: measured on a quiet machine (the reviewer's
+                        // numbers ran beside three builds): the old quick binary checks
+                        // 2000 tags in 0.79 s and 4000 in 2.93 s, quadratic, not worse.
+                        // The profile (4000 tags, --check) is all per-arm walks of the
+                        // remaining union: LiteralPool::claim 20% (the scrutinee's
+                        // members and the head domain per arm), Reach's diff and cover
+                        // 21%, complete_type_predicate 18%, rep_collision 19%. Two cuts
+                        // made here: distinct variant tags need no pair check
+                        // (rep_collision), and rep_head borrows instead of cloning; 4000
+                        // tags now 2.3 s on the no-LTO perf build. A linear select check
+                        // means member sets indexed by head across those four passes.
+                        // Your call: is a select's check quadratic in its arm count
+                        // acceptable (1000 arms 0.2 s), or is that restructure worth
+                        // doing? I lean accept: hand-written selects stay far below 1000
+                        // arms, and a seq's pc union, the case that reached 32k, is
+                        // linear now.
                         let mut incoming = t;
                         while let Some(m) = acc.merge_with(&incoming) {
                             changed = true;

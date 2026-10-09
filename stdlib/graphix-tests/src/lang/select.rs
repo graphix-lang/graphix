@@ -3151,6 +3151,23 @@ run!(
     FuseExpect::None
 );
 
+// a rest shared by or-alternatives is typed from the scrutinee
+run!(
+    or_rest_in_alternatives,
+    r#"{
+    let f = |a: Array<[i64, string]>| select a {
+        [1, r..] | [r.., "a"] => array::fold(r, "", |acc, x| select x {
+            i64 as _ => "[acc]i",
+            string as _ => "[acc]s"
+        }),
+        _ => "-"
+    };
+    "[f([1, 2])][f(["x", "a"])][f([1, "a"])][f([3])]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "iss-");
+    FuseExpect::Jit
+);
+
 #[tokio::test(flavor = "current_thread")]
 async fn pattern_typing_refusals() {
     use graphix_package_core::testing::refusal;
