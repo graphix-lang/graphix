@@ -256,6 +256,12 @@ to say it.
 interior fuses as it would anywhere. `#[sync]` on a seq is a compile
 error.
 
+**A step's function is a definition.** A `let` of one name to a lambda
+literal, a step's or a `{ .. }` statement's, binds the name to the
+lambda itself and the step's value is the name fired at entry, so a
+call through it resolves statically as it would outside a seq: its
+`#[sync]`/`#[native]` assertions are checked by the build.
+
 ## 6. The lowering
 
 A desugar (`expr/seq.rs`) to ordinary Graphix around one compiler

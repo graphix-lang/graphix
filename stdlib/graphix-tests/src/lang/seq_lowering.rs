@@ -85,6 +85,19 @@ async fn lowering_refusals() -> Result<()> {
     refused("seq { until 1 + 1; 42 }", "bool").await;
     refused("seq { #[bogus] let y = 1; y }", "unknown attribute #[bogus]").await;
     refused("seq { use str::len; 1 }", "a declaration is not a seq step").await;
+    // a function a step binds resolves statically, so its assertion is the build's
+    refused(
+        "seq { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); \
+         let y = f(41) + 1; y }",
+        "this function is async",
+    )
+    .await;
+    refused(
+        "seq { let y = { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); \
+         f(41) }; y }",
+        "this function is async",
+    )
+    .await;
     refused(
         "{ let f = |x: i64| -> [i64, Error<`E>] x; \
          seq { #[sync] let v = try { f(1)? } with(_) { 0 }; v } }",

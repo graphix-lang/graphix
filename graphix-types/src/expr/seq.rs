@@ -538,7 +538,7 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
     }
 }
 
-// XCR claude for eric: [bug] The statement's own attributes (stmt.dec) are dropped
+// XCR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
 // here for until, try-let, let and connect statements: the rebuilt guard, sink
 // write, let_pat and connect_path carry no dec. lower_block drops them the same way
 // for a block's lets and connects. Only an expression statement keeps its
@@ -569,6 +569,12 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
 // comes from seq: a call through a step's let dispatches dynamically. Either accept that
 // an assertion on a step-bound definition is a run-time log, or make calls through a
 // step's lambda lets resolve statically.
+// 2026-10-09 claude: Eric ruled 10-09: resolve them statically. A step's (or a { .. }
+// statement's) let of one name to a lambda literal now binds the name to the lambda
+// itself, the step's value being the name fired at entry, so calls through it resolve
+// statically and the #[sync] above is a build error. CLAUDE.md and design/seq_blocks.md
+// say so. Pins: lang::seq_lowering::lowering_refusals (both forms; the step form printed
+// 42 without the change). A seq lowering change: wants the soak.
 /// `value` carrying a statement's decorations too: an attribute on a
 /// seq statement annotates its computation, where the compiler applies
 /// or refuses it.
@@ -771,18 +777,35 @@ impl Machine<'_> {
                 if b.rec {
                     return Err(anyhow!("let rec is not a seq step").at(stmt));
                 }
-                let value = self.stmt_value(&decorated(&b.value, &stmt.dec), visible)?;
+                let value = decorated(&b.value, &stmt.dec);
                 let mut vis = scope(visible);
                 shadow_step(stmt, &mut vis);
                 let result = self.result;
-                self.step(false, value, |v| {
-                    let mut out = writes(sink, result, pos, v, &vis);
-                    out.insert(
-                        0,
-                        let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, v)),
-                    );
-                    out
-                })
+                match self.bound_lambda(b, &value, visible) {
+                    Some((name, bind)) => {
+                        let value = guard(entry_fire(r#ref(pos, &name), self.pc));
+                        let k = self
+                            .step(false, value, |v| writes(sink, result, pos, v, &vis));
+                        self.steps[k].items.insert(0, bind);
+                        k
+                    }
+                    None => {
+                        let value = self.stmt_value(&value, visible)?;
+                        self.step(false, value, |v| {
+                            let mut out = writes(sink, result, pos, v, &vis);
+                            out.insert(
+                                0,
+                                let_pat(
+                                    pos,
+                                    b.pattern.clone(),
+                                    b.typ.clone(),
+                                    r#ref(pos, v),
+                                ),
+                            );
+                            out
+                        })
+                    }
+                }
             }
             ExprKind::Connect { name, value, deref } => {
                 let value = self.stmt_value(&decorated(value, &stmt.dec), visible)?;
@@ -871,6 +894,23 @@ impl Machine<'_> {
         }
     }
 
+    /// A `let` of one name to a lambda literal: the name and its binding
+    /// to the lambda itself, so calls through it resolve statically.
+    fn bound_lambda(
+        &self,
+        b: &BindExpr,
+        value: &Expr,
+        visible: &Names,
+    ) -> Option<(ArcStr, Expr)> {
+        let name = b.pattern.single_bind()?;
+        if !inline_lambda(value) {
+            return None;
+        }
+        let lambda = rewrite_with(value, visible, Rewrite::Issue(self.issue));
+        let bind = let_pat(value.pos, b.pattern.clone(), b.typ.clone(), lambda);
+        Some((name.clone(), bind))
+    }
+
     /// A statement's value. A block in statement position, or as a
     /// let's or a connect's right-hand side, is lowered as a block;
     /// anything else is issued.
@@ -917,14 +957,24 @@ impl Machine<'_> {
                     body.push(let_bind(s.pos, &v, None, bound));
                 }
                 ExprKind::Bind(b) => {
-                    let value = self.stmt_value(&decorated(&b.value, &s.dec), &vis)?;
-                    body.push(let_bind(s.pos, &v, None, value));
-                    body.push(let_pat(
-                        s.pos,
-                        b.pattern.clone(),
-                        b.typ.clone(),
-                        r#ref(s.pos, &v),
-                    ));
+                    let value = decorated(&b.value, &s.dec);
+                    match self.bound_lambda(b, &value, &vis) {
+                        Some((name, bind)) => {
+                            body.push(bind);
+                            let value = guard(entry_fire(r#ref(s.pos, &name), self.pc));
+                            body.push(let_bind(s.pos, &v, None, value));
+                        }
+                        None => {
+                            let value = self.stmt_value(&value, &vis)?;
+                            body.push(let_bind(s.pos, &v, None, value));
+                            body.push(let_pat(
+                                s.pos,
+                                b.pattern.clone(),
+                                b.typ.clone(),
+                                r#ref(s.pos, &v),
+                            ));
+                        }
+                    }
                     shadow_step(s, &mut vis);
                 }
                 ExprKind::Connect { name, value, deref } => {

@@ -799,7 +799,9 @@ cycle, across workers; the compiler never pins threads.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
   desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
   issued once per entry over an argument snapshot); every statement is
-  a step and a passed step sleeps, so a `let` keeps its step's value.
+  a step and a passed step sleeps, so a `let` keeps its step's value;
+  a `let` of one name to a lambda literal binds the lambda itself, so
+  calls through it resolve statically (its assertions are the build's).
   A statement starts in the first cycle its predecessor's effect can
   be seen: the next step enters in the cycle its predecessor completes
   unless it reads or writes a variable a pending write targets, by the
