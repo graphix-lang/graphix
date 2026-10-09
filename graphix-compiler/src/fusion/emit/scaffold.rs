@@ -18,18 +18,19 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
+    Block, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::Variable;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
+use std::convert::Infallible;
 
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
         CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, WAKE, bind_local,
-        bind_scalar_var_with_disc, clean_disc, is_fresh, prim_to_value_disc, scalar_disc,
-        value_disc,
+        bind_scalar_var_with_disc, clean_disc, is_fresh, owned_words, prim_to_value_disc,
+        scalar_disc, value_disc,
     },
     body::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
@@ -49,6 +50,33 @@ pub struct ArraySrc {
     /// elements and its TAINT bit rides into the result.
     pub disc: ClifValue,
     pub ownership: CompositeSource,
+}
+
+impl ArraySrc {
+    /// Hold an owned source while what reads it emits, so a pending exit
+    /// there frees it; pair with [`Self::drop_held`].
+    pub(super) fn hold(&self, cx: &mut BodyCx) {
+        if self.ownership == CompositeSource::Owned {
+            cx.hold(LocalKind::Composite, CompiledExpr::new(self.disc, self.ptr));
+        }
+    }
+
+    /// Drop an owned source [`Self::hold`] held, and end the hold.
+    pub(super) fn drop_held(&self, cx: &mut BodyCx) -> Result<()> {
+        self.drop(cx)?;
+        if self.ownership == CompositeSource::Owned {
+            cx.release();
+        }
+        Ok(())
+    }
+
+    /// Drop an owned source once its readers are done.
+    pub(super) fn drop(&self, cx: &mut BodyCx) -> Result<()> {
+        if self.ownership == CompositeSource::Owned {
+            cx.call_helper("graphix_valarray_drop", &[self.ptr])?;
+        }
+        Ok(())
+    }
 }
 
 /// One `|(k, v)|` destructure leaf: its pattern `BindId`, tuple
@@ -136,17 +164,7 @@ fn read_elem(
         LocalKind::Value => "graphix_valarray_get_value",
     };
     let call = cx.call_helper(helper, &[arr_ptr, idx])?;
-    let r = cx.b.inst_results(call);
-    let (r0, r1) = (r[0], r.get(1).copied());
-    Ok(match (kind, r1) {
-        (LocalKind::Value, Some(payload)) => (r0, payload),
-        (LocalKind::Scalar(p), _) => (scalar_disc(cx.b, p), r0),
-        (LocalKind::Composite, _) => {
-            (cx.b.ins().iconst(types::I64, value_disc::ARRAY), r0)
-        }
-        (LocalKind::String, _) => (cx.b.ins().iconst(types::I64, value_disc::STRING), r0),
-        (LocalKind::Value, None) => unreachable!("a value read returns a pair"),
-    })
+    Ok(owned_words(cx.b, kind, call))
 }
 
 /// Read and bind the `|(k, v)|` destructure leaves of a composite
@@ -198,25 +216,6 @@ fn bind_elem(
         _ => OwnedLocals::new(),
     };
     Ok(Bound { elem: (kind, vv), leaves })
-}
-
-/// Register an owned input array on `owned_input_stack` so a
-/// bottom-abort inside the loop frees it. Pair with [`drop_owned_src`]
-/// after the loop: exactly one drop on either path.
-fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
-    if arr.ownership == CompositeSource::Owned {
-        cx.hold(LocalKind::Composite, CompiledExpr::new(arr.disc, arr.ptr));
-    }
-}
-
-/// Drop an owned input array at the post-loop merge point and pop its
-/// registration.
-fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
-    if arr.ownership == CompositeSource::Owned {
-        cx.call_helper("graphix_valarray_drop", &[arr.ptr])?;
-        cx.release();
-    }
-    Ok(())
 }
 
 /// `len = valarray_len(arr_ptr)`.
@@ -491,20 +490,11 @@ impl SlotFlags {
         let all = cx.b.ins().iconst(types::I64, -1);
         let entered = match word {
             None => all,
-            Some(StateWord::Sure(addr)) => entered(cx, addr),
-            Some(StateWord::Guarded { base, addr }) => {
-                let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                let read = cx.b.create_block();
-                let merge = cx.b.create_block();
-                cx.b.append_block_param(merge, types::I64);
-                cx.b.ins().brif(has, read, &[], merge, &[BlockArg::Value(all)]);
-                cx.b.switch_to_block(read);
-                cx.b.seal_block(read);
-                let e = entered(cx, addr);
-                cx.b.ins().jump(merge, &[BlockArg::Value(e)]);
-                cx.b.switch_to_block(merge);
-                cx.b.seal_block(merge);
-                cx.b.block_params(merge)[0]
+            Some(w) => {
+                let Ok([e]) = w.with_addr(cx, [all], |cx, addr| {
+                    Ok::<_, Infallible>([entered(cx, addr)])
+                });
+                e
             }
         };
         SlotFlags { accs, len, kind, word, entered }
@@ -515,14 +505,8 @@ impl SlotFlags {
     /// available (a state word, a call-site word, or in a loop the
     /// enclosing slot's chain word); a nested loop without a chain word
     /// falls back to the conservative source-or-slot rule.
-    // CR claude for claude: [structure] apply borrows the SlotFlags, so nothing stops a
-    // second application, which would compare against the len + 1 the first one just
-    // stored and miss a resize. Take self: SlotFlags is not Copy, so reusing it would
-    // then fail to compile. finish_loop_result (node/collection.rs:607) only forwards
-    // here; its two callers (emit_loop and emit_init_kind) can call apply directly.
-    // (f-scaffold-body-08)
     pub fn apply(
-        &self,
+        self,
         cx: &mut BodyCx,
         mut r: CompiledExpr,
         src: ClifValue,
@@ -583,25 +567,14 @@ impl SlotFlags {
         src_word: ClifValue,
         src_taint: ClifValue,
     ) -> (ClifValue, ClifValue) {
-        let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-        let exact_bl = cx.b.create_block();
-        let cons_bl = cx.b.create_block();
-        let merge = cx.b.create_block();
-        cx.b.append_block_param(merge, types::I64);
-        cx.b.append_block_param(merge, types::I8);
-        cx.b.ins().brif(has, exact_bl, &[], cons_bl, &[]);
-        cx.b.seal_block(exact_bl);
-        cx.b.seal_block(cons_bl);
-        cx.b.switch_to_block(exact_bl);
-        let (stale, counts) = self.exact_stale(cx, addr, fired_word, src_word, src_taint);
-        cx.b.ins().jump(merge, &[BlockArg::Value(stale), BlockArg::Value(counts)]);
-        cx.b.switch_to_block(cons_bl);
+        // the conservative arm is pure: computed first, it is the fallback
         let (stale, counts) = self.conservative_stale(cx, fired_word, src_word);
-        cx.b.ins().jump(merge, &[BlockArg::Value(stale), BlockArg::Value(counts)]);
-        cx.b.seal_block(merge);
-        cx.b.switch_to_block(merge);
-        let ps = cx.b.block_params(merge);
-        (ps[0], ps[1])
+        let Ok([stale, counts]) = cx.null_guarded(base, [stale, counts], |cx| {
+            let (stale, counts) =
+                self.exact_stale(cx, addr, fired_word, src_word, src_taint);
+            Ok::<_, Infallible>([stale, counts])
+        });
+        (stale, counts)
     }
 
     /// The exact firing rule's STALE contribution: fires iff resized, a
@@ -900,7 +873,7 @@ pub(crate) fn emit_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
@@ -916,7 +889,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.array(), flags))
 }
 
@@ -930,7 +903,7 @@ pub(crate) fn emit_filter_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
@@ -961,7 +934,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.array(), flags))
 }
 
@@ -983,7 +956,7 @@ where
     ) {
         return Err(anyhow!("filter_map output element is not representable"));
     }
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
@@ -1017,7 +990,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.array(), flags))
 }
 
@@ -1041,7 +1014,7 @@ pub(crate) fn emit_flat_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
@@ -1066,7 +1039,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.array(), flags))
 }
 
@@ -1197,7 +1170,7 @@ where
     I: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
     F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let kind = acc.local_kind();
     let acc_var = cx.b.declare_var(match kind {
@@ -1261,7 +1234,7 @@ where
     let d = acc.carry_disc(cx, new_disc);
     cx.b.def_var(acc_disc_var, d);
     lp.close(cx)?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     let payload = cx.b.use_var(acc_var);
     let disc = cx.b.use_var(acc_disc_var);
     Ok((CompiledExpr::new(disc, payload), flags))
@@ -1318,7 +1291,7 @@ pub(crate) fn emit_find_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
@@ -1364,7 +1337,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.taken(), flags))
 }
 
@@ -1378,7 +1351,7 @@ pub(crate) fn emit_find_map_loop<F>(
 where
     F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<(ClifValue, ClifValue)>,
 {
-    adopt_owned_src(cx, &arr);
+    arr.hold(cx);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
@@ -1408,7 +1381,7 @@ where
             Ok(())
         }
     })?;
-    drop_owned_src(cx, &arr)?;
+    arr.drop_held(cx)?;
     Ok((sunk.taken(), flags))
 }
 

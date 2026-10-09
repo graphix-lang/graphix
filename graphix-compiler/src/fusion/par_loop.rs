@@ -39,6 +39,9 @@ pub(crate) const ROOT: u64 = 2;
 #[derive(Clone, Copy)]
 pub(crate) struct ParLoan {
     pub(crate) mode: ParMode,
+    /// The mode of a callee body's loops: `#[parallel]` forces only the
+    /// region's own.
+    pub(crate) body_mode: ParMode,
     pub(crate) forced: Option<u32>,
     pub(crate) control: *const Control,
 }
@@ -74,11 +77,17 @@ struct Run {
 }
 
 impl Run {
-    fn new(lo: usize, hi: usize) -> Self {
+    /// A run of slots `lo..hi`; a map-family run's value buf is taken
+    /// here, on the invoking thread, which finalizes or discards it.
+    fn new(lo: usize, hi: usize, find: bool) -> Self {
+        let mut out = [0; OUT_WORDS];
+        if !find {
+            out[2] = emit_helpers::value_buf_new(hi - lo);
+        }
         Run {
             lo,
             hi,
-            out: [0; OUT_WORDS],
+            out,
             aborted: false,
             panic: None,
             reached: 0,
@@ -138,8 +147,10 @@ pub(crate) unsafe fn run(
     let chunk: Chunk = unsafe { std::mem::transmute(chunk as usize) };
     let len = len as usize;
     let find = kind & FIND != 0;
+    let root = kind & ROOT != 0;
+    let mode = |l: &ParLoan| if root { l.mode } else { l.body_mode };
     let loan = PAR_LOAN.with(|c| c.get()).filter(|l| {
-        l.mode != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
+        mode(l) != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
     });
     let Some(loan) = loan else {
         return unsafe { in_order(chunk, frame, len, find, out) };
@@ -147,23 +158,10 @@ pub(crate) unsafe fn run(
     let mut runs: LPooled<Vec<Run>> = LPooled::take();
     // SAFETY: the site is a constant of the running code's record.
     let site = unsafe { &*site };
-    let (at, grain) = match loan.mode {
+    let (at, grain) = match mode(&loan) {
         ParMode::Off => unreachable!("an Off loan is filtered"),
         ParMode::Force => {
-            // CR claude for claude: [perf] Under #[parallel] the loaned mode is Force.
-            // For a callee's loop (no ROOT bit) this line keeps Force and drops only
-            // the grain, so cost::forced_grain(None, len) gives every slot a pool job
-            // of its own. That is GRAPHIX_PAR=force behaviour, while the node-walk runs
-            // a callee body under ForkFlags::body() (node/lambda.rs:754), which is the
-            // runtime's Auto: #[parallel] is meant to exclude callees (parallel_eval.md
-            // section 7 and section 10, CLAUDE.md). Two 1M-slot loops in a callee fork
-            // into 1M ranges each instead of Auto's 256, and the program takes 1.22 s
-            // instead of 0.32 s without the attribute (debug build, same results). Loan
-            // the callee-body mode next to the region's (ctx.fork_mode() under
-            // ctx.fork.body(): Off under #[serial] or past the depth limit, otherwise
-            // ctx.par) and use it for loops without the ROOT bit. probe:
-            // design/review-2026-10-05/repro/f-kernel-03.gx (f-kernel-03)
-            let forced = if kind & ROOT != 0 { loan.forced } else { None };
+            let forced = if root { loan.forced } else { None };
             (0, Some(cost::forced_grain(forced, len)))
         }
         ParMode::Auto => 'auto: {
@@ -175,7 +173,7 @@ pub(crate) unsafe fn run(
             let cal = match cost::calibration() {
                 Some(cal) => cal,
                 None => {
-                    let mut r = Run::new(0, 1);
+                    let mut r = Run::new(0, 1, find);
                     let (t0, started) = (cost::ticks(), Instant::now());
                     unsafe { run_here(chunk, frame, &mut r) };
                     let (dt, took) = (cost::ticks().wrapping_sub(t0), started.elapsed());
@@ -202,7 +200,7 @@ pub(crate) unsafe fn run(
             };
             if k > 0 {
                 // the probed slots run as one, so a run's fixed costs spread over them
-                let mut r = Run::new(at, at + k);
+                let mut r = Run::new(at, at + k, find);
                 let t0 = cost::ticks();
                 unsafe { run_here(chunk, frame, &mut r) };
                 let each = cost::ticks().wrapping_sub(t0) / k as u64;
@@ -218,7 +216,7 @@ pub(crate) unsafe fn run(
     };
     match grain {
         None if at < len => {
-            let mut r = Run::new(at, len);
+            let mut r = Run::new(at, len, find);
             unsafe { run_here(chunk, frame, &mut r) };
             runs.push(r);
         }
@@ -229,7 +227,7 @@ pub(crate) unsafe fn run(
             let mut lo = at;
             while lo < len {
                 let hi = (lo + g).min(len);
-                runs.push(Run::new(lo, hi));
+                runs.push(Run::new(lo, hi, find));
                 lo = hi;
             }
             let forked = &mut runs[first..];
@@ -271,6 +269,9 @@ unsafe fn in_order(
     find: bool,
     out: *mut u64,
 ) -> i8 {
+    if !find {
+        unsafe { *out.add(2) = emit_helpers::value_buf_new(len) };
+    }
     unsafe { chunk(frame, 0, len as u64, out) };
     if KERNEL_ABORT.with(|c| c.get()) {
         return 1;
@@ -316,14 +317,6 @@ unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     match find {
         false => {
             let bufs = runs.iter().map(|r| r.out[2]);
-            // CR claude for claude: [perf] A forked chunk opens its value buf on a pool
-            // worker: emit/outline.rs:328-329 takes a VALUE_SHELLS box and an
-            // LPooled<Vec<Value>> from the worker's pools. This call gives both back to
-            // the invoking thread's pools. Nothing flows the other way, so the workers'
-            // pools drain and every forked chunk allocates a fresh box and Vec, while
-            // the invoking thread's pools sit at their caps and free the surplus. Hand
-            // each range a buf taken on the invoking thread before the fork, so take
-            // and give stay on one thread. (x-engine-collections-10)
             out[2] = unsafe { emit_helpers::value_bufs_finalize(bufs) };
         }
         true => {

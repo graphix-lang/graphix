@@ -12,7 +12,7 @@ use crate::{
     node::op::{BinOp, BoolOp, CmpOp},
     typ::Type,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
@@ -23,18 +23,18 @@ use smallvec::{SmallVec, smallvec};
 use super::{
     abi::{
         CompiledExpr, LocalKind, TAINT, const_stale_gate, is_tainted, prim_to_value_disc,
-        propagate_flags, scalar_disc, value_disc,
+        propagate_flags, results_pair, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source, ref_local_name,
     },
     call::{
-        BufKind, CompositeSource, close_buf, emit_builtin_call_node, finalize_valarray,
-        open_buf, open_value_buf,
+        BufKind, CompositeSource, close_buf, emit_builtin_call_node, emit_owned_drop,
+        finalize_valarray, open_buf, open_value_buf, owned_drop_kind,
     },
     lower::{freeze_node_typ, resolve_node_typ},
-    scaffold,
+    scaffold::{self, ArraySrc},
     scalar::{
         ElementRead, abstract_read_helper, compile_bin, compile_cast, compile_cmp,
         compile_const, compile_element_read, kind_disc, prim_to_clif,
@@ -83,10 +83,7 @@ pub(crate) fn emit_const_node(
             let ptr = cx.interned_value(value)?;
             let clone = cx.helper("graphix_value_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
-            let (r0, r1) = {
-                let r = cx.b.inst_results(call);
-                (r[0], r[1])
-            };
+            let (r0, r1) = results_pair(cx.b, call);
             let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, r0);
             Ok(CompiledExpr::new(disc, r1))
         }
@@ -200,7 +197,8 @@ fn widen_to_declared_repr(
 }
 
 /// Arithmetic: `compile_bin` on register scalars with the integer
-/// div/mod guard.
+/// div/mod guard; a numeric type with no register form (a decimal, a
+/// varint) through the Value helpers.
 pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
@@ -208,6 +206,9 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
+    if cx.node_kind(lhs.typ()) == Some(AbiKind::Value) {
+        return emit_value_arith_node(cx, op, false, lhs, rhs);
+    }
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
     let l = lcv.payload;
@@ -273,18 +274,71 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     Ok(widen_to_declared_repr(cx, out_typ, prim, cv))
 }
 
-/// Both operands as owned Values, the first held while the second
-/// emits, so a pending exit there frees it.
-fn emit_owned_value_pair<R: Rt, E: UserEvent>(
+/// An operand as a Value pair for a borrowing helper, uncloned; `owned`
+/// is the kind to drop once the helper returned, `None` when there is
+/// nothing to drop.
+#[derive(Clone, Copy)]
+struct ValueOperand {
+    cv: CompiledExpr,
+    owned: Option<LocalKind>,
+}
+
+fn emit_value_operand_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    node: &Node<R, E>,
+) -> Result<ValueOperand> {
+    let kind = cx.node_kind(node.typ());
+    let cv = match kind {
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
+            node.emit_clif(cx)?
+        }
+        Some(AbiKind::Scalar(_) | AbiKind::Null | AbiKind::String) => {
+            emit_owned_value_operand_node(cx, node)?
+        }
+        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let cv = node.emit_clif(cx)?;
+            let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+            CompiledExpr::new(propagate_flags(cx.b, base, &[cv.disc]), cv.payload)
+        }
+        other => bail!("emit_clif: value operand has unexpected type {other:?}"),
+    };
+    let owned = kind.and_then(|k| owned_drop_kind(k, node_composite_source(node)));
+    Ok(ValueOperand { cv, owned })
+}
+
+/// Two operands for a borrowing helper, the first held while the
+/// second emits, so a pending exit there frees it.
+fn emit_value_pair<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
-) -> Result<(CompiledExpr, CompiledExpr)> {
-    let lcv = emit_owned_value_operand_node(cx, lhs)?;
-    cx.hold(LocalKind::Value, lcv);
-    let rcv = emit_owned_value_operand_node(cx, rhs);
+) -> Result<(ValueOperand, ValueOperand)> {
+    let l = emit_value_operand_node(cx, lhs)?;
+    let r = with_held(cx, l, |cx| emit_value_operand_node(cx, rhs))?;
+    Ok((l, r))
+}
+
+/// `f`'s emission with `op`, when owned, held for a pending exit there.
+fn with_held<T>(
+    cx: &mut BodyCx,
+    op: ValueOperand,
+    f: impl FnOnce(&mut BodyCx) -> Result<T>,
+) -> Result<T> {
+    let Some(kind) = op.owned else { return f(cx) };
+    cx.hold(kind, op.cv);
+    let r = f(cx);
     cx.release();
-    Ok((lcv, rcv?))
+    r
+}
+
+/// Drop what a borrowing helper's operands own.
+fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
+    for op in ops {
+        if let Some(kind) = op.owned {
+            emit_owned_drop(cx.b, cx.ctx, kind, op.cv)?;
+        }
+    }
+    Ok(())
 }
 
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
@@ -298,28 +352,41 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let (lcv, rcv) = emit_owned_value_pair(cx, lhs, rhs)?;
-    let helper = match op {
-        BinOp::Add => "graphix_value_checked_add",
-        BinOp::Sub => "graphix_value_checked_sub",
-        BinOp::Mul => "graphix_value_checked_mul",
-        BinOp::Div => "graphix_value_checked_div",
-        BinOp::Mod => "graphix_value_checked_rem",
-    };
-    let fref = cx.helper(helper)?;
+    emit_value_arith_node(cx, op, true, lhs, rhs)
+}
 
-    let call = cx.b.ins().call(fref, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
-    let (rdisc, rpay) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
+/// `lhs op rhs` through the Value helpers, which borrow both operands.
+fn emit_value_arith_node<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    op: BinOp,
+    checked: bool,
+    lhs: &Node<R, E>,
+    rhs: &Node<R, E>,
+) -> Result<CompiledExpr> {
+    let (l, r) = emit_value_pair(cx, lhs, rhs)?;
+    let helper = match (op, checked) {
+        (BinOp::Add, false) => "graphix_value_add",
+        (BinOp::Sub, false) => "graphix_value_sub",
+        (BinOp::Mul, false) => "graphix_value_mul",
+        (BinOp::Div, false) => "graphix_value_div",
+        (BinOp::Mod, false) => "graphix_value_rem",
+        (BinOp::Add, true) => "graphix_value_checked_add",
+        (BinOp::Sub, true) => "graphix_value_checked_sub",
+        (BinOp::Mul, true) => "graphix_value_checked_mul",
+        (BinOp::Div, true) => "graphix_value_checked_div",
+        (BinOp::Mod, true) => "graphix_value_checked_rem",
     };
-    let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
+    let call =
+        cx.call_helper(helper, &[l.cv.disc, l.cv.payload, r.cv.disc, r.cv.payload])?;
+    let (rdisc, rpay) = results_pair(cx.b, call);
+    drop_operands(cx, &[l, r])?;
+    let disc = propagate_flags(cx.b, rdisc, &[l.cv.disc, r.cv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// Comparison: `compile_cmp` on scalar operands; non-scalar `==`/`!=`
-/// via netidx `Value` equality on owned operands. Ordering on
-/// non-scalar operands is not lowered (Err, the region node-walks).
+/// Comparison: `compile_cmp` on scalar operands; on others, `==`/`!=`
+/// by `Value` equality and the orderings by the total order of values,
+/// through helpers that borrow both operands.
 pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: CmpOp,
@@ -347,45 +414,39 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         return Ok(CompiledExpr::new(disc, value));
     }
-    // CR claude for claude: [perf] Ordering (<, >, <=, >=) lowers only for register
-    // scalars, so comparing strings, nullables or other Value-shaped operands de-fuses
-    // the whole region: `array::filter(names, |n| n < "m")` node-walks its loop.
-    // Unchecked arithmetic on decimal, z32/z64 and v32/v64 de-fuses the same way at 239
-    // ("arith operand of non-scalar type"), while `x *? y` on the same operands fuses
-    // through graphix_value_checked_*. A Value ordering helper beside graphix_value_eq,
-    // and an unchecked Value-arith helper whose failure bottoms fresh as the
-    // node-walk's set_bottom(trig) does, would lower both. (f-nodes-scalar-05)
-    let ne = match op {
-        CmpOp::Eq => false,
-        CmpOp::Ne => true,
-        other => {
-            return Err(anyhow!(
-                "emit_clif: ordering cmp {other:?} on non-scalar operands \
-                 — not lowered"
-            ));
-        }
-    };
     for t in [lhs.typ(), rhs.typ()] {
-        if matches!(kernel_abi::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
+        if matches!(cx.node_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
             return Err(anyhow!(
-                "emit_clif: ==/!= operand of type {t:?} has no comparable \
-                 runtime form"
+                "emit_clif: operand of type {t:?} has no comparable runtime form"
             ));
         }
     }
-    let (lcv, rcv) = emit_owned_value_pair(cx, lhs, rhs)?;
-    let helper = cx.helper("graphix_value_eq")?;
-
-    let call = cx.b.ins().call(helper, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
-    let eq = cx.b.inst_results(call)[0]; // I8 bool
-    let result = if ne {
-        let one = cx.b.ins().iconst(types::I8, 1);
-        cx.b.ins().bxor(eq, one)
-    } else {
-        eq
+    let (l, r) = emit_value_pair(cx, lhs, rhs)?;
+    let args = [l.cv.disc, l.cv.payload, r.cv.disc, r.cv.payload];
+    let result = match op {
+        CmpOp::Eq | CmpOp::Ne => {
+            let call = cx.call_helper("graphix_value_eq", &args)?;
+            let eq = cx.b.inst_results(call)[0];
+            match op {
+                CmpOp::Ne => cx.b.ins().bxor_imm(eq, 1),
+                _ => eq,
+            }
+        }
+        CmpOp::Lt | CmpOp::Gt | CmpOp::Lte | CmpOp::Gte => {
+            let call = cx.call_helper("graphix_value_cmp", &args)?;
+            let ord = cx.b.inst_results(call)[0];
+            let cc = match op {
+                CmpOp::Lt => IntCC::SignedLessThan,
+                CmpOp::Gt => IntCC::SignedGreaterThan,
+                CmpOp::Lte => IntCC::SignedLessThanOrEqual,
+                _ => IntCC::SignedGreaterThanOrEqual,
+            };
+            cx.b.ins().icmp_imm(cc, ord, 0)
+        }
     };
+    drop_operands(cx, &[l, r])?;
     let base = scalar_disc(cx.b, PrimType::Bool);
-    let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
+    let disc = propagate_flags(cx.b, base, &[l.cv.disc, r.cv.disc]);
     Ok(CompiledExpr::new(disc, result))
 }
 
@@ -531,10 +592,7 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     // Normalized: a select's type is its raw arm union, its emission
     // follows the normalized one.
-    let kind = match kernel_abi::freeze_for_abi_normalized(node.typ()) {
-        Some(t) => kernel_abi::abi_kind(&t),
-        None => kernel_abi::abi_kind(node.typ()),
-    };
+    let kind = cx.node_kind(node.typ());
     match kind {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // A missing 2-word input is a `Value::Null` placeholder the
@@ -608,14 +666,21 @@ pub(crate) fn widen_result_to_value(
 /// True iff a callsite whose node type is `node_typ` needs
 /// [`widen_result_to_value`] on a result produced in the callee's `ret`
 /// shape. `Null` is exempt: its pair is already a valid Value.
-pub(crate) fn call_result_needs_value_widening(node_typ: &Type, ret: &Type) -> bool {
-    matches!(
-        kernel_abi::abi_kind(node_typ),
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
-    ) && !matches!(
-        kernel_abi::abi_kind(ret),
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
-    )
+pub(crate) fn call_result_needs_value_widening(
+    cx: &BodyCx,
+    node_typ: &Type,
+    ret: &Type,
+) -> Result<bool> {
+    let Some(node) = cx.node_kind(node_typ) else {
+        return Err(anyhow!(
+            "emit_clif: a call site of type {node_typ} has no kernel shape"
+        ));
+    };
+    Ok(matches!(node, AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
+        && !matches!(
+            cx.node_kind(ret),
+            Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
+        ))
 }
 
 /// Compile one producer field and emit its `graphix_value_buf_push_*`
@@ -626,18 +691,8 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     buf: ClifValue,
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
-    // CR claude for claude: [perf] This classifies the field by its raw abi_kind, which
-    // answers None for an un-flattened union, while arith (239), interpolation (494),
-    // owned operands (534) and widen_to_declared_repr (190) classify the normalized
-    // freeze. So with `let pick = |b, x, y| select b { true => x, false => y }`,
-    // `pick(b, 1, 2) + 1` fuses but `{a: pick(b, 1, 2) + 1, c: 0}` de-fuses ("producer
-    // field of shape None"), and the raw checks at 368 and 1151 refuse `pick(b, "a",
-    // "b") == "a"` and `pick(b, [1, 2], [3])[0]`, though the callee's kernel returns
-    // the normalized shape. call_result_needs_value_widening (611) reads the same None
-    // as "no widening needed" instead of refusing. One node classifier (the normalized
-    // freeze with freeze_node_typ's resolve retry) used by every consumer would make
-    // producers and consumers agree by construction. (f-nodes-scalar-06)
-    let helper_name: &str = match kernel_abi::abi_kind(field.typ()) {
+    let kind = cx.node_kind(field.typ());
+    let helper_name: &str = match kind {
         Some(AbiKind::Scalar(p)) => value_buf_push_helper(p),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match node_composite_source(field) {
@@ -667,9 +722,10 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     // A tainted field does not abort the kernel: the composite comes out
     // tainted and its consumer gates. Pushing it is safe because every
     // push helper masks the tag byte before cloning the value.
-    if kernel_abi::is_value_shape(field.typ())
-        || matches!(kernel_abi::abi_kind(field.typ()), Some(AbiKind::Null))
-    {
+    if matches!(
+        kind,
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
+    ) {
         cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
     } else {
         cx.b.ins().call(push, &[buf, cv.payload]);
@@ -716,10 +772,7 @@ pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
     close_buf(cx);
     let call = cx.call_helper("graphix_list_finalize", &[buf])?;
-    let (base, payload) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
-    };
+    let (base, payload) = results_pair(cx.b, call);
     let disc = producer_disc(cx, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
@@ -802,15 +855,12 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
             }
             _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
         })?;
-    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
-        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let arr = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
+    let (arr_ptr, src_disc) = (arr.ptr, arr.disc);
     // A tainted source does not abort: the reads below are guarded and
-    // its taint folds into the result. An owned source is registered so
-    // a bottom-abort before the finalize frees it.
-    let owned = src == CompositeSource::Owned;
-    if owned {
-        cx.hold(LocalKind::Composite, CompiledExpr::new(src_disc, arr_ptr));
-    }
+    // its taint folds into the result. An owned source is held so a
+    // bottom-abort before the finalize frees it.
+    arr.hold(cx);
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let outer = open_value_buf(cx, cap)?;
     // Fires iff the source or any replacement fired.
@@ -828,14 +878,10 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
                     // Guarded: a tainted source's placeholder has no fields.
                     let ftyp = resolve_node_typ(cx.ctx, field_typ);
                     let idx = cx.b.ins().iconst(types::I64, i as i64);
-                    let cv = emit_guarded_element_read(
-                        cx,
-                        arr_ptr,
-                        src_disc,
-                        idx,
-                        &ftyp,
-                        ElementRead::StructField,
-                    )?;
+                    let cv = emit_taint_guarded_read(cx, src_disc, &ftyp, |cx| {
+                        let read = ElementRead::StructField;
+                        compile_element_read(cx.b, arr_ptr, idx, &ftyp, read, cx.ctx)
+                    })?;
                     scaffold::push_field(cx, pair, cv, &ftyp, CompositeSource::Owned)?;
                     Ok(cv.disc)
                 })?;
@@ -843,11 +889,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         }
     }
     let payload = finalize_valarray(cx, outer)?;
-    // Dropped exactly once: the pending path drops it via `owned_input_stack`.
-    if owned {
-        cx.call_helper("graphix_valarray_drop", &[arr_ptr])?;
-        cx.release();
-    }
+    arr.drop_held(cx)?;
     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     let disc = propagate_flags(cx.b, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
@@ -886,41 +928,20 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     }
 }
 
-/// Drop an accessor's temporary Owned source after the element read.
-fn emit_accessor_source_drop(
-    cx: &mut BodyCx,
-    ptr: ClifValue,
-    src: CompositeSource,
-) -> Result<()> {
-    if matches!(src, CompositeSource::Owned) {
-        let drop = cx.helper("graphix_valarray_drop")?;
-        cx.b.ins().call(drop, &[ptr]);
-    }
-    Ok(())
-}
-
-/// An accessor's compiled composite source. The caller drops an Owned
-/// pointer after the read. The disc may carry TAINT; callers guard the
-/// read and fold it.
-struct AccessorSrc {
-    /// ValArray bits.
-    ptr: ClifValue,
-    ownership: CompositeSource,
-    disc: ClifValue,
-}
-
 fn emit_accessor_source_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     want: AbiKind,
-) -> Result<AccessorSrc> {
-    let typ = resolve_node_typ(cx.ctx, source.typ());
-    if kernel_abi::abi_kind(&typ) != Some(want) {
-        return Err(anyhow!("emit_clif: accessor source of type {typ} isn't {want:?}"));
+) -> Result<ArraySrc> {
+    if cx.node_kind(source.typ()) != Some(want) {
+        return Err(anyhow!(
+            "emit_clif: accessor source of type {} isn't {want:?}",
+            source.typ()
+        ));
     }
     let ownership = node_composite_source(source);
     let cv = source.emit_clif(cx)?;
-    Ok(AccessorSrc { ptr: cv.payload, ownership, disc: cv.disc })
+    Ok(ArraySrc { ptr: cv.payload, ownership, disc: cv.disc })
 }
 
 /// A shape-safe, owned, tainted bottom of `elem`'s ABI kind for a
@@ -976,17 +997,16 @@ pub(super) fn emit_bottom_of_kind(
     })
 }
 
-/// Element read guarded on the source's taint: a tainted source holds
-/// a placeholder the unchecked read helpers cannot touch, so the read
-/// is skipped for a tainted placeholder. `is_tainted` folds to false
-/// for proven-untainted sources, so the branch disappears.
-fn emit_guarded_element_read(
+/// `read` of a value of type `elem` out of a source with disc
+/// `src_disc`, guarded on its taint: a tainted source holds a placeholder
+/// the unchecked read helpers cannot touch, so the read is skipped and the
+/// result is a bottom placeholder. `is_tainted` folds to false for proven-
+/// untainted sources, so the branch disappears.
+fn emit_taint_guarded_read(
     cx: &mut BodyCx,
-    arr_ptr: ClifValue,
     src_disc: ClifValue,
-    idx_val: ClifValue,
     elem: &Type,
-    read: ElementRead,
+    read: impl FnOnce(&mut BodyCx) -> Result<CompiledExpr>,
 ) -> Result<CompiledExpr> {
     let tainted = is_tainted(cx.b, src_disc);
     let read_bl = cx.b.create_block();
@@ -1001,7 +1021,7 @@ fn emit_guarded_element_read(
     cx.b.ins().brif(tainted, skip_bl, &[], read_bl, &[]);
     cx.b.switch_to_block(read_bl);
     cx.b.seal_block(read_bl);
-    let rv = compile_element_read(cx.b, arr_ptr, idx_val, elem, read, cx.ctx)?;
+    let rv = read(cx)?;
     cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
     cx.b.switch_to_block(skip_bl);
     cx.b.seal_block(skip_bl);
@@ -1026,18 +1046,14 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ).resolve_tvars())?;
     let name_ptr = cx.interned_str(name)?;
     let call = cx.b.ins().call(wrap, &[typ_ptr, name_ptr, cv.disc, cv.payload]);
-    let (rdisc, rpay) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
-    };
+    let (rdisc, rpay) = results_pair(cx.b, call);
     let disc = propagate_flags(cx.b, rdisc, &[cv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// `x.0` on a Graphix-minted abstract value: a guarded read of the
+/// `x.0` on a Graphix-minted abstract value: a taint-guarded read of the
 /// payload at the representation's shape `rep` that borrows the source
-/// and returns an owned clone (the abstract twin of
-/// [`emit_guarded_element_read`]).
+/// and returns an owned clone.
 pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1047,38 +1063,17 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     let helper = cx.helper(abstract_read_helper(&rep)?)?;
     let src = node_composite_source(source);
     let cv = source.emit_clif(cx)?;
-    let tainted = is_tainted(cx.b, cv.disc);
-    let read_bl = cx.b.create_block();
-    let skip_bl = cx.b.create_block();
-    let merge = cx.b.create_block();
-    let pay_ty = match kernel_abi::abi_kind(&rep) {
-        Some(AbiKind::Scalar(p)) => prim_to_clif(p),
-        _ => types::I64,
-    };
-    cx.b.append_block_param(merge, types::I64);
-    cx.b.append_block_param(merge, pay_ty);
-    cx.b.ins().brif(tainted, skip_bl, &[], read_bl, &[]);
-    cx.b.switch_to_block(read_bl);
-    cx.b.seal_block(read_bl);
-    let call = cx.b.ins().call(helper, &[cv.disc, cv.payload]);
-    let rv = if kernel_abi::is_value_shape(&rep) {
-        let r = cx.b.inst_results(call);
-        CompiledExpr::new(r[0], r[1])
-    } else {
-        let r0 = cx.b.inst_results(call)[0];
-        CompiledExpr::new(kind_disc(cx.b, &rep), r0)
-    };
-    cx.b.ins().jump(merge, &[BlockArg::Value(rv.disc), BlockArg::Value(rv.payload)]);
-    cx.b.switch_to_block(skip_bl);
-    cx.b.seal_block(skip_bl);
-    let ph = emit_bottom_placeholder(cx, &rep, &[cv.disc])?;
-    cx.b.ins().jump(merge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
-    cx.b.switch_to_block(merge);
-    cx.b.seal_block(merge);
-    let (rdisc, rpay) = {
-        let params = cx.b.block_params(merge);
-        (params[0], params[1])
-    };
+    let rv = emit_taint_guarded_read(cx, cv.disc, &rep, |cx| {
+        let call = cx.b.ins().call(helper, &[cv.disc, cv.payload]);
+        Ok(if kernel_abi::is_value_shape(&rep) {
+            let (d, p) = results_pair(cx.b, call);
+            CompiledExpr::new(d, p)
+        } else {
+            let r0 = cx.b.inst_results(call)[0];
+            CompiledExpr::new(kind_disc(cx.b, &rep), r0)
+        })
+    })?;
+    let (rdisc, rpay) = (rv.disc, rv.payload);
     if matches!(src, CompositeSource::Owned) {
         let drop = cx.helper("graphix_value_drop")?;
         cx.b.ins().call(drop, &[cv.disc, cv.payload]);
@@ -1087,66 +1082,36 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// `t.<idx>`: a statically-valid index read through `compile_element_read`.
-// CR claude for claude: [structure] This and emit_struct_ref_node (1115) are one body
-// apart from (AbiKind::Tuple, ElementRead::ArrayIndex) vs (AbiKind::Struct,
-// ElementRead::StructField). emit_abstract_ref_node (1038) repeats
-// emit_guarded_element_read's taint-guarded three-block read (981) line for line, only
-// the read itself differing, and emit_struct_with_node (799-807, 842-845) re-implements
-// scaffold.rs's adopt_owned_src/drop_owned_src. A fix to one copy (the taint guard, the
-// ownership pop) silently misses its twin. Merge the field reads into one function
-// taking the kind and read family, give the guarded read a closure for the read, share
-// adopt/drop with scaffold.rs, and replace the 10 four-line inst_results pair blocks
-// with one helper. (f-nodes-scalar-07)
-pub(crate) fn emit_tuple_ref_node<R: Rt, E: UserEvent>(
+/// What a field read reads out of.
+#[derive(Clone, Copy)]
+pub(crate) enum FieldOf {
+    Tuple,
+    /// A struct; the field's index is its sorted position.
+    Struct,
+}
+
+/// `t.<idx>` and `s.field`: a field read of a tuple or a struct.
+pub(crate) fn emit_field_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
     idx: usize,
     elem_typ: &Type,
+    of: FieldOf,
 ) -> Result<CompiledExpr> {
-    // Elem types may be Refs to abstract type names; resolve before classifying.
+    let (kind, read) = match of {
+        FieldOf::Tuple => (AbiKind::Tuple, ElementRead::ArrayIndex),
+        FieldOf::Struct => (AbiKind::Struct, ElementRead::StructField),
+    };
+    // an element type may be a Ref to an abstract type name
     let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
-        emit_accessor_source_node(cx, source, AbiKind::Tuple)?;
+    let arr = emit_accessor_source_node(cx, source, kind)?;
     let idx_const = cx.b.ins().iconst(types::I64, idx as i64);
-    let result = emit_guarded_element_read(
-        cx,
-        arr_ptr,
-        src_disc,
-        idx_const,
-        &elem_typ,
-        ElementRead::ArrayIndex,
-    )?;
-    emit_accessor_source_drop(cx, arr_ptr, src)?;
+    let result = emit_taint_guarded_read(cx, arr.disc, &elem_typ, |cx| {
+        compile_element_read(cx.b, arr.ptr, idx_const, &elem_typ, read, cx.ctx)
+    })?;
+    arr.drop(cx)?;
     // The element read's disc is fresh; the source's STALE gates it.
-    let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
-    Ok(CompiledExpr::new(disc, result.payload))
-}
-
-/// `s.field`: the kv-pair read via the `struct_get_*` helpers;
-/// `sorted_idx` is the field's position in the sorted layout.
-pub(crate) fn emit_struct_ref_node<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    source: &Node<R, E>,
-    sorted_idx: usize,
-    elem_typ: &Type,
-) -> Result<CompiledExpr> {
-    // Same abstract-Ref resolution as the tuple read.
-    let elem_typ = resolve_node_typ(cx.ctx, elem_typ);
-    let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
-        emit_accessor_source_node(cx, source, AbiKind::Struct)?;
-    let idx_const = cx.b.ins().iconst(types::I64, sorted_idx as i64);
-    let result = emit_guarded_element_read(
-        cx,
-        arr_ptr,
-        src_disc,
-        idx_const,
-        &elem_typ,
-        ElementRead::StructField,
-    )?;
-    emit_accessor_source_drop(cx, arr_ptr, src)?;
-    // The element read's disc is fresh; the source's STALE gates it.
-    let disc = propagate_flags(cx.b, result.disc, &[src_disc]);
+    let disc = propagate_flags(cx.b, result.disc, &[arr.disc]);
     Ok(CompiledExpr::new(disc, result.payload))
 }
 
@@ -1161,17 +1126,14 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     let idx_prim = kernel_abi::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {:?}", idx.typ()))?;
-    if matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array)) {
+    if cx.node_kind(source.typ()) == Some(AbiKind::Array) {
         // Unforced: the helper is bounds-checked (safe on a placeholder)
         // and the source's taint folds into the result below.
-        let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
-            emit_accessor_source_node(cx, source, AbiKind::Array)?;
-        let owned = src == CompositeSource::Owned;
-        if owned {
-            cx.hold(LocalKind::Composite, CompiledExpr::new(src_disc, arr_ptr));
-        }
+        let arr = emit_accessor_source_node(cx, source, AbiKind::Array)?;
+        let (arr_ptr, src_disc) = (arr.ptr, arr.disc);
+        arr.hold(cx);
         let idx_cv = idx.emit_clif(cx);
-        if owned {
+        if arr.ownership == CompositeSource::Owned {
             cx.release();
         }
         let idx_cv = idx_cv?;
@@ -1180,26 +1142,21 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
         let r = cx.b.inst_results(call);
         let (rdisc, rpay) = (r[0], r[1]);
-        emit_accessor_source_drop(cx, arr_ptr, src)?;
+        arr.drop(cx)?;
         // Fires iff the array or the index fired.
         let disc = propagate_flags(cx.b, rdisc, &[src_disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
     }
     if lowering::is_bytes(source.typ()) {
-        // The helper consumes the bytes operand.
-        let bcv = emit_owned_value_operand_node(cx, source)?;
-        cx.hold(LocalKind::Value, bcv);
-        let idx_cv = idx.emit_clif(cx);
-        cx.release();
-        let idx_cv = idx_cv?;
+        let b = emit_value_operand_node(cx, source)?;
+        let bcv = b.cv;
+        let idx_cv = with_held(cx, b, |cx| idx.emit_clif(cx))?;
         // The helper takes an i64; a narrow payload fails cranelift's verifier.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_bytes_index")?;
         let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_i64]);
-        let (rdisc, rpay) = {
-            let r = cx.b.inst_results(call);
-            (r[0], r[1])
-        };
+        let (rdisc, rpay) = results_pair(cx.b, call);
+        drop_operands(cx, &[b])?;
         // Fires iff the bytes or the index fired.
         let disc = propagate_flags(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
         return Ok(CompiledExpr::new(disc, rpay));
@@ -1210,7 +1167,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     ))
 }
 
-/// `m{key}`: both operands owned; `graphix_map_ref` shares
+/// `m{key}`: `graphix_map_ref` borrows both operands, shares
 /// `node::map::map_get` and returns `Nullable<V>`.
 pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -1223,21 +1180,18 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let (mcv, kcv) = emit_owned_value_pair(cx, source, key)?;
+    let (m, k) = emit_value_pair(cx, source, key)?;
+    let (mcv, kcv) = (m.cv, k.cv);
     let helper = cx.helper("graphix_map_ref")?;
-
     let call = cx.b.ins().call(helper, &[mcv.disc, mcv.payload, kcv.disc, kcv.payload]);
-    let (rdisc, rpay) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
-    };
+    let (rdisc, rpay) = results_pair(cx.b, call);
+    drop_operands(cx, &[m, k])?;
     // Fires iff the map or the key fired.
     let disc = propagate_flags(cx.b, rdisc, &[mcv.disc, kcv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-/// `a[i..j]` — the source as an OWNED Value (the helper consumes it),
-/// present bounds as integer scalars with a flag bit each, absent
+/// `a[i..j]` — the source as a Value the helper borrows, present bounds as integer scalars with a flag bit each, absent
 /// bounds pass 0 with the bit cleared. Result is `Nullable<source>`
 /// (shared `node::array::array_slice` semantics).
 pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
@@ -1246,7 +1200,7 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     start: Option<&Node<R, E>>,
     end: Option<&Node<R, E>>,
 ) -> Result<CompiledExpr> {
-    if !(matches!(kernel_abi::abi_kind(source.typ()), Some(AbiKind::Array))
+    if !(cx.node_kind(source.typ()) == Some(AbiKind::Array)
         || lowering::is_bytes(source.typ()))
     {
         return Err(anyhow!(
@@ -1254,7 +1208,8 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let scv = emit_owned_value_operand_node(cx, source)?;
+    let src = emit_value_operand_node(cx, source)?;
+    let scv = src.cv;
     let mut taint_discs: SmallVec<[ClifValue; 8]> = smallvec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
                       n: Option<&Node<R, E>>,
@@ -1282,17 +1237,16 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         }
     };
     let mut flags = 0i64;
-    cx.hold(LocalKind::Value, scv);
-    let bounds = emit_bound(cx, start, 1, &mut flags, &mut taint_discs).and_then(|s| {
-        emit_bound(cx, end, 2, &mut flags, &mut taint_discs).map(|e| (s, e))
-    });
-    cx.release();
-    let (start_v, end_v) = bounds?;
+    let (start_v, end_v) = with_held(cx, src, |cx| {
+        let s = emit_bound(cx, start, 1, &mut flags, &mut taint_discs)?;
+        Ok((s, emit_bound(cx, end, 2, &mut flags, &mut taint_discs)?))
+    })?;
     let flags_v = cx.b.ins().iconst(types::I64, flags);
     let helper = cx.helper("graphix_array_slice")?;
     let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);
     let r = cx.b.inst_results(call);
     let (rdisc, rpay) = (r[0], r[1]);
+    drop_operands(cx, &[src])?;
     // Fires iff the source or any present bound fired.
     let disc = propagate_flags(cx.b, rdisc, &taint_discs);
     Ok(CompiledExpr::new(disc, rpay))

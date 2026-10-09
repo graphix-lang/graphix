@@ -32,7 +32,10 @@ use super::{
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     flow::emit_scope_drops,
-    lower::{Channel, LowerCtx, SiteLayout, StateWord, TruncAnchor, TruncLeaf, TruncRec},
+    lower::{
+        Channel, CtxWord, LowerCtx, SiteLayout, StateWord, TruncAnchor, TruncLeaf,
+        TruncRec,
+    },
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     record::KernelConst,
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
@@ -72,18 +75,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         (16 * args.len().max(1)) as u32,
         3,
     ));
-    // CR claude for claude: [structure] Which helper releases an owned value of each kind
-    // is decided in four places: these helper-name tuples, CallArgDrop with
-    // marshal_args and emit_call_arg_drops (call.rs:308-315, 692-707, 909-934),
-    // emit_discard_result (flow.rs:414-447) and emit_drop_local (call.rs:938-964). The
-    // ownership rule that goes with it (a string is always owned, a borrowed composite
-    // or value is not dropped) is repeated in the first three, and a tuple here can
-    // pair a helper with the wrong number of words. One `emit_owned_drop(b, ctx, kind:
-    // LocalKind, disc, payload)` and one `owned_drop_kind(AbiKind, CompositeSource) ->
-    // Option<LocalKind>` would serve all four and replace CallArgDrop and the tuples.
-    // (f-call-flow-06)
-    let mut drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
-        smallvec::SmallVec::new();
+    let mut drops: SmallVec<[OwnedDrop; 8]> = SmallVec::new();
     let mut arg_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     // an owned arg is held while the later args emit (an emission error
     // abandons the body, its holds with it)
@@ -113,28 +105,15 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 (cx.b.ins().iconst(types::I64, prim_to_value_disc(p)), cv.payload)
             }
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                if node_composite_source(arg_node) == CompositeSource::Owned {
-                    drops.push(("graphix_valarray_drop", cv.payload, None));
-                    cx.hold(LocalKind::Composite, cv);
-                }
                 (cx.b.ins().iconst(types::I64, value_disc::ARRAY), cv.payload)
             }
             Some(AbiKind::String) => {
-                drops.push(("graphix_arcstr_drop", cv.payload, None));
-                cx.hold(LocalKind::String, cv);
                 (cx.b.ins().iconst(types::I64, value_disc::STRING), cv.payload)
             }
             // A bare-null arg is a value-shape pair with the Null disc.
             Some(
                 AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null,
-            ) => {
-                let disc = clean_disc(cx.b, cv.disc);
-                if node_composite_source(arg_node) == CompositeSource::Owned {
-                    drops.push(("graphix_value_drop", disc, Some(cv.payload)));
-                    cx.hold(LocalKind::Value, CompiledExpr::new(disc, cv.payload));
-                }
-                (disc, cv.payload)
-            }
+            ) => (clean_disc(cx.b, cv.disc), cv.payload),
             Some(AbiKind::Unit) => {
                 return Err(anyhow!("emit_clif: call arg has Unit type"));
             }
@@ -142,6 +121,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 return Err(anyhow!("emit_clif: call arg with non-fusable type"));
             }
         };
+        if let Some(k) =
+            kind.and_then(|k| owned_drop_kind(k, node_composite_source(arg_node)))
+        {
+            drops.push((k, cv));
+            cx.hold(k, cv);
+        }
         cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
         cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
     }
@@ -212,17 +197,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
         }
     };
-    for (helper, w0, w1) in drops.drain(..) {
-        let h = cx.helper(helper)?;
-        match w1 {
-            Some(w1) => {
-                cx.b.ins().call(h, &[w0, w1]);
-            }
-            None => {
-                cx.b.ins().call(h, &[w0]);
-            }
-        }
-    }
+    emit_owned_drops(cx.b, cx.ctx, &drops)?;
     let (raw0, raw1) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])
@@ -343,11 +318,9 @@ pub enum CompositeSource {
 /// One owned cross-kernel-call arg to drop after the call returns: args
 /// pass borrowed (the callee clones every composite/value param on
 /// entry), so an owned-source arg's original would otherwise leak.
-enum CallArgDrop {
-    Composite(ClifValue),
-    String(ClifValue),
-    Value { disc: ClifValue, payload: ClifValue },
-}
+/// An owned value the emitter drops after its consumer: its kind and
+/// its words.
+pub(super) type OwnedDrop = (LocalKind, CompiledExpr);
 
 /// One entry in the flat formals+captures list [`emit_lambda_call_node`]
 /// marshals: a call-site arg Node or a capture read from the calling
@@ -393,8 +366,7 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     // decides a constant's WAKE tag bit in the callee. Pins:
     // lang::select::wake_fire_keeps_targets (the lambda-call column).
     let init = cx.first_use(word);
-    let wake = cx.b.ins().ishl_imm(cx.ctx.wake_flag, 1);
-    cx.b.ins().bor(init, wake)
+    CtxWord { init, wake: cx.ctx.wake_flag }.encode(cx.b)
 }
 
 /// Claim a contiguous run of `layout.words` words from this body's own
@@ -605,24 +577,11 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
         let stride_bytes = cx.b.ins().imul_imm(i, (layout.words as i64) * 8);
         Ok(cx.b.ins().iadd(table, stride_bytes))
     };
-    match anchor {
-        StateWord::Sure(word_addr) => emit_chain(cx, word_addr),
-        StateWord::Guarded { base, addr } => {
-            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-            let chain_bl = cx.b.create_block();
-            let merge = cx.b.create_block();
-            cx.b.append_block_param(merge, types::I64);
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            cx.b.ins().brif(has, chain_bl, &[], merge, &[BlockArg::Value(zero)]);
-            cx.b.switch_to_block(chain_bl);
-            cx.b.seal_block(chain_bl);
-            let block = emit_chain(cx, addr)?;
-            cx.b.ins().jump(merge, &[BlockArg::Value(block)]);
-            cx.b.switch_to_block(merge);
-            cx.b.seal_block(merge);
-            Ok(cx.b.block_params(merge)[0])
-        }
-    }
+    let zero = cx.b.ins().iconst(types::I64, 0);
+    let [block] = anchor.with_addr(cx, [zero], |cx, addr| {
+        Ok::<_, anyhow::Error>([emit_chain(cx, addr)?])
+    })?;
+    Ok(block)
 }
 
 fn callee_results(
@@ -727,9 +686,9 @@ fn marshal_args<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     slots: &[LambdaCallSlot<R, E>],
     fn_name: &str,
-) -> Result<(SmallVec<[CompiledExpr; 12]>, SmallVec<[CallArgDrop; 8]>)> {
+) -> Result<(SmallVec<[CompiledExpr; 12]>, SmallVec<[OwnedDrop; 8]>)> {
     let mut cvs: SmallVec<[CompiledExpr; 12]> = SmallVec::new();
-    let mut drops: SmallVec<[CallArgDrop; 8]> = SmallVec::new();
+    let mut drops: SmallVec<[OwnedDrop; 8]> = SmallVec::new();
     for s in slots.iter() {
         let slot_kind = kernel_abi::abi_kind(s.typ());
         let value_slot = matches!(
@@ -744,24 +703,13 @@ fn marshal_args<R: Rt, E: UserEvent>(
                         cv.disc,
                         scalar_to_payload_i64(cx.b, p, cv.payload),
                     ),
-                    // String arg emissions are always owned (local reads
-                    // clone at the read); a scalar-widened arg owns nothing.
+                    // a scalar-widened arg owns nothing
                     _ => {
-                        match slot_kind {
-                            Some(AbiKind::String) => {
-                                drops.push(CallArgDrop::String(cv.payload))
-                            }
-                            _ if node_composite_source(n) != CompositeSource::Owned => (),
-                            Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-                                drops.push(CallArgDrop::Composite(cv.payload))
-                            }
-                            Some(
-                                AbiKind::Variant | AbiKind::Nullable | AbiKind::Value,
-                            ) => drops.push(CallArgDrop::Value {
-                                disc: cv.disc,
-                                payload: cv.payload,
-                            }),
-                            _ => (),
+                        let source = node_composite_source(n);
+                        if let Some(k) =
+                            slot_kind.and_then(|k| owned_drop_kind(k, source))
+                        {
+                            drops.push((k, cv));
                         }
                         cv
                     }
@@ -797,7 +745,7 @@ fn emit_self_dispatch(
     cx: &mut BodyCx,
     func_ref: FuncRef,
     clif_args: &[ClifValue],
-    drops: &[CallArgDrop],
+    drops: &[OwnedDrop],
     placeholder: &Type,
     (dmerge, rmerge): (Block, Block),
     fn_name: &str,
@@ -816,7 +764,7 @@ fn emit_self_dispatch(
     cx.b.ins().brif(direct, call_bl, &[], grow_bl, &[]);
     cx.b.switch_to_block(abort_bl);
     cx.b.seal_block(abort_bl);
-    emit_call_arg_drops(cx.b, cx.ctx, drops)?;
+    emit_owned_drops(cx.b, cx.ctx, drops)?;
     // The abort discards the whole run, so no trigger fold.
     let ph = emit_bottom_placeholder(cx, placeholder, &[])?;
     cx.b.ins().jump(dmerge, &[BlockArg::Value(ph.disc), BlockArg::Value(ph.payload)]);
@@ -862,7 +810,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     // callee ABI returns a narrower shape; both merge edges must carry
     // the widened pairing.
     let node_typ = cs.typ();
-    let widen = call_result_needs_value_widening(node_typ, ret);
+    let widen = call_result_needs_value_widening(cx, node_typ, ret)?;
     let ret_pay_ty = match kernel_abi::abi_kind(ret) {
         Some(AbiKind::Scalar(p)) if !widen => prim_to_clif(p),
         _ => types::I64,
@@ -925,7 +873,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
         cx.b.ins().brif(pending, abort_bl, &[], cont_bl, &[]);
         cx.b.switch_to_block(abort_bl);
         cx.b.seal_block(abort_bl);
-        emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+        emit_owned_drops(cx.b, cx.ctx, &drops)?;
         let exit = pending_exit_block(cx.b, cx.ctx);
         emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
         cx.b.ins().jump(exit, &[]);
@@ -953,7 +901,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    emit_call_arg_drops(cx.b, cx.ctx, &drops)?;
+    emit_owned_drops(cx.b, cx.ctx, &drops)?;
     cx.b.ins()
         .jump(dmerge, &[BlockArg::Value(result.disc), BlockArg::Value(result.payload)]);
     cx.b.switch_to_block(dmerge);
@@ -969,62 +917,62 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
-/// Emit the post-call drops for owned call args.
-fn emit_call_arg_drops(
+/// What a production of `kind` from a node of `source` leaves its
+/// consumer to drop: a string read is always owned; a composite or a
+/// value only when the node made it; a scalar owns nothing.
+pub(super) fn owned_drop_kind(
+    kind: AbiKind,
+    source: CompositeSource,
+) -> Option<LocalKind> {
+    match kind {
+        AbiKind::String => Some(LocalKind::String),
+        _ if source != CompositeSource::Owned => None,
+        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Some(LocalKind::Composite),
+        AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Some(LocalKind::Value),
+        AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::Null => None,
+    }
+}
+
+/// Drop an owned value of `kind` (`cv` its words): the one per-kind
+/// drop dispatch.
+pub(super) fn emit_owned_drop(
     b: &mut FunctionBuilder,
     ctx: &LowerCtx,
-    drops: &[CallArgDrop],
+    kind: LocalKind,
+    cv: CompiledExpr,
 ) -> Result<()> {
-    if drops.is_empty() {
-        return Ok(());
-    }
-    for d in drops {
-        match d {
-            CallArgDrop::Composite(bits) => {
-                let f = ctx.helper(b, "graphix_valarray_drop")?;
-                b.ins().call(f, &[*bits]);
-            }
-            CallArgDrop::String(bits) => {
-                let f = ctx.helper(b, "graphix_arcstr_drop")?;
-                b.ins().call(f, &[*bits]);
-            }
-            CallArgDrop::Value { disc, payload } => {
-                let f = ctx.helper(b, "graphix_value_drop")?;
-                b.ins().call(f, &[*disc, *payload]);
-            }
+    let (helper, args): (&str, SmallVec<[ClifValue; 2]>) = match kind {
+        LocalKind::Scalar(_) => return Ok(()),
+        LocalKind::Composite => {
+            ("graphix_valarray_drop", smallvec::smallvec![cv.payload])
         }
-    }
+        LocalKind::String => ("graphix_arcstr_drop", smallvec::smallvec![cv.payload]),
+        LocalKind::Value => {
+            ("graphix_value_drop", smallvec::smallvec![cv.disc, cv.payload])
+        }
+    };
+    let f = ctx.helper(b, helper)?;
+    b.ins().call(f, &args);
     Ok(())
 }
 
-/// Emit the runtime drop for one owned local of `kind` held in `vv`;
-/// the single per-kind drop dispatch (scalars own nothing).
+pub(super) fn emit_owned_drops(
+    b: &mut FunctionBuilder,
+    ctx: &LowerCtx,
+    drops: &[OwnedDrop],
+) -> Result<()> {
+    drops.iter().try_for_each(|(kind, cv)| emit_owned_drop(b, ctx, *kind, *cv))
+}
+
+/// [`emit_owned_drop`] of an owned local of `kind` held in `vv`.
 pub(super) fn emit_drop_local(
     b: &mut FunctionBuilder,
     ctx: &LowerCtx,
     kind: LocalKind,
     vv: ValueVar,
 ) -> Result<()> {
-    match kind {
-        LocalKind::Scalar(_) => {}
-        LocalKind::Composite => {
-            let f = ctx.helper(b, "graphix_valarray_drop")?;
-            let ptr = b.use_var(vv.payload);
-            b.ins().call(f, &[ptr]);
-        }
-        LocalKind::String => {
-            let f = ctx.helper(b, "graphix_arcstr_drop")?;
-            let ptr = b.use_var(vv.payload);
-            b.ins().call(f, &[ptr]);
-        }
-        LocalKind::Value => {
-            let f = ctx.helper(b, "graphix_value_drop")?;
-            let disc = b.use_var(vv.disc);
-            let payload = b.use_var(vv.payload);
-            b.ins().call(f, &[disc, payload]);
-        }
-    }
-    Ok(())
+    let cv = CompiledExpr::new(b.use_var(vv.disc), b.use_var(vv.payload));
+    emit_owned_drop(b, ctx, kind, cv)
 }
 
 /// Which helper family a buffer between its `_new` and its finalize

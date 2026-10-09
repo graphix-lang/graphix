@@ -288,27 +288,20 @@ impl TypeMemo {
     fn cached<V: Clone>(
         t: &Type,
         table: fn(&TypeMemo) -> &Table<V>,
+        too_big: impl FnOnce() -> V,
         compute: impl FnOnce() -> V,
     ) -> V {
+        // the walks below treat a type as a tree: one that shares its
+        // parts may unfold exponentially, past what any kernel encodes
+        if lowering::unfolds_past(t, lowering::FUSION_SIZE_CAP) {
+            return too_big();
+        }
         let Some((id, owner)) = identity(t) else { return compute() };
         let Some(memo) = Self::current() else { return compute() };
         let tb = table(&memo);
         if let Some(v) = tb.by_id.get(&id).map(|e| e.1.clone()) {
             return v;
         }
-        // CR claude for claude: [perf] These walks treat a type as a tree and never share
-        // by allocation: resolutions(), the Hash of the by_content key (lines 296-301),
-        // and the freeze this memoizes (kernel_abi.rs:374), which also rebuilds its
-        // result unshared. A type built by sharing, such as `let x1 = (x0, x0); .. let
-        // x24 = (x23, x23); x24 ~ 1`, is linear in memory but has 2^24 leaves. Fusion
-        // on it is exponential in time and memory. With --no-cache on the debug build,
-        // n = 20, 22 and 24 take 1.5, 5.1 and 20.8 s and 0.35, 1.2 and 4.7 GB, against
-        // 0.28 s and 57 MB with --no-fusion. The default cold start takes 9.9 s and 4.3
-        // GB at n = 22. Type::content_key is not a ready replacement key, because its
-        // bytes for such a type are exponential too: the no-fusion cold start grows
-        // from 139 to 324 MB between n = 20 and 22. Memoizing these walks by allocation
-        // keeps them linear; a type error printed on x20 is a 7.3 MB message, the same
-        // shape. (x-stack-09)
         let Some(resolved) = resolutions(t) else { return compute() };
         let key = (!t.has_unbound()).then(|| (t.clone(), resolved));
         let hit = key.as_ref().and_then(|k| tb.by_content.get(k).map(|v| v.clone()));
@@ -321,14 +314,19 @@ impl TypeMemo {
     }
 
     pub(crate) fn expanded(t: &Type, compute: impl FnOnce() -> Type) -> Type {
-        Self::cached(t, |m| &m.expanded, compute)
+        Self::cached(t, |m| &m.expanded, || t.clone(), compute)
     }
 
     pub(crate) fn frozen(
         t: &Type,
         compute: impl FnOnce() -> Result<Type, kernel_abi::FreezeError>,
     ) -> Result<Type, kernel_abi::FreezeError> {
-        Self::cached(t, |m| &m.frozen, compute)
+        Self::cached(
+            t,
+            |m| &m.frozen,
+            || Err(kernel_abi::FreezeError::Unsupported),
+            compute,
+        )
     }
 }
 
@@ -413,6 +411,15 @@ impl FusionCtx {
             JitSlot::Unbuilt | JitSlot::Unavailable => None,
         })
         .map_err(|_| anyhow::anyhow!("fusion is unavailable"))
+    }
+
+    /// Install the kernels an image decode session restored; the session
+    /// ends with this, before anything runs.
+    pub(crate) fn install_restored(&self) -> anyhow::Result<()> {
+        match &mut *self.jit.lock() {
+            JitSlot::Built(jit) => jit.install_restored(),
+            JitSlot::Unbuilt | JitSlot::Unavailable => Ok(()),
+        }
     }
 
     /// Whether this context can fuse: its JIT builds.
@@ -1260,7 +1267,7 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// `Ok(None)`: the root type has no kernel representation, the subtree
 /// is an identity passthrough, or some node does not emit CLIF.
 /// Discovery rejects known effects; emission validates the remaining shapes.
-// CR claude for claude: [perf] A pure subtree of any size becomes one CLIF function.
+// CR claude for eric: [perf] A pure subtree of any size becomes one CLIF function.
 // Cranelift's backtracking register allocator (regalloc2, reached from Jit::link) is
 // superlinear in function size, so cold-start compile time grows roughly quadratically
 // with region size while the node-walk stays linear. Debug build, fused vs --no-fusion:
@@ -1268,6 +1275,15 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 // vs 0.7 s); a 5000-arm select takes 5.3 s vs 1.0 s; a lambda whose body is a 9000-deep
 // `+` chain takes 44 s vs 0.7 s. Nothing bounds or splits a region. Splitting an
 // oversized region at its parts would keep it native. (x-stack-10)
+// 2026-10-09 claude: Needs a ruling: splitting trades against #[native]. The simple fix
+// refuses a region past a node budget, so fuse() descends to its parts, which fuse
+// separately and keep compile time linear; but the glue between the parts node-walks, so
+// #[native] over an expression that large fails, and fusion stops being predictable from
+// the source alone. Options: (a) split past a budget, and let #[native] mean 'fuses,
+// possibly as several kernels'; (b) split only where no #[native] covers the region; (c)
+// keep one region and bound regalloc instead (cranelift's single-pass allocator for
+// oversized functions), which keeps the semantics and costs code quality there. I lean
+// (c), then (b).
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut CompileCtx<R, E>,

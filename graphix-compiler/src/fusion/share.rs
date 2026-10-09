@@ -285,7 +285,7 @@ impl SlotShare {
                 continue;
             }
             let root = ExprId::decode(buf)?;
-            let jit = WrappedKernel::image_decode(&ctx.fusion, buf)?;
+            let (jit, kernel) = WrappedKernel::image_decode(&ctx.fusion, buf)?;
             let callees = Pack::decode(buf)?;
             let nraises = decode_varint(buf)? as usize;
             let mut raises = Vec::with_capacity(nraises.min(1024));
@@ -293,7 +293,6 @@ impl SlotShare {
                 let h = image::handler_decode(buf)?;
                 raises.push((h, ExprId::decode(buf)?, ExprId::decode(buf)?));
             }
-            let kernel = jit.wrapper().kernel.clone();
             let print = RegionPrint { callees, raises };
             table.push(Some(SharedRegion { root, kernel, jit, print }));
         }

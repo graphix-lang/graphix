@@ -862,7 +862,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // to a union must hand its consumers a Value pair
         match res {
             Some(cv)
-                if call_result_needs_value_widening(callsite.typ(), &self.typ.rtype) =>
+                if call_result_needs_value_widening(
+                    cx,
+                    callsite.typ(),
+                    &self.typ.rtype,
+                )? =>
             {
                 Ok(Some(widen_result_to_value(cx, &self.typ.rtype, cv)?))
             }

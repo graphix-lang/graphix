@@ -10,7 +10,7 @@ use crate::{
     fusion::{
         LambdaCallInfo,
         emit_helpers::{AbiTy, HelperSpec, all_helpers},
-        kernel_abi::{self, AbiParamKind, KernelKey, KernelSig},
+        kernel_abi::{self, KernelKey, KernelSig},
         lowering::{self, BuiltinCallSiteInfo},
     },
     typ::Type,
@@ -34,7 +34,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyRole, BodySource, emit_interrupt_check, param_id},
+    body::{BodyCx, BodyRole, BodySource, emit_interrupt_check, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::EmitConst,
@@ -69,14 +69,9 @@ pub(super) fn compile_into_function<'a>(
     let mut env = JitEnv::new();
     let mut initial_vals: LPooled<Vec<ClifValue>> = LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
-    // Wire slot 0 is the context word: bit 0 init, bit 1 wake. Under a
-    // wake view init is not genuine: consumers read `init & !wake`.
-    let ctx_word = initial_vals[0];
-    let init_flag = b.ins().band_imm(ctx_word, 1);
-    let wake_flag = {
-        let w = b.ins().band_imm(ctx_word, 2);
-        b.ins().ushr_imm(w, 1)
-    };
+    // Under a wake view init is not genuine: consumers read `init & !wake`.
+    let CtxWord { init: init_flag, wake: wake_flag } =
+        CtxWord::decode(b, initial_vals[0]);
     let helper_refs = HelperRefs::new(helper_ids, names);
     let helper = |b: &mut FunctionBuilder, name: &str| {
         helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
@@ -100,22 +95,23 @@ pub(super) fn compile_into_function<'a>(
         // TAINT guards it.
         let disc = initial_vals[d.wire_slot];
         let payload_in = initial_vals[d.wire_slot + 1];
-        let (payload, kind) = match d.kind {
-            AbiParamKind::Scalar(p) => (payload_in, LocalKind::Scalar(p)),
-            AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
+        let kind = LocalKind::of_param(d.kind);
+        let payload = match kind {
+            LocalKind::Scalar(_) => payload_in,
+            LocalKind::Composite => {
                 let clone = helper(b, "graphix_valarray_clone")?;
                 let call = b.ins().call(clone, &[payload_in]);
-                (b.inst_results(call)[0], LocalKind::Composite)
+                b.inst_results(call)[0]
             }
-            AbiParamKind::String => {
+            LocalKind::String => {
                 let clone = helper(b, "graphix_arcstr_clone")?;
                 let call = b.ins().call(clone, &[payload_in]);
-                (b.inst_results(call)[0], LocalKind::String)
+                b.inst_results(call)[0]
             }
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
+            LocalKind::Value => {
                 let clone = helper(b, "graphix_value_clone")?;
                 let call = b.ins().call(clone, &[disc, payload_in]);
-                (b.inst_results(call)[1], LocalKind::Value)
+                b.inst_results(call)[1]
             }
         };
         let disc_var = b.declare_var(types::I64);
@@ -291,6 +287,28 @@ pub(crate) struct SiteLayout {
     pub(crate) self_blocks: Arc<[kernel_abi::SelfBlock]>,
 }
 
+/// The context word (wire slot 0) as its two 0/1 flags.
+#[derive(Clone, Copy)]
+pub(super) struct CtxWord {
+    pub(super) init: ClifValue,
+    pub(super) wake: ClifValue,
+}
+
+impl CtxWord {
+    pub(super) fn decode(b: &mut FunctionBuilder, word: ClifValue) -> Self {
+        let init = b.ins().band_imm(word, kernel_abi::CTX_INIT);
+        let w = b.ins().band_imm(word, kernel_abi::CTX_WAKE);
+        let wake = b.ins().ushr_imm(w, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
+        Self { init, wake }
+    }
+
+    pub(super) fn encode(self, b: &mut FunctionBuilder) -> ClifValue {
+        let wake =
+            b.ins().ishl_imm(self.wake, kernel_abi::CTX_WAKE.trailing_zeros() as i64);
+        b.ins().bor(self.init, wake)
+    }
+}
+
 /// A state word's address: an instance's or a call site's word, or a
 /// loop slot's (a prev-length word, a first-call word, an in-loop call
 /// site's block anchor). `Guarded` words ride a site block base, null
@@ -300,6 +318,27 @@ pub(crate) struct SiteLayout {
 pub(crate) enum StateWord {
     Sure(ClifValue),
     Guarded { base: ClifValue, addr: ClifValue },
+}
+
+impl StateWord {
+    /// `f` over the word's address; a `Guarded` one behind its null
+    /// guard, `fallback` on the null path.
+    pub(super) fn with_addr<'a, 'f, 'c, const N: usize, E>(
+        self,
+        cx: &mut BodyCx<'a, 'f, 'c>,
+        fallback: [ClifValue; N],
+        f: impl FnOnce(
+            &mut BodyCx<'a, 'f, 'c>,
+            ClifValue,
+        ) -> std::result::Result<[ClifValue; N], E>,
+    ) -> std::result::Result<[ClifValue; N], E> {
+        match self {
+            StateWord::Sure(addr) => f(cx, addr),
+            StateWord::Guarded { base, addr } => {
+                cx.null_guarded(base, fallback, |cx| f(cx, addr))
+            }
+        }
+    }
 }
 
 /// An in-loop state-chain claim re-ensured in every enclosing loop's

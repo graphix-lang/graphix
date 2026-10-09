@@ -2116,3 +2116,88 @@ run!(result_split_over_a_scalar, RESULT_SPLIT_OVER_A_SCALAR, |v: Result<&Value>|
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(5), Value::I64(10)]),
     _ => false,
 }; FuseExpect::Jit);
+
+// A map literal whose keys or values are variants or structs is a
+// constant: it fuses.
+const CONSTANT_MAP_OF_VARIANTS_FUSES: &str = r#"
+{
+  let f = |k: i64| #[native] (k, {`A => 1, `B => 2}, {"a" => {x: 1}}, {"t" => `C(3)});
+  let (k, m, n, o) = f(4);
+  (k, m{`B}$, (n{"a"}$).x, o{"t"}$)
+}
+"#;
+
+run!(constant_map_of_variants_fuses, CONSTANT_MAP_OF_VARIANTS_FUSES, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[i64:4, i64:2, i64:1, ["C", i64:3]]"#)
+}; FuseExpect::Jit);
+
+// A `T | null` union whose `T` has no register form is a plain Value:
+// a record carrying one fuses, and a select over one tests it.
+const NULLABLE_DURATION_IS_A_VALUE: &str = r#"
+{
+  let rows: Array<{n: i64, t: [duration, null]}> = [{n: 1, t: duration:1.s}, {n: 2, t: null}];
+  let a = #[native] array::map(rows, |r| r.n * 2);
+  let b = array::map(rows, |r| select r.t { null as _ => 0, _ => r.n });
+  (a, b)
+}
+"#;
+
+run!(nullable_duration_is_a_value, NULLABLE_DURATION_IS_A_VALUE, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:2, i64:4], [i64:1, i64:0]]")
+}; FuseExpect::Jit);
+
+// A union-typed call result is one kernel shape for every consumer: a
+// struct field, an equality and an index all fuse over it.
+const UNION_RESULT_CONSUMERS_AGREE: &str = r#"
+{
+  let b = true;
+  let pick = |b, x, y| select b { true => x, false => y };
+  #[native] ({a: pick(b, 1, 2) + 1, c: 0}, pick(b, "a", "b") == "a", pick(b, [1, 2], [3])[0])
+}
+"#;
+
+run!(union_result_consumers_agree, UNION_RESULT_CONSUMERS_AGREE, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == r#"[[["a", i64:2], ["c", i64:0]], true, i64:1]"#)
+}; FuseExpect::Jit);
+
+// Ordering over operands with no register form, and arithmetic on a
+// decimal or a varint, fuse through the Value helpers.
+const VALUE_ORDERING_AND_ARITH_FUSE: &str = r#"
+{
+  let names = ["apple", "melon", "kiwi", "zebra", "m"];
+  let small = #[native] array::filter(names, |n| n < "m");
+  let o: [i64, null] = null;
+  let p: [i64, null] = 3;
+  let ords = #[native] (o < p, p <= p, "b" >= "a", "a" > "b");
+  let d = decimal:1.5;
+  let ar = #[native] (d * decimal:2.0, z64:7 - z64:10, v32:3 + v32:4, d / decimal:0.5);
+  (small, ords, ar)
+}
+"#;
+
+run!(value_ordering_and_arith_fuse, VALUE_ORDERING_AND_ARITH_FUSE, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == r#"[["apple", "kiwi"], [false, true, true, false], [decimal:3.00, z64:-3, v32:7, decimal:3.]]"#)
+}; FuseExpect::Jit);
+
+// Whole-value binds, `@` captures of every shape and string literal
+// patterns lower: these selects fuse.
+const WHOLE_BINDS_AND_STRING_LITERALS: &str = r#"
+{
+  let g = |v: [`A, `B(i64)]| select v { `A => 0, other => select other { `B(n) => n } };
+  let h = |a: Array<i64>| select a { [] => 0, all => array::len(all) };
+  let t = |p: (i64, i64)| select p { all@ (x, y) => x + y + all.0 };
+  let s = |p: {x: i64, y: i64}| select p { all@ {x, y} => x + y + all.x };
+  let w = |v: [`Some(i64), `None]| select v { all@ `Some(n) => select all { `Some(m) => m + n }, `None => 0 };
+  let l = |xs: List<i64>| select xs { all@ [<h, ..>] => h + list::len(all), [<>] => 0 };
+  let k = |s: string| select s { "a" => 1, "bc" => 2, other => str::len(other) };
+  let c = |e: [`Char(string), `Key(i64)]| select e { `Char("q") => 1, `Char(_) => 2, `Key(n) => n };
+  #[native] (g(`B(3)), h([1, 2]), t((1, 2)), s({x: 1, y: 2}), w(`Some(2)), l([<4, 5>]),
+    k("a"), k("bc"), k("xyz"), c(`Char("q")), c(`Char("r")), c(`Key(7)))
+}
+"#;
+
+run!(whole_binds_and_string_literals, WHOLE_BINDS_AND_STRING_LITERALS, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == "[i64:3, i64:2, i64:4, i64:4, i64:4, i64:6, i64:1, i64:2, i64:3, i64:1, i64:2, i64:7]")
+}; FuseExpect::Jit);

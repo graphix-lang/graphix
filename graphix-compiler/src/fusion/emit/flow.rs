@@ -7,7 +7,7 @@ use crate::{
     expr::ExprKind,
     fusion::{
         self,
-        kernel_abi::{self, AbiKind, AbiParamKind},
+        kernel_abi::{self, AbiKind},
     },
     node::{callsite::CallSite, select::Select},
     typ::Type,
@@ -32,7 +32,7 @@ use super::{
         emit_tail_rebind_jump, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source,
     },
-    call::{CompositeSource, emit_drop_local},
+    call::{CompositeSource, emit_drop_local, emit_owned_drop, owned_drop_kind},
     nodes::{emit_bottom_of_kind, emit_bottom_placeholder, widen_result_to_value},
     scalar::{cast_u64_to_prim, scalar_to_payload_i64},
     select::{classify_select_scrutinee, emit_select_arms},
@@ -235,7 +235,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         bail!("emit_clif: select with no arms");
     }
     let mark = cx.env.mark();
-    let (scrut, scrut_kind, scrut_typ, _adopted) = classify_select_scrutinee(cx, sel)?;
+    let (scrut, scrut_typ, _adopted) = classify_select_scrutinee(cx, sel)?;
     let scrut_disc = scrut.disc();
     // A fired scrutinee is one of this select's own fires; on the tail
     // spine the accumulator is the only channel that carries it to the
@@ -248,7 +248,6 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx,
         sel,
         scrut,
-        scrut_kind,
         &scrut_typ,
         &mut |cx, body, mark, guards_stale| {
             // A consulted guard's fire is an own fire too.
@@ -318,10 +317,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         let cv = arg.emit_clif(cx)?;
         // a scalar fed to a value-shaped slot is widened to the Value
         // encoding, which owns nothing
-        let value_slot = matches!(
-            cx.ctx.tail.call_slots[slot].kind.abi(),
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value
-        );
+        let value_slot =
+            LocalKind::of_param(&cx.ctx.tail.call_slots[slot].kind) == LocalKind::Value;
         let (val, source) = match kernel_abi::abi_kind(arg.typ()) {
             Some(AbiKind::Scalar(p)) if value_slot => (
                 CompiledExpr::new(cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload)),
@@ -426,34 +423,19 @@ pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     cv: CompiledExpr,
 ) -> Result<()> {
-    let owned = node_composite_source(node) == CompositeSource::Owned;
-    let kind = match kernel_abi::freeze_for_abi_normalized(node.typ()) {
-        Some(t) => kernel_abi::abi_kind(&t),
-        None => kernel_abi::abi_kind(node.typ()),
-    };
-    match kind {
-        Some(AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::Null) => {}
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            if owned {
-                cx.call_helper("graphix_valarray_drop", &[cv.payload])?;
-            }
-        }
-        Some(AbiKind::String) => {
-            cx.call_helper("graphix_arcstr_drop", &[cv.payload])?;
-        }
-        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            if owned {
-                cx.call_helper("graphix_value_drop", &[cv.disc, cv.payload])?;
-            }
-        }
-        None if owned => bail!(
+    let source = node_composite_source(node);
+    match cx.node_kind(node.typ()) {
+        Some(kind) => match owned_drop_kind(kind, source) {
+            Some(k) => emit_owned_drop(cx.b, cx.ctx, k, cv),
+            None => Ok(()),
+        },
+        None if source == CompositeSource::Owned => bail!(
             "emit_clif: discarded result of type {:?} doesn't classify — can't \
              drop it",
             node.typ()
         ),
-        None => {}
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Drop every owned local above `mark`.

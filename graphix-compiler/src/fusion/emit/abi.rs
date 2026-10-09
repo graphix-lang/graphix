@@ -4,11 +4,11 @@
 
 use crate::{
     BindId,
-    fusion::kernel_abi::{AbiKind, PrimType},
+    fusion::kernel_abi::{self, AbiKind, PrimType},
 };
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
+    Inst, InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 
@@ -200,6 +200,77 @@ pub(super) fn const_stale_gate(
 /// flagged disc is an invalid tag to a `Value` helper or a tag compare.
 pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue {
     b.ins().band_imm(disc, !(TAINT | STALE))
+}
+
+/// The kind of an owned non-scalar local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnedKind {
+    Composite,
+    String,
+    Value,
+}
+
+impl OwnedKind {
+    /// The owned kind of a value of ABI kind `k`; `None` for a scalar and
+    /// for a shape with no local.
+    pub(super) fn of(k: AbiKind) -> Option<Self> {
+        Some(match k {
+            AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
+            AbiKind::String => Self::String,
+            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
+            AbiKind::Scalar(_) | AbiKind::Unit | AbiKind::Null => return None,
+        })
+    }
+}
+
+impl LocalKind {
+    /// The local a kernel parameter of kind `k` binds as. Every kind is a
+    /// two-word `(disc, payload)` pair on the wire; they differ in entry
+    /// binding and body emission.
+    pub(super) fn of_param(k: &kernel_abi::ParamKind) -> Self {
+        use kernel_abi::ParamKind as P;
+        match k {
+            P::Scalar(p) => LocalKind::Scalar(*p),
+            P::Array { .. } | P::Tuple { .. } | P::Struct { .. } => LocalKind::Composite,
+            P::String => LocalKind::String,
+            P::Variant { .. } | P::Nullable { .. } | P::Value { .. } => LocalKind::Value,
+        }
+    }
+}
+
+impl From<OwnedKind> for LocalKind {
+    fn from(k: OwnedKind) -> Self {
+        match k {
+            OwnedKind::Composite => LocalKind::Composite,
+            OwnedKind::String => LocalKind::String,
+            OwnedKind::Value => LocalKind::Value,
+        }
+    }
+}
+
+/// The two results of a helper `call` returning a value pair.
+pub(super) fn results_pair(b: &FunctionBuilder, call: Inst) -> (ClifValue, ClifValue) {
+    let rs = b.inst_results(call);
+    (rs[0], rs[1])
+}
+
+/// The results of a read helper `call` as the (disc, payload) of a local
+/// of `kind`: a composite or string read returns its bits alone, a value
+/// read its pair, a scalar read the scalar.
+pub(super) fn owned_words(
+    b: &mut FunctionBuilder,
+    kind: LocalKind,
+    call: Inst,
+) -> (ClifValue, ClifValue) {
+    let rs = b.inst_results(call);
+    let (r0, r1) = (rs[0], rs.get(1).copied());
+    match (kind, r1) {
+        (LocalKind::Scalar(p), _) => (scalar_disc(b, p), r0),
+        (LocalKind::Composite, _) => (b.ins().iconst(types::I64, value_disc::ARRAY), r0),
+        (LocalKind::String, _) => (b.ins().iconst(types::I64, value_disc::STRING), r0),
+        (LocalKind::Value, Some(payload)) => (r0, payload),
+        (LocalKind::Value, None) => unreachable!("a value read returns a pair"),
+    }
 }
 
 /// What a [`Local`]'s `payload` word holds and how it is dropped at

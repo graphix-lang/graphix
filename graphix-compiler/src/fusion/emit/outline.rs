@@ -6,10 +6,10 @@
 use super::{
     abi::{JitEnv, STALE, ValueVar, local_payload_ty},
     body::{BodyCx, emit_kernel_abort},
-    call::close_buf,
+    call::{BufKind, close_buf, open_buf},
     jit::{ChunkFn, chunk_signature},
     lower::{
-        Channel, ClosedFrame, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
+        Channel, ClosedFrame, CtxWord, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
         StateChannel, TailCtx, TruncRec,
     },
     record::KernelConst,
@@ -75,19 +75,9 @@ pub(super) fn emit_outlined(
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // The loop's slot tables are made here, where every chunk finds them.
-    // CR claude for claude: [structure] open_slot_tables is called here only for its
-    // claims. It pushes a frame whose index variable is this never-defined `unused`,
-    // the next line pops that frame, and emit_range pushes the real frame by hand
-    // (outline.rs:330-337). Nothing reads `unused` today; if something did, cranelift
-    // would silently give it 0, so every slot would read as slot 0. Split the claiming
-    // (sites, len, src_disc -> tables, pending) out of open_slot_tables, call only that
-    // here, and push each frame where its index variable exists (open_loop,
-    // emit_range). (f-call-flow-11)
-    let unused = cx.b.declare_var(types::I64);
-    cx.open_slot_tables(lp.state_sites, lp.len, lp.src_disc, unused)?;
-    let frame = cx.ctx.slot_tables.borrow_mut().pop().expect("opened above");
+    let (tables, pending) = cx.claim_slot_tables(lp.state_sites, lp.len, lp.src_disc)?;
     let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
-    let (id, pending) = emit_chunk(cx, &lp, &frame.tables, frame.pending, iteration)?;
+    let (id, pending) = emit_chunk(cx, &lp, &tables, pending, iteration)?;
     // The chain levels at the loop's own depth are sized before any
     // chunk runs, so a chunk's ensure of one only reads it.
     *cx.ctx.closed_frame.borrow_mut() =
@@ -95,9 +85,9 @@ pub(super) fn emit_outlined(
     cx.emit_slot_truncates()?;
     let locals: SmallVec<[ValueVar; 16]> =
         cx.env.locals.iter().map(|l| l.words).collect();
-    let fbase = stack_record(cx, HEADER + frame.tables.len() + 2 * locals.len());
-    let wake = cx.b.ins().ishl_imm(cx.ctx.wake_flag, 1);
-    let ctx_word = cx.b.ins().bor(cx.ctx.init_flag, wake);
+    let fbase = stack_record(cx, HEADER + tables.len() + 2 * locals.len());
+    let ctx_word =
+        CtxWord { init: cx.ctx.init_flag, wake: cx.ctx.wake_flag }.encode(cx.b);
     let header = [
         ctx_word,
         cx.state_ptr(),
@@ -107,11 +97,11 @@ pub(super) fn emit_outlined(
         lp.len,
         lp.entered,
     ];
-    let tables = frame.tables.iter().map(|t| t.base);
-    for (i, v) in header.into_iter().chain(tables).enumerate() {
+    let bases = tables.iter().map(|t| t.base);
+    for (i, v) in header.into_iter().chain(bases).enumerate() {
         cx.b.ins().store(MemFlags::trusted(), v, fbase, word(i));
     }
-    let base = HEADER + frame.tables.len();
+    let base = HEADER + tables.len();
     for (i, vv) in locals.iter().enumerate() {
         let disc = cx.b.use_var(vv.disc);
         let payload = cx.b.use_var(vv.payload);
@@ -239,19 +229,7 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
-    // CR claude for claude: [structure] The context word's layout (bit 0 init, bit 1
-    // wake) is written out by hand at every site. It is decoded here and at
-    // lower.rs:72-79, encoded at outline.rs:91-92 and kernel.rs:349, and built at
-    // call.rs:338-347 from the init view alone, which is how callees lost the wake bit
-    // (probe: design/review-2026-10-05/repro/f-kernel-01.gx). Two bit constants beside
-    // CTX_WIRE_SLOTS (which kernel.rs:349 would also use) and a `CtxWord { init, wake
-    // }` in lower.rs with `decode(b, word)` and `encode(b)`, used at the four emit
-    // sites, would make the layout one definition. (f-call-flow-07)
-    let init_flag = b.ins().band_imm(ctx_word, 1);
-    let wake_flag = {
-        let w = b.ins().band_imm(ctx_word, 2);
-        b.ins().ushr_imm(w, 1)
-    };
+    let CtxWord { init: init_flag, wake: wake_flag } = CtxWord::decode(&mut b, ctx_word);
     let tail_scrut_stale_acc = b.declare_var(types::I64);
     let stale = b.ins().iconst(types::I64, STALE);
     b.def_var(tail_scrut_stale_acc, stale);
@@ -343,8 +321,18 @@ fn emit_range(
     let i_var = cx.b.declare_var(types::I64);
     cx.b.def_var(i_var, r.lo);
     let accs = Accs::new(cx);
-    let cap = cx.b.ins().isub(r.hi, r.lo);
-    let sink = open_sink(cx, kind, cap)?;
+    let sink = match kind {
+        // the invoker took the range's buf, on its own thread
+        SinkKind::Buf => {
+            let buf = cx.b.ins().load(types::I64, MemFlags::trusted(), r.out, word(2));
+            open_buf(cx, BufKind::Value, buf);
+            Sink::Buf(buf)
+        }
+        SinkKind::Find => {
+            let cap = cx.b.ins().isub(r.hi, r.lo);
+            open_sink(cx, kind, cap)?
+        }
+    };
     cx.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
         depth: 1,
         idx_var: i_var,

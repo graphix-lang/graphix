@@ -2274,6 +2274,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
                 })
+                .and_then(|apply| ctx.fusion.install_restored().map(|()| apply))
             }
         };
         drop(dec);

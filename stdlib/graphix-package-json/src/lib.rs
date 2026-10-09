@@ -117,7 +117,7 @@ fn to_json(value: &Value, depth: usize) -> Result<serde_json::Value, String> {
         }
         Value::DateTime(dt) => Ok(serde_json::Value::String(dt.to_rfc3339())),
         Value::Duration(d) => Ok(serde_json::Value::from(d.as_secs_f64())),
-        // CR claude for claude: [bug] A List reaches this arm as its private
+        // CR claude for eric: [bug] A List reaches this arm as its private
         // representation (cons cells of two-slot arrays). It is written as nested
         // pairs, `[0,[1,[2,[]]]]`, one nesting level per element; design/list_native.md
         // records this shape. Because of that, json::read refuses this function's own
@@ -133,6 +133,9 @@ fn to_json(value: &Value, depth: usize) -> Result<serde_json::Value, String> {
         // 2026-10-07 claude: a List is told from an array only by its type, which a fast
         // call does not see: deferred with small-pkgs-11 to a fast-call form that carries
         // the argument types. The depth bound keeps a long list from aborting meanwhile.
+        // 2026-10-09 claude: Rides on the small-pkgs-11 ruling: with the argument's
+        // static type a List writes as a flat array, which the readers' cast turns back
+        // into a List.
         Value::Array(arr) => {
             if is_struct(arr) {
                 let mut map = serde_json::Map::with_capacity(arr.len());

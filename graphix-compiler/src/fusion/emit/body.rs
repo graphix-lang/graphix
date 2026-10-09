@@ -9,7 +9,7 @@ use crate::{
     expr::{Expr, ExprId, ExprKind},
     fusion::{
         LambdaCallInfo,
-        kernel_abi::{self, AbiKind, AbiParamKind, KernelKey},
+        kernel_abi::{self, AbiKind, KernelKey},
         lowering::BuiltinCallSiteInfo,
     },
     typ::Type,
@@ -23,6 +23,7 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, Variable};
 use netidx_value::Value;
 use smallvec::SmallVec;
+use std::convert::Infallible;
 
 use super::{
     abi::{
@@ -33,7 +34,7 @@ use super::{
     flow::{emit_body_tail, emit_scope_drops},
     lower::{
         Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateWord,
-        TruncAnchor, TruncLeaf, TruncRec,
+        TruncAnchor, TruncLeaf, TruncRec, freeze_node_typ,
     },
     nodes::emit_owned_value_operand_node,
     record::{EmitConst, KernelConst, KernelType},
@@ -98,9 +99,10 @@ pub(super) fn emit_tail_rebind_jump(
         let vv = lookup_slot(env, ctx.tail.param_mark, slot, id)
             .ok_or_else(|| anyhow!("TailCall: slot `{}` not in env", slot.name))?;
         let borrowed = r.source == CompositeSource::Borrowed;
-        let (kind, disc, payload) = match slot.kind.abi() {
-            AbiParamKind::Scalar(p) => (LocalKind::Scalar(p), r.val.disc, r.val.payload),
-            AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
+        let kind = LocalKind::of_param(&slot.kind);
+        let (disc, payload) = match kind {
+            LocalKind::Scalar(_) | LocalKind::String => (r.val.disc, r.val.payload),
+            LocalKind::Composite => {
                 let payload = if borrowed {
                     let clone = ctx.helper(b, "graphix_valarray_clone")?;
                     let call = b.ins().call(clone, &[r.val.payload]);
@@ -108,20 +110,15 @@ pub(super) fn emit_tail_rebind_jump(
                 } else {
                     r.val.payload
                 };
-                (LocalKind::Composite, r.val.disc, payload)
+                (r.val.disc, payload)
             }
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                let (disc, payload) = if borrowed {
-                    let clone = ctx.helper(b, "graphix_value_clone")?;
-                    let call = b.ins().call(clone, &[r.val.disc, r.val.payload]);
-                    let rs = b.inst_results(call);
-                    (rs[0], rs[1])
-                } else {
-                    (r.val.disc, r.val.payload)
-                };
-                (LocalKind::Value, disc, payload)
+            LocalKind::Value if borrowed => {
+                let clone = ctx.helper(b, "graphix_value_clone")?;
+                let call = b.ins().call(clone, &[r.val.disc, r.val.payload]);
+                let rs = b.inst_results(call);
+                (rs[0], rs[1])
             }
-            AbiParamKind::String => (LocalKind::String, r.val.disc, r.val.payload),
+            LocalKind::Value => (r.val.disc, r.val.payload),
         };
         staged.push((vv, kind, disc, payload));
     }
@@ -309,6 +306,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Nonzero on an init view (`I64`): the `event.init()` word from wire
     /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
     /// or the slot's first iteration, as a new slot is a new instance.
+    /// The ABI kind a value of node type `t` has in the kernel: the one
+    /// classification producers and consumers share.
+    pub(crate) fn node_kind(&self, t: &Type) -> Option<AbiKind> {
+        freeze_node_typ(self.ctx, t).and_then(|t| kernel_abi::abi_kind(&t))
+    }
+
     pub fn init_flag(&self) -> ClifValue {
         self.env.slot.map_or(self.ctx.init_flag, |s| s.init)
     }
@@ -327,43 +330,43 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// No word, or a null guarded base, is the plain init flag.
     pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
         let init = self.init_flag();
-        let first = |cx: &mut BodyCx, addr: ClifValue| {
+        let Some(word) = word else { return init };
+        let Ok([v]) = word.with_addr(self, [init], |cx, addr| {
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
             let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
             let one = cx.b.ins().iconst(types::I64, 1);
             cx.b.ins().store(MemFlags::trusted(), one, addr, 0);
             let first = cx.b.ins().uextend(types::I64, first);
-            cx.b.ins().bor(init, first)
-        };
-        match word {
-            None => init,
-            Some(StateWord::Sure(addr)) => first(self, addr),
-            // CR claude for claude: [structure] This null-guarded diamond (branch on base
-            // != 0, compute from addr, merge with a fallback) is written out six times:
-            // here, open_slot_tables (body.rs:428-450), emit_slot_truncates
-            // (body.rs:580-618, no result), SlotFlags::new (scaffold.rs:484-497),
-            // SlotFlags::guarded_exact_stale (scaffold.rs:548-574) and emit_site_block
-            // (call.rs:543-560). One SelWord method would replace them: for Sure it
-            // runs f on the address, for Guarded it builds the diamond with a fallback
-            // value. With a unit form for the truncate walk, each site becomes one
-            // call. guarded_exact_stale fits because its conservative arm is pure and
-            // can be computed first as the fallback, and a TruncAnchor maps onto a
-            // SelWord. (f-scaffold-body-06)
-            Some(StateWord::Guarded { base, addr }) => {
-                let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                let word_bl = self.b.create_block();
-                let merge = self.b.create_block();
-                self.b.append_block_param(merge, types::I64);
-                self.b.ins().brif(has, word_bl, &[], merge, &[BlockArg::Value(init)]);
-                self.b.switch_to_block(word_bl);
-                self.b.seal_block(word_bl);
-                let w = first(self, addr);
-                self.b.ins().jump(merge, &[BlockArg::Value(w)]);
-                self.b.switch_to_block(merge);
-                self.b.seal_block(merge);
-                self.b.block_params(merge)[0]
-            }
+            Ok::<_, Infallible>([cx.b.ins().bor(init, first)])
+        });
+        v
+    }
+
+    /// `f`'s values behind a null guard on `base`, `fallback` when it is
+    /// null; each value has its fallback's type.
+    pub(super) fn null_guarded<const N: usize, E>(
+        &mut self,
+        base: ClifValue,
+        fallback: [ClifValue; N],
+        f: impl FnOnce(&mut Self) -> std::result::Result<[ClifValue; N], E>,
+    ) -> std::result::Result<[ClifValue; N], E> {
+        let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+        let then_bl = self.b.create_block();
+        let merge = self.b.create_block();
+        for v in fallback {
+            let t = self.b.func.dfg.value_type(v);
+            self.b.append_block_param(merge, t);
         }
+        let args = fallback.map(BlockArg::Value);
+        self.b.ins().brif(has, then_bl, &[], merge, &args);
+        self.b.switch_to_block(then_bl);
+        self.b.seal_block(then_bl);
+        let vs = f(self)?;
+        self.b.ins().jump(merge, &vs.map(BlockArg::Value));
+        self.b.switch_to_block(merge);
+        self.b.seal_block(merge);
+        let ps = self.b.block_params(merge);
+        Ok(std::array::from_fn(|i| ps[i]))
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire
@@ -418,11 +421,31 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         src_disc: ClifValue,
         idx_var: Variable,
     ) -> Result<()> {
+        let (tables, pending) = self.claim_slot_tables(sites, len, src_disc)?;
+        let depth = self.env.loop_depth + 1;
+        self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
+            depth,
+            idx_var,
+            len,
+            src_disc,
+            tables,
+            pending,
+        });
+        Ok(())
+    }
+
+    /// The claims of [`Self::open_slot_tables`] for a loop at the next
+    /// depth: its sites' tables and its truncate records.
+    pub(crate) fn claim_slot_tables(
+        &mut self,
+        sites: &[ExprId],
+        len: ClifValue,
+        src_disc: ClifValue,
+    ) -> Result<(Vec<SlotTable>, Vec<TruncRec>)> {
         debug_assert!(
             self.ctx.closed_frame.borrow().is_none(),
             "a closed frame's slot truncates were never emitted"
         );
-        let depth = self.env.loop_depth + 1;
         // Every open loop pushed a frame, so the stack is the
         // enclosing-loop chain, outermost first.
         let enclosing: SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
@@ -476,26 +499,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         });
                         let base = self.site_ptr();
                         let word_addr = self.b.ins().iadd_imm(base, off as i64);
-                        let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                        let chain_bl = self.b.create_block();
-                        let merge = self.b.create_block();
-                        self.b.append_block_param(merge, types::I64);
                         let zero = self.b.ins().iconst(types::I64, 0);
-                        self.b.ins().brif(
-                            has,
-                            chain_bl,
-                            &[],
-                            merge,
-                            &[BlockArg::Value(zero)],
-                        );
-                        self.b.switch_to_block(chain_bl);
-                        self.b.seal_block(chain_bl);
-                        let table =
-                            self.emit_slot_chain(word_addr, &enclosing, len, src_disc)?;
-                        self.b.ins().jump(merge, &[BlockArg::Value(table)]);
-                        self.b.switch_to_block(merge);
-                        self.b.seal_block(merge);
-                        let table = self.b.block_params(merge)[0];
+                        let [table] = self.null_guarded(base, [zero], |cx| {
+                            Ok::<_, anyhow::Error>([
+                                cx.emit_slot_chain(word_addr, &enclosing, len, src_disc)?
+                            ])
+                        })?;
                         Some((table, true))
                     }
                     None => None,
@@ -508,15 +517,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 None => break,
             }
         }
-        self.ctx.slot_tables.borrow_mut().push(SlotTableFrame {
-            depth,
-            idx_var,
-            len,
-            src_disc,
-            tables,
-            pending,
-        });
-        Ok(())
+        Ok((tables, pending))
     }
 
     /// Walk one directory level per entry of `dirs` (an enclosing
@@ -623,55 +624,45 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             };
             // The anchor's word address; a site anchor's base is
             // null-guarded: branch around the walk.
-            let (word0, guard) = match r.anchor {
+            let word = match r.anchor {
                 TruncAnchor::State(off) => {
                     let sp = self.state_ptr();
-                    (self.b.ins().iadd_imm(sp, off as i64), None)
+                    StateWord::Sure(self.b.ins().iadd_imm(sp, off as i64))
                 }
                 TruncAnchor::Site(off) => {
                     let base = self.site_ptr();
-                    (self.b.ins().iadd_imm(base, off as i64), Some(base))
-                }
-            };
-            let done_bl = match guard {
-                Some(base) => {
-                    let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-                    let walk = self.b.create_block();
-                    let done = self.b.create_block();
-                    self.b.ins().brif(has, walk, &[], done, &[]);
-                    self.b.switch_to_block(walk);
-                    self.b.seal_block(walk);
-                    Some(done)
-                }
-                None => None,
-            };
-            // Walk the still-open directory levels by their current
-            // ordinals, then ensure level k: a directory when
-            // k <= n_dirs, the leaf when k == n_dirs + 1.
-            let word = self.emit_dir_walk(word0, &dirs, n_dirs, leaf_ptr)?;
-            if k <= n_dirs {
-                let own = self.b.ins().iconst(types::I64, (n_dirs - (k - 1)) as i64);
-                self.b.ins().call(table_helper, &[word, len, valid, own, leaf_ptr]);
-            } else {
-                match r.leaf {
-                    TruncLeaf::Table { stride } => {
-                        let words = self.b.ins().imul_imm(len, stride as i64);
-                        let own0 = self.b.ins().iconst(types::I64, 0);
-                        self.b
-                            .ins()
-                            .call(table_helper, &[word, words, valid, own0, leaf_ptr]);
-                    }
-                    TruncLeaf::Blocks(_) => {
-                        let blocks_helper = self.helper("graphix_slot_state_blocks")?;
-                        self.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
+                    StateWord::Guarded {
+                        base,
+                        addr: self.b.ins().iadd_imm(base, off as i64),
                     }
                 }
-            }
-            if let Some(done) = done_bl {
-                self.b.ins().jump(done, &[]);
-                self.b.switch_to_block(done);
-                self.b.seal_block(done);
-            }
+            };
+            word.with_addr(self, [], |cx, word0| {
+                // Walk the still-open directory levels by their current
+                // ordinals, then ensure level k: a directory when
+                // k <= n_dirs, the leaf when k == n_dirs + 1.
+                let word = cx.emit_dir_walk(word0, &dirs, n_dirs, leaf_ptr)?;
+                if k <= n_dirs {
+                    let own = cx.b.ins().iconst(types::I64, (n_dirs - (k - 1)) as i64);
+                    cx.b.ins().call(table_helper, &[word, len, valid, own, leaf_ptr]);
+                } else {
+                    match r.leaf {
+                        TruncLeaf::Table { stride } => {
+                            let words = cx.b.ins().imul_imm(len, stride as i64);
+                            let own0 = cx.b.ins().iconst(types::I64, 0);
+                            cx.b.ins().call(
+                                table_helper,
+                                &[word, words, valid, own0, leaf_ptr],
+                            );
+                        }
+                        TruncLeaf::Blocks(_) => {
+                            let blocks_helper = cx.helper("graphix_slot_state_blocks")?;
+                            cx.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
+                        }
+                    }
+                }
+                Ok::<_, anyhow::Error>([])
+            })?;
         }
         if k > 1 {
             let mut frames = self.ctx.slot_tables.borrow_mut();

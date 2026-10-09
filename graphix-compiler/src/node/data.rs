@@ -7,9 +7,9 @@ use crate::{
     fusion::{
         self,
         emit::{
-            BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
-            emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
-            emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
+            BodyCx, CompiledExpr, FieldOf, emit_abstract_ref_node, emit_construct_node,
+            emit_field_ref_node, emit_struct_new_node, emit_struct_with_node,
+            emit_tuple_new_node, emit_variant_new_node,
         },
     },
     image::{
@@ -497,7 +497,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         let sorted_idx = self
             .sorted_field_idx
             .ok_or_else(|| anyhow!("emit_clif: struct field index unresolved"))?;
-        emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
+        emit_field_ref_node(cx, &self.source, sorted_idx, &self.typ, FieldOf::Struct)
     }
 }
 
@@ -1007,7 +1007,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         if abstract_source {
             emit_abstract_ref_node(cx, &self.source, &self.typ)
         } else {
-            emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
+            emit_field_ref_node(cx, &self.source, self.field, &self.typ, FieldOf::Tuple)
         }
     }
 }

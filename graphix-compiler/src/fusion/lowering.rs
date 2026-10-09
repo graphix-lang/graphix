@@ -416,13 +416,6 @@ pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option
     crate::stack::ensure_sufficient(|| node_const_value_inner(node))
 }
 
-// CR claude for claude: [perf] Variant and Struct nodes do not fold here. So a constant
-// map literal with a variant or struct key or value (`` {`A => 1, `B => 2} ``, `{"a" =>
-// {x: 1}}`, `` {"a" => `A} ``) is "non-constant" to emit_map_new_node, the only way a
-// map literal emits, and its whole region node-walks. `|k: i64| #[native] (k, {`A => 1,
-// `B => 2})` is refused with "map literal with non-constant entries", while the same
-// map with string keys fuses. Fold Variant (its tag, or `[tag, args..]`) and Struct
-// (`[[name, v]..]` in `names` order) the way their updates build them. (c-data-map-07)
 fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
@@ -433,6 +426,25 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
             v => v,
         }),
         NodeView::Tuple(t) => const_valarray(&t.n),
+        NodeView::Variant(v) if v.n.is_empty() => Some(Value::String(v.tag.clone())),
+        NodeView::Variant(v) => {
+            let mut vals: LPooled<Vec<Value>> = LPooled::take();
+            vals.push(Value::String(v.tag.clone()));
+            for c in v.n.iter() {
+                vals.push(node_const_value(c)?);
+            }
+            Some(Value::Array(netidx_value::ValArray::from_iter_exact(vals.drain(..))))
+        }
+        NodeView::Struct(st) => {
+            let mut fields: LPooled<Vec<Value>> = LPooled::take();
+            for (name, c) in st.names.iter().zip(st.n.iter()) {
+                let pair = [Value::String(name.clone()), node_const_value(c)?];
+                fields.push(Value::Array(netidx_value::ValArray::from_iter_exact(
+                    pair.into_iter(),
+                )));
+            }
+            Some(Value::Array(netidx_value::ValArray::from_iter_exact(fields.drain(..))))
+        }
         NodeView::Map(m) => {
             let (keys, values) = m.entries();
             const_map(keys, values)
@@ -464,6 +476,17 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
     Some(Value::Map(map))
 }
 
+/// Whether a value of an abstract type, or of `Any`, can pass through a
+/// kernel built from `n`, its callees included: a core-trait impl may
+/// run on it.
+pub(crate) fn meets_abstract<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
+    let mut meets = false;
+    fusion::for_each_reachable_node(n, &mut |x| {
+        meets = meets || x.typ().holds_abstract(env)
+    });
+    meets
+}
+
 /// Expand named types to their definitions through composites so
 /// `abi_kind`/`freeze_for_abi` can classify a shape env-free. Abstract
 /// types are leaves. A recursive expansion is left as-is (the kernel
@@ -485,6 +508,36 @@ pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
 /// No kernel encodes a type that unfolds past this; resolving further
 /// is work the freeze would discard.
 pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
+
+/// Whether `t` unfolds, as a tree, past `cap` nodes. A shared part
+/// counts at every place it unfolds but is walked once, so the check is
+/// linear in the type's allocations however much it shares.
+pub(crate) fn unfolds_past(t: &Type, cap: u32) -> bool {
+    fn size(t: &Type, memo: &mut ahash::AHashMap<crate::typ::NormKey, u64>) -> u64 {
+        crate::stack::ensure_sufficient(|| {
+            if let Type::TVar(tv) = t {
+                return tv.binding().map_or(1, |b| size(&b, memo));
+            }
+            let key = crate::typ::norm_key(t);
+            if let Some(n) = key.as_ref().and_then(|k| memo.get(k)) {
+                return *n;
+            }
+            let mut n = 1u64;
+            match t {
+                Type::Fn(ft) => {
+                    ft.for_each_part(&mut |c, _| n = n.saturating_add(size(c, memo)))
+                }
+                t => t.for_each_child(&mut |c| n = n.saturating_add(size(c, memo))),
+            }
+            if let Some(k) = key {
+                memo.insert(k, n);
+            }
+            n
+        })
+    }
+    let mut memo: LPooled<ahash::AHashMap<crate::typ::NormKey, u64>> = LPooled::take();
+    size(t, &mut memo) > cap as u64
+}
 
 /// State of one top-level resolve. Memo entries are keyed by the
 /// expansion plus the `Seen` keys it consulted, so an entry is valid on

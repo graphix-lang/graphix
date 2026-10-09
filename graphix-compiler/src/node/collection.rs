@@ -1599,7 +1599,7 @@ impl Flavor {
 
     /// Append a flat_map callback's result: its elements when it is this
     /// flavor's collection, else itself.
-    fn extend(self, elems: &mut LPooled<Vec<Value>>, v: &Value) {
+    pub(crate) fn extend(self, elems: &mut LPooled<Vec<Value>>, v: &Value) {
         // XCR claude for eric: [bug] flat_map chooses between splicing and pushing by
         // looking at the value, but its callback may return a bare 'b (`['b,
         // Array<'b>]`, `['b, List<'b>]`). A tuple, struct, payload variant or list 'b

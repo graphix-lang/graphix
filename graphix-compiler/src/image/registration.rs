@@ -34,7 +34,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 40;
+pub const REGISTRATION_FORMAT: u8 = 41;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -418,6 +418,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         if image.len() - bytes.remaining() != heap_at {
             return Err(PackError::InvalidFormat);
         }
+        self.fusion.install_restored().map_err(|e| {
+            log::warn!("installing the image's kernels: {e:#}");
+            PackError::InvalidFormat
+        })?;
         Ok((shared, scope, program))
     }
 }

@@ -21,6 +21,7 @@ use crate::{
     fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
         array::{array_index, array_slice, bytes_index},
+        collection::Flavor,
         error::{report_failure, report_ignored, unhandled_msg},
         map::map_get,
         op::{BinOp, arith},
@@ -31,7 +32,7 @@ use poolshark::local::LPooled;
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     panic::AssertUnwindSafe,
 };
 
@@ -110,18 +111,9 @@ impl_helper_arg! {
     i8 => &[AbiTy::I8s];
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
-    // CR claude for claude: [structure] A borrowing helper takes the same owning TagValue
-    // as a consuming one. So whether a helper borrows or consumes is recorded only in
-    // doc comments and in the `std::mem::forget` that each of about twenty readers must
-    // remember. One missing forget is a double free on every fused use. A panic inside
-    // a reader (graphix_value_into_array_borrowed, 678) drops the caller's value during
-    // the unwind. The comment at 615-617 already misstates which helpers consume: eq,
-    // map_ref, array_slice, abstract_wrap, buf_push_value, extend_from_list,
-    // list_to_valarray, cmap_to_pairs and into_array consume too. Give borrowed
-    // parameters a type with the same two I64 slots and no Drop
-    // (`ManuallyDrop<TagValue>` with a HelperArg impl), keep TagValue for consumed
-    // ones, and delete the forgets and that comment. (f-helpers-03)
     TagValue => &[AbiTy::I64, AbiTy::I64];
+    // a borrowed value: the helper reads it and never drops it
+    ManuallyDrop<TagValue> => &[AbiTy::I64, AbiTy::I64];
     ChildBlock => &[AbiTy::I64, AbiTy::I64];
 }
 
@@ -340,10 +332,8 @@ unsafe fn graphix_value_buf_push_array(buf: *mut LPooled<Vec<Value>>, inner: u64
 
 /// Extend `buf` with the elements of an owned ValArray, then drop it.
 unsafe fn graphix_value_buf_extend_from_array(buf: *mut LPooled<Vec<Value>>, inner: u64) {
-    unsafe {
-        let owned = va_owned(inner);
-        (*buf).extend(owned.iter().cloned());
-    }
+    let v = Value::Array(unsafe { va_owned(inner) });
+    Flavor::Array.extend(unsafe { &mut *buf }, &v)
 }
 
 /// Push a clone of borrowed ValArray bits; the caller keeps its ref.
@@ -352,9 +342,8 @@ unsafe fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, s
 }
 
 /// Push a clone of a borrowed Value; the caller keeps its ref.
-unsafe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: TagValue) {
+unsafe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: ManuallyDrop<TagValue>) {
     let dup = v.with_value(|v| v.clone());
-    std::mem::forget(v);
     unsafe { (*buf).push(dup) }
 }
 
@@ -403,30 +392,13 @@ unsafe fn graphix_valarray_drop(bits: u64) {
     drop(unsafe { va_owned(bits) })
 }
 
-/// Extend `buf` with a list value's elements, consuming it; a non-list
-/// value pushes as one element, as `ListFlatMap::finish` does.
-// CR claude for claude: [structure] The doc above names `ListFlatMap::finish`, which
-// exists nowhere. The rule is Flavor::extend (node/collection.rs:1639): this helper
-// restates its List arm and graphix_value_buf_extend_from_array (304) restates its
-// Array arm, so any change to how flat_map flattens must be made in two places to keep
-// the engines agreeing. Have Flavor::extend take the Value by ownership, and call it
-// from MapQBase::finish (node/collection.rs:705) and from both helpers.
-// graphix_value_into_array's doc (662) is also stale: it says a tainted Null reaches
-// that helper, but its only caller sends tainted operands to the bad path
-// (emit/flow.rs:672-674), so the shape check only guards against codegen bugs.
-// (f-helpers-09)
+/// Extend `buf` with a list value's elements, consuming it, as the
+/// node-walk's `flat_map` does (`Flavor::extend`).
 unsafe fn graphix_value_buf_extend_from_list(
     buf: *mut LPooled<Vec<Value>>,
     tv: TagValue,
 ) {
-    use crate::node::list;
-    let v = tv.value();
-    let buf = unsafe { &mut *buf };
-    if list::is_list(&v) {
-        buf.extend(list::Iter::new(v));
-    } else {
-        buf.push(v);
-    }
+    Flavor::List.extend(unsafe { &mut *buf }, &tv.value())
 }
 
 }
@@ -499,7 +471,7 @@ unsafe fn graphix_swallowed_error(
     payload: u64,
 ) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
-    let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
+    let tv = ManuallyDrop::new(unsafe { crate::TagValue::from_raw(disc, payload) });
     // SAFETY: the kernel's interned string outlives this invocation.
     let site = unsafe { &*site };
     tv.with_value(|v| {
@@ -511,7 +483,6 @@ unsafe fn graphix_swallowed_error(
             }
         }
     });
-    std::mem::forget(tv);
 }
 
 /// Raise a `?` site's error onto the invocation's delivery queue
@@ -519,9 +490,8 @@ unsafe fn graphix_swallowed_error(
 /// queue takes a clone. `FusedKernel::update` drains the queue in order.
 unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
-    let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
+    let tv = ManuallyDrop::new(unsafe { crate::TagValue::from_raw(disc, payload) });
     let v = tv.value_cloned();
-    std::mem::forget(tv);
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const crate::node::error::QopSite) };
     QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
@@ -698,23 +668,21 @@ unsafe fn fast_dispatch(
     tv
 }
 
-// Value-shaped helpers take and return `Value` by value in two registers.
-// Readers `mem::forget` their input so the caller keeps its ref; only the
-// consuming helpers (drop, checked arith, index) take ownership.
+// Value-shaped helpers take and return `Value` by value in two registers:
+// a helper that borrows a value takes `ManuallyDrop<TagValue>`, one that
+// consumes it a `TagValue`.
 
 /// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
 /// placeholder or short array reads as the default.
 fn variant_payload_read<T: Default>(
-    v: TagValue,
+    v: &TagValue,
     payload_idx: usize,
     read: impl Fn(&Value) -> T,
 ) -> T {
-    let r = v.with_value(|v| match v {
+    v.with_value(|v| match v {
         Value::Array(a) => a.get(payload_idx + 1).map(&read).unwrap_or_default(),
         _ => T::default(),
-    });
-    std::mem::forget(v);
-    r
+    })
 }
 
 /// The j-th spine cell of a list value; `None` on a short or malformed chain.
@@ -730,11 +698,24 @@ fn list_walk(v: &Value, j: usize) -> Option<&Value> {
     Some(cur)
 }
 
+/// `l op r` over operands with no register form, borrowed: unchecked, a
+/// failure is bottom as the node-walk's; checked, the catchable
+/// `ArithError` value.
+fn value_arith(op: BinOp, checked: bool, l: TagValue, r: TagValue) -> TagValue {
+    let (l, r) = (ManuallyDrop::new(l), ManuallyDrop::new(r));
+    match l.with_value(|a| r.with_value(|b| arith(op, checked, a.clone(), b.clone()))) {
+        Value::Error(_) if !checked => {
+            TagValue::tagged(Value::Null, crate::Tag::FRESH_BOTTOM)
+        }
+        v => TagValue::fired(v),
+    }
+}
+
 jit_helpers! { registry = value_helpers;
 
-/// Unwrap an owned `Value::Array` into owned ValArray bits. The shape
-/// check stays: a tainted `Null` placeholder is reachable here and its
-/// zero payload must never be read as array bits.
+/// Unwrap an owned `Value::Array` into owned ValArray bits. Its caller
+/// sends a tainted operand elsewhere; the shape check only stops a
+/// codegen bug from reading another value's payload as array bits.
 safe fn graphix_value_into_array(v: TagValue) -> u64 {
     match v.value() {
         Value::Array(a) => va_bits(a),
@@ -744,14 +725,13 @@ safe fn graphix_value_into_array(v: TagValue) -> u64 {
 
 /// Borrowed form of [`graphix_value_into_array`]: owned bits out, the
 /// caller keeps its Value.
-safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
+safe fn graphix_value_into_array_borrowed(v: ManuallyDrop<TagValue>) -> u64 {
     let bits = v.with_value(|v| match v {
         Value::Array(a) => va_bits(a.clone()),
         v => {
             panic!("graphix_value_into_array_borrowed: expected Value::Array, got {v:?}")
         }
     });
-    std::mem::forget(v);
     bits
 }
 
@@ -759,20 +739,18 @@ safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
 /// sentinel is rejected before an invalid `Value` materializes.
 safe fn graphix_value_drop(tv: TagValue) {
     // out of drop's reach while the assert may unwind: a sentinel is no Value
-    let tv = std::mem::ManuallyDrop::new(tv);
+    let tv = ManuallyDrop::new(tv);
     assert!(
         !tv.is_sentinel(),
         "graphix_value_drop: zero discriminant — JIT codegen bug \
          (a pending sentinel leaked into a drop)"
     );
-    drop(std::mem::ManuallyDrop::into_inner(tv))
+    drop(ManuallyDrop::into_inner(tv))
 }
 
 /// Clone a borrowed Value (tag preserved); the caller keeps its ref.
-safe fn graphix_value_clone(tv: TagValue) -> TagValue {
-    let dup = tv.clone();
-    std::mem::forget(tv);
-    dup
+safe fn graphix_value_clone(tv: ManuallyDrop<TagValue>) -> TagValue {
+    TagValue::clone(&tv)
 }
 
 /// Clone a `Value` from a kernel's value-constants table slot.
@@ -799,88 +777,103 @@ unsafe fn graphix_abstract_wrap(
     TagValue::fired(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
-safe fn graphix_abstract_get_arcstr(tv: TagValue) -> u64 {
+safe fn graphix_abstract_get_arcstr(tv: ManuallyDrop<TagValue>) -> u64 {
     let r = tv.with_value(|v| slot_arcstr(crate::abstract_value::payload(v)));
-    std::mem::forget(tv);
     arcstr_bits(r)
 }
 
-safe fn graphix_abstract_get_array(tv: TagValue) -> u64 {
+safe fn graphix_abstract_get_array(tv: ManuallyDrop<TagValue>) -> u64 {
     let r = tv.with_value(|v| va_bits(slot_array(crate::abstract_value::payload(v)).clone()));
-    std::mem::forget(tv);
     r
 }
 
-safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
+safe fn graphix_abstract_get_value(tv: ManuallyDrop<TagValue>) -> TagValue {
     let r = tv.with_value(|v| {
         TagValue::fired(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
     });
-    std::mem::forget(tv);
     r
 }
 
-// Checked arithmetic yields the catchable `ArithError` value, never
-// bottom; consumes both operands.
+safe fn graphix_value_add(l: TagValue, r: TagValue) -> TagValue {
+    value_arith(BinOp::Add, false, l, r)
+}
+
+safe fn graphix_value_sub(l: TagValue, r: TagValue) -> TagValue {
+    value_arith(BinOp::Sub, false, l, r)
+}
+
+safe fn graphix_value_mul(l: TagValue, r: TagValue) -> TagValue {
+    value_arith(BinOp::Mul, false, l, r)
+}
+
+safe fn graphix_value_div(l: TagValue, r: TagValue) -> TagValue {
+    value_arith(BinOp::Div, false, l, r)
+}
+
+safe fn graphix_value_rem(l: TagValue, r: TagValue) -> TagValue {
+    value_arith(BinOp::Mod, false, l, r)
+}
 
 safe fn graphix_value_checked_add(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::fired(arith(BinOp::Add, true, l.value(), r.value()))
+    value_arith(BinOp::Add, true, l, r)
 }
 
 safe fn graphix_value_checked_sub(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::fired(arith(BinOp::Sub, true, l.value(), r.value()))
+    value_arith(BinOp::Sub, true, l, r)
 }
 
 safe fn graphix_value_checked_mul(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::fired(arith(BinOp::Mul, true, l.value(), r.value()))
+    value_arith(BinOp::Mul, true, l, r)
 }
 
 safe fn graphix_value_checked_div(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::fired(arith(BinOp::Div, true, l.value(), r.value()))
+    value_arith(BinOp::Div, true, l, r)
 }
 
 safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::fired(arith(BinOp::Mod, true, l.value(), r.value()))
+    value_arith(BinOp::Mod, true, l, r)
 }
 
-/// Value equality; consumes both operands.
-// CR claude for claude: [perf] graphix_value_eq, graphix_bytes_index (799),
-// graphix_map_ref (808) and graphix_array_slice (814) consume their operands. So emit/
-// first clones every borrowed operand (emit_owned_value_operand_node at
-// emit/nodes.rs:375, via graphix_value_clone or graphix_valarray_clone at
-// emit/body.rs:859), and the helper then drops it. That is two atomic refcount updates
-// per borrowed operand per call, for a read the node-walk does on borrowed values
-// (node/op.rs:267). Inside a fused loop such as `array::filter(xs, |x| x == k)` the
-// CLIF clones both x and k per element, and in a forked loop every worker updates the
-// same `k`'s count. Make these helpers borrow, as graphix_valarray_index does, and
-// after the call drop only owned temporaries (emit_accessor_source_drop).
-// (f-helpers-04)
-safe fn graphix_value_eq(l: TagValue, r: TagValue) -> u8 {
-    guard_panic(0, || (l.value() == r.value()) as u8)
+/// `l` against `r` in the total order of values: -1, 0 or 1. Borrows
+/// both operands.
+safe fn graphix_value_cmp(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> i8 {
+    guard_panic(0, || l.with_value(|a| r.with_value(|b| a.cmp(b) as i8)))
+}
+
+/// Value equality; borrows both operands.
+safe fn graphix_value_eq(l: ManuallyDrop<TagValue>, r: ManuallyDrop<TagValue>) -> u8 {
+    guard_panic(0, || l.with_value(|a| r.with_value(|b| (a == b) as u8)))
 }
 
 /// `bytes[i]`: the `u8` or the index error, via the shared
-/// [`bytes_index`]. Consumes `v`.
-safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
-    TagValue::fired(match v.value() {
-        Value::Bytes(b) => bytes_index(&b, i),
+/// [`bytes_index`]. Borrows `v`.
+safe fn graphix_bytes_index(v: ManuallyDrop<TagValue>, i: i64) -> TagValue {
+    TagValue::fired(v.with_value(|v| match v {
+        Value::Bytes(b) => bytes_index(b, i),
         _ => Value::error("ArrayIndexError: expected bytes"),
-    })
+    }))
 }
 
 /// `m{key}`: the value or the not-found error, via the shared
-/// [`map_get`]. Consumes both operands.
-safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
+/// [`map_get`]. Borrows both operands.
+safe fn graphix_map_ref(map: ManuallyDrop<TagValue>, key: ManuallyDrop<TagValue>) -> TagValue {
     guard_panic(TagValue::phantom(), || {
-        TagValue::fired(map_get(&map.value(), &key.value()))
+        TagValue::fired(map.with_value(|m| key.with_value(|k| map_get(m, k))))
     })
 }
 
 /// `a[i..j]` over an array or bytes: `flags` bit0 = `start` present,
-/// bit1 = `end` present. Consumes `src`.
-safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> TagValue {
+/// bit1 = `end` present. Borrows `src`.
+safe fn graphix_array_slice(src: ManuallyDrop<TagValue>, start: i64, end: i64, flags: i64) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
-    TagValue::fired(array_slice(&src.value(), s, e))
+    TagValue::fired(src.with_value(|v| array_slice(v, s, e)))
+}
+
+/// Whether `v` is the string `*lit`. Borrows `v`.
+unsafe fn graphix_value_is_str(v: ManuallyDrop<TagValue>, lit: *const arcstr::ArcStr) -> u8 {
+    let lit = unsafe { &*lit };
+    v.with_value(|v| matches!(v, Value::String(s) if s == lit)) as u8
 }
 
 /// Borrowed test of a variant's tag AND arity against `expected`. As
@@ -888,7 +881,7 @@ safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> 
 /// (`String(tag)` at 0, else an array of arity + 1 with the tag at
 /// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
 unsafe fn graphix_variant_tag_eq(
-    v: TagValue,
+    v: ManuallyDrop<TagValue>,
     expected: *const arcstr::ArcStr,
     arity: usize,
 ) -> u8 {
@@ -905,24 +898,22 @@ unsafe fn graphix_variant_tag_eq(
             _ => 0,
         }
     });
-    std::mem::forget(v);
     r
 }
 
 /// Owned clone of a variant payload slot as a Value; a shape mismatch
 /// yields the drop-safe `Value::Null`.
-safe fn graphix_variant_payload_value(v: TagValue, payload_idx: usize) -> TagValue {
+safe fn graphix_variant_payload_value(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| match v {
         Value::Array(a) => a.get(payload_idx + 1).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     });
-    std::mem::forget(v);
     TagValue::fired(r)
 }
 
 /// Owned `ArcStr` clone of a string variant payload slot; mismatch
 /// yields the static empty string.
-safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
+safe fn graphix_variant_payload_string(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
             Some(Value::String(s)) => s.clone(),
@@ -930,7 +921,6 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
         },
         _ => arcstr::ArcStr::new(),
     });
-    std::mem::forget(v);
     arcstr_bits(r)
 }
 
@@ -942,7 +932,7 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
 /// The result aliases the parent's slot: it is valid while the parent
 /// variant is alive and is never dropped or passed to a consuming
 /// helper.
-unsafe fn graphix_variant_payload_borrowed(v: TagValue, payload_idx: usize) -> TagValue {
+unsafe fn graphix_variant_payload_borrowed(v: ManuallyDrop<TagValue>, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
             // SAFETY: a bitwise alias of the slot; the kernel never drops
@@ -952,35 +942,32 @@ unsafe fn graphix_variant_payload_borrowed(v: TagValue, payload_idx: usize) -> T
         },
         _ => TagValue::fired(Value::Null),
     });
-    std::mem::forget(v);
     r
 }
 
 /// Owned `ArcStr` clone of a nullable's string payload; null yields the
 /// static empty string.
-safe fn graphix_nullable_string(v: TagValue) -> u64 {
+safe fn graphix_nullable_string(v: ManuallyDrop<TagValue>) -> u64 {
     let r = v.with_value(|v| match v {
         Value::String(s) => s.clone(),
         _ => arcstr::ArcStr::new(),
     });
-    std::mem::forget(v);
     arcstr_bits(r)
 }
 
 /// Owned `ValArray` clone of a nullable's composite payload; null
 /// yields the empty array.
-safe fn graphix_nullable_array(v: TagValue) -> u64 {
+safe fn graphix_nullable_array(v: ManuallyDrop<TagValue>) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => a.clone(),
         _ => EMPTY_ARR.clone(),
     });
-    std::mem::forget(v);
     va_bits(r)
 }
 
 /// List-pattern structure test: `k` cells exist; `exact` also requires
 /// nil after them. A non-list fails the walk.
-safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
+safe fn graphix_list_match(v: ManuallyDrop<TagValue>, k: usize, exact: u8) -> u8 {
     use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, k) {
         None => 0,
@@ -992,58 +979,53 @@ safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
             }
         }
     });
-    std::mem::forget(v);
     r
 }
 
 /// Owned clone of the j-th head of a list as a Value; `Null` on a short chain.
-safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
+safe fn graphix_list_get_value(v: ManuallyDrop<TagValue>, j: usize) -> TagValue {
     use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((h, _)) => h.clone(),
         None => Value::Null,
     });
-    std::mem::forget(v);
     TagValue::fired(r)
 }
 
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
-safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
+safe fn graphix_list_get_array(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((Value::Array(a), _)) => a.clone(),
         _ => EMPTY_ARR.clone(),
     });
-    std::mem::forget(v);
     va_bits(r)
 }
 
 /// Owned `ArcStr` of the j-th head; the empty string on mismatch.
-safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
+safe fn graphix_list_get_string(v: ManuallyDrop<TagValue>, j: usize) -> u64 {
     let r = v.with_value(|v| {
         match list_walk(v, j).and_then(|c| crate::node::list::split(c)) {
             Some((Value::String(s), _)) => s.clone(),
             _ => arcstr::ArcStr::new(),
         }
     });
-    std::mem::forget(v);
     arcstr_bits(r)
 }
 
 /// Owned clone of the k-th tail (the `[<h, rest..>]` rest bind), O(1)
 /// shared structure; `Null` on a short chain.
-safe fn graphix_list_tail(v: TagValue, k: usize) -> TagValue {
+safe fn graphix_list_tail(v: ManuallyDrop<TagValue>, k: usize) -> TagValue {
     let r = v.with_value(|v| match list_walk(v, k) {
         Some(cur) => cur.clone(),
         None => Value::Null,
     });
-    std::mem::forget(v);
     TagValue::fired(r)
 }
 
 /// Owned `ValArray` bits of a composite variant payload slot; the
 /// empty array on mismatch.
-safe fn graphix_variant_payload_array(v: TagValue, payload_idx: usize) -> u64 {
+safe fn graphix_variant_payload_array(v: ManuallyDrop<TagValue>, payload_idx: usize) -> u64 {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
             Some(Value::Array(inner)) => inner.clone(),
@@ -1051,7 +1033,6 @@ safe fn graphix_variant_payload_array(v: TagValue, payload_idx: usize) -> u64 {
         },
         _ => EMPTY_ARR.clone(),
     });
-    std::mem::forget(v);
     va_bits(r)
 }
 
@@ -1081,7 +1062,7 @@ unsafe fn graphix_arcstr_drop(s: u64) {
 
 /// Clone a borrowed ArcStr; the caller keeps its ref.
 unsafe fn graphix_arcstr_clone(s: u64) -> u64 {
-    let s = std::mem::ManuallyDrop::new(unsafe { arcstr_from_bits(s, "graphix_arcstr_clone") });
+    let s = ManuallyDrop::new(unsafe { arcstr_from_bits(s, "graphix_arcstr_clone") });
     arcstr_bits((*s).clone())
 }
 
@@ -1177,11 +1158,8 @@ unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
 
 /// Borrowed read of an abstract value's payload (`.0`); a non-abstract
 /// value reads as the shape's placeholder.
-fn abstract_payload_read<T: Default>(tv: TagValue, f: fn(&Value) -> T) -> T {
-    let r =
-        tv.with_value(|v| crate::abstract_value::payload(v).map(f).unwrap_or_default());
-    std::mem::forget(tv);
-    r
+fn abstract_payload_read<T: Default>(tv: &TagValue, f: fn(&Value) -> T) -> T {
+    tv.with_value(|v| crate::abstract_value::payload(v).map(f).unwrap_or_default())
 }
 
 macro_rules! slot_readers {
@@ -1452,15 +1430,15 @@ macro_rules! prim_family {
     };
     (variant_payload $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(safe fn $name(v: TagValue, payload_idx: usize) -> $t {
-                variant_payload_read(v, payload_idx, $read)
+            $(safe fn $name(v: ManuallyDrop<TagValue>, payload_idx: usize) -> $t {
+                variant_payload_read(&v, payload_idx, $read)
             })*
         }
     };
     (abstract_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
         jit_helpers! { registry = $registry;
-            $(safe fn $name(tv: TagValue) -> $t {
-                abstract_payload_read(tv, $read)
+            $(safe fn $name(tv: ManuallyDrop<TagValue>) -> $t {
+                abstract_payload_read(&tv, $read)
             })*
         }
     };
@@ -1868,6 +1846,12 @@ pub(crate) fn set_kernel_panic(p: Box<dyn Any + Send>) {
 /// Append raises a chunk run queued to this thread's delivery queue.
 pub(crate) fn queue_qop_raises(raises: &mut LPooled<Vec<QopRaise>>) {
     QOP_RAISES.with(|q| q.borrow_mut().extend(raises.drain(..)))
+}
+
+/// A chunk's value buf of capacity `cap`, taken on the thread that will
+/// finalize or discard it, so a pool's take and give stay on one thread.
+pub(crate) fn value_buf_new(cap: usize) -> u64 {
+    buf_take(cap) as u64
 }
 
 /// Drop a chunk's value buf whose slots are not taken.

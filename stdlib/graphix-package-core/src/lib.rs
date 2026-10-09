@@ -449,7 +449,7 @@ pub fn map_key(k: &Value) -> String {
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
-// CR claude for claude: [bug] is_struct decides from the value alone, but a struct, an
+// CR claude for eric: [bug] is_struct decides from the value alone, but a struct, an
 // Array<(string, T)> and an array of one-payload variants share one encoding. So json
 // and toml write_str/write_bytes and hbs::render write one type as an object or as an
 // array depending on its contents. `[("a", 1), ("b", 2)]` writes `{"a":1,"b":2}` and
@@ -464,6 +464,13 @@ pub fn map_key(k: &Value) -> String {
 // carries only the resolved return type, so this wants a fast-call form carrying the
 // argument types, in the emitter as well as the node-walk. Deferred to the fusion
 // batch.
+// 2026-10-09 claude: Needs a ruling: writing by static type changes output users see.
+// Proposal: the writers take 'a (not Any) and, as the readers do with their return type,
+// read the argument's type in typecheck1; a fast call carries the site's argument types
+// beside its return type (TypedFastFn gains the resolved FnType). Then a struct writes as
+// an object, an Array<(string, T)> as an array of pairs whatever its contents, a List as
+// a flat array (x-stack-06), and toml refuses by type, not by content. Cost: one
+// fast-call signature change across the typed builtins.
 pub fn is_struct(arr: &ValArray) -> bool {
     if arr.is_empty() {
         return false;

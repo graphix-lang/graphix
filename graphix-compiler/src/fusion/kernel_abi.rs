@@ -14,6 +14,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
+use enumflags2::BitFlags;
 use netidx_core::pack::{Pack as PackTrait, PackError};
 use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
@@ -211,7 +212,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             return Some(AbiKind::Value);
         }
         if let Type::Primitive(p) = resolved {
-            if p.contains(Typ::Null) && p.iter().count() == 2 {
+            if nullable_prim(p).is_some() {
                 return Some(AbiKind::Nullable);
             }
             if let Some(prim) = PrimType::from_type(resolved) {
@@ -236,6 +237,17 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
         }
         None
     }
+}
+
+/// The member `T` of a `T | null` primitive union when `T` has a
+/// register or string form: such a union is [`AbiKind::Nullable`], any
+/// other a plain two-word Value.
+fn nullable_prim(p: &BitFlags<Typ>) -> Option<Typ> {
+    if !p.contains(Typ::Null) || p.iter().count() != 2 {
+        return None;
+    }
+    let other = p.iter().find(|t| *t != Typ::Null)?;
+    (other == Typ::String || PrimType::from_typ(other).is_some()).then_some(other)
 }
 
 /// The success member of an option (`[T, null]`) or result (`[T, Error]`)
@@ -267,9 +279,7 @@ fn option_result_success(members: &[Type]) -> Option<&Type> {
 pub fn nullable_error_marked(t: &Type) -> Option<bool> {
     let resolved = t.deref_cloned()?;
     match &resolved {
-        Type::Primitive(p) if p.contains(Typ::Null) && p.iter().count() == 2 => {
-            Some(false)
-        }
+        Type::Primitive(p) => nullable_prim(p).map(|_| false),
         Type::Set(members) => {
             option_result_success(members)?;
             let is_null = |m: &Type| is_single_prim(m, Typ::Null);
@@ -389,27 +399,6 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     || is_single_prim(resolved, Typ::Bytes)
                 {
                     return Ok(Type::Primitive(*p));
-                }
-                // CR claude for claude: [perf] A two-member primitive union with null
-                // freezes only when the other member is a string or a register scalar.
-                // So [duration, null] (and datetime, bytes, decimal or a varint with
-                // null) is Unsupported, while the wider [duration, i64, null] freezes
-                // as an opaque Value at line 405. Struct fields freeze one at a time,
-                // so a record with one such field de-fuses every region that carries
-                // it, even one that never reads the field, and #[native] refuses it: a
-                // map of |r| r.n * 2 over Array<{n: i64, t: [duration, null]}> fails,
-                // and the same map with t: [duration, i64, null] fuses. abi_kind (214),
-                // nullable_error_marked (270) and nullable_inner (588) repeat this
-                // test, each with its own idea of the inner type. One predicate should
-                // call such a union Nullable only when the inner member has a register
-                // or string form, and AbiKind::Value otherwise. probe:
-                // design/review-2026-10-05/repro/f-kernel-04.gx (f-kernel-04)
-                if p.contains(Typ::Null) && p.iter().count() == 2 {
-                    let other = p.iter().find(|f| *f != Typ::Null).ok_or(Unsupported)?;
-                    if other == Typ::String || PrimType::from_typ(other).is_some() {
-                        return Ok(Type::Primitive(*p));
-                    }
-                    return Err(Unsupported);
                 }
                 // A primitive with no register form (a varint, a decimal,
                 // an error) and a union of several are one two-word Value.
@@ -599,13 +588,7 @@ pub fn nullable_inner(t: &Type) -> Option<Type> {
     {
         let resolved = resolved.as_ref()?;
         match resolved {
-            Type::Primitive(p) if p.contains(Typ::Null) && p.iter().count() == 2 => {
-                let other = p.iter().find(|f| *f != Typ::Null)?;
-                if other == Typ::String {
-                    return Some(Type::Primitive(Typ::String.into()));
-                }
-                PrimType::from_typ(other).map(|pt| Type::Primitive(pt.to_typ().into()))
-            }
+            Type::Primitive(p) => nullable_prim(p).map(|t| Type::Primitive(t.into())),
             Type::Set(members) => {
                 let succ = option_result_success(members)?;
                 freeze_for_abi(succ)
@@ -691,22 +674,6 @@ pub enum ParamKind {
     },
 }
 
-impl ParamKind {
-    /// The wire-classification this parameter binds under.
-    pub fn abi(&self) -> AbiParamKind {
-        match self {
-            ParamKind::Scalar(p) => AbiParamKind::Scalar(*p),
-            ParamKind::Array { .. } => AbiParamKind::Array,
-            ParamKind::Tuple { .. } => AbiParamKind::Tuple,
-            ParamKind::Struct { .. } => AbiParamKind::Struct,
-            ParamKind::Variant { .. } => AbiParamKind::Variant,
-            ParamKind::Nullable { .. } => AbiParamKind::Nullable,
-            ParamKind::String => AbiParamKind::String,
-            ParamKind::Value { .. } => AbiParamKind::Value,
-        }
-    }
-}
-
 /// The [`PrimType`] of a scalar [`Value`]; variable-width integers
 /// collapse to their fixed-width form. `None` for a non-scalar.
 pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
@@ -726,35 +693,12 @@ pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
     })
 }
 
-/// The kind of a kernel parameter at the wire. Every kind is a two-word
-/// `(disc, payload)` pair in the netidx `Value` encoding (TAINT/STALE in
-/// the disc's tag byte); the kinds differ in entry binding and body
-/// emission, not on the wire.
-#[derive(Debug, Clone, Copy)]
-// CR claude for claude: [structure] AbiParamKind is ParamKind with the payloads stripped,
-// kept in step by hand through ParamKind::abi() (line 682). Its three users
-// (emit/jit.rs:637, emit/body.rs:100, emit/lower.rs:103) only turn it into a LocalKind
-// or a payload CLIF type. Delete it and give AbiParamDesc the &ParamKind (matching
-// ParamKind::Array { .. } and so on), or map ParamKind straight to LocalKind as
-// LocalKind::of does for AbiKind, so a new parameter kind is added in one place.
-// (f-kernel-08)
-pub enum AbiParamKind {
-    Scalar(PrimType),
-    Array,
-    Tuple,
-    Struct,
-    Variant,
-    Nullable,
-    String,
-    Value,
-}
-
 /// One kernel parameter at the ABI boundary. `wire_slot` is the first
 /// of its two `u64` slots.
 #[derive(Debug, Clone, Copy)]
 pub struct AbiParamDesc<'a> {
     pub name: &'a ArcStr,
-    pub kind: AbiParamKind,
+    pub kind: &'a ParamKind,
     pub wire_slot: usize,
     /// The source binding, `None` for synthetic inputs. `Ref` emission
     /// resolves by it first, since basenames alias under shadowing.
@@ -869,13 +813,23 @@ pub struct SiteLeaf {
 /// claim nothing. Every consumer null-guards it.
 pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
+/// The context word's init bit (slot 0).
+pub(crate) const CTX_INIT: i64 = 1;
+/// The context word's wake bit (slot 0).
+pub(crate) const CTX_WAKE: i64 = 2;
+
+/// The context word of a run under the init view `init` and a wake.
+pub(crate) fn ctx_word(init: bool, wake: bool) -> u64 {
+    (init as u64 * CTX_INIT as u64) | (wake as u64 * CTX_WAKE as u64)
+}
+
 impl KernelSig {
     /// The parameters in ABI order with their wire-slot offsets; every
     /// ABI site derives its layout from this, never its own order.
     pub fn abi_params(&self) -> impl Iterator<Item = AbiParamDesc<'_>> {
         self.params.iter().enumerate().map(|(i, p)| AbiParamDesc {
             name: &p.name,
-            kind: p.kind.abi(),
+            kind: &p.kind,
             wire_slot: CTX_WIRE_SLOTS + 2 * i,
             bind_id: p.bind_id,
         })
@@ -901,6 +855,18 @@ mod tests {
 
     fn i64_t() -> Type {
         Type::Primitive(Typ::I64.into())
+    }
+
+    /// A type that shares its parts unfolds exponentially: one 40 levels
+    /// of `(t, t)` has 2^40 leaves, past any kernel. The freeze refuses
+    /// it at once instead of walking it as a tree.
+    #[test]
+    fn shared_type_refused_without_unfolding() {
+        let mut t = i64_t();
+        for _ in 0..40 {
+            t = Type::Tuple(Arc::from_iter([t.clone(), t.clone()]));
+        }
+        assert_eq!(try_freeze_for_abi_normalized(&t), Err(FreezeError::Unsupported));
     }
 
     /// A deeply nested finite type freezes; only expansion identity, not

@@ -12,7 +12,7 @@ use crate::{
     fusion::{
         CalleeBody, FusionCtx, LambdaCallInfo,
         emit_helpers::all_helpers,
-        kernel_abi::{self, AbiKind, AbiParamKind, KernelKey, KernelSig, PrimType},
+        kernel_abi::{self, AbiKind, KernelKey, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
     image::ImageBuf,
@@ -52,13 +52,13 @@ use std::{
 use triomphe::Arc;
 
 use super::{
+    abi::{LocalKind, local_payload_ty},
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
     lower::{Callees, EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
     record::{
         BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable,
         record_decode, record_encode,
     },
-    scalar::prim_to_clif,
 };
 
 /// The module's code arena is full: the generation retires and the
@@ -649,11 +649,7 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
     }
     for d in kernel.abi_params() {
         sig.params.push(AbiParam::new(types::I64)); // disc
-        let payload_ty = match d.kind {
-            AbiParamKind::Scalar(p) => prim_to_clif(p),
-            _ => types::I64,
-        };
-        sig.params.push(AbiParam::new(payload_ty));
+        sig.params.push(AbiParam::new(local_payload_ty(LocalKind::of_param(d.kind))));
     }
 }
 
@@ -704,6 +700,9 @@ pub struct WrappedKernel {
     /// Per-activation block-tree roots living in the parent's state
     /// buffer; `FusedKernel` frees and resets them.
     pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
+    /// The kernel can meet a value of an abstract type (or `Any`), whose
+    /// core-trait impls a run reaches through the value-hook loan.
+    pub(crate) meets_abstract: bool,
 }
 
 impl WrappedKernel {
@@ -713,17 +712,20 @@ impl WrappedKernel {
         encode_varint(self.state_words as u64, buf);
         self.slot_table_words.encode(buf)?;
         self.state_self_blocks.encode(buf)?;
+        self.meets_abstract.encode(buf)?;
         record_encode(self.wrapper(), buf)
     }
 
-    /// A kernel an image carried, installed into `fusion`'s module.
+    /// A kernel an image carried, and its signature; it installs into
+    /// `fusion`'s module when the decode session ends.
     pub(crate) fn image_decode(
         fusion: &FusionCtx,
         buf: &mut &[u8],
-    ) -> Result<Self, PackError> {
+    ) -> Result<(Self, Arc<KernelSig>), PackError> {
         let state_words = decode_varint(buf)? as usize;
         let slot_table_words = Pack::decode(buf)?;
         let state_self_blocks = Pack::decode(buf)?;
+        let meets_abstract = bool::decode(buf)?;
         let wrapper = record_decode(buf)?;
         fusion
             .jit()
@@ -733,8 +735,10 @@ impl WrappedKernel {
                     state_words,
                     slot_table_words,
                     state_self_blocks,
+                    meets_abstract,
                 )
             })
+            .map(|w| (w, wrapper.kernel.clone()))
             .map_err(|e| {
                 log::warn!(
                     "loading the kernel `{}` from the image: {e:#}",
@@ -983,25 +987,6 @@ impl Emission {
         let first = names.first;
         let to = self.names.next();
         let Caches { base: _, by_kernel, first_layout, layout_ids, kernels } = caches;
-        let mut layouts: LPooled<AHashMap<u32, u32>> = LPooled::take();
-        let mut by_id: LPooled<Vec<(u32, SmallVec<[KernelKey; 8]>)>> =
-            layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
-        by_id.sort_unstable_by_key(|(id, _)| *id);
-        for (id, l) in by_id.drain(..) {
-            // CR claude for claude: [perf] This interns the task's layout lists before
-            // `same` exists, so each list still names the task's own copies of kernels
-            // the parent already has. A task body with an external call site (layout !=
-            // 0) is rekeyed to a layout no parent region produces, so it is never
-            // `moved`, and each task that reached it compiles its own copy; in practice
-            // only layout-0 bodies dedupe. In the probe (20 array elements `g(x + i) +
-            // fact(..)`, with g calling h), the program image holds 19 more records of
-            // g under the default task walk than under GRAPHIX_FUSE_SERIAL=1, while h
-            // and fact match, against CLAUDE.md's 'the output is the serial walk's'.
-            // Compute `same` first and map each task layout list through it before
-            // interning. probe: design/review-2026-10-05/repro/f-jit-06.sh (f-jit-06)
-            layouts.insert(id, self.caches.intern_layout(l));
-        }
-        let layout = |l: u32| if l >= first_layout { layouts[&l] } else { l };
         // a kernel the task built that this one has: the task's calls go
         // to this one's body
         let mut same: LPooled<AHashMap<KernelKey, KernelKey>> = LPooled::take();
@@ -1021,6 +1006,19 @@ impl Emission {
                 }
             }
         }
+        // a task's layout lists name this one's kernels where it has them,
+        // so a body the task shares with this one keys to this one's layout
+        let mut layouts: LPooled<AHashMap<u32, u32>> = LPooled::take();
+        let mut by_id: LPooled<Vec<(u32, SmallVec<[KernelKey; 8]>)>> =
+            layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
+        by_id.sort_unstable_by_key(|(id, _)| *id);
+        for (id, mut l) in by_id.drain(..) {
+            for k in l.iter_mut() {
+                *k = same.get(k).copied().unwrap_or(*k);
+            }
+            layouts.insert(id, self.caches.intern_layout(l));
+        }
+        let layout = |l: u32| if l >= first_layout { layouts[&l] } else { l };
         let mut moved: LPooled<AHashMap<u32, FuncId>> = LPooled::take();
         let mut kept: LPooled<Vec<(CacheKey, CachedBody)>> = LPooled::take();
         for (key, cached) in by_kernel {
@@ -1159,6 +1157,9 @@ pub struct Jit {
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
     in_flight: Option<InFlight>,
+    /// Wrappers an image decode restored, installed together when its
+    /// session ends ([`Self::install_restored`]).
+    restored: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)>,
 }
 
 /// A batch whose functions compile on threads of their own.
@@ -1182,6 +1183,7 @@ impl Jit {
             retired: 0,
             records: BTreeMap::new(),
             in_flight: None,
+            restored: Vec::new(),
         })
     }
 
@@ -1432,35 +1434,49 @@ impl Jit {
         }
     }
 
-    /// The wrapped kernel a region restored from an image dispatches:
-    /// its wrapper record installed and finalized, over the layout data
-    /// the image carried.
+    /// The wrapped kernel a region restored from an image dispatches,
+    /// over the layout data the image carried: its wrapper installs with
+    /// the session's others ([`Self::install_restored`]), before any run.
     fn load_wrapped(
         &mut self,
         wrapper: &Arc<BodyRecord>,
         state_words: usize,
         slot_table_words: Vec<kernel_abi::SiteAnchor>,
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
+        meets_abstract: bool,
     ) -> Result<WrappedKernel> {
-        // CR claude for claude: [perf] A warm start installs and finalizes each restored
-        // region on its own: FusedKernel and SlotShare image_decode call this once per
-        // region, and so does every lazily decoded body. cranelift-jit's arena never
-        // extends a finalized segment, so each region costs at least a page of arena
-        // and RSS plus an mprotect (and a membarrier IPI on aarch64), where a cold link
-        // packs a whole batch under one finalize. With 600 one-line #[native] regions,
-        // GRAPHIX_PROFILE counts 601 finalizes warm against 3 cold, and under
-        // GRAPHIX_JIT_ARENA=1048576 the warm start retires two generations where the
-        // cold run retires none. Queue the decoded wrappers and install them with one
-        // Generation::install when the decoder session ends. probe:
-        // design/review-2026-10-05/repro/f-jit-05.sh (f-jit-05)
-        let (ptrs, code) = self.install(std::slice::from_ref(wrapper))?;
-        let entry = Entry { fn_ptr: ptrs[0], _code: code, wrapper: wrapper.clone() };
+        let entry = Arc::new(OnceLock::new());
+        self.restored.push((wrapper.clone(), entry.clone()));
         Ok(WrappedKernel {
-            entry: Arc::new(OnceLock::from(entry)),
+            entry,
             state_words,
             slot_table_words,
             state_self_blocks,
+            meets_abstract,
         })
+    }
+
+    /// Install every wrapper an image decode restored, under one
+    /// finalize, giving each its entry.
+    pub(crate) fn install_restored(&mut self) -> Result<()> {
+        if self.restored.is_empty() {
+            return Ok(());
+        }
+        let restored = std::mem::take(&mut self.restored);
+        // in batches a fresh arena holds, as a cold link's
+        for batch in restored.chunks(super::super::LINK_BATCH) {
+            let records: Vec<Arc<BodyRecord>> =
+                batch.iter().map(|(r, _)| r.clone()).collect();
+            let (ptrs, code) = self.install(&records)?;
+            for ((wrapper, entry), fn_ptr) in batch.iter().zip(ptrs) {
+                let _ = entry.set(Entry {
+                    fn_ptr,
+                    _code: code.clone(),
+                    wrapper: wrapper.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1523,7 +1539,8 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         .iter()
         .map(|(key, em, spec)| (*key, BodySource { spec: *spec, hook: em }))
         .collect();
-    compile_region(em, kernel, &parent, callees, &emitters)
+    let meets_abstract = super::super::lowering::meets_abstract(root, type_env);
+    compile_region(em, kernel, &parent, callees, &emitters, meets_abstract)
 }
 
 fn compile_region(
@@ -1532,11 +1549,20 @@ fn compile_region(
     parent: &BodySource,
     callees: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
+    meets_abstract: bool,
 ) -> Result<WrappedKernel> {
     let mut build_profile = profile::phase(Phase::JitBuild);
     let mut fresh: SmallVec<[(CacheKey, Arc<KernelSig>); 8]> = SmallVec::new();
     let mark = em.pending.len();
-    let r = compile_region_inner(em, kernel, parent, callees, emitters, &mut fresh);
+    let r = compile_region_inner(
+        em,
+        kernel,
+        parent,
+        callees,
+        emitters,
+        meets_abstract,
+        &mut fresh,
+    );
     if r.is_err() {
         profile::failed(&mut build_profile);
         // A fresh entry of a failed region would hand out an id that no
@@ -1557,6 +1583,7 @@ fn compile_region_inner(
     parent: &BodySource,
     callees: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
+    meets_abstract: bool,
     fresh: &mut SmallVec<[(CacheKey, Arc<KernelSig>); 8]>,
 ) -> Result<WrappedKernel> {
     // Phase 1: declare every kernel in the closure. A callee body with no
@@ -1653,6 +1680,7 @@ fn compile_region_inner(
         state_words: emitted.state_words,
         slot_table_words: emitted.slot_table_words,
         state_self_blocks: emitted.state_self_blocks,
+        meets_abstract,
     })
 }
 
@@ -1906,28 +1934,6 @@ fn emit_wrapper(
 /// the tainted placeholder. `Z32`/`Z64`/`V32`/`V64` pack as their
 /// fixed-width prim.
 pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
-    if kernel_abi::scalar_prim_of_value(v) != Some(prim) {
-        return None;
-    }
-    // CR claude for claude: [structure] This match repeats value_words' scalar widening
-    // (tval.rs:108-117: sign-extend, zero-extend, float bits), and the two must agree.
-    // Kernel constants (scalar.rs:247) and the runtime's scalar staging (kernel.rs:265)
-    // use this table, while every other seam uses value_words, whose doc points back
-    // here. Once the prim check passes, `value_words(v)[1]` is the same word for every
-    // scalar variant, so the body can be `(scalar_prim_of_value(v) ==
-    // Some(prim)).then(|| value_words(v)[1])`. (f-jit-15)
-    Some(match *v {
-        Value::I8(x) => x as i64 as u64,
-        Value::I16(x) => x as i64 as u64,
-        Value::I32(x) | Value::Z32(x) => x as i64 as u64,
-        Value::I64(x) | Value::Z64(x) => x as u64,
-        Value::U8(x) => x as u64,
-        Value::U16(x) => x as u64,
-        Value::U32(x) | Value::V32(x) => x as u64,
-        Value::U64(x) | Value::V64(x) => x,
-        Value::F32(x) => x.to_bits() as u64,
-        Value::F64(x) => x.to_bits(),
-        Value::Bool(b) => b as u64,
-        _ => return None,
-    })
+    (kernel_abi::scalar_prim_of_value(v) == Some(prim))
+        .then(|| crate::tval::value_words(v)[1])
 }

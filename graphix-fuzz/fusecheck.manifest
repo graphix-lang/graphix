@@ -61,7 +61,7 @@
 3	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
 0	catch-stmt-aug2026/00_constraint_too_narrow.gx
 4	catch-stmt-aug2026/01_shadowing_rethrow.gx
-3	catch-stmt-aug2026/02_toplevel_file_catch.gx
+4	catch-stmt-aug2026/02_toplevel_file_catch.gx
 2	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 2	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
 6	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
@@ -177,7 +177,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 3	frame-state-cross-cycle-jul2026/00_resumed_recursion.gx
 2	frame-state-cross-cycle-jul2026/01_capture_fed_rec_refire.gx
 4	frame-taint-exit-jul2026/01_rec_bottom_sample_debt.gx
-8	frame-taint-exit-jul2026/02_original.gx
+6	frame-taint-exit-jul2026/02_original.gx
 2	framed-arg-stale-formal-aug2026/00_fold_go_retrigger.gx
 1	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 1	framed-formal-seed-aug2026/02_found_form_min_element.gx
@@ -219,7 +219,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 29	interface-ctor-trait-oct2026/01_six_modules.gx
 3	interp-format-jul2026/01_union_array_typed_prefix.gx
 2	kernel-frame-init-const-fire-aug2026/00_rec_const_terminal_input_arm.gx
-8	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx
+6	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx
 2	kernel-frame-init-const-fire-aug2026/02_tuple_ref_recursion.gx
 3	kernel-frame-init-const-fire-aug2026/03_crossmodule_refwrite.gx
 4	kernel-result-bottom-persists-aug2026/00_defused_select_reads_ride.gx
@@ -417,7 +417,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 6	soak-jul2026/30_arm_local_lift_reseed.gx
 1	soak-jul2026/31_list_enumerate_key_type.gx
 2	soak-jul2026/32_connect_as_hof_source.gx
-9	soak-jul2026/33_arm_wake_replay_ref_write.gx
+6	soak-jul2026/33_arm_wake_replay_ref_write.gx
 12	soak-jul2026/34_arm_wake_replay_ref_write_b.gx
 3	soak-jul2026/35_per_slot_lift_aliasing.gx
 11	soak-jul2026/36_slot_prime_cached_replay.gx
@@ -477,7 +477,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 8	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 2	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
-21	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
+24	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
 abort	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
 abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx
@@ -521,7 +521,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 2	variant-arity-tag-only-aug2026/02_reactive_kernel_goes_silent.gx
 1	variant-arity-tag-only-aug2026/03_no_annotation_needed.gx
 1	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
-2	varint-literal-sep2026/00_literal_over_a_varint.gx
+1	varint-literal-sep2026/00_literal_over_a_varint.gx
 1	varint-literal-sep2026/01_varint_or_pattern.gx
 3	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 3	wake-catchup-sep2026/00_wake_recompute_table.gx

@@ -1254,6 +1254,33 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          }))\n",
     ),
     (
+        // whole-value binds, @ captures and a string scrutinee
+        "select-whole-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let s = \"s[x % i64:4]\";\n\
+         let a = array::init(x % i64:5, |i| i);\n\
+         let v: [`B(Array<i64>), `C] = select x % i64:2 { i64:0 => `B(a), _ => `C };\n\
+         let k = select s { \"s0\" => i64:1, other => str::len(other) };\n\
+         let n = select a { [] => i64:0, all@ [h, ..] => h + array::len(all) };\n\
+         let m = select v { all@ `B(_) => select all { `B(b) => array::len(b) }, `C => i64:0 };\n\
+         k + n + m\n",
+    ),
+    (
+        // borrowing helpers over borrowed and owned operands in a loop
+        "borrowed-operand-helpers",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let k = \"k[x % i64:3]\";\n\
+         let names = array::init(i64:20, |i| \"k[i % i64:3]\");\n\
+         let m = {\"k0\" => [i64:1, i64:2], \"k1\" => [i64:3]};\n\
+         let hits = array::len(array::filter(names, |n| n == k));\n\
+         let got = select m{k} { error as _ => i64:0, a => array::len(a[i64:0..]$) };\n\
+         hits + got\n",
+    ),
+    (
         // slots whose callback call feeds an argument, grown and shrunk
         "fed-arg-slots",
         "let clk = sys::time::timer(duration:0.001s, true);\n\

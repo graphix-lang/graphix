@@ -8,6 +8,7 @@
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
     BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    cost::ForkSite,
     expr::Expr,
     fusion::{
         emit::{KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
@@ -16,7 +17,7 @@ use crate::{
             SELF_BLOCK_REACHED, TagValue, free_self_block_tree, free_slot_chain,
             reclaim_self_block_tree, reclaim_slot_chain,
         },
-        kernel_abi::{KernelSig, ParamKind},
+        kernel_abi::{self, KernelSig, ParamKind},
         share::Redirects,
     },
     image::{
@@ -31,7 +32,6 @@ use anyhow::Result;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::Value;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
@@ -49,6 +49,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     hooks: bool,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
+    fork: ForkSite,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
     slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity
@@ -117,6 +118,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             typ: KernelType::new(typ),
             hooks,
             feeders,
+            fork: ForkSite::default(),
             slept: WakeBit::default(),
             kernel,
             jit,
@@ -185,8 +187,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         let typ = Type::decode(buf)?;
         let hooks = bool::decode(buf)?;
         let feeders = decode_nodes(ctx, buf)?.into_boxed_slice();
-        let jit = WrappedKernel::image_decode(&ctx.fusion, buf)?;
-        let kernel = jit.wrapper().kernel.clone();
+        let (jit, kernel) = WrappedKernel::image_decode(&ctx.fusion, buf)?;
         if feeders.len() != kernel.params.len() {
             return Err(PackError::InvalidFormat);
         }
@@ -275,29 +276,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
-        let mut any_updated = false;
-        let mut any_bottom = false;
-        let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
-        // CR claude for claude: [perf] design/parallel_eval.md (3.1 and 10) lists a
-        // kernel's feeders as a fork point and cites this loop, but the loop polls them
-        // one after another and the kernel has no ForkSite. So a lambda call that fuses
-        // with its non-fusable arguments fed (`fusion::try_fuse_feeding_args`) loses
-        // the fork the node-walked call gives its arguments. This holds under
-        // GRAPHIX_PAR=force and under `#[parallel]`, whose check
-        // (`analysis::check_parallel`, run at typecheck1 before fusion) counted that
-        // fork and passes. Auto never measures the site either. probe:
-        // design/review-2026-10-05/repro/f-mod-lowering-12.gx takes 3.0-3.5 s under
-        // off, auto and force alike, while the same call node-walked (impure callee)
-        // takes about 1.9 s under auto/force. Fork the feeders that are not plain input
-        // reads through a ForkSite, as `update_args` forks a call's arguments.
-        // (f-mod-lowering-12)
-        for src in self.feeders.iter_mut() {
-            let tv = src.update(ctx);
-            let tag = tv.tag();
-            any_updated |= tag.triggers();
-            any_bottom |= tag.is_bottom();
-            polled.push(tv);
-        }
+        // the feeders are a fork point, as a call's arguments are
+        let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
+        let any_updated = polled.iter().any(|tv| tv.tag().triggers());
+        let any_bottom = polled.iter().any(|tv| tv.tag().is_bottom());
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",
@@ -327,9 +309,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         #[cfg(debug_assertions)]
         record_fusion_invocation();
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
-        // Slot 0: bit 0 init view, bit 1 wake.
+        // slot 0: the context word
         let wake = ctx.event.wake() || woke;
-        slots.push(ctx.event.init() as u64 | (wake as u64) << 1);
+        slots.push(kernel_abi::ctx_word(ctx.event.init(), wake));
         slots.push(if self.state.is_empty() {
             0
         } else {
@@ -367,24 +349,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
         // and `out` is two words the wrapper fills.
+        let body = ctx.fork.body();
         let loan = super::par_loop::ParLoan {
             mode: ctx.fork_mode(),
+            body_mode: ctx.with_fork_flags(body, |ctx| ctx.fork_mode()),
             forced: ctx.fork.forced,
             control: &**ctx.control,
         };
-        // CR claude for claude: [perf] Every kernel run takes the value-hook loan as soon
-        // as any Eq/Ord/Display impl exists anywhere: hooks_live asks env.impls, not
-        // this kernel. par_loop::run never forks under a loan. So one unused `type K =
-        // Abstract<i64>; impl Display for K { let fmt = |k| "K" }` turns off every
-        // kernel-loop fork in the program, under GRAPHIX_PAR=force and #[parallel] too,
-        // and adds an Env clone to every kernel run. Probe: a fused 64-slot map over a
-        // 2000-deep recursion, with #[parallel] on its definition, prints 8 'PAR kernel
-        // loop' lines under GRAPHIX_DBG_PAR=1, and 0 once those two lines are added;
-        // the values are the same. Only a kernel that can meet an abstract value (an
-        // Abstract or Any among its params, locals, constants or callee types) needs
-        // the loan. Decide that at emission, keep it in the record, and wrap only those
-        // runs. (x-parallel-04)
-        let ((), mut raises) = crate::node::coretraits::with_display_hooks(ctx, |env| {
+        let mut run = |env: &crate::env::Env| {
             emit_helpers::with_qop_raises(|| {
                 emit_helpers::with_kernel_env(env, || {
                     super::par_loop::with_par_loan(Some(loan), || unsafe {
@@ -392,7 +364,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                     })
                 })
             })
-        });
+        };
+        // only a kernel that meets an abstract value takes the value-hook
+        // loan, under which its loops never fork
+        let ((), mut raises) = match self.jit.meets_abstract {
+            true => crate::node::coretraits::with_display_hooks(ctx, run),
+            false => run(&ctx.env),
+        };
         for (site, v) in raises.drain(..) {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
