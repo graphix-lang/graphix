@@ -126,8 +126,8 @@ cell for the rest).
 
 - **Interp**: `PatternNode::arm_match` consults `is_match` and `bind`
   as for any pattern. The shallow discriminator (`PatternNode::shallow_discriminant`)
-  treats an Or arm as deep; a per-alternative shallow set is a possible
-  later optimization.
+  shallows each alternative's member of the arm's predicate, as for any
+  union predicate.
 - **JIT**: or-arms emit natively via `emit_or_chain`
   (`fusion/emit/select.rs`). The alternatives' structure conditions
   run left to right in their own block runs (each via

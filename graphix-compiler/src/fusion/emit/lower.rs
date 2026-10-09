@@ -91,7 +91,7 @@ pub(super) fn compile_into_function<'a>(
         b.ins().call(f, &[t, init_flag]);
     }
     // Wire slot 2: the callee's per-call-site block; 0 for parents and
-    // recursive back-edges, so consumers null-guard.
+    // bodies that claim no site words.
     let site_ptr = initial_vals[2];
     // Non-scalar params are cloned at entry so the body owns every
     // slot and drops them unconditionally.
@@ -170,6 +170,7 @@ pub(super) fn compile_into_function<'a>(
         helper_ids,
         helper_refs,
         chunks,
+        chunk: false,
         owned_floor: 0,
         in_flight_bufs: RefCell::new(Vec::new()),
         owned_input_stack: RefCell::new(Vec::new()),
@@ -193,7 +194,7 @@ pub(super) fn compile_into_function<'a>(
         closed_frame: RefCell::new(None),
         callee_layouts,
     };
-    // A wedged native loop aborts to bottom on interrupt.
+    // A wedged native loop aborts on interrupt; the kernel keeps its last result.
     if loop_head.is_some() {
         emit_interrupt_check(b, &mut env, &lower)?;
     }
@@ -278,15 +279,9 @@ pub(super) struct EmittedBody {
 
 /// A callee kernel's per-call-site state-block layout, recorded when
 /// the callee body is defined and read by every caller to size the
-/// block it supplies. A caller with no layout is on a recursive
-/// back-edge and passes 0.
-// CR claude for claude: [doc-drift] This doc says a caller with no layout is on a
-// recursive back-edge and passes 0, and so do lower.rs:93-94, 291-293, 441-442,
-// kernel_abi.rs:835-837, body.rs:419, 569, 650, 660 and scaffold.rs:464, 547. A missing
-// layout is a self-call, which roots a per-activation child block
-// (graphix_site_child_block, call.rs:411-443), and any other miss is refused. The block
-// a body receives is therefore 0 only when that body claims no site words. Reword them
-// all to that rule, as body.rs:719-722 already does. (f-call-flow-09)
+/// block it supplies. A self-call has no layout yet and roots a
+/// per-activation child block (`graphix_site_child_block`); any other
+/// caller without one is refused.
 #[derive(Debug, Clone)]
 pub(crate) struct SiteLayout {
     pub(crate) words: u32,
@@ -296,20 +291,13 @@ pub(crate) struct SiteLayout {
     pub(crate) self_blocks: Arc<[kernel_abi::SelfBlock]>,
 }
 
-/// A per-slot state word's address. `Guarded` words ride a base
-/// that is 0 on recursive back-edges; the consumer takes the
-/// no-memory path when the base is null.
-// CR claude for claude: [readability] SelWord, slot_select_word and the sel_sites
-// parameters are named for the selection memory strict fusion deleted (strict_fusion.md
-// lists SelWord claims as deleted). The words they carry are prev-length words,
-// first-call words and in-loop call-site block anchors. The comments at body.rs:357,
-// body.rs:420, body.rs:501, lower.rs:338 and lower.rs:348 still describe selects
-// reading these tables. This doc says per-slot, but root-level instance and call-site
-// words use the type too. Rename (e.g. StateWord, slot_word, state_sites), rewrite
-// those comments, and update kernel_instance_state.md:122 and 158, which cite the old
-// names. (f-scaffold-body-07)
+/// A state word's address: an instance's or a call site's word, or a
+/// loop slot's (a prev-length word, a first-call word, an in-loop call
+/// site's block anchor). `Guarded` words ride a site block base, null
+/// only for a body that claims no site words; the consumer takes the
+/// no-memory path when it is.
 #[derive(Clone, Copy)]
-pub(crate) enum SelWord {
+pub(crate) enum StateWord {
     Sure(ClifValue),
     Guarded { base: ClifValue, addr: ClifValue },
 }
@@ -352,8 +340,7 @@ impl TruncLeaf {
     }
 }
 
-/// A guarded-select site's per-slot state table in an open scaffold
-/// loop.
+/// A state site's per-slot table in an open scaffold loop.
 #[derive(Clone, Copy)]
 pub(crate) struct SlotTable {
     pub(super) site: ExprId,
@@ -362,8 +349,8 @@ pub(crate) struct SlotTable {
     pub(super) guarded: bool,
 }
 
-/// One open scaffold loop's per-slot state tables. A select consults
-/// the frame only when emitted at exactly `depth`; `len`/`src_disc`
+/// One open scaffold loop's per-slot state tables. A site consults the
+/// frame only when emitted at exactly `depth`; `len`/`src_disc`
 /// dominate the loop body so a nested loop can chain its own tables.
 pub(crate) struct SlotTableFrame {
     pub(super) depth: u32,
@@ -394,7 +381,7 @@ pub(super) enum Channel {
 /// its [`Channel`] only.
 pub(super) struct StateChannel {
     /// Base pointer (`I64`); possibly 0, so consumers null-guard where
-    /// it can be absent ([`SelWord::Guarded`]).
+    /// it can be absent ([`StateWord::Guarded`]).
     pub(super) ptr: ClifValue,
     /// Next unclaimed word index.
     pub(super) next: Cell<usize>,
@@ -458,7 +445,7 @@ pub(crate) struct LowerCtx<'a> {
     /// Per-call-site state channel (wire slot 2).
     pub(super) site: StateChannel,
     /// Layouts of already-defined callees; a missing entry is a
-    /// recursive back-edge (the call passes 0).
+    /// self-call, which roots a per-activation child block.
     pub(super) callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
     /// Open scaffold-loop frames, innermost last.
     pub(super) slot_tables: RefCell<Vec<SlotTableFrame>>,
@@ -479,6 +466,9 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) helper_refs: HelperRefs<'a>,
     /// The body's outlined loops, emitted so far.
     pub(super) chunks: &'a RefCell<Vec<ChunkFn>>,
+    /// Emitting an outlined loop's chunk: the chain level its loop sizes
+    /// is shared by forked chunks, sized before the fork, read-only here.
+    pub(super) chunk: bool,
     /// The env's first locals, below this mark, are borrowed from the
     /// body a chunk was outlined from: an abort drops only those above.
     pub(super) owned_floor: usize,

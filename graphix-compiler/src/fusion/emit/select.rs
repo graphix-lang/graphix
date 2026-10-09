@@ -64,8 +64,9 @@ impl SelectMerge {
 
 /// The select scrutinee, emitted once up front; every arm condition
 /// and pattern bind reuses these SSA values. `Opaque` (string) supports
-/// only Ignore / guard arms. `disc` carries the scrutinee's taint,
-/// OR-ed into every arm's result so a bottom scrutinee bottoms the select.
+/// only Ignore / guard arms. `disc` carries the scrutinee's flags: a
+/// tainted scrutinee takes no arm (the chain branches to the miss
+/// block), and its STALE bit folds into the select's fire.
 // CR claude for claude: [structure] SelectScrut::Value does not say whether it holds a
 // variant, an option or a primitive union, so classify_select_scrutinee returns the
 // AbiKind beside it and five functions take (scrut, scrut_kind, scrut_typ). Every test
@@ -373,20 +374,10 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// the end, struct leaves read `a[i][1]`.
 ///
 /// Element reads are total, so the condition is the AND of the length
-/// test and every leaf's own test, in one block. `@` bindings, rest
-/// bindings, non-scalar leaves and nested variant leaves refuse (the
-/// select de-fuses).
-// CR claude for claude: [doc-drift] Stale docs in this file. This doc says `@` bindings,
-// rest bindings and non-scalar leaves refuse, but array `@` and rest binds lower as
-// Subslice and non-scalar leaves as ElemValue; only tuple and struct `@` and nested
-// variant, or- and abstract leaves refuse. The or-leaf error at :619 cites
-// `design/or_patterns.md P3`, a section that no longer exists. SelectScrut's doc
-// (:66-68) says the scrutinee's taint is OR-ed into every arm so a bottom scrutinee
-// bottoms the select, but a tainted scrutinee branches to miss_bl (:761) before any
-// arm, which makes the scrutinee term of the OR at :1420 a no-op. payload_local_kind's
-// doc (:1172) names variant payloads only, yet leaves, list heads and nullable binds
-// use it, and design/distributed_jit.md:202 lists a tainted-take drop edge that no
-// longer exists. (f-select-10)
+/// test and every leaf's own test, in one block. An array `@` or rest
+/// bind lowers as a subslice and a non-scalar leaf as an element value;
+/// a tuple or struct `@` and a nested variant, or- or abstract leaf
+/// refuse (the select de-fuses).
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -633,10 +624,7 @@ fn emit_composite_pattern_cond_inner(
                 ));
             }
             StructPatternNode::Or { .. } => {
-                return Err(anyhow!(
-                    "emit_clif: or-pattern leaf not lowerable \
-                     (design/or_patterns.md P3)"
-                ));
+                return Err(anyhow!("emit_clif: or-pattern leaf not lowerable"));
             }
         }
     }
@@ -954,23 +942,12 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     scrut_typ: &Type,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
-    // The node-walk tests the type predicate only when it is explicit.
-    // CR claude for claude: [doc-drift] The comment above is false: the node-walk checks
-    // the type predicate whether written or inferred (PatternNode::shape_matches,
-    // node/pattern.rs:1316-1325). Skipping an inferred one here is sound only because
-    // an inferred predicate rejects nothing beyond what the arm's own structure rejects
-    // and what earlier unguarded arms took, and the chain decides both before it
-    // reaches this arm. State that invariant instead, since it is what a new narrowing
-    // source must keep. (f-select-09)
-    // CR claude for claude: [doc-drift] The comment above is false: the node-walk also
-    // tests an inferred predicate (PatternNode::shape_matches, node/pattern.rs:1310),
-    // shallowly through Type::shallow_discriminant and deeply where two scrutinee
-    // members share a runtime shape. Someone who trusts it will take the kernel and the
-    // node-walk to test the same thing here, and fix inferred-predicate matching in one
-    // engine only. design/or_patterns.md:107-109 is stale the same way: it says the
-    // shallow discriminator treats an or-arm as deep, but each alternative is shallowed
-    // (GXDBG_SHALLOW=1 on `A(x) | `B(x) prints [`A(i64), `B(i64)] => [`A(Any),
-    // `B(Any)]). Rewrite both to say what each engine tests. (c-pattern-11)
+    // An inferred predicate rejects nothing beyond what the arm's
+    // structure rejects and what earlier unguarded arms took, both of
+    // which the chain decides before it reaches this arm; only a written
+    // one is tested here. The node-walk tests both (`PatternNode::
+    // shape_matches`): a narrowing source that breaks this rule breaks
+    // the agreement.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
         None
     } else {
@@ -1210,9 +1187,9 @@ fn emit_list_pattern_cond(
     Ok(cx.b.inst_results(call)[0])
 }
 
-/// The [`LocalKind`] a non-scalar variant payload element binds as —
-/// by its ABI kind. `Unit`/`Null` payloads (and shapes with no kernel
-/// encoding) refuse.
+/// The [`LocalKind`] a non-scalar bind takes (a variant payload, a
+/// leaf, a list head, a nullable's payload), by its ABI kind.
+/// `Unit`/`Null` (and shapes with no kernel encoding) refuse.
 fn payload_local_kind(t: &Type) -> Option<LocalKind> {
     kernel_abi::abi_kind(t).and_then(LocalKind::of)
 }

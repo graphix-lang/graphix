@@ -832,6 +832,16 @@ pub struct SiteAnchor {
     pub leaf: Option<Arc<SiteLeaf>>,
 }
 
+impl SiteAnchor {
+    /// Whether the chain's call-site blocks root activation trees, its
+    /// own or a nested chain's.
+    pub fn roots_trees(&self) -> bool {
+        self.leaf.as_deref().is_some_and(|l| {
+            !l.self_blocks.is_empty() || l.anchors.iter().any(Self::roots_trees)
+        })
+    }
+}
+
 /// A chain leaf whose entries are per-slot call-site blocks: `stride`
 /// words per slot, `anchors` naming the in-block words owning further
 /// chains and `self_blocks` those rooting activation trees.
@@ -854,9 +864,9 @@ pub struct SiteLeaf {
 /// words, since a callee's claims would alias across call sites.
 ///
 /// Slot 2 is the per-call-site state block pointer, sized by the callee
-/// and supplied by each caller from its own storage; 0 for region
-/// parents, callees that claim nothing, and recursive back-edges, so
-/// every consumer null-guards it.
+/// and supplied by each caller from its own storage (a self-call's is a
+/// per-activation child block); 0 for region parents and callees that
+/// claim nothing. Every consumer null-guards it.
 pub(crate) const CTX_WIRE_SLOTS: usize = 3;
 
 impl KernelSig {

@@ -4,16 +4,18 @@
 //! Code generation is distributed: each node's `Update::emit_clif` (and
 //! each builtin's `Apply::emit_clif`) emits its own computation into the
 //! open kernel and recurses into its children. This module holds the
-//! shared machinery: [`Jit`] (declare/define/wrap + the `by_kernel`
-//! cache), [`BodyCx`] / [`JitEnv`] / [`LowerCtx`] (the emission
+//! shared machinery: `Emission` (a region's names and the `by_kernel`
+//! cache), [`Jit`] (compile and install at a link), [`BodyCx`] /
+//! [`JitEnv`] / [`LowerCtx`] (the emission
 //! context), [`CompiledExpr`] (the SSA result shape), the `emit_*_node`
 //! helpers, and the scalar codegen primitives; HOF loops live in
 //! [`scaffold`], the collection intrinsics' gates over them in
 //! [`loops`].
 //!
-//! Calling convention: the platform's default C convention. Parameters
-//! come in source order from [`KernelSig::abi_params`], each a
-//! `(disc, payload)` pair: the disc is an `I64` holding the `Value`
+//! Calling convention: the platform's default C convention. The
+//! `CTX_WIRE_SLOTS` context words (the cycle context, the state block,
+//! the site block) come first, then the parameters in source order from
+//! [`KernelSig::abi_params`], each a `(disc, payload)` pair: the disc is an `I64` holding the `Value`
 //! discriminant plus the TAINT/STALE bits; a scalar payload keeps its
 //! natural CLIF register class between kernels and is widened only at
 //! the wrapper/packer seams. The runtime calls through [`WrappedKernel`].
@@ -56,5 +58,5 @@ pub(crate) use self::nodes::{
     emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
-pub(crate) use self::record::{BodyRecord, KernelType, record_decode, record_encode};
+pub(crate) use self::record::{BodyRecord, KernelType};
 pub(crate) use self::{scaffold::slot_state_sites, select::emit_select_node};

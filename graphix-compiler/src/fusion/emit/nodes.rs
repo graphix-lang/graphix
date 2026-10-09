@@ -18,6 +18,7 @@ use cranelift_codegen::ir::{
     BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
 use netidx_value::Value;
+use smallvec::{SmallVec, smallvec};
 
 use super::{
     abi::{
@@ -198,9 +199,8 @@ fn widen_to_declared_repr(
     }
 }
 
-/// Arithmetic. A datetime/duration operand routes to the
-/// `graphix_value_<op>` helpers (both operands owned); otherwise
-/// `compile_bin` on register scalars with the integer div/mod guard.
+/// Arithmetic: `compile_bin` on register scalars with the integer
+/// div/mod guard.
 pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     op: BinOp,
@@ -208,33 +208,11 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    if lowering::is_datetime_or_duration(lhs.typ())
-        || lowering::is_datetime_or_duration(rhs.typ())
-    {
-        let lcv = emit_owned_value_operand_node(cx, lhs)?;
-        let rcv = emit_owned_value_operand_node(cx, rhs)?;
-        let helper = match op {
-            BinOp::Add => "graphix_value_add",
-            BinOp::Sub => "graphix_value_sub",
-            BinOp::Mul => "graphix_value_mul",
-            BinOp::Div => "graphix_value_div",
-            BinOp::Mod => "graphix_value_rem",
-        };
-        let fref = cx.helper(helper)?;
-        let call = cx.b.ins().call(fref, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
-        let (rdisc, rpay) = {
-            let r = cx.b.inst_results(call);
-            (r[0], r[1])
-        };
-        let disc = propagate_flags(cx.b, rdisc, &[lcv.disc, rcv.disc]);
-        return Ok(CompiledExpr::new(disc, rpay));
-    }
     let lcv = lhs.emit_clif(cx)?;
     let rcv = rhs.emit_clif(cx)?;
     let l = lcv.payload;
     let r = rcv.payload;
-    // Not `prim_of` (panics): the operand type may be an un-normalized
-    // union; Err means no fusion.
+    // the operand type may be an un-normalized union; Err means no fusion
     let prim = freeze_node_typ(cx.ctx, lhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t))
@@ -359,14 +337,6 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     let rprim = kernel_abi::freeze_for_abi_normalized(rhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t));
-    // Mixed scalar types take the Value path below: the node-walk orders
-    // them by `Typ` first.
-    // CR claude for claude: [doc-drift] The comment above says mixed scalar types take
-    // the Value path, but operand_type (node/op.rs:197) makes both operands one type:
-    // `|x: i32, y: i64| x < y` is a check error, so lp != rp never reaches here. The
-    // error texts at 363 and 371 cite a kernel_abi::cmp that does not exist, and
-    // FusionStats.failed reports them verbatim. The comment at 237 explains not calling
-    // prim_of, which no longer exists. Delete all three references. (f-nodes-scalar-08)
     if let (Some(lp), Some(rp)) = (lprim, rprim)
         && lp == rp
     {
@@ -391,7 +361,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         other => {
             return Err(anyhow!(
                 "emit_clif: ordering cmp {other:?} on non-scalar operands \
-                 — not lowered (mirrors kernel_abi::cmp)"
+                 — not lowered"
             ));
         }
     };
@@ -399,7 +369,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         if matches!(kernel_abi::abi_kind(t), Some(AbiKind::Unit | AbiKind::Null) | None) {
             return Err(anyhow!(
                 "emit_clif: ==/!= operand of type {t:?} has no comparable \
-                 runtime form (mirrors kernel_abi::cmp)"
+                 runtime form"
             ));
         }
     }
@@ -517,7 +487,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     let buf = cx.b.inst_results(call)[0];
     open_buf(cx, BufKind::String, buf);
     // A tainted part renders harmlessly; its taint folds into the result.
-    let mut part_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    let mut part_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
     for a in args {
         let part = a;
         // Normalized so a select-valued part (an arm union) still classifies.
@@ -712,10 +682,10 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
 fn emit_fields_into_buf<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
-) -> Result<(ClifValue, smallvec::SmallVec<[ClifValue; 8]>)> {
+) -> Result<(ClifValue, SmallVec<[ClifValue; 8]>)> {
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let buf = open_value_buf(cx, cap)?;
-    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    let mut field_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
     for f in fields {
         field_discs.push(emit_push_field_node(cx, buf, f)?);
     }
@@ -795,12 +765,12 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     if names.len() != fields.len() {
         return Err(anyhow!("emit_clif: struct literal name/field arity mismatch"));
     }
-    let mut indexed: smallvec::SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
+    let mut indexed: SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
     let cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
     let outer = open_value_buf(cx, cap)?;
-    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    let mut field_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
     for (name, field) in indexed {
         // Names are interned constants; only the value discs gate freshness.
         let disc = push_struct_pair(cx, outer, name, |cx, pair| {
@@ -844,8 +814,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let outer = open_value_buf(cx, cap)?;
     // Fires iff the source or any replacement fired.
-    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> =
-        smallvec::smallvec![src_disc];
+    let mut field_discs: SmallVec<[ClifValue; 8]> = smallvec![src_disc];
     for (i, (name, field_typ)) in fields.iter().enumerate() {
         match replace.iter().find(|r| r.index == Some(i)) {
             Some(r) => {
@@ -905,8 +874,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
         let buf = open_value_buf(cx, cap)?;
         cx.call_helper("graphix_value_buf_push_arcstr", &[buf, tag_ptr])?;
-        let mut payload_discs: smallvec::SmallVec<[ClifValue; 8]> =
-            smallvec::SmallVec::new();
+        let mut payload_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
         for p in payloads {
             payload_discs.push(emit_push_field_node(cx, buf, p)?);
         }
@@ -1287,13 +1255,12 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         ));
     }
     let scv = emit_owned_value_operand_node(cx, source)?;
-    let mut taint_discs: smallvec::SmallVec<[ClifValue; 8]> =
-        smallvec::smallvec![scv.disc];
+    let mut taint_discs: SmallVec<[ClifValue; 8]> = smallvec![scv.disc];
     let emit_bound = |cx: &mut BodyCx,
                       n: Option<&Node<R, E>>,
                       flag: i64,
                       flags: &mut i64,
-                      taint: &mut smallvec::SmallVec<[ClifValue; 8]>|
+                      taint: &mut SmallVec<[ClifValue; 8]>|
      -> Result<ClifValue> {
         match n {
             None => Ok(cx.b.ins().iconst(types::I64, 0)),

@@ -198,7 +198,7 @@ each was obvious in hindsight and invisible in advance.
 
 7. **Owned arm binds drop at every arm exit.** Non-scalar pattern binds
    (payload clones, list head/tail) drop on the value-position taken
-   path, guard-false, tainted-take and undetermined edges, and in the
+   path, guard-false and undetermined edges, and in the
    guard prologue (`emit_scope_drops` before each truncate); tail
    position is covered by the whole-env drop at return. The `leakcheck`
    witnesses (`select-payload-bind`, `select-list-binds`) pin it; run

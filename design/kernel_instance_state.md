@@ -119,7 +119,7 @@ fresh — ragged inner lengths for free. The chain is emitted at the
 nested preheader, once per enclosing iteration, so ensure calls follow
 the loop structure's natural cost. `BodyCx::open_slot_tables` pushes a
 `SlotTableFrame { depth, idx_var, tables }` (always, possibly empty);
-`slot_select_word(site)` answers `table + i*8` when the site is emitted
+`slot_word(site)` answers `table + i*8` when the site is emitted
 at exactly the frame's depth; `close_slot_tables` pops after body
 emission. The claimed anchors are recorded on
 `WrappedKernel::slot_table_words` so `FusedKernel::drop` frees them;
@@ -157,11 +157,11 @@ pointer, uniform on every kernel signature:
   region parents, and recursive back-edges pass 0 (a fresh transient
   activation in the node-walk — for a single-shot activation fresh
   memory ≡ no memory). A consumer whose base is null branches to the
-  stateless approximation (`SelWord::Guarded`); a callee loop's chain
+  stateless approximation (`StateWord::Guarded`); a callee loop's chain
   branches around its ensure calls.
 
-A region parent has no kernel caller, so the runtime `FusedKernel` supplies
-its own `site` block when the compiled body claimed site words.
+A region parent has no kernel caller and claims only state words, so its
+site block is always null.
 
 ### Activation: per-activation block trees
 

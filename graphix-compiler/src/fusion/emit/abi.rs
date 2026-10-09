@@ -241,8 +241,8 @@ pub(super) struct Local {
     pub(super) kind: LocalKind,
     /// `Some` for params, lets and every bind a pattern, element or leaf
     /// names; a `Ref` resolves BindId-first, which is exact under
-    /// shadowing. `None` for a local nothing names (an adopted select
-    /// scrutinee, a find loop's result), whose `name` goes unread.
+    /// shadowing. `None` for a local no BindId names (an adopted select
+    /// scrutinee, a find loop's result): a read finds it by `name`.
     pub(super) bind_id: Option<BindId>,
 }
 

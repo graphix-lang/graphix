@@ -672,28 +672,8 @@ pub(crate) fn for_each_child<'a, R: Rt, E: UserEvent>(
         V::FoldQ(m) => [&m.source, &m.init, &m.prototype].into_iter().for_each(f),
         V::Module(m) => m.source().into_iter().chain(m.nodes.iter()).for_each(f),
         V::Block(b) => b.children.iter().for_each(f),
-        // CR claude for claude: [readability] The comment below is wrong. `ArgMap` is an
-        // IndexMap that iterates in source order (callsite.rs:146-149), not a hash map.
-        // The ArgKey sort it justifies puts positional args before named ones and
-        // orders names alphabetically, which is not source order. The sort costs a
-        // pooled Vec plus a sort per CallSite in every discovery, fingerprint,
-        // raise-blocker and `calls_a_function` walk, and those walks repeat at each
-        // level of the fusion walk. Iterate `cs.args.values().filter_map(|a|
-        // a.node.as_ref())` and drop the comment. `CallSite::fuse`
-        // (callsite.rs:2259-2266) carries the same comment and sort.
-        // (f-mod-lowering-10)
         V::CallSite(cs) => {
-            // The args map is hash-ordered; walk in ArgKey order so the
-            // downstream discovery order is deterministic.
-            let mut args: LPooled<Vec<(&crate::node::callsite::ArgKey, &Node<R, E>)>> =
-                cs.args
-                    .iter()
-                    .filter_map(|(k, a)| a.node.as_ref().map(|n| (k, n)))
-                    .collect();
-            args.sort_by(|(a, _), (b, _)| a.cmp(b));
-            for (_, n) in args.drain(..) {
-                f(n)
-            }
+            cs.args.values().filter_map(|a| a.node.as_ref()).for_each(&mut *f);
             f(&cs.fnode)
         }
         V::Select(s) => {
@@ -1439,16 +1419,8 @@ fn build_region<R: Rt, E: UserEvent>(
     Ok(Some(n))
 }
 
-/// Whether a build failed for want of JIT code memory: the arena
-/// refuses the define with an allocation error.
-
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
-// CR claude for claude: [dead] Lines 1354-1355 are the doc comment of `arena_exhausted`,
-// which no longer exists (arena exhaustion is now `ArenaExhausted` in emit/jit.rs). A
-// doc comment attaches to the next item across the blank line, so `refuse`'s rustdoc
-// opens with "Whether a build failed for want of JIT code memory". Delete the two
-// lines. (f-mod-lowering-11)
 fn refuse<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     spec: &Expr,

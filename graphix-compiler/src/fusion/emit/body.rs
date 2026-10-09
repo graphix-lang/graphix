@@ -32,7 +32,7 @@ use super::{
     call::{CompositeSource, emit_drop_local, emit_pending_cleanup},
     flow::{emit_body_tail, emit_scope_drops},
     lower::{
-        Channel, ClosedFrame, LowerCtx, SelWord, SiteLayout, SlotTable, SlotTableFrame,
+        Channel, ClosedFrame, LowerCtx, SiteLayout, SlotTable, SlotTableFrame, StateWord,
         TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
@@ -140,7 +140,7 @@ pub(super) fn emit_tail_rebind_jump(
 }
 
 /// Poll `graphix_interrupted` at a loop head: nonzero takes the
-/// kernel's abort path ([`emit_kernel_bottom`]), zero falls through
+/// kernel's abort path ([`emit_kernel_abort`]), zero falls through
 /// to a fresh block. Emitted at the tail-loop head and every HOF
 /// scaffold loop head.
 pub(super) fn emit_interrupt_check(
@@ -156,7 +156,7 @@ pub(super) fn emit_interrupt_check(
     b.ins().brif(intr, abort_bl, &[], continue_block, &[]);
     b.switch_to_block(abort_bl);
     b.seal_block(abort_bl);
-    emit_kernel_bottom(&mut BodyCx { b: &mut *b, env: &mut *env, ctx })?;
+    emit_kernel_abort(&mut BodyCx { b: &mut *b, env: &mut *env, ctx })?;
     b.switch_to_block(continue_block);
     b.seal_block(continue_block);
     Ok(())
@@ -292,18 +292,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Look up a helper and call it, asserting the argument count
     /// against its registered wire signature.
     ///
-    /// Prefer this over `helper()` + `ins().call()`: cranelift's
-    /// verifier rejects a mismatched call as a whole-function failure,
-    /// so the region would silently node-walk instead of failing a test.
-    // CR claude for claude: [doc-drift] This note is stale: a mismatched call does not
-    // make the region node-walk. cranelift's verifier is on by default, a verifier
-    // error fails the link, and a failed link panics (jit.rs:1187). What call_helper
-    // actually adds is the debug assert that names the helper at emission. Dozens of
-    // direct helper() + ins().call() sites skip that assert (e.g. body.rs:485-490,
-    // call.rs:440-441). Separately, design/distributed_jit.md:163-169 (contract 3) says
-    // the first-call word is shared across loop iterations. In a loop the word belongs
-    // to the slot (emit_callee_context_word, call.rs:338-347), as
-    // kernel_instance_state.md and CLAUDE.md say. (f-scaffold-body-09)
+    /// Prefer this over `helper()` + `ins().call()`: a mismatched call
+    /// fails here, naming the helper, rather than as a verifier error at
+    /// the link.
     pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
         let f = self.helper(name)?;
         debug_assert_eq!(
@@ -334,7 +325,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The init view of an instance whose first use `word` records: the
     /// init flag, or set while the word reads 0, which this use records.
     /// No word, or a null guarded base, is the plain init flag.
-    pub(crate) fn first_use(&mut self, word: Option<SelWord>) -> ClifValue {
+    pub(crate) fn first_use(&mut self, word: Option<StateWord>) -> ClifValue {
         let init = self.init_flag();
         let first = |cx: &mut BodyCx, addr: ClifValue| {
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
@@ -346,7 +337,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         };
         match word {
             None => init,
-            Some(SelWord::Sure(addr)) => first(self, addr),
+            Some(StateWord::Sure(addr)) => first(self, addr),
             // CR claude for claude: [structure] This null-guarded diamond (branch on base
             // != 0, compute from addr, merge with a fallback) is written out six times:
             // here, open_slot_tables (body.rs:428-450), emit_slot_truncates
@@ -358,7 +349,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             // call. guarded_exact_stale fits because its conservative arm is pure and
             // can be computed first as the fallback, and a TruncAnchor maps onto a
             // SelWord. (f-scaffold-body-06)
-            Some(SelWord::Guarded { base, addr }) => {
+            Some(StateWord::Guarded { base, addr }) => {
                 let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
                 let word_bl = self.b.create_block();
                 let merge = self.b.create_block();
@@ -412,7 +403,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// Open a scaffold loop's per-slot state-table frame; emit in the
-    /// loop preheader. For each guarded-select site in `sites` it
+    /// loop preheader. For each state site in `sites` it
     /// anchors a chain of owning tables mirroring the loop nesting
     /// (one directory level per enclosing frame) that ends in a leaf
     /// table with one word per slot ordinal. A tainted source at any
@@ -474,8 +465,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                     Some((table, false))
                 }
                 // A callee body's loop anchors in the per-call-site
-                // block, whose base is 0 on a recursive back-edge:
-                // branch around the chain and hand the selects a 0 table.
+                // block, behind its null guard: on a null base branch
+                // around the chain and hand the sites a 0 table.
                 None => match self.claim_site_anchor(n_dirs as u32, None) {
                     Some(off) => {
                         pending.push(TruncRec {
@@ -544,9 +535,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let mut word = word;
         for (j, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
             let fvalid = emit_untainted_i64(self.b, *fdisc);
-            let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
-            let call = self.b.ins().call(helper, &[word, *flen, fvalid, own, leaf_ptr]);
-            let dir = self.b.inst_results(call)[0];
+            let dir = if j == 0 && self.ctx.chunk {
+                let shared = self.helper("graphix_slot_state_table_shared")?;
+                let call = self.b.ins().call(shared, &[word, *flen, fvalid]);
+                self.b.inst_results(call)[0]
+            } else {
+                let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
+                let call =
+                    self.b.ins().call(helper, &[word, *flen, fvalid, own, leaf_ptr]);
+                self.b.inst_results(call)[0]
+            };
             let i = self.b.use_var(*fidx);
             let o = self.b.ins().ishl_imm(i, 3);
             word = self.b.ins().iadd(dir, o);
@@ -556,7 +554,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// Emit the owning-table chain from `word_addr` (an anchor word's
     /// address) through one directory level per enclosing frame down
-    /// to this loop's LEAF selection table (sized `len`, resize gated
+    /// to this loop's LEAF table (sized `len`, resize gated
     /// by `src_disc`'s taint). Returns the leaf table base.
     fn emit_slot_chain(
         &mut self,
@@ -623,8 +621,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 None => self.b.ins().iconst(types::I64, 0),
                 Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
             };
-            // The anchor's word address; a site anchor's base may be 0
-            // (a back-edge activation) — branch around the walk.
+            // The anchor's word address; a site anchor's base is
+            // null-guarded: branch around the walk.
             let (word0, guard) = match r.anchor {
                 TruncAnchor::State(off) => {
                     let sp = self.state_ptr();
@@ -689,7 +687,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// carries a table for it; `None` when there is no open loop, the
     /// site is at a different depth than the frame's body, or the
     /// frame claimed no table.
-    pub(crate) fn slot_select_word(&mut self, id: ExprId) -> Option<SelWord> {
+    pub(crate) fn slot_word(&mut self, id: ExprId) -> Option<StateWord> {
         let (idx_var, table, guarded) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
@@ -704,19 +702,19 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let off = self.b.ins().ishl_imm(i, 3);
         let addr = self.b.ins().iadd(table, off);
         Some(if guarded {
-            // A callee loop's chain is anchored in the (possibly null)
-            // site block: `table` is 0 on a recursive back-edge.
-            SelWord::Guarded { base: table, addr }
+            // A callee loop's chain is anchored in the site block,
+            // behind its null guard.
+            StateWord::Guarded { base: table, addr }
         } else {
-            SelWord::Sure(addr)
+            StateWord::Sure(addr)
         })
     }
 
     /// Claim one word of per-call-site block memory (wire slot 2),
     /// the callee-body twin of [`claim_state_word`](Self::claim_state_word).
     /// Returns the byte offset; `None` outside callee bodies. The block
-    /// base may be 0 at runtime (a recursive back-edge), so every
-    /// consumer null-guards ([`SelWord::Guarded`]).
+    /// base is null only for a body that claims no site words; every
+    /// consumer null-guards it all the same ([`StateWord::Guarded`]).
     pub(crate) fn claim_site_word(&self) -> Option<i32> {
         if self.ctx.claims != Channel::Site {
             return None;
@@ -941,19 +939,12 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
     }
 }
 
-/// Unconditionally bottom the kernel from the current block: set the
-/// pending flag, drop the in-flight owned set, and jump to
-/// `pending_exit` (so `FusedKernel::update` returns `None`). Terminates the
-/// block.
-// CR claude for claude: [doc-drift] This is the kernel's abort path (an interrupt at a
-// loop head, or a forked loop's abort), not a bottom. FusedKernel::update sees
-// KERNEL_ABORT, discards the out words and rides its resident (kernel.rs:460), as the
-// node-walk's interrupted dispatch does (node/lambda.rs:747). The doc above ('bottom
-// the kernel ... so FusedKernel::update returns None', when update returns a &TagValue)
-// and lower.rs:195 ('A wedged native loop aborts to bottom on interrupt') both say
-// otherwise. Rename it emit_kernel_abort, which is what body.rs:142 already calls it,
-// and fix both comments. (f-kernel-09)
-pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
+/// Abort the kernel from the current block (an interrupt at a loop
+/// head, a forked loop's abort): set the abort flag, drop the in-flight
+/// owned set, and jump to `pending_exit`. `FusedKernel::update`
+/// discards the out words and keeps its resident, as the node-walk's
+/// interrupted dispatch does. Terminates the block.
+pub(super) fn emit_kernel_abort(cx: &mut BodyCx) -> Result<()> {
     let pending_set = cx.helper("graphix_abort_set")?;
     let exit = pending_exit_block(cx.b, cx.ctx);
     cx.b.ins().call(pending_set, &[]);

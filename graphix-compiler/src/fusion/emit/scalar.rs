@@ -8,15 +8,8 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, anyhow};
-// CR claude for claude: [style] MemFlags is imported here yet spelled
-// cranelift_codegen::ir::MemFlags at 218 and 226, Endianness is spelled out at 219,
-// 227, 489 and 495, and 194 writes anyhow::anyhow! despite the anyhow import; nodes.rs
-// writes smallvec::SmallVec/smallvec! 15 times with no import. clif_size (463) and
-// zero_const (258) restate prim_to_clif's width table: clif_size is
-// prim_to_clif(p).bytes(), and zero_const is iconst(prim_to_clif(p), 0) for every prim
-// but the two floats. (f-nodes-scalar-09)
 use cranelift_codegen::ir::{
-    InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
+    Endianness, InstBuilder, MemFlags, Type as ClifType, Value as ClifValue,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -198,9 +191,7 @@ pub(super) fn widen_to_i64(
             b.ins().uextend(types::I64, v)
         }
         PrimType::F32 | PrimType::F64 => {
-            return Err(anyhow::anyhow!(
-                "widen_to_i64: float index — emission malformed"
-            ));
+            return Err(anyhow!("widen_to_i64: float index — emission malformed"));
         }
     })
 }
@@ -222,16 +213,14 @@ pub(super) fn scalar_to_payload_i64(
         PrimType::F32 => {
             let bits = b.ins().bitcast(
                 types::I32,
-                cranelift_codegen::ir::MemFlags::new()
-                    .with_endianness(cranelift_codegen::ir::Endianness::Little),
+                MemFlags::new().with_endianness(Endianness::Little),
                 v,
             );
             b.ins().uextend(types::I64, bits)
         }
         PrimType::F64 => b.ins().bitcast(
             types::I64,
-            cranelift_codegen::ir::MemFlags::new()
-                .with_endianness(cranelift_codegen::ir::Endianness::Little),
+            MemFlags::new().with_endianness(Endianness::Little),
             v,
         ),
     }
@@ -264,12 +253,9 @@ pub(super) fn compile_const(
 /// return whose value is never observed.
 pub(super) fn zero_const(b: &mut FunctionBuilder, p: PrimType) -> ClifValue {
     match p {
-        PrimType::I8 | PrimType::U8 | PrimType::Bool => b.ins().iconst(types::I8, 0),
-        PrimType::I16 | PrimType::U16 => b.ins().iconst(types::I16, 0),
-        PrimType::I32 | PrimType::U32 => b.ins().iconst(types::I32, 0),
-        PrimType::I64 | PrimType::U64 => b.ins().iconst(types::I64, 0),
         PrimType::F32 => b.ins().f32const(0.0),
         PrimType::F64 => b.ins().f64const(0.0),
+        p => b.ins().iconst(prim_to_clif(p), 0),
     }
 }
 
@@ -468,12 +454,7 @@ pub(super) fn prim_to_clif(p: PrimType) -> ClifType {
 
 /// Width in bytes of the underlying CLIF type.
 pub(super) fn clif_size(p: PrimType) -> u32 {
-    match p {
-        PrimType::I8 | PrimType::U8 | PrimType::Bool => 1,
-        PrimType::I16 | PrimType::U16 => 2,
-        PrimType::I32 | PrimType::U32 | PrimType::F32 => 4,
-        PrimType::I64 | PrimType::U64 | PrimType::F64 => 8,
-    }
+    prim_to_clif(p).bytes()
 }
 
 /// Narrow a `pack_value_to_u64` payload word to a CLIF value of prim
@@ -492,14 +473,13 @@ pub(super) fn cast_u64_to_prim(
             let bits32 = b.ins().ireduce(types::I32, raw);
             b.ins().bitcast(
                 types::F32,
-                MemFlags::new()
-                    .with_endianness(cranelift_codegen::ir::Endianness::Little),
+                MemFlags::new().with_endianness(Endianness::Little),
                 bits32,
             )
         }
         PrimType::F64 => b.ins().bitcast(
             types::F64,
-            MemFlags::new().with_endianness(cranelift_codegen::ir::Endianness::Little),
+            MemFlags::new().with_endianness(Endianness::Little),
             raw,
         ),
     }

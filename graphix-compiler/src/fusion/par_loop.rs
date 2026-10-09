@@ -3,7 +3,8 @@
 //! level runs as chunks of slots, here, in order or forked.
 
 use super::emit_helpers::{
-    self, KERNEL_ABORT, KERNEL_ENV, QopRaise, SELF_BLOCK_GEN, SELF_BLOCK_REACHED,
+    self, KERNEL_ABORT, KERNEL_ENV, QopRaise, SELF_BLOCK_GEN, SELF_BLOCK_MADE,
+    SELF_BLOCK_REACHED,
 };
 use crate::{
     branch::{self, Live},
@@ -68,6 +69,7 @@ struct Run {
     aborted: bool,
     panic: Option<Box<dyn Any + Send>>,
     reached: u64,
+    made: u64,
     raises: LPooled<Vec<QopRaise>>,
 }
 
@@ -80,6 +82,7 @@ impl Run {
             aborted: false,
             panic: None,
             reached: 0,
+            made: 0,
             raises: LPooled::take(),
         }
     }
@@ -108,6 +111,7 @@ unsafe impl Send for Run {}
 unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
     let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
     let prev_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
+    let prev_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
     let ((), raises) = emit_helpers::with_qop_raises(|| unsafe {
         chunk(frame, r.lo as u64, r.hi as u64, r.out.as_mut_ptr())
     });
@@ -117,6 +121,7 @@ unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
         r.panic = emit_helpers::take_kernel_panic();
     }
     r.reached = SELF_BLOCK_REACHED.with(|c| c.replace(prev_reached));
+    r.made = SELF_BLOCK_MADE.with(|c| c.replace(prev_made));
 }
 
 /// Run an outlined loop of `len` slots over `frame`, filling `out`: in
@@ -278,11 +283,14 @@ unsafe fn in_order(
 
 /// Merge `runs`, in slot order, into `out`, and report through this
 /// thread's loans what they reported through theirs: the raises of every
-/// run up to the first that aborted, its panic, the activations reached.
+/// run up to the first that aborted, its panic, the activations reached
+/// and made.
 unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     let aborted = runs.iter().position(|r| r.aborted);
     let reached: u64 = runs.iter().map(|r| r.reached).sum();
     SELF_BLOCK_REACHED.with(|c| c.set(c.get() + reached));
+    let made: u64 = runs.iter().map(|r| r.made).sum();
+    SELF_BLOCK_MADE.with(|c| c.set(c.get() + made));
     let delivered = aborted.map_or(runs.len(), |i| i + 1);
     for r in runs[..delivered].iter_mut() {
         emit_helpers::queue_qop_raises(&mut r.raises);

@@ -1395,18 +1395,6 @@ pub(crate) fn is_map(t: &Type) -> bool {
     t.with_deref(|r| matches!(r, Some(Type::Map { .. })))
 }
 
-/// True if `t` derefs to one of the single-bit `datetime`/`duration`
-/// value-shape primitives.
-pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
-    t.with_deref(|r| match r {
-        Some(Type::Primitive(p)) if p.iter().count() == 1 => {
-            p.contains(netidx_value::Typ::DateTime)
-                || p.contains(netidx_value::Typ::Duration)
-        }
-        _ => false,
-    })
-}
-
 /// A marshallable call return shape: every fusable shape but bare `Null`.
 fn is_call_return_supported(t: &Type) -> bool {
     match abi_kind(t) {

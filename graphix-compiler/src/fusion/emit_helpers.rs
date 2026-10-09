@@ -110,19 +110,6 @@ impl_helper_arg! {
     i8 => &[AbiTy::I8s];
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
-    // CR claude for claude: [risk] design/unified_value_abi.md says helpers take handle
-    // words as u64, because a typed ArcStr/ValArray parameter holding the 0 sentinel is
-    // UB at the boundary. This impl lets graphix_value_buf_push_string (344),
-    // graphix_arcstr_clone (1018) and graphix_string_buf_push_arcstr (1055) take a
-    // typed ArcStr. A 0 String word from a codegen slip then fails with no message:
-    // graphix_arcstr_clone and graphix_string_buf_push_arcstr dereference null, and
-    // graphix_value_buf_push_string stores a null ArcStr in the array.
-    // graphix_arcstr_drop (1007) stops the same word with its 'JIT codegen bug' assert.
-    // Remove this impl so jit_helpers! refuses typed handles as it does ValArray, give
-    // those three a u64 with the non-zero assert, and return ArcStr as u64 bits
-    // throughout: 727, 1001, 1018, 1048, 1602 and 1616 return a typed ArcStr, while
-    // 859, 890, 951 and 1025 return bits. (f-helpers-07)
-    arcstr::ArcStr => &[AbiTy::I64];
     // CR claude for claude: [structure] A borrowing helper takes the same owning TagValue
     // as a consuming one. So whether a helper borrows or consumes is recorded only in
     // doc comments and in the `std::mem::forget` that each of about twenty readers must
@@ -257,6 +244,25 @@ unsafe fn va_owned(bits: u64) -> ValArray {
     unsafe { std::mem::transmute::<u64, ValArray>(bits) }
 }
 
+/// Release an ArcStr as owned bits.
+#[inline]
+fn arcstr_bits(s: arcstr::ArcStr) -> u64 {
+    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(s) }
+}
+
+/// The ArcStr a kernel's string word holds. A zero word is the pending
+/// sentinel, never a string: a codegen bug `helper` names.
+///
+/// # Safety
+///
+/// `bits` came from an ArcStr-producing helper; a borrowed word's
+/// result is forgotten, never dropped.
+#[inline]
+unsafe fn arcstr_from_bits(bits: u64, helper: &str) -> arcstr::ArcStr {
+    assert!(bits != 0, "{helper}: null ArcStr — JIT codegen bug");
+    unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(bits) }
+}
+
 /// Release a ValArray as owned bits.
 #[inline]
 fn va_bits(a: ValArray) -> u64 {
@@ -373,7 +379,8 @@ unsafe fn graphix_value_buf_push_arcstr(
 }
 
 /// Push an owned `ArcStr` as `Value::String`, consuming it.
-unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: arcstr::ArcStr) {
+unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: u64) {
+    let s = unsafe { arcstr_from_bits(s, "graphix_value_buf_push_string") };
     unsafe { (*buf).push(Value::String(s)) }
 }
 
@@ -617,16 +624,7 @@ unsafe fn graphix_typedcall(
 
 }
 
-/// The trampoline core. The argument discs decide the tag: a tainted
-/// argument bottoms the result without calling, all-stale arguments
-/// make it STALE, and `None` from the fn is this cycle's bottom. A
-/// panic in the fn cannot unwind through the kernel: it aborts the
-/// kernel and `FusedKernel::update` resumes it ([`resume_kernel_panic`]), as
-/// the node-walk's call would have unwound.
-///
-/// SAFETY: `args` is `n` valid clean `Value`s on the call site's stack,
-/// viewed and never owned; the site releases what it owned afterwards.
-// CR claude for claude: [risk] This is the only panic catch in the helpers.
+// XCR claude for claude: [risk] This is the only panic catch in the helpers.
 // graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap also run Graphix
 // code: Value eq/cmp on an abstract value calls its Eq/Ord impl through the hooks
 // FusedKernel::update loans (node/coretraits.rs dispatch_eq, dispatch_cmp). A panic in
@@ -638,6 +636,34 @@ unsafe fn graphix_typedcall(
 // kernel's pending fast-fn panic and resumes it in the wrong branch. Catch panics in
 // the hook-capable helpers as this function does, and save and restore both
 // thread-locals around a run, as the other kernel loans are. (f-helpers-06)
+// 2026-10-08 claude: guard_panic now wraps fast_dispatch's call and the three
+// hook-capable helpers (graphix_value_eq, graphix_map_ref, graphix_valarray_into_cmap),
+// and FusedKernel::update saves and restores KERNEL_ABORT, KERNEL_PANIC and the
+// self-block counters around every run. Nothing pins it: no test reaches a panicking
+// value hook from a kernel. Review the mechanism.
+/// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
+/// impl): a panic there aborts the kernel, `placeholder` stands for the
+/// result, and the panic resumes after the run.
+fn guard_panic<T>(placeholder: T, f: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => {
+            set_kernel_panic(payload);
+            KERNEL_ABORT.with(|c| c.set(true));
+            placeholder
+        }
+    }
+}
+
+/// The trampoline core. The argument discs decide the tag: a tainted
+/// argument bottoms the result without calling, all-stale arguments
+/// make it STALE, and `None` from the fn is this cycle's bottom. A
+/// panic in the fn cannot unwind through the kernel: it aborts the
+/// kernel and `FusedKernel::update` resumes it ([`guard_panic`]), as the
+/// node-walk's call would have unwound.
+///
+/// SAFETY: `args` is `n` valid clean `Value`s on the call site's stack,
+/// viewed and never owned; the site releases what it owned afterwards.
 unsafe fn fast_dispatch(
     call: impl FnOnce(&[Value]) -> Option<Value>,
     args: u64,
@@ -655,18 +681,13 @@ unsafe fn fast_dispatch(
     let tv = if taint_mask != 0 {
         TagValue::tagged(Value::Null, bottom)
     } else {
-        match std::panic::catch_unwind(AssertUnwindSafe(|| call(args_vec))) {
-            Ok(Some(v)) => TagValue::tagged(
+        guard_panic(TagValue::tagged(Value::Null, bottom), || match call(args_vec) {
+            Some(v) => TagValue::tagged(
                 v,
                 if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
             ),
-            Ok(None) => TagValue::tagged(Value::Null, bottom),
-            Err(payload) => {
-                KERNEL_PANIC.with(|p| *p.borrow_mut() = Some(payload));
-                KERNEL_ABORT.with(|c| c.set(true));
-                TagValue::tagged(Value::Null, bottom)
-            }
-        }
+            None => TagValue::tagged(Value::Null, bottom),
+        })
     };
     if crate::dbgenv::gxdbg_dync() {
         eprintln!(
@@ -679,30 +700,7 @@ unsafe fn fast_dispatch(
 
 // Value-shaped helpers take and return `Value` by value in two registers.
 // Readers `mem::forget` their input so the caller keeps its ref; only the
-// consuming helpers (drop, arith, index) take ownership.
-
-/// Unchecked value arithmetic through netidx's operators. An Error
-/// result becomes bottom, as the node-walk's BinOp does; consumes both.
-// CR claude for claude: [dead] value_arith_op and graphix_value_{add,sub,mul,div,rem} are
-// reached only from emit_arith_node's datetime/duration branch (emit/nodes.rs:212), and
-// that branch cannot run. Arithmetic is `'a: Number + Singleton`, and Number holds
-// neither datetime nor duration, so `let d = duration:1.s; d + d` is refused at the
-// check with 'Number does not contain duration' (pinned by datetime_arith07-13). Delete
-// the five helpers, value_arith_op, that branch with its doc line, and
-// lowering::is_datetime_or_duration, whose only use is that branch. Do not revive them
-// as they are: a failing op returns TagValue::phantom (STALE_BOTTOM), which
-// propagate_flags cannot make fresh, while the node-walk sets a fresh bottom when an
-// input fired (node/op.rs:788). (f-helpers-05)
-fn value_arith_op(
-    l: TagValue,
-    r: TagValue,
-    f: impl FnOnce(Value, Value) -> Value,
-) -> TagValue {
-    match f(l.value(), r.value()) {
-        Value::Error(_) => TagValue::phantom(),
-        v => TagValue::fired(v),
-    }
-}
+// consuming helpers (drop, checked arith, index) take ownership.
 
 /// Borrowed read of payload `payload_idx` (slot 0 is the tag). A
 /// placeholder or short array reads as the default.
@@ -760,21 +758,14 @@ safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
 /// Drop an owned Value. Disc 0 is never a real Value, so the pending
 /// sentinel is rejected before an invalid `Value` materializes.
 safe fn graphix_value_drop(tv: TagValue) {
-    // CR claude for claude: [risk] If this assert fires, the unwind drops the still-owned
-    // `tv` before the nounwind abort. TagValue::drop transmutes [0, payload] into a
-    // Value, and no variant has discriminant 0, so the check that diagnoses a leaked
-    // pending sentinel ends in undefined behaviour instead of the clean abort. Put the
-    // parameter out of drop's reach first: `let tv = std::mem::ManuallyDrop::new(tv);`
-    // above the assert, and `drop(std::mem::ManuallyDrop::into_inner(tv))` after it.
-    // Probe (standalone rustc): `extern "C" fn f(d: D) { assert!(d.0 != 0); drop(d) }`,
-    // where D has a printing Drop, prints from the unwind before 'panic in a function
-    // that cannot unwind'. (f-helpers-01)
+    // out of drop's reach while the assert may unwind: a sentinel is no Value
+    let tv = std::mem::ManuallyDrop::new(tv);
     assert!(
         !tv.is_sentinel(),
         "graphix_value_drop: zero discriminant — JIT codegen bug \
          (a pending sentinel leaked into a drop)"
     );
-    drop(tv)
+    drop(std::mem::ManuallyDrop::into_inner(tv))
 }
 
 /// Clone a borrowed Value (tag preserved); the caller keeps its ref.
@@ -808,10 +799,10 @@ unsafe fn graphix_abstract_wrap(
     TagValue::fired(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
-safe fn graphix_abstract_get_arcstr(tv: TagValue) -> arcstr::ArcStr {
+safe fn graphix_abstract_get_arcstr(tv: TagValue) -> u64 {
     let r = tv.with_value(|v| slot_arcstr(crate::abstract_value::payload(v)));
     std::mem::forget(tv);
-    r
+    arcstr_bits(r)
 }
 
 safe fn graphix_abstract_get_array(tv: TagValue) -> u64 {
@@ -826,28 +817,6 @@ safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
     });
     std::mem::forget(tv);
     r
-}
-
-// Value arithmetic consumes both operands; codegen passes them owned.
-
-safe fn graphix_value_add(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| arith(BinOp::Add, false, a, b))
-}
-
-safe fn graphix_value_sub(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| arith(BinOp::Sub, false, a, b))
-}
-
-safe fn graphix_value_mul(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| arith(BinOp::Mul, false, a, b))
-}
-
-safe fn graphix_value_div(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| arith(BinOp::Div, false, a, b))
-}
-
-safe fn graphix_value_rem(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| arith(BinOp::Mod, false, a, b))
 }
 
 // Checked arithmetic yields the catchable `ArithError` value, never
@@ -886,7 +855,7 @@ safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
 // after the call drop only owned temporaries (emit_accessor_source_drop).
 // (f-helpers-04)
 safe fn graphix_value_eq(l: TagValue, r: TagValue) -> u8 {
-    (l.value() == r.value()) as u8
+    guard_panic(0, || (l.value() == r.value()) as u8)
 }
 
 /// `bytes[i]`: the `u8` or the index error, via the shared
@@ -901,7 +870,9 @@ safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
 /// `m{key}`: the value or the not-found error, via the shared
 /// [`map_get`]. Consumes both operands.
 safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
-    TagValue::fired(map_get(&map.value(), &key.value()))
+    guard_panic(TagValue::phantom(), || {
+        TagValue::fired(map_get(&map.value(), &key.value()))
+    })
 }
 
 /// `a[i..j]` over an array or bytes: `flags` bit0 = `start` present,
@@ -960,20 +931,18 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
         _ => arcstr::ArcStr::new(),
     });
     std::mem::forget(v);
-    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+    arcstr_bits(r)
 }
 
-/// A variant payload slot's words, borrowed: valid while the parent
-/// variant is alive, never passed to a consuming or dropping helper. A
-/// shape mismatch yields `Value::Null`.
-// CR claude for claude: [risk] `safe` makes this a safe `pub extern "C" fn`, reachable as
-// graphix_compiler::fusion::emit_helpers::graphix_variant_payload_borrowed. Its result
-// is an owning TagValue that aliases the parent's slot through ptr::read, with no
-// reference taken. Safe code that drops the result releases a reference it never held:
-// a use-after-free of the slot's string or array with no unsafe block anywhere. Declare
-// it `unsafe fn` with the contract that the result is never dropped or consumed, or
-// return a type without Drop. (f-helpers-02)
-safe fn graphix_variant_payload_borrowed(v: TagValue, payload_idx: usize) -> TagValue {
+/// A variant payload slot's words, borrowed. A shape mismatch yields
+/// `Value::Null`.
+///
+/// # Safety
+///
+/// The result aliases the parent's slot: it is valid while the parent
+/// variant is alive and is never dropped or passed to a consuming
+/// helper.
+unsafe fn graphix_variant_payload_borrowed(v: TagValue, payload_idx: usize) -> TagValue {
     let r = v.with_value(|v| match v {
         Value::Array(a) => match a.get(payload_idx + 1) {
             // SAFETY: a bitwise alias of the slot; the kernel never drops
@@ -995,7 +964,7 @@ safe fn graphix_nullable_string(v: TagValue) -> u64 {
         _ => arcstr::ArcStr::new(),
     });
     std::mem::forget(v);
-    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+    arcstr_bits(r)
 }
 
 /// Owned `ValArray` clone of a nullable's composite payload; null
@@ -1058,7 +1027,7 @@ safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
         }
     });
     std::mem::forget(v);
-    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+    arcstr_bits(r)
 }
 
 /// Owned clone of the k-th tail (the `[<h, rest..>]` rest bind), O(1)
@@ -1100,32 +1069,25 @@ fn push_display<T: std::fmt::Display>(buf: *mut StringBuf, v: T) {
 jit_helpers! { registry = string_helpers;
 
 /// Owned clone of a kernel strings-table slot.
-unsafe fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> arcstr::ArcStr {
-    unsafe { (*p).clone() }
+unsafe fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> u64 {
+    arcstr_bits(unsafe { (*p).clone() })
 }
 
 /// Drop an owned ArcStr. Takes raw bits so the zero pending sentinel is
 /// rejected before an invalid `ArcStr` (NonNull) materializes.
 unsafe fn graphix_arcstr_drop(s: u64) {
-    assert!(
-        s != 0,
-        "graphix_arcstr_drop: null ArcStr — JIT codegen bug \
-         (a pending sentinel leaked into a drop)"
-    );
-    // SAFETY: nonzero bits that came from an ArcStr-producing helper.
-    drop(unsafe { std::mem::transmute::<u64, arcstr::ArcStr>(s) })
+    drop(unsafe { arcstr_from_bits(s, "graphix_arcstr_drop") })
 }
 
 /// Clone a borrowed ArcStr; the caller keeps its ref.
-safe fn graphix_arcstr_clone(s: arcstr::ArcStr) -> arcstr::ArcStr {
-    let dup = s.clone();
-    std::mem::forget(s);
-    dup
+unsafe fn graphix_arcstr_clone(s: u64) -> u64 {
+    let s = std::mem::ManuallyDrop::new(unsafe { arcstr_from_bits(s, "graphix_arcstr_clone") });
+    arcstr_bits((*s).clone())
 }
 
 /// The empty-`ArcStr` placeholder for a tainted String position, as bits.
 safe fn graphix_arcstr_empty() -> u64 {
-    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(arcstr::ArcStr::new()) }
+    arcstr_bits(arcstr::ArcStr::new())
 }
 
 /// The empty-`ValArray` placeholder for a tainted composite position,
@@ -1147,14 +1109,15 @@ unsafe fn graphix_string_buf_drop(buf: *mut StringBuf) {
 }
 
 /// Finalize a string buf into an owned ArcStr, consuming the buf.
-unsafe fn graphix_string_buf_finalize(buf: *mut StringBuf) -> arcstr::ArcStr {
+unsafe fn graphix_string_buf_finalize(buf: *mut StringBuf) -> u64 {
     let s = arcstr::ArcStr::from(unsafe { (*buf).as_str() });
     STRING_SHELLS.with(|st| unsafe { st.give(buf) });
-    s
+    arcstr_bits(s)
 }
 
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.
-unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: arcstr::ArcStr) {
+unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: u64) {
+    let s = unsafe { arcstr_from_bits(s, "graphix_string_buf_push_arcstr") };
     unsafe { &mut *buf }.push_str(&s);
 }
 
@@ -1205,7 +1168,9 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 /// `Value::Map` ([`crate::node::collection::pairs_to_map`]).
 unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    TagValue::fired(crate::node::collection::pairs_to_map(arr.iter()))
+    guard_panic(TagValue::phantom(), || {
+        TagValue::fired(crate::node::collection::pairs_to_map(arr.iter()))
+    })
 }
 
 }
@@ -1314,8 +1279,12 @@ thread_local! {
     /// frees the rest. Saved/restored around every kernel invocation.
     pub(crate) static SELF_BLOCK_GEN: Cell<u64> = const { Cell::new(0) };
     /// Activation reaches this invocation; the reclaim runs only when
-    /// it is below the tree size. Saved/restored like [`SELF_BLOCK_GEN`].
+    /// it is below the live tree size. Saved/restored like
+    /// [`SELF_BLOCK_GEN`].
     pub(crate) static SELF_BLOCK_REACHED: Cell<u64> = const { Cell::new(0) };
+    /// Activation blocks this invocation allocated. Saved/restored like
+    /// [`SELF_BLOCK_GEN`].
+    pub(crate) static SELF_BLOCK_MADE: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Free the subtrees of the per-activation block tree at `root` not
@@ -1355,6 +1324,59 @@ pub unsafe fn reclaim_self_block_tree(
             for s in l.slots.iter().filter(|s| at(**s)) {
                 work.push((unsafe { base.add(*s as usize) }, l));
             }
+            for a in l.anchors.iter().filter(|a| at(a.rel)) {
+                freed += unsafe {
+                    reclaim_slot_chain(
+                        base.add(a.rel as usize),
+                        a.own_levels as u64,
+                        a.leaf.as_deref(),
+                        generation,
+                    )
+                };
+            }
+        }
+    }
+    freed
+}
+
+/// [`reclaim_self_block_tree`] for every tree rooted in the call-site
+/// blocks at the leaf of the slot-state chain whose word is at `word`,
+/// and in the chains those blocks root. Returns the blocks freed.
+///
+/// SAFETY: `word` addresses a chain word laid out as `own_levels` and
+/// `leaf` describe.
+pub unsafe fn reclaim_slot_chain(
+    word: *mut u64,
+    own_levels: u64,
+    leaf: Option<&SiteLeaf>,
+    generation: u64,
+) -> u64 {
+    let p = unsafe { *word };
+    let Some(leaf) = leaf.filter(|_| p != 0) else { return 0 };
+    let v: &mut Vec<u64> = unsafe { &mut *(p as *mut Vec<u64>) };
+    let mut freed = 0u64;
+    if own_levels > 0 {
+        for e in v.iter_mut() {
+            freed +=
+                unsafe { reclaim_slot_chain(e, own_levels - 1, Some(leaf), generation) };
+        }
+        return freed;
+    }
+    for block in v.chunks_exact_mut(leaf.stride as usize) {
+        for b in leaf.self_blocks.iter() {
+            freed += unsafe {
+                reclaim_self_block_tree(&mut block[b.rel as usize], &b.layout, generation)
+            };
+        }
+        for a in leaf.anchors.iter() {
+            freed += unsafe {
+                reclaim_slot_chain(
+                    &mut block[a.rel as usize],
+                    a.own_levels as u64,
+                    a.leaf.as_deref(),
+                    generation,
+                )
+            };
         }
     }
     freed
@@ -1604,7 +1626,7 @@ unsafe fn graphix_slot_state_table(
     leaf: *const SiteLeaf,
 ) -> *mut u64 {
     let len = len as usize;
-    // CR claude for claude: [risk] In a forked chunk, the chain levels at the outlined
+    // XCR claude for claude: [risk] In a forked chunk, the chain levels at the outlined
     // loop's own depth (sized by its len) are shared by all chunks. They are safe only
     // because emit_slot_truncates sized them before the fork with the same (len, valid)
     // the chunk passes, so this check takes the read-only path. If the preheader misses
@@ -1615,6 +1637,15 @@ unsafe fn graphix_slot_state_table(
     // inside chunks. Instead, the chunk could reach its shared level through a
     // read-only variant of this helper that panics (a JIT bug) when the table is not
     // already sized. (f-kernel-07)
+    // 2026-10-08 claude: Added graphix_slot_state_table_shared, which takes sized_table's
+    // read-only path or panics (a JIT bug). A chunk (LowerCtx::chunk, set by outline.rs)
+    // reaches the level its own loop sizes through it: the first directory level of
+    // BodyCx::emit_dir_walk, and a callee site's leaf in the outlined body itself
+    // (claim_callee_block with n_dirs == 0). The per-slot levels below keep the mutating
+    // helpers. A nested map and a callee with its own loop and a recursion, forked under
+    // GRAPHIX_PAR=force (389 forked loops), agree with GRAPHIX_PAR=off and never panic;
+    // graphix-tests passes. Nothing pins the panic itself: it needs a missed truncate
+    // record.
     if let Some(table) = unsafe { sized_table(word, len, source_present) } {
         return table;
     }
@@ -1635,6 +1666,19 @@ unsafe fn graphix_slot_state_table(
         v.resize(len, 0)
     }
     v.as_mut_ptr()
+}
+
+/// [`graphix_slot_state_table`] for the level a forked chunk shares with
+/// the others: sized before the fork, so read-only here.
+unsafe fn graphix_slot_state_table_shared(
+    word: *mut u64,
+    len: u64,
+    source_present: u64,
+) -> *mut u64 {
+    unsafe { sized_table(word, len as usize, source_present) }.expect(
+        "graphix_slot_state_table_shared: a shared chain level not sized before \
+         the fork — JIT codegen bug",
+    )
 }
 
 /// The per-activation block for a self-call, allocated on first use
@@ -1661,6 +1705,7 @@ unsafe fn graphix_site_child_block(
         // Index `words`, past the emitted layout, holds the generation stamp.
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
         crate::stack::record_self_blocks(1);
+        SELF_BLOCK_MADE.set(SELF_BLOCK_MADE.get() + 1);
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     v[words] = SELF_BLOCK_GEN.get();
@@ -1714,8 +1759,8 @@ unsafe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64
 }
 
 /// `arr[idx]` as an owned `ArcStr` (String elem).
-unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
-    slot_arcstr(unsafe { va_ref(&bits) }.get(idx))
+unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> u64 {
+    arcstr_bits(slot_arcstr(unsafe { va_ref(&bits) }.get(idx)))
 }
 
 /// `arr[idx]` as an owned `Value`.
@@ -1728,8 +1773,8 @@ unsafe fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
     va_bits(slot_array(struct_field(unsafe { va_ref(&bits) }, sorted_idx)).clone())
 }
 
-unsafe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> arcstr::ArcStr {
-    slot_arcstr(struct_field(unsafe { va_ref(&bits) }, sorted_idx))
+unsafe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> u64 {
+    arcstr_bits(slot_arcstr(struct_field(unsafe { va_ref(&bits) }, sorted_idx)))
 }
 
 unsafe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
@@ -1795,8 +1840,8 @@ thread_local! {
     /// means the result is the abort sentinel.
     pub static KERNEL_ABORT: Cell<bool> = const { Cell::new(false) };
 
-    /// A panic a fast fn raised inside the running kernel, for
-    /// [`resume_kernel_panic`].
+    /// A panic a fast fn or a value hook raised inside the running
+    /// kernel, which `FusedKernel::update` resumes after the run.
     static KERNEL_PANIC: RefCell<Option<Box<dyn Any + Send>>> = const { RefCell::new(None) };
 
     /// The invoking kernel's type environment, loaned for one wrapper
@@ -1869,14 +1914,6 @@ impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
 }
 
 impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
-
-/// Resume the unwind of a panic a fast fn raised in the kernel run that
-/// just returned.
-pub(crate) fn resume_kernel_panic() {
-    if let Some(payload) = KERNEL_PANIC.with(|p| p.borrow_mut().take()) {
-        std::panic::resume_unwind(payload)
-    }
-}
 
 /// Count a fused kernel run against the running runtime once a kernel
 /// commits to running.

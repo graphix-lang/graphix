@@ -1,26 +1,21 @@
-//! The per-context JIT pipeline: [`Jit`] emits a region's bodies
-//! against its own id table ([`Names`]), the backend compiles each to a
-//! [`BodyRecord`], and the region's wrapper record installs into the
-//! current module [`Generation`], cold and warm alike; [`WrappedKernel`]
-//! and the wrapper-seam value packing ([`pack_value_to_u64`]).
+//! The per-context JIT pipeline: an [`Emission`] emits a region's
+//! bodies against its own id table ([`Names`]) and caches them
+//! ([`Caches`]); at a link [`Jit`] compiles each to a [`BodyRecord`] and
+//! installs the region's wrapper record into the current module
+//! [`Generation`], cold and warm alike; [`WrappedKernel`] and the
+//! wrapper-seam value packing ([`pack_value_to_u64`]).
 
-// CR claude for claude: [doc-drift] The module doc above, emit/mod.rs:7-8 and CacheKey's
-// doc (735) make `Jit` the emitter and the owner of the `by_kernel` cache, but
-// `Emission` (its `Names` and `Caches`) emits and caches, and `Jit` only compiles and
-// installs at link. emit/mod.rs:13-17 gives the calling convention as (disc, payload)
-// pairs and leaves out the CTX_WIRE_SLOTS words (cycle context, state, site) in front
-// of them. abi.rs:230-234 says an id-less local's `name` goes unread, yet
-// JitEnv::lookup (abi.rs:274-280) matches id-less locals by name. (f-jit-14)
 use crate::{
     Node, Rt, UserEvent,
     env::Env,
     expr::ExprId,
     fusion::{
-        CalleeBody, LambdaCallInfo,
+        CalleeBody, FusionCtx, LambdaCallInfo,
         emit_helpers::all_helpers,
         kernel_abi::{self, AbiKind, AbiParamKind, KernelKey, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
+    image::ImageBuf,
     profile::{self, Phase},
 };
 use ahash::{AHashMap, AHashSet};
@@ -43,6 +38,7 @@ use cranelift_module::{
     DataId, FuncId, Linkage, Module, ModuleError, ModuleReloc, ModuleRelocTarget,
     default_libcall_names,
 };
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -58,7 +54,10 @@ use triomphe::Arc;
 use super::{
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
     lower::{Callees, EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
-    record::{BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable},
+    record::{
+        BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable,
+        record_decode, record_encode,
+    },
     scalar::prim_to_clif,
 };
 
@@ -702,13 +701,48 @@ pub struct WrappedKernel {
     /// `Box<Vec<u64>>` chain owned by `graphix_slot_state_table` and
     /// freed by `FusedKernel`'s `Drop`.
     pub(crate) slot_table_words: Vec<kernel_abi::SiteAnchor>,
-    /// The body's own per-call-site block layout. A caller supplies the
-    /// block; for a region parent the runtime `FusedKernel` supplies it from
-    /// its own per-instance storage.
-    pub(crate) own_site: Option<SiteLayout>,
     /// Per-activation block-tree roots living in the parent's state
-    /// buffer; `FusedKernel` frees and resets them with its own site block.
+    /// buffer; `FusedKernel` frees and resets them.
     pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
+}
+
+impl WrappedKernel {
+    /// What an image carries for this kernel: its layout and its
+    /// wrapper's record.
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        encode_varint(self.state_words as u64, buf);
+        self.slot_table_words.encode(buf)?;
+        self.state_self_blocks.encode(buf)?;
+        record_encode(self.wrapper(), buf)
+    }
+
+    /// A kernel an image carried, installed into `fusion`'s module.
+    pub(crate) fn image_decode(
+        fusion: &FusionCtx,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let state_words = decode_varint(buf)? as usize;
+        let slot_table_words = Pack::decode(buf)?;
+        let state_self_blocks = Pack::decode(buf)?;
+        let wrapper = record_decode(buf)?;
+        fusion
+            .jit()
+            .and_then(|mut jit| {
+                jit.load_wrapped(
+                    &wrapper,
+                    state_words,
+                    slot_table_words,
+                    state_self_blocks,
+                )
+            })
+            .map_err(|e| {
+                log::warn!(
+                    "loading the kernel `{}` from the image: {e:#}",
+                    wrapper.label
+                );
+                PackError::InvalidFormat
+            })
+    }
 }
 
 /// A linked region's wrapper.
@@ -748,7 +782,7 @@ impl WrappedKernel {
     }
 }
 
-/// A compiled kernel body's identity in the [`Jit`]'s cache: a body
+/// A compiled kernel body's identity in an [`Emission`]'s cache: a body
 /// bakes its sibling kernels' FuncIds, which depend on the region's
 /// ordered kernel list, so only identical layouts may share a
 /// compilation. A body with no sibling sites uses layout 0.
@@ -785,7 +819,7 @@ struct Caches {
     base: Option<Arc<Caches>>,
     /// Lambda kernel bodies; the entry holds the `Arc` so the key's
     /// address cannot be reused by a later allocation.
-    by_kernel: BTreeMap<CacheKey, CachedKernel>,
+    by_kernel: BTreeMap<CacheKey, CachedBody>,
     /// The first layout id this layer mints; 0 is the layout-independent
     /// id.
     first_layout: u32,
@@ -808,7 +842,7 @@ impl Caches {
         self.first_layout + self.layout_ids.len() as u32
     }
 
-    fn by_kernel(&self, key: &CacheKey) -> Option<&CachedKernel> {
+    fn by_kernel(&self, key: &CacheKey) -> Option<&CachedBody> {
         self.by_kernel.get(key).or_else(|| self.base.as_ref()?.by_kernel(key))
     }
 
@@ -988,7 +1022,7 @@ impl Emission {
             }
         }
         let mut moved: LPooled<AHashMap<u32, FuncId>> = LPooled::take();
-        let mut kept: LPooled<Vec<(CacheKey, CachedKernel)>> = LPooled::take();
+        let mut kept: LPooled<Vec<(CacheKey, CachedBody)>> = LPooled::take();
         for (key, cached) in by_kernel {
             let key = CacheKey {
                 kernel: same.get(&key.kernel).copied().unwrap_or(key.kernel),
@@ -1367,12 +1401,10 @@ impl Jit {
         &mut self,
         wrappers: &[Arc<BodyRecord>],
     ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
-        let e = match self.generation.install(wrappers) {
-            Ok(p) => return Ok((p, self.generation.code.clone())),
+        let e = match self.try_install(wrappers) {
+            Ok(r) => return Ok(r),
             Err(e) => e,
         };
-        self.generation = Generation::new(&self.shared.isa)?;
-        self.retired += 1;
         if !e.chain().any(|c| c.is::<ArenaExhausted>()) {
             return Err(e);
         }
@@ -1381,28 +1413,33 @@ impl Jit {
              kernel drops) and reinstalling in a fresh module",
             self.retired
         );
-        // CR claude for claude: [risk] If this reinstall fails too, the fresh generation
-        // stays current with the failed install's declared and defined functions and
-        // constant symbols still in it, which the Generation doc says cannot happen
-        // ('never finalized again'). The next finalize_definitions here would relocate
-        // a leftover thunk or chunk against its never-defined owner, and cranelift-jit
-        // panics with 'can't resolve symbol'. Today every path panics anyway (the link
-        // panics on this error, and a warm region too big for a fresh arena cannot link
-        // cold either), so this is latent. Retire the generation again before returning
-        // the error. (f-jit-07)
-        let p = self.generation.install(wrappers)?;
-        Ok((p, self.generation.code.clone()))
+        self.try_install(wrappers)
+    }
+
+    /// Install into the current generation; a failure retires it, so a
+    /// generation never holds a failed install's definitions.
+    fn try_install(
+        &mut self,
+        wrappers: &[Arc<BodyRecord>],
+    ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
+        match self.generation.install(wrappers) {
+            Ok(p) => Ok((p, self.generation.code.clone())),
+            Err(e) => {
+                self.generation = Generation::new(&self.shared.isa)?;
+                self.retired += 1;
+                Err(e)
+            }
+        }
     }
 
     /// The wrapped kernel a region restored from an image dispatches:
     /// its wrapper record installed and finalized, over the layout data
     /// the image carried.
-    pub(crate) fn load_wrapped(
+    fn load_wrapped(
         &mut self,
         wrapper: &Arc<BodyRecord>,
         state_words: usize,
         slot_table_words: Vec<kernel_abi::SiteAnchor>,
-        own_site: Option<SiteLayout>,
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
     ) -> Result<WrappedKernel> {
         // CR claude for claude: [perf] A warm start installs and finalizes each restored
@@ -1423,33 +1460,19 @@ impl Jit {
             state_words,
             slot_table_words,
             state_self_blocks,
-            own_site,
         })
     }
 }
 
-// CR claude for claude: [dead] state_words, slot_table_words and state_self_blocks are
-// written (1517-1519, 1547-1549) and never read. A callee body claims only through its
-// site block, and the region parent's values go straight into its WrappedKernel, so the
-// fields and their 'filled in phase 2' docs send a reader after nothing, and rustc does
-// not flag them. Delete them. lowering::CachedKernel, the lambda signature behind
-// LambdaCallInfo, has the same name; this cache of bodies would read better as
-// CachedBody. (f-jit-12)
-struct CachedKernel {
+struct CachedBody {
     /// The body's id in [`Names`].
     func_id: FuncId,
     signature: Signature,
-    /// See [`WrappedKernel::slot_table_words`]; filled in phase 2.
-    slot_table_words: Vec<kernel_abi::SiteAnchor>,
-    /// See [`WrappedKernel::state_self_blocks`]; filled in phase 2.
-    state_self_blocks: Vec<kernel_abi::SelfBlock>,
     /// Filled when the body is emitted. `None` at a caller's emission
     /// is a self-call, which roots a per-activation block tree.
     site_layout: Option<SiteLayout>,
     /// Holds the Arc so its pointer cannot be reused by a later allocation.
     _kernel: Arc<KernelSig>,
-    /// See [`WrappedKernel::state_words`].
-    state_words: usize,
 }
 
 /// Emit `kernel` and its callees by walking their Nodes' `emit_clif`,
@@ -1575,13 +1598,10 @@ fn compile_region_inner(
                 let fid = em.names.local(&sig);
                 em.caches.by_kernel.insert(
                     key,
-                    CachedKernel {
+                    CachedBody {
                         func_id: fid,
                         signature: sig.clone(),
                         _kernel: k.clone(),
-                        state_self_blocks: Vec::new(),
-                        state_words: 0,
-                        slot_table_words: Vec::new(),
                         site_layout: None,
                     },
                 );
@@ -1609,15 +1629,16 @@ fn compile_region_inner(
         em.pending.push(pending);
         callee_layouts.insert(key.kernel, emitted.site_layout.clone());
         if let Some(cached) = em.caches.by_kernel.get_mut(key) {
-            cached.state_words = emitted.state_words;
-            cached.slot_table_words = emitted.slot_table_words;
-            cached.state_self_blocks = emitted.state_self_blocks;
             cached.site_layout = Some(emitted.site_layout);
         }
     }
     let (emitted, pending) =
         emit_kernel_body(em, kernel, &funcids, parent, &callee_layouts)?;
     em.pending.push(pending);
+    debug_assert_eq!(
+        emitted.site_layout.words, 0,
+        "a region parent claims no site words"
+    );
     // Phase 3: the parent's wrapper.
     let (wrapper_id, func) = emit_wrapper(em, kernel, parent_fid)?;
     let entry = Arc::new(OnceLock::new());
@@ -1632,7 +1653,6 @@ fn compile_region_inner(
         state_words: emitted.state_words,
         slot_table_words: emitted.slot_table_words,
         state_self_blocks: emitted.state_self_blocks,
-        own_site: Some(emitted.site_layout),
     })
 }
 

@@ -116,6 +116,27 @@ async fn fused_recursion_sheds_unreached_blocks() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn fused_loop_recursion_sheds_unreached_blocks() -> Result<()> {
+    // Two slots of a fused loop take turns going 50 deep: the slot that
+    // went shallow frees its tree, so one deep tree is live, not two.
+    let blocks = collect_n_blocks(
+        "{ let x = array::iter([i64:0, i64:1]); \
+           let rec f = |k: i64| -> i64 select k { i64:0 => i64:0, _ => k + f(k - i64:1) }; \
+           let src = array::init(i64:2, |i| select i == x { true => i64:50, false => i64:1 }); \
+           array::map(src, |y| f(y)) }",
+        2,
+    )
+    .await?;
+    if blocks[0] < 40 || blocks[1] > 70 {
+        bail!(
+            "per-slot recursion shrink reclaim off: live SelfBlocks {blocks:?} \
+             (expected ~51 after each turn)"
+        );
+    }
+    Ok(())
+}
+
 /// Every mode produces the same first `n` values.
 async fn assert_agree(code: &str, n: usize) -> Result<()> {
     let interp = as_i64(&collect_n(code, Mode::Interp, n).await?)?;

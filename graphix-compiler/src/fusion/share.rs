@@ -9,10 +9,8 @@ use crate::{
     ApplyView, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, Rt, UserEvent,
     expr::ExprId,
     fusion::{
-        FusedKernel, collect_region_inputs,
-        emit::{WrappedKernel, record_decode, record_encode},
-        for_each_reachable_node,
-        kernel_abi::{KernelSig, SelfBlock, SiteAnchor},
+        FusedKernel, collect_region_inputs, emit::WrappedKernel, for_each_reachable_node,
+        kernel_abi::KernelSig,
     },
     image::{self, ImageBuf},
     node::genn,
@@ -251,14 +249,6 @@ pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
 }
 
 impl SlotShare {
-    // CR claude for claude: [structure] This codec and image_decode below repeat
-    // FusedKernel's codec (fusion/kernel.rs:299-303 and 191-214) at lines 264-268,
-    // 294-298 and 306-324. Both write and read state_words, slot_table_words, own_site,
-    // state_self_blocks and the wrapper record, then make the same load_wrapped call
-    // with the same warning. A field added to WrappedKernel has to be added in four
-    // places, and missing one breaks only one node kind's warm start. A
-    // WrappedKernel::image_encode / image_decode pair next to the type in
-    // fusion/emit/jit.rs, replacing load_wrapped, would serve both. (c-image-09)
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.base as u64, buf);
         encode_varint(self.table.len() as u64, buf);
@@ -268,13 +258,8 @@ impl SlotShare {
                 continue;
             };
             buf.put_u8(1);
-            let w = &e.jit;
             e.root.encode(buf)?;
-            encode_varint(w.state_words as u64, buf);
-            w.slot_table_words.encode(buf)?;
-            w.own_site.encode(buf)?;
-            w.state_self_blocks.encode(buf)?;
-            record_encode(w.wrapper(), buf)?;
+            e.jit.image_encode(buf)?;
             e.print.callees.encode(buf)?;
             encode_varint(e.print.raises.len() as u64, buf);
             for (h, t, s) in e.print.raises.iter() {
@@ -300,11 +285,7 @@ impl SlotShare {
                 continue;
             }
             let root = ExprId::decode(buf)?;
-            let state_words = decode_varint(buf)? as usize;
-            let slot_table_words: Vec<SiteAnchor> = Pack::decode(buf)?;
-            let own_site = Pack::decode(buf)?;
-            let state_self_blocks: Vec<SelfBlock> = Pack::decode(buf)?;
-            let wrapper = record_decode(buf)?;
+            let jit = WrappedKernel::image_decode(&ctx.fusion, buf)?;
             let callees = Pack::decode(buf)?;
             let nraises = decode_varint(buf)? as usize;
             let mut raises = Vec::with_capacity(nraises.min(1024));
@@ -312,26 +293,7 @@ impl SlotShare {
                 let h = image::handler_decode(buf)?;
                 raises.push((h, ExprId::decode(buf)?, ExprId::decode(buf)?));
             }
-            let jit = ctx
-                .fusion
-                .jit()
-                .and_then(|mut jit| {
-                    jit.load_wrapped(
-                        &wrapper,
-                        state_words,
-                        slot_table_words,
-                        own_site,
-                        state_self_blocks,
-                    )
-                })
-                .map_err(|e| {
-                    log::warn!(
-                        "loading the shared kernel `{}` from the image: {e:#}",
-                        wrapper.label
-                    );
-                    PackError::InvalidFormat
-                })?;
-            let kernel = wrapper.kernel.clone();
+            let kernel = jit.wrapper().kernel.clone();
             let print = RegionPrint { callees, raises };
             table.push(Some(SharedRegion { root, kernel, jit, print }));
         }

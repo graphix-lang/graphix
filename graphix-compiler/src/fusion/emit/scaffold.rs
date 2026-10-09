@@ -35,7 +35,7 @@ use super::{
         BodyCx, emit_interrupt_check, ensure_owned_composite_src, ensure_owned_value_src,
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
-    lower::SelWord,
+    lower::StateWord,
     outline,
     scalar::{prim_to_clif, scalar_to_payload_i64, valarray_get_helper, widen_to_i64},
 };
@@ -250,13 +250,13 @@ fn open_loop(
     cx: &mut BodyCx,
     len: ClifValue,
     src_disc: ClifValue,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     entered: ClifValue,
 ) -> Result<LoopFrame> {
     let i_var = cx.b.declare_var(types::I64);
     let zero = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(i_var, zero);
-    cx.open_slot_tables(sel_sites, len, src_disc, i_var)?;
+    cx.open_slot_tables(state_sites, len, src_disc, i_var)?;
     Ok(LoopFrame::blocks(cx, i_var, len, entered))
 }
 
@@ -447,7 +447,7 @@ pub struct SlotFlags {
     /// The loop instance's prev-length word: `len + 1` after a run over
     /// a source, 0 before any; a bottom source sets [`FORGOT`] over it,
     /// forgetting the length (its return is a resize) but not the slots.
-    word: Option<SelWord>,
+    word: Option<StateWord>,
     /// The slots the instance entered before this run (all, `u64::MAX`,
     /// without a word): a slot at or past it is new.
     entered: ClifValue,
@@ -465,14 +465,17 @@ impl SlotFlags {
         let word = match cx.claim_state_word() {
             Some(off) => {
                 let sp = cx.state_ptr();
-                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
+                Some(StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
             }
-            None => match cx.collection_site().and_then(|id| cx.slot_select_word(id)) {
+            None => match cx.collection_site().and_then(|id| cx.slot_word(id)) {
                 Some(w) => Some(w),
-                // The site block base may be 0 on a recursive back-edge.
+                // in the site block, behind its null guard
                 None if cx.env.loop_depth == 0 => cx.claim_site_word().map(|off| {
                     let base = cx.site_ptr();
-                    SelWord::Guarded { base, addr: cx.b.ins().iadd_imm(base, off as i64) }
+                    StateWord::Guarded {
+                        base,
+                        addr: cx.b.ins().iadd_imm(base, off as i64),
+                    }
                 }),
                 None => None,
             },
@@ -488,8 +491,8 @@ impl SlotFlags {
         let all = cx.b.ins().iconst(types::I64, -1);
         let entered = match word {
             None => all,
-            Some(SelWord::Sure(addr)) => entered(cx, addr),
-            Some(SelWord::Guarded { base, addr }) => {
+            Some(StateWord::Sure(addr)) => entered(cx, addr),
+            Some(StateWord::Guarded { base, addr }) => {
                 let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
                 let read = cx.b.create_block();
                 let merge = cx.b.create_block();
@@ -544,10 +547,10 @@ impl SlotFlags {
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
         let (stale, src_counts) = match self.word {
             None => self.conservative_stale(cx, fired_word, src_word),
-            Some(SelWord::Sure(addr)) => {
+            Some(StateWord::Sure(addr)) => {
                 self.exact_stale(cx, addr, fired_word, src_word, src_taint)
             }
-            Some(SelWord::Guarded { base, addr }) => {
+            Some(StateWord::Guarded { base, addr }) => {
                 self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
             }
         };
@@ -570,7 +573,7 @@ impl SlotFlags {
     }
 
     /// [`exact_stale`](Self::exact_stale) behind a null-guard on `base`
-    /// (0 on a recursive back-edge); the conservative rule on the 0 path.
+    /// (the site block's); the conservative rule on the null path.
     fn guarded_exact_stale(
         &self,
         cx: &mut BodyCx,
@@ -764,7 +767,7 @@ fn emit_slots(
     flags: &SlotFlags,
     kind: SinkKind,
     (src, src_disc, len): (ClifValue, ClifValue, ClifValue),
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // CR claude for eric: [bug] Under a tainted source this runs `len` iterations over
@@ -791,11 +794,11 @@ fn emit_slots(
     // I lean (a), which matches 'bottom scrutinee => bottom select'.
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
-        let lp = outline::Loop { kind, src, src_disc, len, entered, sel_sites };
+        let lp = outline::Loop { kind, src, src_disc, len, entered, state_sites };
         return outline::emit_outlined(cx, lp, accs, iteration);
     }
     let sink = open_sink(cx, kind, len)?;
-    let lp = open_loop(cx, len, src_disc, sel_sites, entered)?;
+    let lp = open_loop(cx, len, src_disc, state_sites, entered)?;
     iteration(cx, &lp, &Slots { src, src_disc, sink, accs })?;
     lp.close(cx)?;
     Ok(match sink {
@@ -816,7 +819,7 @@ pub(crate) fn emit_init_loop<F>(
     idx_id: Option<BindId>,
     out_typ: &Type,
     out_src: CompositeSource,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     body: F,
 ) -> Result<(ClifValue, SlotFlags, ClifValue)>
 where
@@ -854,7 +857,7 @@ where
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
     flags.accs.fold(cx, disc);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), state_sites, {
         |cx, lp, s| {
             let ((), value) = lp.run(
                 cx,
@@ -891,7 +894,7 @@ pub(crate) fn emit_map_loop<F>(
     elem: &HofElem,
     out_typ: &Type,
     out_src: CompositeSource,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -901,7 +904,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -921,7 +924,7 @@ pub(crate) fn emit_filter_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     predicate: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -931,7 +934,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
         |cx, lp, s| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
@@ -968,7 +971,7 @@ pub(crate) fn emit_filter_map_loop<F>(
     elem: &HofElem,
     out_elem: &Type,
     out_src: CompositeSource,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -984,7 +987,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -1032,7 +1035,7 @@ pub(crate) fn emit_flat_map_loop<F>(
     arr: ArraySrc,
     elem: &HofElem,
     extend_kind: FlatMapExtend,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
@@ -1042,7 +1045,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, state_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -1186,7 +1189,7 @@ pub(crate) fn emit_fold_loop<'a, 'f, 'c, I, F>(
     acc_name: &ArcStr,
     acc_id: Option<BindId>,
     elem: &HofElem,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     init: I,
     body: F,
 ) -> Result<(CompiledExpr, SlotFlags)>
@@ -1213,7 +1216,7 @@ where
     cx.b.def_var(acc_var, init_pay);
     let d0 = acc.carry_disc(cx, init_disc);
     cx.b.def_var(acc_disc_var, d0);
-    let lp = open_loop(cx, len, arr.disc, sel_sites, flags.entered)?;
+    let lp = open_loop(cx, len, arr.disc, state_sites, flags.entered)?;
     // The acc binds before the interrupt poll so the poll's abort cleanup
     // drops an owned acc. Acc leaves carry the acc's loop-carried
     // TAINT|STALE; unlike an element, the acc can be tainted.
@@ -1309,7 +1312,7 @@ pub(crate) fn emit_find_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     predicate: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
@@ -1319,7 +1322,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, state_sites, {
         |cx, lp, s| {
             let (found_var, result_disc_var, result_payload_var) = s.found();
             let (bound, keep) =
@@ -1369,7 +1372,7 @@ pub(crate) fn emit_find_map_loop<F>(
     cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
-    sel_sites: &[ExprId],
+    state_sites: &[ExprId],
     body: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
@@ -1379,7 +1382,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, state_sites, {
         |cx, lp, s| {
             let (found_var, result_disc_var, result_payload_var) = s.found();
             let (bound, (disc, payload)) =

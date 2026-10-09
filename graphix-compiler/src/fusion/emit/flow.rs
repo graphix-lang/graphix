@@ -334,17 +334,9 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
 
-/// Bind one `let` into the env by the value's runtime shape.
-/// Composite/value lets clone borrowed sources so this scope owns
-/// them.
 /// Bind `value` as a local of the binding's type `typ`, in that type's
-/// representation: every read of the local sees the binding's type.
-// CR claude for claude: [doc-drift] Two docs are stacked on this function, and the first
-// is wrong. The local is not bound by the value's runtime shape but by the binding's
-// type `typ`: `ak` comes from `typ`, and a value-shaped value is widened to it by
-// widen_result_to_value. Keep one doc: "Bind `value` as a local of the binding's type
-// `typ`, in that type's representation; a borrowed composite or value source is cloned
-// so this scope owns it." (f-call-flow-10)
+/// representation; a borrowed composite or value source is cloned so
+/// this scope owns it.
 fn emit_let_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     name: &ArcStr,

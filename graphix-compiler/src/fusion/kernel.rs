@@ -10,13 +10,11 @@ use crate::{
     BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
     expr::Expr,
     fusion::{
-        emit::{
-            KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
-            record_decode, record_encode,
-        },
+        emit::{KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
         emit_helpers::{
-            self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_REACHED, TagValue,
-            free_self_block_tree, free_slot_chain, reclaim_self_block_tree,
+            self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_MADE,
+            SELF_BLOCK_REACHED, TagValue, free_self_block_tree, free_slot_chain,
+            reclaim_self_block_tree, reclaim_slot_chain,
         },
         kernel_abi::{KernelSig, ParamKind},
         share::Redirects,
@@ -30,7 +28,7 @@ use crate::{
     typ::Type,
 };
 use anyhow::Result;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -61,27 +59,16 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// words. Zero means "no previous observation"; consumers store
     /// `value + 1`.
     state: Box<[u64]>,
-    /// This instance's own call-site block (wire slot 2), the storage a
-    /// kernel caller would otherwise supply.
-    // CR claude for claude: [dead] A wrapper's root body is always a region parent, which
-    // claims only from the State channel (claim_site_word, claim_site_anchor and
-    // claim_self_block_word answer None for it). So WrappedKernel::own_site is always
-    // an empty layout and this block always has zero words: every region that
-    // GRAPHIX_DBG_KERNELS=1 prints shows site_words=0 self_blocks=0. This field is
-    // dead, and so are the own_site walks in Drop, in update's has_self_blocks and
-    // reclaim, the quiescent check, and the own_site entries of both image codecs (here
-    // and in share.rs). Delete own_site, pack 0 in wire slot 2 as kernel_abi.rs:835
-    // already describes, and remove the sentence in kernel_instance_state.md that says
-    // FusedKernel supplies its own site block. (f-kernel-05)
-    site: Box<[u64]>,
     /// The last result; ridden when no feeder fired. Bottom feeders may
     /// belong to untaken branches, so only running the kernel decides
     /// output validity.
     resident: TagValue,
     /// `self_gen` is stamped into every activation block reached by an
     /// invocation; blocks left unstamped are freed afterwards. The walk
-    /// runs only when the reach count falls below `tree_size`.
+    /// runs only when the reach count falls below the live blocks:
+    /// `tree_size` plus those the invocation made.
     self_gen: u64,
+    /// The activation blocks live after the last invocation.
     tree_size: u64,
     /// A slot's kernel shared with its prototype delivers these raises
     /// to the slot's handlers (`fusion::share`).
@@ -101,16 +88,6 @@ impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
         for b in self.jit.state_self_blocks.iter() {
             let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
             unsafe { free_self_block_tree(p, &b.layout) };
-        }
-        if let Some(l) = self.jit.own_site.as_ref() {
-            for b in l.self_blocks.iter() {
-                let p = std::mem::replace(&mut self.site[b.rel as usize], 0);
-                unsafe { free_self_block_tree(p, &b.layout) };
-            }
-            for a in l.anchors.iter() {
-                let p = std::mem::replace(&mut self.site[a.rel as usize], 0);
-                unsafe { free_slot_chain(p, a.own_levels as u64, a.leaf.as_deref()) };
-            }
         }
     }
 }
@@ -135,8 +112,6 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     ) -> Node<R, E> {
         debug_assert_eq!(feeders.len(), kernel.params.len(), "one feeder per param");
         let state = vec![0u64; jit.state_words].into_boxed_slice();
-        let site = vec![0u64; jit.own_site.as_ref().map_or(0, |l| l.words as usize)]
-            .into_boxed_slice();
         Node::new(Self {
             spec,
             typ: KernelType::new(typ),
@@ -146,7 +121,6 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             kernel,
             jit,
             state,
-            site,
             resident: TagValue::phantom(),
             self_gen: 0,
             tree_size: 0,
@@ -211,31 +185,8 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         let typ = Type::decode(buf)?;
         let hooks = bool::decode(buf)?;
         let feeders = decode_nodes(ctx, buf)?.into_boxed_slice();
-        let state_words = decode_varint(buf)? as usize;
-        let slot_table_words = Pack::decode(buf)?;
-        let own_site = Pack::decode(buf)?;
-        let state_self_blocks = Pack::decode(buf)?;
-        let wrapper = record_decode(buf)?;
-        let jit = ctx
-            .fusion
-            .jit()
-            .and_then(|mut jit| {
-                jit.load_wrapped(
-                    &wrapper,
-                    state_words,
-                    slot_table_words,
-                    own_site,
-                    state_self_blocks,
-                )
-            })
-            .map_err(|e| {
-                log::warn!(
-                    "loading the kernel `{}` from the image: {e:#}",
-                    wrapper.label
-                );
-                PackError::InvalidFormat
-            })?;
-        let kernel = wrapper.kernel.clone();
+        let jit = WrappedKernel::image_decode(&ctx.fusion, buf)?;
+        let kernel = jit.wrapper().kernel.clone();
         if feeders.len() != kernel.params.len() {
             return Err(PackError::InvalidFormat);
         }
@@ -245,7 +196,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     /// Nothing ran yet: every word the image does not carry is initial.
     fn quiescent(&self) -> bool {
         let mut slept = self.slept;
-        self.state.iter().chain(self.site.iter()).all(|w| *w == 0)
+        self.state.iter().all(|w| *w == 0)
             && !slept.take()
             && self.self_gen == 0
             && self.tree_size == 0
@@ -319,11 +270,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         self.typ.typ.encode(buf)?;
         self.hooks.encode(buf)?;
         encode_nodes(&self.feeders, buf)?;
-        encode_varint(w.state_words as u64, buf);
-        w.slot_table_words.encode(buf)?;
-        w.own_site.encode(buf)?;
-        w.state_self_blocks.encode(buf)?;
-        record_encode(w.wrapper(), buf)
+        w.image_encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
@@ -388,7 +335,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         } else {
             self.state.as_mut_ptr() as u64
         });
-        slots.push(if self.site.is_empty() { 0 } else { self.site.as_mut_ptr() as u64 });
+        // a region parent claims no site words
+        slots.push(0);
         for (p, tv) in self.kernel.params.iter().zip(polled.drain(..)) {
             let (disc, payload) = Self::stage(&p.kind, &p.name, tv);
             slots.push(disc);
@@ -401,35 +349,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         );
         let mut out: [u64; 2] = [0, 0];
         let f = unsafe { self.jit.fn_ptr() };
-        KERNEL_ABORT.with(|c| c.set(false));
-        // A nested kernel's reaches must not count toward this tree, so
-        // the enclosing thread-local values are saved and restored.
-        // CR claude for claude: [risk] Only activation trees rooted in the parent's state
-        // words are stamped, counted and reclaimed here. A recursive callee called
-        // inside a loop roots its trees in per-slot call-site blocks
-        // (SiteLeaf.self_blocks under slot_table_words), which neither this gate nor
-        // reclaim_self_block_tree reaches, because the reclaim never walks anchors. So
-        // each slot keeps its deepest recursion's blocks until the slot is truncated or
-        // the kernel drops, against shrink = delete. probe:
-        // design/review-2026-10-05/repro/f-kernel-06.gx, where 100 slots each go 60000
-        // deep once, is OOM-killed under MemoryMax=250M after 57 cycles, while one slot
-        // going deep every other cycle finishes under 120M. The same gate also leaves
-        // SELF_BLOCK_GEN and SELF_BLOCK_REACHED untouched for such a kernel, so when it
-        // runs nested on a thread mid-invocation (a stolen pool job, a value hook) its
-        // reaches add to the enclosing kernel's count and delay that kernel's shed.
-        // parallel_eval.md section 9 says these loans and KERNEL_ABORT are saved and
-        // restored around every kernel call; KERNEL_ABORT is reset at 368 and 419
-        // instead. (f-kernel-06)
+        // A run nested in another on this thread (a stolen pool job, a
+        // value hook) must neither see nor clobber the enclosing run's
+        // abort, panic or reach count: each is saved and restored.
+        let outer_abort = KERNEL_ABORT.with(|c| c.replace(false));
+        let outer_panic = emit_helpers::take_kernel_panic();
         let has_self_blocks = !self.jit.state_self_blocks.is_empty()
-            || self.jit.own_site.as_ref().is_some_and(|l| !l.self_blocks.is_empty());
-        let (shrink_gen, saved_gen, saved_reached) = if has_self_blocks {
+            || self.jit.slot_table_words.iter().any(|a| a.roots_trees());
+        let shrink_gen = has_self_blocks.then(|| {
             self.self_gen = self.self_gen.wrapping_add(1);
-            let sg = SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
-            let sr = SELF_BLOCK_REACHED.with(|c| c.replace(0));
-            (Some(self.self_gen), sg, sr)
-        } else {
-            (None, 0, 0)
-        };
+            self.self_gen
+        });
+        let saved_gen = SELF_BLOCK_GEN.with(|c| c.replace(shrink_gen.unwrap_or(0)));
+        let saved_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
+        let saved_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
         // The run reads its env loan under the value-hook loan (a
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
@@ -480,13 +413,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 );
             }
         }
-        let pending = KERNEL_ABORT.with(|c| c.replace(false));
+        let pending = KERNEL_ABORT.with(|c| c.replace(outer_abort));
+        let panic = emit_helpers::take_kernel_panic();
+        if let Some(p) = outer_panic {
+            emit_helpers::set_kernel_panic(p)
+        }
         // Must run before the pending early return. An aborted run
         // reached only a prefix, so its reach count is not a shrink signal.
+        let made = SELF_BLOCK_MADE.with(|c| c.get());
         if let Some(generation) = shrink_gen {
             let reached = SELF_BLOCK_REACHED.with(|c| c.get());
-            if !pending {
-                if reached < self.tree_size {
+            // what was live plus what this run made; an aborted run only adds
+            let live = self.tree_size + made;
+            if pending {
+                self.tree_size = live;
+            } else {
+                if reached < live {
                     // SAFETY: the root words are this kernel's own state,
                     // laid out as the wrapper describes.
                     for b in self.jit.state_self_blocks.iter() {
@@ -498,24 +440,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                             )
                         };
                     }
-                    if let Some(l) = self.jit.own_site.as_ref() {
-                        for b in l.self_blocks.iter() {
-                            unsafe {
-                                reclaim_self_block_tree(
-                                    (&mut self.site[b.rel as usize]) as *mut u64,
-                                    &b.layout,
-                                    generation,
-                                )
-                            };
-                        }
+                    for a in self.jit.slot_table_words.iter() {
+                        unsafe {
+                            reclaim_slot_chain(
+                                (&mut self.state[a.rel as usize]) as *mut u64,
+                                a.own_levels as u64,
+                                a.leaf.as_deref(),
+                                generation,
+                            )
+                        };
                     }
                 }
                 self.tree_size = reached;
             }
-            SELF_BLOCK_GEN.with(|c| c.set(saved_gen));
-            SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
         }
-        super::emit_helpers::resume_kernel_panic();
+        SELF_BLOCK_GEN.with(|c| c.set(saved_gen));
+        SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
+        SELF_BLOCK_MADE.with(|c| c.set(saved_made));
+        if let Some(p) = panic {
+            std::panic::resume_unwind(p)
+        }
         if pending {
             // The out slot is a sentinel, not a Value.
             if crate::dbgenv::graphix_dbg_invoke() {

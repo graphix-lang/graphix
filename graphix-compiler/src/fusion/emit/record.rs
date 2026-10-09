@@ -286,6 +286,24 @@ fn reloc_tag(r: Reloc) -> Result<u8, PackError> {
     })
 }
 
+/// Whether a decoded relocation is one this host emits, writing inside
+/// the `len` bytes of its code.
+fn reloc_fits(r: &RecordReloc, len: usize) -> bool {
+    let x86 = cfg!(target_arch = "x86_64");
+    let width = match r.kind {
+        Reloc::Abs8 => 8,
+        Reloc::Abs4 => 4,
+        Reloc::X86PCRel4 | Reloc::X86CallPCRel4 if x86 => 4,
+        Reloc::Arm64Call | Reloc::Aarch64AdrPrelPgHi21 | Reloc::Aarch64AddAbsLo12Nc
+            if !x86 =>
+        {
+            4
+        }
+        _ => return false,
+    };
+    (r.offset as usize).checked_add(width).is_some_and(|end| end <= len)
+}
+
 fn reloc_of(tag: u8) -> Result<Reloc, PackError> {
     Ok(match tag {
         0 => Reloc::Abs4,
@@ -550,7 +568,7 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             let mut bytes = vec![0u8; n];
             buf.copy_to_slice(&mut bytes);
             let align = decode_varint(buf)?;
-            // CR claude for claude: [risk] A decoded relocation's offset, kind and
+            // XCR claude for claude: [risk] A decoded relocation's offset, kind and
             // addend, and the record's align, reach cranelift-jit unchecked.
             // perform_relocations only debug_asserts offset < size before writing, so
             // an offset past the code is an out-of-bounds write in release. A bad
@@ -567,7 +585,21 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             // chunk and const indices. These checks only harden the structure: the code
             // bytes run unverified too, so the real fix is an integrity check on the
             // entry (see registration.rs:313). (x-image-05)
+            // 2026-10-08 claude: record_decode now refuses an align that is not a power
+            // of two up to a page, and a relocation (reloc_fits) whose kind this host
+            // does not emit (GOT/PLT always, and the other architecture's) or whose write
+            // runs past the code. A warm start of the 512-region arena program still
+            // restores (49 ms against 551 ms cold). state_words and the site layouts are
+            // still trusted, as is the code itself: that waits on the entry integrity
+            // check this CR points to. Nothing pins the refusals; a corrupted-record test
+            // would.
             let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
+            if !align.is_power_of_two() || align > 4096 {
+                return Err(PackError::InvalidFormat);
+            }
+            if relocs.iter().any(|r| !reloc_fits(r, bytes.len())) {
+                return Err(PackError::InvalidFormat);
+            }
             let n = decode_varint(buf)? as usize;
             let mut callees = Vec::with_capacity(n.min(64));
             for _ in 0..n {

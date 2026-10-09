@@ -32,7 +32,7 @@ use super::{
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
     flow::emit_scope_drops,
-    lower::{Channel, LowerCtx, SelWord, SiteLayout, TruncAnchor, TruncLeaf, TruncRec},
+    lower::{Channel, LowerCtx, SiteLayout, StateWord, TruncAnchor, TruncLeaf, TruncRec},
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     record::KernelConst,
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
@@ -374,9 +374,9 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
         0 => cx.claim_state_word().map(|off| {
             let sp = cx.state_ptr();
-            SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
+            StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
         }),
-        _ => cx.slot_select_word(site),
+        _ => cx.slot_word(site),
     };
     // XCR claude for claude: [bug] The callee's context word carries only bit 0 (init |
     // first call), never bit 1 (wake), so inside every cross-kernel callee `genuine =
@@ -553,7 +553,7 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
                 f.pending.push(trunc_rec(TruncAnchor::State(off)));
             }
             let sp = cx.state_ptr();
-            SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
+            StateWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
         }
         None => match cx.claim_site_anchor(n_dirs as u32, leaf_rt.clone()) {
             Some(off) => {
@@ -562,7 +562,7 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
                 }
                 let base = cx.site_ptr();
                 let addr = cx.b.ins().iadd_imm(base, off as i64);
-                SelWord::Guarded { base, addr }
+                StateWord::Guarded { base, addr }
             }
             None => return Ok(cx.b.ins().iconst(types::I64, 0)),
         },
@@ -577,6 +577,14 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
         let (llen, ldisc, lidx) = leaf_frame;
         let lvalid = emit_untainted_i64(cx.b, ldisc);
         let table = match &leaf_rt {
+            // the leaf a chunk's own loop sizes is shared by the chunks
+            _ if n_dirs == 0 && cx.ctx.chunk => {
+                let shared = cx.helper("graphix_slot_state_table_shared")?;
+                let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
+                let words = cx.b.ins().imul(llen, stride);
+                let call = cx.b.ins().call(shared, &[word_addr, words, lvalid]);
+                cx.b.inst_results(call)[0]
+            }
             None => {
                 let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
                 let words = cx.b.ins().imul(llen, stride);
@@ -598,8 +606,8 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
         Ok(cx.b.ins().iadd(table, stride_bytes))
     };
     match anchor {
-        SelWord::Sure(word_addr) => emit_chain(cx, word_addr),
-        SelWord::Guarded { base, addr } => {
+        StateWord::Sure(word_addr) => emit_chain(cx, word_addr),
+        StateWord::Guarded { base, addr } => {
             let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
             let chain_bl = cx.b.create_block();
             let merge = cx.b.create_block();

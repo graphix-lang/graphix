@@ -5,7 +5,7 @@
 
 use super::{
     abi::{JitEnv, STALE, ValueVar, local_payload_ty},
-    body::{BodyCx, emit_kernel_bottom},
+    body::{BodyCx, emit_kernel_abort},
     call::close_buf,
     jit::{ChunkFn, chunk_signature},
     lower::{
@@ -46,7 +46,7 @@ pub(super) struct Loop<'s> {
     pub(super) len: ClifValue,
     /// The slots the loop instance entered before this run.
     pub(super) entered: ClifValue,
-    pub(super) sel_sites: &'s [ExprId],
+    pub(super) state_sites: &'s [ExprId],
 }
 
 /// The frame a chunk reads: the context word, the state and site
@@ -84,7 +84,7 @@ pub(super) fn emit_outlined(
     // here, and push each frame where its index variable exists (open_loop,
     // emit_range). (f-call-flow-11)
     let unused = cx.b.declare_var(types::I64);
-    cx.open_slot_tables(lp.sel_sites, lp.len, lp.src_disc, unused)?;
+    cx.open_slot_tables(lp.state_sites, lp.len, lp.src_disc, unused)?;
     let frame = cx.ctx.slot_tables.borrow_mut().pop().expect("opened above");
     let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
     let (id, pending) = emit_chunk(cx, &lp, &frame.tables, frame.pending, iteration)?;
@@ -137,7 +137,7 @@ pub(super) fn emit_outlined(
     cx.b.ins().brif(aborted, abort_bl, &[], cont_bl, &[]);
     cx.b.switch_to_block(abort_bl);
     cx.b.seal_block(abort_bl);
-    emit_kernel_bottom(cx)?;
+    emit_kernel_abort(cx)?;
     cx.b.switch_to_block(cont_bl);
     cx.b.seal_block(cont_bl);
     let out = |cx: &mut BodyCx, i: usize| {
@@ -285,6 +285,7 @@ fn emit_chunk(
         helper_ids: p.helper_ids,
         helper_refs: HelperRefs::new(p.helper_ids, &names),
         chunks: p.chunks,
+        chunk: true,
         owned_floor: env.mark(),
         in_flight_bufs: RefCell::new(Vec::new()),
         owned_input_stack: RefCell::new(Vec::new()),
