@@ -305,32 +305,6 @@ macro_rules! compare_op {
         });
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
-            // XCR claude for eric: [bug] `<`, `>`, `<=` and `>=` accept references. A
-            // reference's value is its bind id, and parallel compile mints ids in
-            // thread order, so `r1 < r2` over two instances' `&v` prints true on some
-            // runs and false on others, in both engines, with nothing fused. This
-            // breaks the rule that a reference is not a number, and the rule in
-            // design/parallel_compile.md that "anything that iterates by id must not
-            // change output". Refuse the ordering operators when the operand type
-            // `holds_ref`, as `TypeCast` does. A generic `|a, b| a < b` called with
-            // references needs the same refusal at the call (a bound, as `Singleton`
-            // is), and `array::sort` and map keys over references flip in the same way.
-            // probe: design/review-2026-10-05/repro/c-error-op-04.gx (c-error-op-04)
-            // 2026-10-06 claude: comparisons now carry the `Discernible` bound, which
-            // a generic definition takes from its body and each call checks, but it
-            // does not cover this: a lone reference type has no two members to mix
-            // up, so `&i64 < &i64` is still Discernible. Refusing ordering over
-            // references could ride the same machinery (a second bound, or
-            // Discernible refusing references under the orderings only).
-            // 2026-10-06 claude: done as a second bound, `Ordered` (Discernible and no
-            // reference where a comparison looks): the orderings require it, and so
-            // do array::sort, list::sort, min, max, array::dedup, map keys (the
-            // literal and the map:: functions) and db tree keys; a generic
-            // definition takes it from its body, so each call checks it. Eric also
-            // ruled that `==` and `!=` over references compare what they point to,
-            // not the cell (`Equality::Targets`, `ExecCtx::ref_targets`); `uniq`
-            // compares the same way. Pins: lang::byref::byref_ordering_refused,
-            // byref_eq_compares_targets, byref_uniq_compares_targets.
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
