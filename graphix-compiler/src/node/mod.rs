@@ -38,6 +38,18 @@ use smallvec::SmallVec;
 use std::{cell::Cell, iter, mem, sync::OnceLock};
 use triomphe::Arc;
 
+// CR claude for eric: [perf] Investigate reducing the runtime's heap usage. Every call
+// is a retained activation, and a node-walked activation keeps about 21 KB (c-cost-misc-06
+// measured 20.4-21.6 KB per activation of a 22-node body), so memory, not the stack, is
+// what limits how deep or wide a node-walked program can go. An unbounded recursion
+// fills 8 GB in 14 s under --no-fusion and is OOM-killed before the stack budget fires:
+// `let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1,
+// "x") }; go(-100, "x")`, and the fuzzer's children hit their memory limit on its
+// shapes (a 10-09 gate run recorded one as a crash). Measure what one activation holds:
+// its nodes, its per-instance types and env entries, its residents and CachedVals,
+// the bind ids it registers; then see what can be shared with its definition or not
+// kept at all. Containment of a runaway recursion is folded into t-misc-01.
+// (runtime-heap-01)
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
 pub use error::ErrorRelay;

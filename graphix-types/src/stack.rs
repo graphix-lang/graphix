@@ -112,6 +112,18 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 // but the stack-size difference is not, and graphix-fuzz check_par has no containment
 // exemption like check_verdict's, so it records either direction as a parallel
 // evaluation bug. probe: design/review-2026-10-05/repro/t-misc-01.sh (t-misc-01)
+// 2026-10-09 claude: Eric 10-09: fold runaway-recursion containment in here. A 10-09 gate
+// fuzz run found a node-walked unbounded recursion that fills 8 GB in 14 s (--no-fusion)
+// before the 1 GB stack budget fires, since a node-walked activation holds about 21 KB of
+// heap; the shell runs with no budget at all. Proposal: a budget on live activations,
+// charged where one is born (a call site binding an instance; a kernel's per-activation
+// block) and released at its delete, a counter on Control beside the stack budget
+// (GRAPHIX_ACTIVATION_BUDGET), aborting the runtime through the same path. A count
+// follows the program, not the thread or the fork schedule, so the node-walk's
+// containment can move to it, leaving stack bytes for native JIT recursion. A JIT tail
+// loop allocates nothing and is not counted (it spins until interrupted). Defaults:
+// unlimited or very large in the shell, about 100k in the fuzzer's children. See
+// runtime-heap-01 for the footprint itself.
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
         // SAFETY: see `current_control`.
