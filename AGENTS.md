@@ -483,7 +483,9 @@ no elaboration, no fusion, so `#[native]` and the def assertions
 are verified by a build; `--expand` builds) and checks a script's file as one block, as it
 runs, with its names at the root (`compile_script`); a root loads
 through `RootFile::load`, open
-buffers first, paired with its `.gxi`, and under buffer overrides a path
+buffers first, paired with its `.gxi`: a script's interface is spliced
+in and its `val`s and impls checked over the script's names, by the
+run as by the check (`check_script_sig`, right after the check); and under buffer overrides a path
 is never canonicalized (the editor's names rule). Checks are lazy and
 coalesced: a change marks its roots dirty and `ServerState::flush`
 checks them when the client has nothing queued; nothing is checked at

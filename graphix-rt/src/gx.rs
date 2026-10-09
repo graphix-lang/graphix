@@ -6,10 +6,10 @@ use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    View, compile,
+    View,
     expr::{
         self, Expr, ExprId, ExprKind, ModPath, ModuleKind, Origin, ResolverRef,
-        Resolvers, RootFile, Source,
+        Resolvers, RootFile, Sig, Source,
     },
     ide::{Ide, IdeMode},
     image::ProgramRoot,
@@ -881,12 +881,12 @@ impl<X: GXExt> GX<X> {
         &self,
         source: &Source,
         resolvers: &Resolvers,
-    ) -> Result<(Origin, Arc<[Expr]>)> {
-        let (ori, exprs) = match source {
+    ) -> Result<(Origin, Arc<[Expr]>, Option<Sig>)> {
+        let (ori, exprs, sig) = match source {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref()).await?;
-                // CR claude for eric: [bug] A script root's .gxi is only half applied.
+                // XCR claude for claude: [bug] A script root's .gxi is only half applied.
                 // RootFile::load splices its types, uses, mods and traits into the
                 // script, but this line drops root.sig, so the vals are never checked.
                 // `graphix --check foo.gx` and the LSP check a lone module (one that no
@@ -909,7 +909,17 @@ impl<X: GXExt> GX<X> {
                 // script but checks the vals against its top-level names; (c) refuse to
                 // run a file that has an interface. I lean to (b): the run and the check
                 // agree on the verdict and a script keeps its output.
-                (root.ori, root.exprs)
+                // 2026-10-09 claude: Eric ruled 10-09 option (b): a root with an
+                // interface runs and checks as a script; its interface is spliced in and
+                // its vals and declared impls are checked over the script's top-level
+                // names (check_script_sig), by the run as by --check, right after the
+                // check and before elaboration (compile_script's verifier: fusion may
+                // delete a bound lambda's env entry). The check no longer compiles a lone
+                // root as mod <stem>. The type-after-the-last-val splice already passed.
+                // Pins: graphix-shell/tests/script_interface.rs
+                // (val_declared_otherwise_is_refused and missing_items_are_refused fail
+                // on the run with the fix undone; matching_interface_checks).
+                (root.ori, root.exprs, root.sig)
             }
             source @ Source::Netidx(_) => {
                 // Non-file transports are fetched by whichever resolver claims
@@ -922,16 +932,16 @@ impl<X: GXExt> GX<X> {
                 let src = fetch.await?;
                 let ori =
                     Origin { parent: None, source: source.clone(), text: src.clone() };
-                (ori.clone(), expr::parser::parse(ori)?)
+                (ori.clone(), expr::parser::parse(ori)?, None)
             }
             Source::Internal(src) => {
                 let ori =
                     Origin { parent: None, source: source.clone(), text: src.clone() };
-                (ori.clone(), expr::parser::parse(ori)?)
+                (ori.clone(), expr::parser::parse(ori)?, None)
             }
             Source::Unspecified => bail!("can't load from an unspecified source"),
         };
-        Ok((ori, exprs))
+        Ok((ori, exprs, sig))
     }
 
     async fn check(
@@ -969,9 +979,10 @@ impl<X: GXExt> GX<X> {
             // A package root is the body of `mod <package>`, recompiled
             // over the copy registered at startup.
             let overrides = resolvers_for_call.iter().find_map(|r| r.overrides());
-            // a root with an interface is the body of a module: a package's
-            // under its name, a lone one's under its file's stem
-            let (ori, exprs, modules_at, as_module) = match (&initial_scope, source) {
+            // a package root is the body of a module under its name; a lone
+            // root is a script, its interface checked over its names
+            let (ori, exprs, modules_at, as_module, sig) = match (&initial_scope, source)
+            {
                 (Some(name), Source::File(file)) => {
                     let path =
                         ModPath(netidx_core::path::Path::root().append(name.as_str()));
@@ -981,33 +992,19 @@ impl<X: GXExt> GX<X> {
                     self.ctx.env.package_roots.insert(name.clone());
                     let root = RootFile::load(file, overrides.as_ref()).await?;
                     let ori = root.ori.clone();
-                    (ori, Arc::from_iter([root.into_module(name.clone())]), path, true)
+                    (
+                        ori,
+                        Arc::from_iter([root.into_module(name.clone())]),
+                        path,
+                        true,
+                        None,
+                    )
                 }
                 (Some(_), _) => bail!("only a file can be checked as a package root"),
-                (None, Source::File(file)) => {
-                    let root = RootFile::load(file, overrides.as_ref()).await?;
-                    let stem = file.file_stem().and_then(|s| s.to_str());
-                    match (&root.sig, stem) {
-                        (Some(_), Some(stem)) => {
-                            let name = ArcStr::from(stem);
-                            let path =
-                                ModPath(netidx_core::path::Path::root().append(stem));
-                            self.ctx.env.unbind_scope_subtree(&path);
-                            let ori = root.ori.clone();
-                            (
-                                ori,
-                                Arc::from_iter([root.into_module(name)]),
-                                ModPath::root(),
-                                true,
-                            )
-                        }
-                        _ => (root.ori, root.exprs, ModPath::root(), false),
-                    }
-                }
                 (None, _) => {
-                    let (ori, exprs) =
+                    let (ori, exprs, sig) =
                         self.load_exprs(source, &resolvers_for_call).await?;
-                    (ori, exprs, ModPath::root(), false)
+                    (ori, exprs, ModPath::root(), false, sig)
                 }
             };
             let exprs =
@@ -1062,6 +1059,7 @@ impl<X: GXExt> GX<X> {
                         &Scope::root(),
                         spec,
                         &stmts,
+                        sig.as_ref(),
                     )
                     .map(|n| nodes.push(n))
                 }
@@ -1118,7 +1116,7 @@ impl<X: GXExt> GX<X> {
     ) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
-        let (ori, exprs) = self.load_exprs(source, &self.resolvers).await?;
+        let (ori, exprs, sig) = self.load_exprs(source, &self.resolvers).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
         let exprs =
@@ -1126,16 +1124,24 @@ impl<X: GXExt> GX<X> {
                 .await?;
         info!("resolve time: {:?}", st.elapsed());
         let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
-        let wrapped =
-            wrap_file_in_block(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
+        let stmts = Arc::from_iter(exprs.into_iter());
+        let wrapped = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
         if let Some(sources) = sources {
             program_sources(&wrapped, sources);
         }
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
-        let n = compile(&mut self.ctx.view(), self.flags, &scope, wrapped)
-            .with_context(|| ori.clone())?;
+        // the block's names at its own scope, as compiling it would put them
+        let n = graphix_compiler::compile_script(
+            &mut self.ctx.view(),
+            self.flags,
+            &scope.append_block("do", id.inner()),
+            wrapped,
+            &stmts,
+            sig.as_ref(),
+        )
+        .with_context(|| ori.clone())?;
         let typ = n.typ().clone();
         self.nodes.insert(id, n);
         self.ctx.rt.updated.insert(id, true);

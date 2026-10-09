@@ -23,6 +23,7 @@ pub mod node;
 pub mod node_shape;
 pub(crate) mod perfdbg;
 
+pub use node::module::check_script_sig;
 pub use stack::set_stack_budget;
 pub use stack::{Control, CtlFlag, ParMode, with_control};
 pub mod tval;
@@ -2338,15 +2339,19 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
-    check_and_fuse_inner(ctx, flags, node)?;
+    check_and_fuse_inner(ctx, flags, node, &|_| Ok(()))?;
     ctx.apply_deferred();
     Ok(())
 }
+
+/// What `verify` asks of the checked program, before it elaborates.
+type Verify<'a, R, E> = &'a dyn Fn(&CompileCtx<R, E>) -> Result<()>;
 
 fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
+    verify: Verify<R, E>,
 ) -> Result<()> {
     let st = Instant::now();
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
@@ -2355,6 +2360,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
         .typecheck0(ctx)
         .and_then(|()| drain_pending_settles(ctx))
         .and_then(|()| check_pending_names(ctx))
+        .and_then(|()| verify(ctx))
     {
         ctx.pending_settles.clear();
         ctx.pending_settles.push(Vec::new());
@@ -2492,7 +2498,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
-    compile_top(ctx, flags, spec, |ctx, spec, top_id| {
+    compile_top(ctx, flags, spec, &|_| Ok(()), |ctx, spec, top_id| {
         let (n, scope) = node::compile_statement(
             ctx,
             flags,
@@ -2509,15 +2515,21 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
 /// Compile a script's statements `exprs` as the one block it runs as,
 /// with its names at `scope` itself: every statement is built before any
 /// is checked, so a `let` takes its type from the writers below it.
-/// `spec` is the block's expression.
+/// `spec` is the block's expression; `sig`, its interface, is checked
+/// over its names once the script is.
 pub fn compile_script<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: Expr,
     exprs: &Arc<[Expr]>,
+    sig: Option<&expr::Sig>,
 ) -> Result<Node<R, E>> {
-    compile_top(ctx, flags, spec, |ctx, spec, top_id| {
+    let verify = |cx: &CompileCtx<R, E>| match sig {
+        Some(sig) => check_script_sig(cx, sig, &scope.lexical),
+        None => Ok(()),
+    };
+    compile_top(ctx, flags, spec, &verify, |ctx, spec, top_id| {
         let n =
             node::Block::compile(ctx, flags, spec.clone(), scope, top_id, false, exprs)?;
         Ok((n, scope.clone()))
@@ -2637,6 +2649,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
+    verify: Verify<R, E>,
     build: impl FnOnce(&mut ExecCtx<'_, R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
@@ -2660,9 +2673,10 @@ fn compile_top<R: Rt, E: UserEvent>(
     if let Err(err) = check_pending_imports(ctx) {
         return Err(abandon_stmt(ctx, node, saved, err));
     }
-    if let Err(e) = check_and_fuse(ctx, flags, &mut node) {
+    if let Err(e) = check_and_fuse_inner(ctx, flags, &mut node, verify) {
         return Err(abandon_stmt(ctx, node, saved, e));
     }
+    ctx.apply_deferred();
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing; a check runs no fusion walk and
     // leaves the attributes to a build.

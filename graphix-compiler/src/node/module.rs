@@ -737,6 +737,67 @@ fn check_sig<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// A script's interface over its names at `scope`, once it compiled:
+/// each `val` is the binding of its name there, of a type that matches
+/// the declaration, and each declared impl is implemented. The
+/// interface's other items were spliced into the script.
+pub fn check_script_sig<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    sig: &Sig,
+    scope: &ModPath,
+) -> Result<()> {
+    for si in sig.items.iter() {
+        let at = |e: anyhow::Error| {
+            let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+            e.context(ParserContext { ori, pos: si.pos })
+        };
+        let missing = || at(anyhow!("sig item {si} is missing an implementation"));
+        match &si.kind {
+            SigKind::Bind(BindSig { name, typ: declared }) => {
+                let bind = ctx
+                    .env
+                    .binds
+                    .get(scope)
+                    .and_then(|m| m.get(name.name.as_str()))
+                    .and_then(|id| ctx.env.by_id.get(id));
+                let Some(bind) = bind else { return Err(missing()) };
+                let declared = declared
+                    .scope_refs(scope)
+                    .rewrite_trait_args(&ctx.env)
+                    .map_err(at)?;
+                if let Type::Fn(ft) = &declared {
+                    ft.generalize(0)
+                }
+                if let Err(e) = declared.sig_matches(&ctx.env, &bind.typ) {
+                    return Err(anyhow!(
+                        "val {name} is declared {declared} but implemented {}: {e:#}",
+                        bind.typ
+                    )
+                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos }));
+                }
+            }
+            SigKind::Impl(im) => {
+                let target = im.target.scope_refs(scope);
+                let implemented = match ctx.env.lookup_trait(scope, &im.trait_name) {
+                    Ok(Some(tid)) => {
+                        ctx.env.impl_entry(tid, &target).map_err(at)?.is_some()
+                    }
+                    Ok(None) => false,
+                    Err(e) => return Err(at(e)),
+                };
+                if !implemented {
+                    return Err(missing());
+                }
+            }
+            SigKind::Module(_)
+            | SigKind::Use { .. }
+            | SigKind::TypeDef(_)
+            | SigKind::Trait(_) => (),
+        }
+    }
+    Ok(())
+}
+
 static ERR_TAG: ArcStr = literal!("DynamicLoadError");
 /// A dynamic module's value: `null` once its text loaded, else the
 /// load's error.
