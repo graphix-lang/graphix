@@ -233,7 +233,7 @@ fn run_transaction(
     );
     if let Some(reply) = commit_reply.borrow_mut().take() {
         let _ = reply.send(match result {
-            // XCR claude for claude: [bug] Commit replies null but never calls
+            // CR claude for claude: [bug] Commit replies null but never calls
             // self.trees[0].flush(), so sled leaves the commit in its in-memory log
             // until the 500 ms flusher runs. A program that commits and then calls
             // sys::exit (std::process::exit, so no Drop runs) or crashes loses the
@@ -247,6 +247,10 @@ fn run_transaction(
             // flush takes sled's process-wide lock, so a commit answers only once every other
             // open txn has ended (db2-01). design/review-2026-10-05/repro/db2-09.sh: k = 42
             // after every restart.
+            // 2026-10-09 reviewer: the fix holds (db2-09.sh on a quick build: k = 42 in
+            // all four cases, the "second txn open" one included), but the only catch is
+            // that script, which no gate runs. Owed: a gated pin (a test that re-executes
+            // its binary to commit and exit, then reads k in a fresh process).
             Ok(()) => match trees[0].flush() {
                 Ok(_) => Value::Null,
                 Err(e) => errf!("DbErr", "{e}"),

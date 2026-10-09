@@ -351,20 +351,6 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         }),
         _ => cx.slot_word(site),
     };
-    // XCR claude for claude: [bug] The callee's context word carries only bit 0 (init |
-    // first call), never bit 1 (wake), so inside every cross-kernel callee `genuine =
-    // init & !wake` (line 151) is just `init`. Under an arm wake init is forced to 1,
-    // the fastcall stale mask is zeroed, and a builtin over standing args returns
-    // FIRED. The node-walk keeps `event.wake_init` through the dispatch and returns
-    // STALE. So a re-entered impure arm that calls a fused lambda writes its connects
-    // again and ticks `count` or `~` on every re-entry, and a site's first dispatch
-    // under a wake does the same. Forward the caller's wake bit here, as outline.rs:91
-    // does for chunks: `bor(first_use(word), ishl_imm(wake_flag, 1))`. probe:
-    // design/review-2026-10-05/repro/f-kernel-01.gx (graphix-fuzz check: DIVERGENCE).
-    // (f-kernel-01)
-    // 2026-10-08 claude: forwarded, as outline.rs does for chunks; the wake bit also
-    // decides a constant's WAKE tag bit in the callee. Pins:
-    // lang::select::wake_fire_keeps_targets (the lambda-call column).
     let init = cx.first_use(word);
     CtxWord { init, wake: cx.ctx.wake_flag }.encode(cx.b)
 }

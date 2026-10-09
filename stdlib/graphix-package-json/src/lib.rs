@@ -94,7 +94,7 @@ fn to_json(value: &Value, depth: usize) -> Result<serde_json::Value, String> {
         }
         Value::Decimal(d) => Ok(serde_json::Value::String(d.to_string())),
         Value::String(s) => Ok(serde_json::Value::String(s.to_string())),
-        // XCR claude for claude: [bug] json::write_str writes bytes as an array of numbers
+        // XCR claude for eric: [bug] json::write_str writes bytes as an array of numbers
         // (here) and a datetime as an RFC3339 string (line 96), but json::read's cast
         // (line 180) takes neither back: reading the output into the type it was
         // written from raises InvalidCast (the reader takes a datetime only as epoch
@@ -110,6 +110,14 @@ fn to_json(value: &Value, depth: usize) -> Result<serde_json::Value, String> {
         // key out; and a struct cast reads a field the data omits as null where null casts
         // to its type (graphix-types cast.rs) — a rule every cast now follows, hence the X.
         // Pins: json_round_trips, toml_optional_field_round_trips, toml_map_round_trips.
+        // 2026-10-09 reviewer: the round trips hold and are pinned, but they ride three
+        // changes to what every cast in the language does, which are yours to rule:
+        // (1) graphix-types cast.rs: a struct cast fills a field the data omits with null
+        // wherever null casts to the field's type, so `cast<{a: i64, b: [i64, null]}>`
+        // of `{a: 1}` (and any typed read, subscribe or rpc arg) now succeeds where it
+        // was "struct size mismatch"; (2) netidx-value: a string casts to a datetime
+        // (RFC3339) and (3) an array of numbers casts to bytes. If they stand, CLAUDE.md
+        // should state (1); if not, the json/toml readers need their own conversion.
         Value::Bytes(b) => {
             let mut arr: LPooled<Vec<serde_json::Value>> =
                 b.iter().map(|byte| serde_json::Value::from(*byte)).collect();

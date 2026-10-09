@@ -34,7 +34,7 @@ use crate::encoding::{
 /// A sled handle whose drop runs on a blocking thread: dropping the last
 /// handle flushes the log and joins sled's flusher, which can wait for a
 /// transaction's lock, and must never stall the runtime.
-// XCR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
+// CR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
 // wherever its last Value does, usually in GX::update_nodes on the runtime thread.
 // TreeInner's sled::Tree, CursorInner's sled::Iter and the subscription task's
 // Arc<TreeInner> work the same way. sled's TreeInner::drop then flushes the log in a
@@ -47,6 +47,11 @@ use crate::encoding::{
 // 2026-10-07 claude: Reaped hands the last Db, Tree and Iter handle to
 // spawn_blocking. No test holds a txn across a drop; the repro
 // design/review-2026-10-05/repro/db2-06.gx now ticks through to the commit.
+// 2026-10-09 reviewer: the fix holds (the repro, quick build, --no-cache: "opened B:
+// .../b2.db", the ticks, "committed", exit 0; Db, Tree and cursor Iter are all Reaped),
+// but nothing in the gate fails if Reaped is undone. Owed: the repro as a lib test in
+// lib_tests/db.rs (a txn held open across the last drop of another db's handle; a
+// regression hangs it, which is a result).
 pub(crate) struct Reaped<T: Send + 'static>(ManuallyDrop<T>);
 
 impl<T: Send + 'static> Reaped<T> {
@@ -111,17 +116,6 @@ pub(crate) fn get_db(cached: &CachedVals, idx: usize) -> Option<Db> {
 static OPEN: LazyLock<Mutex<AHashMap<PathBuf, Weak<Reaped<sled::Db>>>>> =
     LazyLock::new(|| Mutex::new(AHashMap::new()));
 
-// XCR claude for claude: [bug] Every delivery calls sled::open, and sled holds
-// an exclusive lock on the database while any handle lives, so opening a
-// path this process already has open fails with 'could not acquire lock ...
-// WouldBlock'. That includes this call when its path re-fires with the same
-// value: the working handle is replaced by the error. Two db::open calls on
-// one path, or two runtimes in one process, fail the same way; a
-// process-wide map from canonical path to a weak handle would hand back the
-// live database. probe: design/review-2026-10-05/repro/db2-16.gx (db2-16)
-// 2026-10-07 claude: one handle per canonical path (OPEN, weak). A db dropped and
-// reopened at once can still fail: the last handle's drop runs on a blocking thread
-// (Reaped) and holds sled's lock until it ends. Pin: db_open_twice.
 fn open_db(path: &str) -> Result<Db> {
     let mut open = OPEN.lock();
     let canonical = || std::fs::canonicalize(path);
@@ -367,20 +361,6 @@ fn tree_params_of_result_type(t: &Type) -> Option<&[Type]> {
 /// A key or value type as its tree's meta stores it: printed with every
 /// typedef expanded, a recursive one by name inside its own expansion, so
 /// two programs agree on the text exactly when they agree on the type.
-// XCR claude for claude: [bug] The type metadata stored on disk and compared on every open
-// is the type printer's single-line text. A typedef nested in the type prints as its
-// name, so Tree<string, Array<Rec>> stores "Array<Rec>" and a program whose Rec differs
-// opens the tree without the DbErr the book and mod.gxi promise; the values come back
-// mistyped and the engines disagree (the JIT reads an i64 field as "", the node-walk
-// yields 42). The text also changes whenever the printer does, and a database whose
-// stored text differs no longer opens. Store a versioned structural encoding of the
-// type with its typedefs resolved and compare that; keep the printed form for messages.
-// probe: design/review-2026-10-05/repro/db2-19.gx (db2-19)
-// 2026-10-07 claude: a tree's types are stored printed with every typedef expanded
-// (a recursive one by name inside its own expansion) and normalized, under a format
-// version (META_VERSION 2); a tree written before refuses to open. The printed text
-// is the format: db_typedef_types_stored_expanded pins one, so a printer change that
-// moves it fails there and needs a META_VERSION bump with a reader for the old text.
 fn stored_type(t: &Type, env: &Env) -> ArcStr {
     const MAX_DEPTH: usize = 256;
     fn expand(t: &Type, env: &Env, open: &mut Vec<*const ()>) -> Type {

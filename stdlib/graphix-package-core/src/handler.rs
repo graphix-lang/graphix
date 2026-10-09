@@ -105,7 +105,7 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
         loop {
             let answer = match self.f.update(ctx).view() {
                 TagView::Fired(tv) => tv.value_cloned(),
-                // XCR claude for claude: [bug] `ready` is cleared when a request goes to the
+                // CR claude for claude: [bug] `ready` is cleared when a request goes to the
                 // handler and set again only when the handler's output fires (871). Some
                 // handlers never fire for a request: one that raises with `?` (the error goes
                 // to the serve site's catch through `throws 'e`), or one that is bottom for it
@@ -121,6 +121,18 @@ impl<R: Rt, E: UserEvent, Q: Reply> Handler<R, E, Q> {
                 // `$` on a missing value shows here; a fresh bottom some other input causes while a
                 // request waits answers it too (the pairing of db1-01). Pin:
                 // lib_tests http_bottom_handler_then_good; the repro answers 500 then "200 hi bob".
+                // 2026-10-09 reviewer: the fix answers 500 to every handler whose reply mixes
+                // the request with an async value. At dispatch `req.method` fires while the
+                // async value is still bottom, so the reply struct is FreshBottom on the
+                // dispatch cycle and the request gets the HandlerError before the value lands.
+                // Probe (quick build, --no-cache, fusion on and off):
+                // `|req| { let page = sys::time::after_idle(duration:100.ms, "p [req.path]");
+                // { body: "[req.method] [page]", .. } }` answers
+                // `500 ["HandlerError", "the handler has no value for this request"]`; inlining
+                // the after_idle in the body string does the same; `body: page` alone answers
+                // 200. A fresh bottom is not "no value for this request" while an async part
+                // is pending; the wedge needs another signal (the raise itself, or a timeout).
+                // Pin to add: a handler of that shape answering 200.
                 TagView::FreshBottom if self.busy => {
                     errf!("HandlerError", "the handler has no value for this request")
                 }

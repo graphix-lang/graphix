@@ -1251,7 +1251,7 @@ fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
 /// select, block or cast as a source), and so is a decorated source, whose
 /// decorations would otherwise stand above the whole chain.
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
-    // XCR claude for claude: [readability] This admits only names and postfix chains, but
+    // CR claude for claude: [readability] This admits only names and postfix chains, but
     // the parser reads any bracket-delimited primary bare as a postfix source and drops
     // parens around one. So the formatter adds a pair it does not need: `(1, 2).0`
     // becomes `((1, 2)).0`, `[1, 2][0]` becomes `([1, 2])[0]`, `{ a: 1 }.a` becomes `({
@@ -1265,6 +1265,13 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     // grammar reads none of them as a postfix source, and ts_expr refuses the bare
     // form. A decorated source keeps its parens too (t-format-resolver-14). Pinned by
     // the print proptests and ts_expr.
+    // 2026-10-09 reviewer: the fix itself holds: `graphix fmt --stdout` prints `(1,
+    // 2).0`, `[1, 2][0]`, `{ a: 1 }.a`, `{ a: 1, b: 2 }.b`, `[<1, 2>][0]`, `{ u$ with b:
+    // 5 }`, `{ u? with b: 5 }` bare and keeps `(42).0`, `(select ..).0` and `{ (u.a) with
+    // .. }`. But no named pin can fail if it is undone: the proptests and ts_expr check
+    // that the output reparses, which the old extra parens also did. To close: add the
+    // bare cases above to parser/test.rs print_bare_chains_round_trip, which already
+    // asserts exact output for `(a + b).c` and `(42).0`.
     use ExprKind::*;
     e.dec.is_none()
         && matches!(

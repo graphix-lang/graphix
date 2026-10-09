@@ -1205,7 +1205,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
-    // XCR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
+    // CR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
     // key's scope is minted fresh on many compiles: a try/with body scope is named by
     // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
     // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
@@ -1227,6 +1227,12 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // ~90 MB (was +18 MB per 400 steps). A check (GXRt::check, the LSP) now rolls back
     // every registry Saved holds, lowered_seqs included. Left: a dynamic module's reload
     // keeps its old lowerings. No pin: RSS by probe only.
+    // 2026-10-09 reviewer: the probe levels off now (debug build, HEAD 32f22367: 87.6 MB
+    // at k 400, 91.6 MB at k 2000), and SeqMachine::compile names its nested scopes by
+    // the machine's id. Back to CR: the note leaves a dynamic module's reload keeping its
+    // old lowerings, which the CR names, and nothing pins the rest. A test that builds
+    // many instances of a function holding a seq in a try/with body and in a lambda
+    // literal and asserts lowered_seqs.len() stays put would.
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;

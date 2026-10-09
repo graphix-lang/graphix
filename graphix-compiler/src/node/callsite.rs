@@ -275,24 +275,6 @@ fn quantified_formal(
     typ: &Type,
 ) -> Result<Option<(Type, LPooled<Vec<RigidGate>>)>> {
     let mut expanded = typ.with_deref(|t| t.cloned());
-    // XCR claude for claude: [bug] This expands the formal one typedef level only, so
-    // an alias of an alias is missed. With `type G = F`, where F is the pinned
-    // `fn<'b: Number>(x: 'b) -> 'b`, G expands to the Ref F, quantified_formal
-    // returns None, and the argument is checked with 'b open, while each call in
-    // the body still picks a new 'b. With the formal written `|f: G|`,
-    // NESTED_QUANTIFIER_MONO and NESTED_QUANTIFIER_CONCRETE
-    // (stdlib/graphix-tests/src/lang/types.rs) both pass --check. `|f: G| f(1.5)`
-    // runs `|x: i64| -> i64 x + 1` on 1.5, and when its i64 result feeds a kernel
-    // the runtime panics at fusion/kernel.rs:243. Expand the whole alias chain
-    // before matching `Type::Fn`, pin the alias form in that table, and pin there
-    // too the typedef'd struct form (`type T = { f: fn<'c: Number>(c: 'c) -> 'c }`,
-    // used as `|t: T|` or `let t: T = ..`; the hole at typ/fntyp.rs:946,
-    // t-fntyp-03) and the free-variable form `{ f: fn(c: 'c) -> 'c }` (env.rs:1451,
-    // gx-ui-01). probe: design/review-2026-10-05/repro/tests-lang-b-02.gx
-    // (tests-lang-b-02)
-    // 2026-10-06 claude: the whole alias chain expands now; `|f: G|` is pinned
-    // (NESTED_QUANTIFIER_ALIAS_* in lang::types::unsound_acceptances_are_refused).
-    // The struct and free-variable forms stay with t-fntyp-03 and gx-ui-01.
     while let Some(t @ Type::Ref(_)) = &expanded {
         expanded = t.lookup_ref_with(env, false)?;
     }
@@ -1240,7 +1222,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
-        // XCR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
+        // CR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
         // at 1196, is only logged: the instance is installed and dispatched anyway,
         // though design/parallel_compile.md says an instance whose signature its
         // definition's does not hold is refused. Any checker gap that lets a mistyped
@@ -1267,6 +1249,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // graphix-tests pass with the refusal in place, and the probe is now refused by
         // the check itself. What would catch a regression: the soak (a checker gap would
         // surface as a failed bind).
+        // 2026-10-09 reviewer: the refusals read right: a failed typecheck0 discards the
+        // apply, build_bound discards it on a failed elaboration and leaves
+        // Callee::Failed, and rebind drops what the failed bind deferred. Back to CR for
+        // the pin only: the probe is refused by the check now and no test reaches a
+        // refused run-time bind (no test looks for "did not type" or "did not
+        // elaborate"), so undoing either refusal fails nothing but the soak. A pin needs
+        // a function value of the wrong type at a dynamic site (a test-only builtin
+        // returning one would do), asserting the site bottoms and logs instead of running
+        // the callee.
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             ctx.discard_apply(apply);
             return Err(

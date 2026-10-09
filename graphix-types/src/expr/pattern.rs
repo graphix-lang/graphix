@@ -216,28 +216,6 @@ impl StructurePattern {
         }
     }
 
-    // XCR claude for claude: [bug] The slice's element type is the union of what its
-    // element patterns infer, so `[0, rest..]` over Array<[i64, null]> infers
-    // Array<i64>, and the select's narrowing (select.rs:1260) never widens it to
-    // the scrutinee's element type. bind_captures then types `rest` and `all@` as
-    // Array<i64> (`[`Open, rest..]` over Array<Tok> gives Array<`Open>).
-    // compile_slice types every element bind with the shared union, and narrowing
-    // binds its cell to only one leftover member (`[1, x]` over Array<[i64, string,
-    // f64]> gives x: [i64, f64]). At run time the arm tests only Array<Any>
-    // (shallow_discriminant), so values outside those types reach the binds: the
-    // check passes ill-typed code, the JIT and the node-walk disagree, a select on
-    // x with no string arm passes as exhaustive and produces nothing, and `select
-    // rest { [`Num(n), ..] => n, _ => 0 }` is refused as dead. CLAUDE.md says a
-    // slice's rest carries the scrutinee's types, so each position, the rest and
-    // `all@` should be typed from the scrutinee. probe:
-    // design/review-2026-10-05/repro/c-pattern-01.gx (jit 12, node-walk "can't add
-    // null"). (c-pattern-01)
-    // 2026-10-08 claude: infer_slice gives the element type one Set member per element,
-    // plus a cell for the rest, and each narrows against the scrutinee's element type on
-    // its own; captures and rests take the narrowed type, normalized. The select's settle
-    // (Reach::new) no longer binds pattern cells against a scrutinee with no open cell.
-    // Pins: lang::select::slice_rest_scrutinee_type, slice_elements_typed_apart,
-    // pattern_typing_refusals.
     /// The inferred type of a slice pattern: its element type is a Set
     /// with one member per element pattern, in order, and with `rest` a
     /// cell last for the elements the rest stands over, so each element

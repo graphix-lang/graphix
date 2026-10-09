@@ -37,7 +37,7 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // any other key type stores each value tagged by its type and
 // self-delimiting.
 
-// XCR claude for claude: [bug] Every key type other than string, bytes and the
+// CR claude for claude: [bug] Every key type other than string, bytes and the
 // integers falls through to Pack here, and Pack's byte order is not the
 // language's order: negative f64/f32 sort after the positives and in reverse,
 // pre-1970 datetimes sort last, true sorts before false, decimals sort by scale
@@ -58,6 +58,14 @@ pub(crate) fn decode_value(data: &[u8]) -> Result<Value> {
 // instead of misreading. Not matched: a Map key, which Value orders by pairing
 // entries from the back when the lengths differ; this encodes entries front to
 // back. Pin: encoding::test::key_bytes_sort_as_values, lib_tests db_float_keys_order.
+// 2026-10-09 reviewer: every case the CR names now sorts as Value does, and both pins
+// fail without the encoding. Open: the Map key gap the note admits, while mod.gxi says
+// every tree keeps keys in `<` order. The mismatch is netidx-value's
+// `PartialOrd for Value` Map arm, which pairs entries from the back (next_back) when
+// the lengths differ, against its own comment (lexicographic, length as tiebreak):
+// {1 => a} < {0 => x, 1 => a} there, front to back says greater. Fix that arm in
+// netidx (then this encoding already matches) and add Maps of unequal length to
+// `values()`, or say in mod.gxi that a Map key is not ordered.
 pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     match (key_typ, v) {

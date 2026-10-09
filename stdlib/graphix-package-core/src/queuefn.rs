@@ -449,7 +449,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) else {
             bail!("queuefn: third argument must be a function")
         };
-        // XCR claude for claude: [bug] The wrapper is built from f's type alone. This
+        // CR claude for claude: [bug] The wrapper is built from f's type alone. This
         // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
         // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
         // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
@@ -465,6 +465,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // wrapper's generated call passes every formal and no more (genn::apply builds
         // no variadic call). The repro's qf now fails --check with that message.
         // Supporting them would need a variadic generated call; X'd for that choice.
+        // 2026-10-09 reviewer: the refusal is in typecheck1, i.e. elaboration, so the
+        // check passes what the build refuses (CLAUDE.md: that is a type-system bug).
+        // `graphix --no-cache --check core-aux-06.gx` prints nothing and exits clean;
+        // running it fails at `let qf` with this message. The LSP and --check never see
+        // it. The refusal belongs in the check (a bound on queuefn's `'a`, as
+        // `Function` is, or a check-time rule), or the wrapper must support them. No pin
+        // exists for either. Refuse vs support is still open.
         // the wrapper's call passes every formal and no more
         if ft.vargs.is_some() || ft.args.iter().any(|a| a.has_default()) {
             bail!(

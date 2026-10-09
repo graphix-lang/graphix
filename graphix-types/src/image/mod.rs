@@ -1029,7 +1029,7 @@ pub fn decode_at<T>(
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
-        // XCR claude for claude: [bug] This guard refuses re-entry of `ord` only when
+        // CR claude for claude: [bug] This guard refuses re-entry of `ord` only when
         // `prev == built`, i.e. only when nothing was entered since this ordinal's last
         // entry. But enter() (l.396) does `self.built += 1` on every call, so a corrupt
         // image whose misframed decode enters at least one object per round (the Type
@@ -1046,6 +1046,17 @@ pub fn decode_at<T>(
         // 2026-10-07 claude: an ordinal is entered at most twice while open, and
         // `built` counts only enters that fill an empty slot. The probe exits 0
         // with the program's output (no unit pin: it needs a cyclic image).
+        // 2026-10-09 reviewer: the guard reads right (an ordinal open twice fails a
+        // third entry, a second needs a slot filled since, and `built` counts only
+        // fills), but nothing exercises it. The probe's exit 0 says nothing: its fixture
+        // x-image-04.img.gz carries format byte 25 and REGISTRATION_FORMAT is now 41, so
+        // the header refuses it and the run is a plain cold start; it exits 0 the same
+        // way with or without the fix. A pin needs a cyclic image built for the current
+        // format: a graphix-types unit test that hand-writes a definition reaching its
+        // own ordinal through an entering object (the Type -> TypeRef params -> REF ord
+        // path) and expects InvalidFormat, or a fixture regenerated with the review's
+        // corrupt.py and a script that checks its format byte before trusting a clean
+        // exit.
         let open = match d.active.get(&ord) {
             None => 0,
             Some((at, open)) if *at != built && *open < 2 => *open,

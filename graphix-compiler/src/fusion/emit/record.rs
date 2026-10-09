@@ -568,7 +568,7 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             let mut bytes = vec![0u8; n];
             buf.copy_to_slice(&mut bytes);
             let align = decode_varint(buf)?;
-            // XCR claude for claude: [risk] A decoded relocation's offset, kind and
+            // CR claude for claude: [risk] A decoded relocation's offset, kind and
             // addend, and the record's align, reach cranelift-jit unchecked.
             // perform_relocations only debug_asserts offset < size before writing, so
             // an offset past the code is an out-of-bounds write in release. A bad
@@ -593,6 +593,13 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             // still trusted, as is the code itself: that waits on the entry integrity
             // check this CR points to. Nothing pins the refusals; a corrupted-record test
             // would.
+            // 2026-10-09 reviewer: the checks read right: reloc_fits takes each kind's
+            // write width and refuses GOT/PLT and the other architecture's kinds, and the
+            // align is checked before use; what else the CR names (state_words, site
+            // layouts, the code itself) is x-image-03's checksum. Back to CR for the pin
+            // only, as the note says: removing the checks fails nothing. A test that
+            // corrupts a warm entry's relocation offset, kind tag and align and asserts
+            // the read fails and the run starts cold would pin it.
             let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
             if !align.is_power_of_two() || align > 4096 {
                 return Err(PackError::InvalidFormat);

@@ -401,7 +401,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 32]>) {
     let n = nodes.len();
-    // XCR claude for claude: [bug] This fork point decides on cost alone, and so do
+    // CR claude for claude: [bug] This fork point decides on cost alone, and so do
     // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
     // operands). Only plan_block applies the rule that two children reaching an ordered
     // call keep their serial order (design/parallel_eval.md §3.2, §6). So two calls of
@@ -423,6 +423,15 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // lang::functions::ordered_siblings_stay_serial, ordered_slots_stay_serial.
     // check_parallel still accepts #[parallel] over such siblings, which then run in
     // order.
+    // 2026-10-09 reviewer: the runtime half holds: with both decide_siblings forced to
+    // Independent, ordered_siblings_stay_serial and ordered_slots_stay_serial fail in par
+    // and jit_par on three runs of three. Back to CR for the check half the CR names:
+    // `let t = #[parallel] (qf(1), qf(2), qf(3));` over one queuefn wrapper `qf` builds
+    // and runs serially ([1, 2, 3]), though CLAUDE.md makes #[parallel] a compile error
+    // where nothing forks, while `#[parallel] { qf(1); qf(2); qf(3) }` is refused
+    // ("statement 2 reads through a reference or a call the compiler cannot resolve").
+    // check_parallel should refuse a tuple, call or operator whose children
+    // analysis::independent rejects, with a pin.
     site.decide_siblings(ctx, n, || crate::analysis::independent(nodes.iter(), ctx));
     fork_point(ctx, nodes, site, gather_in_order, |(t0, mut p0), (t1, p1)| {
         p0.extend(p1);

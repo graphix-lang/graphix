@@ -1467,7 +1467,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.clear();
     }
 
-    // XCR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
+    // CR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
     // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
     // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
     // fires again, while `timer(duration:3.ms, true)` restarts because constants fire
@@ -1486,6 +1486,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     // prints every arm again after Paused -> Live; the wake tests in lang/async_restart
     // pass unchanged, so a pin for the level-argument case is still owed.
     // 2026-10-08 claude: pinned by lang::async_restart::wake_reissues_standing_async (an async builtin over a standing path answers again at the wake).
+    // 2026-10-09 reviewer: the fix holds: the repro (quick build, --no-cache, fusion on
+    // and off) prints "json level 3" again after Paused -> Live and "timer level" counts
+    // on. The pin covers CachedArgsAsync only (is_file over a let-bound path). Timer and
+    // AfterIdle over a level argument (sys/src/time.rs, their `woke` paths) have no
+    // test: no fixture runs `timer(level, ..)` or `after_idle(level, ..)` in a
+    // re-selected arm, so taking out either `woke` passes the gate. Add a run! for each
+    // (the repro's `count(timer(interval, true))` arm is the shape).
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.slept = true;
@@ -1629,26 +1636,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     }
 }
 
-// XCR claude for claude: [bug] sleep() clears the configured #n together with the
-// running count, and update reloads n only from a FIRED #n (line 1147). A level #n
-// (a let, a parameter, a callee's argument) is therefore lost for good once the arm
-// sleeps: take passes nothing ever again, and Skip (1215, 1234) passes everything.
-// A literal #n restarts only because a constant re-fires at the wake. The
-// fired-only seed also leaves take dead from birth when a sibling arm consumed #n's
-// fire before this arm's first selection. Keep the last #n read through seam_value
-// across sleep and have sleep() reset only the remaining count; Throttle::sleep
-// zeroes its #rate the same way. probe:
-// design/review-2026-10-05/repro/x-engine-firing-05.gx (x-engine-firing-05)
-// 2026-10-07 claude: seed_count takes a fired #n as a restart and a standing one
-// when no count runs, so sleep() forgets only the count; Throttle keeps its rate
-// across sleep and takes a standing rate it has not seen. The repro's level and
-// literal #n now agree in every epoch, under x-engine-firing-07's rule (a restarted
-// skip shows nothing until it passes): ... [] [] [7, 7, 8, 8]. No pin checks the
-// values (fuzz pins check engine agreement); wants a soak.
 /// Set the count `#n` gives take and skip: a fired `#n` restarts it, and
 /// a standing one seeds a count not running (after a sleep, or at a birth
 /// whose fire a sibling consumed), so a level `#n` survives a sleep.
-// 2026-10-08 claude: pinned by lang::async_restart::wake_keeps_a_standing_count (take over a let-bound #n across a sleep).
 fn seed_count(n: &TagValue, left: &mut Option<usize>) {
     if let Some(tv) = seam_value(n)
         && (tv.is_fired() || left.is_none())
@@ -2519,7 +2509,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        // XCR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
+        // CR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
         // re-selected arm's input does not fire at the wake, the arm emits the previous
         // activation's count, and the next fire counts 1, so the arm shows 2 and then
         // 1. Once, Take, Skip, Uniq and Hold do the same in their sleep: a woken
@@ -2537,6 +2527,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         // once, uniq and hold sit inside a machine that resets on its arm's sleep.
         // No pin checks the values; a semantics change: wants review and a soak.
         // 2026-10-08 claude: pinned by lang::async_restart::wake_restarts_a_count (a woken count delivers 1, not its pre-sleep total).
+        // 2026-10-09 reviewer: the fix holds (graphix-fuzz run of the repro, every
+        // mode: Trace([-1]; [1]; [2]; []; []; [1])), but the pin cannot fail for it.
+        // In wake_restarts_a_count the arm wakes in the cycle `n` fires, so the woken
+        // count counts that fire and sets `out` to 1 whether or not sleep() cleared it;
+        // only `count = 0` is exercised. The bug needs an input that does NOT fire at
+        // the wake (the repro's in0/in1 schedule: the selector changes, the counted
+        // input stays stale). Pin that shape for count, and for once/uniq/take/hold,
+        // whose `out` resets are unpinned too.
         self.count = 0;
         self.out = TagValue::phantom();
     }

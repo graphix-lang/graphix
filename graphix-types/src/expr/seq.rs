@@ -538,7 +538,7 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
     }
 }
 
-// XCR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
+// XCR claude for eric: [bug] The statement's own attributes (stmt.dec) are dropped
 // here for until, try-let, let and connect statements: the rebuilt guard, sink
 // write, let_pat and connect_path carry no dec. lower_block drops them the same way
 // for a block's lets and connects. Only an expression statement keeps its
@@ -559,6 +559,16 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
 // definition, not a seq one: an assertion no static analysis reaches is checked at the
 // definition's first runtime bind (analysis::analyze_bound_callee), which logs. Refusing
 // it at compile would need the definition analyzed without an instance.
+// 2026-10-09 reviewer: verified on the quick binary: the repro is refused (unknown
+// attribute #[bogus]); `#[native] let y = f(41) + 1` (f async) is refused (did not fully
+// fuse); `#[parallel] b <- y + 1` is refused; `#[bogus] until ..` is refused. Pin
+// lang::seq_lowering::lowering_refusals fails if `decorated` is undone. What Eric must
+// decide: `seq { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); let y =
+// f(41) + 1; y }` logs the #[sync] failure and prints 42, while the same lets at the top
+// level or inside a select arm are a compile error. Per the 10-07 note the difference
+// comes from seq: a call through a step's let dispatches dynamically. Either accept that
+// an assertion on a step-bound definition is a run-time log, or make calls through a
+// step's lambda lets resolve statically.
 /// `value` carrying a statement's decorations too: an attribute on a
 /// seq statement annotates its computation, where the compiler applies
 /// or refuses it.

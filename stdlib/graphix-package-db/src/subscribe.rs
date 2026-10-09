@@ -264,7 +264,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         }
     }
 
-    // XCR claude for claude: [bug] sleep aborts the watch task and forgets tree_val, and
+    // CR claude for claude: [bug] sleep aborts the watch task and forgets tree_val, and
     // the accessors' sleep below drops their bind id. Both re-establish only on a FIRED
     // argument, but at a wake the arm's arguments arrive stale. So a subscription, or
     // an on_insert/on_remove accessor, in a select arm that sleeps once never delivers
@@ -278,6 +278,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
     // watches again, under the same bind id, on its first update after; an accessor
     // keeps its argument and re-refs. Events while asleep are lost (a pause). No lib
     // test; design/review-2026-10-05/repro/db2-05.gx prints [{key: "b", value: 2}].
+    // 2026-10-09 reviewer: the db half holds (the repro, quick build, --no-cache, prints
+    // [{key: "b", value: 2}] after the wake), but two things are open. No test pins it:
+    // add a run! of the repro's shape to lib_tests/db.rs. And sys/watch.rs WatchStream,
+    // named here, is unchanged: its sleep clears `cached` and drops the watches, and
+    // update re-watches only on Invocation::Fired. Probe: the repro's shape with
+    // `sys::fs::watch::path(w)?` in the `On arm and a file written in the dir after the
+    // wake: the control (no `Off) prints ".../b"; with the sleep nothing prints after
+    // "off". It needs the slept bit too.
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.stop();
         self.slept = true;

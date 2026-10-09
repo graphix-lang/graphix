@@ -206,7 +206,7 @@ impl Type {
                         // `acc` is merge-saturated, so only the incoming
                         // element (or its merge result) can enable a new
                         // merge.
-                        // XCR claude for claude: [perf] Each incoming member is tried
+                        // CR claude for claude: [perf] Each incoming member is tried
                         // against every kept one, so normalizing an N-member union
                         // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
                         // union that its idle select normalizes in check_dead_arms, so
@@ -227,6 +227,16 @@ impl Type {
                         // in 1.3 s, was 7.9. A hand-written select over N tags stays
                         // quadratic (4000 tags 4.1 s): check_dead_arms diffs and
                         // could_matches the whole remaining union at every arm.
+                        // 2026-10-09 reviewer: the seq half holds (quick binary, --check
+                        // --no-cache: 16k steps 1.4 s, 32k 2.4 s) and the index keeps the
+                        // earliest-merge order, since a keyed member is tried against its
+                        // key's members and every unkeyed one in order. The finding's
+                        // other half, big tag selects, is not fixed: `type T = [`T0, ..]`
+                        // with one arm per tag checks in 1.8 s at 2000 tags, 6.1 s at 4000
+                        // and 32.9 s at 8000 on the same quick binary (worse than
+                        // quadratic, and slower than the debug numbers above). The
+                        // note blames check_dead_arms without a profile. Stays a CR until
+                        // that path is measured and fixed or split into its own finding.
                         let mut incoming = t;
                         while let Some(m) = acc.merge_with(&incoming) {
                             changed = true;
@@ -237,26 +247,6 @@ impl Type {
                 }
                 true
             };
-        // XCR claude for claude: [bug] The merge is greedy in arrival order and the sort
-        // comes after it, so one member set has several normal forms. [(i64, bool),
-        // (string, bool), (i64, f64)] gives [(i64, f64), ([i64, string], bool)], the
-        // same members in another order give [(i64, [f64, bool]), (string, bool)], and
-        // contains holds both ways. The interface checks compare normal forms by
-        // position (the Set arm of sig_matches, matches.rs:287, and the typedef `!=` at
-        // module.rs:477), so an implementation that writes or infers the union in
-        // another order is refused. For example, `val x: [(i64, bool), (string, bool),
-        // (i64, f64)]` over `let x = select c { 0 => (1, 2.0), 1 => (1, true), _ =>
-        // ("a", true) }` is a signature mismatch. Sorting before the merge would not
-        // make the form canonical, because a union written already merged, like [([i64,
-        // string], bool), (i64, f64)], cannot merge further; those checks want mutual
-        // containment, as find_impl uses. probe:
-        // design/review-2026-10-05/repro/t-fntyp-09.sh (t-fntyp-09)
-        // 2026-10-07 claude: the form stays order-dependent; the checks now compare
-        // ground unions by mutual containment (Type::sig_matches's Set arm, the
-        // typedef body compare in node/module.rs). A union holding an open cell, a
-        // parametric typedef's body included, still compares by position. Pins:
-        // lang::interfaces::typedef_union_in_another_order,
-        // val_union_inferred_in_another_order.
         for t in set {
             if !absorb(t, &mut nested, &mut acc) {
                 return (Type::Any, true);
@@ -633,28 +623,6 @@ impl Type {
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
                 if union_identical(self, t) { Some(self.clone()) } else { None }
             }
-            // XCR claude for claude: [bug] Two fn types merge only when `==`, and `==`
-            // never equates a bound cell with its binding, though the TVar arms below
-            // look through it. So `|x: i64| x * 2` and `|x: i64| -> i64 x + 1`, both
-            // fn(x: i64) -> i64, stay two union members, and a call through `select b {
-            // true => g, false => h }` is refused with "expected fn not [..]"
-            // (deref_typ!, graphix-compiler/src/node/mod.rs:143); with both annotated,
-            // or both unannotated, it is accepted. A generic member beside a
-            // monomorphic one (`|x| x` beside `|x: i64| x + 1`) is refused the same
-            // way, since nothing instantiates it to meet the other. So whether a select
-            // of functions can be called depends on which annotations were written;
-            // `let f: fn(x: i64) -> i64 = select ..` is accepted. probe:
-            // design/review-2026-10-05/repro/x-typecheck-generics-F12.gx
-            // (x-typecheck-generics-F12)
-            // 2026-10-07 claude: the annotation half is fixed: union_identical
-            // looks through a bound cell, so g and h are one member (pin
-            // lang::types::fn_members_merge_through_bindings). Still open: `|x| x`
-            // beside `|x: i64| x + 1` stays two members and the call is refused.
-            // 2026-10-08 claude: done: Type::union meets function members first
-            // (setops.rs meet_open_fns): one with open cells meets another both ways, a
-            // generic one through a fresh instance, so `|x| x` beside `|x: i64| x + 1` is
-            // one member and the select's call is accepted; the generic stays generic.
-            // Pin lang::types::fn_members_meet_a_generic.
             (Type::Fn(_), Type::Fn(_)) => {
                 if union_identical(self, t) {
                     Some(self.clone())

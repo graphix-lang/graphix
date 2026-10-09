@@ -132,7 +132,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
             Ok(id)
         }
         BindMode::Reuse(map) => match map.get(name) {
-            // XCR claude for claude: [bug] Under an inferred predicate, this two-way
+            // CR claude for claude: [bug] Under an inferred predicate, this two-way
             // contains binds the open cells inside both alternatives' inferred
             // types. For a reused capture that binding is the only lasting effect,
             // because PatternNode::compile retypes captures and bind_captures types
@@ -156,6 +156,13 @@ fn leaf_bind<R: Rt, E: UserEvent>(
             // 2026-10-08 claude: Eric ruled: a name or-alternatives share is always the
             // union of their narrowed types, plain binds included (no exact-equality
             // rule). Pin: lang::select::or_binds_union.
+            // 2026-10-09 reviewer: the capture and payload/capture cases hold and are
+            // pinned (the probe is refused, "cannot compute [i64, null] + i64";
+            // or_capture_and_payload). Back to CR for the rest case the CR names: `[1,
+            // r..] | [r.., "a"]` over Array<[i64, string]> is accepted now and runs right
+            // (f([1, 2]) = 1, f(["x", "a"]) = 1, both engines), but no test has a rest in
+            // an or-alternative, so a return of the refusal, or a rest typed from one
+            // alternative, fails nothing. Pin it beside or_capture_and_payload.
             // under an inferred predicate the alternatives' types are
             // judged once the select narrows them (`leaves`)
             Some((id, _)) if cx.inferred => Ok(*id),
@@ -248,19 +255,6 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [structure] captures_inner and realign_inner (:284) derive
-    // the type at each child position with the same code: alt_types for an or,
-    // struct_fields for a struct, with_deref for variant and tuple payloads and slice
-    // elements, rep for an abstract. They differ only in what they do with each child
-    // (collect captures, or reset struct field indexes) and on a missing struct field
-    // (skipped here, an error there). Any change to how a position is typed must be
-    // made twice: the pairing of or-alternatives with Set members by count, which
-    // mistypes or-patterns inside slices, is already in both, and alt_types is inlined
-    // a third time at fusion/emit/select.rs:1798. One helper that yields each child's
-    // type, with a struct child's field index, would give both walks a single
-    // derivation. (c-pattern-12)
-    // 2026-10-08 claude: child_types is the one derivation: leaves, realign and footprint
-    // walk it, and fusion's or-chain calls set_members.
     /// The part of `typ`, a type of this pattern's shape, each child
     /// stands over, with a struct child's field index; `None` when `typ`
     /// is not of the shape, and a `None` part for a field it lacks. Under
@@ -622,37 +616,6 @@ impl StructPatternNode {
                 bail!("slice patterns can't match {typ}")
             });
         };
-        // XCR claude for claude: [bug] Every element compiles against one element type.
-        // Under an inferred predicate, that type is infer_slice's union of all the
-        // element patterns (graphix-types/src/expr/pattern.rs:201). A `_` element makes
-        // it Any, so every bind beside it is Any: `[x, _] => x + 1` over Array<i64> is
-        // refused with "cannot compute Any + i64", and `[_, (x, y)]` with "tuple
-        // patterns can't match Any". Elements of different shapes make it a union, and
-        // the Tuple, Variant and Struct arms below accept only their exact constructor.
-        // So `[`A, `B]` over Array<[`A, `B]> is refused, even written `Array<[`A, `B]>
-        // as [`A, `B]`, and so are `[(1, x), (y, 2)]` and `[{b, ..}, x]`. The same
-        // exact-constructor rule refuses `Box(`A(x))` for `type Box =
-        // Abstract<[`A(i64), `B(i64)]>`. probe:
-        // design/review-2026-10-05/repro/c-pattern-08.sh (c-pattern-08)
-        // 2026-10-08 claude: under an inferred predicate each element compiles against
-        // its own member, so `[x, _]`, `[`A, `B]`, `[(1, x), (y, 2)]` and `[{b, ..}, x]`
-        // pass (lang::select::slice_elements_typed_apart). Open: a constructor pattern at
-        // a union position under a WRITTEN type, `Array<[`A, `B]> as [`A, `B]` and
-        // `Box(`A(x))` over a union representation, is still refused. Narrowing it to its
-        // member needs the node to carry its own refutable test: Variant/Tuple/Struct
-        // claim irrefutability because a type test decided their constructor, so `let
-        // `A(x) = v` over [`A(i64), `B] would be accepted and bind nothing.
-        // 2026-10-08 claude: ruled (Eric): the written-type cases too. Refutability is
-        // judged against a type now (StructPatternNode::covers: a constructor covers only
-        // a position whose type is that constructor), so a constructor at a union
-        // position under a written type narrows to its member at compile with its own
-        // test live; a slice ladder under a written type needs its elements to cover the
-        // written element type; Reach credits a written-union atom with each member it
-        // covers; the literal pool reads an abstract's payload. `Array<[`A, `B]> as [`A,
-        // `B]` and `Box(`A(x)) / Box(`B(y))` are accepted, the latter exhaustive; `let
-        // `A(x) = v` over a union is refused as refutable. Pins:
-        // lang::select::written_type_constructor_at_union,
-        // written_type_constructor_refusals.
         let members = match cx.inferred {
             true => set_members(&et, elems.len() + open as usize),
             false => None,
@@ -754,21 +717,6 @@ impl StructPatternNode {
                 // Each alternative compiles against its own member of an
                 // inferred predicate; under an explicit `T as p1 | p2`
                 // every alternative checks against T.
-                // XCR claude for claude: [bug] A slice's element type is the union of
-                // every element's inferred type (infer_slice). Through compile_slice
-                // (:421), this pairs an or-pattern's alternatives with that union's
-                // members whenever the counts happen to agree, and captures (:215) and
-                // realign (:288) pair the same way. `[x, 1 | 2]` over Array<[i64,
-                // null]> checks `2` against x's cell, so x is typed i64 and the fused
-                // run panics at fusion/kernel.rs:243 on the null. Because the union is
-                // sorted, `[`B | `A]` over Array<[`A, `B]> is refused while `[`A | `B]`
-                // is accepted. Each alternative needs its own inferred type, or slice
-                // elements must compile with inferred false. probe:
-                // design/review-2026-10-05/repro/c-pattern-05.gx (c-pattern-05)
-                // 2026-10-08 claude: a slice's element type is a Set with one member per
-                // element (infer_slice) and each element compiles against its own, so an
-                // or-pattern in an element pairs with its own member. Pin:
-                // lang::select::or_in_slice_element.
                 let alt_types = match cx.inferred {
                     true => set_members(type_predicate, alts.len()),
                     false => None,
@@ -800,26 +748,6 @@ impl StructPatternNode {
                     false => p.covers(&ctx.env, type_predicate, false),
                 };
                 for i in 1..compiled.len() {
-                    // XCR claude for claude: [bug] An alternative that matches_anything()
-                    // only covers its own member of the inferred Set, but this refuses
-                    // every later alternative whatever its member. So `(x, _) | (x, _,
-                    // _)` over `[(i64, i64), (i64, i64, i64)]` is refused, while the
-                    // same select written as two arms is accepted and prints [5, 7].
-                    // matches_anything(Or) (:1052) makes the same mistake through
-                    // matches_every (:1150): `(x, 0, _) | (x, _)` over that union
-                    // counts as a wildcard, so this non-exhaustive select is accepted
-                    // and f((7, 8, 9)) produces nothing. Treat an alternative as a
-                    // wildcard only over its own member, as check_dead_arms does per
-                    // atom. Do not just drop this check: Or's is_match/bind (:906,
-                    // :787) pick an alternative by structure alone, so `(x, _)` would
-                    // bind x to ["x", 1] for {x: 1, y: 2} in `(x, _) | {x, ..}`. probe:
-                    // design/review-2026-10-05/repro/c-pattern-10.sh (c-pattern-10)
-                    // 2026-10-08 claude: under an inferred predicate only a bare name or
-                    // `_` kills the alternatives after it here; Reach::arm judges the rest
-                    // per alternative against what reaches the arm. matches_anything(Or) is
-                    // false, so an or-arm is never a wildcard. Alternatives with one runtime
-                    // form are refused (StructPatternNode::leaves), so `(x, _) | {x, ..}`
-                    // is refused as its two arms are. Pins: lang::select::or_wild_*.
                     if compiled[..i].iter().any(wild) {
                         bail!(
                             "unreachable or-pattern alternative: an earlier \
@@ -1132,32 +1060,6 @@ impl StructPatternNode {
             // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
-                    // XCR claude for claude: [bug] An or-arm picks its alternative by
-                    // structure alone, here and in is_match; emit_or_chain in
-                    // fusion/emit/select.rs does the same. But the check types each
-                    // alternative's binds against its own member of the union. A value
-                    // of a later member that an earlier alternative's structure accepts
-                    // binds through the earlier alternative: same-tag variants, tuples,
-                    // arrays, structs and payload variants are all Value::Array. So a
-                    // bind typed i64 receives a string: the node-walk returns it, the
-                    // fused select returns 0, and a kernel fed the bind panics at
-                    // fusion/kernel.rs:243. The same alternatives written as separate
-                    // arms are typed soundly (x is [i64, string] there). Either test
-                    // each alternative's member before its structure in both engines,
-                    // or type each alternative's binds over the whole scrutinee as
-                    // separate arms are. probe:
-                    // design/review-2026-10-05/repro/c-pattern-06.gx (c-pattern-06)
-                    // 2026-10-08 claude: ruled (Eric): type each alternative's binds over
-                    // the whole scrutinee, as separate arms. leaves does: a value an
-                    // earlier alternative's structure takes is within that alternative's
-                    // narrowed types, which the alternatives must agree on; alternatives
-                    // a structure test cannot tell apart (the footprint check) are
-                    // refused. The probe is refused: x is [i64, string] in one
-                    // alternative and i64 in the other. Pins:
-                    // lang::select::pattern_typing_refusals.
-                    // 2026-10-08 claude: with the union rule (Eric) x is [i64, string]
-                    // over the probe, so `-> i64` refuses it, and without the annotation
-                    // `A("s", 1) binds x = "s" soundly (lang::select::or_binds_union).
                     if a.is_match(v) {
                         return a.bind(v, f);
                     }

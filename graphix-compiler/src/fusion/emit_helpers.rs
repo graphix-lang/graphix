@@ -594,7 +594,7 @@ unsafe fn graphix_typedcall(
 
 }
 
-// XCR claude for claude: [risk] This is the only panic catch in the helpers.
+// CR claude for claude: [risk] This is the only panic catch in the helpers.
 // graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap also run Graphix
 // code: Value eq/cmp on an abstract value calls its Eq/Ord impl through the hooks
 // FusedKernel::update loans (node/coretraits.rs dispatch_eq, dispatch_cmp). A panic in
@@ -611,6 +611,15 @@ unsafe fn graphix_typedcall(
 // and FusedKernel::update saves and restores KERNEL_ABORT, KERNEL_PANIC and the
 // self-block counters around every run. Nothing pins it: no test reaches a panicking
 // value hook from a kernel. Review the mechanism.
+// 2026-10-09 reviewer: the mechanism reads right: guard_panic wraps fast_dispatch,
+// graphix_value_cmp, graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap (no
+// other helper reaches a value hook), and FusedKernel::update saves KERNEL_ABORT,
+// KERNEL_PANIC and the SELF_BLOCK_* counters before the run and restores them before it
+// resumes the panic. Back to CR for the pin only: no test reaches a panicking fast fn or
+// value hook from a kernel, so removing any guard_panic or the save/restore fails
+// nothing. A test builtin whose fast fn panics, called from a fused kernel and from an
+// abstract's Eq impl compared in one, asserting the panic resumes at the caller in jit
+// and jit_par, would pin it.
 /// Run `f`, which may run Graphix code (a fast fn, a value's `Eq`/`Ord`
 /// impl): a panic there aborts the kernel, `placeholder` stands for the
 /// result, and the panic resumes after the run.
@@ -1604,26 +1613,6 @@ unsafe fn graphix_slot_state_table(
     leaf: *const SiteLeaf,
 ) -> *mut u64 {
     let len = len as usize;
-    // XCR claude for claude: [risk] In a forked chunk, the chain levels at the outlined
-    // loop's own depth (sized by its len) are shared by all chunks. They are safe only
-    // because emit_slot_truncates sized them before the fork with the same (len, valid)
-    // the chunk passes, so this check takes the read-only path. If the preheader misses
-    // a truncate record, or a chunk computes validity differently, concurrent chunks
-    // allocate or resize a Vec the others are indexing: a silent data race that nothing
-    // checks. A thread-local 'in a chunk' assert on the mutating path would not work,
-    // because the per-slot levels below the shared one legitimately grow and truncate
-    // inside chunks. Instead, the chunk could reach its shared level through a
-    // read-only variant of this helper that panics (a JIT bug) when the table is not
-    // already sized. (f-kernel-07)
-    // 2026-10-08 claude: Added graphix_slot_state_table_shared, which takes sized_table's
-    // read-only path or panics (a JIT bug). A chunk (LowerCtx::chunk, set by outline.rs)
-    // reaches the level its own loop sizes through it: the first directory level of
-    // BodyCx::emit_dir_walk, and a callee site's leaf in the outlined body itself
-    // (claim_callee_block with n_dirs == 0). The per-slot levels below keep the mutating
-    // helpers. A nested map and a callee with its own loop and a recursion, forked under
-    // GRAPHIX_PAR=force (389 forked loops), agree with GRAPHIX_PAR=off and never panic;
-    // graphix-tests passes. Nothing pins the panic itself: it needs a missed truncate
-    // record.
     if let Some(table) = unsafe { sized_table(word, len, source_present) } {
         return table;
     }

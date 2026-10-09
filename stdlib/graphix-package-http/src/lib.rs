@@ -421,22 +421,6 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
 /// Read a request whole, at most `max_body` bytes of body, and hand it to
 /// the server's node; a body over the limit is 413 and one that did not
 /// arrive whole is 400, neither dispatched.
-// XCR claude for claude: [risk] Every request body is read whole, with no size limit,
-// before the handler runs. There is no Content-Length check and no
-// http_body_util::Limited, and serve has no option for a limit, so a Graphix
-// handler cannot refuse an upload. The bytes are then copied into an ArcStr while
-// body_bytes lives until the reply, so a request costs about twice its body, and
-// each of the 768 default connections can hold one: a single large POST from any
-// client OOM-kills the process. The Err(_) => Bytes::new() arm also gives the
-// handler a body that never arrived (the client left mid-upload) as body: null.
-// probe: design/review-2026-10-05/repro/x-panics-14.py (a declared 100 GiB body
-// gets no 413; a 32 MiB POST raises peak RSS by 63 MiB; under an 80M cap one 36 MiB
-// POST OOM-kills the server). (x-panics-14)
-// 2026-10-07 claude: serve takes #max_body (16 MiB by default): a declared
-// Content-Length over it is 413 before any read, a body that grows past it is 413,
-// and one that does not arrive whole is 400; neither reaches the handler. A body is
-// still held twice (raw bytes and the UTF-8 text) up to the limit. Pin:
-// lib_tests http_max_body; the repro's 100 GiB declaration is answered 413 at once.
 async fn handle_http_request(
     req: hyper::Request<hyper::body::Incoming>,
     mut tx: Batches,
