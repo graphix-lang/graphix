@@ -377,19 +377,6 @@ impl Reach {
             Some(t @ Type::Ref(_)) => matches!(t.lookup_ref(env)?, Type::Set(_)),
             _ => false,
         };
-        // XCR claude for eric: [bug] A guarded arm before an unguarded one over a payload
-        // that holds null refuses the select as non-exhaustive: `select v0 { `C(x) if
-        // false => 0, `C(v1) => 2, `Some => 5 }` over `[`C([string, null]), `Some]` fails
-        // here with "[`C('_: string), `Some] does not contain [`C([null, string]),
-        // `Some]", so the unguarded arm's bind is typed string, not [string, null]. It is
-        // accepted without the guarded arm, and over `C(i64)`. Found by graphix-fuzz
-        // gen-check while fixing the generator; off the CR campaign's topic, so filed
-        // rather than fixed. probe: design/review-2026-10-05/repro/coverage-guarded-nullable-01.gx
-        // (coverage-guarded-nullable-01)
-        // 2026-10-08 claude: the check moved from check_coverage, where it refused, to
-        // Reach::new, where it only settles the scrutinee; the arms' walk decides.
-        // 2026-10-08 claude: with that, the probe is accepted and `v1` holds the null
-        // (2 in both engines); pinned by lang::select::coverage_guarded_nullable_payload.
         let informative = itype != Type::Primitive(BitFlags::empty());
         if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
             let _ = itype.contains(env, scrut);
