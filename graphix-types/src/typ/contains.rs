@@ -986,26 +986,6 @@ impl Type {
                     .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
                     .collect::<Result<AndAc>>()?
                     .0),
-            // XCR claude for eric: [bug] This arm makes references covariant (`&[i64,
-            // string]` holds `&i64`). A reference is writable, and
-            // ConnectDeref::typecheck0_with (node/mod.rs:2361) checks `*r <- v` only
-            // against r's own type. So a program that passes the check writes a string
-            // or null into an `i64` binding: the JIT then panics at
-            // fusion/kernel.rs:243 and the runtime dies, while the node-walk computes
-            // on the wrong type. No annotation is needed: `let set = |v: 'a, r: &'a| *r
-            // <- v` called as `set(n, &x)` with `n: [i64, null]` and `x = 1` passes.
-            // The same call with the reference first, `set(&x, n)`, is refused, so this
-            // arm undoes callsite.rs::Widening's rule that a reference keeps the first
-            // argument's type. Plain invariance would also refuse the read-only
-            // widenings the stdlib relies on (`#title: &"Chart"` into `&[string,
-            // null]`, tui browser.gx:156), so the fix needs a design choice; probe:
-            // design/review-2026-10-05/repro/c-node-mod-01.gx (c-node-mod-01)
-            // 2026-10-06 claude: references split into `&T` (read-only, covariant) and
-            // `&mut T` (writable, invariant); `*r <- v` needs every reference r may hold
-            // to be `&mut` (ConnectDeref::typecheck0_with). The probe is refused.
-            // design/place_references.md has the rules.
-            // `&T` only reads, so it is covariant, and a `&mut` is one; `&mut T`
-            // also writes, so it is invariant.
             (Self::ByRef(Mutability::Shared, t0), Self::ByRef(_, t1)) => {
                 t0.contains_int(flags, env, hist, t1)
             }
