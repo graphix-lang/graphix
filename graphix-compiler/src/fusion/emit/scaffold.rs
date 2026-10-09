@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 pub(crate) use super::abi::LocalKind;
 use super::{
     abi::{
-        CompiledExpr, FIRE_TEST, STALE, TAINT, ValueVar, WAKE, bind_local,
+        CompiledExpr, FIRE_TEST, STALE, SlotView, TAINT, ValueVar, WAKE, bind_local,
         bind_scalar_var_with_disc, clean_disc, is_fresh, prim_to_value_disc, scalar_disc,
         value_disc,
     },
@@ -205,9 +205,7 @@ fn bind_elem(
 /// after the loop: exactly one drop on either path.
 fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
     if arr.ownership == CompositeSource::Owned {
-        let var = cx.b.declare_var(types::I64);
-        cx.b.def_var(var, arr.ptr);
-        cx.ctx.owned_input_stack.borrow_mut().push(var);
+        cx.hold(LocalKind::Composite, CompiledExpr::new(arr.disc, arr.ptr));
     }
 }
 
@@ -216,7 +214,7 @@ fn adopt_owned_src(cx: &mut BodyCx, arr: &ArraySrc) {
 fn drop_owned_src(cx: &mut BodyCx, arr: &ArraySrc) -> Result<()> {
     if arr.ownership == CompositeSource::Owned {
         cx.call_helper("graphix_valarray_drop", &[arr.ptr])?;
-        cx.ctx.owned_input_stack.borrow_mut().pop();
+        cx.release();
     }
     Ok(())
 }
@@ -298,31 +296,26 @@ impl LoopFrame {
         body: impl FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<T>,
     ) -> Result<(B, T)> {
         cx.enter_loop();
-        let outer = cx.env.slot_init;
+        let outer = cx.env.slot;
         let new =
             cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
         let new = cx.b.ins().uextend(types::I64, new);
         let init = cx.init_flag();
-        // CR claude for claude: [bug] The slot's init view reaches only constants, the
-        // builtin stale mask and the callee first-call word. A read of a local bound
-        // outside the loop keeps its STALE disc: a capture, a kernel param or an outer
-        // let, read through emit_ref_node or as a capture in marshal_args. A new fold
-        // slot's acc likewise carries the STALE of the init or of the previous slot.
-        // The node-walk runs a new slot under event.init, where a standing read is
-        // FIRED (node/mod.rs standing_view), and it seeds a fresh fold slot's acc FIRED
-        // (node/collection.rs FoldQ::update). So `err?` over a standing error bound
-        // outside the callback, or `acc?` in a fold, raises once per new slot in the
-        // node-walk and never in the JIT. Under a genuine slot init (new slot, no wake)
-        // those reads need STALE cleared with TAINT kept, and a new fold slot's acc
-        // must read FIRED; probe: design/review-2026-10-05/repro/f-scaffold-body-02.gx
-        // (graphix-fuzz check: interp (3, 3) then (4, 4), jit (0, 0)).
-        // (f-scaffold-body-02)
-        cx.env.slot_init = Some(cx.b.ins().bor(init, new));
+        let init = cx.b.ins().bor(init, new);
+        let standing = {
+            let born = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
+            let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, cx.ctx.wake_flag, 0);
+            let genuine = cx.b.ins().band(born, no_wake);
+            let clear = cx.b.ins().iconst(types::I64, !STALE);
+            let keep = cx.b.ins().iconst(types::I64, -1);
+            cx.b.ins().select(genuine, clear, keep)
+        };
+        cx.env.slot = Some(SlotView { init, new, standing, mark: cx.env.mark() });
         let r = bind(cx, self.i).and_then(|bound| {
             emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
             Ok((bound, body(cx)?))
         });
-        cx.env.slot_init = outer;
+        cx.env.slot = outer;
         cx.exit_loop();
         cx.close_slot_tables();
         r
@@ -774,7 +767,7 @@ fn emit_slots(
     sel_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
-    // CR claude for claude: [bug] Under a tainted source this runs `len` iterations over
+    // CR claude for eric: [bug] Under a tainted source this runs `len` iterations over
     // the source's placeholder. emit_fold_loop (line 1160) does the same, and so does
     // emit_init_loop, which clamps only an oversize count (795). The node-walk builds
     // no slot under a bottom source and runs exactly the slots it kept
@@ -788,6 +781,14 @@ fn emit_slots(
     // A fix also needs a ruling on the bottom-source firing rule: MapQ ignores its kept
     // slots' fires (collection.rs:1082), while FoldQ counts them (1517).
     // (f-scaffold-body-01)
+    // 2026-10-08 claude: Needs a ruling before a fix. Under a bottom source the node-walk
+    // re-runs the slots it kept over their standing elements, but a kernel keeps no
+    // per-slot elements: the source's placeholder is all it has. So the JIT cannot match
+    // the node-walk as it stands. Options: (a) a bottom source runs no slot in either
+    // engine (the slots stay asleep until the source returns, as an unselected arm does);
+    // this also settles the MapQ/FoldQ firing-rule split, since no slot fires; (b)
+    // kernels keep each slot's element, which is state a pure kernel does not have today.
+    // I lean (a), which matches 'bottom scrutinee => bottom select'.
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
         let lp = outline::Loop { kind, src, src_disc, len, entered, sel_sites };
@@ -1219,6 +1220,14 @@ where
     let ((bound, acc_leaves), new_acc) = lp.run(
         cx,
         |cx, i| {
+            // a new slot's acc is delivered: the chain as it stands, fired
+            if let Some(s) = cx.env.slot {
+                let d = cx.b.use_var(acc_disc_var);
+                let fired = cx.b.ins().band_imm(d, !STALE);
+                let new = cx.b.ins().icmp_imm(IntCC::NotEqual, s.new, 0);
+                let d = cx.b.ins().select(new, fired, d);
+                cx.b.def_var(acc_disc_var, d);
+            }
             cx.env.bind(acc_name.clone(), acc_vv, kind, acc_id);
             let bound = bind_elem(cx, arr.disc, arr.ptr, i, elem)?;
             let acc_leaves = match &acc {

@@ -56,5 +56,5 @@ pub(crate) use self::nodes::{
     emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
-pub(crate) use self::record::{BodyRecord, record_decode, record_encode};
+pub(crate) use self::record::{BodyRecord, KernelType, record_decode, record_encode};
 pub(crate) use self::{scaffold::slot_state_sites, select::emit_select_node};

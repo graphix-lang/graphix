@@ -253,13 +253,29 @@ pub(crate) struct JitEnv {
     /// Current scaffold-loop depth. State claims are refused inside
     /// loops: one static word cannot hold per-slot memory.
     pub(super) loop_depth: u32,
-    /// In a loop body, the slot's init view (`BodyCx::init_flag`).
-    pub(super) slot_init: Option<ClifValue>,
+    /// In a loop body, the innermost slot's views.
+    pub(super) slot: Option<SlotView>,
+}
+
+/// How a loop slot's body reads what stands.
+#[derive(Clone, Copy)]
+pub(super) struct SlotView {
+    /// The slot's init view (`BodyCx::init_flag`): the enclosing one, or
+    /// a new slot's.
+    pub(super) init: ClifValue,
+    /// 1 in a new slot, else 0.
+    pub(super) new: ClifValue,
+    /// ANDed into the disc of a read of a local bound before the loop:
+    /// clears STALE in a genuine birth (an init view, no wake), where a
+    /// standing value reads as delivered.
+    pub(super) standing: ClifValue,
+    /// The locals below this index were bound before the loop.
+    pub(super) mark: usize,
 }
 
 impl JitEnv {
     pub(super) fn new() -> Self {
-        Self { locals: Vec::with_capacity(8), loop_depth: 0, slot_init: None }
+        Self { locals: Vec::with_capacity(8), loop_depth: 0, slot: None }
     }
 
     pub(super) fn bind(
@@ -280,17 +296,22 @@ impl JitEnv {
         self.locals[mark..].iter().map(|l| (l.kind, l.words))
     }
 
-    /// BindId first, then by name but only to id-less synthetic locals:
-    /// a same-named local with a different id is a distinct binding and
-    /// must miss here (the region de-fuses) rather than be read.
-    pub(super) fn lookup(&self, id: BindId, name: &str) -> Option<&Local> {
-        if let Some(l) = self.locals.iter().rev().find(|l| l.bind_id == Some(id)) {
-            return Some(l);
-        }
-        self.locals.iter().rev().find(|l| l.bind_id.is_none() && l.name.as_str() == name)
+    /// The index of a read's local: BindId first, then by `name` but only
+    /// to id-less synthetic locals (a same-named local with a different id
+    /// is a distinct binding and must miss here, so the region de-fuses,
+    /// rather than be read); by BindId alone for a synthetic `Ref` that
+    /// names nothing.
+    pub(super) fn position(&self, id: BindId, name: Option<&str>) -> Option<usize> {
+        let by_id = self.locals.iter().rposition(|l| l.bind_id == Some(id));
+        by_id.or_else(|| {
+            let name = name?;
+            self.locals
+                .iter()
+                .rposition(|l| l.bind_id.is_none() && l.name.as_str() == name)
+        })
     }
 
-    /// By BindId alone, for synthetic `Ref`s that name nothing.
+    /// By BindId alone.
     pub(super) fn lookup_id(&self, id: BindId) -> Option<&Local> {
         self.locals.iter().rev().find(|l| l.bind_id == Some(id))
     }

@@ -1,0 +1,38 @@
+{
+  // f-scaffold-body-02: a new loop slot is a birth: a standing value bound
+  // outside the loop (a capture, a kernel param, an outer slot's let, a
+  // callee's capture) reads as delivered there, and a new fold slot's acc
+  // is delivered. Each count is one raise per new slot. Was a DIVERGENCE.
+  let n = array::iter([1, 2, 3, 4]);
+  let by_capture = 0;
+  let by_acc = 0;
+  let by_inner = 0;
+  let by_callee = 0;
+  let m = {
+    catch(e) by_capture <- e ~ by_capture + 1;
+    let err: [i64, Error<`E>] = error(`E);
+    array::map(array::init(n, |i| i), |x| err? + x)
+  };
+  let f = {
+    catch(e) by_acc <- e ~ by_acc + 1;
+    let e0: [i64, Error<`E>] = error(`E);
+    array::fold(array::init(n, |i| i), e0, |acc, x| {
+      let v = acc?;
+      acc
+    })
+  };
+  let a = {
+    catch(e) by_inner <- e ~ by_inner + 1;
+    array::map([0], |k| {
+      let err: [i64, Error<`E>] = error(`E);
+      array::map(array::init(n, |i| i), |x| err? + x + k)
+    })
+  };
+  let b = {
+    catch(e) by_callee <- e ~ by_callee + 1;
+    let err: [i64, Error<`E>] = error(`E);
+    let g = |x: i64| -> i64 err? + x;
+    array::map(array::init(n, |i| i), |x| g(x))
+  };
+  select count(n) { 4 => (by_capture, by_acc, by_inner, by_callee), _ => never() }
+}

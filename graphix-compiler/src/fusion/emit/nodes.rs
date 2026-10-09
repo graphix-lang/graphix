@@ -131,12 +131,9 @@ pub(crate) fn emit_ref_node(
     // BindId first (exact under shadowing); a synthetic Ref has no name
     // and resolves by id alone.
     let name = ref_local_name(spec);
-    let (vv, kind) = {
-        let l = match name {
-            Some(name) => cx.env.lookup(id, name),
-            None => cx.env.lookup_id(id),
-        };
-        if l.is_none() && crate::dbgenv::gxdbg_refmiss() {
+    let (index, vv, kind) = {
+        let index = cx.env.position(id, name);
+        if index.is_none() && crate::dbgenv::gxdbg_refmiss() {
             eprintln!(
                 "REFMISS `{name:?}` id={id:?} locals={:?}",
                 cx.env
@@ -146,17 +143,18 @@ pub(crate) fn emit_ref_node(
                     .collect::<Vec<_>>()
             );
         }
-        let l = l.ok_or_else(|| {
+        let index = index.ok_or_else(|| {
             anyhow!(
                 "emit_clif: undefined local `{}` ({id:?})",
                 name.unwrap_or("<synthetic>")
             )
         })?;
-        (l.words, l.kind)
+        let l = &cx.env.locals[index];
+        (index, l.words, l.kind)
     };
-    // A wake reads a standing binding with its STALE disc intact; only
-    // genuine init upgrades, and that happens at the boundary.
-    let disc = cx.b.use_var(vv.disc);
+    // A wake reads a standing binding with its STALE disc intact; only a
+    // genuine init upgrades: the kernel's at the boundary, a slot's here.
+    let disc = cx.read_disc(index);
     match kind {
         // Each consumer gets its own ArcStr ref; the slot keeps its own
         // until scope exit.
@@ -297,6 +295,20 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
     Ok(widen_to_declared_repr(cx, out_typ, prim, cv))
 }
 
+/// Both operands as owned Values, the first held while the second
+/// emits, so a pending exit there frees it.
+fn emit_owned_value_pair<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    lhs: &Node<R, E>,
+    rhs: &Node<R, E>,
+) -> Result<(CompiledExpr, CompiledExpr)> {
+    let lcv = emit_owned_value_operand_node(cx, lhs)?;
+    cx.hold(LocalKind::Value, lcv);
+    let rcv = emit_owned_value_operand_node(cx, rhs);
+    cx.release();
+    Ok((lcv, rcv?))
+}
+
 /// Checked arithmetic (`+?` / `-?` / `*?` / `/?` / `%?`). Both
 /// operands are owned Values; `graphix_value_checked_<op>` shares the
 /// node-walk's `Value::checked_*` core. The result is a Value: the
@@ -308,8 +320,7 @@ pub(crate) fn emit_checked_arith_node<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    let lcv = emit_owned_value_operand_node(cx, lhs)?;
-    let rcv = emit_owned_value_operand_node(cx, rhs)?;
+    let (lcv, rcv) = emit_owned_value_pair(cx, lhs, rhs)?;
     let helper = match op {
         BinOp::Add => "graphix_value_checked_add",
         BinOp::Sub => "graphix_value_checked_sub",
@@ -392,8 +403,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
             ));
         }
     }
-    let lcv = emit_owned_value_operand_node(cx, lhs)?;
-    let rcv = emit_owned_value_operand_node(cx, rhs)?;
+    let (lcv, rcv) = emit_owned_value_pair(cx, lhs, rhs)?;
     let helper = cx.helper("graphix_value_eq")?;
 
     let call = cx.b.ins().call(helper, &[lcv.disc, lcv.payload, rcv.disc, rcv.payload]);
@@ -827,15 +837,10 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     // A tainted source does not abort: the reads below are guarded and
     // its taint folds into the result. An owned source is registered so
     // a bottom-abort before the finalize frees it.
-    let src_var = match src {
-        CompositeSource::Owned => {
-            let v = cx.b.declare_var(types::I64);
-            cx.b.def_var(v, arr_ptr);
-            cx.ctx.owned_input_stack.borrow_mut().push(v);
-            Some(v)
-        }
-        CompositeSource::Borrowed => None,
-    };
+    let owned = src == CompositeSource::Owned;
+    if owned {
+        cx.hold(LocalKind::Composite, CompiledExpr::new(src_disc, arr_ptr));
+    }
     let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
     let outer = open_value_buf(cx, cap)?;
     // Fires iff the source or any replacement fired.
@@ -870,9 +875,9 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     }
     let payload = finalize_valarray(cx, outer)?;
     // Dropped exactly once: the pending path drops it via `owned_input_stack`.
-    if src_var.is_some() {
+    if owned {
         cx.call_helper("graphix_valarray_drop", &[arr_ptr])?;
-        cx.ctx.owned_input_stack.borrow_mut().pop();
+        cx.release();
     }
     let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     let disc = propagate_flags(cx.b, base, &field_discs);
@@ -1049,18 +1054,8 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
     let wrap = cx.helper("graphix_abstract_wrap")?;
-    // CR claude for claude: [bug] This interns the abstract type with its params still
-    // type variables, because resolve_node_typ leaves Abstract params alone.
-    // graphix_abstract_wrap then stores params like [TVar _N -> string], where
-    // Construct::update stores typ.resolve_tvars(), which is [string]. A kernel-built
-    // value packs and casts to string with the cell's name in it, so pack::write_bytes
-    // differs per engine. coretraits::take_site also sees a kernel-built and a
-    // node-walked Box<string> as two instantiations, so a user Eq/Ord impl is skipped
-    // and the values are compared structurally. Resolve the params the same way for
-    // both engines, e.g. intern resolve_node_typ(..).resolve_tvars() or pass
-    // Construct's params in. probe: design/review-2026-10-05/repro/f-nodes-scalar-01.gx
-    // (graphix-fuzz check: interp true, jit false at cycle 2). (f-nodes-scalar-01)
-    let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ))?;
+    // the type as Construct::update stores it: its params resolved
+    let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ).resolve_tvars())?;
     let name_ptr = cx.interned_str(name)?;
     let call = cx.b.ins().call(wrap, &[typ_ptr, name_ptr, cv.disc, cv.payload]);
     let (rdisc, rpay) = {
@@ -1203,20 +1198,15 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // and the source's taint folds into the result below.
         let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
-        // CR claude for claude: [bug] While the index is emitted, an owned source array
-        // (an array::map result, say) lives only in the SSA value arr_ptr. When the
-        // index runs a loop or lambda call whose abort check fires (an interrupt),
-        // emit_pending_cleanup drops in-flight bufs, owned_input_stack and env locals
-        // but not arr_ptr, so the array leaks. The bytes path (1169), emit_map_ref_node
-        // (1202), emit_array_slice_node (1234), emit_checked_arith_node (310),
-        // emit_cmp_node's Value path (375) and emit_builtin_call_node's drops list
-        // (call.rs) hold an owned operand across a sibling's emission the same way.
-        // Register every owned value held across a sibling's emission for the pending
-        // cleanup, as emit_struct_with_node and scaffold's adopt_owned_src already do
-        // for arrays. probe: design/review-2026-10-05/repro/f-nodes-scalar-03.gx (REPL,
-        // 30 interrupts: +456 MB, about 16 MB each; +29 MB with none).
-        // (f-nodes-scalar-03)
-        let idx_cv = idx.emit_clif(cx)?;
+        let owned = src == CompositeSource::Owned;
+        if owned {
+            cx.hold(LocalKind::Composite, CompiledExpr::new(src_disc, arr_ptr));
+        }
+        let idx_cv = idx.emit_clif(cx);
+        if owned {
+            cx.release();
+        }
+        let idx_cv = idx_cv?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
@@ -1230,7 +1220,10 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
     if lowering::is_bytes(source.typ()) {
         // The helper consumes the bytes operand.
         let bcv = emit_owned_value_operand_node(cx, source)?;
-        let idx_cv = idx.emit_clif(cx)?;
+        cx.hold(LocalKind::Value, bcv);
+        let idx_cv = idx.emit_clif(cx);
+        cx.release();
+        let idx_cv = idx_cv?;
         // The helper takes an i64; a narrow payload fails cranelift's verifier.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_bytes_index")?;
@@ -1262,8 +1255,7 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
             source.typ()
         ));
     }
-    let mcv = emit_owned_value_operand_node(cx, source)?;
-    let kcv = emit_owned_value_operand_node(cx, key)?;
+    let (mcv, kcv) = emit_owned_value_pair(cx, source, key)?;
     let helper = cx.helper("graphix_map_ref")?;
 
     let call = cx.b.ins().call(helper, &[mcv.disc, mcv.payload, kcv.disc, kcv.payload]);
@@ -1323,8 +1315,12 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         }
     };
     let mut flags = 0i64;
-    let start_v = emit_bound(cx, start, 1, &mut flags, &mut taint_discs)?;
-    let end_v = emit_bound(cx, end, 2, &mut flags, &mut taint_discs)?;
+    cx.hold(LocalKind::Value, scv);
+    let bounds = emit_bound(cx, start, 1, &mut flags, &mut taint_discs).and_then(|s| {
+        emit_bound(cx, end, 2, &mut flags, &mut taint_discs).map(|e| (s, e))
+    });
+    cx.release();
+    let (start_v, end_v) = bounds?;
     let flags_v = cx.b.ins().iconst(types::I64, flags);
     let helper = cx.helper("graphix_array_slice")?;
     let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);

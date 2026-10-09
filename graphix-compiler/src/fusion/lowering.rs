@@ -4,7 +4,8 @@
 //! emitters consume.
 
 use crate::{
-    BindId, CompileCtx, Node, NodeView, PrintFlag, Refs, Rt, UserEvent,
+    ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
+    UserEvent,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
@@ -16,12 +17,13 @@ use crate::{
     },
     node::{callsite::CallSite, lambda::GXLambda},
     profile::{self, Phase},
-    typ::{FnArgKind, FnType, Type, TypeRef},
+    typ::{FnArgKind, FnArgType, FnType, Type, TypeRef},
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_value::Value;
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::cell::{Cell, RefCell};
@@ -522,6 +524,8 @@ impl Default for ResolveCx {
 }
 
 struct NodeEntry {
+    /// The key's owner: the key is its address.
+    _key: Type,
     deps: Vec<(u64, TypeRef)>,
     resolved: Option<Type>,
     size: u32,
@@ -725,18 +729,14 @@ fn expand_ref_d_inner<'a>(
     if let Some(k) = nkey
         && !frame.poisoned
     {
-        // CR claude for claude: [bug] This memo is keyed by `norm_key(typ)`, an
-        // allocation address, but `NodeEntry` does not keep `typ` alive. A typedef body
-        // built by `lookup_ref` (line 750) is recorded here and then dropped at line
-        // 754 once something under it expands. The next same-size instantiation in this
-        // resolve can get the freed address and take the first one's expansion.
-        // Example: with `type W<'a> = ['a, Inner]`, `[W<i64>, W<f64>]` freezes as
-        // Scalar(I64), and the runtime panics at kernel.rs:243 on an f64. Keep the
-        // key's owner in the entry, as `NormCx::memo` and `TypeMemo::by_id` do. probe:
-        // design/review-2026-10-05/repro/f-mod-lowering-01.gx (f-mod-lowering-01)
         cx.nodes.borrow_mut().insert(
             k,
-            NodeEntry { deps: frame.deps, resolved: r.clone(), size: frame.size },
+            NodeEntry {
+                _key: typ.clone(),
+                deps: frame.deps,
+                resolved: r.clone(),
+                size: frame.size,
+            },
         );
     }
     r
@@ -888,25 +888,6 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
         g.args().iter().map(|p| p.single_bind_id()).collect();
     let mut inv: SmallVec<[bool; 8]> = ids.iter().map(|id| id.is_some()).collect();
     let Some(sb) = self_bind else { return inv };
-    enum ALook {
-        Pos(usize),
-        Named(ArcStr),
-    }
-    let looks: SmallVec<[ALook; 8]> = {
-        let mut p = 0usize;
-        g.typ()
-            .args
-            .iter()
-            .map(|fa| match &fa.kind {
-                FnArgKind::Positional { .. } => {
-                    let k = p;
-                    p += 1;
-                    ALook::Pos(k)
-                }
-                FnArgKind::Labeled { name, .. } => ALook::Named(name.clone()),
-            })
-            .collect()
-    };
     fusion::for_each_emitted_node(g.body(), &mut |n| {
         let NodeView::CallSite(cs) = n.view() else { return };
         if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb) {
@@ -916,10 +897,7 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
             if !inv[i] {
                 continue;
             }
-            let arg = match &looks[i] {
-                ALook::Pos(p) => cs.arg_positional(*p),
-                ALook::Named(name) => cs.arg_named(name),
-            };
+            let arg = formal_arg(cs, g.typ(), i);
             let keep = matches!(
                 (ids[i], arg),
                 (Some(fid), Some(a))
@@ -931,6 +909,41 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
         }
     });
     inv
+}
+
+/// The argument a call passes formal `i` of `ftype`: a labeled one by
+/// its name, a positional one by its place among the positionals.
+pub(crate) fn formal_arg<'a, R: Rt, E: UserEvent>(
+    cs: &'a CallSite<R, E>,
+    ftype: &FnType,
+    i: usize,
+) -> Option<&'a Node<R, E>> {
+    match &ftype.args.get(i)?.kind {
+        FnArgKind::Labeled { name, .. } => cs.arg_named(name),
+        FnArgKind::Positional { .. } => {
+            let positional =
+                |a: &&FnArgType| matches!(a.kind, FnArgKind::Positional { .. });
+            cs.arg_positional(ftype.args[..i].iter().filter(positional).count())
+        }
+    }
+}
+
+/// `g`'s own ids for the formal parameters of `kernel`, which may have
+/// been built for another instance of `g`'s definition: each pair the
+/// kernel's id and `g`'s where they differ.
+pub(crate) fn rebound_formals<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    kernel: &KernelSig,
+) -> SmallVec<[(BindId, BindId); 4]> {
+    let formals =
+        (0..g.typ().args.len()).filter(|i| !kernel.skipped_args.contains(&(*i as u32)));
+    formals
+        .zip(kernel.params.iter())
+        .filter_map(|(i, p)| {
+            let (old, new) = (p.bind_id?, g.args().get(i)?.single_bind_id()?);
+            (old != new).then_some((old, new))
+        })
+        .collect()
 }
 
 /// Why a lambda has no kernel; its call sites node-walk.
@@ -975,7 +988,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // feeding a formal a differently-shaped value would marshal it under
     // the wrong ABI.
     if let Some(sb) = self_call
-        && !self_calls_abi_consistent(g.body(), sb, &formals.by_position, ec)
+        && !self_calls_abi_consistent(g, sb, &formals.by_position, ec)
     {
         return Err("a self-call passes a formal a value of another shape".into());
     }
@@ -1084,7 +1097,7 @@ fn formal_slots<R: Rt, E: UserEvent>(
         // uses are statically-resolved calls, and a body that needs it
         // as a value fails to emit. A rebind slot cannot carry a lambda.
         if is_fn_shaped(&arg_typ, &ec.env) {
-            if inv[i] && matches!(fa.kind, FnArgKind::Positional { .. }) {
+            if inv[i] {
                 out.skipped.push(i as u32);
                 continue;
             }
@@ -1202,7 +1215,63 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
             _ => return false,
         }
     }
+    let mut visiting: LPooled<Vec<LambdaInstanceId>> = LPooled::take();
+    visiting.push(g.instance_id());
     body_has_self_tail_call(g.body(), self_bind)
+        && claims_no_site_memory(g.body(), Some(self_bind), &mut visiting)
+}
+
+/// Whether a body holds no per-call-site memory a native tail loop's
+/// passes would share where the node-walk's activations each hold their
+/// own: a collection loop's words, a non-tail self-call's block root, a
+/// callee whose body holds any. Such a body recurses natively.
+fn claims_no_site_memory<R: Rt, E: UserEvent>(
+    body: &Node<R, E>,
+    self_bind: Option<BindId>,
+    visiting: &mut LPooled<Vec<LambdaInstanceId>>,
+) -> bool {
+    let is_self = |cs: &CallSite<R, E>| {
+        self_bind
+            .is_some_and(|sb| matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb))
+    };
+    let mut tail_calls: LPooled<IntSet<ExprId>> = LPooled::take();
+    fusion::for_each_tail_leaf(
+        body,
+        &mut |n| match n.view() {
+            NodeView::CallSite(cs) if is_self(cs) => {
+                tail_calls.insert(n.spec().id);
+                true
+            }
+            _ => false,
+        },
+        &mut |_| (),
+    );
+    let mut none = true;
+    fusion::for_each_emitted_node(body, &mut |n| {
+        none = none
+            && match n.view() {
+                NodeView::MapQ(_) | NodeView::FoldQ(_) => false,
+                NodeView::CallSite(cs) if is_self(cs) => {
+                    tail_calls.contains(&n.spec().id)
+                }
+                NodeView::CallSite(cs) => match cs.resolved_apply() {
+                    // a cycle through another function roots blocks too
+                    Some(ApplyView::Lambda(g)) if visiting.contains(&g.instance_id()) => {
+                        false
+                    }
+                    Some(ApplyView::Lambda(g)) => {
+                        visiting.push(g.instance_id());
+                        let none =
+                            claims_no_site_memory(g.body(), g.self_bind(), visiting);
+                        visiting.pop();
+                        none
+                    }
+                    _ => true,
+                },
+                _ => true,
+            }
+    });
+    none
 }
 
 /// Does the body contain a self-call in tail position (as
@@ -1230,13 +1299,14 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
 /// an unfreezable arg or a self-call that does not map 1:1 onto the
 /// formals counts as inconsistent.
 fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
-    body: &Node<R, E>,
+    g: &GXLambda<R, E>,
     self_bind: BindId,
     formal_slot_types_by_position: &[(usize, Type)],
     ec: &CompileCtx<R, E>,
 ) -> bool {
     let mut ok = true;
-    fusion::for_each_emitted_node(body, &mut |n| {
+    let ftype = g.typ();
+    fusion::for_each_emitted_node(g.body(), &mut |n| {
         if !ok {
             return;
         }
@@ -1245,19 +1315,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
             return;
         }
         for (i, formal_kt) in formal_slot_types_by_position.iter() {
-            // CR claude for claude: [bug] `i` is the formal's index among all formals
-            // (`by_position`, line 1091), but `arg_positional` counts positional
-            // arguments only, and labeled formals come first. For `|#k: i64, n: i64|`
-            // this reads `n`'s argument for `k` and finds nothing for `n`, so every
-            // self-recursive lambda with a labeled formal is refused with "a self-call
-            // passes a formal a value of another shape", and its calls never fuse. Look
-            // up labeled formals with `arg_named`, as `invariant_formals` does. Line
-            // 1066 skips an invariant fn formal only when it is positional, so a lambda
-            // with a labeled callback is refused with "not forwarded unchanged by its
-            // self-calls" even though it has no self-calls. probe:
-            // design/review-2026-10-05/repro/f-mod-lowering-06.gx (the #[native] fails;
-            // the positional twin prints (10, 7)). (f-mod-lowering-06)
-            let Some(arg) = cs.arg_positional(*i) else {
+            let Some(arg) = formal_arg(cs, ftype, *i) else {
                 ok = false;
                 return;
             };

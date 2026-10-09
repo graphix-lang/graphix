@@ -11,8 +11,8 @@ use crate::{
     expr::Expr,
     fusion::{
         emit::{
-            WrappedKernel, pack_value_to_u64, prim_to_value_disc, record_decode,
-            record_encode,
+            KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
+            record_decode, record_encode,
         },
         emit_helpers::{
             self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_REACHED, TagValue,
@@ -43,7 +43,9 @@ static EMPTY_ARRAY: LazyLock<Value> = LazyLock::new(|| Value::Array(EMPTY_ARR.cl
 /// An `Update` node over a compiled kernel and its input feeders.
 pub struct FusedKernel<R: Rt, E: UserEvent> {
     spec: Expr,
-    typ: Type,
+    /// Owns the typedefs it names: one the replaced region declared is
+    /// deleted with it.
+    typ: KernelType,
     /// The region may run a core-trait impl, whose reads its feeders do
     /// not show (`analysis::region_runs_hooks`).
     hooks: bool,
@@ -137,7 +139,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             .into_boxed_slice();
         Node::new(Self {
             spec,
-            typ,
+            typ: KernelType::new(typ),
             hooks,
             feeders,
             slept: WakeBit::default(),
@@ -314,7 +316,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let w = &self.jit;
         put_tag(NodeTag::Fused, buf);
         self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
+        self.typ.typ.encode(buf)?;
         self.hooks.encode(buf)?;
         encode_nodes(&self.feeders, buf)?;
         encode_varint(w.state_words as u64, buf);
@@ -561,7 +563,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.typ
+        &self.typ.typ
     }
 
     fn refs(&self, refs: &mut Refs) {

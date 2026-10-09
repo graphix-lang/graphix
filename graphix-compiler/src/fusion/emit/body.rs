@@ -58,10 +58,10 @@ fn lookup_slot(
     env: &JitEnv,
     mark: usize,
     slot: &kernel_abi::KernelParam,
+    id: Option<BindId>,
 ) -> Option<ValueVar> {
     let params = &env.locals[..mark];
-    let by_id =
-        slot.bind_id.and_then(|id| params.iter().rev().find(|l| l.bind_id == Some(id)));
+    let by_id = id.and_then(|id| params.iter().rev().find(|l| l.bind_id == Some(id)));
     by_id
         .or_else(|| {
             params.iter().rev().find(|l| {
@@ -94,7 +94,8 @@ pub(super) fn emit_tail_rebind_jump(
         SmallVec::new();
     for r in rebinds {
         let slot = &slots[r.slot];
-        let vv = lookup_slot(env, ctx.tail.param_mark, slot)
+        let id = param_id(ctx.tail.params, slot.bind_id);
+        let vv = lookup_slot(env, ctx.tail.param_mark, slot, id)
             .ok_or_else(|| anyhow!("TailCall: slot `{}` not in env", slot.name))?;
         let borrowed = r.source == CompositeSource::Borrowed;
         let (kind, disc, payload) = match slot.kind.abi() {
@@ -200,6 +201,18 @@ pub(super) struct BodySpec<'a> {
     /// `abi_kind`/freeze can classify them. Never for binding lookups.
     pub(super) type_env: &'a Env,
     pub(super) role: BodyRole<'a>,
+    /// This body's own formal ids for the kernel's (cached from another
+    /// instance of the definition): old to new.
+    pub(super) params: &'a [(BindId, BindId)],
+}
+
+/// The id a body binds the kernel parameter `id` under, by its
+/// [`BodySpec::params`].
+pub(super) fn param_id(
+    params: &[(BindId, BindId)],
+    id: Option<BindId>,
+) -> Option<BindId> {
+    id.map(|id| params.iter().find(|(old, _)| *old == id).map_or(id, |(_, new)| *new))
 }
 
 impl<'a> BodySpec<'a> {
@@ -255,6 +268,22 @@ pub struct BodyCx<'a, 'f, 'c> {
 }
 
 impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
+    /// Hold `cv`, an owned value of `kind`, while a sibling emits: a
+    /// pending exit there drops it. [`Self::release`] ends the hold
+    /// before the normal path consumes or drops the value.
+    pub(super) fn hold(&mut self, kind: LocalKind, cv: CompiledExpr) {
+        let disc = self.b.declare_var(types::I64);
+        self.b.def_var(disc, cv.disc);
+        let payload = self.b.declare_var(self.b.func.dfg.value_type(cv.payload));
+        self.b.def_var(payload, cv.payload);
+        self.ctx.owned_input_stack.borrow_mut().push((kind, ValueVar { disc, payload }));
+    }
+
+    /// End the latest [`Self::hold`].
+    pub(super) fn release(&mut self) {
+        self.ctx.owned_input_stack.borrow_mut().pop();
+    }
+
     /// FuncRef for a registered `emit_helpers` runtime helper.
     pub fn helper(&mut self, name: &str) -> Result<FuncRef> {
         self.ctx.helper(self.b, name)
@@ -290,7 +319,16 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
     /// or the slot's first iteration, as a new slot is a new instance.
     pub fn init_flag(&self) -> ClifValue {
-        self.env.slot_init.unwrap_or(self.ctx.init_flag)
+        self.env.slot.map_or(self.ctx.init_flag, |s| s.init)
+    }
+
+    /// The disc of a read of the local at `index`.
+    pub(super) fn read_disc(&mut self, index: usize) -> ClifValue {
+        let disc = self.b.use_var(self.env.locals[index].words.disc);
+        match self.env.slot {
+            Some(s) if index < s.mark => self.b.ins().band(disc, s.standing),
+            _ => disc,
+        }
     }
 
     /// The init view of an instance whose first use `word` records: the

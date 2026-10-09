@@ -8,10 +8,12 @@ use crate::{
     fusion::{
         LambdaCallInfo,
         kernel_abi::{self, AbiKind},
-        lowering::{BuiltinCallSiteInfo, CaptureSlot, SiteDispatch, cast_typed},
+        lowering::{
+            BuiltinCallSiteInfo, CaptureSlot, SiteDispatch, cast_typed, formal_arg,
+        },
     },
     node::callsite::CallSite,
-    typ::{FnArgKind, Type},
+    typ::Type,
 };
 use anyhow::{Result, anyhow};
 use cranelift_codegen::ir::{
@@ -83,6 +85,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     let mut drops: smallvec::SmallVec<[(&str, ClifValue, Option<ClifValue>); 8]> =
         smallvec::SmallVec::new();
     let mut arg_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    // an owned arg is held while the later args emit (an emission error
+    // abandons the body, its holds with it)
     for (i, (arg_node, t)) in args.iter().zip(info.arg_types.iter()).enumerate() {
         // The buffer is laid out by `info.arg_types`, so only the
         // `AbiKind` needs to agree, not the exact `Type`.
@@ -111,11 +115,13 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
                 if node_composite_source(arg_node) == CompositeSource::Owned {
                     drops.push(("graphix_valarray_drop", cv.payload, None));
+                    cx.hold(LocalKind::Composite, cv);
                 }
                 (cx.b.ins().iconst(types::I64, value_disc::ARRAY), cv.payload)
             }
             Some(AbiKind::String) => {
                 drops.push(("graphix_arcstr_drop", cv.payload, None));
+                cx.hold(LocalKind::String, cv);
                 (cx.b.ins().iconst(types::I64, value_disc::STRING), cv.payload)
             }
             // A bare-null arg is a value-shape pair with the Null disc.
@@ -125,6 +131,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 let disc = clean_disc(cx.b, cv.disc);
                 if node_composite_source(arg_node) == CompositeSource::Owned {
                     drops.push(("graphix_value_drop", disc, Some(cv.payload)));
+                    cx.hold(LocalKind::Value, CompiledExpr::new(disc, cv.payload));
                 }
                 (disc, cv.payload)
             }
@@ -137,6 +144,9 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         };
         cx.b.ins().stack_store(disc, slot, (16 * i) as i32);
         cx.b.ins().stack_store(payload, slot, (16 * i + 8) as i32);
+    }
+    for _ in drops.iter() {
+        cx.release();
     }
     // A tainted arg is a mask bit, not a reason to skip emission; the
     // trampoline bottoms the call.
@@ -362,20 +372,6 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
-        // CR claude for claude: [bug] In a callee body claim_state_word is None, so a
-        // self-call hands the new activation this activation's own init flag. A
-        // recursion depth first reached after init (by growth, or by regrowth after a
-        // shrink) therefore runs with no init view, and the native tail loop does the
-        // same for its new iterations. The node-walk builds that activation fresh, so
-        // its constants fire and a constant-derived error under a handler-ful `?`
-        // raises once per new depth; the JIT never raises it. probe:
-        // design/review-2026-10-05/repro/f-call-flow-05.gx (interp counts 5 errors, JIT
-        // 3). The hand-inlined chain agrees only because arm_raise_blocker
-        // (lowering.rs:163) de-fuses it, and that walk does not follow the self edge,
-        // whose callee is unbound at fusion time. A first-call word in this body's site
-        // block would still miss a regrown depth because it survives the shrink, while
-        // the zeroed block that graphix_site_child_block allocates marks exactly the
-        // fresh activations. (f-call-flow-05)
         0 => cx.claim_state_word().map(|off| {
             let sp = cx.state_ptr();
             SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
@@ -455,7 +451,7 @@ fn emit_site_block(
     cx: &mut BodyCx,
     info: &LambdaCallInfo,
     is_self: bool,
-) -> Result<ClifValue> {
+) -> Result<(ClifValue, Option<ClifValue>)> {
     let key = kernel_abi::kernel_key(&info.kernel);
     let layout = match cx.callee_site_layout(key) {
         // No recorded layout means the callee is still being emitted: a
@@ -494,10 +490,16 @@ fn emit_site_block(
             let desc = cx.const_ptr(KernelConst::SiteBlockWords)?;
             let f = cx.helper("graphix_site_child_block")?;
             let call = cx.b.ins().call(f, &[word, desc]);
-            return Ok(cx.b.inst_results(call)[0]);
+            let rs = cx.b.inst_results(call);
+            return Ok((rs[0], Some(rs[1])));
         }
         Some(l) => l.clone(),
     };
+    claim_callee_block(cx, &layout).map(|block| (block, None))
+}
+
+/// A static callee's block, carved out of this body's memory.
+fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue> {
     if layout.words == 0 {
         return Ok(cx.b.ins().iconst(types::I64, 0));
     }
@@ -661,18 +663,11 @@ fn call_slots<'a, R: Rt, E: UserEvent>(
         ));
     }
     let mut slots: LPooled<Vec<LambdaCallSlot<R, E>>> = LPooled::take();
-    let mut pos = 0usize;
     let mut sig_idx = 0usize;
-    for (i, fa) in ftype.args.iter().enumerate() {
-        let node = match &fa.kind {
-            FnArgKind::Positional { .. } => {
-                let n = cs.arg_positional(pos);
-                pos += 1;
-                n
-            }
-            FnArgKind::Labeled { name, .. } => cs.arg_named(name),
-        }
-        .ok_or_else(|| anyhow!("lambda call `{fn_name}`: missing call-site arg node"))?;
+    for i in 0..ftype.args.len() {
+        let node = formal_arg(cs, &ftype, i).ok_or_else(|| {
+            anyhow!("lambda call `{fn_name}`: missing call-site arg node")
+        })?;
         // A skipped fn formal has no callee slot (its uses are
         // statically-resolved calls baked at build time). Its arg node
         // is not emitted, so one carrying an effect must de-fuse.
@@ -766,18 +761,18 @@ fn marshal_args<R: Rt, E: UserEvent>(
             }
             // Capture reads are borrowed.
             LambdaCallSlot::Cap(c) => {
-                let vv = cx
+                let index = cx
                     .env
-                    .lookup(c.bind_id, c.name.as_str())
+                    .position(c.bind_id, Some(c.name.as_str()))
                     .ok_or_else(|| {
                         anyhow!(
                             "lambda call `{fn_name}`: capture `{}` not in the calling \
                              kernel's env",
                             c.name
                         )
-                    })?
-                    .words;
-                CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload))
+                    })?;
+                let payload = cx.env.locals[index].words.payload;
+                CompiledExpr::new(cx.read_disc(index), cx.b.use_var(payload))
             }
         };
         cvs.push(cv);
@@ -867,9 +862,15 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let (slot_cvs, drops) = marshal_args(cx, &slots, fn_name)?;
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
-    clif_args.push(emit_callee_context_word(cx, cs.spec().id));
+    let context = emit_callee_context_word(cx, cs.spec().id);
+    let (site_block, fresh) = emit_site_block(cx, info, is_self)?;
+    // a self-call's activation made just now is born with the init view
+    let context = match fresh {
+        None => context,
+        Some(fresh) => cx.b.ins().bor(context, fresh),
+    };
+    clif_args.push(context);
     clif_args.push(cx.state_ptr());
-    let site_block = emit_site_block(cx, info, is_self)?;
     clif_args.push(site_block);
     for cv in slot_cvs.iter() {
         clif_args.push(cv.disc);
@@ -1073,11 +1074,8 @@ pub(super) fn emit_pending_cleanup(
         let ptr = b.use_var(*var);
         b.ins().call(f, &[ptr]);
     }
-    // In-flight HOF inputs are finished ValArrays, not value bufs.
-    for arr_var in ctx.owned_input_stack.borrow().iter() {
-        let f = ctx.helper(b, "graphix_valarray_drop")?;
-        let ptr = b.use_var(*arr_var);
-        b.ins().call(f, &[ptr]);
+    for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
+        emit_drop_local(b, ctx, *kind, *vv)?;
     }
     emit_scope_drops(&mut BodyCx { b, env, ctx }, ctx.owned_floor)
 }

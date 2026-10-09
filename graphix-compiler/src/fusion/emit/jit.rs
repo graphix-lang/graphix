@@ -1186,23 +1186,21 @@ impl Jit {
         }
         let work = take_functions(&mut pending);
         let isa = self.shared.isa.clone();
+        // the work goes to the thread once it exists: a refused spawn
+        // leaves it here to link now
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let compiled = std::thread::Builder::new()
             .stack_size(STACK)
-            .spawn(move || backend_all(&*isa, work));
+            .spawn(move || backend_all(&*isa, rx.recv().expect("the batch's work")));
         match compiled {
-            Ok(compiled) => self.in_flight = Some(InFlight { pending, compiled }),
-            // CR claude for claude: [bug] By the time the spawn fails, take_functions has
-            // already moved every Function out of `pending` into `work`, and the failed
-            // spawn dropped `work` along with its closure. This fallback therefore
-            // compiles the Function::new() placeholders. Cranelift panics on them
-            // (remove_constant_phis: entry block unknown) and the whole compile dies.
-            // So a refused batch thread (EAGAIN from pids.max, RLIMIT_NPROC or a
-            // refused stack mmap) never gets the synchronous link this arm is meant to
-            // give it. Keep `work` until the thread exists: send it over a channel
-            // after spawn succeeds, or take it back on Err. probe:
-            // design/review-2026-10-05/repro/f-jit-03.sh; without the shim, systemd-run
-            // --user --scope -p TasksMax=46 hits it too. (f-jit-03)
-            Err(_) => self.link(pending),
+            Ok(compiled) => {
+                tx.send(work).expect("the batch thread waits for its work");
+                self.in_flight = Some(InFlight { pending, compiled })
+            }
+            Err(_) => {
+                let compiled = backend_all(&*self.shared.isa, work);
+                self.install_or_panic(pending, compiled)
+            }
         }
     }
 
@@ -1476,6 +1474,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
             lambda_call_sites: lambda_sites,
             type_env,
             role: BodyRole::Parent,
+            params: &[],
         },
         hook: &parent,
     };
@@ -1492,6 +1491,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
                         lambda_call_sites: &cb.sites,
                         type_env,
                         role: BodyRole::Callee(cb.self_call.as_ref()),
+                        params: &cb.params,
                     },
                 ))
             })
@@ -1562,19 +1562,6 @@ fn compile_region_inner(
     let parent_fid = em.names.local(&parent_sig);
     funcids.push((parent_key, (parent_fid, parent_sig)));
     for (key, k) in callees {
-        // CR claude for claude: [bug] A callee body can miss `by_kernel` here only
-        // because its layout differs: any body with a lambda call keys on this region's
-        // whole callee list. Phase 2 then emits it from this region's instance
-        // (`emitters`) against `k`. `k` is the signature `build_lambda_kernel` cached
-        // for the first instance reached (lowering.rs:933), and its params bind that
-        // instance's formal BindIds. Every read of a formal misses with `emit_clif:
-        // undefined local`, so the region de-fuses and a correct `#[native]` is
-        // refused. Ordinary shapes hit it: select arms that reach `g -> h` both
-        // directly and through a wrapper, or two statements of a module with an
-        // interface. The outcome depends on walk order: `GRAPHIX_FUSE_SERIAL=1` refuses
-        // two such top-level statements that the task walk fuses, which contradicts
-        // design/parallel_compile.md:163-170. probe:
-        // design/review-2026-10-05/repro/f-jit-01.gx (f-jit-01)
         let key = CacheKey { kernel: *key, layout: layout_of(*key) };
         let entry = match em.caches.by_kernel(&key) {
             Some(e) => {

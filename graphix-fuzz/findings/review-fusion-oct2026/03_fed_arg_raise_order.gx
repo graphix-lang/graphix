@@ -1,0 +1,12 @@
+let s = "x";
+let t = "y";
+let last: string = never();
+{
+  catch(e) last <- "[(e.0).error]";
+  // f-mod-lowering-02: a fed argument raising after a fused one that
+  // raises would deliver first, so nothing is fed: the raises reach the
+  // handler in source order. Was a DIVERGENCE.
+  let f = |a: i64, b: i64| a + b;
+  f(cast<i64>(s)?, cast<i64>(once(t))?)
+};
+last

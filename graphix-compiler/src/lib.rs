@@ -2263,7 +2263,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     info!("typecheck time {:?}", st.elapsed());
     analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
-    if fusion_on(flags) {
+    if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
         let fused = fusion::TypeMemo::scope(|| fusion::fuse(node, ctx));

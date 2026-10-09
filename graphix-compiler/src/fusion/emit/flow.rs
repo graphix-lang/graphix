@@ -7,7 +7,7 @@ use crate::{
     expr::ExprKind,
     fusion::{
         self,
-        kernel_abi::{self, AbiKind},
+        kernel_abi::{self, AbiKind, AbiParamKind},
     },
     node::{callsite::CallSite, select::Select},
     typ::Type,
@@ -34,7 +34,7 @@ use super::{
     },
     call::{CompositeSource, emit_drop_local},
     nodes::{emit_bottom_of_kind, emit_bottom_placeholder, widen_result_to_value},
-    scalar::cast_u64_to_prim,
+    scalar::{cast_u64_to_prim, scalar_to_payload_i64},
     select::{classify_select_scrutinee, emit_select_arms},
 };
 
@@ -315,21 +315,21 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         let arg = cs
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
-        // CR claude for claude: [bug] A scalar argument fed to a value-shaped formal
-        // ([f64, null], [bool, null], [i32, null], [i64, f64]) reaches
-        // emit_tail_rebind_jump raw. body.rs:112 clones it as a Value or def_vars it
-        // into the I64 payload word, and nothing calls scalar_to_payload_i64; only
-        // i64/u64 survive, because their CLIF type is already the payload word. The JIT
-        // then panics: a borrowed argument fails link verification (jit.rs:1187), an
-        // owned one fails in cranelift-frontend's def_var. Either way the process dies
-        // on an ordinary well-typed program. The non-tail self call widens this case in
-        // marshal_args (call.rs:687); here, fit each argument to its slot, e.g. emit
-        // value-shaped slots through emit_owned_value_operand_node and pass them Owned.
-        // probe: design/review-2026-10-05/repro/f-call-flow-01.gx (`--no-fusion` prints
-        // 3, 5; with fusion it panics). (f-call-flow-01)
         let cv = arg.emit_clif(cx)?;
-        let source = node_composite_source(arg);
-        rebinds.push(TailRebind { slot, val: cv, source });
+        // a scalar fed to a value-shaped slot is widened to the Value
+        // encoding, which owns nothing
+        let value_slot = matches!(
+            cx.ctx.tail.call_slots[slot].kind.abi(),
+            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value
+        );
+        let (val, source) = match kernel_abi::abi_kind(arg.typ()) {
+            Some(AbiKind::Scalar(p)) if value_slot => (
+                CompiledExpr::new(cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload)),
+                CompositeSource::Owned,
+            ),
+            _ => (cv, node_composite_source(arg)),
+        };
+        rebinds.push(TailRebind { slot, val, source });
     }
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
@@ -585,6 +585,7 @@ fn emit_qop_error_disposal(
 fn emit_qop_always_bad<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
+    result_typ: &Type,
     sink: QopSink,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
@@ -594,18 +595,13 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
     emit_qop_error_disposal(cx, sink, deliverable, clean, cv.payload, inner_owned)?;
-    // CR claude for claude: [bug] This placeholder is Value-shaped (an i64 zero payload)
-    // whatever the qop's own type. That type is a bottom-fed cell that takes its
-    // consumer's type (f64, i32, bool), and consumers read the shape from
-    // abi_kind(node.typ()). So `v * 2.0 + error(`Boom)?` emits `fadd.f64 v15, v72` with
-    // an i64 v72, and the link panics on the verifier errors; the node-walk prints
-    // "caught". node_is_bottom does not catch it because the node's type is f64, not ⊥.
-    // The same panic hits an always-error or always-null `?`/`$` used as a select arm,
-    // an annotated let, a lambda-call argument or an operand of `&&`. Emit the
-    // placeholder of the frozen result_typ, keeping the shapeless one only when that
-    // type is ⊥. probe: design/review-2026-10-05/repro/f-call-flow-02.gx
-    // (f-call-flow-02)
-    let bottom = emit_bottom_of_kind(cx, AbiKind::Value)?;
+    // the placeholder has the shape its consumers read: the result type's,
+    // a bottom-fed cell that took its consumer's, shapeless only for ⊥
+    let kind = kernel_abi::freeze_for_abi_normalized(result_typ)
+        .and_then(|t| kernel_abi::abi_kind(&t))
+        .filter(|k| !matches!(k, AbiKind::Unit | AbiKind::Null))
+        .unwrap_or(AbiKind::Value);
+    let bottom = emit_bottom_of_kind(cx, kind)?;
     let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
     let disc = cx.b.ins().bor(bottom.disc, stale_bit);
     Ok(CompiledExpr::new(disc, bottom.payload))
@@ -642,7 +638,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                  but is not a two member union — node-walk handles it"
             ));
         }
-        return emit_qop_always_bad(cx, inner, sink);
+        return emit_qop_always_bad(cx, inner, result_typ, sink);
     }
     let Some(success_typ) = kernel_abi::freeze_for_abi_normalized(result_typ) else {
         return Err(anyhow!(

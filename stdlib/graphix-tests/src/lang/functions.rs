@@ -786,11 +786,15 @@ run!(fold_callback_name_collision, FOLD_CALLBACK_NAME_COLLISION, |v: Result<
 ); FuseExpect::Jit);
 
 // An abandoned kernel-closure build (the rec lambda de-fuses on the
-// error-arm base case) must not break a later region's compile.
+// base case's type test, which has no tag form) must not break a later
+// region's compile.
 const ABANDONED_KERNEL_CLOSURE: &str = r#"
 {
   let rec f = |n: i64| -> i64 select n {
-    m if m <= i64:0 => select (i64:7 +? i64:-100) { error as _ => i64:1, i64 as x => x },
+    m if m <= i64:0 => {
+      let d: [datetime, Error<`E>] = error(`E);
+      select d { datetime as _ => i64:1, error as _ => i64:2 }
+    },
     m => (m + f(m - i64:1))
   };
   let v = f(i64:8);
@@ -2581,7 +2585,7 @@ run!(trait_call_in_a_default, TRAIT_CALL_IN_A_DEFAULT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a))
         if a[0] == Value::Array([s("int 5:1"), s("int 5:2")].into_iter().collect())
             && a[1] == s("int 5"))
-}; FuseExpect::None);
+}; FuseExpect::Jit);
 
 // A variable settles to the widest argument whatever the order, a
 // formal holding two of them included.

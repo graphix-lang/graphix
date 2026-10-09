@@ -56,7 +56,9 @@ let total = #[native] sum_to(1000000, 0)
 `#[tail_recursive]` asserts the shape and `#[native]` that the call
 compiles to native code. `#[tail_recursive]` is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if a parameter
-is labeled (the loop rebinds positional parameters), if the
+is labeled (the loop rebinds positional parameters), if the body holds
+memory of its own per call (a collection operation, or a call to a
+function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
 program does not compile.
 

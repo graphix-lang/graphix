@@ -934,18 +934,28 @@ pub fn eval_pool() -> &'static rayon::ThreadPool {
     static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
         // resolved here: rayon resolves 0 through RAYON_NUM_THREADS, the
         // compile pool's setting
-        let threads = std::env::var("GRAPHIX_EVAL_THREADS")
+        let mut threads = std::env::var("GRAPHIX_EVAL_THREADS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(|| {
                 std::thread::available_parallelism().map_or(1, |n| n.get())
             });
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .stack_size(16 << 20)
-            .thread_name(|i| format!("graphix-eval-{i}"))
-            .build()
-            .expect("the evaluation pool")
+        // a process short of address space or threads gets fewer workers
+        loop {
+            let built = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .stack_size(16 << 20)
+                .thread_name(|i| format!("graphix-eval-{i}"))
+                .build();
+            match built {
+                Ok(pool) => break pool,
+                Err(e) if threads > 1 => {
+                    log::warn!("the evaluation pool: {threads} workers: {e}");
+                    threads /= 2
+                }
+                Err(e) => panic!("the evaluation pool: {e}"),
+            }
+        }
     });
     &POOL
 }

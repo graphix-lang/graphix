@@ -381,8 +381,10 @@ fn assertion_failure<R: Rt, E: UserEvent>(
             RecursionKind::TailCalls => Some(
                 "#[tail_recursive]: every recursive call is in tail position, but \
                  no loop is built — the loop rebinds positional formals of types \
-                 a fused kernel can carry, so with a labeled, variadic or opaque \
-                 formal every call keeps its own activation",
+                 a fused kernel can carry and shares nothing between its passes, \
+                 so with a labeled, variadic or opaque formal, or a body holding \
+                 per-call memory (a collection operation, or a callee holding \
+                 one), every call keeps its own activation",
             ),
             RecursionKind::Recursive => Some(
                 "#[tail_recursive]: this function recurses through a non-tail \

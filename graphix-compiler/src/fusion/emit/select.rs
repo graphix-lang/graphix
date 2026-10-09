@@ -849,23 +849,15 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                     cx.b.seal_block(cont);
                     eff
                 }
-                // Schedule-free: pure and never bottom, so no
-                // undetermined case and no fold.
-                // CR claude for claude: [bug] A lazily emitted guard's STALE bit never
-                // reaches `acc`, yet a constant in it fires at an init or wake view on
-                // its own, so a consulted guard such as `n if n > 0` or `_ if true`
-                // fires while the scrutinee is stale. The node-walk emits the select
-                // there (EmissionPlanes::new; organic_firing.md delta 2), and the
-                // prologue path folds the same guard when it is written as `n > zero`.
-                // Only this path drops the fire: `y <- f(in0)` never writes in an arm
-                // that is entered or woken while `in0` stands, in value and tail
-                // position alike. Fold `band_imm(gcv.disc, STALE)` into `acc` before
-                // the brif and drop the "no fold" claim above. Outside init and wake
-                // that fold equals the scrutinee's, so the guard stays lazy at no cost.
-                // probe: design/review-2026-10-05/repro/f-select-01.gx (graphix-fuzz
-                // check: DIVERGENCE). (f-select-01)
+                // Schedule-free: pure and never bottom, so no undetermined
+                // case; a consulted guard's fire still folds into the
+                // accumulator (a constant in it fires at an init or a wake)
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
+                    let gs = cx.b.ins().band_imm(gcv.disc, STALE);
+                    let cur = cx.b.use_var(acc);
+                    let n = cx.b.ins().band(cur, gs);
+                    cx.b.def_var(acc, n);
                     let valid = is_untainted(cx.b, gcv.disc);
                     cx.b.ins().band(gcv.payload, valid)
                 }
@@ -1061,88 +1053,45 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     {
                         None
                     }
-                    // CR claude for claude: [bug] This guard compares
-                    // `scalar_prim(inner)` with `PrimType::from_typ(pt)`. Both are None
-                    // whenever neither the tested type nor the option's inner type is a
-                    // register scalar, so `string as s` over `[Array<i64>, null]` or
-                    // `[datetime, null]` gets through, and the `Some(false)` arm below
-                    // lowers "is a string" to "is not null". The bind then reads with
-                    // the predicate's kind (graphix_nullable_string yields ""), so the
-                    // fused select takes an arm the node-walk's `is_a` refuses: a wrong
-                    // answer, not a lost fusion. In a monomorphic program the dead-arm
-                    // check hides this, but an instance of a generic definition (`|x:
-                    // ['a, null]| select x { string as s => .. }`) takes its
-                    // definition's check and reaches here. Test the value's tag against
-                    // the predicate's own (`clean_disc == Typ(pt)`) instead of
-                    // inferring it from non-null. probe:
-                    // design/review-2026-10-05/repro/f-select-03.gx (--no-fusion prints
-                    // (7, 7, 102), fusion prints (100, 100, 102)). (f-select-03)
                     SelectScrut::Value { disc, .. }
-                        if matches!(scrut_kind, AbiKind::Nullable)
-                            && kernel_abi::nullable_inner(&scrut_typ)
-                                .as_ref()
-                                .and_then(|t| kernel_abi::scalar_prim(t))
-                                == PrimType::from_typ(pt) =>
+                        if matches!(scrut_kind, AbiKind::Nullable) =>
                     {
                         let cd = clean_disc(cx.b, disc);
-                        match kernel_abi::nullable_error_marked(&scrut_typ) {
-                            // `[T, null]`: "is a T" is "is not null".
-                            Some(false) => Some(cx.b.ins().icmp_imm(
+                        let exact = kernel_abi::nullable_inner(&scrut_typ).is_some_and(
+                            |t| matches!(t, Type::Primitive(q) if q.exactly_one() == Some(pt)),
+                        );
+                        let tag = match PrimType::from_typ(pt) {
+                            Some(prim) => Some(scalar_disc(cx.b, prim)),
+                            None if pt == netidx_value::Typ::String => {
+                                Some(cx.b.ins().iconst(types::I64, value_disc::STRING))
+                            }
+                            None if pt == netidx_value::Typ::Error => {
+                                Some(cx.b.ins().iconst(types::I64, value_disc::ERROR))
+                            }
+                            None => None,
+                        };
+                        match (kernel_abi::nullable_error_marked(&scrut_typ), exact, tag)
+                        {
+                            // `[T, null]` tested for `T`: "is a T" is "is not null"
+                            (Some(false), true, _) => Some(cx.b.ins().icmp_imm(
                                 IntCC::NotEqual,
                                 cd,
                                 value_disc::NULL,
                             )),
-                            // `[T, Error<E>]`: the error is not null, so
-                            // "is a T" is the positive test against T's disc.
-                            Some(true) => match PrimType::from_typ(pt) {
-                                Some(prim) => {
-                                    let td = scalar_disc(cx.b, prim);
-                                    Some(cx.b.ins().icmp(IntCC::Equal, cd, td))
-                                }
-                                None if pt == netidx_value::Typ::String => {
-                                    Some(cx.b.ins().icmp_imm(
-                                        IntCC::Equal,
-                                        cd,
-                                        value_disc::STRING,
-                                    ))
-                                }
-                                // CR claude for claude: [perf] Over a result union this
-                                // Error test is reached only when the success type has
-                                // no register form: the gate at :1006-1011 compares
-                                // scalar_prim(nullable_inner) with
-                                // PrimType::from_typ(Error), which is None. So the
-                                // canonical split `select r { error as e => .., v => ..
-                                // }` over `[i64, Error<E>]` refuses ("type predicate ..
-                                // not lowerable") and its whole select node-walks,
-                                // while the same select over `[string, Error<E>]`
-                                // fuses. Test `clean_disc == value_disc::ERROR` for an
-                                // Error predicate over any error-marked Nullable,
-                                // whatever the success type. The
-                                // abandoned_kernel_closure fixture
-                                // (stdlib/graphix-tests/src/lang/functions.rs:810)
-                                // de-fuses only through this refusal and needs another
-                                // trigger once this is fixed. probe:
-                                // design/review-2026-10-05/repro/f-select-04.gx
-                                // (graphix-fuzz run). (f-select-04)
-                                None if pt == netidx_value::Typ::Error => {
-                                    Some(cx.b.ins().icmp_imm(
-                                        IntCC::Equal,
-                                        cd,
-                                        value_disc::ERROR,
-                                    ))
-                                }
-                                None => {
-                                    return Err(anyhow!(
-                                        "emit_clif: non-register type \
-                                             predicate {pred:?} over a result \
-                                             union not lowerable"
-                                    ));
-                                }
-                            },
-                            None => {
+                            // the value's own tag against the predicate's
+                            (Some(_), _, Some(td)) => {
+                                Some(cx.b.ins().icmp(IntCC::Equal, cd, td))
+                            }
+                            (Some(_), _, None) => {
+                                return Err(anyhow!(
+                                    "emit_clif: non-register type predicate \
+                                     {pred:?} over {scrut_typ:?} not lowerable"
+                                ));
+                            }
+                            (None, ..) => {
                                 return Err(anyhow!(
                                     "emit_clif: Nullable scrutinee \
-                                         {scrut_typ:?} has no marker shape"
+                                     {scrut_typ:?} has no marker shape"
                                 ));
                             }
                         }

@@ -42,6 +42,7 @@ use dashmap::DashMap;
 use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
+use smallvec::SmallVec;
 use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
@@ -338,6 +339,13 @@ const LINK_BATCH: usize = 256;
 pub(crate) type KernelCacheKey =
     (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions);
 
+enum JitSlot {
+    Unbuilt,
+    Built(emit::Jit),
+    /// The build failed: the context runs unfused.
+    Unavailable,
+}
+
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
@@ -345,7 +353,7 @@ pub struct FusionCtx {
     /// shared by the context's compile tasks for installing. The mutex is
     /// interior mutability for `ExecCtx`'s `Sync` bound; JIT ops are
     /// compile-time only.
-    jit: Arc<parking_lot::Mutex<Option<emit::Jit>>>,
+    jit: Arc<parking_lot::Mutex<JitSlot>>,
     /// What this context, or this compile task, emits before a link: the
     /// names, the kernel caches (lambda kernel signatures and bodies; a
     /// later compile may call an earlier one's lambda) and the functions
@@ -391,10 +399,25 @@ impl FusionCtx {
     /// The context's JIT module, built on first use.
     pub(crate) fn jit(&self) -> anyhow::Result<MappedMutexGuard<'_, emit::Jit>> {
         let mut jit = self.jit.lock();
-        if jit.is_none() {
-            *jit = Some(emit::Jit::new()?);
+        if let JitSlot::Unbuilt = *jit {
+            *jit = match emit::Jit::new() {
+                Ok(j) => JitSlot::Built(j),
+                Err(e) => {
+                    log::warn!("fusion is unavailable, the program runs unfused: {e:#}");
+                    JitSlot::Unavailable
+                }
+            }
         }
-        Ok(MutexGuard::map(jit, |jit| jit.as_mut().expect("built above")))
+        MutexGuard::try_map(jit, |jit| match jit {
+            JitSlot::Built(j) => Some(j),
+            JitSlot::Unbuilt | JitSlot::Unavailable => None,
+        })
+        .map_err(|_| anyhow::anyhow!("fusion is unavailable"))
+    }
+
+    /// Whether this context can fuse: its JIT builds.
+    pub(crate) fn available(&self) -> bool {
+        self.jit().is_ok()
     }
 
     /// What this context or task emits into, built with the JIT.
@@ -449,7 +472,7 @@ impl FusionCtx {
             None => Vec::new(),
         };
         let mut jit = self.jit.lock();
-        let Some(jit) = jit.as_mut() else { return };
+        let JitSlot::Built(jit) = &mut *jit else { return };
         let retired = jit.retired();
         f(jit, pending);
         self.stats.jit_generations += jit.retired() - retired;
@@ -462,7 +485,7 @@ impl FusionCtx {
 
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            jit: Arc::new(parking_lot::Mutex::new(None)),
+            jit: Arc::new(parking_lot::Mutex::new(JitSlot::Unbuilt)),
             emission: parking_lot::Mutex::new(None),
             stats: FusionStats::default(),
             top_id: None,
@@ -829,6 +852,9 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     pub sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
     /// This callee body's own builtin/cast/qop Apply sites.
     pub apply_sites: nohash::IntMap<ExprId, lowering::BuiltinCallSiteInfo>,
+    /// This body's formal ids for the kernel's, where the kernel was
+    /// cached from another instance of the definition: old to new.
+    pub params: SmallVec<[(BindId, BindId); 4]>,
 }
 
 /// What [`discover_lambda_calls`] found in a region.
@@ -926,6 +952,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
                         self_call: cached.self_call.map(|sb| (sb, cached.clone())),
                         sites: LPooled::take(),
                         apply_sites: cached.apply_sites.clone(),
+                        params: lowering::rebound_formals(g, &cached.kernel),
                     },
                 );
                 enqueue.push((g.body(), ptr));
@@ -988,36 +1015,40 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     if !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_))) {
         return Ok(None);
     }
-    let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
-    // CR claude for claude: [bug] A fed argument runs in the kernel's feeder poll, before
-    // the kernel, so its handler-ful `?` delivers ahead of the queued raises of the
-    // fused arguments to its left, while the node-walk evaluates arguments left to
-    // right. Two raises to one handler in one cycle then reach it in the opposite order
-    // (the first takes the cycle, the second lands next cycle), and a handler that
-    // keeps the last error settles on a different one under fusion. The `let`
-    // equivalence the doc comment cites holds for values, not for raise order. Feeding
-    // every earlier argument that can raise, or not feeding in that case, keeps source
-    // order. probe: design/review-2026-10-05/repro/f-mod-lowering-02.gx (graphix-fuzz
-    // check: DIVERGENCE). (f-mod-lowering-02)
+    // A feeder runs before the kernel, so a fed argument's raise would
+    // reach its handler ahead of a fused earlier argument's: then nothing
+    // is fed.
+    let raises = |n: &Node<R, E>| {
+        let mut any = false;
+        for_each_reachable_node(n, &mut |n| {
+            any |= matches!(n.view(), NodeView::Qop(q) if q.handler.is_some())
+        });
+        any
+    };
+    let mut feeds: SmallVec<[bool; 8]> = SmallVec::new();
+    let mut fused_raise = false;
     for arg in cs.args.values_mut() {
-        let Some(node) = arg.node.as_mut() else { continue };
-        let mut discovery = lowering::BuiltinCallDiscovery::default();
-        if lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_ok() {
+        let Some(node) = arg.node.as_mut() else {
+            feeds.push(false);
             continue;
+        };
+        let mut discovery = lowering::BuiltinCallDiscovery::default();
+        let feed =
+            lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_err();
+        match (feed, raises(node)) {
+            (true, true) if fused_raise => return Ok(None),
+            (false, true) => fused_raise = true,
+            _ => (),
         }
+        feeds.push(feed);
+    }
+    let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
+    for (arg, feed) in cs.args.values_mut().zip(feeds) {
+        let Some(node) = arg.node.as_mut().filter(|_| feed) else { continue };
         let typ = node.typ().clone();
-        // CR claude for claude: [bug] This `#fed` binding is never unbound. It survives
-        // the free_var_input refusal, the failed attempt that puts the originals back,
-        // and `feed` replacing the read, and FusedKernel::delete deletes only feeders.
-        // A collection slot's instance repeats this walk at every bind
-        // (share::fuse_slot), so env.by_id gains an entry per fed argument per slot
-        // created, whether or not the call fuses. Memory grows without bound under slot
-        // churn, about 300 B per slot. probe:
-        // design/review-2026-10-05/repro/f-mod-lowering-03.gx (RSS 94, 225, 393 MB at
-        // cycles 2k/20k/40k; with `{ let y = x ~ x; g(y) }` as the callback, or with
-        // --no-fusion, it stays under 100 MB). (f-mod-lowering-03)
         let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
         if free_var_input(id, ctx).is_none() {
+            ctx.env.unbind_variable(id);
             ctx.discard(read);
             continue;
         }
@@ -1026,6 +1057,21 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     if fed.is_empty() {
         return Ok(None);
     }
+    // the bindings name the inputs for the attempt alone: a kernel's
+    // feeder replaces its read
+    let ids: SmallVec<[BindId; 8]> = fed.iter().map(|(id, _)| *id).collect();
+    let r = fuse_fed(child, ctx, &mut fed);
+    for id in ids {
+        ctx.env.unbind_variable(id);
+    }
+    r
+}
+
+fn fuse_fed<R: Rt, E: UserEvent>(
+    child: &mut Node<R, E>,
+    ctx: &mut CompileCtx<R, E>,
+    fed: &mut Vec<(BindId, Node<R, E>)>,
+) -> anyhow::Result<Option<Node<R, E>>> {
     // Every fed argument must be an input: an argument the kernel skips
     // would drop its effect.
     let kernel = match try_fuse(child, ctx)? {
@@ -1112,21 +1158,27 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     {
         return parts.drain(..).try_for_each(|p| visit(p, ctx));
     }
-    // a part that calls no function is not worth a task
-    let (mut heavy, light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
-        parts.drain(..).partition(|p| calls_a_function(p));
-    let mut light = light;
-    // CR claude for claude: [bug] Every light part is visited before any heavy one, and
-    // the first light error returns before the heavy parts run. So the error returned
-    // is not "the first error in order" that the doc above promises, nor the serial
-    // walk's error, which CLAUDE.md says the task walk reproduces. With `#[native]
-    // g(a); #[native] once(a);` in a block (g a lambda that prints), the default build
-    // reports the later `once` and GRAPHIX_FUSE_SERIAL=1 reports the earlier `g`. Keep
-    // each part's index and return the error with the lowest one. probe:
-    // design/review-2026-10-05/repro/f-mod-lowering-08.gx (f-mod-lowering-08)
-    light.drain(..).try_for_each(|p| visit(p, ctx))?;
+    // a part that calls no function is not worth a task; the error is the
+    // serial walk's, the first in order
+    let (mut heavy, mut light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
+        parts.drain(..).enumerate().partition(|(_, p)| calls_a_function(p));
+    let light_err =
+        light.drain(..).find_map(|(i, p)| visit(p, ctx).err().map(|e| (i, e)));
+    if let Some((i, _)) = &light_err {
+        heavy.retain(|(h, _)| h < i);
+    }
+    let first = |heavy_err: Option<(usize, anyhow::Error)>| match [light_err, heavy_err]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(i, _)| *i)
+    {
+        Some((_, e)) => Err(e),
+        None => Ok(()),
+    };
     if heavy.len() < 2 {
-        return heavy.drain(..).try_for_each(|p| visit(p, ctx));
+        return first(
+            heavy.drain(..).find_map(|(i, p)| visit(p, ctx).err().map(|e| (i, e))),
+        );
     }
     let mut parts = heavy;
     // fusion records no attribute, and whether there are any decides
@@ -1134,23 +1186,23 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     let census = ctx.attr_census.lock().clone();
     let memo = TypeMemo::current();
     let mut emission = ctx.fusion.emission()?;
-    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = parts
+    let mut work: LPooled<Vec<(usize, &mut Node<R, E>, CompileCtx<R, E>)>> = parts
         .drain(..)
-        .map(|p| {
+        .map(|(i, p)| {
             let task = ctx.fork();
             *task.attr_census.lock() = census.clone();
             *task.fusion.emission.lock() = Some(emission.fork());
-            (p, task)
+            (i, p, task)
         })
         .collect();
     drop(emission);
-    let mut results: Vec<anyhow::Result<()>> = work
+    let mut results: Vec<(usize, anyhow::Result<()>)> = work
         .par_iter_mut()
-        .map(|(n, task)| {
-            task.run_task(|task| TypeMemo::enter(memo.clone(), || visit(n, task)))
+        .map(|(i, n, task)| {
+            (*i, task.run_task(|task| TypeMemo::enter(memo.clone(), || visit(n, task))))
         })
         .collect();
-    for (_, task) in work.drain(..) {
+    for (_, _, task) in work.drain(..) {
         task.attr_census.lock().clear();
         ctx.join(task);
     }
@@ -1158,7 +1210,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     if ctx.fusion.unlinked() >= LINK_BATCH {
         ctx.fusion.link_batch();
     }
-    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+    first(results.drain(..).find_map(|(i, r)| r.err().map(|e| (i, e))))
 }
 
 /// Does the subtree call a lambda or run a collection operation, the
@@ -1283,17 +1335,6 @@ fn build_region<R: Rt, E: UserEvent>(
     let inputs = collect_region_inputs(&**node, ctx);
     drop(phase);
     let phase = profile::phase(Phase::Callees);
-    // CR claude for claude: [bug] If the JIT cannot be built, `emission()` errs, and this
-    // `?` turns that into a compile error (so do 1292 here and 1122/1141 in
-    // `fuse_each`). The JIT fails to build when the arena reservation is refused under
-    // an address-space limit, when cranelift has no ISA for the host, or when
-    // GRAPHIX_JIT_ARENA cannot be reserved. The result is that every program fails with
-    // fusion on instead of node-walking. `graphix arena.gx` under `ulimit -v 1400000`,
-    // or with GRAPHIX_JIT_ARENA=1000000000000000, prints "jit arena reservation failed:
-    // ... (os error 12)", while `--no-fusion` prints 41. A failed JIT build should mean
-    // fusion is unavailable: log it once, refuse the region, and visit `fuse_each`'s
-    // parts serially. probe: design/review-2026-10-05/repro/f-mod-lowering-05.sh
-    // (f-mod-lowering-05)
     ctx.fusion.emission()?.attempt();
     let lambdas = discover_lambda_calls(node, ctx);
     drop(phase);
@@ -1326,26 +1367,26 @@ fn build_region<R: Rt, E: UserEvent>(
         Err(e) => {
             ctx.fusion.emission()?.forget_attempt();
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
-            // CR claude for claude: [bug] Each refused callee's reason is recorded here,
-            // then `refuse` records the generic emission error for the same call-site
-            // spec. `failure_for_source` returns the last failure for a spec, so
-            // `#[native] g(a)` on a lambda with no kernel reports only "lambda call
-            // site `g(a)` not discovered — subtree node-walks" and never the cause
-            // ("lambda `g` has no kernel: its body: builtin `print` has no fast-call
-            // entry"). This is the book's main use, `#[native] f(..)` on a user
-            // function. One call deeper (`let h = |x: i64| g(x) * 3; #[native] h(a)`),
-            // both records land on `g(x)` inside h's body, outside the subtree
-            // Native::check walks, and the error lists no reason at all. probe:
-            // design/review-2026-10-05/repro/f-mod-lowering-07.gx (f-mod-lowering-07)
             for (spec, why) in lambdas.refused.iter() {
                 ctx.fusion.stats.record_failure(spec, why);
             }
-            let spec = e
+            // the region's own record carries the causes: a refused callee
+            // or a blocker may sit in a callee's body, outside the region
+            let mut why = format_compact!("{e:#}");
+            for (_, refused) in lambdas.refused.iter() {
+                why.push_str("; ");
+                why.push_str(refused);
+            }
+            let blocker = e
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<FusionBlocker>())
                 .map(|blocker| &blocker.spec)
-                .unwrap_or_else(|| node.spec());
-            return refuse(ctx, spec, &format!("{e:#}"));
+                .filter(|spec| {
+                    let mut inside = false;
+                    for_each_node(node, &mut |n| inside |= n.spec().id == spec.id);
+                    inside
+                });
+            return refuse(ctx, blocker.unwrap_or_else(|| node.spec()), &why);
         }
     };
     // Feeders register under the real top id: `Rt::ref_var` is keyed
@@ -1356,16 +1397,6 @@ fn build_region<R: Rt, E: UserEvent>(
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
         .collect();
-    // CR claude for claude: [bug] The kernel takes the region's type, which may name a
-    // typedef declared inside the region. fuse then discards the replaced region
-    // (:978), and deleting it runs TypeDef::delete, which undefines that name while the
-    // kernel and the shell's root type (graphix-rt/src/gx.rs:916) still reach it
-    // through a weak resolution cell. The script `type C = {col: i64}; type S = {inner:
-    // C, n: i64}; let s: S = {inner: {col: 1}, n: 2}; s` fuses whole and prints
-    // `[["inner", [["col", 1]]], ["n", 2]]` because TVal's is_a_with fails
-    // (tval.rs:277), while --no-fusion prints `{inner: {col: 1}, n: 2}`. Make the
-    // kernel own the definitions its type names, as DefTable::typedefs and KernelType
-    // do. probe: design/review-2026-10-05/repro/c-data-map-10.gx (c-data-map-10)
     let n = FusedKernel::new(
         node.spec().clone(),
         node.typ().clone(),

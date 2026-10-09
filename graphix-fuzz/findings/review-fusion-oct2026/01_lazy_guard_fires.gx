@@ -1,0 +1,10 @@
+// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:1; in0=i64:2
+{
+  // f-select-01: a lazily emitted guard folds its fire into the select's
+  // accumulator, so a consulted guard's constant firing at an arm's entry
+  // or wake fires the select as the node-walk's does. Was a DIVERGENCE.
+  let f = |v: i64| select v { n if n > i64:0 => n, _ => i64:0 };
+  let y = i64:-1;
+  select in1 { i64:0 => in0 * i64:0, _ => { y <- f(in0); i64:5 } };
+  y
+}

@@ -135,6 +135,15 @@ impl_helper_arg! {
     // (`ManuallyDrop<TagValue>` with a HelperArg impl), keep TagValue for consumed
     // ones, and delete the forgets and that comment. (f-helpers-03)
     TagValue => &[AbiTy::I64, AbiTy::I64];
+    ChildBlock => &[AbiTy::I64, AbiTy::I64];
+}
+
+/// A self-call's per-activation block and whether it was just made: a
+/// fresh activation, born with the init view.
+#[repr(C)]
+pub struct ChildBlock {
+    block: *mut u64,
+    fresh: u64,
 }
 
 impl<T> HelperArg for *mut T {
@@ -1636,17 +1645,19 @@ unsafe fn graphix_slot_state_table(
 unsafe fn graphix_site_child_block(
     word: *mut u64,
     desc: *const std::sync::atomic::AtomicU64,
-) -> *mut u64 {
+) -> ChildBlock {
     use std::sync::atomic::Ordering::Relaxed;
+    let none = ChildBlock { block: std::ptr::null_mut(), fresh: 0 };
     if word.is_null() {
-        return std::ptr::null_mut();
+        return none;
     }
     let words = unsafe { (*desc).load(Relaxed) } as usize;
     if words == 0 {
-        return std::ptr::null_mut();
+        return none;
     }
     let word = unsafe { &mut *word };
-    if *word == 0 {
+    let fresh = *word == 0;
+    if fresh {
         // Index `words`, past the emitted layout, holds the generation stamp.
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
         crate::stack::record_self_blocks(1);
@@ -1654,7 +1665,7 @@ unsafe fn graphix_site_child_block(
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     v[words] = SELF_BLOCK_GEN.get();
     SELF_BLOCK_REACHED.set(SELF_BLOCK_REACHED.get() + 1);
-    v.as_mut_ptr()
+    ChildBlock { block: v.as_mut_ptr(), fresh: fresh as u64 }
 }
 
 /// [`graphix_slot_state_table`] for a chain leaf of per-slot call-site

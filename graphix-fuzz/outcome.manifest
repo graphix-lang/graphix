@@ -316,6 +316,9 @@ trace	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 trace	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 trace	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 trace	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
+trace	review-fusion-oct2026/01_lazy_guard_fires.gx
+trace	review-fusion-oct2026/02_slot_birth_reads_standing.gx
+trace	review-fusion-oct2026/03_fed_arg_raise_order.gx
 trace	review-oct2026/01_defaulted_label_handler.gx
 reject	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 reject	rigid-commit-sep2026/01_annotation_variable_split.gx

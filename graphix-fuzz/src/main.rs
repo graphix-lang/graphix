@@ -1253,4 +1253,14 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
            f(y % i64:20, i64:0) + count(y)\n\
          }))\n",
     ),
+    (
+        // slots whose callback call feeds an argument, grown and shrunk
+        "fed-arg-slots",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let len = select x % i64:2 { i64:0 => i64:50, _ => i64:0 };\n\
+         let g = |v: i64| v * i64:2 + i64:1;\n\
+         array::len(array::map(array::init(len, |i| i), |y| g(y ~ y)))\n",
+    ),
 ];

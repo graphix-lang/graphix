@@ -267,6 +267,7 @@ fn emit_chunk(
             loop_head: None,
             param_mark: env.mark(),
             call_slots: &[],
+            params: &[],
             tail_scrut_stale_acc,
         },
         init_flag,

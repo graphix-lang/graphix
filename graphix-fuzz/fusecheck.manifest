@@ -115,7 +115,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	dyncall-jun2026/01_pending_string_dyncall_drop.gx
 0	dyncall-jun2026/02_dead_pend_discard_position.gx
 0	dyncall-key0-stateful-aug2026/00_count_in_callee_fold.gx
-3	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
+1	dyncall-layout-jul2026/01_shared_callee_stale_layout.gx
 20	dyncall-loop-stale-ride-aug2026/00_map_filter_refire_rides_shared_cache.gx
 1	dyncall-partial-args-jul2026/00_window_bottom_val.gx
 1	dyncall-partial-args-jul2026/01_window_scalar_bottom_val.gx
@@ -219,12 +219,12 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 29	interface-ctor-trait-oct2026/01_six_modules.gx
 3	interp-format-jul2026/01_union_array_typed_prefix.gx
 2	kernel-frame-init-const-fire-aug2026/00_rec_const_terminal_input_arm.gx
-9	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx
+8	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx
 2	kernel-frame-init-const-fire-aug2026/02_tuple_ref_recursion.gx
 3	kernel-frame-init-const-fire-aug2026/03_crossmodule_refwrite.gx
 4	kernel-result-bottom-persists-aug2026/00_defused_select_reads_ride.gx
 9	kernel-result-bottom-persists-aug2026/01_guard_arm_epoch3.gx
-5	kernel-result-bottom-persists-aug2026/02_block_connect_qop.gx
+4	kernel-result-bottom-persists-aug2026/02_block_connect_qop.gx
 11	kernel-result-bottom-persists-aug2026/03_catch_qop_select.gx
 6	kernel-tainted-source-fire-aug2026/00_window_div0_fold.gx
 3	key0-dyncall-stale-fold-aug2026/00_refwrite_guard_echo.gx
@@ -312,10 +312,13 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	ref-cast-sep2026/00_cast_of_a_reference.gx
 6	ref-print-id-oct2026/00_interpolated_ref.gx
 0	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
-31	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
+30	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 4	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
 1	result-union-nullable-abi-aug2026/00_checked_arith_error_binds_pointer.gx
 1	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
+6	review-fusion-oct2026/01_lazy_guard_fires.gx
+12	review-fusion-oct2026/02_slot_birth_reads_standing.gx
+3	review-fusion-oct2026/03_fed_arg_raise_order.gx
 3	review-oct2026/01_defaulted_label_handler.gx
 0	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 0	rigid-commit-sep2026/01_annotation_variable_split.gx
@@ -474,7 +477,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 8	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx
 2	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
-24	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
+21	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
 abort	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
 abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx

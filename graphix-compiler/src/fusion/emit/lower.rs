@@ -34,7 +34,7 @@ use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodyRole, BodySource, emit_interrupt_check},
+    body::{BodyRole, BodySource, emit_interrupt_check, param_id},
     call::BufKind,
     jit::{ChunkFn, Names},
     record::EmitConst,
@@ -126,7 +126,7 @@ pub(super) fn compile_into_function<'a>(
             d.name.clone(),
             ValueVar { disc: disc_var, payload: payload_var },
             kind,
-            d.bind_id,
+            param_id(spec.params, d.bind_id),
         );
     }
     b.seal_block(entry);
@@ -143,19 +143,6 @@ pub(super) fn compile_into_function<'a>(
         v
     };
 
-    // CR claude for claude: [bug] The loop head is built whenever has_tail_loop is set
-    // (analysis.rs:672, pure && structural_tail_loop, where MapQ/FoldQ count as pure).
-    // But every word the body claims on the site channel is one word that every pass of
-    // the loop reads and overwrites: a collection loop's prev-length/entered word, a
-    // callee's block, a self-call's block root. So pass k sees pass k-1's length and
-    // the next cycle's first pass sees the last pass's. The result then fires on inputs
-    // no activation reads, and slots that already exist count as new: a constant error
-    // in a map callback raises again, 6 raises in the node-walk vs 9 in the JIT. The
-    // node-walk gives every depth its own activation, and recursive_activations.md
-    // allows the loop only where it gives the same answers, so a body that claims site
-    // words should recurse natively instead. probe:
-    // design/review-2026-10-05/repro/f-call-flow-03.gx (the node-walk prints 6 once,
-    // the JIT twice). (f-call-flow-03)
     let loop_head = if kernel.has_tail_loop {
         // Sealed after the body: each TailCall adds a predecessor.
         let head = b.create_block();
@@ -171,6 +158,7 @@ pub(super) fn compile_into_function<'a>(
             loop_head,
             param_mark,
             call_slots: &kernel.params,
+            params: spec.params,
             tail_scrut_stale_acc,
         },
         init_flag,
@@ -439,6 +427,8 @@ pub(super) struct TailCtx<'a> {
     pub(super) param_mark: usize,
     /// The params a tail-call rebinds, by slot index.
     pub(super) call_slots: &'a [kernel_abi::KernelParam],
+    /// The body's own ids for the params' ([`BodySpec::params`]).
+    pub(super) params: &'a [(BindId, BindId)],
     /// AND over every tail-position select scrutinee's STALE bit on
     /// the executed path; `emit_kernel_return` folds it into the
     /// returned disc.
@@ -495,9 +485,10 @@ pub(crate) struct LowerCtx<'a> {
     /// In-flight bufs between their `_new` and finalize, innermost
     /// last; a whole-kernel abort drops them ([`emit_pending_cleanup`]).
     pub(super) in_flight_bufs: RefCell<Vec<(BufKind, Variable)>>,
-    /// Owned HOF input arrays in flight, freed by a pending exit inside
-    /// the loop body. Finished ValArrays, not bufs.
-    pub(super) owned_input_stack: RefCell<Vec<Variable>>,
+    /// Owned values held while a sibling emits (a loop's input array,
+    /// an operand awaiting the other), freed by a pending exit there
+    /// ([`super::body::BodyCx::hold`]).
+    pub(super) owned_input_stack: RefCell<Vec<(LocalKind, ValueVar)>>,
     /// The collection HOF callsite whose loop scaffold is under
     /// construction; keys a nested loop's prev-length word.
     pub(super) collection_site: Cell<Option<ExprId>>,

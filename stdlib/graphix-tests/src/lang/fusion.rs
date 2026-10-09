@@ -1135,6 +1135,49 @@ async fn effect_rejection_reports_native_blocker() -> Result<()> {
     Ok(())
 }
 
+// A `#[native]` call names why its callee has no kernel, the callee one
+// call deeper included.
+#[tokio::test]
+async fn native_reports_callee_cause() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    for prog in [
+        "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; #[native] g(a) }",
+        "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; \
+         let h = |x: i64| g(x) * 3; #[native] h(a) }",
+    ] {
+        let error = ctx
+            .rt
+            .compile(ArcStr::from(prog))
+            .await
+            .expect_err("print must reject #[native]");
+        let message = format!("{error:#}");
+        assert!(message.contains("`print` has no fast-call entry"), "{prog}: {message}");
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+// Of two refusals, the one reported is the first in source order, as the
+// serial walk's is.
+#[tokio::test]
+async fn native_reports_first_refusal() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init(tx).await?;
+    let error = ctx
+        .rt
+        .compile(arcstr::literal!(
+            "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; \
+             let r = { #[native] g(a); #[native] once(a); 0 }; r }"
+        ))
+        .await
+        .expect_err("both parts must reject #[native]");
+    let message = format!("{error:#}");
+    assert!(message.contains("g(a)"), "{message}");
+    ctx.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_block_discards_unused_reference() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
@@ -1886,3 +1929,190 @@ run!(scalar_let_captured_at_a_nullable, SCALAR_LET_CAPTURED_AT_A_NULLABLE, |v: R
     v,
     Ok(Value::Bool(true))
 ); FuseExpect::Jit);
+
+// A tail call passing a scalar to a value-shaped formal widens it to the
+// formal's Value encoding.
+const TAIL_SCALAR_TO_NULLABLE: &str = r#"
+{
+  let rec last = |best: [f64, null], xs: Array<f64>| -> [f64, null] select xs {
+    [] => best,
+    [h, t..] => last(h, t)
+  };
+  last(null, [1.0, 2.0, 3.0])
+}
+"#;
+
+run!(tail_scalar_to_nullable, TAIL_SCALAR_TO_NULLABLE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::F64(3.0))
+); FuseExpect::Jit);
+
+// A `?` that always raises stands in its consumer's shape: here an f64
+// operand, which the fused add reads as one.
+async fn always_raising_operand(mode: graphix_package_core::testing::Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+            let got = 0;
+            let f = |v: f64| v * 2.0 + error(`Boom)?;
+            let r = { catch(e) got <- e ~ 1; f(1.5) };
+            got
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), vec![0, 1]);
+    Ok(())
+}
+
+modes!(always_raising_operand);
+
+// A callee body cached for one instance and emitted from another binds
+// its own formals: both arms' `#[native]` fuse, `g -> h` reached directly
+// and through `k`.
+const CALLEE_BODY_OTHER_INSTANCE: &str = r#"
+{
+  let h = |a: i64| a * 3 + 1;
+  let g = |a: i64| h(a) + 1;
+  let k = |c: i64| g(c) * 3;
+  let x = sys::time::after_idle(duration:1.ms, 3);
+  select count(x) { 1 => #[native] (g(x) + 1), _ => #[native] (k(x) + 2) }
+}
+"#;
+
+run!(callee_body_other_instance, CALLEE_BODY_OTHER_INSTANCE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(12)))
+}; FuseExpect::Jit);
+
+// A tail-recursive body holding a collection loop recurses natively:
+// each depth's loop keeps its own length, as each activation's does.
+async fn tail_body_with_collection(
+    mode: graphix_package_core::testing::Mode,
+) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+            let z = 0;
+            z <- 1;
+            let rec f = |a: Array<i64>, acc: i64, z: i64| -> i64 select a {
+                [] => acc,
+                [x, rest..] => f(rest, acc + array::len(array::map(a, |v| v)), z)
+            };
+            f([1, 2, 3], 0, z)
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6]);
+    Ok(())
+}
+
+modes!(tail_body_with_collection);
+
+// A recursion depth first reached after init is a fresh activation in
+// the JIT as in the node-walk: its constants fire and its constant-derived
+// error raises once per new depth.
+async fn fresh_depth_is_born(mode: graphix_package_core::testing::Mode) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(
+        r#"{
+            let errors = 0;
+            let depth = 2;
+            depth <- 4;
+            let rec f = |n: i64| -> i64 {
+                cast<i64>("x")?;
+                select n { 0 => 0, n => f(n - 1) + 1 }
+            };
+            let r = { catch(e) errors <- e ~ errors + 1; f(depth) };
+            errors
+        }"#,
+        mode,
+    )
+    .await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values).last(), Some(&5));
+    Ok(())
+}
+
+modes!(fresh_depth_is_born);
+
+// A kernel-built abstract value carries its type's params resolved, as a
+// node-walked one does: one instantiation, so the user's Eq applies.
+const KERNEL_BUILT_ABSTRACT_EQ: &str = r#"
+{
+  type Box<'a> = Abstract<('a, i64)>;
+  impl<'a> Eq for Box<'a> { let eq = |a, b| a.0.1 == b.0.1 };
+  array::map([1, 2, 3], |i| Box(("x", i)) == Box(("y", 2)))
+}
+"#;
+
+run!(kernel_built_abstract_eq, KERNEL_BUILT_ABSTRACT_EQ, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[false, true, false]")
+});
+
+// A type test over an option tests the value's own type: "is a string"
+// over `[Array<i64>, null]` is never "is not null".
+const OPTION_TYPE_TEST_TESTS_THE_TYPE: &str = r#"
+{
+  let f = |x: ['a, null]| -> i64 select x {
+    string as s => str::len(s) + 100,
+    null as _ => 0,
+    _ => 7
+  };
+  let a: [Array<i64>, null] = [1];
+  let d: [datetime, null] = datetime:"2020-01-01T00:00:00Z";
+  let c: [string, null] = "ab";
+  (f(a), f(d), f(c))
+}
+"#;
+
+run!(option_type_test_tests_the_type, OPTION_TYPE_TEST_TESTS_THE_TYPE, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:7, i64:7, i64:102]")
+});
+
+// Two instantiations of one typedef with bodies of one size expand each
+// to its own type: `p` is `[i64, f64]`, never `[i64, i64]`.
+const TYPEDEF_INSTANCES_EXPAND_APART: &str = r#"
+{
+  type Inner = i64;
+  type W<'a> = ['a, Inner];
+  let p: [W<i64>, W<f64>] = once(f64:1.5);
+  let g = |q: [W<i64>, W<f64>], k: i64| -> i64 k + 1;
+  g(p, 1)
+}
+"#;
+
+run!(typedef_instances_expand_apart, TYPEDEF_INSTANCES_EXPAND_APART, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::I64(2)))
+});
+
+// A labeled formal is passed by its name: a self-recursive lambda with
+// one and a lambda with a labeled callback both fuse.
+const LABELED_FORMALS_FUSE: &str = r#"
+{
+  let rec f = |#k: i64, n: i64| -> i64 select n { 0 => k, m => f(#k: k + 1, m - 1) + 1 };
+  let g = |#cb: fn(v: i64) -> i64, x: i64| -> i64 cb(x) + 1;
+  #[native] (f(#k: 0, 5), g(#cb: |v| v * 2, 3))
+}
+"#;
+
+run!(labeled_formals_fuse, LABELED_FORMALS_FUSE, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:10, i64:7]")
+});
+
+// A result union's error test is the value's own tag, whatever the
+// success type: the split fuses over `[i64, Error<E>]`.
+const RESULT_SPLIT_OVER_A_SCALAR: &str = r#"
+{
+  let o: [Error<`E>, i64] = 4;
+  let e: [Error<`E>, i64] = error(`E);
+  let a = #[native] select o { error as _ => 0, x => x + 1 };
+  let b = #[native] select e { error as _ => 10, x => x + 1 };
+  (a, b)
+}
+"#;
+
+run!(result_split_over_a_scalar, RESULT_SPLIT_OVER_A_SCALAR, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(5), Value::I64(10)]),
+    _ => false,
+}; FuseExpect::Jit);
