@@ -221,6 +221,11 @@ to and never refuse.
   packed and imaged with the type, printed in the `fn<'b: Concrete>`
   header. A rigid variable absorbs it the way `|x: 'r| x + x` absorbs
   `Number`, and the inferred signature carries it to every call.
+- A read's result is `Result<'b, E>`, a union beside its own error. In
+  a union checked against a union the known members are matched first
+  and an open member takes only the members they leave (all of them when
+  none are left, `contains.rs`), so `let r: [&i64, Error<E>] = parse(..)`
+  offers 'b only `&i64`, which `Concrete` refuses, never `Error<E>`.
 
 A definition's check runs no `typecheck1`, so its call sites record
 their terminal settle in the gate's frame (`CallSite::typecheck0` under

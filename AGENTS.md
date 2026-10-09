@@ -723,7 +723,10 @@ node graph IS the IR — there is no parallel typed IR
   rank-2: its argument is checked with `'b` rigid, a call copies `'b`
   generic, and an open quantifier never binds to its bound, no site's
   settle decides it (`design/tvar_constraints.md`);
-  union collapse requires strict tvar identity; a free union member stays free (a type test over an
+  union collapse requires strict tvar identity; in a union checked against
+  a union, an open member takes only the members its known siblings leave
+  (`[&i64, Error<E>] ⊇ ['b, Error<E>]` gives 'b `&i64`, never `Error<E>`,
+  all of them when none are left); a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError`, unchecked wraps, integer

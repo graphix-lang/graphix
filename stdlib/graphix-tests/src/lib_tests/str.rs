@@ -450,6 +450,23 @@ const STR_PARSE_REF_TARGET: &str = r#"{
 
 run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("Concrete"); FuseExpect::None);
 
+// The result's own error member covers the annotation's, so the target
+// takes only the reference, which `Concrete` refuses.
+run!(
+    parse_refuses_a_reference_beside_its_error,
+    r#"{ let r: [&i64, Error<`ParseError(string)>] = str::parse("u64:7"); r }"#,
+    refused("Concrete");
+    FuseExpect::None
+);
+
+// The target takes the annotation's member that is not the error.
+run!(
+    parse_target_is_not_its_own_error,
+    r#"{ let r: [i64, Error<`ParseError(string)>] = str::parse("7"); r$ + 1 }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(8)));
+    FuseExpect::Jit
+);
+
 // `str::parse` is a typed fast fn: the kernel casts the parsed value to
 // the site's resolved return type, here a struct under `#[native]`.
 const STR_PARSE_STRUCT_NATIVE: &str = r#"{

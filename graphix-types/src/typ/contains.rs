@@ -1228,11 +1228,48 @@ impl Type {
             }
             // Member-wise identity pre-pass: only the residue takes the
             // general per-member walk (which is O(|s0|·|s1|) per level).
+            // An open rhs member takes from the lhs members its known
+            // siblings leave: in `[A, E] ⊇ ['b, E]`, 'b is A, never E.
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
+                let mut used: SmallVec<[bool; 8]> = smallvec::smallvec![false; s0.len()];
+                let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
                 for m in s1.iter() {
-                    if !s0.iter().any(|c| identical_linked(c, m, commit))
-                        && !t0.contains_int(flags, env, hist, m)?
+                    if is_unbound_tvar(m) {
+                        open.push(m);
+                        continue;
+                    }
+                    if let Some(i) =
+                        s0.iter().position(|c| identical_linked(c, m, commit))
                     {
+                        used[i] = true;
+                        continue;
+                    }
+                    if !t0.contains_int(flags, env, hist, m)? {
+                        return Ok(false);
+                    }
+                    for (i, c) in s0.iter().enumerate() {
+                        if c.contains_int(BitFlags::empty(), env, hist, m)? {
+                            used[i] = true;
+                            break;
+                        }
+                    }
+                }
+                if open.is_empty() {
+                    return Ok(true);
+                }
+                let mut rest: SmallVec<[Type; 8]> = s0
+                    .iter()
+                    .zip(&used)
+                    .filter(|(_, used)| !**used)
+                    .map(|(c, _)| c.clone())
+                    .collect();
+                let rest = match rest.len() {
+                    0 => t0.clone(),
+                    1 => rest.pop().unwrap(),
+                    _ => Self::Set(Arc::from_iter(rest.drain(..))),
+                };
+                for m in open {
+                    if !rest.contains_int(flags, env, hist, m)? {
                         return Ok(false);
                     }
                 }
