@@ -1876,27 +1876,6 @@ impl UnionParts {
     fn narrowing(&self) -> Option<Type> {
         match (&self.first, self.known) {
             (Some(k), 1) => Some(k.clone()),
-            // XCR claude for eric: [bug] With no known member, each open member gets a
-            // Singleton conjunct of its own, and that does not make the union one type.
-            // `['a, 'b]` passes as an arithmetic operand and its members later bind i64
-            // and f64; this is the design doc's "two open members may still differ".
-            // `let g = |c, a, b| { let s = select c { true => a, false => b }; let t =
-            // select c { true => b, false => a }; s + t }` is typed `fn(c, a: 'a:
-            // Number & Singleton, b: 'b: Number & Singleton) -> ['a, 'b]`, so `g(true,
-            // 1, 2.5)` passes --check and both engines compute 3.5 by promotion, while
-            // GRAPHIX_NO_SUBST=1 refuses it. When the members bind after the operand is
-            // checked (`f(select b { true => p, false => q })` with `f = |s| s + s`,
-            // then `p <- 1; q <- 2.0`), --check passes and the build fails on the
-            // compiler-bug path: "an instance at fn(s: [i64, f64]) ... of a definition
-            // typed ...". The open members must be one type, not each a singleton.
-            // probe: design/review-2026-10-05/repro/t-tvar-06.gx (t-tvar-06)
-            // 2026-10-06 claude: the open members are merged into one cell before
-            // this narrowing (UnionParts::merge_open, from require_singleton and
-            // narrow_singleton), and two rigid ones are refused (rigid_pair, in
-            // singleton_holds and narrow_singleton). This arm then gives the one
-            // merged cell its Singleton conjunct. Pins:
-            // lang::types::singleton_open_members_merge (both shapes of the probe,
-            // and two declared variables) and singleton_merged_members_run.
             (_, 0) => Some(Type::Singleton),
             _ => None,
         }
