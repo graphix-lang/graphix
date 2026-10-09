@@ -1396,7 +1396,7 @@ fn build_region<R: Rt, E: UserEvent>(
     let n = FusedKernel::new(
         node.spec().clone(),
         node.typ().clone(),
-        crate::analysis::region_runs_hooks(node, &ctx.env),
+        crate::analysis::region_facts(node, ctx),
         kernel,
         wrapped,
         feeders,

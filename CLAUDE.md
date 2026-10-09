@@ -504,8 +504,11 @@ node graph IS the IR — there is no parallel typed IR
   woken one is a fresh one; configuration (`#n`, `#rate`) survives. A labeled DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Async builtins clear their
   output on sleep and start again over their present arguments at the
-  wake (`design/async_sleep_outputs.md`). A pure non-recursive
-  arm skips `sleep` and is not updated while untaken.
+  wake (`design/async_sleep_outputs.md`). An arm with no effect, no
+  raise to a handler (an event, as a write is) and no recursive call
+  skips `sleep` and is not updated while untaken; a fused arm is judged
+  by the region its kernel replaced (`analysis::RegionFacts`), so fusion
+  decides nothing here.
 - **Activation state** (`design/activation_state.md`,
   `design/recursive_activations.md`, `design/atomic_recursion.md`):
   held state never decides output bottomness; activations ARE

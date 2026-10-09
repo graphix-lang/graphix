@@ -183,7 +183,7 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
     let mut fused = FusedKernel::new(
         node.spec().clone(),
         node.typ().clone(),
-        crate::analysis::region_runs_hooks(node, &ctx.env),
+        crate::analysis::region_facts(node, ctx),
         entry.kernel.clone(),
         entry.jit.clone(),
         feeders,

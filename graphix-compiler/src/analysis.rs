@@ -27,6 +27,8 @@ use crate::{
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
+use bytes::{Buf, BufMut};
+use netidx_core::pack::{Pack, PackError};
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -536,7 +538,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
-        // CR claude for eric: [bug] A fused arm body is a FusedKernel. This line calls
+        // XCR claude for claude: [bug] A fused arm body is a FusedKernel. This line calls
         // it ASYNC and for_each_node does not look inside it, so under fusion
         // arm_sleeps_on_deselect puts a pure arm to sleep that the node-walk never
         // sleeps. At re-entry the node-walk runs that arm as a birth (standing reads
@@ -551,6 +553,14 @@ fn node_facts<R: Rt, E: UserEvent>(
         // classifying a kernel PURE, joined with its feeders and keeping the recursion
         // check, makes both engines re-raise; counting a handler-ful `?` as impure
         // makes both read stale. (f-kernel-02)
+        // 2026-10-09 claude: Eric ruled 10-09: the wake rule decides; re-entry raises
+        // nothing new. An arm sleeps when it holds a raise to a handler
+        // (analysis::arm_sleeps), and a kernel is judged by the region it replaced
+        // (RegionFacts: hooks, raises, recursive calls, carried in the image; format 42)
+        // and its feeders, no longer ASYNC across the board. Both engines give (0, 1).
+        // CLAUDE.md and wake_catchup.md say so. Pin:
+        // lang::async_restart::reentry_raises_once (interp and par fail without the raise
+        // rule). A wake semantics change: wants the soak.
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
             OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::PURE,
@@ -843,18 +853,40 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     node: &Node<R, E>,
 ) -> bool {
-    let mut pure = true;
-    let mut recurses = false;
+    let mut sleeps = false;
+    arm_sleeps(ctx, node, &mut sleeps);
+    sleeps
+}
+
+/// An arm sleeps when it holds an effect, a raise to a handler (an event
+/// as a write is) or a recursive call; a kernel by the facts of the
+/// region it replaced and its feeders, so fusion decides nothing here.
+fn arm_sleeps<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    node: &Node<R, E>,
+    sleeps: &mut bool,
+) {
     fusion::for_each_node(node, &mut |n| {
-        let facts = node_facts(n, OwnTargets::All, &mut |cs| {
-            recurses |= callee_lambda(cs, ctx)
-                .and_then(|lid| lambda_def(ctx, lid))
-                .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive);
-            callee_facts(cs, None, ctx, &mut |_| ())
-        });
-        pure &= facts.is_pure();
+        if *sleeps {
+            return;
+        }
+        match n.view() {
+            NodeView::FusedKernel(k) => {
+                let f = k.facts();
+                *sleeps = f.raises || f.recurses;
+                for feeder in k.feeders() {
+                    arm_sleeps(ctx, feeder, &mut *sleeps)
+                }
+            }
+            _ => {
+                let facts = node_facts(n, OwnTargets::All, &mut |cs| {
+                    callee_facts(cs, None, ctx, &mut |_| ())
+                });
+                *sleeps =
+                    !facts.is_pure() || raises_to_handler(n) || calls_recursive(n, ctx);
+            }
+        }
     });
-    !pure || recurses
 }
 
 /// Variables named by id, those some reference points to (`refs`), or
@@ -980,17 +1012,66 @@ fn runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
         NodeView::Lte(o) => holds(&o.lhs) || holds(&o.rhs),
         NodeView::Gte(o) => holds(&o.lhs) || holds(&o.rhs),
         NodeView::StringInterpolate(si) => si.args.iter().any(holds),
-        NodeView::FusedKernel(k) => k.runs_hooks(),
+        NodeView::FusedKernel(k) => k.facts().hooks,
         _ => false,
     }
 }
 
-/// Whether anything in the region `n`, callees excluded, may run a
-/// core-trait impl.
-pub(crate) fn region_runs_hooks<R: Rt, E: UserEvent>(n: &Node<R, E>, env: &Env) -> bool {
-    let mut runs = false;
-    fusion::for_each_node(n, &mut |x| runs = runs || runs_hooks(x, env));
-    runs
+/// What a fused region keeps of the nodes it replaced, callees
+/// excluded, for the analyses that walk past it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RegionFacts {
+    /// It may run a core-trait impl, whose reads its feeders do not show.
+    pub(crate) hooks: bool,
+    /// A raise in it goes to a handler.
+    pub(crate) raises: bool,
+    /// It calls a recursive definition.
+    pub(crate) recurses: bool,
+}
+
+impl Pack for RegionFacts {
+    fn encoded_len(&self) -> usize {
+        1
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let bits =
+            self.hooks as u8 | (self.raises as u8) << 1 | (self.recurses as u8) << 2;
+        Ok(buf.put_u8(bits))
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let bits = u8::decode(buf)?;
+        if bits > 7 {
+            return Err(PackError::InvalidFormat);
+        }
+        Ok(Self { hooks: bits & 1 != 0, raises: bits & 2 != 0, recurses: bits & 4 != 0 })
+    }
+}
+
+/// The [`RegionFacts`] of the region `n`.
+pub(crate) fn region_facts<R: Rt, E: UserEvent>(
+    n: &Node<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> RegionFacts {
+    let mut f = RegionFacts::default();
+    fusion::for_each_node(n, &mut |x| {
+        f.hooks |= runs_hooks(x, &ctx.env);
+        f.raises |= raises_to_handler(x);
+        f.recurses |= calls_recursive(x, ctx);
+    });
+    f
+}
+
+fn raises_to_handler<R: Rt, E: UserEvent>(n: &Node<R, E>) -> bool {
+    matches!(n.view(), NodeView::Qop(q) if q.raises_to_handler())
+}
+
+fn calls_recursive<R: Rt, E: UserEvent>(n: &Node<R, E>, ctx: &CompileCtx<R, E>) -> bool {
+    let NodeView::CallSite(cs) = n.view() else { return false };
+    callee_lambda(cs, ctx)
+        .and_then(|lid| lambda_def(ctx, lid))
+        .is_some_and(|d| *d.recursion.lock() != RecursionKind::NotRecursive)
 }
 
 fn local_summary<R: Rt, E: UserEvent>(
@@ -1008,7 +1089,7 @@ fn local_summary<R: Rt, E: UserEvent>(
         // a kernel reads only through its feeders, and through the core-trait
         // impls its region may run
         NodeView::FusedKernel(k) => {
-            if k.runs_hooks() {
+            if k.facts().hooks {
                 s.opaque()
             }
             k.feeders()

@@ -137,8 +137,11 @@ is insufficient; the forced recompute republishes `p2` at the present
   actions; the engine did not get simpler. Sleep is pause. The keeper:
   a pure non-recursive arm skips `sleep` (nothing to pause) and is not
   updated while untaken (`LazyArmFacts::sleep_on_deselect`); a `<-`, a catch,
-  a sample, an `any`, or a stateful/async callee makes an arm impure,
-  and impure arms still sleep.
+  a sample, an `any`, a `?` that raises to a handler (its raise is an
+  event; re-entered, the arm reads a standing error stale and raises
+  nothing new), or a stateful/async callee makes an arm impure, and
+  impure arms still sleep. A fused arm is judged by the region its kernel
+  replaced (`analysis::RegionFacts`).
 
 ## Mechanics
 

@@ -908,6 +908,13 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> Qop<R, E> {
+    /// Whether a raise here goes to a handler (an event), not to the log.
+    pub(crate) fn raises_to_handler(&self) -> bool {
+        self.handler.is_some()
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Qop, buf);

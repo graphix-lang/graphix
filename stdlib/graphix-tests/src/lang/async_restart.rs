@@ -320,6 +320,25 @@ async fn wake_restarts_quietly(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// An arm holding a raise to a handler sleeps and wakes like an arm with a
+// write: re-entered over a standing error, it reads it stale and raises
+// nothing new, fused or node-walked.
+async fn reentry_raises_once(mode: Mode) -> Result<()> {
+    let code = r#"{
+        let s = array::iter([1, 2, 1, 2]);
+        let t = "x";
+        let raised = 0;
+        let out = {
+            catch(x) raised <- x ~ raised + 1;
+            select s { 1 => cast<i64>(t)? + 1, _ => 0 }
+        };
+        raised
+    }"#;
+    let (values, _) = run_delta(code, mode).await?;
+    assert_eq!(values.last(), Some(&Value::I64(1)), "{values:?}");
+    Ok(())
+}
+
 // A range waits for a late bound instead of refusing it.
 async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
     let code = r#"{
@@ -338,5 +357,6 @@ modes!(
     wake_restarts_a_count,
     wake_restarts_quietly,
     wake_restarts_standing_timers,
+    reentry_raises_once,
     range_over_a_late_bound
 );

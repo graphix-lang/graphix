@@ -8,6 +8,7 @@
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
     BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    analysis::RegionFacts,
     cost::ForkSite,
     expr::Expr,
     fusion::{
@@ -44,9 +45,8 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// Owns the typedefs it names: one the replaced region declared is
     /// deleted with it.
     typ: KernelType,
-    /// The region may run a core-trait impl, whose reads its feeders do
-    /// not show (`analysis::region_runs_hooks`).
-    hooks: bool,
+    /// What the region it replaced did (`analysis::region_facts`).
+    facts: RegionFacts,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
     fork: ForkSite,
@@ -106,7 +106,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub(crate) fn new(
         spec: Expr,
         typ: Type,
-        hooks: bool,
+        facts: RegionFacts,
         kernel: Arc<KernelSig>,
         jit: WrappedKernel,
         feeders: Box<[Node<R, E>]>,
@@ -116,7 +116,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         Node::new(Self {
             spec,
             typ: KernelType::new(typ),
-            hooks,
+            facts,
             feeders,
             fork: ForkSite::default(),
             slept: WakeBit::default(),
@@ -130,9 +130,9 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         })
     }
 
-    /// Whether the region may run a core-trait impl.
-    pub(crate) fn runs_hooks(&self) -> bool {
-        self.hooks
+    /// What the region it replaced did.
+    pub(crate) fn facts(&self) -> RegionFacts {
+        self.facts
     }
 
     /// The kernel signature this region fused into.
@@ -185,13 +185,13 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let hooks = bool::decode(buf)?;
+        let facts = RegionFacts::decode(buf)?;
         let feeders = decode_nodes(ctx, buf)?.into_boxed_slice();
         let (jit, kernel) = WrappedKernel::image_decode(&ctx.fusion, buf)?;
         if feeders.len() != kernel.params.len() {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Self::new(spec, typ, hooks, kernel, jit, feeders))
+        Ok(Self::new(spec, typ, facts, kernel, jit, feeders))
     }
 
     /// Nothing ran yet: every word the image does not carry is initial.
@@ -269,7 +269,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         put_tag(NodeTag::Fused, buf);
         self.spec.encode(buf)?;
         self.typ.typ.encode(buf)?;
-        self.hooks.encode(buf)?;
+        self.facts.encode(buf)?;
         encode_nodes(&self.feeders, buf)?;
         w.image_encode(buf)
     }
