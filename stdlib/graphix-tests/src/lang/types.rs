@@ -2193,8 +2193,8 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::I64(7)))
 );
 
-/// A ⊥ the body required stays in the signature.
-const REQUIRED_BOTTOM_KEPT: &str = r#"
+/// A declared variable may be anything, so `_` cannot hold it.
+const BOTTOM_REFUSES_A_DECLARED_VARIABLE: &str = r#"
 {
     let f = 'a: Number |x: 'a| {
         let b: _ = x;
@@ -2205,7 +2205,31 @@ const REQUIRED_BOTTOM_KEPT: &str = r#"
 }
 "#;
 
-run!(required_bottom_kept, REQUIRED_BOTTOM_KEPT, refused("does not contain f64"); FuseExpect::None);
+run!(
+    bottom_refuses_a_declared_variable,
+    BOTTOM_REFUSES_A_DECLARED_VARIABLE,
+    refused("_ does not contain 'a");
+    FuseExpect::None
+);
+
+/// A function type without `throws` throws nothing, so a function that
+/// throws a declared variable does not fit it.
+const NO_THROWS_REFUSES_A_DECLARED_THROWS: &str = r#"
+{
+    let app = |f: fn(x: i64) -> i64 throws 'e, v: i64| -> i64 throws 'e {
+        let g: fn(x: i64) -> i64 = f;
+        g(v)
+    };
+    app(|x| x, 1)
+}
+"#;
+
+run!(
+    no_throws_refuses_a_declared_throws,
+    NO_THROWS_REFUSES_A_DECLARED_THROWS,
+    refused("fn(x: i64) -> i64 does not contain fn(x: i64) -> i64 throws 'e");
+    FuseExpect::None
+);
 
 /// A type error names an inferred cell by its binding, never its id.
 const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"

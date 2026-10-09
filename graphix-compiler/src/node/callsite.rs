@@ -1088,7 +1088,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
-        // CR claude for eric: [bug] This returns early when the callee's `throws` is an
+        // XCR claude for claude: [bug] This returns early when the callee's `throws` is an
         // open cell. In a definition's check that is always true for a call through a
         // `fn(..) throws 'e` parameter, and for `array::map(xs, f)` over one. So
         // nothing joins the enclosing catch or the gate's inferred throws: a catch
@@ -1111,6 +1111,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // 2026-10-08 claude: re-addressed: what remains is the implicit-throws question
         // in t-tvar-02 (graphix-types/src/typ/tvar.rs), which is with you; this follows
         // from that ruling.
+        // 2026-10-09 claude: fixed with t-tvar-02's ruling: the def check re-scoped the
+        // inferred throws with scope_refs, which re-mints every cell, so the implicit
+        // throws bound to a copy of the rigid 'e. It now checks the thrown type itself, h
+        // infers throws 'e, and the probe is refused by --check at the caller's catch (c
+        // is i64 and cannot hold Error<ErrChain<`Boom>>). Pins:
+        // lang::errors::callback_throws_reach_the_callers_catch (fails with the fix
+        // undone), callback_throws_reach_an_inner_catch.
         let Some(t) = ftype.throws.deref_cloned() else {
             let rigid = match &ftype.throws {
                 Type::TVar(tv) => tv.open_cell().is_some_and(|c| c.is_rigid()),

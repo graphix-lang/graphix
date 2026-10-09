@@ -831,9 +831,10 @@ impl Type {
                 Ok(true)
             }
             // ⊥ ⊇ 'r has one solution, so an open cell commits; a bound
-            // cell answers for its binding.
+            // cell answers for its binding; a rigid one may be anything.
             (Self::Bottom, Self::TVar(t0)) => match t0.binding() {
                 Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
+                None if (rigid || commit) && t0.is_rigid() => Ok(false),
                 None => {
                     if commit {
                         t0.bind_bottom_required();

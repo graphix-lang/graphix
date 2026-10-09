@@ -199,6 +199,10 @@ val filter: fn(v: 'a, f: fn(x: 'a) -> bool throws 'e) -> 'a throws 'e
 
 This means: the `filter` function itself doesn't throw errors, but if the function you pass to it throws errors of type `'e`, then `filter` will also throw those same errors.
 
+A function type without `throws` throws nothing. A parameter written
+`f: fn(x: 'a) -> bool` refuses a callback that can throw; write `throws
+'e` to accept one and pass its errors on.
+
 ### Result Type
 
 The `Result` type is a convenient way to represent success or error:

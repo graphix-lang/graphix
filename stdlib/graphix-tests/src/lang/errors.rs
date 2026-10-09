@@ -673,3 +673,44 @@ run!(error_literal_has_its_payload_type, r#"{
     let f = |e: Error<string>| e.0;
     f(error:"boom")
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "boom"); FuseExpect::None);
+
+// A call through a `throws 'e` parameter raises 'e: the definition
+// infers `throws 'e`, so the caller's catch is checked against what the
+// callback throws.
+const CALLBACK_THROWS_REACH_THE_CALLERS_CATCH: &str = r#"
+{
+    let h = |f: fn(x: i64) -> i64 throws 'e, x: i64| f(x);
+    let g = |x: i64| -> i64 select x { 0 => error(`Boom)?, x => x };
+    let c: i64 = never();
+    catch(e) c <- e;
+    h(g, 0);
+    c
+}
+"#;
+
+run!(
+    callback_throws_reach_the_callers_catch,
+    CALLBACK_THROWS_REACH_THE_CALLERS_CATCH,
+    graphix_package_core::testing::refused("c is i64 and cannot hold Error<ErrChain<`Boom>>");
+    FuseExpect::None
+);
+
+// A catch inside the definition takes the callback's 'e.
+const CALLBACK_THROWS_REACH_AN_INNER_CATCH: &str = r#"
+{
+    let h = |f: fn(x: i64) -> i64 throws 'e, x: i64| {
+        let caught: bool = never();
+        catch(e) caught <- e;
+        f(x);
+        caught
+    };
+    h(|x| x, 0)
+}
+"#;
+
+run!(
+    callback_throws_reach_an_inner_catch,
+    CALLBACK_THROWS_REACH_AN_INNER_CATCH,
+    graphix_package_core::testing::refused("caught is bool and cannot hold 'e");
+    FuseExpect::None
+);

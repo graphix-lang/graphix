@@ -1874,8 +1874,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 Some(check) => *check.lock() = Some(f),
             }
             res?;
-            let inferred_throws =
-                gate.thrown(ctx).scope_refs(&def.scope.lexical).normalize();
+            let inferred_throws = gate.thrown(ctx).normalize();
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });

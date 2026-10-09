@@ -1689,7 +1689,7 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                // CR claude for eric: [bug] This reopens every cell bound to ⊥,
+                // XCR claude for claude: [bug] This reopens every cell bound to ⊥,
                 // including a ⊥ the body required. A `⊥ ⊇ 'x` from a `_` annotation, a
                 // `-> _` return, or a callback formal like publish's `#on_write` is a
                 // fact, not a vacuous observation, so the signature drops it even
@@ -1711,6 +1711,15 @@ impl Type {
                 // implicit throws in a parameter a promise that the callback does not
                 // throw (then that impl is wrong and the rigid bind should be refused),
                 // or no statement at all (then an unwritten throws should not be ⊥)?
+                // 2026-10-09 claude: Eric ruled 10-09: a written function type without
+                // throws throws nothing. contains' (Bottom, TVar) arm refuses a rigid
+                // cell as every bind arm does, so the probe is refused at let b: _ = x
+                // ("_ does not contain 'a") and a throws 'e function does not fit a
+                // fn(..) without throws. Nothing in the tree or netidx-admin's tests
+                // relied on the old bind; must-reject family 2 now also binds a declared
+                // variable under _. Pins:
+                // lang::types::bottom_refuses_a_declared_variable,
+                // no_throws_refuses_a_declared_throws (both fail with the fix undone).
                 let required = tv.cell().read().bottom_required;
                 if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()

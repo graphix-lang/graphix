@@ -87,12 +87,13 @@ gives no primitive first parameter included.
 **2. Rigid variables.** Site: a lambda with declared variables (`'a`,
 `'b`) whose parameters `x: 'a`, `y: 'b` are in scope in the body.
 Mutation: add a statement that equates two of them (`x == y`) or binds
-one to a concrete type (`x == 1`). Rule: a def's declared variables are
-rigid in its body check: none binds to a concrete type and no two
-unify. Skip: a variable with a constraint the concrete type satisfies
+one to a concrete type (`x == 1`) or to ⊥ (`let b: _ = x`). Rule: a
+def's declared variables are rigid in its body check: none binds to a
+concrete type or to ⊥ and no two unify. Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
-statement comparing a parameter `x: 'a` with a literal, or calling a
+statement comparing a parameter `x: 'a` with a literal or, alternately,
+binding it under a `_` annotation, or calling a
 parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
 quantifier: each call picks that anew), right site the definition. Open: equating two declared variables.
 

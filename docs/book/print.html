@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-21da47b5.js";
+            window.path_to_searchindex_js = "searchindex-f7316388.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -1251,6 +1251,8 @@ set(&amp;mut x, 1)   // x becomes 1
 <pre><code class="language-graphix">val filter: fn(v: 'a, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e
 </code></pre>
 <p>This means: the <code>filter</code> function itself doesn’t throw errors, but if the function you pass to it throws errors of type <code>'e</code>, then <code>filter</code> will also throw those same errors.</p>
+<p>A function type without <code>throws</code> throws nothing. A parameter written
+<code>f: fn(x: 'a) -&gt; bool</code> refuses a callback that can throw; write <code>throws 'e</code> to accept one and pass its errors on.</p>
 <h3 id="result-type"><a class="header" href="#result-type">Result Type</a></h3>
 <p>The <code>Result</code> type is a convenient way to represent success or error:</p>
 <pre><code class="language-graphix">type Result&lt;'r, 'e&gt; = ['r, Error&lt;'e&gt;]
