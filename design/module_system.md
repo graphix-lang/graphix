@@ -206,20 +206,18 @@ segment, so a sandboxed dynamic-module env may keep `/sys/net` without
 
 Keyword roots resolve structurally. `self::x` looks up at
 `mod_root(S)`. `package::x` looks up at the package root — `/pkg` when
-`S`'s first component is a registered package, a loaded script's own
-top level (its `#do` block under the root) when the first component is
-one, else `/` (the program is the package). So `package::m` reaches a
-script's file-top `mod m` from any depth, in load mode as in check
-mode.
+`S`'s first component is a registered package, else `/` (the program
+is the package). A script's top level is the root in every mode (the
+check, the LSP, the REPL and the run all compile it there), so
+`package::m` reaches a script's file-top `mod m` from any depth, and a
+script's `mod` named like a package is a duplicate.
 `super` is SCOPE-relative, not module-relative: one `super` from module
 `M` anchors at `dirname(M)` and resolves along that anchor's chain (an
 entry carries `keyword_anchored: true`; a `super::*` glob expands to one source
 per chain level at use time). This is what makes script files work: a
-loaded file's top level is the `#do` block under root, and a
 submodule's `use super::x` must reach the file's top-level lets, which
-live at that block scope. Climbing above `/` or a registered package's
-root is an error. Check mode (statements at root) and load mode (the
-`#do` wrapper) agree.
+live at the root. Climbing above `/` or a registered package's root is
+an error.
 
 ### Headers
 

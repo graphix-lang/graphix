@@ -974,7 +974,7 @@ cycle, across workers; the compiler never pins threads.
 - **Module system** (`design/module_system.md`): Rust-2018-style
   `use`; every name arrives by declaration, `use`, or prelude;
   `self`/`super`/`package` roots (`package::` is the registered
-  package, else a loaded script's own top level, else `/`);
+  package, else `/`, where a script's top level is in every mode);
   declarations, `let` included, are statement-position only. A module
   with an interface compiles its body with its `mod` statement and
   checks it with the statement (`Module::typecheck0`), in a compile task

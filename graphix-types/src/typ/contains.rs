@@ -506,7 +506,7 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
-    // CR claude for eric: [readability] When a trait bound refuses a type, the error is
+    // XCR claude for claude: [readability] When a trait bound refuses a type, the error is
     // a bare mismatch against the bounded cell. With no `impl Show for i64`,
     // `Show::show(2)` gives "type mismatch 'self: unbound within Show does not contain
     // i64", which never says that i64 lacks an impl. When the impl exists in a sibling
@@ -524,6 +524,10 @@ impl Type {
     // 2026-10-08 claude: re-addressed: what remains is the run-mode module name
     // (`#do..::b` where --check says `b`), which is c-analysis-branch-11's naming, yours
     // to rule.
+    // 2026-10-10 claude: the run-mode name is gone with c-analysis-branch-11's ruling
+    // (c): the run compiles a script at /, so its module b is /b in both modes and no
+    // message names #do..::b. Pins: lang::traits (trait_refusal) and
+    // graphix-shell/tests/script_scope.rs.
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.

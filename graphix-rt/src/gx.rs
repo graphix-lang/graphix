@@ -1037,7 +1037,7 @@ impl<X: GXExt> GX<X> {
                 false => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
-                    // CR claude for eric: [bug] The check compiles a script with its
+                    // XCR claude for claude: [bug] The check compiles a script with its
                     // names at `/` (compile_script at Scope::root()). load_program, the
                     // run, compiles the same file as a Block that compile() scopes at
                     // `/#do<id>`, so any verdict that depends on the scope can differ.
@@ -1053,6 +1053,14 @@ impl<X: GXExt> GX<X> {
                     // 2026-10-08 claude: the same choice as c-analysis-branch-11 (Env::package_root),
                     // which is with Eric: compile the check at the script's `#do` level, or record
                     // the scope a script compiled at and anchor `self::` and `package::` there.
+                    // 2026-10-10 claude: Eric ruled 10-10 option (c): the run compiles a
+                    // script at /, as the check, the LSP and the REPL do (compile_script
+                    // at Scope::root()), and Env::package_root lost its #do case, so a
+                    // block inside a script is in the script's package. self:: and
+                    // package:: name the script's own names in every mode, the block impl
+                    // and package::x probes agree (true, 2), and a script's own mod str
+                    // is a duplicate in both. Pins: graphix-shell/tests/script_scope.rs
+                    // (all three fail with the change undone).
                     graphix_compiler::compile_script(
                         &mut self.ctx.view(),
                         flags,
@@ -1132,11 +1140,10 @@ impl<X: GXExt> GX<X> {
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
-        // the block's names at its own scope, as compiling it would put them
         let n = graphix_compiler::compile_script(
             &mut self.ctx.view(),
             self.flags,
-            &scope.append_block("do", id.inner()),
+            &scope,
             wrapped,
             &stmts,
             sig.as_ref(),

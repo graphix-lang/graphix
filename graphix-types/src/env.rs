@@ -6,7 +6,7 @@ use crate::{
         FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite, Warning,
     },
-    is_do_block, mod_root,
+    mod_root,
     profile::{self, Phase},
     tracked::{TrackedMap, TrackedSet},
     typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef, Unguarded},
@@ -759,12 +759,11 @@ impl Env {
     }
 
     /// The current package root of `scope`: `/pkg` when the first
-    /// path component names a registered package; a loaded script's
-    /// own top level (its `#do` block under the root) when the first
-    /// component is one; else `/` (the program is the package).
+    /// path component names a registered package, else `/` (the program
+    /// is the package).
     pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
         match Path::parts(scope).next() {
-            // CR claude for eric: [bug] This takes any first-level `#do` component for
+            // XCR claude for claude: [bug] This takes any first-level `#do` component for
             // a loaded script's top level. That holds for the build (load_program
             // compiles the script as a block, its names under `/#doN`) but not for
             // --check and the LSP: compile_script (graphix-compiler/src/lib.rs:2087)
@@ -794,7 +793,15 @@ impl Env {
             // names but adds a registry to Env (join, swap_lexical, the image codec
             // and unbind_scope_subtree carry it). (b) also fixes the duplicate
             // `mod str` above only if the check stops putting script modules at `/`.
-            Some(first) if self.package_roots.contains(first) || is_do_block(first) => {
+            // 2026-10-10 claude: Eric ruled 10-10 option (c): the run compiles a script
+            // at /, as the check, the LSP and the REPL do (compile_script at
+            // Scope::root()), and Env::package_root lost its #do case, so a block inside
+            // a script is in the script's package. self:: and package:: name the script's
+            // own names in every mode, the block impl and package::x probes agree (true,
+            // 2), and a script's own mod str is a duplicate in both. Pins:
+            // graphix-shell/tests/script_scope.rs (all three fail with the change
+            // undone).
+            Some(first) if self.package_roots.contains(first) => {
                 &scope[..1 + first.len()]
             }
             _ => "/",
@@ -1995,12 +2002,12 @@ mod test {
     }
 
     #[test]
-    fn package_root_is_the_scripts_do_block() {
+    fn package_root_is_a_package_or_the_root() {
         let mut env = Env::default();
         assert_eq!(env.package_root("/"), "/");
         assert_eq!(env.package_root("/a/b"), "/");
-        assert_eq!(env.package_root("/#do1"), "/#do1");
-        assert_eq!(env.package_root("/#do1/#block3/test"), "/#do1");
+        assert_eq!(env.package_root("/#do1"), "/");
+        assert_eq!(env.package_root("/#do1/#block3/test"), "/");
         assert_eq!(env.package_root("/#fn7/m"), "/");
         env.package_roots.insert(ArcStr::from("pkg"));
         assert_eq!(env.package_root("/pkg/#do1/sub"), "/pkg");
