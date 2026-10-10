@@ -1786,6 +1786,24 @@ impl Env {
         }
     }
 
+    /// Mark exported the representation of every abstract type defined
+    /// at `scope` itself.
+    pub fn publish_abstract_reps_at(&mut self, scope: &ModPath) {
+        let ids: LPooled<Vec<AbstractId>> = match self.typedefs.get(scope) {
+            None => LPooled::take(),
+            Some(defs) => defs
+                .into_iter()
+                .filter_map(|(_, td)| match (td.typ(), &td.rep) {
+                    (Type::Abstract { id, .. }, Some(_)) => Some(*id),
+                    _ => None,
+                })
+                .collect(),
+        };
+        for id in ids.iter() {
+            self.publish_abstract_rep(*id);
+        }
+    }
+
     /// Is `id` a Graphix-minted (not Rust-backed) abstract type?
     pub fn abstract_minted(&self, id: AbstractId) -> bool {
         self.abstract_reps.get(&id).is_some()

@@ -17,7 +17,7 @@ use crate::{
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{
-        AbstractId, FnArgKind, FnArgType, FnType, Type,
+        FnArgKind, FnArgType, FnType, Type,
         tvar::{AtLevel, Level},
     },
     wrap,
@@ -374,7 +374,7 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
-            // CR claude for eric: [bug] This publishes the rep of every abstract
+            // XCR claude for claude: [bug] This publishes the rep of every abstract
             // typedef with a body under a re-exported `mod sub;`. A gxi body is already
             // public from bind_sig, so the only reps this changes are an interface-less
             // descendant's own `type T = Abstract<..>`. As a result, a parent gxi that
@@ -397,19 +397,17 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             // was written in the same commit (927b1e75) and says the opposite. Private
             // means deleting this loop; public means TypeDef::compile registers an
             // interface-less module's reps public.
-            let exported: LPooled<Vec<AbstractId>> = inner_env
-                .typedefs
-                .iter()
-                .filter(|(path, _)| under(path))
-                .flat_map(|(_, defs)| defs.iter())
-                .filter_map(|(_, td)| match (td.typ(), &td.rep) {
-                    (Type::Abstract { id, .. }, Some(_)) => Some(*id),
-                    _ => None,
-                })
-                .collect();
-            for id in exported.iter() {
-                env.publish_abstract_rep(*id);
-            }
+            // 2026-10-10 claude: Eric ruled 10-10 option public: a module with no
+            // interface hides nothing, so its abstract type is a public newtype in every
+            // nesting. An interface-less module publishes the reps of the abstract types
+            // defined at its own scope once its body compiles (compile_module_inner,
+            // Env::publish_abstract_reps_at); the loop this CR sits on is gone, so there
+            // is one mechanism. The probe's five nestings: nested_gxi, nested_plain, flat
+            // and deep print "5 6", hidden (a .gxi with type T;) refuses.
+            // design/nominal_abstract_types.md's table now says public; the book already
+            // did. Pins: lang::interfaces::abstract_type_public_without_interface,
+            // abstract_type_public_under_an_interface (both fail with the fix undone),
+            // abstract_type_hidden_by_its_interface.
         }
     }
 }
@@ -1205,6 +1203,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 Value::String(s) => {
                     let compiled = self.compile_source(ctx, s);
                     ctx.apply_deferred();
+                    // CR claude for claude: [bug] A warm image start reports a dynamic
+                    // module's compile error at a different position from a cold one:
+                    // "compile error at line: 1, column: 161" cold, "line: 1, column: 1"
+                    // warm, the rest of the message equal, so the fuzzer records an image
+                    // divergence (seed 1217, 10-10). It predates the interface-less
+                    // publication change; something on the error's outer context (the
+                    // module's spec or the source expression's position) does not survive
+                    // the image. probe: graphix-fuzz check
+                    // design/review-2026-10-05/repro/image-dynamic-pos-01.gx
+                    // (image-dynamic-pos-01)
                     if let Err(e) = compiled {
                         return self.resident.set(TagValue::tagged(
                             errf!(ERR_TAG, "compile error {e:?}"),

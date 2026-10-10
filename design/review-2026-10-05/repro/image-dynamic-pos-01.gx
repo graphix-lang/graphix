@@ -1,0 +1,4 @@
+{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sandbox whitelist [core]; sig { use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"            type Box<'a> = Abstract<'a>;
+            impl Val for Box<i64> { let v = |b| b.0 };
+            let make = |x| Box(x)
+        " }; select status { error as e => e, null as _ => 2 } }

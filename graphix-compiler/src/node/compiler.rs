@@ -321,6 +321,11 @@ fn compile_module_inner<R: Rt, E: UserEvent>(
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
             ctx.env.modules.insert_cow(scope.lexical.clone());
             let res = Block::compile(ctx, flags, spec, &scope, top_id, true, exprs);
+            // no interface hides anything, an abstract type's representation
+            // included
+            if res.is_ok() {
+                ctx.env.publish_abstract_reps_at(&scope.lexical);
+            }
             match body_ori {
                 Some(ori) => res.with_context(|| ori),
                 None => res,

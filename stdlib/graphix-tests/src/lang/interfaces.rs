@@ -1191,3 +1191,57 @@ run!(
     "/test/b.gx" => r#"
         let shown = super::t::Show::show(1)
     "#; FuseExpect::None);
+
+// A module with no interface hides nothing: its abstract type is a
+// public newtype, constructed, read and matched from outside.
+run!(
+    abstract_type_public_without_interface,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(10))),
+    "/test.gx" => r#"
+        mod inner;
+        let u = inner::T(5);
+        let result = select u { inner::T(p) => p + u.0 }
+    "#,
+    "/test/inner.gx" => r#"
+        type T = Abstract<i64>
+    "#);
+
+// The same under a parent whose interface re-exports the module.
+run!(
+    abstract_type_public_under_an_interface,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(5))),
+    "/test.gx" => r#"
+        mod outer;
+        let result = outer::sub::T(5).0
+    "#,
+    "/test/outer.gxi" => r#"
+        mod sub
+    "#,
+    "/test/outer.gx" => r#"
+        mod sub
+    "#,
+    "/test/outer/sub.gx" => r#"
+        type T = Abstract<i64>
+    "#);
+
+// A module whose interface writes `type T;` hides it, at any depth.
+run!(
+    abstract_type_hidden_by_its_interface,
+    refused("the definition of outer::sub::T is not visible here"),
+    "/test.gx" => r#"
+        mod outer;
+        let result = outer::sub::T(5).0
+    "#,
+    "/test/outer.gxi" => r#"
+        mod sub
+    "#,
+    "/test/outer.gx" => r#"
+        mod sub
+    "#,
+    "/test/outer/sub.gxi" => r#"
+        type T
+    "#,
+    "/test/outer/sub.gx" => r#"
+        type T = Abstract<i64>
+    "#
+; FuseExpect::None);

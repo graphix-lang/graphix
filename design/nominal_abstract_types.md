@@ -14,7 +14,7 @@ the interface's business, as for any type — the two are orthogonal:
 |------------------------------|---------------------------|--------------------------------------------|
 | `type T;`                    | `type T = Abstract<u64>;` | hidden newtype                             |
 | `type T = Abstract<u64>;`    | —                         | public newtype: anyone constructs          |
-| —                            | `type T = Abstract<u64>;` | module-private nominal type, no gxi needed |
+| (no interface file)          | `type T = Abstract<u64>;` | public newtype: no interface hides anything |
 | `type T;`                    | `type T;` / nothing       | Rust-backed: Graphix never constructs      |
 | `type T;`                    | `type T = {x: i64};`      | ERROR: a hidden type is Abstract or Rust   |
 
