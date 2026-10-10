@@ -2398,11 +2398,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
 
 /// Whether a compile under `flags` fuses.
 fn fusion_on(flags: BitFlags<CFlag>) -> bool {
-    // A malformed input only de-fuses. The JIT helpers' wire ABI is
-    // System V (a 16-byte `TagValue` is two
-    // registers); Win64 passes it by hidden pointer, so on Windows the
-    // graph is interpreted.
-    // CR claude for eric: [risk] `not(windows)` turns fusion on for every other
+    // XCR claude for claude: [risk] `not(windows)` turns fusion on for every other
     // cranelift host. The helper seam passes and returns the 16-byte TagValue by value,
     // which matches the two-I64 CLIF signatures only where the C ABI uses two registers
     // for it: SysV x86_64 and AAPCS64 (design/helper_abi_portability.md). On s390x
@@ -2412,7 +2408,17 @@ fn fusion_on(flags: BitFlags<CFlag>) -> bool {
     // `all(any(target_arch = "x86_64", target_arch = "aarch64"), not(windows))`. The
     // same doc's last paragraph says a registration image that fails to decode is
     // fatal, but graphix-rt/src/gx.rs:300 warns and compiles cold. (f-helpers-08)
-    !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows))
+    // 2026-10-10 claude: Eric ruled 10-10: fix Windows and the other ABIs rather than
+    // gate. The out-pointer rule landed: a pair (TagValue, ChildBlock) crosses the helper
+    // seam as a pointer to the call site's words, and a pair return through a trailing
+    // out-pointer; HelperRefs::call is the only call path and jit_helpers! writes every
+    // helper's extern C signature, with no by-value impl for a pair type. The Windows
+    // gate is gone. On the win11 guest the language suite passes with fusion on (4823 of
+    // 4823, after fusion_parity stopped reading the source tree).
+    // design/helper_abi_portability.md is rewritten as built, its image paragraph now
+    // saying a bad entry is discarded. Big-endian stays unsupported (f-jit-10). Pins:
+    // every jit/jit_par fixture, fastcall_tags_follow_the_arg_discs.
+    !flags.contains(CFlag::FusionDisabled)
 }
 
 /// Drain the deferred terminal settles ([`CompileCtx::pending_settles`])

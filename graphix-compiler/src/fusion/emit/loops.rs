@@ -10,7 +10,7 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
-use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
+use cranelift_codegen::ir::Value as ClifValue;
 use netidx_value::Typ;
 
 #[derive(Debug)]
@@ -114,9 +114,7 @@ fn emit_flattened_source<R: Rt, E: UserEvent>(
     helper: &'static str,
 ) -> Result<scaffold::ArraySrc> {
     let value = emit::emit_owned_value_operand_node(cx, source)?;
-    let flatten = cx.helper(helper)?;
-    let call = cx.b.ins().call(flatten, &[value.disc, value.payload]);
-    let ptr = cx.b.inst_results(call)[0];
+    let ptr = cx.call_helper(helper, &[value.disc, value.payload])?[0];
     Ok(scaffold::ArraySrc { ptr, disc: value.disc, ownership: CompositeSource::Owned })
 }
 
@@ -128,9 +126,7 @@ fn convert_collection_result(
     ptr: ClifValue,
     helper: &'static str,
 ) -> Result<CompiledExpr> {
-    let f = cx.helper(helper)?;
-    let call = cx.b.ins().call(f, &[ptr]);
-    let rs = cx.b.inst_results(call);
+    let rs = cx.call_helper(helper, &[ptr])?;
     let (disc, payload) = (rs[0], rs[1]);
     Ok(CompiledExpr::new(disc, payload))
 }

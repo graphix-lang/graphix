@@ -525,21 +525,20 @@ fn emit_qop_error_disposal(
     cx.b.seal_block(sink_bl);
     match sink {
         QopSink::Deliver(site) => {
-            let raise = cx.helper("graphix_qop_raise")?;
-            cx.b.ins().call(raise, &[site, clean, payload]);
+            cx.call_helper("graphix_qop_raise", &[site, clean, payload])?;
         }
         QopSink::Log { site, unhandled } => {
-            let log = cx.helper("graphix_swallowed_error")?;
             let unhandled = cx.b.ins().iconst(types::I8, unhandled as i64);
-            cx.b.ins().call(log, &[site, unhandled, clean, payload]);
+            cx.call_helper(
+                "graphix_swallowed_error",
+                &[site, unhandled, clean, payload],
+            )?;
         }
         QopSink::DeliverNull(site) => {
-            let raise = cx.helper("graphix_qop_raise_null")?;
-            cx.b.ins().call(raise, &[site]);
+            cx.call_helper("graphix_qop_raise_null", &[site])?;
         }
         QopSink::UnhandledNull(msg) => {
-            let log = cx.helper("graphix_unhandled_null")?;
-            cx.b.ins().call(log, &[msg]);
+            cx.call_helper("graphix_unhandled_null", &[msg])?;
         }
         QopSink::DropNull => {}
     }
@@ -547,8 +546,7 @@ fn emit_qop_error_disposal(
     cx.b.switch_to_block(cont_bl);
     cx.b.seal_block(cont_bl);
     if inner_owned {
-        let value_drop = cx.helper("graphix_value_drop")?;
-        cx.b.ins().call(value_drop, &[clean, payload]);
+        cx.call_helper("graphix_value_drop", &[clean, payload])?;
     }
     Ok(())
 }
@@ -675,13 +673,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.seal_block(bad_bl);
             emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // The inner's STALE carries; TAINT marks no-value.
-            let ph_helper = if is_string {
-                cx.helper("graphix_arcstr_empty")?
-            } else {
-                cx.helper("graphix_valarray_empty")?
-            };
-            let call = cx.b.ins().call(ph_helper, &[]);
-            let ph = cx.b.inst_results(call)[0];
+            let ph_helper =
+                if is_string { "graphix_arcstr_empty" } else { "graphix_valarray_empty" };
+            let ph = cx.call_helper(ph_helper, &[])?[0];
             let tainted_base = cx.b.ins().iconst(types::I64, base_disc | TAINT);
             let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
             let ph_disc = cx.b.ins().bor(tainted_base, stale_bit);
@@ -696,9 +690,8 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                     if inner_owned {
                         payload
                     } else {
-                        let clone = cx.helper("graphix_arcstr_clone")?;
-                        let call = cx.b.ins().call(clone, &[payload]);
-                        cx.b.inst_results(call)[0]
+                        let call = cx.call_helper("graphix_arcstr_clone", &[payload])?;
+                        call[0]
                     }
                 }
                 _ => {
@@ -707,9 +700,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                     } else {
                         "graphix_value_into_array_borrowed"
                     };
-                    let unbox = cx.helper(helper_name)?;
-                    let call = cx.b.ins().call(unbox, &[clean, payload]);
-                    cx.b.inst_results(call)[0]
+                    cx.call_helper(helper_name, &[clean, payload])?[0]
                 }
             };
             let base = cx.b.ins().iconst(types::I64, base_disc);

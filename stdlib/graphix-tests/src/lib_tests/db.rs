@@ -1191,6 +1191,11 @@ run_with_tempdir!(
     }
 );
 
+// CR claude for claude: [bug] Fails on Windows (x86_64-pc-windows-gnu on the lab's
+// win11 guest, 10-10), in a test with no engine modes, so fusion is not involved;
+// the run was stopped before the harness printed the reason. Likely the copy of the
+// open database files: Windows refuses to read a file another handle holds without
+// share flags. To reproduce: cross-build with `cargo test --no-run -p graphix-tests --target x86_64-pc-windows-gnu`, copy the exe to the win11 guest (netidx lab/README.md) and run it filtered to the test. (win-01)
 // A commit is on disk when it answers: a copy of the files taken then holds it.
 run_with_tempdir!(
     name: db_commit_is_durable,

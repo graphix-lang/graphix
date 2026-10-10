@@ -18,14 +18,15 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use cranelift_codegen::{
     ir::{
-        AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue,
-        types,
+        AbiParam, Block, FuncRef, Function, InstBuilder, Signature, StackSlotData,
+        StackSlotKind, Value as ClifValue, types,
     },
     isa::CallConv,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::FuncId;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -73,17 +74,12 @@ pub(super) fn compile_into_function<'a>(
     let CtxWord { init: init_flag, wake: wake_flag } =
         CtxWord::decode(b, initial_vals[0]);
     let helper_refs = HelperRefs::new(helper_ids, names);
-    let helper = |b: &mut FunctionBuilder, name: &str| {
-        helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
-    };
     let state_ptr = initial_vals[1];
     #[cfg(debug_assertions)]
-    if crate::dbgenv::gxdbg_callret()
-        && let Some(f) = helper_refs.get(b.func, "graphix_dbg_disc")
-    {
+    if crate::dbgenv::gxdbg_callret() {
         use crate::fusion::emit_helpers::CallRetTag;
         let t = b.ins().iconst(types::I64, CallRetTag::InitFlag as i64);
-        b.ins().call(f, &[t, init_flag]);
+        helper_refs.call(b, "graphix_dbg_disc", &[t, init_flag])?;
     }
     // Wire slot 2: the callee's per-call-site block; 0 for parents and
     // bodies that claim no site words.
@@ -99,19 +95,13 @@ pub(super) fn compile_into_function<'a>(
         let payload = match kind {
             LocalKind::Scalar(_) => payload_in,
             LocalKind::Composite => {
-                let clone = helper(b, "graphix_valarray_clone")?;
-                let call = b.ins().call(clone, &[payload_in]);
-                b.inst_results(call)[0]
+                helper_refs.call(b, "graphix_valarray_clone", &[payload_in])?[0]
             }
             LocalKind::String => {
-                let clone = helper(b, "graphix_arcstr_clone")?;
-                let call = b.ins().call(clone, &[payload_in]);
-                b.inst_results(call)[0]
+                helper_refs.call(b, "graphix_arcstr_clone", &[payload_in])?[0]
             }
             LocalKind::Value => {
-                let clone = helper(b, "graphix_value_clone")?;
-                let call = b.ins().call(clone, &[disc, payload_in]);
-                b.inst_results(call)[1]
+                helper_refs.call(b, "graphix_value_clone", &[disc, payload_in])?[1]
             }
         };
         let disc_var = b.declare_var(types::I64);
@@ -546,9 +536,14 @@ pub(crate) struct LowerCtx<'a> {
 }
 
 impl LowerCtx<'_> {
-    /// The `FuncRef` of a registered `emit_helpers` runtime helper.
-    pub(super) fn helper(&self, b: &mut FunctionBuilder, name: &str) -> Result<FuncRef> {
-        self.helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
+    /// [`HelperRefs::call`] in this body.
+    pub(super) fn call_helper(
+        &self,
+        b: &mut FunctionBuilder,
+        name: &str,
+        args: &[ClifValue],
+    ) -> Result<SmallVec<[ClifValue; 2]>> {
+        self.helper_refs.call(b, name, args)
     }
 
     /// The channel this body claims from.
@@ -597,6 +592,70 @@ impl<'a> HelperRefs<'a> {
         Some(f)
     }
 
+    /// Call the registered `emit_helpers` runtime helper `name` with the
+    /// call-site words `args` (a pair parameter is two); its results, a
+    /// pair return's two words included.
+    pub(super) fn call(
+        &self,
+        b: &mut FunctionBuilder,
+        name: &str,
+        args: &[ClifValue],
+    ) -> Result<SmallVec<[ClifValue; 2]>> {
+        let f = self.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))?;
+        let shape = self.shape(name).expect("a registered helper has a shape");
+        let slot = |b: &mut FunctionBuilder| {
+            b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                16,
+                3,
+            ))
+        };
+        let mut wire: SmallVec<[ClifValue; 8]> = SmallVec::new();
+        let mut words = args.iter();
+        for param in shape.params {
+            for t in *param {
+                let w = words
+                    .next()
+                    .ok_or_else(|| anyhow!("helper `{name}`: too few args"))?;
+                if let AbiTy::Pair = t {
+                    let payload = words
+                        .next()
+                        .ok_or_else(|| anyhow!("helper `{name}`: too few args"))?;
+                    let s = slot(b);
+                    b.ins().stack_store(*w, s, 0);
+                    b.ins().stack_store(*payload, s, 8);
+                    wire.push(b.ins().stack_addr(types::I64, s, 0));
+                } else {
+                    wire.push(*w);
+                }
+            }
+        }
+        if words.next().is_some() {
+            bail!("helper `{name}`: too many args")
+        }
+        let out = match shape.ret {
+            [AbiTy::Pair] => {
+                let s = slot(b);
+                wire.push(b.ins().stack_addr(types::I64, s, 0));
+                Some(s)
+            }
+            _ => None,
+        };
+        let call = b.ins().call(f, &wire);
+        Ok(match out {
+            Some(s) => smallvec::smallvec![
+                b.ins().stack_load(types::I64, s, 0),
+                b.ins().stack_load(types::I64, s, 8)
+            ],
+            None => b.inst_results(call).iter().copied().collect(),
+        })
+    }
+
+    /// The helper's parameter and return slots.
+    pub(super) fn shape(&self, name: &str) -> Option<&HelperShape> {
+        self.ids.shapes.get(name)
+    }
+
     /// The helper's wire-slot count, for [`BodyCx::call_helper`]'s debug
     /// assert (cranelift reports an arity mismatch only as a whole-
     /// function failure, a silent de-fuse).
@@ -611,6 +670,13 @@ pub(super) struct HelperFuncIds {
     pub(super) ids: BTreeMap<&'static str, FuncId>,
     /// See [`HelperRefs::arity`].
     pub(super) arity: BTreeMap<&'static str, usize>,
+    pub(super) shapes: BTreeMap<&'static str, HelperShape>,
+}
+
+/// A helper's parameter and return slots, as registered.
+pub(super) struct HelperShape {
+    pub(super) params: &'static [&'static [AbiTy]],
+    pub(super) ret: &'static [AbiTy],
 }
 
 impl HelperFuncIds {
@@ -620,12 +686,15 @@ impl HelperFuncIds {
     ) -> Result<Self> {
         let mut ids = BTreeMap::new();
         let mut arity = BTreeMap::new();
+        let mut shapes = BTreeMap::new();
         for h in all_helpers() {
             let sig = helper_signature(call_conv, &h);
             ids.insert(h.name, declare(h.name, &sig)?);
-            arity.insert(h.name, h.params.iter().map(|p| p.len()).sum());
+            let words = |t: &AbiTy| if let AbiTy::Pair = t { 2 } else { 1 };
+            arity.insert(h.name, h.params.iter().flat_map(|p| p.iter()).map(words).sum());
+            shapes.insert(h.name, HelperShape { params: h.params, ret: h.ret });
         }
-        Ok(Self { ids, arity })
+        Ok(Self { ids, arity, shapes })
     }
 }
 
@@ -654,6 +723,8 @@ fn helper_abi_param(t: AbiTy, is_param: bool) -> AbiParam {
             let p = AbiParam::new(types::I8);
             if is_param { p.sext() } else { p }
         }
+        // a pair's pointer
+        AbiTy::Pair => AbiParam::new(types::I64),
     }
 }
 
@@ -665,8 +736,10 @@ fn helper_signature(call_conv: CallConv, spec: &HelperSpec) -> Signature {
             sig.params.push(helper_abi_param(*t, true));
         }
     }
-    for t in spec.ret {
-        sig.returns.push(helper_abi_param(*t, false));
+    match spec.ret {
+        // written through a trailing out-pointer
+        [AbiTy::Pair] => sig.params.push(helper_abi_param(AbiTy::Pair, true)),
+        ret => sig.returns.extend(ret.iter().map(|t| helper_abi_param(*t, false))),
     }
     sig
 }

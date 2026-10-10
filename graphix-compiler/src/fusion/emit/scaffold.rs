@@ -164,7 +164,7 @@ fn read_elem(
         LocalKind::Value => "graphix_valarray_get_value",
     };
     let call = cx.call_helper(helper, &[arr_ptr, idx])?;
-    Ok(owned_words(cx.b, kind, call))
+    Ok(owned_words(cx.b, kind, &call))
 }
 
 /// Read and bind the `|(k, v)|` destructure leaves of a composite
@@ -221,7 +221,7 @@ fn bind_elem(
 /// `len = valarray_len(arr_ptr)`.
 fn input_len(cx: &mut BodyCx, arr_ptr: ClifValue) -> Result<ClifValue> {
     let call = cx.call_helper("graphix_valarray_len", &[arr_ptr])?;
-    Ok(cx.b.inst_results(call)[0])
+    Ok(call[0])
 }
 
 /// An open scaffold loop over a range of slots: the counter, the

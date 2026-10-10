@@ -23,7 +23,7 @@ use smallvec::{SmallVec, smallvec};
 use super::{
     abi::{
         CompiledExpr, LocalKind, TAINT, const_stale_gate, is_tainted, prim_to_value_disc,
-        propagate_flags, results_pair, scalar_disc, value_disc,
+        propagate_flags, scalar_disc, value_disc,
     },
     body::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
@@ -72,18 +72,16 @@ pub(crate) fn emit_const_node(
                 }
             };
             let ptr = cx.interned_str(s)?;
-            let clone = cx.helper("graphix_arcstr_clone_from_static")?;
-            let call = cx.b.ins().call(clone, &[ptr]);
-            let payload = cx.b.inst_results(call)[0];
+            let call = cx.call_helper("graphix_arcstr_clone_from_static", &[ptr])?;
+            let payload = call[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING);
             let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, disc);
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
             let ptr = cx.interned_value(value)?;
-            let clone = cx.helper("graphix_value_clone_from_static")?;
-            let call = cx.b.ins().call(clone, &[ptr]);
-            let (r0, r1) = results_pair(cx.b, call);
+            let call = cx.call_helper("graphix_value_clone_from_static", &[ptr])?;
+            let (r0, r1) = (call[0], call[1]);
             let disc = const_stale_gate(cx.b, init, cx.ctx.wake_flag, r0);
             Ok(CompiledExpr::new(disc, r1))
         }
@@ -158,9 +156,8 @@ pub(crate) fn emit_ref_node(
         // until scope exit.
         LocalKind::String => {
             let s = cx.b.use_var(vv.payload);
-            let clone = cx.helper("graphix_arcstr_clone")?;
-            let call = cx.b.ins().call(clone, &[s]);
-            Ok(CompiledExpr::new(disc, cx.b.inst_results(call)[0]))
+            let call = cx.call_helper("graphix_arcstr_clone", &[s])?;
+            Ok(CompiledExpr::new(disc, call[0]))
         }
         LocalKind::Scalar(p) => {
             let cv = CompiledExpr::new(disc, cx.b.use_var(vv.payload));
@@ -228,7 +225,7 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             _ => "graphix_f64_rem",
         };
         let call = cx.call_helper(helper, &[l, r])?;
-        let value = cx.b.inst_results(call)[0];
+        let value = call[0];
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         return Ok(widen_to_declared_repr(
             cx,
@@ -385,7 +382,7 @@ fn emit_value_arith_node<R: Rt, E: UserEvent>(
     };
     let call =
         cx.call_helper(helper, &[l.cv.disc, l.cv.payload, r.cv.disc, r.cv.payload])?;
-    let (rdisc, rpay) = results_pair(cx.b, call);
+    let (rdisc, rpay) = (call[0], call[1]);
     drop_operands(cx, &[l, r])?;
     let disc = propagate_flags(cx.b, rdisc, &[l.cv.disc, r.cv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
@@ -433,7 +430,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     let result = match op {
         CmpOp::Eq | CmpOp::Ne => {
             let call = cx.call_helper("graphix_value_eq", &args)?;
-            let eq = cx.b.inst_results(call)[0];
+            let eq = call[0];
             match op {
                 CmpOp::Ne => cx.b.ins().bxor_imm(eq, 1),
                 _ => eq,
@@ -441,7 +438,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         }
         CmpOp::Lt | CmpOp::Gt | CmpOp::Lte | CmpOp::Gte => {
             let call = cx.call_helper("graphix_value_cmp", &args)?;
-            let ord = cx.b.inst_results(call)[0];
+            let ord = call[0];
             let cc = match op {
                 CmpOp::Lt => IntCC::SignedLessThan,
                 CmpOp::Gt => IntCC::SignedGreaterThan,
@@ -552,7 +549,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     args: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
     let call = cx.call_helper("graphix_string_buf_new", &[])?;
-    let buf = cx.b.inst_results(call)[0];
+    let buf = call[0];
     open_buf(cx, BufKind::String, buf);
     // A tainted part renders harmlessly; its taint folds into the result.
     let mut part_discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
@@ -564,14 +561,12 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
             Some(AbiKind::String) => {
                 let cv = part.emit_clif(cx)?;
                 part_discs.push(cv.disc);
-                let push = cx.helper("graphix_string_buf_push_arcstr")?;
-                cx.b.ins().call(push, &[buf, cv.payload]);
+                cx.call_helper("graphix_string_buf_push_arcstr", &[buf, cv.payload])?;
             }
             Some(AbiKind::Scalar(p)) => {
                 let cv = part.emit_clif(cx)?;
                 part_discs.push(cv.disc);
-                let push = cx.helper(string_buf_push_helper(p))?;
-                cx.b.ins().call(push, &[buf, cv.payload]);
+                cx.call_helper(string_buf_push_helper(p), &[buf, cv.payload])?;
             }
             other => {
                 return Err(anyhow!(
@@ -583,7 +578,7 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     }
     close_buf(cx);
     let call = cx.call_helper("graphix_string_buf_finalize", &[buf])?;
-    let payload = cx.b.inst_results(call)[0];
+    let payload = call[0];
     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
     let disc = propagate_flags(cx.b, base, &part_discs);
     Ok(CompiledExpr::new(disc, payload))
@@ -724,7 +719,6 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    let push = cx.helper(helper_name)?;
     let cv = field.emit_clif(cx)?;
     // A tainted field does not abort the kernel: the composite comes out
     // tainted and its consumer gates. Pushing it is safe because every
@@ -733,9 +727,9 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
         kind,
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value | AbiKind::Null)
     ) {
-        cx.b.ins().call(push, &[buf, cv.disc, cv.payload]);
+        cx.call_helper(helper_name, &[buf, cv.disc, cv.payload])?;
     } else {
-        cx.b.ins().call(push, &[buf, cv.payload]);
+        cx.call_helper(helper_name, &[buf, cv.payload])?;
     }
     Ok(cv.disc)
 }
@@ -779,7 +773,7 @@ pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
     close_buf(cx);
     let call = cx.call_helper("graphix_list_finalize", &[buf])?;
-    let (base, payload) = results_pair(cx.b, call);
+    let (base, payload) = (call[0], call[1]);
     let disc = producer_disc(cx, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
@@ -911,9 +905,8 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let tag_ptr = cx.interned_str(tag)?;
     if payloads.is_empty() {
-        let clone_static = cx.helper("graphix_arcstr_clone_from_static")?;
-        let call = cx.b.ins().call(clone_static, &[tag_ptr]);
-        let bits = cx.b.inst_results(call)[0];
+        let call = cx.call_helper("graphix_arcstr_clone_from_static", &[tag_ptr])?;
+        let bits = call[0];
         let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
         // A nullary variant is a constant: fires at init only.
         let init = cx.init_flag();
@@ -982,16 +975,14 @@ pub(super) fn emit_bottom_of_kind(
             CompiledExpr::new(disc, zero_const(cx.b, p))
         }
         AbiKind::String => {
-            let helper = cx.helper("graphix_arcstr_empty")?;
-            let call = cx.b.ins().call(helper, &[]);
-            let s = cx.b.inst_results(call)[0];
+            let call = cx.call_helper("graphix_arcstr_empty", &[])?;
+            let s = call[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
             CompiledExpr::new(disc, s)
         }
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
-            let helper = cx.helper("graphix_valarray_empty")?;
-            let call = cx.b.ins().call(helper, &[]);
-            let a = cx.b.inst_results(call)[0];
+            let call = cx.call_helper("graphix_valarray_empty", &[])?;
+            let a = call[0];
             let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
             CompiledExpr::new(disc, a)
         }
@@ -1048,12 +1039,14 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     arg: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
-    let wrap = cx.helper("graphix_abstract_wrap")?;
     // the type as Construct::update stores it: its params resolved
     let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ).resolve_tvars())?;
     let name_ptr = cx.interned_str(name)?;
-    let call = cx.b.ins().call(wrap, &[typ_ptr, name_ptr, cv.disc, cv.payload]);
-    let (rdisc, rpay) = results_pair(cx.b, call);
+    let call = cx.call_helper(
+        "graphix_abstract_wrap",
+        &[typ_ptr, name_ptr, cv.disc, cv.payload],
+    )?;
+    let (rdisc, rpay) = (call[0], call[1]);
     let disc = propagate_flags(cx.b, rdisc, &[cv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
 }
@@ -1067,23 +1060,22 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     rep: &Type,
 ) -> Result<CompiledExpr> {
     let rep = resolve_node_typ(cx.ctx, rep);
-    let helper = cx.helper(abstract_read_helper(&rep)?)?;
+    let helper = abstract_read_helper(&rep)?;
     let src = node_composite_source(source);
     let cv = source.emit_clif(cx)?;
     let rv = emit_taint_guarded_read(cx, cv.disc, &rep, |cx| {
-        let call = cx.b.ins().call(helper, &[cv.disc, cv.payload]);
+        let call = cx.call_helper(helper, &[cv.disc, cv.payload])?;
         Ok(if kernel_abi::is_value_shape(&rep) {
-            let (d, p) = results_pair(cx.b, call);
+            let (d, p) = (call[0], call[1]);
             CompiledExpr::new(d, p)
         } else {
-            let r0 = cx.b.inst_results(call)[0];
+            let r0 = call[0];
             CompiledExpr::new(kind_disc(cx.b, &rep), r0)
         })
     })?;
     let (rdisc, rpay) = (rv.disc, rv.payload);
     if matches!(src, CompositeSource::Owned) {
-        let drop = cx.helper("graphix_value_drop")?;
-        cx.b.ins().call(drop, &[cv.disc, cv.payload]);
+        cx.call_helper("graphix_value_drop", &[cv.disc, cv.payload])?;
     }
     let disc = propagate_flags(cx.b, rdisc, &[cv.disc]);
     Ok(CompiledExpr::new(disc, rpay))
@@ -1145,9 +1137,8 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         }
         let idx_cv = idx_cv?;
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
-        let helper = cx.helper("graphix_valarray_index")?;
-        let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
-        let r = cx.b.inst_results(call);
+        let call = cx.call_helper("graphix_valarray_index", &[arr_ptr, idx_i64])?;
+        let r = call;
         let (rdisc, rpay) = (r[0], r[1]);
         arr.drop(cx)?;
         // Fires iff the array or the index fired.
@@ -1160,9 +1151,9 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let idx_cv = with_held(cx, b, |cx| idx.emit_clif(cx))?;
         // The helper takes an i64; a narrow payload fails cranelift's verifier.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
-        let helper = cx.helper("graphix_bytes_index")?;
-        let call = cx.b.ins().call(helper, &[bcv.disc, bcv.payload, idx_i64]);
-        let (rdisc, rpay) = results_pair(cx.b, call);
+        let call =
+            cx.call_helper("graphix_bytes_index", &[bcv.disc, bcv.payload, idx_i64])?;
+        let (rdisc, rpay) = (call[0], call[1]);
         drop_operands(cx, &[b])?;
         // Fires iff the bytes or the index fired.
         let disc = propagate_flags(cx.b, rdisc, &[bcv.disc, idx_cv.disc]);
@@ -1189,9 +1180,11 @@ pub(crate) fn emit_map_ref_node<R: Rt, E: UserEvent>(
     }
     let (m, k) = emit_value_pair(cx, source, key)?;
     let (mcv, kcv) = (m.cv, k.cv);
-    let helper = cx.helper("graphix_map_ref")?;
-    let call = cx.b.ins().call(helper, &[mcv.disc, mcv.payload, kcv.disc, kcv.payload]);
-    let (rdisc, rpay) = results_pair(cx.b, call);
+    let call = cx.call_helper(
+        "graphix_map_ref",
+        &[mcv.disc, mcv.payload, kcv.disc, kcv.payload],
+    )?;
+    let (rdisc, rpay) = (call[0], call[1]);
     drop_operands(cx, &[m, k])?;
     // Fires iff the map or the key fired.
     let disc = propagate_flags(cx.b, rdisc, &[mcv.disc, kcv.disc]);
@@ -1249,9 +1242,11 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
         Ok((s, emit_bound(cx, end, 2, &mut flags, &mut taint_discs)?))
     })?;
     let flags_v = cx.b.ins().iconst(types::I64, flags);
-    let helper = cx.helper("graphix_array_slice")?;
-    let call = cx.b.ins().call(helper, &[scv.disc, scv.payload, start_v, end_v, flags_v]);
-    let r = cx.b.inst_results(call);
+    let call = cx.call_helper(
+        "graphix_array_slice",
+        &[scv.disc, scv.payload, start_v, end_v, flags_v],
+    )?;
+    let r = call;
     let (rdisc, rpay) = (r[0], r[1]);
     drop_operands(cx, &[src])?;
     // Fires iff the source or any present bound fired.

@@ -8,7 +8,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Inst, InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
+    InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 
@@ -248,21 +248,14 @@ impl From<OwnedKind> for LocalKind {
     }
 }
 
-/// The two results of a helper `call` returning a value pair.
-pub(super) fn results_pair(b: &FunctionBuilder, call: Inst) -> (ClifValue, ClifValue) {
-    let rs = b.inst_results(call);
-    (rs[0], rs[1])
-}
-
-/// The results of a read helper `call` as the (disc, payload) of a local
+/// The results `rs` of a read helper as the (disc, payload) of a local
 /// of `kind`: a composite or string read returns its bits alone, a value
 /// read its pair, a scalar read the scalar.
 pub(super) fn owned_words(
     b: &mut FunctionBuilder,
     kind: LocalKind,
-    call: Inst,
+    rs: &[ClifValue],
 ) -> (ClifValue, ClifValue) {
-    let rs = b.inst_results(call);
     let (r0, r1) = (rs[0], rs.get(1).copied());
     match (kind, r1) {
         (LocalKind::Scalar(p), _) => (scalar_disc(b, p), r0),

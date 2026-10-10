@@ -122,7 +122,7 @@ pub(super) fn emit_outlined(
     let run = super::scaffold::slots_run(cx, lp.len, lp.src_disc);
     let call =
         cx.call_helper("graphix_par_loop", &[chunk, fbase, run, site, kind, obase])?;
-    let aborted = cx.b.inst_results(call)[0];
+    let aborted = call[0];
     let abort_bl = cx.b.create_block();
     let cont_bl = cx.b.create_block();
     cx.b.ins().brif(aborted, abort_bl, &[], cont_bl, &[]);

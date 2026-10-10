@@ -135,9 +135,7 @@ fn read_scrut_elem(
         ElementRead::ArrayIndex => valarray_get_helper(prim),
         ElementRead::StructField => struct_get_helper(prim),
     };
-    let helper = cx.helper(helper_name)?;
-    let call = cx.b.ins().call(helper, &[ptr, idx_v]);
-    Ok(cx.b.inst_results(call)[0])
+    Ok(cx.call_helper(helper_name, &[ptr, idx_v])?[0])
 }
 
 /// The read family and index value of an element position.
@@ -414,9 +412,8 @@ fn emit_composite_pattern_cond_inner(
     pat: &StructPatternNode,
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
-    let len_helper = cx.helper("graphix_valarray_len")?;
-    let call = cx.b.ins().call(len_helper, &[ptr]);
-    let len = cx.b.inst_results(call)[0];
+    let call = cx.call_helper("graphix_valarray_len", &[ptr])?;
+    let len = call[0];
     let styp = resolve_node_typ(cx.ctx, scrut_typ);
     struct LeafSpec<'p> {
         idx: ElemIdx,
@@ -658,7 +655,7 @@ fn emit_composite_pattern_cond_inner(
             ElementRead::StructField => "graphix_struct_get_array_borrowed",
         };
         let call = cx.call_helper(helper_name, &[ptr, idx_v])?;
-        let child_ptr = cx.b.inst_results(call)[0];
+        let child_ptr = call[0];
         let c = emit_composite_pattern_cond(cx, child_ptr, &typ, sub, binds)?;
         cond = cx.b.ins().band(cond, c);
     }
@@ -1194,11 +1191,10 @@ fn emit_list_pattern_cond(
     if let Some(id) = tail {
         binds.push(SelectArmBind::ListTail { id: *id, k });
     }
-    let helper = cx.helper("graphix_list_match")?;
     let kc = cx.b.ins().iconst(types::I64, k as i64);
     let ex = cx.b.ins().iconst(types::I8, exact as i64);
-    let call = cx.b.ins().call(helper, &[disc, payload, kc, ex]);
-    Ok(cx.b.inst_results(call)[0])
+    let call = cx.call_helper("graphix_list_match", &[disc, payload, kc, ex])?;
+    Ok(call[0])
 }
 
 /// The [`LocalKind`] a non-scalar bind takes (a variant payload, a
@@ -1246,7 +1242,7 @@ fn owned_list_head(
     args: &[ClifValue],
 ) -> Result<(ClifValue, ClifValue)> {
     let call = cx.call_helper(owned_read_helper(ReadFrom::ListHead, kind), args)?;
-    Ok(owned_words(cx.b, kind.into(), call))
+    Ok(owned_words(cx.b, kind.into(), &call))
 }
 
 /// Install an arm's `binds` into the env.
@@ -1285,7 +1281,7 @@ fn install_arm_binds(
             SelectArmBind::ValueOwned { id, kind } => {
                 let helper = owned_read_helper(ReadFrom::Value, *kind);
                 let call = cx.call_helper(helper, &[sdisc, value_payload()?])?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), call);
+                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
                 (*id, d, p, (*kind).into())
             }
             SelectArmBind::Payload { id, idx, prim, on } => {
@@ -1296,7 +1292,7 @@ fn install_arm_binds(
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let call =
                     cx.call_helper(variant_payload_helper(*prim), &[vd, vp, idx_c])?;
-                let v = cx.b.inst_results(call)[0];
+                let v = call[0];
                 (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
             }
             SelectArmBind::PayloadValue { id, idx, kind, on } => {
@@ -1307,7 +1303,7 @@ fn install_arm_binds(
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let helper = owned_read_helper(ReadFrom::Payload, *kind);
                 let call = cx.call_helper(helper, &[vd, vp, idx_c])?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), call);
+                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
                 (*id, d, p, (*kind).into())
             }
             SelectArmBind::ListHead { id, idx, kind } => {
@@ -1316,7 +1312,7 @@ fn install_arm_binds(
                 let (d, p) = match *kind {
                     LocalKind::Scalar(p) => {
                         let call = cx.call_helper("graphix_list_get_value", &args)?;
-                        let raw = cx.b.inst_results(call)[1];
+                        let raw = call[1];
                         (scalar_disc(cx.b, p), cast_u64_to_prim(cx.b, raw, p))
                     }
                     LocalKind::Composite => {
@@ -1331,7 +1327,7 @@ fn install_arm_binds(
                 let kc = cx.b.ins().iconst(types::I64, *k as i64);
                 let call =
                     cx.call_helper("graphix_list_tail", &[sdisc, value_payload()?, kc])?;
-                let rs = cx.b.inst_results(call);
+                let rs = call;
                 (*id, rs[0], rs[1], LocalKind::Value)
             }
             SelectArmBind::ElemValue { id, idx, typ, kind, parent_ptr } => {
@@ -1343,7 +1339,7 @@ fn install_arm_binds(
                     element_read_helper(typ, read)?,
                     &[*parent_ptr, idx_v],
                 )?;
-                let (d, p) = owned_words(cx.b, (*kind).into(), call);
+                let (d, p) = owned_words(cx.b, (*kind).into(), &call);
                 (*id, d, p, (*kind).into())
             }
             SelectArmBind::Subslice { id, start, back, parent_ptr } => {
@@ -1356,7 +1352,7 @@ fn install_arm_binds(
                     "graphix_valarray_subslice",
                     &[*parent_ptr, start, back],
                 )?;
-                let bits = cx.b.inst_results(call)[0];
+                let bits = call[0];
                 (
                     *id,
                     cx.b.ins().iconst(types::I64, value_disc::ARRAY),
@@ -1599,7 +1595,7 @@ fn emit_structure_cond(
                 let lit = cx.interned_str(lit)?;
                 let call =
                     cx.call_helper("graphix_value_is_str", &[disc, payload, lit])?;
-                Some(cx.b.inst_results(call)[0])
+                Some(call[0])
             }
             _ => {
                 return Err(anyhow!(
@@ -1724,12 +1720,11 @@ fn emit_variant_cond(
             )
         })?;
     let tag_ptr = cx.interned_str(tag)?;
-    let helper = cx.helper("graphix_variant_tag_eq")?;
     // The helper checks arity as well as tag: same-tag arms at different
     // arities are distinct cases.
     let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
-    let call = cx.b.ins().call(helper, &[v.0, v.1, tag_ptr, arity]);
-    let mut cond = cx.b.inst_results(call)[0];
+    let call = cx.call_helper("graphix_variant_tag_eq", &[v.0, v.1, tag_ptr, arity])?;
+    let mut cond = call[0];
     for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
         match sub {
             StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
@@ -1751,12 +1746,12 @@ fn emit_variant_cond(
                     &[v.0, v.1, idx_c],
                 )?;
                 let (pd, pp) = {
-                    let rs = cx.b.inst_results(call);
+                    let rs = call;
                     (rs[0], rs[1])
                 };
                 let lit = cx.interned_str(lit)?;
                 let call = cx.call_helper("graphix_value_is_str", &[pd, pp, lit])?;
-                let eq = cx.b.inst_results(call)[0];
+                let eq = call[0];
                 cond = cx.b.ins().band(cond, eq);
             }
             StructPatternNode::Literal(lit) => {
@@ -1773,7 +1768,7 @@ fn emit_variant_cond(
                 let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
                 let call =
                     cx.call_helper(variant_payload_helper(prim), &[v.0, v.1, idx_c])?;
-                let value = cx.b.inst_results(call)[0];
+                let value = call[0];
                 let lit = compile_const(cx.b, lit, prim)?;
                 let eq = compile_cmp(cx.b, CmpOp::Eq, prim, value, lit);
                 cond = cx.b.ins().band(cond, eq);
@@ -1784,7 +1779,7 @@ fn emit_variant_cond(
                     "graphix_variant_payload_borrowed",
                     &[v.0, v.1, idx_c],
                 )?;
-                let rs = cx.b.inst_results(call);
+                let rs = call;
                 let nested = (rs[0], rs[1]);
                 let inner =
                     emit_variant_cond(cx, nested, Some(nested), tag, nbinds, elt, binds)?;

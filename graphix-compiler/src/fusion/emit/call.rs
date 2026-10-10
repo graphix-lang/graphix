@@ -178,30 +178,30 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     let n = cx.b.ins().iconst(types::I64, args.len() as i64);
     let call = match &info.dispatch {
         SiteDispatch::Fast { name, f } => {
-            let fast = cx.helper("graphix_fastcall")?;
             let fp = cx.const_ptr(KernelConst::FastFn { name: name.clone(), f: *f })?;
-            cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask])
+            cx.call_helper("graphix_fastcall", &[fp, base, n, taint_mask, stale_mask])?
         }
         SiteDispatch::Typed { name, f, typ } => {
-            let typed = cx.helper("graphix_typedcall")?;
             let fp = cx.const_ptr(KernelConst::TypedFn { name: name.clone(), f: *f })?;
             let tp = cx.interned_type(typ)?;
-            cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
+            cx.call_helper(
+                "graphix_typedcall",
+                &[fp, tp, base, n, taint_mask, stale_mask],
+            )?
         }
         SiteDispatch::Cast { target, source } => {
-            let typed = cx.helper("graphix_typedcall")?;
             let fp = cx.const_ptr(KernelConst::Cast(cast_typed))?;
             let pair =
                 Type::Tuple(triomphe::Arc::from_iter([target.clone(), source.clone()]));
             let tp = cx.interned_type(&pair)?;
-            cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
+            cx.call_helper(
+                "graphix_typedcall",
+                &[fp, tp, base, n, taint_mask, stale_mask],
+            )?
         }
     };
     emit_owned_drops(cx.b, cx.ctx, &drops)?;
-    let (raw0, raw1) = {
-        let r = cx.b.inst_results(call);
-        (r[0], r[1])
-    };
+    let (raw0, raw1) = (call[0], call[1]);
     let dmerge = cx.b.create_block();
     let pay_ty = match ret_abi {
         Some(AbiKind::Scalar(p)) => prim_to_clif(p),
@@ -271,8 +271,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 cx.b.ins().brif(untainted, bad_shape_bl, &[], cont_bl, &[]);
                 cx.b.switch_to_block(bad_shape_bl);
                 cx.b.seal_block(bad_shape_bl);
-                let mismatch_h = cx.helper("graphix_shape_mismatch")?;
-                cx.b.ins().call(mismatch_h, &[raw0]);
+                cx.call_helper("graphix_shape_mismatch", &[raw0])?;
                 cx.b.ins().jump(cont_bl, &[]);
                 cx.b.switch_to_block(cont_bl);
                 cx.b.seal_block(cont_bl);
@@ -446,9 +445,8 @@ fn emit_site_block(
                 ));
             }
             let desc = cx.const_ptr(KernelConst::SiteBlockWords)?;
-            let f = cx.helper("graphix_site_child_block")?;
-            let call = cx.b.ins().call(f, &[word, desc]);
-            let rs = cx.b.inst_results(call);
+            let call = cx.call_helper("graphix_site_child_block", &[word, desc])?;
+            let rs = call;
             return Ok((rs[0], Some(rs[1])));
         }
         Some(l) => l.clone(),
@@ -531,32 +529,35 @@ fn claim_callee_block(cx: &mut BodyCx, layout: &SiteLayout) -> Result<ClifValue>
             Some(l) => cx.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
         };
         let word_addr = cx.emit_dir_walk(word_addr, dirs, n_dirs, leaf_ptr)?;
-        let table_helper = cx.helper("graphix_slot_state_table")?;
         let (llen, ldisc, lidx) = leaf_frame;
         let lvalid = emit_untainted_i64(cx.b, ldisc);
         let table = match &leaf_rt {
             // the leaf a chunk's own loop sizes is shared by the chunks
             _ if n_dirs == 0 && cx.ctx.chunk => {
-                let shared = cx.helper("graphix_slot_state_table_shared")?;
                 let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
                 let words = cx.b.ins().imul(llen, stride);
-                let call = cx.b.ins().call(shared, &[word_addr, words, lvalid]);
-                cx.b.inst_results(call)[0]
+                let call = cx.call_helper(
+                    "graphix_slot_state_table_shared",
+                    &[word_addr, words, lvalid],
+                )?;
+                call[0]
             }
             None => {
                 let stride = cx.b.ins().iconst(types::I64, layout.words as i64);
                 let words = cx.b.ins().imul(llen, stride);
                 let own0 = cx.b.ins().iconst(types::I64, 0);
-                let call =
-                    cx.b.ins()
-                        .call(table_helper, &[word_addr, words, lvalid, own0, leaf_ptr]);
-                cx.b.inst_results(call)[0]
+                let call = cx.call_helper(
+                    "graphix_slot_state_table",
+                    &[word_addr, words, lvalid, own0, leaf_ptr],
+                )?;
+                call[0]
             }
             Some(_) => {
-                let blocks_helper = cx.helper("graphix_slot_state_blocks")?;
-                let call =
-                    cx.b.ins().call(blocks_helper, &[word_addr, llen, lvalid, leaf_ptr]);
-                cx.b.inst_results(call)[0]
+                let call = cx.call_helper(
+                    "graphix_slot_state_blocks",
+                    &[word_addr, llen, lvalid, leaf_ptr],
+                )?;
+                call[0]
             }
         };
         let i = cx.b.use_var(lidx);
@@ -741,7 +742,7 @@ fn emit_self_dispatch(
     let call_bl = cx.b.create_block();
     let grow_bl = cx.b.create_block();
     let call = cx.call_helper("graphix_stack_check", &[])?;
-    let flag = cx.b.inst_results(call)[0];
+    let flag = call[0];
     let interrupted = cx.b.ins().icmp_imm(IntCC::Equal, flag, 0);
     cx.b.ins().brif(interrupted, abort_bl, &[], direct_bl, &[]);
     cx.b.switch_to_block(direct_bl);
@@ -937,8 +938,7 @@ pub(super) fn emit_owned_drop(
             ("graphix_value_drop", smallvec::smallvec![cv.disc, cv.payload])
         }
     };
-    let f = ctx.helper(b, helper)?;
-    b.ins().call(f, &args);
+    ctx.call_helper(b, helper, &args)?;
     Ok(())
 }
 
@@ -988,7 +988,7 @@ pub(super) fn close_buf(cx: &mut BodyCx) {
 /// A fresh registered value buf of capacity `cap`.
 pub(super) fn open_value_buf(cx: &mut BodyCx, cap: ClifValue) -> Result<ClifValue> {
     let call = cx.call_helper("graphix_value_buf_new", &[cap])?;
-    let buf = cx.b.inst_results(call)[0];
+    let buf = call[0];
     open_buf(cx, BufKind::Value, buf);
     Ok(buf)
 }
@@ -997,7 +997,7 @@ pub(super) fn open_value_buf(cx: &mut BodyCx, cap: ClifValue) -> Result<ClifValu
 pub(super) fn finalize_valarray(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
     close_buf(cx);
     let call = cx.call_helper("graphix_valarray_finalize", &[buf])?;
-    Ok(cx.b.inst_results(call)[0])
+    Ok(call[0])
 }
 
 /// Emit drops for everything the kernel currently owns, for a
@@ -1009,12 +1009,12 @@ pub(super) fn emit_pending_cleanup(
     ctx: &LowerCtx,
 ) -> Result<()> {
     for (kind, var) in ctx.in_flight_bufs.borrow().iter() {
-        let f = match kind {
-            BufKind::Value => ctx.helper(b, "graphix_value_buf_drop")?,
-            BufKind::String => ctx.helper(b, "graphix_string_buf_drop")?,
+        let helper = match kind {
+            BufKind::Value => "graphix_value_buf_drop",
+            BufKind::String => "graphix_string_buf_drop",
         };
         let ptr = b.use_var(*var);
-        b.ins().call(f, &[ptr]);
+        ctx.call_helper(b, helper, &[ptr])?;
     }
     for (kind, vv) in ctx.owned_input_stack.borrow().iter() {
         emit_drop_local(b, ctx, *kind, *vv)?;

@@ -149,16 +149,11 @@ pub(super) fn compile_element_read(
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
     let helper_name = element_read_helper(elem, read)?;
-    let helper = ctx.helper(b, helper_name)?;
-    let call = b.ins().call(helper, &[arr_ptr, idx_val]);
+    let call = ctx.call_helper(b, helper_name, &[arr_ptr, idx_val])?;
     if kernel_abi::is_value_shape(elem) {
-        let (r0, r1) = {
-            let r = b.inst_results(call);
-            (r[0], r[1])
-        };
-        Ok(CompiledExpr::new(r0, r1))
+        Ok(CompiledExpr::new(call[0], call[1]))
     } else {
-        let r0 = b.inst_results(call)[0];
+        let r0 = call[0];
         Ok(CompiledExpr::new(kind_disc(b, elem), r0))
     }
 }

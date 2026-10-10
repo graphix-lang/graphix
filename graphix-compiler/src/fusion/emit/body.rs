@@ -17,8 +17,7 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, Value as ClifValue,
-    condcodes::IntCC, types,
+    Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use netidx_value::Value;
@@ -104,18 +103,21 @@ pub(super) fn emit_tail_rebind_jump(
             LocalKind::Scalar(_) | LocalKind::String => (r.val.disc, r.val.payload),
             LocalKind::Composite => {
                 let payload = if borrowed {
-                    let clone = ctx.helper(b, "graphix_valarray_clone")?;
-                    let call = b.ins().call(clone, &[r.val.payload]);
-                    b.inst_results(call)[0]
+                    let call =
+                        ctx.call_helper(b, "graphix_valarray_clone", &[r.val.payload])?;
+                    call[0]
                 } else {
                     r.val.payload
                 };
                 (r.val.disc, payload)
             }
             LocalKind::Value if borrowed => {
-                let clone = ctx.helper(b, "graphix_value_clone")?;
-                let call = b.ins().call(clone, &[r.val.disc, r.val.payload]);
-                let rs = b.inst_results(call);
+                let call = ctx.call_helper(
+                    b,
+                    "graphix_value_clone",
+                    &[r.val.disc, r.val.payload],
+                )?;
+                let rs = call;
                 (rs[0], rs[1])
             }
             LocalKind::Value => (r.val.disc, r.val.payload),
@@ -145,9 +147,8 @@ pub(super) fn emit_interrupt_check(
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<()> {
-    let interrupted = ctx.helper(b, "graphix_interrupted")?;
-    let call = b.ins().call(interrupted, &[]);
-    let intr = b.inst_results(call)[0];
+    let call = ctx.call_helper(b, "graphix_interrupted", &[])?;
+    let intr = call[0];
     let abort_bl = b.create_block();
     let continue_block = b.create_block();
     b.ins().brif(intr, abort_bl, &[], continue_block, &[]);
@@ -282,25 +283,23 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// FuncRef for a registered `emit_helpers` runtime helper.
-    pub fn helper(&mut self, name: &str) -> Result<FuncRef> {
-        self.ctx.helper(self.b, name)
-    }
-
-    /// Look up a helper and call it, asserting the argument count
-    /// against its registered wire signature.
-    ///
-    /// Prefer this over `helper()` + `ins().call()`: a mismatched call
-    /// fails here, naming the helper, rather than as a verifier error at
-    /// the link.
-    pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
-        let f = self.helper(name)?;
+    /// Call a registered helper with the call-site words `args` (a pair
+    /// parameter is two), asserting the count against its registered
+    /// signature: a mismatched call fails here, naming the helper, rather
+    /// than as a verifier error at the link. Its results, a pair return's
+    /// two words included.
+    pub fn call_helper(
+        &mut self,
+        name: &str,
+        args: &[ClifValue],
+    ) -> Result<SmallVec<[ClifValue; 2]>> {
         debug_assert_eq!(
             self.ctx.helper_refs.arity(name),
             Some(args.len()),
             "helper `{name}` called with {} args",
             args.len()
         );
-        Ok(self.b.ins().call(f, args))
+        self.ctx.call_helper(self.b, name, args)
     }
 
     /// Nonzero on an init view (`I64`): the `event.init()` word from wire
@@ -532,19 +531,22 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         n_dirs: usize,
         leaf_ptr: ClifValue,
     ) -> Result<ClifValue> {
-        let helper = self.helper("graphix_slot_state_table")?;
         let mut word = word;
         for (j, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
             let fvalid = emit_untainted_i64(self.b, *fdisc);
             let dir = if j == 0 && self.ctx.chunk {
-                let shared = self.helper("graphix_slot_state_table_shared")?;
-                let call = self.b.ins().call(shared, &[word, *flen, fvalid]);
-                self.b.inst_results(call)[0]
+                let call = self.call_helper(
+                    "graphix_slot_state_table_shared",
+                    &[word, *flen, fvalid],
+                )?;
+                call[0]
             } else {
                 let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
-                let call =
-                    self.b.ins().call(helper, &[word, *flen, fvalid, own, leaf_ptr]);
-                self.b.inst_results(call)[0]
+                let call = self.call_helper(
+                    "graphix_slot_state_table",
+                    &[word, *flen, fvalid, own, leaf_ptr],
+                )?;
+                call[0]
             };
             let i = self.b.use_var(*fidx);
             let o = self.b.ins().ishl_imm(i, 3);
@@ -566,11 +568,13 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     ) -> Result<ClifValue> {
         let no_leaf = self.b.ins().iconst(types::I64, 0);
         let word = self.emit_dir_walk(word_addr, enclosing, enclosing.len(), no_leaf)?;
-        let helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         let own0 = self.b.ins().iconst(types::I64, 0);
-        let call = self.b.ins().call(helper, &[word, len, valid, own0, no_leaf]);
-        Ok(self.b.inst_results(call)[0])
+        let call = self.call_helper(
+            "graphix_slot_state_table",
+            &[word, len, valid, own0, no_leaf],
+        )?;
+        Ok(call[0])
     }
 
     /// Pop the frame [`open_slot_tables`](Self::open_slot_tables)
@@ -611,7 +615,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             }
             frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
         };
-        let table_helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         for r in recs.iter() {
             let n_dirs = r.n_dirs as usize;
@@ -644,20 +647,25 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                 let word = cx.emit_dir_walk(word0, &dirs, n_dirs, leaf_ptr)?;
                 if k <= n_dirs {
                     let own = cx.b.ins().iconst(types::I64, (n_dirs - (k - 1)) as i64);
-                    cx.b.ins().call(table_helper, &[word, len, valid, own, leaf_ptr]);
+                    cx.call_helper(
+                        "graphix_slot_state_table",
+                        &[word, len, valid, own, leaf_ptr],
+                    )?;
                 } else {
                     match r.leaf {
                         TruncLeaf::Table { stride } => {
                             let words = cx.b.ins().imul_imm(len, stride as i64);
                             let own0 = cx.b.ins().iconst(types::I64, 0);
-                            cx.b.ins().call(
-                                table_helper,
+                            cx.call_helper(
+                                "graphix_slot_state_table",
                                 &[word, words, valid, own0, leaf_ptr],
-                            );
+                            )?;
                         }
                         TruncLeaf::Blocks(_) => {
-                            let blocks_helper = cx.helper("graphix_slot_state_blocks")?;
-                            cx.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
+                            cx.call_helper(
+                                "graphix_slot_state_blocks",
+                                &[word, len, valid, leaf_ptr],
+                            )?;
                         }
                     }
                 }
@@ -886,9 +894,8 @@ pub fn ensure_owned_composite_src(
     match src {
         CompositeSource::Owned => Ok(v),
         CompositeSource::Borrowed => {
-            let clone = cx.helper("graphix_valarray_clone")?;
-            let call = cx.b.ins().call(clone, &[v]);
-            Ok(cx.b.inst_results(call)[0])
+            let call = cx.call_helper("graphix_valarray_clone", &[v])?;
+            Ok(call[0])
         }
     }
 }
@@ -906,9 +913,8 @@ pub fn ensure_owned_value_src(
         CompositeSource::Borrowed => {
             // `graphix_value_clone` preserves the tag bits, so taint
             // rides through the clone.
-            let clone = cx.helper("graphix_value_clone")?;
-            let call = cx.b.ins().call(clone, &[disc, payload]);
-            let r = cx.b.inst_results(call);
+            let call = cx.call_helper("graphix_value_clone", &[disc, payload])?;
+            let r = call;
             Ok((r[0], r[1]))
         }
     }
@@ -936,9 +942,8 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 /// discards the out words and keeps its resident, as the node-walk's
 /// interrupted dispatch does. Terminates the block.
 pub(super) fn emit_kernel_abort(cx: &mut BodyCx) -> Result<()> {
-    let pending_set = cx.helper("graphix_abort_set")?;
     let exit = pending_exit_block(cx.b, cx.ctx);
-    cx.b.ins().call(pending_set, &[]);
+    cx.call_helper("graphix_abort_set", &[])?;
     emit_pending_cleanup(cx.b, cx.env, cx.ctx)?;
     cx.b.ins().jump(exit, &[]);
     Ok(())
@@ -990,12 +995,11 @@ pub(super) fn emit_kernel_return(
     #[cfg(debug_assertions)]
     if crate::dbgenv::gxdbg_callret() {
         use crate::fusion::emit_helpers::CallRetTag;
-        let f = cx.helper("graphix_dbg_disc")?;
         let t = cx.b.ins().iconst(types::I64, CallRetTag::Return as i64);
-        cx.b.ins().call(f, &[t, cv.disc]);
+        cx.call_helper("graphix_dbg_disc", &[t, cv.disc])?;
         let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
         let t3 = cx.b.ins().iconst(types::I64, CallRetTag::TailScrutAcc as i64);
-        cx.b.ins().call(f, &[t3, acc]);
+        cx.call_helper("graphix_dbg_disc", &[t3, acc])?;
     }
     // The result fires if its value chain fired or any tail-select
     // scrutinee or consulted guard on the executed path did, in any

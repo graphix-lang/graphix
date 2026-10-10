@@ -70,12 +70,21 @@ pub(crate) enum AbiTy {
     I8u,
     /// I8, sign-extended by the caller when a parameter.
     I8s,
+    /// A two-word struct: two values at the call site, and on the wire a
+    /// pointer to them as a parameter, or a pointer the helper writes
+    /// them through as a return. No C ABI agrees on a struct by value.
+    Pair,
 }
 
 /// The wire slots a Rust type occupies as a helper parameter, one per
-/// register. A type without an impl cannot appear in a helper signature.
-pub(crate) trait HelperArg {
+/// register, and the word it crosses the seam as. A type without an impl
+/// cannot appear in a helper signature.
+pub(crate) trait HelperArg: Sized {
     const ABI: &'static [AbiTy];
+    type Wire;
+
+    /// SAFETY: `w` is what a call site passes for this parameter.
+    unsafe fn from_wire(w: Self::Wire) -> Self;
 }
 
 /// The wire slots of a helper return; `()` returns nothing.
@@ -95,6 +104,11 @@ macro_rules! impl_helper_arg {
     ($($t:ty => $abi:expr;)*) => {
         $(impl HelperArg for $t {
             const ABI: &'static [AbiTy] = $abi;
+            type Wire = $t;
+
+            unsafe fn from_wire(w: $t) -> $t {
+                w
+            }
         })*
     };
 }
@@ -111,10 +125,30 @@ impl_helper_arg! {
     i8 => &[AbiTy::I8s];
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
-    TagValue => &[AbiTy::I64, AbiTy::I64];
+}
+
+/// A pair parameter arrives as a pointer to the call site's two words,
+/// which the helper takes over.
+macro_rules! impl_pair_arg {
+    ($($t:ty => $read:expr;)*) => {
+        $(impl HelperArg for $t {
+            const ABI: &'static [AbiTy] = &[AbiTy::Pair];
+            type Wire = *const [u64; 2];
+
+            unsafe fn from_wire(w: *const [u64; 2]) -> $t {
+                $read(w)
+            }
+        })*
+    };
+}
+
+impl_pair_arg! {
+    TagValue => |w: *const [u64; 2]| unsafe { std::ptr::read(w.cast::<TagValue>()) };
     // a borrowed value: the helper reads it and never drops it
-    ManuallyDrop<TagValue> => &[AbiTy::I64, AbiTy::I64];
-    ChildBlock => &[AbiTy::I64, AbiTy::I64];
+    ManuallyDrop<TagValue> => |w: *const [u64; 2]| {
+        ManuallyDrop::new(unsafe { std::ptr::read(w.cast::<TagValue>()) })
+    };
+    ChildBlock => |w: *const [u64; 2]| unsafe { std::ptr::read(w.cast::<ChildBlock>()) };
 }
 
 /// A self-call's per-activation block and whether it was just made: a
@@ -127,10 +161,20 @@ pub struct ChildBlock {
 
 impl<T> HelperArg for *mut T {
     const ABI: &'static [AbiTy] = &[AbiTy::I64];
+    type Wire = *mut T;
+
+    unsafe fn from_wire(w: *mut T) -> *mut T {
+        w
+    }
 }
 
 impl<T> HelperArg for *const T {
     const ABI: &'static [AbiTy] = &[AbiTy::I64];
+    type Wire = *const T;
+
+    unsafe fn from_wire(w: *const T) -> *const T {
+        w
+    }
 }
 
 /// One registered helper: symbol name, address, and wire signature
@@ -151,6 +195,30 @@ macro_rules! jit_helper_ret {
     };
 }
 
+/// One helper's `extern "C"` definition: each parameter crosses as its
+/// [`HelperArg::Wire`], and a pair return (`-> TagValue`, `-> ChildBlock`)
+/// through a trailing out-pointer.
+macro_rules! jit_helper_fn {
+    ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [pair $ret:ty] $body:block) => {
+        $(#[$attr])*
+        pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire,)* out: *mut $ret) {
+            // SAFETY: the call site passes each parameter's wire form
+            $(let $p: $t = unsafe { <$t as HelperArg>::from_wire($p) };)*
+            let r: $ret = (move || $body)();
+            // SAFETY: the call site passes a two-word slot
+            unsafe { out.write(r) }
+        }
+    };
+    ([$($attr:meta)*] [$($unsafety:ident)?] $name:ident ($($p:ident: $t:ty),*) [$($ret:ty)?] $body:block) => {
+        $(#[$attr])*
+        pub(crate) $($unsafety)? extern "C" fn $name($($p: <$t as HelperArg>::Wire),*) $(-> $ret)? {
+            // SAFETY: the call site passes each parameter's wire form
+            $(let $p: $t = unsafe { <$t as HelperArg>::from_wire($p) };)*
+            $body
+        }
+    };
+}
+
 /// Declare JIT helpers: each entry is `safe`/`unsafe` followed by an
 /// ordinary `fn`. Emits the `pub [unsafe] extern "C"` definitions plus
 /// a `$registry()` function pushing one [`HelperSpec`] per helper.
@@ -167,12 +235,46 @@ macro_rules! jit_helpers {
     };
     (@parse [$registry:ident] [$($acc:tt)*]
         $(#[$attr:meta])*
+        unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> TagValue $body:block
+        $($rest:tt)*
+    ) => {
+        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [pair TagValue] $body);
+        jit_helpers!(@parse [$registry]
+            [$($acc)* { $name; ($($t),*); (TagValue) }] $($rest)*);
+    };
+    (@parse [$registry:ident] [$($acc:tt)*]
+        $(#[$attr:meta])*
+        safe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> TagValue $body:block
+        $($rest:tt)*
+    ) => {
+        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [pair TagValue] $body);
+        jit_helpers!(@parse [$registry]
+            [$($acc)* { $name; ($($t),*); (TagValue) }] $($rest)*);
+    };
+    (@parse [$registry:ident] [$($acc:tt)*]
+        $(#[$attr:meta])*
+        unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> ChildBlock $body:block
+        $($rest:tt)*
+    ) => {
+        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [pair ChildBlock] $body);
+        jit_helpers!(@parse [$registry]
+            [$($acc)* { $name; ($($t),*); (ChildBlock) }] $($rest)*);
+    };
+    (@parse [$registry:ident] [$($acc:tt)*]
+        $(#[$attr:meta])*
+        safe fn $name:ident($($p:ident: $t:ty),* $(,)?) -> ChildBlock $body:block
+        $($rest:tt)*
+    ) => {
+        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [pair ChildBlock] $body);
+        jit_helpers!(@parse [$registry]
+            [$($acc)* { $name; ($($t),*); (ChildBlock) }] $($rest)*);
+    };
+    (@parse [$registry:ident] [$($acc:tt)*]
+        $(#[$attr:meta])*
         unsafe fn $name:ident($($p:ident: $t:ty),* $(,)?) $(-> $ret:ty)? $body:block
         $($rest:tt)*
     ) => {
-        $(#[$attr])*
-        pub unsafe extern "C" fn $name($($p: $t),*) $(-> $ret)? $body
-
+        jit_helper_fn!([$($attr)*] [unsafe] $name ($($p: $t),*) [$($ret)?] $body);
         jit_helpers!(@parse [$registry]
             [$($acc)* { $name; ($($t),*); ($($ret)?) }] $($rest)*);
     };
@@ -181,9 +283,7 @@ macro_rules! jit_helpers {
         safe fn $name:ident($($p:ident: $t:ty),* $(,)?) $(-> $ret:ty)? $body:block
         $($rest:tt)*
     ) => {
-        $(#[$attr])*
-        pub extern "C" fn $name($($p: $t),*) $(-> $ret)? $body
-
+        jit_helper_fn!([$($attr)*] [] $name ($($p: $t),*) [$($ret)?] $body);
         jit_helpers!(@parse [$registry]
             [$($acc)* { $name; ($($t),*); ($($ret)?) }] $($rest)*);
     };
@@ -1914,18 +2014,25 @@ mod tests {
         let args = vec![arr];
         let (ap, n) = (args.as_ptr() as u64, args.len() as u64);
         let fp = len as *const () as u64;
-        let tv = unsafe { graphix_fastcall(fp, ap, n, 0, 0) };
+        let fastcall = |f: u64, taint: u64, stale: u64| {
+            let mut out = std::mem::MaybeUninit::<TagValue>::uninit();
+            unsafe {
+                graphix_fastcall(f, ap, n, taint, stale, out.as_mut_ptr());
+                out.assume_init()
+            }
+        };
+        let tv = fastcall(fp, 0, 0);
         assert_eq!(tv.tag(), crate::Tag::FIRED);
         assert_eq!(tv.value_cloned(), Value::I64(3));
-        let tv = unsafe { graphix_fastcall(fp, ap, n, 0, 0b1) };
+        let tv = fastcall(fp, 0, 0b1);
         assert_eq!(tv.tag(), crate::Tag::STALE);
         assert_eq!(tv.value_cloned(), Value::I64(3));
         let never_p = never as *const () as u64;
-        let tv = unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0) };
+        let tv = fastcall(never_p, 0b1, 0);
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
-        let tv = unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0b1) };
+        let tv = fastcall(never_p, 0b1, 0b1);
         assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
-        let tv = unsafe { graphix_fastcall(none as *const () as u64, ap, n, 0, 0) };
+        let tv = fastcall(none as *const () as u64, 0, 0);
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
         assert_eq!(args.len(), 1);
     }

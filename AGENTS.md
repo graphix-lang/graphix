@@ -783,7 +783,11 @@ node graph IS the IR — there is no parallel typed IR
   on exhaustion the link reinstalls its records in a fresh one; a
   generation's code is freed when it and every kernel installed into it
   have dropped (each `WrappedKernel` holds its code). Pin:
-  `graphix-shell/tests/jit_arena_rotation.rs`. Kernel ABI: kind-grouped params from
+  `graphix-shell/tests/jit_arena_rotation.rs`. A two-word value never
+  crosses the helper seam by value: a pointer in, an out-pointer back,
+  through `HelperRefs::call` alone (`design/helper_abi_portability.md`),
+  so fusion runs on every host Cranelift supports, Windows included.
+  Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types, abstract types, primitive
   unions and the primitives with no register form (varints, decimal,
   error) are opaque 2-word values (`design/unified_value_abi.md`).

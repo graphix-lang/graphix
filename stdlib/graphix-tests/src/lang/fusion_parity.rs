@@ -7,20 +7,26 @@ use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use graphix_compiler::expr::{Origin, Source, parser};
 use graphix_package_core::testing::{Mode, fixture_runtime};
-use std::path::Path;
+
+/// A fuzz finding, by its path under `graphix-fuzz/findings`, and its text.
+macro_rules! witness {
+    ($path:literal) => {
+        ($path, include_str!(concat!("../../../../graphix-fuzz/findings/", $path)))
+    };
+}
 
 /// Witnesses, each a program one of whose statements must be refused.
-const WITNESSES: &[&str] = &[
-    "fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx",
-    "typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx",
-    "typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx",
-    "typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx",
+const WITNESSES: &[(&str, &str)] = &[
+    witness!("fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx"),
+    witness!("typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx"),
+    witness!("typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx"),
+    witness!("typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx"),
 ];
 
-/// The first refusal compiling `file`'s statements one at a time, the
+/// The first refusal compiling `text`'s statements one at a time, the
 /// earlier ones kept.
-async fn first_refusal(file: &Path, mode: Mode) -> Result<String> {
-    let text = ArcStr::from(std::fs::read_to_string(file)?);
+async fn first_refusal(name: &str, text: &str, mode: Mode) -> Result<String> {
+    let text = ArcStr::from(text);
     let ori = Origin { parent: None, source: Source::Unspecified, text };
     let stmts = parser::parse(ori)?;
     let (ctx, _rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
@@ -34,7 +40,7 @@ async fn first_refusal(file: &Path, mode: Mode) -> Result<String> {
             }
         }
     }
-    anyhow::bail!("{} compiled", file.display())
+    anyhow::bail!("{name} compiled")
 }
 
 /// Strip tvar numbers (`'_6070` → `'_N`) so counter drift between the
@@ -57,12 +63,9 @@ fn norm(s: &str) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn refusals_identical_across_fusion() -> Result<()> {
-    let findings =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../graphix-fuzz/findings");
-    for w in WITNESSES {
-        let f = findings.join(w);
-        let fused = first_refusal(&f, Mode::Jit).await.context(*w)?;
-        let walked = first_refusal(&f, Mode::Interp).await.context(*w)?;
+    for (w, text) in WITNESSES {
+        let fused = first_refusal(w, text, Mode::Jit).await.context(*w)?;
+        let walked = first_refusal(w, text, Mode::Interp).await.context(*w)?;
         assert_eq!(
             norm(&fused),
             norm(&walked),
