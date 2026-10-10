@@ -768,6 +768,11 @@ impl Type {
                 // (compare same-definition instances parameter-wise when every occurrence
                 // is covariant), which pairs with t-contains-07's ruling on abstract
                 // parameters.
+                // 2026-10-10 claude: Eric ruled with t-contains-07 (10-10) not to infer
+                // variance: a typedef whose parameters grow stays refused ("cannot
+                // compare two instances of N"), the valid widening included, until
+                // declared variance exists. Nothing left to do here unless that syntax
+                // lands; delete if you agree.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 // one entry per definition, at its larger params
                 let defs = match [t0, t1].map(|t| match t {
@@ -893,7 +898,7 @@ impl Type {
                 if id0 != id1 {
                     return Ok(false);
                 }
-                // CR claude for eric: [bug] Abstract parameters are checked
+                // XCR claude for claude: [bug] Abstract parameters are checked
                 // covariantly, whatever the representation (or a Rust-backed handle)
                 // does with them. With `type Sink<'a> = Abstract<fn(x: 'a) -> i64>`, a
                 // `Sink<i64>` is accepted as a `Sink<[i64, string]>`, so a string
@@ -907,11 +912,22 @@ impl Type {
                 // app_contains (`'c<a0> ⊇ 'c<a1>` by a0 ⊇ a1) is the same rule and
                 // needs the same fix. probe:
                 // design/review-2026-10-05/repro/t-contains-07.gx (t-contains-07)
+                // the representation is hidden, so its parameters are invariant
+                // 2026-10-10 claude: Eric ruled 10-10 option 1: an abstract type's
+                // parameters are invariant (equal_int, both directions), and so is an
+                // unknown constructor's argument in app_contains; declared variance
+                // syntax is the extension if a covariant abstract container is ever
+                // needed. A let annotation over a constructed value pre-unifies first
+                // (Bind::typecheck0, pre_unify_arg, only for abstract-typed values), so
+                // `let b: Box<[i64, string]> = Box(1)` still checks. The probe is refused
+                // at q. Pins: lang::types::abstract_parameters_are_invariant (fails with
+                // the fix undone), annotation_decides_constructed_parameters,
+                // lang::traits::core_eq_bound_names_other_var.
                 Ok(p0.len() == p1.len()
                     && p0
                         .iter()
                         .zip(p1.iter())
-                        .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
+                        .map(|(t0, t1)| t0.equal_int(flags, env, hist, t1))
                         .collect::<Result<AndAc>>()?
                         .0)
             }
@@ -995,8 +1011,7 @@ impl Type {
                 t0.contains_int(flags, env, hist, t1)
             }
             (Self::ByRef(Mutability::Mut, t0), Self::ByRef(Mutability::Mut, t1)) => {
-                Ok(t0.contains_int(flags, env, hist, t1)?
-                    && t1.contains_int(flags, env, hist, t0)?)
+                t0.equal_int(flags, env, hist, t1)
             }
             (Self::ByRef(Mutability::Mut, _), Self::ByRef(Mutability::Shared, _)) => {
                 Ok(false)
@@ -1734,6 +1749,18 @@ impl Type {
     /// form and binds the constructor variable by name, discharging its
     /// bound through `find_impl`. A type with no last parameter is not
     /// a constructor.
+    /// Containment both ways: an invariant position.
+    fn equal_int(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Self,
+    ) -> Result<bool> {
+        Ok(self.contains_int(flags, env, hist, t)?
+            && t.contains_int(flags, env, hist, self)?)
+    }
+
     fn app_contains(
         &self,
         flags: BitFlags<ContainsFlags>,
@@ -1747,8 +1774,9 @@ impl Type {
                     (Some(f0), Some(f1)) => f0.contains_int(flags, env, hist, &f1),
                     (Some(f0), None) => f0.contains_int(flags, env, hist, t),
                     (None, Some(f1)) => self.contains_int(flags, env, hist, &f1),
+                    // an unknown constructor's argument is invariant
                     (None, None) => Ok(c0.contains_int(flags, env, hist, c1)?
-                        && a0.contains_int(flags, env, hist, a1)?),
+                        && a0.equal_int(flags, env, hist, a1)?),
                 }
             }
             (Self::App(c, a), t1) => match Self::app_filled(c, a) {
@@ -1933,7 +1961,7 @@ impl Type {
     }
 }
 
-// CR claude for eric: [test-gap] These three tests are the only direct pins of
+// CR claude for claude: [test-gap] These three tests are the only direct pins of
 // Type::contains. No graphix-tests pin covers the rules broken by the accepted
 // ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
 // (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
@@ -1958,6 +1986,11 @@ impl Type {
 // 2026-10-08 claude: re-addressed: the remaining pins come with your rulings on
 // c-node-mod-01 (XCR), t-contains-07 and t-tvar-02, and the variance must-reject families
 // with t-contains-07's.
+// 2026-10-10 claude: t-tvar-02 and t-contains-07 are ruled and pinned
+// (lang::types::bottom_refuses_a_declared_variable, no_throws_refuses_a_declared_throws,
+// abstract_parameters_are_invariant). What remains: a must-reject family for a widened
+// abstract parameter, which needs the generators to build parameterized abstract types
+// (graphix-fuzz/src/generate/modules.rs makes only unparameterized ones).
 #[cfg(test)]
 mod tests {
     use super::*;

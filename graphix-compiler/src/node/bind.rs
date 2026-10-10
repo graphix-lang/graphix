@@ -491,6 +491,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             && b.typ.is_some()
         {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
+            // an abstract type's parameters are invariant: the annotation,
+            // not the payload, decides a constructed value's
+            if let Some(Type::Abstract { .. }) = self.node.typ().deref_cloned() {
+                wrap!(
+                    self.node,
+                    Type::pre_unify_arg(&ctx.env, &self.typ, self.node.typ())
+                )?;
+            }
         }
         wrap!(self.node, self.node.typecheck0(ctx))?;
         self.check_value(ctx)?;

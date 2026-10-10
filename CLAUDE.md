@@ -777,7 +777,9 @@ cycle, across workers; the compiler never pins threads.
   is private to `graphix-types/src/list.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
-  definition is visible; `T as t` is a nominal tag test anywhere.
+  definition is visible; `T as t` is a nominal tag test anywhere. Its
+  parameters, and an unknown constructor's (`'c<a>`), are invariant; a
+  `let` annotation decides a constructed value's.
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,

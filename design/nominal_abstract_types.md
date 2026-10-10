@@ -66,6 +66,14 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    carries its id alone, so a select over two instantiations of one is
    refused (they share a runtime form, `Type::rep_collision`).
    Constraints must match the gxi (`type NumBox<'a: Number>;`).
+   Parameters are invariant: the representation is hidden, so nothing
+   outside it can say a `Sink<i64>` is a `Sink<[i64, string]>`, and a
+   Rust-backed handle (`db::Tree<K, V>`) may store what it is given.
+   A `let` annotation decides a constructed value's parameters (`let b:
+   Box<[i64, string]> = Box(1)`), as a formal decides an argument's. An
+   unknown constructor's argument (`'c<a>`) is invariant too. Declared
+   variance is the extension if a covariant abstract container is ever
+   needed.
 5. The constructor is syntax, not a value: `Counter(x)` constructs, and
    a function that builds one is written `|x| Counter(x)`. Type and
    value names are separate namespaces, so `Counter(x)` resolves to the

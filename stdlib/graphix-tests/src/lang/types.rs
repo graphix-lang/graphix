@@ -2231,6 +2231,42 @@ run!(
     FuseExpect::None
 );
 
+/// An abstract type hides its representation, so its parameters are
+/// invariant: a sink of i64 is not a sink of `[i64, string]`.
+const ABSTRACT_PARAMETERS_ARE_INVARIANT: &str = r#"
+{
+    type Sink<'a> = Abstract<fn(x: 'a) -> i64>;
+    let p: Sink<i64> = Sink(|x: i64| x);
+    let q: Sink<[i64, string]> = p;
+    q.0("hello")
+}
+"#;
+
+run!(
+    abstract_parameters_are_invariant,
+    ABSTRACT_PARAMETERS_ARE_INVARIANT,
+    refused("Sink<[i64, string]> does not contain Sink<i64>");
+    FuseExpect::None
+);
+
+/// The annotation, not the payload, decides a constructed value's
+/// parameters.
+const ANNOTATION_DECIDES_CONSTRUCTED_PARAMETERS: &str = r#"
+{
+    type Box<'a> = Abstract<'a>;
+    let b: Box<[i64, string]> = Box(1);
+    let take = |b: Box<[i64, string]>| select b.0 { i64 as n => n, string as _ => 0 };
+    take(b)
+}
+"#;
+
+run!(
+    annotation_decides_constructed_parameters,
+    ANNOTATION_DECIDES_CONSTRUCTED_PARAMETERS,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    FuseExpect::Jit
+);
+
 /// A type error names an inferred cell by its binding, never its id.
 const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
 {
