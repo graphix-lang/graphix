@@ -669,6 +669,9 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// checks, may lack the defining module's private typedefs.
     env: Env,
     typing: Typing,
+    /// The runtime this activation counts against, when a cycle bound it
+    /// (`stack::activation_born`).
+    charged: Option<usize>,
 }
 
 /// How an instance's check types its body.
@@ -929,6 +932,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if self.charged.take() == Some(Arc::as_ptr(ctx.control) as usize) {
+            ctx.control.activation_died()
+        }
         self.body.delete(ctx);
         for n in &self.args {
             n.ids(&mut |id| {
@@ -1058,6 +1064,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             first_dispatch: true,
             env: Env { binds, ..ctx.env.lexical() },
             typing,
+            charged: crate::stack::activation_born(),
         })
     }
 
@@ -1088,6 +1095,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             first_dispatch: true,
             env,
             typing: Typing::Restored,
+            charged: crate::stack::activation_born(),
         })
     }
 }

@@ -3975,7 +3975,17 @@ fn child_resource_env(cmd: &mut tokio::process::Command) {
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         cmd.env("GRAPHIX_STACK_BUDGET", (1u64 << 30).to_string());
     }
+    if std::env::var_os("GRAPHIX_ACTIVATION_BUDGET").is_none() {
+        cmd.env("GRAPHIX_ACTIVATION_BUDGET", ACTIVATION_BUDGET.to_string());
+    }
 }
+
+/// The live activations a fuzzed program may hold: a node-walked
+/// activation holds about 20 KB of heap, so this bounds a runaway
+/// recursion's near 1 GB, and it trips well before the 1 GiB stack budget
+/// would (a recursion's frames reach that between 100k and 300k), so
+/// containment follows the program, never the thread or the fork.
+pub const ACTIVATION_BUDGET: u64 = 50_000;
 
 /// Give a worker child a parent-owned sandbox cwd (generated programs
 /// write files at arbitrary relative paths, and the worker arms exit via

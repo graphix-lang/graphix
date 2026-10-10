@@ -271,6 +271,9 @@ async fn main() -> Result<()> {
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
+    if std::env::var_os("GRAPHIX_ACTIVATION_BUDGET").is_none() {
+        graphix_compiler::set_activation_budget(graphix_fuzz::ACTIVATION_BUDGET);
+    }
     // the JIT's parallel runs are the default mode at a threshold every
     // fork point pays
     graphix_compiler::cost::fix_calibration(graphix_fuzz::AUTO_T);

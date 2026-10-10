@@ -2826,3 +2826,35 @@ run!(
     refused("Array<'a: string> does not contain Array<i64>");
     FuseExpect::None
 );
+
+/// An embedder bounds the activations its runtime holds: a node-walked
+/// recursion without end aborts the runtime at the budget, where it would
+/// otherwise fill memory, and the count follows the program.
+#[tokio::test(flavor = "multi_thread")]
+async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
+    use graphix_compiler::CFlag;
+    use graphix_package_core::testing::init_with_flags_and_setup;
+    let (tx, _rx) = tokio::sync::mpsc::channel(10);
+    let ctx = init_with_flags_and_setup(
+        tx,
+        &crate::TEST_REGISTER,
+        vec![],
+        CFlag::FusionDisabled.into(),
+        |_| {},
+    )
+    .await?;
+    ctx.rt.control().set_activation_budget(2000);
+    let code = r#"{
+        let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1, "x") };
+        go(-1, "x")
+    }"#;
+    let _ = ctx.rt.compile(arcstr::ArcStr::from(code)).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !ctx.rt.budget_aborted() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(ctx.rt.budget_aborted(), "the runaway recursion was not stopped");
+    let live = ctx.rt.control().live_activations();
+    assert!((2000..10_000).contains(&live), "{live} live activations");
+    Ok(())
+}

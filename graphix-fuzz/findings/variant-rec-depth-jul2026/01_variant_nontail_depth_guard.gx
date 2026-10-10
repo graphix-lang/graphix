@@ -2,13 +2,12 @@
 // over a variant-returning f, now refused at compile): an unannotated
 // variant-returning non-tail recursion types honestly as [`A, `B] and
 // both engines compute it. The depth is one both engines finish under
-// the stack budget: the native kernel's frame is a few words, the
-// node-walk's is kilobytes, and a depth only one side can reach is
-// containment, not a divergence.
+// the fuzzer's budgets (stack, and activations: 50,000), and a depth
+// only one side can reach is containment, not a divergence.
 {
   let rec f = |n: i64| select n {
     i64:0 => `A,
     _ => select f(n - i64:1) { `A => `B, `B => `A }
   };
-  select f(i64:100000) { `A => i64:1, `B => i64:2 }
+  select f(i64:20000) { `A => i64:1, `B => i64:2 }
 }

@@ -16,8 +16,9 @@ does not bound it. A tail call is an activation like any other call
 (`tail_calls_are_calls.md`), so an infinite recursion, tail or not,
 grows stack and memory with its depth; only a stateless tail recursion
 the JIT runs as one native loop is constant-stack and bounded-memory.
-What contains the rest is the stack budget (`GRAPHIX_STACK_BUDGET`) and
-the interrupt (`recursive_activations.md` §4).
+What contains the rest is the activation budget, the stack budget
+(`GRAPHIX_STACK_BUDGET`) and the interrupt (`recursive_activations.md`
+§4).
 
 ## Why
 
@@ -104,3 +105,16 @@ exceed it aborts the runtime through the same `Control`
 (`CtlFlag::Budget`), on both engines, and the fuzz harness reads that
 abort as a timeout — containment, like the deadline, not a program
 outcome.
+
+The activation budget counts what a runaway recursion actually grows:
+live activations, each a call's instance, a collection slot's or a
+kernel's per-activation block, charged where a cycle binds one and
+released at its delete, against the runtime's `Control`
+(`Control::set_activation_budget`, `set_activation_budget`,
+`GRAPHIX_ACTIVATION_BUDGET`; unlimited by default, so an embedder
+chooses). A node-walked activation holds about 20 KB of heap, so memory
+runs out long before stack, and a count follows the program where stack
+bytes follow the thread and the fork schedule; past the budget the
+runtime aborts the same way (`CtlFlag::Budget`). The fuzzer's children
+run at 50,000, below where their 1 GiB stack budget would trip. A JIT
+tail loop binds nothing and is not counted; the interrupt stops it.

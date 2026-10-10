@@ -674,12 +674,12 @@ impl<X: GXExt> GXHandle<X> {
         Ok(rx.await.map_err(|_| self.stopped("runtime did not respond"))?)
     }
 
-    /// Why the runtime stopped, when its stack budget stopped it, else
-    /// `what`.
+    /// Why the runtime stopped, when a budget stopped it, else `what`.
     pub fn stopped(&self, what: &'static str) -> anyhow::Error {
         if self.budget_aborted() {
             anyhow!(
-                "the runtime exceeded its stack budget (GRAPHIX_STACK_BUDGET) and stopped"
+                "a runaway recursion exceeded the runtime's budget \
+                 (GRAPHIX_STACK_BUDGET or GRAPHIX_ACTIVATION_BUDGET) and it stopped"
             )
         } else {
             anyhow!(what)

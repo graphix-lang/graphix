@@ -69,6 +69,64 @@ pub fn set_stack_budget(bytes: usize) {
     DEFAULT_BUDGET.store(bytes, Ordering::Relaxed);
 }
 
+/// The activation budget a new runtime's [`Control`] starts with:
+/// unlimited, `GRAPHIX_ACTIVATION_BUDGET`, or the last
+/// [`set_activation_budget`].
+static DEFAULT_ACTIVATIONS: LazyLock<AtomicU64> = LazyLock::new(|| {
+    AtomicU64::new(match std::env::var("GRAPHIX_ACTIVATION_BUDGET") {
+        Err(_) => u64::MAX,
+        Ok(s) => s.trim().parse().unwrap_or_else(|_| {
+            let msg = compact_str::format_compact!(
+                "GRAPHIX_ACTIVATION_BUDGET={s:?} is not a count; running without an \
+                 activation budget"
+            );
+            log::error!("{msg}");
+            eprintln!("{msg}");
+            u64::MAX
+        }),
+    })
+});
+
+/// Set the activation budget runtimes created from now on start with; a
+/// running one keeps its own ([`Control::set_activation_budget`]).
+pub fn set_activation_budget(activations: u64) {
+    DEFAULT_ACTIVATIONS.store(activations, Ordering::Relaxed);
+}
+
+/// Count an activation born in the runtime whose cycle runs on this
+/// thread, aborting it past its budget: the containment of a runaway
+/// recursion, which a count follows whatever thread or fork it runs on.
+/// The address of the runtime charged, which [`Control::activation_died`]
+/// releases; `None` outside a cycle, charging nothing.
+#[doc(hidden)]
+pub fn activation_born() -> Option<usize> {
+    let p = current_control()?;
+    // SAFETY: see `current_control`.
+    let c = unsafe { &*p };
+    let live = c.activations.fetch_add(1, Ordering::Relaxed) + 1;
+    if live > c.activation_budget() && !c.budget_aborted() {
+        log::error!(
+            "activation budget ({}) exceeded by a recursion — aborting the runtime \
+             (raise via GRAPHIX_ACTIVATION_BUDGET or Control::set_activation_budget)",
+            c.activation_budget()
+        );
+        c.abort_budget();
+    }
+    Some(p as usize)
+}
+
+/// [`Control::activation_died`] for the runtime whose cycle runs on this
+/// thread, when it is the one `charged` names.
+#[doc(hidden)]
+pub fn activation_died(charged: Option<usize>) {
+    if let Some(p) = current_control()
+        && charged == Some(p as usize)
+    {
+        // SAFETY: see `current_control`.
+        unsafe { (*p).activation_died() }
+    }
+}
+
 /// Abort the running runtime because a recursion exceeded its budget;
 /// the one exit for both the node-walk and the kernel stack check.
 #[doc(hidden)]
@@ -100,7 +158,7 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 /// Whether one more segment would put the runtime running on this
 /// thread over its budget.
 #[doc(hidden)]
-// CR claude for eric: [bug] What this charges depends on the thread and the fork
+// XCR claude for claude: [bug] What this charges depends on the thread and the fork
 // schedule, not on the program. The serial cycle runs on a 2 MB tokio worker and pays a
 // 32 MB segment after about 1 MB of recursion; a forked part runs on a 16 MB eval-pool
 // stack and pays nothing until about 15 MB; and parts running at the same time add up
@@ -124,6 +182,19 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 // loop allocates nothing and is not counted (it spins until interrupted). Defaults:
 // unlimited or very large in the shell, about 100k in the fuzzer's children. See
 // runtime-heap-01 for the footprint itself.
+// 2026-10-10 claude: Eric ruled 10-10: an activation budget, under the embedder's
+// control. Control counts live activations (a lambda instance a cycle binds, charged at
+// construction and released at its delete; a kernel's per-activation block) and aborts
+// the runtime through CtlFlag::Budget past activation_budget
+// (Control::set_activation_budget, graphix_compiler::set_activation_budget,
+// GRAPHIX_ACTIVATION_BUDGET; unlimited by default). A count follows the program, not the
+// thread or fork schedule, so the fuzzer's children run at 50,000, which trips before
+// their 1 GiB stack budget (bracketed: at 100k the activation budget fires in every
+// engine and mode, at 300k the stack budget does), and the node-walk's containment no
+// longer depends on GRAPHIX_PAR. The runaway recursion that filled 8 GB in 14 s now stops
+// in about 2 s; crash_000004 checks AGREE (contained). The stack budget stays, for native
+// JIT recursion, with its thread dependence. Pin:
+// lang::functions::activation_budget_stops_a_runaway_recursion.
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
         // SAFETY: see `current_control`.
@@ -153,6 +224,14 @@ pub fn record_self_blocks(n: i64) {
     if let Some(c) = current_control() {
         // SAFETY: see `current_control`.
         unsafe { (*c).self_blocks.fetch_add(n, Ordering::Relaxed) };
+    }
+    // a kernel's per-activation block is an activation
+    match n {
+        1 => {
+            activation_born();
+        }
+        -1 => activation_died(current_control().map(|p| p as usize)),
+        _ => (),
     }
 }
 
@@ -245,6 +324,9 @@ pub struct Control {
     forks: AtomicU64,
     /// Runs of compile tasks its cycles forked to build instances.
     build_forks: AtomicU64,
+    /// Live activations its cycles bound, and how many it may hold.
+    activations: AtomicU64,
+    activation_budget: AtomicU64,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -291,6 +373,10 @@ impl Control {
             self_blocks: AtomicI64::new(0),
             forks: AtomicU64::new(0),
             build_forks: AtomicU64::new(0),
+            activations: AtomicU64::new(0),
+            activation_budget: AtomicU64::new(
+                DEFAULT_ACTIVATIONS.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -351,6 +437,30 @@ impl Control {
 
     pub fn set_stack_budget(&self, bytes: usize) {
         self.stack_budget.store(bytes, Ordering::Relaxed)
+    }
+
+    /// The activations this runtime may hold at once, over every call,
+    /// slot and kernel block its cycles bind; `u64::MAX` is unlimited.
+    /// Past it the runtime aborts as past its stack budget.
+    pub fn activation_budget(&self) -> u64 {
+        self.activation_budget.load(Ordering::Relaxed)
+    }
+
+    pub fn set_activation_budget(&self, activations: u64) {
+        self.activation_budget.store(activations, Ordering::Relaxed)
+    }
+
+    /// The activations this runtime's cycles hold now.
+    pub fn live_activations(&self) -> u64 {
+        self.activations.load(Ordering::Relaxed)
+    }
+
+    /// Release an activation [`activation_born`] charged here.
+    pub fn activation_died(&self) {
+        let _ =
+            self.activations.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_sub(1))
+            });
     }
 
     /// Request that in-flight loops abort this cycle; cleared when the

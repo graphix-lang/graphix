@@ -719,7 +719,10 @@ node graph IS the IR — there is no parallel typed IR
   unconditionally; shrink = delete (a depth not reached this cycle is
   deleted; re-reaching it is fresh). No depth limit; evaluation is
   atomic within a cycle; containment is the cooperative interrupt
-  (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`). Kernel
+  (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`) and the
+  activation budget: live activations (calls, slots, kernel blocks)
+  bound per runtime, unlimited by default, set by an embedder
+  (`Control::set_activation_budget`) or `GRAPHIX_ACTIVATION_BUDGET`. Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a
