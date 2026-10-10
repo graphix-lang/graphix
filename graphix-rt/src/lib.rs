@@ -642,19 +642,10 @@ impl<X: GXExt> GXHandle<X> {
     /// });
     /// ```
     ///
-    /// The aborted cycle rides its last result and re-fires next cycle,
-    /// so a wrongly-fired watchdog costs a cycle, not correctness.
-    // CR claude for eric: [doc-drift] The doc above (lines 654-655) and
-    // design/atomic_recursion.md:84-85 say an interrupted cycle 're-fires next cycle,
-    // so a wrongly-fired watchdog costs a cycle, not correctness', but nothing
-    // re-schedules an interrupted root. GXLambda::update and FusedKernel ride their
-    // resident, do_cycle clears `updated`, and the inputs' fires are spent, so the
-    // derivation recomputes only when an input fires again. A one-shot trigger's result
-    // is therefore lost: at the REPL, a Ctrl-C one second into a 2.7 s `sum(0, go ~
-    // 400000000)` leaves `r` with no value for good, while the uninterrupted run prints
-    // 80000000200000000 (probe: design/review-2026-10-05/repro/rt-06.py). Either re-run
-    // the roots an interrupted cycle updated, with their trigger fires restored, or
-    // correct both docs and the watchdog advice. (rt-06)
+    /// The interrupted cycle's work is abandoned: each value keeps its
+    /// last result and recomputes only when an input fires again, so a
+    /// result an interrupted event would have produced is lost. Set a
+    /// watchdog's budget well above the longest legitimate cycle.
     pub fn interrupt(&self) {
         self.0.control.interrupt()
     }

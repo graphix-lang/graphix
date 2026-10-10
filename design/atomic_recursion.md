@@ -84,8 +84,10 @@ semantics:
   an embedder. Credits change what CORRECT programs observe; an
   interrupt only changes what BROKEN programs experience, loudly. It is
   the browser's slow-script dialog, not a scheduler.
-- Abort is not bottom: the aborted cycle rides its last result and
-  re-fires next cycle.
+- Abort is not bottom, and not a retry: the aborted cycle's values keep
+  their last results and recompute only when an input fires again, so
+  the result the interrupted event would have produced is lost (a
+  re-fire would re-wedge an infinite loop on every cycle).
 
 The shell arms Ctrl-C before the first cycle (a top-level infinite loop
 wedges inside `load_env`, before the input loop exists) and `abort()`s
