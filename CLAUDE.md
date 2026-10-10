@@ -597,6 +597,9 @@ node graph IS the IR — there is no parallel typed IR
   wrappers install with one finalize; a kernel has its entry only after
   its pass links. Emission accepted everything a link compiles, so a
   link that fails (a verifier error included) is a JIT bug and panics.
+  A function past `jit::LARGE_FUNCTION` instructions compiles with
+  Cranelift's single-pass register allocator: linear compile time,
+  worse code, one region still.
   One JITModule + 256MB
   arena per generation, built on the first fusion (a fusion-off context
   never builds one); an install that fails retires the generation, and

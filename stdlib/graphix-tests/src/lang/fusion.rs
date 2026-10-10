@@ -2201,3 +2201,21 @@ run!(whole_binds_and_string_literals, WHOLE_BINDS_AND_STRING_LITERALS, |v: Resul
     matches!(v, Ok(v) if v.to_string()
         == "[i64:3, i64:2, i64:4, i64:4, i64:4, i64:6, i64:1, i64:2, i64:3, i64:1, i64:2, i64:7]")
 }; FuseExpect::Jit);
+
+// A region past the backtracking allocator's budget compiles with the
+// single-pass one: still one native kernel, its answer the node-walk's.
+run!(large_region_fuses_whole, {
+    let n = 800;
+    let mut src = String::from("{\n  let f = |a: i64| -> i64 {\n    let x0 = 1;\n");
+    for i in 1..n {
+        src.push_str(&format!("    let x{i} = x{} * 3 + {i};\n", i - 1));
+    }
+    src.push_str(&format!("    x{} + a\n  }};\n  #[native] f(2)\n}}", n - 1));
+    src
+}, |v: Result<&Value>| {
+    let mut x: i64 = 1;
+    for i in 1..800 {
+        x = x.wrapping_mul(3).wrapping_add(i);
+    }
+    matches!(v, Ok(Value::I64(r)) if *r == x.wrapping_add(2))
+}; FuseExpect::Jit);

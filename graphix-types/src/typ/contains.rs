@@ -774,32 +774,6 @@ impl Type {
                 Ok(true)
             }
             (t0 @ Self::Ref(_), t1) | (t0, t1 @ Self::Ref(_)) => {
-                // CR claude for eric: [bug] This memo keys a reference on its
-                // definition and its params. A typedef whose params grow as it recurses
-                // never meets a repeated pair, so comparing two different
-                // instantiations of it unfolds forever. Example: `type N<'a> = [null,
-                // ('a, N<Array<'a>>)]`, which the cast_to_a_growing_definition pin
-                // treats as legal. `let n1: N<i64> = null; let n2: N<[i64, string]> =
-                // n1` is a valid widening, and it hangs `--check`; so does the
-                // `N<string>` form, which should be refused. The language server checks
-                // inside its message loop, so such a file freezes it. Contractiveness
-                // in Env::deftype makes this memo sound but does not bound it, and
-                // nothing here plays the role of fusion's MAX_FREEZE_EXPANSIONS; probe:
-                // design/review-2026-10-05/repro/t-contains-09.gx (t-contains-09)
-                // 2026-10-07 claude: no longer hangs: past MAX_GROWTH growing expansions of
-                // one definition on a path the comparison is refused ("cannot compare
-                // two instances of N"). The valid widening N<[i64, string]> := N<i64>
-                // is refused that way too; deciding it needs the parameters' variance.
-                // 2026-10-08 claude: re-addressed: deciding the valid widening N<[i64,
-                // string]> := N<i64> needs a variance rule for typedef parameters
-                // (compare same-definition instances parameter-wise when every occurrence
-                // is covariant), which pairs with t-contains-07's ruling on abstract
-                // parameters.
-                // 2026-10-10 claude: Eric ruled with t-contains-07 (10-10) not to infer
-                // variance: a typedef whose parameters grow stays refused ("cannot
-                // compare two instances of N"), the valid widening included, until
-                // declared variance exists. Nothing left to do here unless that syntax
-                // lands; delete if you agree.
                 let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
                 // one entry per definition, at its larger params
                 let defs = match [t0, t1].map(|t| match t {

@@ -105,7 +105,27 @@ struct Compiled {
 
 /// The host ISA every module compiles for.
 fn host_isa() -> Result<OwnedTargetIsa> {
+    isa_with(|_| Ok(()))
+}
+
+/// The host ISA allocating registers in one pass, for a function so large
+/// the backtracking allocator's superlinear time would dominate its
+/// compile: worse code, linear time.
+static LARGE_FUNCTION_ISA: LazyLock<Option<OwnedTargetIsa>> = LazyLock::new(|| {
+    isa_with(|f| f.set("regalloc_algorithm", "single_pass").context("set regalloc"))
+        .map_err(|e| log::warn!("no single-pass isa: {e:#}"))
+        .ok()
+});
+
+/// Instructions past which a function compiles with
+/// [`LARGE_FUNCTION_ISA`].
+const LARGE_FUNCTION: usize = 20_000;
+
+fn isa_with(
+    extra: impl FnOnce(&mut settings::Builder) -> Result<()>,
+) -> Result<OwnedTargetIsa> {
     let mut flag_builder = settings::builder();
+    extra(&mut flag_builder)?;
     flag_builder.set("opt_level", "speed").context("set opt_level")?;
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -340,6 +360,10 @@ fn backend(
 ) -> Result<Compiled> {
     ctx.clear();
     ctx.func = std::mem::replace(func, Function::new());
+    let isa = match &*LARGE_FUNCTION_ISA {
+        Some(large) if ctx.func.dfg.num_insts() > LARGE_FUNCTION => &**large,
+        _ => isa,
+    };
     ctx.compile(isa, &mut ControlPlane::default())
         .map_err(|e| anyhow!("compile: {}", e.inner))?;
     let code = ctx.compiled_code().expect("compiled above");

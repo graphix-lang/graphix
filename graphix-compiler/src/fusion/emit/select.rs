@@ -784,29 +784,6 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
             .then(|| cx.b.create_block());
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        // CR claude for eric: [perf] For an arm whose guard is not pure of its binds,
-        // the prologue (:740-751) already emitted this pattern condition and cloned the
-        // arm's owned binds. This emits both again, so the arm pays two tag tests or
-        // list walks and two clones per invocation (a Subslice bind takes a pooled Arc
-        // each time). The prologue dominates the chain, so its pcond and bind specs can
-        // be kept per arm and reused here. probe:
-        // design/review-2026-10-05/repro/f-select-13.gx (GRAPHIX_DUMP_CLIF=1: 4 tag
-        // tests and 3 payload clones for 3 arms; 3 and 2 with a pure guard).
-        // (f-select-13)
-        // 2026-10-08 claude: Half done: the chain reuses a non-or arm's pattern condition
-        // and bind specs from the prologue (the condition emitters are straight-line, so
-        // their values dominate the chain), so the arm's tag test or list walk runs once.
-        // The second clone remains: the prologue installs owned clones for the guard and
-        // drops them before the chain clones again. Borrowing in the prologue needs a
-        // local kind no cleanup drops, since an abort while the guard emits runs
-        // emit_pending_cleanup over every owned local; that is the borrowed/owned split
-        // f-helpers-03 asks for.
-        // 2026-10-09 claude: Scope call for the remaining half: dropping the prologue's
-        // clone needs a local that no cleanup drops (an ownership flag on Local, honored
-        // by emit_scope_drops and emit_pending_cleanup) and borrowed read helpers for
-        // every kind a bind can have (only the variant payload has one). That saves one
-        // refcount pair per impure-guard arm per run. I lean accepting the clone: delete
-        // this CR.
         let pcond = match conds[i].take() {
             Some((pcond, prologue_binds)) => {
                 binds = prologue_binds;
