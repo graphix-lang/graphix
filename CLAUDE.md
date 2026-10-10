@@ -826,7 +826,10 @@ cycle, across workers; the compiler never pins threads.
   (`Type::map_refs`) before the value comparison; such a comparison
   never fuses. References and functions have no order (`Ordered`).
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
-  block; it is not control flow.
+  block; it is not control flow. `?` wraps its error in an `ErrChain`
+  once, extending a chain rather than nesting it, and the types agree:
+  `ErrChain<ErrChain<X>>` is `ErrChain<X>`, so a generic `Result<T, 'e>`
+  raises `ErrChain<'e>`.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
   desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
   issued once per entry over an argument snapshot); every statement is

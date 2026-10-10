@@ -723,8 +723,8 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
                 ])))
             }
         },
-        Some(Type::Error(et)) => et.with_deref(|et| match et {
-            // CR claude for eric: [bug] `?` refuses any operand whose error payload is
+        Some(Type::Error(payload)) => payload.with_deref(|et| match et {
+            // XCR claude for claude: [bug] `?` refuses any operand whose error payload is
             // a type variable. `|r: Result<i64, 'e>| -> i64 r?` stops here with `type
             // must be known`, although the type is written out and `r$` checks. A bound
             // that rules out a chain (`'e: [`A, `B]`) and `|e| error(e)?` are refused
@@ -749,12 +749,18 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             // catch loses the payload's type); (c) keep the refusal, which now names the
             // payload. I lean to (a): a generic error type that is itself a chain is the
             // rare case.
-            None => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "? raises {etyp}, whose payload is a type variable: whether it is a \
-                     chain already is not known; give the error a concrete type"
-                )
-            }),
+            // a chain the variable turns out to be collapses into this one, as
+            // `wrap_error` extends it
+            // 2026-10-10 claude: Eric ruled 10-10: model the run time. wrap_error already
+            // extends a chain rather than nesting it, so the types follow:
+            // Type::lookup_ref expands ErrChain<P> as P when P is a chain (the core
+            // ErrChain, or a struct of exactly its fields), making ErrChain<ErrChain<X>>
+            // ErrChain<X>. ? over an unbound payload variable now raises ErrChain<'e>
+            // instead of refusing, and a call that binds 'e to a chain re-raises that
+            // chain with its history. design/catch.md and CLAUDE.md say so. Pins:
+            // lang::errors::generic_error_raises, generic_reraise_keeps_the_chain (both
+            // fail with the fix undone).
+            None => Ok(Type::Error(Arc::new(typ_echain((**payload).clone())))),
             Some(Type::Ref(tr)) if tr.scope == ModPath::root() && tr.name == *ECHAIN =>
             {
                 Ok(etyp.clone())

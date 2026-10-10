@@ -22,6 +22,15 @@ along the dynamic (call) chain takes it; a handler may rethrow with
 `catch` in the same block shadows the first for the statements below
 it.
 
+What `?` raises is its error wrapped in an `ErrChain` (the error, its
+position and origin, and a `cause`), once: an error that is a chain
+already is extended, the old chain becoming the new link's cause,
+never nested. The types follow the values: `ErrChain<ErrChain<X>>` is
+`ErrChain<X>` (`Type::lookup_ref` collapses it), so `?` over a generic
+`Result<T, 'e>` raises `ErrChain<'e>`, and a call that makes `'e` a
+chain re-raises that chain with its history. Pins:
+`generic_error_raises`, `generic_reraise_keeps_the_chain`.
+
 ```graphix
 let error_display: [null, string] = null;
 let x = {

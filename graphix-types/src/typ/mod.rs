@@ -13,7 +13,10 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack as PackTrait, PackError, encode_varint};
+use netidx_core::{
+    pack::{Pack as PackTrait, PackError, encode_varint},
+    path::Path,
+};
 use netidx_value::Typ;
 use nohash::{IntMap, IntSet};
 use parking_lot::Mutex;
@@ -375,7 +378,7 @@ impl AbstractId {
         pos: SourcePosition,
         ori: &Origin,
     ) -> Self {
-        let parts = || netidx_core::path::Path::parts(&scope.0);
+        let parts = || Path::parts(&scope.0);
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
         }
@@ -2385,10 +2388,43 @@ impl Type {
                         }
                     }
                 }
+                // a raise extends a chain rather than nesting it, so a chain
+                // of a chain is that chain
+                if *canonical_scope == ModPath::from(["core"])
+                    && Path::basename(&**name) == Some("ErrChain")
+                    && let [payload] = &params[..]
+                    && let Some(chain) = payload.chain_type(env)?
+                {
+                    return Ok(Some(chain));
+                }
                 Ok(Some(def_typ.replace_tvars(&known)))
             }
             t => Ok(Some(t.clone())),
         }
+    }
+
+    /// This type's expansion when it is an error chain: the `ErrChain`
+    /// definition, or a struct with exactly its fields.
+    fn chain_type(&self, env: &Env) -> Result<Option<Type>> {
+        let t = match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(t) => return t.chain_type(env),
+                None => return Ok(None),
+            },
+            Type::Ref(tr) if Path::basename(&*tr.name) == Some("ErrChain") => {
+                match self.lookup_ref_peek(env)? {
+                    t @ Type::Struct(_) => t,
+                    _ => return Ok(None),
+                }
+            }
+            t @ Type::Struct(_) => t.clone(),
+            _ => return Ok(None),
+        };
+        let Type::Struct(fields) = &t else { return Ok(None) };
+        let names = ["cause", "error", "ori", "pos"];
+        let chain = fields.len() == names.len()
+            && fields.iter().zip(names).all(|((n, _, _), m)| n.as_str() == m);
+        Ok(chain.then_some(t))
     }
 
     /// Push a `TypeRefSite` for every `Type::Ref` beneath that carries

@@ -763,3 +763,45 @@ run!(
     graphix_package_core::testing::refused("caught is bool and cannot hold 'e");
     FuseExpect::None
 );
+
+// A `?` over a generic error raises it wrapped in a chain.
+const GENERIC_ERROR_RAISES: &str = r#"
+{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let caught: Error<ErrChain<`Neg>> = never();
+    catch(e) caught <- e;
+    must(error(`Neg));
+    caught
+}
+"#;
+
+run!(generic_error_raises, GENERIC_ERROR_RAISES, |v: Result<&Value>| {
+    format!("{}", v.unwrap()).contains(r#"["error", "Neg"]"#)
+});
+
+// A chain raised again through a generic `?` keeps its type, as the run
+// time extends it rather than nesting it, and its history: the first
+// raise is the new link's cause.
+const GENERIC_RERAISE_KEEPS_THE_CHAIN: &str = r#"
+{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let inner = |x: i64| -> i64 select x { 0 => error(`Zero)?, x => x };
+    let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] {
+        let r: [i64, Error<ErrChain<`Zero>>] = never();
+        catch(e) r <- e;
+        r <- inner(x);
+        r
+    };
+    let caught: Error<ErrChain<`Zero>> = never();
+    catch(e) caught <- e;
+    must(relay(0));
+    caught
+}
+"#;
+
+run!(generic_reraise_keeps_the_chain, GENERIC_RERAISE_KEEPS_THE_CHAIN, |v: Result<
+    &Value,
+>| {
+    let s = format!("{}", v.unwrap());
+    s.starts_with(r#"error:[["cause", [["cause", null], ["error", "Zero"]"#)
+});
