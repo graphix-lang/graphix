@@ -6,8 +6,9 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AndAc, CoreTrait, Lazy, Mutability, NormKey, Open, RefHist, RefPair, TVar,
-        TraitId, Type, node_addr, params_size, probe_key, setops::union_identical,
-        tvar::would_cycle_inner,
+        TraitId, Type, node_addr, params_size, probe_key,
+        setops::union_identical,
+        tvar::{Fresh, would_cycle_inner},
     },
 };
 use ahash::AHashMap;
@@ -172,6 +173,32 @@ impl ContainsHist {
 
 /// A cell whose chain of bindings ends open is as free as the cell it
 /// ends in.
+/// A union whose open member's cell another member mentions, as
+/// `['b, Array<'b>]`: where a member goes decides that cell.
+fn shares_bare_cell(s0: &[Type]) -> bool {
+    s0.iter()
+        .filter_map(|m| match m {
+            Type::TVar(tv) if !tv.is_bound() => Some(tv.cell_addr()),
+            _ => None,
+        })
+        .any(|cell| {
+            s0.iter().filter(|m| !is_unbound_tvar(m)).any(|m| {
+                let mut tvs: LPooled<AHashMap<arcstr::ArcStr, TVar>> = LPooled::take();
+                m.collect_tvars(&mut tvs);
+                tvs.values().any(|tv| tv.cell_addr() == cell)
+            })
+        })
+}
+
+/// How deep `t` nests constructors.
+fn nesting(t: &Type) -> usize {
+    ensure_sufficient(|| {
+        let mut depth = 0;
+        t.for_each_child(&mut |c| depth = depth.max(nesting(c)));
+        depth + 1
+    })
+}
+
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
@@ -1132,99 +1159,34 @@ impl Type {
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
-                // the members free on entry: covering an rhs member may
-                // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
-                // reaches it
-                let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
-                let probe = BitFlags::empty();
-                let mut residue: LPooled<Vec<Type>> = LPooled::take();
-                for m in s1.iter() {
-                    // An rhs member equal to the whole lhs set is
-                    // covered reflexively; as residue it would close a
-                    // cycle.
-                    let reflexive = m
-                        .deref_cloned()
-                        .is_some_and(|md| identical_linked(t0, &md, commit));
-                    if reflexive {
-                        continue;
-                    }
-                    // An rhs member that is one of the lhs's own cells
-                    // is covered reflexively too.
-                    let own_cell = match m {
-                        Self::TVar(mtv) => s0.iter().any(|c| match c {
-                            Self::TVar(ctv) => ctv.same_cell(mtv),
-                            _ => false,
-                        }),
-                        _ => false,
+                if !commit || !shares_bare_cell(s0) {
+                    return Self::place_members(flags, env, hist, t0, s0, s1);
+                }
+                // the members as written, else deepest first: the deepest a
+                // constructor member fits decides the variable its bare
+                // sibling shares; each order is tried on copies first
+                let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
+                deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m)));
+                for order in [&s1[..], &deepest[..]] {
+                    let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    let copy0 = t0.reset_tvars_int(&mut known, Fresh::Copy);
+                    let copy0 = copy0.unwrap_or_else(|| t0.clone());
+                    let copy1: SmallVec<[Type; 8]> = order
+                        .iter()
+                        .map(|m| {
+                            m.reset_tvars_int(&mut known, Fresh::Copy)
+                                .unwrap_or_else(|| m.clone())
+                        })
+                        .collect();
+                    let Self::Set(c0) = &copy0 else {
+                        unreachable!("a copy keeps its shape")
                     };
-                    if own_cell {
-                        continue;
-                    }
-                    // A free rhs member is residue too: the coverage
-                    // loop would bind it greedily; in the residue it
-                    // aliases with the bare lhs member.
-                    if is_unbound_tvar(m) {
-                        residue.push(m.clone());
-                        continue;
-                    }
-                    let mut covered = false;
-                    // CR claude for eric: [bug] This loop commits the first
-                    // non-variable member that covers an rhs member before the residue
-                    // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
-                    // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
-                    // Array<i64>` and then cannot place `Array<Array<i64>>`, though 'b
-                    // := Array<i64> covers both. InstanceTypes::new
-                    // (node/lambda.rs:402) meets exactly this union for every
-                    // array::flat_map or list::flat_map instance whose callback returns
-                    // an array of arrays. So `array::flat_map([1, 2], |x| [[x]])`,
-                    // `array::flat_map(groups, |g| g)`, a generic wrapper over flat_map
-                    // and the book's Bag impl pass --check and the LSP but fail to
-                    // build with no reason given; GRAPHIX_NO_SUBST=1 runs them. Making
-                    // this containment succeed also admits a callback whose return is
-                    // that union itself (`|x| select x { 1 => [x], n => [[n]] }`,
-                    // refused today), and the runtime splices its bare-array member, so
-                    // decide the fix together with flat_map's signature
-                    // (x-engine-collections-03). probe:
-                    // design/review-2026-10-05/repro/x-engine-collections-02.gx
-                    // (x-engine-collections-02)
-                    // 2026-10-07 claude: flat_map is parametric now (x-engine-collections-03), so no
-                    // instance meets this union and the probe runs ([[1], [2]]). The greedy commit
-                    // stands for a union a program writes with a bare variable beside a constructor of
-                    // it; fixing it needs the commit to try the bare member before the constructor
-                    // when the constructor's binding cannot place the rest.
-                    // 2026-10-08 claude: re-addressed: a rule choice. Not committing a
-                    // constructor member that mentions a bare member's own variable (send
-                    // it to the residue) makes ['b, Array<'b>] place both, but changes
-                    // what `['b, Array<'b>] ⊇ Array<i64>` infers ('b := Array<i64>
-                    // instead of i64); trying both needs a rollback contains does not
-                    // have. Which solution should inference prefer?
-                    for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
-                        if c.contains_int(probe, env, hist, m)? {
-                            if !c.contains_int(flags, env, hist, m)? {
-                                return Ok(false);
-                            }
-                            covered = true;
-                            break;
-                        }
-                    }
-                    if !covered {
-                        residue.push(m.clone());
+                    let trial = &mut ContainsHist::new();
+                    if Self::place_members(flags, env, trial, &copy0, c0, &copy1)? {
+                        return Self::place_members(flags, env, hist, t0, s0, order);
                     }
                 }
-                if residue.is_empty() {
-                    return Ok(true);
-                }
-                let target = if residue.len() == 1 {
-                    residue[0].clone()
-                } else {
-                    Type::Set(Arc::from_iter(residue.drain(..)))
-                };
-                let target = target.normalize();
-                let bare = s0.iter().zip(&free).find(|(_, free)| **free);
-                match bare {
-                    Some((tv_m, _)) => tv_m.contains_int(flags, env, hist, &target),
-                    None => Ok(false),
-                }
+                Self::place_members(flags, env, hist, t0, s0, s1)
             }
             // Member-wise identity pre-pass: only the residue takes the
             // general per-member walk (which is O(|s0|·|s1|) per level).
@@ -1749,6 +1711,120 @@ impl Type {
     /// form and binds the constructor variable by name, discharging its
     /// bound through `find_impl`. A type with no last parameter is not
     /// a constructor.
+    /// `t0`, a union `s0` holding an open member, contains the members
+    /// `s1` in that order: each goes to the first constructor member that
+    /// fits it, and what none takes to the open member.
+    fn place_members(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t0: &Self,
+        s0: &[Type],
+        s1: &[Type],
+    ) -> Result<bool> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        // the members free on entry: covering an rhs member may
+        // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
+        // reaches it
+        let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
+        let probe = BitFlags::empty();
+        let mut residue: LPooled<Vec<Type>> = LPooled::take();
+        for m in s1.iter() {
+            // An rhs member equal to the whole lhs set is
+            // covered reflexively; as residue it would close a
+            // cycle.
+            let reflexive =
+                m.deref_cloned().is_some_and(|md| identical_linked(t0, &md, commit));
+            if reflexive {
+                continue;
+            }
+            // An rhs member that is one of the lhs's own cells
+            // is covered reflexively too.
+            let own_cell = match m {
+                Self::TVar(mtv) => s0.iter().any(|c| match c {
+                    Self::TVar(ctv) => ctv.same_cell(mtv),
+                    _ => false,
+                }),
+                _ => false,
+            };
+            if own_cell {
+                continue;
+            }
+            // A free rhs member is residue too: the coverage
+            // loop would bind it greedily; in the residue it
+            // aliases with the bare lhs member.
+            if is_unbound_tvar(m) {
+                residue.push(m.clone());
+                continue;
+            }
+            let mut covered = false;
+            // XCR claude for claude: [bug] This loop commits the first
+            // non-variable member that covers an rhs member before the residue
+            // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
+            // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
+            // Array<i64>` and then cannot place `Array<Array<i64>>`, though 'b
+            // := Array<i64> covers both. InstanceTypes::new
+            // (node/lambda.rs:402) meets exactly this union for every
+            // array::flat_map or list::flat_map instance whose callback returns
+            // an array of arrays. So `array::flat_map([1, 2], |x| [[x]])`,
+            // `array::flat_map(groups, |g| g)`, a generic wrapper over flat_map
+            // and the book's Bag impl pass --check and the LSP but fail to
+            // build with no reason given; GRAPHIX_NO_SUBST=1 runs them. Making
+            // this containment succeed also admits a callback whose return is
+            // that union itself (`|x| select x { 1 => [x], n => [[n]] }`,
+            // refused today), and the runtime splices its bare-array member, so
+            // decide the fix together with flat_map's signature
+            // (x-engine-collections-03). probe:
+            // design/review-2026-10-05/repro/x-engine-collections-02.gx
+            // (x-engine-collections-02)
+            // 2026-10-07 claude: flat_map is parametric now (x-engine-collections-03), so no
+            // instance meets this union and the probe runs ([[1], [2]]). The greedy commit
+            // stands for a union a program writes with a bare variable beside a constructor of
+            // it; fixing it needs the commit to try the bare member before the constructor
+            // when the constructor's binding cannot place the rest.
+            // 2026-10-08 claude: re-addressed: a rule choice. Not committing a
+            // constructor member that mentions a bare member's own variable (send
+            // it to the residue) makes ['b, Array<'b>] place both, but changes
+            // what `['b, Array<'b>] ⊇ Array<i64>` infers ('b := Array<i64>
+            // instead of i64); trying both needs a rollback contains does not
+            // have. Which solution should inference prefer?
+            // 2026-10-10 claude: Eric ruled 10-10: inference keeps preferring the
+            // constructor member (['b, Array<'b>] ⊇ Array<i64> gives 'b := i64), but
+            // never strands a member: for a union whose bare member's cell a constructor
+            // member mentions (shares_bare_cell), a committing check tries the members in
+            // their order, then deepest first, each on copies of the open cells
+            // (reset_tvars_int over one map), and commits the first order that places all
+            // of them (place_members). The probe gives [[1]]. Pin:
+            // lang::types::union_places_every_member (fails with the fix undone).
+            for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
+                if c.contains_int(probe, env, hist, m)? {
+                    if !c.contains_int(flags, env, hist, m)? {
+                        return Ok(false);
+                    }
+                    covered = true;
+                    break;
+                }
+            }
+            if !covered {
+                residue.push(m.clone());
+            }
+        }
+        if residue.is_empty() {
+            return Ok(true);
+        }
+        let target = if residue.len() == 1 {
+            residue[0].clone()
+        } else {
+            Type::Set(Arc::from_iter(residue.drain(..)))
+        };
+        let target = target.normalize();
+        let bare = s0.iter().zip(&free).find(|(_, free)| **free);
+        match bare {
+            Some((tv_m, _)) => tv_m.contains_int(flags, env, hist, &target),
+            None => Ok(false),
+        }
+    }
+
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,

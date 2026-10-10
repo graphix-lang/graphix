@@ -2267,6 +2267,21 @@ run!(
     FuseExpect::Jit
 );
 
+/// A union of a bare variable and a constructor of it places every
+/// member: when the constructor's first fit would strand one, the
+/// deepest member fit decides the variable.
+const UNION_PLACES_EVERY_MEMBER: &str = r#"
+{
+    let g = |x: ['b, Array<'b>]| -> ['b, Array<'b>] x;
+    let y: [Array<i64>, Array<Array<i64>>] = [[1]];
+    g(y)
+}
+"#;
+
+run!(union_places_every_member, UNION_PLACES_EVERY_MEMBER, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:1]]"
+});
+
 /// A type error names an inferred cell by its binding, never its id.
 const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
 {
