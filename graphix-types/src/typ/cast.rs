@@ -753,7 +753,7 @@ impl Type {
             }
             // A member the value already inhabits wins; else the first
             // member it converts to.
-            // CR claude for eric: [bug] The first member a value converts to wins, and
+            // XCR claude for claude: [bug] The first member a value converts to wins, and
             // a payload variant also converts an array of exactly its payload's length
             // as a tagless payload (555-563). So a value carrying one member's tag is
             // claimed by any member that sorts before it: cast<[`Abc(string, i64),
@@ -765,7 +765,27 @@ impl Type {
             // design/review-2026-10-05/repro/t-cast-setops-14.gx is the coverage one;
             // this one is design/review-2026-10-05/repro/t-cast-setops-13.gx
             // (t-cast-setops-13)
+            // 2026-10-10 claude: Eric ruled 10-10: a member whose tag the value carries
+            // in its own form (a bare variant's tag string, or an array of a payload
+            // variant's tag and payload) is the value's reading; when one exists, only
+            // the tagged members are tried and a payload that does not fit is refused,
+            // never read tagless (carries_tag). The probe gives (Zed(5), Abc(5), Zed(5),
+            // Zed(5)) in both engines. Pin: lang::types::cast_reads_the_tag (fails with
+            // the fix undone).
             Type::Set(ts) => {
+                // a member whose tag the value carries is its reading,
+                // whatever a tagless reading of an earlier member says
+                let mut tagged = ts.iter().filter(|t| carries_tag(env, t, v)).peekable();
+                if tagged.peek().is_some() {
+                    let mut refused = None;
+                    for t in tagged {
+                        match t.cast_int(env, hist, src, v) {
+                            Ok(r) => return Ok(r),
+                            Err(e) => refused = Some(e),
+                        }
+                    }
+                    return Err(refused.expect("a tagged member was tried"));
+                }
                 let mut converted = None;
                 for t in ts.iter() {
                     match t.cast_int(env, hist, src, v) {
@@ -1609,6 +1629,22 @@ fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
             _ => false,
         }
     })
+}
+
+/// Whether `v` is the variant `t` names in its own form: the tag of a
+/// bare variant, or an array of a payload variant's tag and payload.
+fn carries_tag(env: &Env, t: &Type, v: &Value) -> bool {
+    let Some(head) = rep_head(env, t) else { return false };
+    let Type::Variant(tag, args, _) = &*head else { return false };
+    match v {
+        Value::String(s) => args.is_empty() && s == tag,
+        Value::Array(a) => {
+            !args.is_empty()
+                && a.len() == args.len() + 1
+                && matches!(&a[0], Value::String(s) if s == tag)
+        }
+        _ => false,
+    }
 }
 
 /// `v` as the primitive `t`. An integer target holds the value exactly

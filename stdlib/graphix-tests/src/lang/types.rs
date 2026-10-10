@@ -556,6 +556,27 @@ run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| match
     _ => false,
 });
 
+// A union member whose tag the value carries is its reading, whatever a
+// tagless reading of an earlier member says; a bare string is a tag only
+// of a bare variant, and a tagged value whose payload does not fit is
+// refused rather than read tagless.
+const CAST_READS_THE_TAG: &str = r#"
+{
+  let v: Array<string> = ["Zed", "5"];
+  let s = "Zed";
+  let bad: Array<string> = ["Zed", "x"];
+  let refused = select cast<[`Abc(string, string), `Zed(i64)]>(bad) {
+    error as _ => true,
+    _ => false
+  };
+  (cast<[`Abc(string, i64), `Zed(i64)]>(v)$, cast<[string, `Zed(i64)]>(s)$, refused)
+}
+"#;
+
+run!(cast_reads_the_tag, CAST_READS_THE_TAG, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[["Zed", i64:5], "Zed", true]"#
+});
+
 // A cast to an integer type holds the value exactly or refuses it,
 // whatever the source: a narrower integer, a float (its fraction
 // dropped) or a string; a union target takes the first member that
