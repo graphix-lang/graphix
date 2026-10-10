@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-de2e97b3.js";
+            window.path_to_searchindex_js = "searchindex-b2ba0c10.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2494,7 +2494,8 @@ which is,</p>
 type Source = [
     `File(string),
     `Netidx(string),
-    `Internal(string),
+    `Vfs(string),
+    `Program,
     `Unspecified
 ];
 
@@ -5144,7 +5145,8 @@ type Pos = {
 type Source = [
     `File(string),
     `Netidx(string),
-    `Internal(string),
+    `Vfs(string),
+    `Program,
     `Unspecified
 ];
 
