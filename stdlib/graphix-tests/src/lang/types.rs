@@ -556,21 +556,36 @@ run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| match
     _ => false,
 });
 
-// Narrow float->int casts saturate at the target width (300 -> u8:255).
-const CAST_NARROW_SATURATES: &str = r#"
-(
-  cast<u8>(f64:300.5)$,
-  cast<i8>(f64:-300.5)$,
-  cast<i16>(f64:70000.0)$,
-  cast<f64>(i8:-5)$
-)
+// A cast to an integer type holds the value exactly or refuses it,
+// whatever the source: a narrower integer, a float (its fraction
+// dropped) or a string; a union target takes the first member that
+// holds it.
+const CAST_TO_AN_INTEGER_IS_EXACT: &str = r#"
+{
+  let big = 300;
+  let refused = |r: [u8, i8, i16, u16, u32, i64, Error<`InvalidCast(string)>]| select r {
+    error as _ => true,
+    _ => false
+  };
+  (
+    refused(cast<u8>(f64:300.5)),
+    refused(cast<i8>(f64:-300.5)),
+    refused(cast<u8>(big)),
+    refused(cast<u16>("70000")),
+    refused(cast<u32>("4294967296")),
+    refused(cast<i64>(f64:0. / f64:0.)),
+    cast<u8>(f64:200.7)$,
+    cast<i16>(f64:-3.9)$,
+    cast<u64>("18446744073709551615")$,
+    cast<[u8, i64]>("300")$,
+    cast<f64>(i8:-5)$
+  )
+}
 "#;
 
-run!(cast_narrow_saturates, CAST_NARROW_SATURATES, |v: Result<&Value>| match v {
-    Ok(Value::Array(a)) => {
-        &**a == &[Value::U8(255), Value::I8(-128), Value::I16(32767), Value::F64(-5.0)]
-    }
-    _ => false,
+run!(cast_to_an_integer_is_exact, CAST_TO_AN_INTEGER_IS_EXACT, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == "[true, true, true, true, true, true, u8:200, i16:-3, u64:18446744073709551615, i64:300, f64:-5.]"
 });
 
 // A rec def whose base arm returns a param: the elem union is honestly

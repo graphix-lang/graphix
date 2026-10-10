@@ -400,7 +400,7 @@ impl Type {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
-                // CR claude for eric: [bug] Every type-directed read (str::parse,
+                // XCR claude for claude: [bug] Every type-directed read (str::parse,
                 // json/toml/pack::read, sys::net subscribe/call, sqlite::query) and
                 // every cast from a string reaches this line, and netidx's Value::cast
                 // parses a string as an i64 literal and converts with Rust `as`, so
@@ -420,10 +420,21 @@ impl Type {
                 // then admit the InvalidCast it can already return. probe:
                 // design/review-2026-10-05/repro/gx-stdlib-02.gx (gx-stdlib-02)
                 // netidx casts every error as false: an error is no data
+                // 2026-10-10 claude: Eric ruled 10-10 option 1, exact everywhere: a cast
+                // to an integer type (strings, type-directed reads and number-to-number
+                // casts alike) holds the value exactly or is an InvalidCast; a float
+                // drops its fraction but NaN, an infinity or out of range is refused; a
+                // union target takes the first member that holds the value (cast<[u8,
+                // i64]>("300") is i64:300). graphix-types' convert wraps netidx's
+                // Value::cast for integer targets; the JIT inlines only the casts that
+                // always fit (lowering::always_fits), the rest call cast_value.
+                // str::parse already maps a failed cast to its declared ParseError, so
+                // its signature stands. cast_narrow_saturates is replaced. Pin:
+                // lang::types::cast_to_an_integer_is_exact (fails with the fix undone).
                 if let Value::Error(_) = v {
                     return Err(self.cast_fail("an error is not data", v));
                 }
-                match s.iter().find_map(|t| v.clone().cast(t)) {
+                match s.iter().find_map(|t| convert(v.clone(), t)) {
                     Some(v) => Ok(Some(v)),
                     None => Err(self.cast_fail("no primitive conversion", v)),
                 }
@@ -1598,6 +1609,73 @@ fn compared_ref(env: &Env, seen: &mut AHashSet<Type>, t: &Type) -> bool {
             _ => false,
         }
     })
+}
+
+/// `v` as the primitive `t`. An integer target holds the value exactly
+/// or refuses it, whatever the source: a number, a float (its fraction
+/// dropped) or a string; every other conversion is netidx's.
+fn convert(v: Value, t: Typ) -> Option<Value> {
+    if !is_integer(t) {
+        return v.cast(t);
+    }
+    let n = match &v {
+        Value::I8(n) => *n as i128,
+        Value::I16(n) => *n as i128,
+        Value::I32(n) | Value::Z32(n) => *n as i128,
+        Value::I64(n) | Value::Z64(n) => *n as i128,
+        Value::U8(n) => *n as i128,
+        Value::U16(n) => *n as i128,
+        Value::U32(n) | Value::V32(n) => *n as i128,
+        Value::U64(n) | Value::V64(n) => *n as i128,
+        Value::F32(f) => float_int(*f as f64)?,
+        Value::F64(f) => float_int(*f)?,
+        Value::String(s) => match s.trim().parse::<i128>() {
+            Ok(n) => n,
+            Err(_) => match s.parse::<Value>() {
+                Ok(Value::String(_)) | Err(_) => return None,
+                Ok(parsed) => return convert(parsed, t),
+            },
+        },
+        _ => return v.cast(t),
+    };
+    match t {
+        Typ::I8 => i8::try_from(n).ok().map(Value::I8),
+        Typ::I16 => i16::try_from(n).ok().map(Value::I16),
+        Typ::I32 => i32::try_from(n).ok().map(Value::I32),
+        Typ::Z32 => i32::try_from(n).ok().map(Value::Z32),
+        Typ::I64 => i64::try_from(n).ok().map(Value::I64),
+        Typ::Z64 => i64::try_from(n).ok().map(Value::Z64),
+        Typ::U8 => u8::try_from(n).ok().map(Value::U8),
+        Typ::U16 => u16::try_from(n).ok().map(Value::U16),
+        Typ::U32 => u32::try_from(n).ok().map(Value::U32),
+        Typ::V32 => u32::try_from(n).ok().map(Value::V32),
+        Typ::U64 => u64::try_from(n).ok().map(Value::U64),
+        Typ::V64 => u64::try_from(n).ok().map(Value::V64),
+        _ => unreachable!("an integer type"),
+    }
+}
+
+fn is_integer(t: Typ) -> bool {
+    matches!(
+        t,
+        Typ::I8
+            | Typ::I16
+            | Typ::I32
+            | Typ::Z32
+            | Typ::I64
+            | Typ::Z64
+            | Typ::U8
+            | Typ::U16
+            | Typ::U32
+            | Typ::V32
+            | Typ::U64
+            | Typ::V64
+    )
+}
+
+/// A float's integer part, `None` for NaN or an infinity.
+fn float_int(f: f64) -> Option<i128> {
+    f.is_finite().then(|| f.trunc() as i128)
 }
 
 fn map_refs(env: &Env, t: &Type, v: &Value, f: &mut dyn FnMut(&Value) -> Value) -> Value {

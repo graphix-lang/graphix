@@ -224,7 +224,28 @@ fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> 
 pub(crate) fn inline_cast(source: &Type, target: &Type) -> Option<(PrimType, PrimType)> {
     let src = scalar_prim(source).filter(|p| p.is_numeric())?;
     let tgt = PrimType::from_type(target).filter(|p| p.is_numeric())?;
-    Some((src, tgt))
+    always_fits(src, tgt).then_some((src, tgt))
+}
+
+/// Whether every `src` value converts to `tgt` with no refusal: any number
+/// to a float, an integer to one whose range holds the source's. The rest
+/// cast through `Type::cast_value`, which refuses a value that does not fit.
+fn always_fits(src: PrimType, tgt: PrimType) -> bool {
+    let bits = |p: PrimType| match p {
+        PrimType::I8 | PrimType::U8 => 8,
+        PrimType::I16 | PrimType::U16 => 16,
+        PrimType::I32 | PrimType::U32 | PrimType::F32 => 32,
+        _ => 64,
+    };
+    match (src.is_integer(), tgt.is_integer()) {
+        (_, false) => true,
+        (false, true) => false,
+        (true, true) => match (src.is_signed(), tgt.is_signed()) {
+            (false, false) | (true, true) => bits(tgt) >= bits(src),
+            (false, true) => bits(tgt) > bits(src),
+            (true, false) => false,
+        },
+    }
 }
 
 /// Register a cast that is not emitted inline.
