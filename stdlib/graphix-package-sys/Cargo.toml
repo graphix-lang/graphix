@@ -23,6 +23,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 compact_str = { workspace = true }
 dirs = { workspace = true }
+dunce = { workspace = true }
 enumflags2 = { workspace = true }
 extended-notify = { workspace = true }
 futures = { workspace = true }

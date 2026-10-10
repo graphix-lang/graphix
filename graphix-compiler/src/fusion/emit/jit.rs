@@ -1884,16 +1884,6 @@ fn emit_trampoline(
         let out = b.block_params(entry)[1];
         // Loading a scalar payload at its narrow CLIF type is sound because
         // the packer stores the sign/zero-extended form.
-        // CR claude for eric: [risk] These narrow loads read a value's low bytes only
-        // on a little-endian host. On a big-endian one (cranelift-native targets s390x,
-        // and compile_top gates fusion only off Windows, lib.rs:2179) an i32 input of 5
-        // loads as 0. The comment above holds only on little-endian, and so does the
-        // value-word encoding both engines share: TagValue::masked (tval.rs:265)
-        // transmutes value_words' widened payload back into a Value, so the node-walk
-        // would misread every narrow scalar there too, and fixing this load alone fixes
-        // nothing. No big-endian target is supported; a crate-level `compile_error!`
-        // under `cfg(target_endian = "big")` would say so instead of computing wrong
-        // values. (f-jit-10)
         let vals: SmallVec<[ClifValue; 16]> = target_sig
             .params
             .iter()

@@ -648,10 +648,6 @@ run!(
     ; FuseExpect::Jit
 );
 
-// CR claude for claude: [bug] Fails on Windows (x86_64-pc-windows-gnu on the lab's
-// win11 guest, 10-10); the test has no engine modes, so fusion is not involved, and
-// the run was stopped before the harness printed the reason. To reproduce: cross-build with `cargo test --no-run -p graphix-tests --target x86_64-pc-windows-gnu`, copy the exe to the win11 guest (netidx lab/README.md) and run it filtered to the test.
-// (win-02)
 /// A watch read in an arm that sleeps and wakes hears the events after
 /// the wake.
 #[tokio::test(flavor = "current_thread")]

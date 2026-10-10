@@ -767,9 +767,11 @@ impl<R: Rt, E: UserEvent> HttpServe<R, E> {
             }
         };
         let conns = l.conns.clone();
+        // a clone does not share the original's non-blocking mode on Windows
         let std_listener = l
             .socket
             .try_clone()
+            .and_then(|c| c.set_nonblocking(true).map(|()| c))
             .map_err(|e| http_err(format_args!("bind to {} failed: {e}", s.addr)))?;
         let addr = std_listener
             .local_addr()

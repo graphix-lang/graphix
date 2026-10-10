@@ -39,9 +39,22 @@ mod typecheck;
 mod wake;
 mod xls;
 
-/// The test certificates' directory, escaped for a Graphix string.
+/// The test certificates, written once to a directory of their own so a
+/// test binary run away from its source tree has them; escaped for a
+/// Graphix string.
 fn cert_dir() -> String {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/");
+    static DIR: std::sync::LazyLock<tempfile::TempDir> = std::sync::LazyLock::new(|| {
+        let dir = tempfile::tempdir().expect("a directory for the test certs");
+        for (name, pem) in [
+            ("ca.pem", &include_bytes!("../../certs/ca.pem")[..]),
+            ("server.pem", &include_bytes!("../../certs/server.pem")[..]),
+            ("server.key", &include_bytes!("../../certs/server.key")[..]),
+        ] {
+            std::fs::write(dir.path().join(name), pem).expect("write a test cert");
+        }
+        dir
+    });
+    let dir = DIR.path().display().to_string().replace('\\', "/");
     graphix_package_core::testing::escape_path(std::path::Path::new(&dir).display())
         .to_string()
 }

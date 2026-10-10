@@ -136,11 +136,6 @@ run!(http_raising_handler_then_good, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "500 200 hi bob")
 }; FuseExpect::Jit);
 
-// CR claude for claude: [bug] Hangs on Windows (x86_64-pc-windows-gnu on the lab's
-// win11 guest, 10-10) in all four modes, the node-walk included, so fusion is not
-// involved: still running after 60 s while the rest of the http tests passed. The
-// abandoned request's connection may not close on the client's give-up there. To
-// reproduce: cross-build with `cargo test --no-run -p graphix-tests --target x86_64-pc-windows-gnu`, copy the exe to the win11 guest (netidx lab/README.md) and run it filtered to the test. (win-03)
 // A handler with no value for a request leaves it unanswered; once its
 // client gives up, the next request is served.
 run!(http_abandoned_request_then_good, r#"{

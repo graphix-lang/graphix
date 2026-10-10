@@ -148,8 +148,10 @@ impl Drop for Watched {
     }
 }
 
+/// A path as the program names it: a Windows canonical path's `\\?\`
+/// prefix dropped wherever the plain form means the same.
 fn utf8_path(p: ArcPath) -> Value {
-    Value::String(arcstr::format!("{}", p.display()))
+    Value::String(arcstr::format!("{}", dunce::simplified(&p).display()))
 }
 
 #[derive(Debug, Clone)]

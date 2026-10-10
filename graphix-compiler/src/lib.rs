@@ -3,6 +3,10 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 #![recursion_limit = "256"]
+
+// Both engines read a narrow scalar from a value word's low bytes.
+#[cfg(target_endian = "big")]
+compile_error!("graphix supports little-endian targets only");
 pub use graphix_types::{
     AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
     SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
