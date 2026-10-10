@@ -146,6 +146,27 @@ impl ImageBuf {
     pub fn patch_u64(&mut self, at: usize, v: u64) {
         self.0[at..at + 8].copy_from_slice(&v.to_be_bytes());
     }
+
+    /// Write into the four bytes reserved at `at` the checksum of
+    /// everything after them; [`sealed`] checks it.
+    pub fn seal(&mut self, at: usize) {
+        seal(&mut self.0, at)
+    }
+}
+
+/// [`ImageBuf::seal`] over finished bytes.
+pub fn seal(image: &mut [u8], at: usize) {
+    let sum = crc32fast::hash(&image[at + 4..]);
+    image[at..at + 4].copy_from_slice(&sum.to_be_bytes());
+}
+
+/// Whether `image` holds at `at` the checksum of everything after it, as
+/// [`ImageBuf::seal`] wrote it: a corrupted image is never decoded.
+pub fn sealed(image: &[u8], at: usize) -> bool {
+    match image.get(at..at + 4) {
+        Some(sum) => sum == crc32fast::hash(&image[at + 4..]).to_be_bytes(),
+        None => false,
+    }
 }
 
 unsafe impl BufMut for ImageBuf {

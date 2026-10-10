@@ -34,7 +34,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 43;
+pub const REGISTRATION_FORMAT: u8 = 44;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -202,6 +202,8 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
         let mut buf = ImageBuf::default();
         buf.put_slice(MAGIC);
         buf.put_u8(REGISTRATION_FORMAT);
+        let seal_at = buf.len();
+        buf.put_u32(0);
         isa.encode(&mut buf)?;
         let offsets_at = buf.len();
         buf.put_u64(0);
@@ -270,6 +272,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
         let counts_at = buf.len();
         enc.counts().encode(&mut buf)?;
         buf.patch_u64(offsets_at + 16, counts_at as u64);
+        buf.seal(seal_at);
         Ok(buf.freeze())
     }
 }
@@ -310,7 +313,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         nodes: &mut Vec<(ExprId, Node<R, E>)>,
     ) -> Result<(SharedDecoder, Scope, Option<ProgramRoot>), PackError> {
         let mut bytes: &[u8] = &image;
-        // CR claude for eric: [risk] Nothing checks an entry's contents. Past the
+        // XCR claude for claude: [risk] Nothing checks an entry's contents. Past the
         // magic, format, ISA, header offsets and id counts, every byte is trusted,
         // kernel machine code included (define_function_bytes installs it as stored).
         // One flipped bit in a cached entry can make a warm run print a changed string
@@ -324,6 +327,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         // checked before use, with a mismatch handled as a failed read that rewrites
         // the entry, would close this. probe:
         // design/review-2026-10-05/repro/x-image-03.sh (x-image-03)
+        // 2026-10-10 claude: Eric ruled 10-10: checksum the entries. A registration image
+        // carries, after its magic and format, a crc32 of everything after it
+        // (ImageBuf::seal, image::sealed, crc32fast), checked before anything decodes; a
+        // mismatch is a failed read, so the session compiles cold and rewrites the entry
+        // (checked: a corrupted entry is replaced on the next run that reads it). Format
+        // 44. The fsync before the rename was already there. The probe's flips now all
+        // run correct; it still reads "unchanged, still corrupt" only because its loop
+        // rewrote the entry. Pins: lang::image::a_bad_registration_image_runs_cold (a
+        // letter's case flipped in a string, which decodes; fails with the check
+        // disabled); the part-rewriting image tests re-seal so they still reach their own
+        // guards.
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {
             return Err(PackError::InvalidFormat);
         }
@@ -331,6 +345,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
+        if !image::sealed(&image, MAGIC.len() + 1) {
+            warn!("the image is corrupt: its checksum does not match");
+            return Err(PackError::InvalidFormat);
+        }
+        bytes.advance(4);
         let isa = String::decode(&mut bytes)?;
         if isa != crate::fusion::emit::isa_description() {
             warn!("the image was written for another isa: {isa}");

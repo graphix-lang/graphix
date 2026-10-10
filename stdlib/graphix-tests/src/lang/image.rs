@@ -352,9 +352,12 @@ async fn cold_and_warm(
 
 /// The header's (heap, instance table, id counts) offsets and where they
 /// sit in `image`.
+/// Where a registration image's checksum is, after its magic and format.
+const SEAL_AT: usize = 5;
+
 fn image_offsets(image: &Bytes) -> (usize, u64, usize, usize) {
     use bytes::Buf;
-    let mut b = &image[5..];
+    let mut b = &image[SEAL_AT + 4..];
     String::decode(&mut b).expect("the isa");
     let header = image.len() - b.len();
     (header, b.get_u64(), b.get_u64() as usize, b.get_u64() as usize)
@@ -370,6 +373,7 @@ fn with_table(image: &Bytes, rewrite: impl FnOnce(&[u8]) -> Vec<u8>) -> Bytes {
     let counts = table_at + rewritten.len();
     out.extend_from_slice(&image[counts_at..]);
     out[header + 16..header + 24].copy_from_slice(&(counts as u64).to_be_bytes());
+    graphix_compiler::image::seal(&mut out, SEAL_AT);
     Bytes::from(out)
 }
 
@@ -693,7 +697,15 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
         rewritten.extend_from_slice(table);
         rewritten
     });
-    for bad in [image.slice(..image.len() / 2), huge] {
+    // one letter's case flipped inside a string, which would decode: the
+    // checksum refuses it before anything does
+    let mut flipped = image.to_vec();
+    let at = flipped
+        .windows(8)
+        .position(|w| w == b"ErrChain")
+        .expect("the image holds the name ErrChain");
+    flipped[at + 3] ^= 0x20;
+    for bad in [image.slice(..image.len() / 2), huge, Bytes::from(flipped)] {
         let (tx, mut rx) = mpsc::channel(10);
         let warm =
             init_with_registration(tx, TEST_REGISTER, RegistrationImage::load(bad))
