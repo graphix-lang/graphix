@@ -495,20 +495,6 @@ impl Type {
                 let spine = match &src {
                     Some(Type::List(_)) => true,
                     Some(Type::Array(_)) => false,
-                    // CR claude for eric: [bug] With no single static source type, a
-                    // 2-element array whose last element is list-shaped is taken for a
-                    // list spine. That covers json/pack/toml/str::parse/netidx reads
-                    // and an Any or union source such as [Array<Array<i64>>, null]. So
-                    // [[1, 2], []] cast to List<Array<i64>> silently becomes [<[1, 2]>]
-                    // and the empty row is lost. The nullable source breaks the rule
-                    // pinned by types::cast_array_to_list (the source type, not the
-                    // shape, picks the conversion), because src_head gives up on a
-                    // union whose only collection member is an Array. The read cases
-                    // cannot be fixed here: a list serializes as its raw rep, so
-                    // json::write_str([<[1, 2]>]) and json::write_str of the array [[1,
-                    // 2], []] are the same document. probe:
-                    // design/review-2026-10-05/repro/t-cast-setops-08.gx
-                    // (t-cast-setops-08)
                     _ => list::len(v).is_some(),
                 };
                 let src = match &src {

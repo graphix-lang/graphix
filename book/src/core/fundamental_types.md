@@ -387,6 +387,24 @@ cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (`list::nth`) walks the spine and is O(n);
 if you need random access, convert to an array.
 
+### Lists as Data
+
+At run time a list is its chain of cells, each a pair of the head and
+the rest, so a list written out (`json::write_str`, `pack`, netidx) is
+that chain, and reads back into a `List` as itself. Data is read in the
+shape its target type gives it, so an ordinary array read straight into
+a `List` is taken for such a chain. To make a list out of an array, say
+what is on the wire first, then convert:
+
+```graphix
+let rows: Array<Array<i64>> = json::read(s)?;
+let l = cast<List<Array<i64>>>(rows)?
+```
+
+The cast's source type, `Array<Array<i64>>`, decides that the value is
+an array of rows. The same two steps turn an `Any` into a list:
+`cast<List<Array<i64>>>(cast<Array<Array<i64>>>(v)?)`.
+
 ## Tuples
 
 Tuples are written `(x, y)`, they can be of arbitrary length, and each element
