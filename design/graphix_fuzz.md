@@ -541,6 +541,7 @@ refusal lands, their FLIPs recorded as typeflips.
   relaxation hides the next bug of that class; the answer to a flaky
   pin is a tier (`FinalValues`/`Excluded`), fixed once per marker and
   policed by `selfcheck`.
-- **Release-profile fuzzing:** the dev profile keeps
-  `debug_assertions` on, and the asserts are what caught the earliest
-  JIT classes.
+- **Fuzzing without the asserts:** the asserts are what caught the
+  earliest JIT classes, so the fleet builds the `soak` profile, release
+  codegen with `debug-assertions` and `overflow-checks` on, never
+  `--release`.

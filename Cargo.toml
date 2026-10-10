@@ -10,6 +10,13 @@ codegen-units = 16
 opt-level = 3
 lto = "thin"
 
+# The fleet's: release codegen with the debug asserts and overflow checks
+# that catch JIT and compiler bugs.
+[profile.soak]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
 [profile.dev]
 opt-level = "s"
 debug = false
