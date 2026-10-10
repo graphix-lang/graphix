@@ -6,5 +6,8 @@
 // LambdaDef and panicked the runtime task; both engines died alike, so
 // the verdict read AGREE. The registry now orders by the registered
 // uuid; a worker aborts on any panic so it counts as a crash.
+// 2026-10-10: a function has no order, so a map key type naming one is
+// refused at the check; keys widened to Any still order the two kinds at
+// run time.
 // Expected (both engines): 2.
-{type T = Abstract<i64>; let f = |x: i64| x; let u: [T, fn(x: i64) -> i64] = T(i64:1); let w: [T, fn(x: i64) -> i64] = f; let m = {u => i64:1, w => i64:2}; map::len(m)}
+{type T = Abstract<i64>; let f = |x: i64| x; let u: Any = T(i64:1); let w: Any = f; let m = {u => i64:1, w => i64:2}; map::len(m)}

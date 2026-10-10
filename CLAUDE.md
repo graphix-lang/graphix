@@ -756,7 +756,7 @@ cycle, across workers; the compiler never pins threads.
   bound (`Type::indiscernible`), which a generic definition's variable
   takes from its body, so each call checks it; what orders or hashes
   (the orderings, sorts, `min`/`max`, `dedup`, map keys) takes
-  `'a: Ordered`, which also refuses a reference; a member still open at
+  `'a: Ordered`, which also refuses a reference or a function; a member still open at
   the statement's settle reads as any type it may yet bind
   (`PendingSettle::Discernible`, `design/tvar_constraints.md`).
   `flat_map`'s callback returns the collection (`fn(x: 'a) ->
@@ -824,7 +824,7 @@ cycle, across workers; the compiler never pins threads.
   (`bind::ref_target`: the place, else the byref chain's binding, else
   the cell), rewriting each one the operand type holds
   (`Type::map_refs`) before the value comparison; such a comparison
-  never fuses. References have no order (`Ordered`).
+  never fuses. References and functions have no order (`Ordered`).
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`

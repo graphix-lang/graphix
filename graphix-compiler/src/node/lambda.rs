@@ -580,7 +580,7 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
-// CR claude for eric: [bug] A function value orders by its LambdaId here and a
+// XCR claude for claude: [bug] A function value orders by its LambdaId here and a
 // reference by its BindId (`Value::U64`, bind.rs:1282), but both ids are now minted in
 // parallel: in the per-statement compile tasks (`typecheck1_statements`,
 // node/mod.rs:1089), in slot builds (`build_fresh`, collection.rs:927) and in forked
@@ -600,6 +600,13 @@ impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 // task are relocated to program order at its join, which also fixes the watch/db
 // handle orders §8 lists. I recommend (a): a function has no order a program
 // could mean.
+// 2026-10-10 claude: Eric ruled 10-10 option (a): a function has no order. Ordered
+// refuses a function type wherever it refuses a reference (rep_ambiguity;
+// Indiscernible::Unordered names the kind), so sort, the orderings, min/max and map keys
+// over functions or values holding them are refused at the check; == and != still compare
+// by identity. The run-to-run order this CR found can no longer be asked for. Pins:
+// lib_tests::map::map_key_refuses_a_function (was map_key_mixed_abstract_kinds, which
+// keyed a map by a function).
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))

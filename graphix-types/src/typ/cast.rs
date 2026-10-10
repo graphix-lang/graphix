@@ -1457,8 +1457,18 @@ impl Type {
 pub enum Indiscernible {
     /// Two members of one union with one runtime form.
     Pair(Type, Type),
-    /// A reference, under `Ordered`.
-    Ref(Type),
+    /// A reference or a function, under `Ordered`: neither has an order.
+    Unordered(Type),
+}
+
+impl Indiscernible {
+    /// What an unordered type is, and how `==` and `!=` compare it.
+    pub fn unordered_kind(t: &Type) -> (&'static str, &'static str) {
+        match t {
+            Type::Fn(_) => ("function", "by identity"),
+            _ => ("reference", "by what they point to"),
+        }
+    }
 }
 
 fn rep_ambiguity(
@@ -1514,7 +1524,9 @@ fn rep_ambiguity(
             }
             Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
             Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
-            Type::ByRef(..) if refs && !keys_only => Some(Indiscernible::Ref(t.clone())),
+            Type::ByRef(..) | Type::Fn(_) if refs && !keys_only => {
+                Some(Indiscernible::Unordered(t.clone()))
+            }
             _ => None,
         }
     })
@@ -1561,15 +1573,16 @@ impl Type {
                     a.resolve_tvars(),
                     b.resolve_tvars()
                 ),
-                Indiscernible::Ref(r) => {
+                Indiscernible::Unordered(r) => {
+                    let (kind, how) = Indiscernible::unordered_kind(r);
                     let r = r.resolve_tvars();
                     let holds = match r == t {
-                        true => format_compact!("is a reference"),
-                        false => format_compact!("holds the reference {r}"),
+                        true => format_compact!("is a {kind}"),
+                        false => format_compact!("holds the {kind} {r}"),
                     };
                     anyhow::anyhow!(
-                        "{what} {holds}: references have no order, and only == and != \
-                         compare them, by what they point to"
+                        "{what} {holds}: {kind}s have no order, and only == and != \
+                         compare them, {how}"
                     )
                 }
             }

@@ -2071,29 +2071,35 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                 a.resolve_tvars(),
                 b.resolve_tvars()
             ),
-            (Discerned::Compared { .. }, Indiscernible::Ref(r))
+            (Discerned::Compared { .. }, Indiscernible::Unordered(r))
                 if r.resolve_tvars() == typ =>
             {
+                let (kind, how) = Indiscernible::unordered_kind(&r);
                 bail!(
-                    "can't order references: they have no order (== and != compare them by \
-                 what they point to)"
+                    "can't order {kind}s: they have no order (== and != compare them {how})"
                 )
             }
-            (Discerned::Compared { .. }, Indiscernible::Ref(r)) => bail!(
-                "can't order values of {typ}: it holds the reference {}, and references \
-                 have no order (== and != compare them by what they point to)",
-                r.resolve_tvars()
-            ),
+            (Discerned::Compared { .. }, Indiscernible::Unordered(r)) => {
+                let (kind, how) = Indiscernible::unordered_kind(&r);
+                bail!(
+                    "can't order values of {typ}: it holds the {kind} {}, and {kind}s have \
+                     no order (== and != compare them {how})",
+                    r.resolve_tvars()
+                )
+            }
             (_, Indiscernible::Pair(a, b)) => bail!(
                 "{} and {} can't share a map key type: they have the same runtime \
                  form; wrap them in distinct variants",
                 a.resolve_tvars(),
                 b.resolve_tvars()
             ),
-            (_, Indiscernible::Ref(r)) => bail!(
-                "a map key type can't hold the reference {}: references have no order",
-                r.resolve_tvars()
-            ),
+            (_, Indiscernible::Unordered(r)) => {
+                let (kind, _) = Indiscernible::unordered_kind(&r);
+                bail!(
+                    "a map key type can't hold the {kind} {}: {kind}s have no order",
+                    r.resolve_tvars()
+                )
+            }
         }
     })
 }

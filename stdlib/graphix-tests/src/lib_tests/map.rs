@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::literal;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 const MAP_LEN: &str = r#"
@@ -267,36 +270,28 @@ run!(map_map_native, MAP_MAP_NATIVE, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// A key collision through map::map: both engines rebuild through the
-// one CMap::from_iter seam, so they agree on the duplicate policy.
+// When keys collide the last pair wins, in a literal as through map::map
+// and map::filter_map.
 const MAP_MAP_KEY_COLLISION: &str = r#"
 {
   let m = {"a" => 1, "b" => 2};
   let collided = map::map(m, |(k, v)| ("same", v));
-  (map::len(collided), map::get(collided, "same"))
+  let filtered = map::filter_map(m, |(k, v)| ("same", v));
+  (
+    map::len(collided),
+    map::get(collided, "same")$,
+    map::get(filtered, "same")$,
+    map::get({"same" => 1, "same" => 2}, "same")$
+  )
 }
 "#;
-// CR claude for eric: [test-gap] The predicate accepts 1 or 2. run! checks each mode
-// against the predicate separately and never compares one mode's value with another's,
-// so this test cannot see the engines disagree, which is what the comment above says it
-// pins. For loose predicates like this one, CLAUDE.md's 'asserting equal values' for
-// run! does not hold. The policy also differs by constructor: a literal `{k => 1, k =>
-// 2}` keeps the last value, while map::map and map::filter_map keep the first when two
-// keys collapse, through CMap::from_iter in pairs_to_map
-// (graphix-compiler/src/node/collection.rs:205). Choose one policy, then pin the exact
-// value (`Ok(Ok((1, 1)))` today). Probe: `let k = "same"; (map::get({k => 1, k => 2},
-// k), map::get(map::map({"a" => 1, "b" => 2}, |(kk, v)| (k, v)), k))` gives (2, 1) in
-// both engines. (tests-lib-b2-03)
-// 2026-10-06 claude: re-addressed: which value a map keeps when keys collapse is a
-// semantics choice (literal keeps the last, map/filter_map keep the first).
 run!(map_map_key_collision, MAP_MAP_KEY_COLLISION, |v: Result<&Value>| {
-    matches!(
-        v.map(|v| v.clone().cast_to::<(i64, i64)>()),
-        Ok(Ok((1, n))) if n == 1 || n == 2
-    )
+    matches!(v.map(|v| v.clone().cast_to::<(i64, i64, i64, i64)>()), Ok(Ok((1, 2, 2, 2))))
 });
 
-const MAP_KEY_MIXED_ABSTRACT_KINDS: &str = r#"
+// A function has no order, so no map key type holds one, even beside a
+// type that orders.
+const MAP_KEY_REFUSES_A_FUNCTION: &str = r#"
 {
   type T = Abstract<i64>;
   let f = |x: i64| x;
@@ -307,12 +302,12 @@ const MAP_KEY_MIXED_ABSTRACT_KINDS: &str = r#"
 }
 "#;
 
-run!(map_key_mixed_abstract_kinds, MAP_KEY_MIXED_ABSTRACT_KINDS, |v: Result<&Value>| {
-    match v {
-        Ok(Value::I64(2)) => true,
-        _ => false,
-    }
-});
+run!(
+    map_key_refuses_a_function,
+    MAP_KEY_REFUSES_A_FUNCTION,
+    refused("a map key type can't hold the function fn(x: i64) -> i64");
+    FuseExpect::None
+);
 
 const MAP_UNION_SECOND_WINS: &str = r#"
 {
