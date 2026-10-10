@@ -206,53 +206,6 @@ impl Type {
                         // `acc` is merge-saturated, so only the incoming
                         // element (or its merge result) can enable a new
                         // merge.
-                        // CR claude for eric: [perf] Each incoming member is tried
-                        // against every kept one, so normalizing an N-member union
-                        // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
-                        // union that its idle select normalizes in check_dead_arms, so
-                        // --check of `seq { 1; ..; 1 }` is quadratic (16k steps 2.2 s,
-                        // 32k 7.9 s, 64k 32 s with the debug binary), and
-                        // deep_nesting's seqarm@100000 child takes about 80 s. A
-                        // hand-written select over N tags is worse (4000 tags 3.3 s,
-                        // 16000 52.8 s), because check_coverage and check_dead_arms
-                        // also rebuild the union per arm. Most members can merge only
-                        // with one of their own shape (a variant only with the same tag
-                        // and arity), so keying the kept members by shape would avoid
-                        // the N² scan. Separately, seqarm needs no more than about 10k
-                        // statements to exercise the lowering's stack.
-                        // (tests-shell-compiler-18)
-                        // 2026-10-07 claude: kept members are indexed by MergeKey (a
-                        // variant's tag and arity, a struct's field names), so a union
-                        // of N tags normalizes in linear time: the 32k-step seq checks
-                        // in 1.3 s, was 7.9. A hand-written select over N tags stays
-                        // quadratic (4000 tags 4.1 s): check_dead_arms diffs and
-                        // could_matches the whole remaining union at every arm.
-                        // 2026-10-09 reviewer: the seq half holds (quick binary, --check
-                        // --no-cache: 16k steps 1.4 s, 32k 2.4 s) and the index keeps the
-                        // earliest-merge order, since a keyed member is tried against its
-                        // key's members and every unkeyed one in order. The finding's
-                        // other half, big tag selects, is not fixed: `type T = [`T0, ..]`
-                        // with one arm per tag checks in 1.8 s at 2000 tags, 6.1 s at 4000
-                        // and 32.9 s at 8000 on the same quick binary (worse than
-                        // quadratic, and slower than the debug numbers above). The
-                        // note blames check_dead_arms without a profile. Stays a CR until
-                        // that path is measured and fixed or split into its own finding.
-                        // 2026-10-09 claude: measured on a quiet machine (the reviewer's
-                        // numbers ran beside three builds): the old quick binary checks
-                        // 2000 tags in 0.79 s and 4000 in 2.93 s, quadratic, not worse.
-                        // The profile (4000 tags, --check) is all per-arm walks of the
-                        // remaining union: LiteralPool::claim 20% (the scrutinee's
-                        // members and the head domain per arm), Reach's diff and cover
-                        // 21%, complete_type_predicate 18%, rep_collision 19%. Two cuts
-                        // made here: distinct variant tags need no pair check
-                        // (rep_collision), and rep_head borrows instead of cloning; 4000
-                        // tags now 2.3 s on the no-LTO perf build. A linear select check
-                        // means member sets indexed by head across those four passes.
-                        // Your call: is a select's check quadratic in its arm count
-                        // acceptable (1000 arms 0.2 s), or is that restructure worth
-                        // doing? I lean accept: hand-written selects stay far below 1000
-                        // arms, and a seq's pc union, the case that reached 32k, is
-                        // linear now.
                         let mut incoming = t;
                         while let Some(m) = acc.merge_with(&incoming) {
                             changed = true;

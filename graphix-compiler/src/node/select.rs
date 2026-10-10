@@ -338,7 +338,9 @@ fn check_repeats<R: Rt, E: UserEvent>(
 /// `null`, a true/false pair, a completed literal pool, a completed
 /// slice ladder). It narrows an arm's binds, an arm that can match none
 /// of it is dead, and the select is exhaustive when nothing reaches past
-/// the last arm.
+/// the last arm. Quadratic in the arm count (each arm re-walks what still
+/// reaches; 4000 tag arms check in about 2 s): member sets indexed by
+/// head would make it linear.
 struct Reach {
     /// What still reaches the next arm.
     atype: Type,
