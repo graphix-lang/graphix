@@ -1568,8 +1568,9 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
         _ => "",
     };
     let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
-    // a type variable is declared, and no declaration widens it
-    if matches!(held, Type::TVar(_)) {
+    // a type variable is declared, and no declaration widens it; nor does
+    // one widen a function, as two function types share a runtime form
+    if matches!(held, Type::TVar(_) | Type::Fn(_)) {
         return format_with_flags(
             PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
             || anyhow!("{name} is {held} and cannot hold {written}"),
@@ -2410,11 +2411,11 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         if !check {
             return Ok(());
         }
+        let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
         };
-        let written = self.node.typ();
         wrap!(
             self,
             bind.typ.check_contains(&ctx.env, written).map_err(|e| {
@@ -2440,11 +2441,11 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         if !check {
             return Ok(());
         }
+        let rhs = &ctx.monomorphic(self.rhs.typ());
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind,
         };
-        let rhs = self.rhs.typ();
         let targets = bind.typ.with_deref(|t| match t {
             None => Ok(None),
             Some(Type::ByRef(m, t)) => Ok(Some(vec![(*m, (**t).clone())])),

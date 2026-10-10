@@ -197,6 +197,13 @@ where
     ))
 }
 
+// CR claude for claude: [bug] An operator's operand cannot be a lambda: `f <- t ~
+// |x: i64| x + 1` and `t ~ |x| x` fail to parse ("Unexpected `|`" at the lambda), so
+// sampling a function value needs parentheses, `t ~ (|x: i64| x + 1)`. A lambda as the
+// right operand of `~`/`~!` is the natural way to write "on t, switch to this function",
+// and a lambda body extends as far right as it can, so it is unambiguous there. Eric
+// flagged it 10-10 as a bug to fix later. probe: `let t = 1; let f = t ~ |x: i64| x + 1;
+// f` under --check. (parse-lambda-operand-01)
 parser! {
     pub(crate) fn arith_term[I](key: bool)(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]

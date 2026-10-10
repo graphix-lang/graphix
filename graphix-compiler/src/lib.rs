@@ -1587,10 +1587,22 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     env_restore_methods!();
 
-    /// Record `id` as a `<-` target, of this batch and for good.
+    /// Record `id` as a `<-` target, of this batch and for good. A
+    /// binding something writes is never generalized: its uses share one
+    /// type, which every value written takes (the value restriction).
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
+        self.env.poly_binds.remove(&id);
+    }
+
+    /// A value's type as a written binding holds it: a function's
+    /// generalized signature as one instance of it.
+    pub(crate) fn monomorphic(&self, t: &Type) -> Type {
+        t.with_deref(|d| match d {
+            Some(Type::Fn(ft)) => Type::Fn(Arc::new(ft.instantiate(&self.rec_defs))),
+            _ => t.clone(),
+        })
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {

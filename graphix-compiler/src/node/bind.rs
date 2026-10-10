@@ -237,7 +237,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
-        // CR claude for eric: [bug] A binding that `<-` rewrites is generalized here as
+        // XCR claude for claude: [bug] A binding that `<-` rewrites is generalized here as
         // if it were immutable. The connect's check (node/mod.rs:2334) then unifies the
         // written type into the scheme's own generic cells, so a writer narrows the
         // definition, and only the uses checked after it see that. Statement order
@@ -252,6 +252,18 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // written into, which stays polymorphic because `lower` skips generic cells
         // (graphix-types/src/typ/tvar.rs:292). probe:
         // design/review-2026-10-05/repro/t-tvar-03.gx (t-tvar-03)
+        // 2026-10-10 claude: Eric ruled 10-10, the value restriction: a binding something
+        // writes (a <- target, or the referent of a &mut) is not generalized.
+        // mark_connect_target drops it from poly_binds, and the let's value, each <- and
+        // each write through a reference take one instance of a function's generalized
+        // signature (CompileCtx::monomorphic), so its uses, calls and writers share one
+        // type whatever the statement order. The probe is refused in both orders and
+        // through &mut; an unwritten binding stays polymorphic; a write's mismatch no
+        // longer suggests a union of two function types. The REPL case (a writer in a
+        // later input than the uses) still meets an already generalized binding. Pins:
+        // lang::types::written_binding_is_monomorphic and
+        // written_through_a_reference_is_monomorphic (fail with the fix undone),
+        // written_binding_writer_first, written_binding_takes_its_type.
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
@@ -288,7 +300,13 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             _ => false,
         };
         if !forwards {
-            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+            let mut written = false;
+            self.pattern.ids(&mut |id| written |= ctx.connect_targets.contains(&id));
+            let value = match written {
+                true => ctx.monomorphic(self.node.typ()),
+                false => self.node.typ().clone(),
+            };
+            wrap!(self.node, self.typ.check_contains(&ctx.env, &value))?;
         }
         Ok(())
     }

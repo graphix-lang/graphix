@@ -2318,6 +2318,72 @@ run!(union_places_every_member, UNION_PLACES_EVERY_MEMBER, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[[i64:1]]"
 });
 
+/// A binding something writes is not generalized: its uses and its
+/// writers share one type, whatever the statement order.
+const WRITTEN_BINDING_IS_MONOMORPHIC: &str = r#"
+{
+    let f = |x| x;
+    let n = f(41);
+    f <- |x| "oops";
+    n + 1
+}
+"#;
+
+run!(
+    written_binding_is_monomorphic,
+    WRITTEN_BINDING_IS_MONOMORPHIC,
+    refused("f is fn(x: i64) -> i64 and cannot hold fn(x: i64) -> string");
+    FuseExpect::None
+);
+
+const WRITTEN_BINDING_WRITER_FIRST: &str = r#"
+{
+    let f = |x| x;
+    f <- |x| "oops";
+    let n = f(41);
+    n + 1
+}
+"#;
+
+run!(
+    written_binding_writer_first,
+    WRITTEN_BINDING_WRITER_FIRST,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+
+const WRITTEN_THROUGH_A_REFERENCE: &str = r#"
+{
+    let f = |x| x;
+    let r = &mut f;
+    *r <- |x| "oops";
+    let n = f(41);
+    n + 1
+}
+"#;
+
+run!(
+    written_through_a_reference_is_monomorphic,
+    WRITTEN_THROUGH_A_REFERENCE,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+
+/// A write of the binding's one type is fine.
+const WRITTEN_BINDING_TAKES_ITS_TYPE: &str = r#"
+{
+    let f = |x| x;
+    let t = sys::time::timer(duration:50.ms, false);
+    f <- t ~ (|x: i64| x + 1);
+    let r = f(41);
+    sys::time::timer(duration:200.ms, false) ~ r
+}
+"#;
+
+run!(written_binding_takes_its_type, WRITTEN_BINDING_TAKES_ITS_TYPE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+}; FuseExpect::None);
+
 /// A type error names an inferred cell by its binding, never its id.
 const INFERRED_CELL_PRINTS_ITS_BINDING: &str = r#"
 {

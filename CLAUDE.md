@@ -539,7 +539,10 @@ node graph IS the IR — there is no parallel typed IR
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; only a site's first-ever dispatch, and a
   loop slot's first iteration, is an init view.
-- **`let rec` is monomorphic-recursive**; a def's declared tvars are
+- **`let rec` is monomorphic-recursive**, and a binding something writes
+  (a `<-` target, a `&mut`'s referent) is not generalized: its uses and
+  writers share one instance of a function's signature (the value
+  restriction, `CompileCtx::monomorphic`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥ and no
   two unify (`contains.rs` Distinct), so a function type without
   `throws` (which throws nothing) refuses one that throws `'e`, while a call instantiates them
