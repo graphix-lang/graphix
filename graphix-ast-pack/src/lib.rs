@@ -82,7 +82,7 @@ pub fn emit() -> Result<()> {
         let key = vfs_path(&package, rel);
         let ori = Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from(rel.to_string_lossy().as_ref())),
+            source: Source::Vfs(ArcStr::from(rel.to_string_lossy().as_ref())),
             text: source.clone(),
         };
         let packed = if is_gx {

@@ -901,9 +901,14 @@ fn source_encode(s: &Source, buf: &mut impl BufMut) -> Result<(), PackError> {
             buf.put_u8(1);
             p.encode(buf)
         }
-        Source::Internal(s) => {
+        Source::Vfs(s) => {
             buf.put_u8(2);
             s.encode(buf)
+        }
+        // its text is the origin's, written beside it
+        Source::Program(_) => {
+            buf.put_u8(4);
+            Ok(())
         }
         Source::Unspecified => {
             buf.put_u8(3);
@@ -927,8 +932,9 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
             Ok(Source::File(p))
         }
         1 => Ok(Source::Netidx(Pack::decode(buf)?)),
-        2 => Ok(Source::Internal(Pack::decode(buf)?)),
+        2 => Ok(Source::Vfs(Pack::decode(buf)?)),
         3 => Ok(Source::Unspecified),
+        4 => Ok(Source::Program(ArcStr::new())),
         _ => Err(PackError::UnknownTag),
     }
 }
@@ -979,7 +985,11 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
                 _ => return Err(PackError::UnknownTag),
             };
             let source = source_decode(sub)?;
-            let text = Pack::decode(sub)?;
+            let text: ArcStr = Pack::decode(sub)?;
+            let source = match source {
+                Source::Program(_) => Source::Program(text.clone()),
+                s => s,
+            };
             Ok(Arc::new(Origin { parent, source, text }))
         },
         |b| origin_decode(b),
@@ -2051,11 +2061,44 @@ mod tests {
         });
     }
 
+    /// A program's origin carries its text once: the source is written
+    /// without it and decodes holding the origin's.
+    #[test]
+    fn a_program_origin_writes_its_text_once() {
+        let text = literal!("let x = 1; x + 1 // a program long enough to see twice");
+        let ori = Arc::new(Origin {
+            parent: None,
+            source: Source::Program(text.clone()),
+            text: text.clone(),
+        });
+        let expr = Expr {
+            id: ExprId::new(),
+            ori,
+            pos: Default::default(),
+            kind: ExprKind::Constant(Value::I64(1)),
+            dec: None,
+            str_form: Default::default(),
+            end: Default::default(),
+        };
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[expr], &mut enc);
+        let seen =
+            packed.image.windows(text.len()).filter(|w| *w == text.as_bytes()).count();
+        assert_eq!(seen, 1, "the program text is written {seen} times");
+        let mut dec = packed.decoder(&enc);
+        DecodeImage::with(&mut dec, || {
+            let mut b = packed.body();
+            let d = Expr::decode(&mut b).unwrap();
+            assert_eq!(d.ori.source, Source::Program(text.clone()));
+            assert_eq!(d.ori.text, text);
+        });
+    }
+
     #[test]
     fn expression_clones_share_one_definition() {
         let ori = Arc::new(Origin {
             parent: None,
-            source: Source::Internal(literal!("test")),
+            source: Source::Vfs(literal!("/test")),
             text: literal!("1 + 2"),
         });
         let child = Expr {
@@ -2102,7 +2145,7 @@ mod tests {
     fn expressions_keep_ids_and_share_origins() {
         let ori = Arc::new(Origin {
             parent: None,
-            source: Source::Internal(literal!("test")),
+            source: Source::Vfs(literal!("/test")),
             text: literal!("1; 2"),
         });
         let mk = |v: i64| Expr {

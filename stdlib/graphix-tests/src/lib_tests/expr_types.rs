@@ -21,10 +21,8 @@ async fn a_check_records_the_types_it_decided() -> Result<()> {
         |_| {},
     )
     .await?;
-    let r = ctx
-        .rt
-        .check_with_types(Source::Internal(literal!(PROGRAM)), vec![], None)
-        .await?;
+    let r =
+        ctx.rt.check_with_types(Source::Program(literal!(PROGRAM)), vec![], None).await?;
     let at = |line: i32, column: i32| {
         r.ide
             .expr_types

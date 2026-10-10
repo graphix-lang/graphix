@@ -34,7 +34,7 @@ async fn run_code(
     }
     ctx.rt.control().reset_invocations();
     let res = match as_file {
-        true => ctx.rt.load(Source::Internal(ArcStr::from(code))).await?,
+        true => ctx.rt.load(Source::Program(ArcStr::from(code))).await?,
         false => ctx.rt.compile(ArcStr::from(code)).await?,
     };
     let eid = res.exprs.first().context("no top-level expr")?.id;
@@ -1090,7 +1090,7 @@ async fn load_just_bind_no_output() -> Result<()> {
     // reports `output: false`.
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    let res = ctx.rt.load(Source::Internal(ArcStr::from("let x = 5"))).await?;
+    let res = ctx.rt.load(Source::Program(ArcStr::from("let x = 5"))).await?;
     let comp = res.exprs.first().ok_or_else(|| anyhow::anyhow!("no comp expr"))?;
     assert!(!comp.output, "let-only file should have output=false");
     ctx.shutdown().await;

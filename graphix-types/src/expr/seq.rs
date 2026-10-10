@@ -1859,14 +1859,14 @@ mod test {
         use crate::expr::{Origin, Source, parser::parse};
         let ori = |name: &str| Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from(name)),
+            source: Source::Vfs(ArcStr::from(name)),
             text: ArcStr::from("seq { a <- 1; b <- a; let c = f(b); c }"),
         };
         let seq = parse(ori("seq")).expect("parses");
         let _elsewhere = OriginScope::enter(Arc::new(ori("elsewhere")));
         let lowered = desugar(&seq[0], &Env::default(), &ModPath::root()).unwrap();
         let foreign = lowered.fold(0, &mut |n, e| {
-            n + (e.ori.source != Source::Internal(ArcStr::from("seq"))) as usize
+            n + (e.ori.source != Source::Vfs(ArcStr::from("seq"))) as usize
         });
         assert_eq!(foreign, 0);
     }

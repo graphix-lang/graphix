@@ -254,14 +254,14 @@ mod test {
     fn packed(src: &str) -> (Arc<[Expr]>, Arc<[Expr]>) {
         let ori = Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from("test")),
+            source: Source::Vfs(ArcStr::from("/test")),
             text: ArcStr::from(src),
         };
         let exprs = parser::parse(ori).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
         let packed = pack_module(&exprs).expect("pack");
         let dummy = Arc::new(Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from("decoded")),
+            source: Source::Vfs(ArcStr::from("/decoded")),
             text: ArcStr::new(),
         });
         (exprs, unpack_module(&packed, dummy).expect("unpack"))
@@ -347,14 +347,14 @@ mod test {
         // survive, so check `dec` directly.
         let ori = Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from("dec")),
+            source: Source::Vfs(ArcStr::from("/dec")),
             text: ArcStr::from("#[native]\n// note\n42"),
         };
         let exprs = parser::parse(ori).expect("parse");
         let packed = pack_module(&exprs).expect("pack");
         let dummy = Arc::new(Origin {
             parent: None,
-            source: Source::Internal(ArcStr::from("decoded")),
+            source: Source::Vfs(ArcStr::from("/decoded")),
             text: ArcStr::new(),
         });
         let unpacked = unpack_module(&packed, dummy).expect("unpack");

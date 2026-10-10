@@ -2147,7 +2147,7 @@ fn reserved_word_as_a_name_is_named() {
 fn parse_program(text: &str) -> String {
     let ori = crate::expr::Origin {
         parent: None,
-        source: crate::expr::Source::Internal(literal!("test")),
+        source: crate::expr::Source::Vfs(literal!("/test")),
         text: ArcStr::from(text),
     };
     format!("{:#}", parse(ori).unwrap_err())

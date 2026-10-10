@@ -2628,12 +2628,12 @@ fn ts_list_closer_parses() {
 fn a_unit_leaves_no_origin_behind() {
     let unit = |name: &str, text: &str| Origin {
         parent: None,
-        source: Source::Internal(ArcStr::from(name)),
+        source: Source::Vfs(ArcStr::from(name)),
         text: ArcStr::from(text),
     };
     let unscoped = || ExprKind::NoOp.to_expr_nopos().ori.source.clone();
     let exprs = parser::parse(unit("parsed", "1; 2")).unwrap();
-    assert_eq!(exprs[0].ori.source, Source::Internal(ArcStr::from("parsed")));
+    assert_eq!(exprs[0].ori.source, Source::Vfs(ArcStr::from("parsed")));
     assert_eq!(unscoped(), Source::Unspecified);
     parser::parse_sig(unit("sig", "val x: i64")).unwrap();
     assert_eq!(unscoped(), Source::Unspecified);
@@ -2648,7 +2648,7 @@ fn a_unit_leaves_no_origin_behind() {
 fn an_interface_module_has_the_interface_origin() {
     let intf = |text: &str| Origin {
         parent: None,
-        source: Source::Internal(ArcStr::from("m.gxi")),
+        source: Source::Vfs(ArcStr::from("m.gxi")),
         text: ArcStr::from(text),
     };
     let sig = parser::parse_sig(intf("mod sub")).unwrap();

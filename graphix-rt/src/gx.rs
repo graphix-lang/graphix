@@ -934,11 +934,12 @@ impl<X: GXExt> GX<X> {
                     Origin { parent: None, source: source.clone(), text: src.clone() };
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
-            Source::Internal(src) => {
+            Source::Program(src) => {
                 let ori =
                     Origin { parent: None, source: source.clone(), text: src.clone() };
                 (ori.clone(), expr::parser::parse(ori)?, None)
             }
+            Source::Vfs(m) => bail!("{m} is a VFS module: it loads through a `mod`"),
             Source::Unspecified => bail!("can't load from an unspecified source"),
         };
         Ok((ori, exprs, sig))

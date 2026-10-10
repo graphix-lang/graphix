@@ -453,7 +453,7 @@ pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("runtime init failed: {e:?}"))?;
-    let src = graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+    let src = graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
     let res = match tokio::time::timeout(timeout, ctx.rt.check(src, None)).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(format!("{e:?}")),
@@ -492,7 +492,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
     let sink = graphix_package_core::PrintSink::default();
     let registration = registration_image_source().await;
     let program =
-        graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+        graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
     let init = init_session_with_setup(
         tx,
         REGISTER,
@@ -1118,7 +1118,7 @@ async fn run_subject(
     let sink = graphix_package_core::PrintSink::default();
     let seeded = sink.clone();
     let program =
-        Some(graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text())));
+        Some(graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text())));
     let (registration, program, program_image, image_rx) = match image {
         SessionImage::Read(bytes) => (RegistrationImage::load(bytes), None, None, None),
         SessionImage::Write => {
@@ -2802,8 +2802,7 @@ async fn tm_check(
         Err(e) => return TmCheck::Unparsed(e),
     };
     let resolver = VfsResolver::new(subj.table.clone());
-    let text =
-        graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+    let text = graphix_compiler::expr::Source::Program(ArcStr::from(subj.compile_text()));
     let resolvers = vec![resolver.into()];
     let r = match types {
         true => {

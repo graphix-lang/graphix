@@ -301,7 +301,7 @@ impl<X: GXExt> Shell<X> {
         let mut args = vec![];
         match self.packages.iter().find_map(|p| p.main_program()) {
             Some(main) if matches!(self.mode, Mode::Repl) => {
-                self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
+                self.mode = Mode::Script(Source::Program(ArcStr::from(main)));
                 if let Some(bin) = std::env::args_os().next() {
                     args.push(ArcStr::from(bin.to_string_lossy().as_ref()));
                 }
@@ -363,7 +363,7 @@ impl<X: GXExt> Shell<X> {
             // registration entry serves a later run of a different
             // program under these packages; a program built into the
             // binary is the only one it runs, so it never writes one.
-            if !matches!(self.mode, Mode::Script(Source::Internal(_))) {
+            if !matches!(self.mode, Mode::Script(Source::Program(_))) {
                 let (tx, rx) = oneshot::channel();
                 pending_registration = Some(rx);
                 image.save = Some(tx);

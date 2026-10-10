@@ -659,7 +659,7 @@ pub async fn eval_packed(
     let source = ArcStr::from(format_compact!("let result = {code}").as_str());
     let ori = Origin {
         parent: None,
-        source: Source::Internal(arcstr::literal!("test")),
+        source: Source::Vfs(arcstr::literal!("/test")),
         text: source.clone(),
     };
     let exprs = graphix_compiler::expr::parser::parse(ori)?;

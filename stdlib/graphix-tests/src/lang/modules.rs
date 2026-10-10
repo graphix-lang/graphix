@@ -701,7 +701,7 @@ async fn module_errors_are_framed_by_the_module() -> Result<()> {
         let files =
             [("/test.gx", "mod inner; let result = 0"), ("/test/inner.gx", inner)];
         let e = compile_error(&files, "{ mod test; test::result }").await?;
-        assert!(format!("{e:?}").contains("in module inner"), "{inner}: {e:?}");
+        assert!(format!("{e:?}").contains("in module /test/inner"), "{inner}: {e:?}");
     }
     Ok(())
 }

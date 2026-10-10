@@ -147,10 +147,10 @@ impl TypeMap {
     }
 }
 
-/// Whether `ori` is the VFS module `module` (a module's origin is its
-/// name, the root program's its whole text).
+/// Whether `ori` is the VFS module named `module` (its origin is the
+/// module's path).
 pub fn in_module(ori: &Origin, module: &str) -> bool {
-    matches!(&ori.source, Source::Internal(m) if m == module)
+    matches!(&ori.source, Source::Vfs(m) if netidx_core::path::Path::basename(m) == Some(module))
 }
 
 /// A module-file position as a body position.

@@ -28,10 +28,10 @@ async fn lsp_mode_checks_without_fusion_and_survives_ill_typed() -> Result<()> {
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let ctx = init(tx).await?;
     let before = ctx.fusion_stats().await?.attempted;
-    ctx.rt.check(Source::Internal(literal!(FUSABLE)), None).await?;
+    ctx.rt.check(Source::Program(literal!(FUSABLE)), None).await?;
     // May return Err; the process must survive.
-    let _ = ctx.rt.check(Source::Internal(literal!(ILL_TYPED)), None).await;
-    ctx.rt.check(Source::Internal(literal!(FUSABLE)), None).await?;
+    let _ = ctx.rt.check(Source::Program(literal!(ILL_TYPED)), None).await;
+    ctx.rt.check(Source::Program(literal!(FUSABLE)), None).await?;
     let after = ctx.fusion_stats().await?.attempted;
     assert_eq!(before, after, "a check attempted fusion ({before} -> {after})");
     ctx.shutdown().await;

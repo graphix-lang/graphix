@@ -694,7 +694,7 @@ impl<X: GXExt> GXHandle<X> {
     /// Check that a graphix module compiles and type-checks without
     /// altering the runtime's live environment. A `netidx:` path loads
     /// from netidx; otherwise from the filesystem (or the text itself for
-    /// `Source::Internal`).
+    /// `Source::Program`).
     ///
     /// Compile and parse failures carry structured context on the
     /// `anyhow::Error`: `downcast_ref` to

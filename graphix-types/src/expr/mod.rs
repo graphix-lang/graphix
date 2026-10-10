@@ -397,7 +397,7 @@ impl ModuleKind {
         let is_interface = |o: &Origin| match &o.source {
             Source::File(p) => p.extension().is_some_and(|e| e == "gxi"),
             Source::Netidx(p) => p.ends_with(".gxi"),
-            Source::Internal(_) | Source::Unspecified => false,
+            Source::Vfs(_) | Source::Program(_) | Source::Unspecified => false,
         };
         exprs
             .iter()
@@ -979,7 +979,11 @@ impl ExprKind {
 pub enum Source {
     File(PathBuf),
     Netidx(Path),
-    // CR claude for eric: [structure] Internal carries a VFS module's bare leaf name
+    /// A module the VFS resolver served, by its full module path.
+    Vfs(ArcStr),
+    /// A program given as text, the text its `Origin` holds.
+    Program(ArcStr),
+    // XCR claude for claude: [structure] Internal carries a VFS module's bare leaf name
     // (graphix-types/src/expr/resolver.rs:233) or an entire program's text (the shell's
     // embedded main program, graphix-shell/src/lib.rs:247, which GX::load_exprs parses
     // at graphix-rt/src/gx.rs:761; the fuzzer), and Display prints both as `module
@@ -993,7 +997,18 @@ pub enum Source {
     // 2026-10-07 claude: re-addressed: the split reaches core's program-visible
     // `Source` type (`Internal(string)` is what an error's origin holds), so a
     // Program variant, or Internal carrying a path, is a language change.
-    Internal(ArcStr),
+    // 2026-10-10 claude: Eric ruled 10-10: split it. Source::Internal is gone: Vfs(path)
+    // is a VFS module by its full module path (printed `module /a/util`, so two util
+    // modules no longer print alike), and Program(text) is a program given as text
+    // (printed `program`; an error position no longer names its text). Core's Source type
+    // is [`File(string), `Netidx(string), `Vfs(string), `Program, `Unspecified]; a
+    // program origin's value carries its text in the origin's text field. The image
+    // writes Program's source without its text and rebuilds it from the origin's (format
+    // 45), so an embedded program's text is stored once. Pins: graphix-types
+    // image::tests::a_program_origin_writes_its_text_once;
+    // lang::interfaces::interface_error_is_placed and
+    // lang::modules::module_errors_are_framed_by_the_module now pin the module path;
+    // resolver test a_vfs_body_resolves_its_submodules_in_the_vfs.
     #[default]
     Unspecified,
 }
@@ -1005,7 +1020,8 @@ impl fmt::Display for Source {
         match self {
             Source::File(p) => write!(f, "file {}", p.display()),
             Source::Netidx(p) => write!(f, "netidx {p}"),
-            Source::Internal(m) => write!(f, "module {m}"),
+            Source::Vfs(m) => write!(f, "module {m}"),
+            Source::Program(_) => write!(f, "program"),
             Source::Unspecified => write!(f, "expr"),
         }
     }
@@ -1015,7 +1031,9 @@ impl Source {
     pub fn is_file(&self) -> bool {
         match self {
             Self::File(_) => true,
-            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
+            Self::Netidx(_) | Self::Vfs(_) | Self::Program(_) | Self::Unspecified => {
+                false
+            }
         }
     }
 
@@ -1026,7 +1044,8 @@ impl Source {
                 (literal!("File"), ArcStr::from(s)).into()
             }
             Self::Netidx(p) => (literal!("Netidx"), p.clone()).into(),
-            Self::Internal(s) => (literal!("Internal"), s.clone()).into(),
+            Self::Vfs(s) => (literal!("Vfs"), s.clone()).into(),
+            Self::Program(_) => literal!("Program").into(),
             Self::Unspecified => literal!("Unspecified").into(),
         }
     }
@@ -1073,8 +1092,8 @@ impl Origin {
     pub fn to_value(&self) -> Value {
         let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
         let text = match self.source {
-            Source::Unspecified => self.text.clone(),
-            Source::File(_) | Source::Netidx(_) | Source::Internal(_) => ArcStr::new(),
+            Source::Unspecified | Source::Program(_) => self.text.clone(),
+            Source::File(_) | Source::Netidx(_) | Source::Vfs(_) => ArcStr::new(),
         };
         [
             (literal!("parent"), p),

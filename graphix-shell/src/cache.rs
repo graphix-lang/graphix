@@ -193,7 +193,7 @@ fn sources_record(
         match &o.source {
             Source::File(p) => read.push((p, o)),
             // the packages are the build's, an embedded program is the key
-            Source::Internal(_) | Source::Unspecified => (),
+            Source::Vfs(_) | Source::Program(_) | Source::Unspecified => (),
             Source::Netidx(p) => {
                 info!("no program entry: the program reads {p} from netidx");
                 return None;
@@ -289,8 +289,8 @@ impl RegistrationCache {
         let program = program.and_then(|p| {
             let id = match p {
                 Source::File(path) => path.to_string_lossy().into_owned().into_bytes(),
-                Source::Internal(text) => text.as_bytes().to_vec(),
-                Source::Netidx(_) | Source::Unspecified => return None,
+                Source::Program(text) => text.as_bytes().to_vec(),
+                Source::Netidx(_) | Source::Vfs(_) | Source::Unspecified => return None,
             };
             // the search path decides which file a module name reaches
             let modpath = std::env::var_os("GRAPHIX_MODPATH").unwrap_or_default();

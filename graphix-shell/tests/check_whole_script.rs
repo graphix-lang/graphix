@@ -17,7 +17,7 @@ y
 async fn check_types_a_top_level_let_by_its_writers() -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::Internal(WRITERS_BELOW.into())))
+        .mode(Mode::Check(Source::Program(WRITERS_BELOW.into())))
         .build()?
         .check()
         .await

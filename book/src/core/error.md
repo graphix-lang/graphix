@@ -60,7 +60,8 @@ type Pos = {
 type Source = [
     `File(string),
     `Netidx(string),
-    `Internal(string),
+    `Vfs(string),
+    `Program,
     `Unspecified
 ];
 

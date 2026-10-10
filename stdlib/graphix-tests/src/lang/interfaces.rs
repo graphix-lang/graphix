@@ -1053,7 +1053,7 @@ async fn interface_error_is_placed() -> Result<()> {
         ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await.unwrap_err();
     let pc = e.downcast_ref::<ParserContext>().expect("a placed error");
     assert_eq!(pc.pos.line, 2, "{e:#}");
-    assert!(matches!(&pc.ori.source, Source::Internal(n) if n == "inner"), "{e:#}");
+    assert!(matches!(&pc.ori.source, Source::Vfs(n) if n == "/test/inner"), "{e:#}");
     ctx.shutdown().await;
     Ok(())
 }

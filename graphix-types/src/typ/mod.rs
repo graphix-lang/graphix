@@ -1715,7 +1715,7 @@ impl std::fmt::Display for UnresolvableRef {
         if let Some(pos) = self.pos {
             write!(f, " at {pos}")?;
             match self.ori.as_ref().map(|o| &o.source) {
-                None | Some(Source::Internal(_) | Source::Unspecified) => (),
+                None | Some(Source::Program(_) | Source::Unspecified) => (),
                 Some(source) => write!(f, " in {source}")?,
             }
         }

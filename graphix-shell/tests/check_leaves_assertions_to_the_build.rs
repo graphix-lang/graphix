@@ -25,7 +25,7 @@ r
 async fn check(program: &'static str, flags: BitFlags<CFlag>) -> Result<()> {
     ShellBuilder::<NoExt>::default()
         .cache(CacheMode::Off)
-        .mode(Mode::Check(Source::Internal(program.into())))
+        .mode(Mode::Check(Source::Program(program.into())))
         .enable_flags(flags)
         .build()?
         .check()

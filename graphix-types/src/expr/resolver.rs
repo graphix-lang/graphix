@@ -308,7 +308,7 @@ fn resolve_from_vfs(
     let unit = |e: &VfsEntry| Unit {
         ori: Origin {
             parent: Some(parent.clone()),
-            source: Source::Internal(name.clone().into()),
+            source: Source::Vfs(ArcStr::from(&*scope.0.append(&**name))),
             text: e.source.clone(),
         },
         packed: e.packed.clone(),
@@ -871,8 +871,7 @@ impl Expr {
                 name,
             } => Box::pin(async move {
                 let source = self_kind_origin(&self.kind).map(|o| &o.source);
-                // a file or a netidx path is one place; an `Internal`
-                // source is a VFS module's bare name, and a VFS lookup is
+                // a file or a netidx path is one place; a VFS lookup is
                 // scoped by the module path, so it cannot come round again
                 let chain = match source {
                     Some(s @ (Source::File(_) | Source::Netidx(_))) => {
@@ -893,10 +892,12 @@ impl Expr {
                         let Some(p) = p.to_str() else { return Ok(None) };
                         Some(files(PathBuf::from(submodule_base(p))))
                     }
-                    Some(Source::Internal(_) | Source::Unspecified) => None,
+                    Some(Source::Vfs(_) | Source::Program(_) | Source::Unspecified) => {
+                        None
+                    }
                     Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
                     None => match &self.ori.source {
-                        Source::Unspecified | Source::Internal(_) => None,
+                        Source::Unspecified | Source::Vfs(_) | Source::Program(_) => None,
                         Source::File(p) => p.parent().map(|p| files(p.into())),
                         s => resolvers.iter().find_map(|m| m.for_source(s)),
                     },
@@ -1105,7 +1106,11 @@ mod test {
         assert_ne!(e.end.0, WrittenAt::NOWHERE.0);
         let (m, _) = body(&e);
         let (x, _) = body(&m[0]);
-        assert!(matches!(x[0].ori.source, Source::Internal(_)), "{:?}", x[0].ori.source);
+        assert!(
+            matches!(&x[0].ori.source, Source::Vfs(p) if p == "/m/x"),
+            "{:?}",
+            x[0].ori.source
+        );
     }
 
     /// An interface pairs with the implementation beside it only: one
