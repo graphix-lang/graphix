@@ -5,8 +5,10 @@ use crate::expr::{
         arrayexp::Index,
         brace, cast, construct, csep, expr, fldname,
         grow::{fold_fits, grow},
-        interpolated, list_lit, literal, never_expr, raw_string, reference, select,
-        sep_by1_tok, seq, spaces, sptoken, variant,
+        interpolated,
+        lambdaexp::lambda,
+        list_lit, literal, never_expr, raw_string, reference, select, sep_by1_tok, seq,
+        spaces, sptoken, variant,
     },
 };
 use crate::typ::Mutability;
@@ -14,7 +16,7 @@ use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice,
     error::StreamError,
-    many, not_followed_by, optional,
+    look_ahead, many, not_followed_by, one_of, optional,
     parser::char::string,
     position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
@@ -197,13 +199,6 @@ where
     ))
 }
 
-// CR claude for claude: [bug] An operator's operand cannot be a lambda: `f <- t ~
-// |x: i64| x + 1` and `t ~ |x| x` fail to parse ("Unexpected `|`" at the lambda), so
-// sampling a function value needs parentheses, `t ~ (|x: i64| x + 1)`. A lambda as the
-// right operand of `~`/`~!` is the natural way to write "on t, switch to this function",
-// and a lambda body extends as far right as it can, so it is unambiguous there. Eric
-// flagged it 10-10 as a bug to fix later. probe: `let t = 1; let f = t ~ |x: i64| x + 1;
-// f` under --check. (parse-lambda-operand-01)
 parser! {
     pub(crate) fn arith_term[I](key: bool)(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
@@ -290,13 +285,27 @@ where
     }))
 }
 
+/// An operator's right operand: a term, or a lambda, which is the last
+/// operand of its chain since its body takes the rest.
+fn operand<I>(key: bool) -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice((
+        attempt(look_ahead(spaces().with(one_of(['|', '\''])))).with(lambda()),
+        arith_term(key),
+    ))
+}
+
 parser! {
     pub(crate) fn arith[I](key: bool)(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow((
             arith_term(*key),
-            many((attempt(spaces().with(binop())), arith_term(*key))),
+            many((attempt(spaces().with(binop())), operand(*key))),
             position(),
         ).and_then(|(e, exprs, end): (Expr, LPooled<Vec<(BinOp, Expr)>>, _)| {
             if !fold_fits(exprs.len(), end) {

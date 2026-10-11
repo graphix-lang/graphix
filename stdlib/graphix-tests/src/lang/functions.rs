@@ -2858,3 +2858,13 @@ async fn activation_budget_stops_a_runaway_recursion() -> anyhow::Result<()> {
     assert!((2000..10_000).contains(&live), "{live} live activations");
     Ok(())
 }
+
+// A sampled function value is written without parens: a lambda is the last
+// operand of its chain.
+run!(lambda_sampled_on_a_trigger, r#"{
+  let t = 1;
+  let f = |x: i64| x * 10;
+  f <- t ~ |x: i64| x + 1;
+  let g = t ~ 'a: Number |x: 'a| -> 'a x + x;
+  select f(5) { 6 => g(4), _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(8))); FuseExpect::Jit);

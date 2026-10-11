@@ -894,7 +894,8 @@ cycle, across workers; the compiler never pins threads.
   reached with the source line and a caret, and a refusal its reason.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
-  left-associative (`8 / 2 * 2` is 8). `BinOp` (`expr/binop.rs`) is the
+  left-associative (`8 / 2 * 2` is 8), and a lambda may be an operator's
+  last operand, its body taking the rest (`t ~ |x| x + 1`). `BinOp` (`expr/binop.rs`) is the
   one table. Arithmetic (`fn<'a: Number + Singleton>(x: 'a, y: 'a) ->
   'a`) and comparison (`fn('a, 'a) -> bool`) take operands of EXACTLY
   one type, each containing the other's (`node/op.rs::operand_type`):

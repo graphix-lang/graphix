@@ -1684,6 +1684,22 @@ fn qop_wraps_whole_chain() {
     assert_eq!(q, parse_one("a.b?").unwrap());
 }
 
+/// A lambda is an operator's last operand: its body takes the rest of the
+/// chain, and the tree prints back to itself.
+#[test]
+fn lambda_is_a_last_operand() {
+    for (src, inner) in [
+        ("t ~ |x: i64| x + 1", "|x: i64| x + 1"),
+        ("t ~! 'a: Number |x: 'a| -> 'a x + x", "'a: Number |x: 'a| -> 'a x + x"),
+        ("a + b ~ || 1", "|| 1"),
+    ] {
+        let e = parse_one(src).unwrap();
+        let (_, _, last) = BinOp::of(&e.kind).expect("a binary operator");
+        assert_eq!(**last, parse_one(inner).unwrap(), "{src}");
+        assert_eq!(parse_one(&e.to_string()).unwrap(), e, "{src}");
+    }
+}
+
 #[test]
 fn print_bare_chains_round_trip() {
     // Bare chains and parenthesized non-chain sources round-trip to the
