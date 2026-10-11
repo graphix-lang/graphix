@@ -330,16 +330,14 @@ pub enum SigKind {
     Use { reexport: bool, names: Arc<[UseItem]> },
 }
 
-#[derive(Debug, Clone, Pack)]
-#[pack(unwrapped)]
+#[derive(Debug, Clone)]
 pub struct SigItem {
     pub comments: Comments,
     pub doc: Doc,
     pub kind: SigKind,
-    // IDE metadata: excluded from equality and from the packed form.
-    #[pack(skip)]
+    // where errors about the item point: excluded from equality, packed
+    // as an expression's are (`serialize.rs`)
     pub pos: SourcePosition,
-    #[pack(skip)]
     pub ori: Option<Arc<Origin>>,
 }
 

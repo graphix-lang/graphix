@@ -1203,16 +1203,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 Value::String(s) => {
                     let compiled = self.compile_source(ctx, s);
                     ctx.apply_deferred();
-                    // CR claude for claude: [bug] A warm image start reports a dynamic
-                    // module's compile error at a different position from a cold one:
-                    // "compile error at line: 1, column: 161" cold, "line: 1, column: 1"
-                    // warm, the rest of the message equal, so the fuzzer records an image
-                    // divergence (seed 1217, 10-10). It predates the interface-less
-                    // publication change; something on the error's outer context (the
-                    // module's spec or the source expression's position) does not survive
-                    // the image. probe: graphix-fuzz check
-                    // design/review-2026-10-05/repro/image-dynamic-pos-01.gx
-                    // (image-dynamic-pos-01)
                     if let Err(e) = compiled {
                         return self.resident.set(TagValue::tagged(
                             errf!(ERR_TAG, "compile error {e:?}"),

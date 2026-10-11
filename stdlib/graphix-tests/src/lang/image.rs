@@ -414,6 +414,22 @@ async fn program_image_restores() -> Result<()> {
     Ok(())
 }
 
+/// A dynamic module's interface keeps its items' positions in an image:
+/// a refusal a restored module's body meets points where a cold one's
+/// does.
+#[tokio::test]
+async fn a_restored_interface_keeps_its_positions() -> Result<()> {
+    let program = r#"{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sandbox whitelist [core]; sig { use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"type Box<'a> = Abstract<'a>; impl Val for Box<i64> { let v = |b| b.0 }; let make = |x| Box(x)" }; select status { error as e => e, null as _ => 2 } }"#;
+    let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
+    let refused = cold.last().expect("the module refused its body");
+    assert!(
+        format!("{refused}").contains("compile error at line: 1, column: 134"),
+        "{refused}"
+    );
+    assert_eq!(cold, warm);
+    Ok(())
+}
+
 /// `#[parallel]` and `#[serial]` restore with the program, on an
 /// expression, a `let` and a definition alike.
 #[tokio::test]

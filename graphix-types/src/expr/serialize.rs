@@ -13,8 +13,8 @@
 use crate::{
     SourcePosition,
     expr::{
-        Decorations, Expr, ExprId, ExprKind, NOP, Origin, OriginScope, Sig, VfsEntry,
-        get_origin,
+        Decorations, Expr, ExprId, ExprKind, NOP, Origin, OriginScope, Sig, SigItem,
+        VfsEntry, get_origin,
     },
     image,
     profile::{self, Phase},
@@ -127,6 +127,65 @@ impl Pack for Expr {
         } else {
             Self::syntax_decode(buf, ExprId::new(), get_origin())
         }
+    }
+}
+
+/// An interface item packs its position as an expression does; its
+/// origin travels under an image session, and the syntax codec takes the
+/// unit's.
+impl Pack for SigItem {
+    fn encoded_len(&self) -> usize {
+        let ori = match (image::is_encoding(), &self.ori) {
+            (false, _) => 0,
+            (true, None) => 1,
+            (true, Some(ori)) => 1 + image::origin_len(ori),
+        };
+        self.comments.encoded_len()
+            + self.doc.encoded_len()
+            + self.kind.encoded_len()
+            + <i32 as Pack>::encoded_len(&self.pos.line)
+            + <i32 as Pack>::encoded_len(&self.pos.column)
+            + ori
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.comments.encode(buf)?;
+        self.doc.encode(buf)?;
+        self.kind.encode(buf)?;
+        <i32 as Pack>::encode(&self.pos.line, buf)?;
+        <i32 as Pack>::encode(&self.pos.column, buf)?;
+        if image::is_encoding() {
+            match &self.ori {
+                None => buf.put_u8(0),
+                Some(ori) => {
+                    buf.put_u8(1);
+                    image::origin_encode(ori, buf)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let comments = Pack::decode(buf)?;
+        let doc = Pack::decode(buf)?;
+        let kind = Pack::decode(buf)?;
+        let line = <i32 as Pack>::decode(buf)?;
+        let column = <i32 as Pack>::decode(buf)?;
+        let ori = match image::is_decoding() {
+            false => Some(get_origin()),
+            true => {
+                if !buf.has_remaining() {
+                    return Err(PackError::BufferShort);
+                }
+                match buf.get_u8() {
+                    0 => None,
+                    1 => Some(image::origin_decode(buf)?),
+                    _ => return Err(PackError::UnknownTag),
+                }
+            }
+        };
+        Ok(SigItem { comments, doc, kind, pos: SourcePosition { line, column }, ori })
     }
 }
 
