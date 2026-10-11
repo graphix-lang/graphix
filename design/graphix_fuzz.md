@@ -154,9 +154,10 @@ crashes surface, and divergences never record. The Excluded list is empirical an
 flake.
 
 **`Timeout` narrowly means a wedged evaluator** — or a runaway the
-stack budget aborted: any failed request to a runtime whose `Control`
-reports `budget_aborted()` is `Timeout(StackBudget)` (the driver maps
-it, in one place), because the deadline and the budget are the same
+stack or activation budget aborted: any failed request to a runtime
+whose `Control` reports `budget_aborted()` is `Timeout(ActivationBudget)`
+when its live activations passed their budget, else `Timeout(StackBudget)`
+(the driver maps it, in one place), because the deadline and the budget are the same
 containment and which one stops an unbounded descent first is a race
 between the engines' descent speeds, not a property of the program.
 Timeout==Timeout is AGREE whatever stopped each side; a Timeout beside
@@ -165,7 +166,12 @@ Read a bench timeout as an unexplained failure, not a pass. An
 asymmetric hang is a top-tier finding: fusion adding or removing
 nontermination — with one exception the kinds make legible: a
 node-walk `StackBudget` beside a JIT trace is CONTAINED, unrefuted and
-not recorded, without the slow retry.
+not recorded, without the slow retry; and in a forked comparison
+(`Pair::Par`) a `StackBudget` on either side beside a trace is CONTAINED
+too, since the stack budget charges by thread (the serial cycle's 2 MB
+worker pays a 32 MB segment early, a forked part's 16 MB pool stack
+later). The activation budget counts what the program holds, so a
+one-sided `ActivationBudget` stays a divergence.
 The node-walk's frame per recursion level is kilobytes (`update_call`
 alone is 3.6KB under LTO) where a native kernel's is words, so a depth
 only the kernel reaches says nothing about either engine's answer. A
@@ -181,7 +187,7 @@ a group at a time, and shared. A batch child's first pass agrees only
 when every comparison agrees at once and no run timed out or failed;
 anything else is a suspect. The individual check takes each comparison
 through one confirm ladder: the node-walk's stack budget beside a JIT
-trace is containment; a one-sided Timeout reruns that side at the slow
+trace, or either schedule's beside the other's trace, is containment; a one-sided Timeout reruns that side at the slow
 budget (a session's cold and warm together) and the comparison goes on
 with the rerun's outcome; a reference that burned seconds of CPU and
 still timed out is honest slowness; a reference that disagrees with its

@@ -158,50 +158,6 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 /// Whether one more segment would put the runtime running on this
 /// thread over its budget.
 #[doc(hidden)]
-// CR claude for eric: [bug] What this charges depends on the thread and the fork
-// schedule, not on the program. The serial cycle runs on a 2 MB tokio worker and pays a
-// 32 MB segment after about 1 MB of recursion; a forked part runs on a 16 MB eval-pool
-// stack and pays nothing until about 15 MB; and parts running at the same time add up
-// on the Control. So GRAPHIX_PAR, GRAPHIX_EVAL_THREADS and auto-mode timing change
-// which programs the budget stops, in both directions. Under 16M, f(1000) aborts
-// serially and finishes forced. Under 64M, a 4-slot map of f(15000) finishes serially
-// and aborts forced, and a timer-driven copy in the default auto mode dies at cycle 5-7
-// once the cost model forks it. Summing is the per-cycle rule (parallel_eval.md §13),
-// but the stack-size difference is not, and graphix-fuzz check_par has no containment
-// exemption like check_verdict's, so it records either direction as a parallel
-// evaluation bug. probe: design/review-2026-10-05/repro/t-misc-01.sh (t-misc-01)
-// 2026-10-09 claude: Eric 10-09: fold runaway-recursion containment in here. A 10-09 gate
-// fuzz run found a node-walked unbounded recursion that fills 8 GB in 14 s (--no-fusion)
-// before the 1 GB stack budget fires, since a node-walked activation holds about 21 KB of
-// heap; the shell runs with no budget at all. Proposal: a budget on live activations,
-// charged where one is born (a call site binding an instance; a kernel's per-activation
-// block) and released at its delete, a counter on Control beside the stack budget
-// (GRAPHIX_ACTIVATION_BUDGET), aborting the runtime through the same path. A count
-// follows the program, not the thread or the fork schedule, so the node-walk's
-// containment can move to it, leaving stack bytes for native JIT recursion. A JIT tail
-// loop allocates nothing and is not counted (it spins until interrupted). Defaults:
-// unlimited or very large in the shell, about 100k in the fuzzer's children. See
-// runtime-heap-01 for the footprint itself.
-// 2026-10-10 claude: Eric ruled 10-10: an activation budget, under the embedder's
-// control. Control counts live activations (a lambda instance a cycle binds, charged at
-// construction and released at its delete; a kernel's per-activation block) and aborts
-// the runtime through CtlFlag::Budget past activation_budget
-// (Control::set_activation_budget, graphix_compiler::set_activation_budget,
-// GRAPHIX_ACTIVATION_BUDGET; unlimited by default). A count follows the program, not the
-// thread or fork schedule, so the fuzzer's children run at 50,000, which trips before
-// their 1 GiB stack budget (bracketed: at 100k the activation budget fires in every
-// engine and mode, at 300k the stack budget does), and the node-walk's containment no
-// longer depends on GRAPHIX_PAR. The runaway recursion that filled 8 GB in 14 s now stops
-// in about 2 s; crash_000004 checks AGREE (contained). The stack budget stays, for native
-// JIT recursion, with its thread dependence. Pin:
-// lang::functions::activation_budget_stops_a_runaway_recursion.
-// 2026-10-11 claude: reviewed: the activation budget is built and pinned
-// (lang::functions::activation_budget_stops_a_runaway_recursion; the fuzzer sets
-// ACTIVATION_BUDGET). The stack budget stays for native JIT recursion with its thread
-// dependence, and graphix-fuzz's Pair::Par has no containment exemption (Verdict::of
-// treats Timeout vs Trace as Unsure), so a non-tail native recursion can still split
-// serial and forked runs. Needs a ruling: accept that leftover, or exempt containment in
-// Pair::Par.
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
         // SAFETY: see `current_control`.

@@ -205,6 +205,7 @@ impl fmt::Display for Rendered<'_> {
 pub enum Containment {
     Deadline,
     StackBudget,
+    ActivationBudget,
 }
 
 /// Strip tvar numbers (`'_6070` -> `'_N`), abstract-type ids
@@ -584,7 +585,13 @@ async fn drive(
     if matches!(outcome, Outcome::RuntimeErr(_) | Outcome::CompileErr(_))
         && ctx.rt.budget_aborted()
     {
-        return Outcome::Timeout(Containment::StackBudget);
+        let control = ctx.rt.control();
+        return Outcome::Timeout(
+            match control.live_activations() > control.activation_budget() {
+                true => Containment::ActivationBudget,
+                false => Containment::StackBudget,
+            },
+        );
     }
     outcome
 }
@@ -1776,6 +1783,23 @@ impl<'a> Oracle<'a> {
             eprintln!(
                 "CONTAINED — the node-walk exceeded the stack budget; the kernel's \
                  value stands unrefuted, not recorded"
+            );
+            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+            return Settled::Drop;
+        }
+        // The stack budget charges by thread (a forked part runs on a larger
+        // stack than the serial cycle), so whether it stops a deep native
+        // recursion depends on the fork schedule: containment either way.
+        if matches!(pair, Pair::Par(_))
+            && matches!(
+                (&a, &b),
+                (Outcome::Timeout(Containment::StackBudget), Outcome::Trace(_))
+                    | (Outcome::Trace(_), Outcome::Timeout(Containment::StackBudget))
+            )
+        {
+            eprintln!(
+                "CONTAINED — the stack budget stopped one schedule and not the other; \
+                 not recorded"
             );
             eprintln!("    program: {}", self.code.replace('\n', "\\n"));
             return Settled::Drop;
