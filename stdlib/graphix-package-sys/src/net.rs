@@ -251,10 +251,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
             (Some(Value::String(path)), true)
                 if self.cur.as_ref().map(|(p, _)| &**p) != Some(&*path) =>
             {
-                let net = NetState::get(ctx);
                 if let Some((_, dv)) = self.cur.take() {
-                    net.unsubscribe(dv, self.id)
+                    NetState::get(ctx).unsubscribe(dv, self.id);
+                    self.renew(ctx);
                 }
+                let net = NetState::get(ctx);
                 let path = Path::from(path);
                 if !Path::is_absolute(&path) {
                     return self
@@ -329,6 +330,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
+        self.renew(ctx);
+    }
+}
+
+impl Subscribe {
+    /// Answer under a fresh id: an update already sent for the old
+    /// subscription arrives on the old one, which nothing reads.
+    fn renew<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.release_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);

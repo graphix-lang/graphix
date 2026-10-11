@@ -221,10 +221,22 @@ async fn build(
 
 #[derive(Default)]
 struct Routes {
-    /// netidx SHARES Dvals by path: several builtins subscribing the
-    /// same path get the same SubId, so routing is a fan-out list.
-    subs: IntMap<SubId, smallvec::SmallVec<[BindId; 2]>>,
+    subs: IntMap<SubId, Route>,
     writes: IntMap<Id, BindId>,
+}
+
+/// One subscription's routing. netidx SHARES Dvals by path: several
+/// builtins subscribing the same path get the same SubId, so routing is a
+/// fan-out list. The route lives while any Dval this state handed out for
+/// the SubId does (a reader's or a write target's), and so knows whether
+/// the updates channel is registered on it:
+/// netidx then sends a new reader nothing (`NO_SPURIOUS`), and the
+/// subscribe replays the last value itself.
+#[derive(Default)]
+struct Route {
+    ids: smallvec::SmallVec<[BindId; 2]>,
+    held: usize,
+    streamed: bool,
 }
 
 struct Inner {
@@ -237,7 +249,6 @@ struct Inner {
     /// the NetState closes `flush_tx` and the tasks end.
     pending_publish_batch: Arc<Mutex<Option<UpdateBatch>>>,
     flush_tx: mpsc::UnboundedSender<()>,
-    unsubscribe_graveyard_tx: mpsc::UnboundedSender<Dval>,
     // rpc client procs, GC'd on use
     rpc_clients: Mutex<Vec<(Path, netidx_protocols::rpc::client::Proc, time::Instant)>>,
     // per-list-builtin resolver change trackers
@@ -259,7 +270,7 @@ impl std::fmt::Debug for NetState {
 
 impl NetState {
     /// Get (or create) the net state for this runtime. On creation the
-    /// pump/flusher/graveyard tasks spawn and their delivery channels
+    /// pump and flusher tasks spawn and their delivery channels
     /// register with the runtime — which is why this needs `ctx`.
     /// Branches of a cycle may ask at once: one creates it.
     pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) -> NetState {
@@ -282,7 +293,6 @@ impl NetState {
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);
         let (flush_tx, mut flush_rx) = mpsc::unbounded();
-        let (graveyard_tx, mut graveyard_rx) = mpsc::unbounded::<Dval>();
         let routes: Arc<Mutex<Routes>> = Arc::default();
         // the graph-facing delivery channels
         let (mut var_tx, var_rx) = mpsc::channel(100);
@@ -297,7 +307,6 @@ impl NetState {
             rpcs_tx,
             pending_publish_batch: Arc::default(),
             flush_tx,
-            unsubscribe_graveyard_tx: graveyard_tx,
             rpc_clients: Mutex::new(Vec::new()),
             change_trackers: Mutex::new(IntMap::default()),
             publish_timeout: timeouts.publish,
@@ -315,14 +324,11 @@ impl NetState {
                             Some(mut batch) => {
                                 let mut out = VBATCH.take();
                                 {
-                                    // coalesce per SubId (last wins) — the same channel can be
-                                    // registered on a shared Dval more than once — then fan out
-                                    // to every registered reader.
                                     // every update, in order, to every reader
                                     let routes = routes.lock();
                                     for (sub_id, ev) in batch.drain(..) {
-                                        if let Some(ids) = routes.subs.get(&sub_id) {
-                                            for id in ids {
+                                        if let Some(route) = routes.subs.get(&sub_id) {
+                                            for id in &route.ids {
                                                 out.push((*id, translate(ev.clone())));
                                             }
                                         }
@@ -398,16 +404,6 @@ impl NetState {
                 }
             });
         }
-        // GRAVEYARD: hold unsubscribed Dvals for the grace period so
-        // rapid resubscription reuses the connection.
-        task::spawn(async move {
-            while let Some(dv) = graveyard_rx.next().await {
-                task::spawn(async move {
-                    time::sleep(Duration::from_secs(60)).await;
-                    drop(dv);
-                });
-            }
-        });
         st
     }
 
@@ -437,14 +433,16 @@ impl NetState {
         let dv =
             self.handles(ctx)?.subscriber.subscribe_updates(path, [(flags, updates_tx)]);
         let mut routes = self.0.routes.lock();
-        let ids = routes.subs.entry(dv.id()).or_default();
-        if !ids.is_empty()
+        let route = routes.subs.entry(dv.id()).or_default();
+        if route.streamed
             && flags.contains(UpdatesFlags::BEGIN_WITH_LAST)
             && let ev @ NEvent::Update(_) = dv.last()
         {
             ctx.rt.set_var(id, translate(ev));
         }
-        ids.push(id);
+        route.streamed = true;
+        route.held += 1;
+        route.ids.push(id);
         Ok(dv)
     }
 
@@ -454,27 +452,40 @@ impl NetState {
         ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
     ) -> Result<Dval> {
-        Ok(self.handles(ctx)?.subscriber.subscribe(path))
+        let dv = self.handles(ctx)?.subscriber.subscribe(path);
+        self.0.routes.lock().subs.entry(dv.id()).or_default().held += 1;
+        Ok(dv)
     }
 
     /// Release a Dval [`Self::write_target`] gave.
     pub(crate) fn release(&self, dv: Dval) {
-        let _ = self.0.unsubscribe_graveyard_tx.unbounded_send(dv);
+        self.drop_dval(dv)
+    }
+
+    /// Drop a Dval this state handed out: the subscription ends with its
+    /// last holder, and its route with it.
+    fn drop_dval(&self, dv: Dval) {
+        let sub_id = dv.id();
+        drop(dv);
+        let mut routes = self.0.routes.lock();
+        if let Some(route) = routes.subs.get_mut(&sub_id) {
+            route.held -= 1;
+            if route.held == 0 {
+                routes.subs.remove(&sub_id);
+            }
+        }
     }
 
     pub(crate) fn unsubscribe(&self, dv: Dval, id: BindId) {
         {
             let mut routes = self.0.routes.lock();
-            if let Some(ids) = routes.subs.get_mut(&dv.id()) {
-                if let Some(i) = ids.iter().position(|x| *x == id) {
-                    ids.remove(i);
-                }
-                if ids.is_empty() {
-                    routes.subs.remove(&dv.id());
+            if let Some(route) = routes.subs.get_mut(&dv.id()) {
+                if let Some(i) = route.ids.iter().position(|x| *x == id) {
+                    route.ids.remove(i);
                 }
             }
         }
-        let _ = self.0.unsubscribe_graveyard_tx.unbounded_send(dv);
+        self.drop_dval(dv)
     }
 
     pub(crate) fn publish<R: Rt, E: UserEvent>(

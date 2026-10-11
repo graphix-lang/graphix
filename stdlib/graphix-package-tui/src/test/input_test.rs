@@ -302,3 +302,43 @@ let result = browser(
     }
     Ok(())
 }
+
+/// A scroll by one row resubscribes only the row that enters: no row that
+/// stays on screen blanks to #SUB, so no frame shows more than one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
+    let mut h = TuiTestHarness::with_viewport(
+        r##"
+use tui::{Tui, browser::{MoveCursor, browser}};
+let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
+let path = sys::time::after_idle(duration:200.ms, "/local/ring");
+let cur: MoveCursor = never();
+let b: Tui = browser(#size: {width: 40, height: 4}, #cursor: cur, path);
+let flashed = select b {
+  `Table(t) => array::len(array::filter(*t.rows, |r| str::contains(#part: "#SUB", "[(*r).cells]"))),
+  _ => never()
+};
+let i = 0;
+i <- sys::time::timer(duration:100.ms, 16) ~ i + 1;
+cur <- select i { x if x >= 6 && x < 12 => i ~ `Down(1), _ => never() };
+let after_load = select i { x if x >= 6 => flashed, _ => never() };
+let worst = 0;
+worst <- after_load ~ max(worst, after_load);
+let answer = select i { 16 => worst, _ => never() };
+let result = b
+"##,
+        40,
+        4,
+    )
+    .await?;
+    h.watch("test::answer").await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !matches!(h.get_watched("test::answer"), Some(Value::I64(_))) {
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("no result; render:\n{}", h.render_lines()?.join("\n"))
+        }
+        h.next_update(Duration::from_millis(500)).await?;
+    }
+    assert_eq!(h.get_watched("test::answer"), Some(&Value::I64(1)));
+    Ok(())
+}

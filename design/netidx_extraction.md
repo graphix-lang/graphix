@@ -45,8 +45,8 @@ already has (`Rt::watch_var`, `spawn_var`, `CustomBuiltinType` events):
   and pings a task that coalesces and commits, in place of a core
   end-of-cycle commit hook — near-identical batching without a hook
   every embedder would have to run;
-- a 60s Dval unsubscribe graveyard and an on-use-GC'd RPC client
-  cache;
+- an on-use-GC'd RPC client cache; an unsubscribe drops its Dval at
+  once, so a subscription's data stops when its last reader goes;
 - `list`/`list_table` wait on `publisher.flushed()` before reading, so
   they see this process's own registrations.
 

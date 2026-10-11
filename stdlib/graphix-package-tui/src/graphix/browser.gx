@@ -43,15 +43,17 @@ let browser = |
             (mode, { columns, rows: paths })
         }
     };
-    let visible_rows = select structure.rows {
-        [] => [],
-        all => {
-            let len = array::len(all);
-            let start = min(len - 1, viewport.y);
-            let end = min(len, viewport.y + size.height - 1);
-            (all)[start .. end]$
-        }
+    let row_slots = max(1, size.height - 1);
+    let first_row = max(0, min(array::len(structure.rows) - 1, viewport.y));
+    let visible_rows = {
+        let end = min(array::len(structure.rows), first_row + row_slots);
+        (structure.rows)[first_row .. end]$
     };
+    // A ring of n slots over a window starting at first: slot k holds the
+    // window position p where (first + p) % n == k, so a scroll by one moves
+    // one item to another slot and leaves every other where it was.
+    let slot_item = |first, n, k| first + ((k - first) % n + n) % n;
+    let in_order = |first, len, slots| array::init(len, |p| slots[(first + p) % array::len(slots)]$);
     let content_widths: Array<i64> = [];
     let get_width = |i| select content_widths[i] {
         error as _ => 0,
@@ -93,46 +95,38 @@ let browser = |
             row(#style:header_style, array::push_front(cols, cell(line("Name"))))
         }
     };
-    // CR claude for eric: [bug] These slots are screen positions, so a one-row scroll
-    // gives every slot a new path: each visible cell's net::subscribe unsubscribes and
-    // resubscribes, and uniq(path) ~ "#SUB" blanks it, including rows that stay on
-    // screen. The 4-char #SUB feeds content_widths, so columns whose header and values
-    // are narrower widen and fewer fit until the 1 s throttle passes the real widths (8
-    // one-char columns at width 40 show 5 for a second, at load and at a scroll after
-    // an idle second). The #rate throttle on line 105 never holds a value: rate reads
-    // stale in this select arm of a fresh slot, so Throttle never learns its wait (the
-    // cause in x-engine-firing-05). On some scrolls a moved cell also shows the
-    // previous row's value for a cycle, because Subscribe keeps its BindId across a
-    // path change (net.rs Subscribe::update). probe:
-    // design/review-2026-10-05/repro/gx-ui.r2-14.gx (gx-ui.r2-14)
-    // 2026-10-07 claude: not fixed. A slot of array::map is a position, so a cell
-    // keyed by its path needs either a keyed collection (slots that follow a key
-    // across a reorder) or mapping over every listed row with only the visible ones
-    // selected awake, which costs a slot per row of a listing that may hold 100k.
-    // Both are language or stdlib choices; the throttle half is
-    // x-engine-firing-05's.
-    let cells = array::map(visible_rows, |row| {
-        let name = select str::basename(row) { null as _ => "", s => s };
-        select mode {
-            `List => {
-                let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
-                    throttle(#rate, net::subscribe(row));
-                [name, "[any(uniq(row) ~ "#SUB", v)]"]
-            },
-            `Table => {
-                let a = array::map(visible_columns, |col| {
-                    let path = "[row]/[col]";
-                    let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
-                        throttle(#rate, net::subscribe(path));
-                    "[any(uniq(path) ~ "#SUB", v)]"
-                });
-                array::push_front(a, name)
+    let row_cells = array::map(array::init(row_slots, |k| k), |k|
+        select (structure.rows)[slot_item(first_row, row_slots, k)] {
+            error as _ => [],
+            row => {
+                let name = select str::basename(row) { null as _ => "", s => s };
+                select mode {
+                    `List => {
+                        let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                            throttle(#rate, net::subscribe(row));
+                        [name, "[any(uniq(row) ~ "#SUB", v)]"]
+                    },
+                    `Table => {
+                        let col_slots = array::len(visible_columns);
+                        let a = array::map(array::init(col_slots, |c| c), |c| {
+                            let col = (structure.columns)[slot_item(viewport.x, col_slots, c)]$;
+                            let path = "[row]/[col]";
+                            let v: Result<Primitive, [`InvalidCast(string), `SubscribeError(string)]> =
+                                throttle(#rate, net::subscribe(path));
+                            "[any(uniq(path) ~ "#SUB", v)]"
+                        });
+                        array::push_front(in_order(viewport.x, col_slots, a), name)
+                    }
+                }
             }
-        }
-    });
+        });
+    let cells = in_order(first_row, array::len(visible_rows), row_cells);
     content_widths <- throttle(#rate:duration:1.0s,
         array::fold(cells, [], |acc, row| {
-            let row = array::map(row, |s| str::char_len(s));
+            let row = array::map(row, |s| select s {
+                "#SUB" => 0,
+                s => str::char_len(s)
+            });
             select acc {
                 [] => row,
                 acc => array::map(array::zip(row, acc), |(l0, l1)| max(l0, l1))

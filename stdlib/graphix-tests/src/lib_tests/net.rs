@@ -19,8 +19,15 @@
 // 2026-10-09 claude: rpc replies out of order are pinned now (net_rpc_latest_call_wins,
 // with sys-net-09); a publisher going away and an rpc server failing or missing remain.
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{
+        FuseExpect, Mode, compile_result, fixture_runtime, next_update, result_source,
+    },
+};
 use netidx::subscriber::Value;
+use std::time::Duration;
+use tokio::time::Instant;
 
 const NET_PUB_SUB: &str = r#"
 {
@@ -352,3 +359,73 @@ run!(net_publish_path_moves_while_bottom, r#"
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::Jit);
+
+// A subscription that moves to another path and back gets the first
+// path's value again.
+const NET_RESUBSCRIBE: &str = r#"
+{
+  sys::net::publish("/local/resub/a", "a");
+  sys::net::publish("/local/resub/b", "b");
+  let path = "/local/resub/a";
+  let n = 0;
+  n <- sys::time::timer(duration:100.ms, 2) ~ n + 1;
+  path <- n ~ select n { 1 => "/local/resub/b", _ => "/local/resub/a" };
+  let v: string = sys::net::subscribe(path)?;
+  sys::time::after_idle(duration:300.ms, v) ~ [path, v]
+}
+"#;
+
+run!(net_resubscribe, NET_RESUBSCRIBE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => match &a[..] {
+            [Value::String(p), Value::String(v)] => &**p == "/local/resub/a" && &**v == "a",
+            _ => false,
+        },
+        _ => false,
+    }
+}; FuseExpect::Jit);
+
+// A subscription moving between busy paths never answers with a value of
+// the path it left.
+const NET_NO_STALE_VALUE: &str = r#"
+{
+  type R = Result<string, [`InvalidCast(string), `SubscribeError(string)]>;
+  let tick = 0;
+  tick <- sys::time::timer(duration:2.ms, true) ~ tick + 1;
+  let pubs = array::init(4, |k| sys::net::publish("/local/stale/k[k]", "k[k]:[tick]"));
+  let held: Array<R> = array::init(4, |k| sys::net::subscribe("/local/stale/k[k]"));
+  let j = 0;
+  j <- sys::time::timer(duration:10.ms, 100) ~ j + 1;
+  let path = "/local/stale/k0";
+  path <- j ~ "/local/stale/k[j % 4]";
+  let r: R = sys::net::subscribe(path);
+  let got = r$ ~ (str::basename(path)$, r$);
+  let wrong = 0;
+  wrong <- select got {
+    (k, s) if str::starts_with(#pfx: "[k]:", s) => never(),
+    _ => got ~ wrong + 1
+  };
+  sys::time::timer(duration:1.5s, false) ~ wrong
+}
+"#;
+
+/// The race needs the pump running beside the runtime, which `run!`'s
+/// single-threaded runtimes never do.
+#[tokio::test(flavor = "multi_thread")]
+async fn net_no_stale_value() -> Result<()> {
+    for mode in [Mode::Interp, Mode::Jit] {
+        let (ctx, mut rx) = fixture_runtime(
+            [("/test.gx", result_source(NET_NO_STALE_VALUE))],
+            &crate::TEST_REGISTER,
+            mode,
+            |_| {},
+        )
+        .await?;
+        let res = compile_result(&ctx).await?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let wrong = next_update(&mut rx, res.exprs[0].id, deadline).await?;
+        ctx.shutdown().await;
+        assert_eq!(wrong, Value::I64(0), "values of the path left, {mode:?}");
+    }
+    Ok(())
+}
