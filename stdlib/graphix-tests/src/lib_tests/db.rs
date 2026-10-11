@@ -1281,3 +1281,80 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// An open transaction locks nothing: plain ops run while it is open, and
+// its write is invisible to them until the commit.
+run_with_tempdir!(
+    name: db_txn_open_locks_nothing,
+    code: r#"{{
+        let db = db::open("{0}/x.db")$;
+        let t: db::Tree<string, i64> = db::tree(db, "a")$;
+        let pre = db::insert(t, "x", 1)$;
+        let txn = db::txn::begin(pre ~ db)$;
+        let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+        let ins = db::txn::insert(tt, "k", 7)$;
+        let before = db::get(t, ins ~ "k")$;
+        let x = db::get(t, before ~ "x")$;
+        let c = db::txn::commit(x ~ txn)$;
+        let after = db::get(t, c ~ "k")$;
+        after ~ [before, x, after]
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::Null, Value::I64(1), Value::I64(7)]));
+        Ok(())
+    }
+);
+
+// A key the transaction read changes before the commit: the commit is a
+// `Conflict and writes nothing.
+run_with_tempdir!(
+    name: db_txn_conflict,
+    code: r#"{{
+        let db = db::open("{0}/x.db")$;
+        let t: db::Tree<string, i64> = db::tree(db, "a")$;
+        let pre = db::insert(t, "x", 1)$;
+        let txn = db::txn::begin(pre ~ db)$;
+        let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, txn ~ "a")$;
+        let r = db::txn::get(tt, tt ~ "x")$;
+        let w = db::insert(t, r ~ "x", 2)$;
+        let ins = db::txn::insert(tt, w ~ "y", 3)$;
+        let c = db::txn::commit(ins ~ txn);
+        let y = db::get(t, c ~ "y")$;
+        y ~ (c, y)
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        let conflict = Value::Error(Value::String("Conflict".into()).into());
+        assert_eq!(v, arr([conflict, Value::Null]));
+        Ok(())
+    }
+);
+
+// Two transactions on two databases, interleaved: write A, write B,
+// commit A, commit B. Both commit.
+run_with_tempdir!(
+    name: db_txn_interleaved_databases,
+    code: r#"{{
+        let da = db::open("{0}/a.db")$;
+        let dbb = db::open("{0}/b.db")$;
+        let ta: db::Tree<string, i64> = db::tree(da, "t")$;
+        let tb: db::Tree<string, i64> = db::tree(dbb, "t")$;
+        let xa = db::txn::begin(ta ~ da)$;
+        let xb = db::txn::begin(tb ~ dbb)$;
+        let tta: db::txn::TxnTree<string, i64> = db::txn::tree(xa, xa ~ "t")$;
+        let ttb: db::txn::TxnTree<string, i64> = db::txn::tree(xb, xb ~ "t")$;
+        let ia = db::txn::insert(tta, "k", 1)$;
+        let ib = db::txn::insert(ttb, ia ~ "k", 2)$;
+        let ca = db::txn::commit(ib ~ xa)$;
+        let cb = db::txn::commit(ca ~ xb)$;
+        let va = db::get(ta, cb ~ "k")$;
+        let vb = db::get(tb, va ~ "k")$;
+        vb ~ [va, vb]
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        assert_eq!(v, arr([Value::I64(1), Value::I64(2)]));
+        Ok(())
+    }
+);

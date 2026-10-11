@@ -23,8 +23,12 @@ Cursors iterate over tree entries reactively, advancing on each trigger.
 
 ## db::txn
 
-Multi-tree ACID transactions. All trees must be opened before any data
-operations.
+Multi-tree ACID transactions, optimistic: an open transaction locks
+nothing. Its reads see the trees as they stand and its own writes, and
+its writes wait for the commit, which checks that every key it read
+still holds what it read and applies the writes atomically, or fails
+with `` `Conflict `` and applies none. A program that gets `` `Conflict ``
+runs the transaction again.
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-db/src/graphix/txn.gxi}}

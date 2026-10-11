@@ -327,26 +327,40 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
     })
 }
 
-pub(crate) fn parse_batch_ops(
+/// Each op of a batch, in order, as its encoded key and the value it
+/// writes (`None` removes).
+pub(crate) fn for_batch_ops(
     key_typ: Option<Typ>,
     arr: &ValArray,
-) -> Result<sled::Batch> {
-    let mut batch = sled::Batch::default();
+    mut f: impl FnMut(&[u8], Option<&[u8]>),
+) -> Result<()> {
     for op in arr.iter() {
         match op {
             Value::Array(a) => match &a[..] {
-                [Value::String(tag), k, v] if &**tag == "Insert" => batch.insert(
+                [Value::String(tag), k, v] if &**tag == "Insert" => f(
                     encode_key(key_typ, k)?.as_slice(),
-                    encode_value(v)?.as_slice(),
+                    Some(encode_value(v)?.as_slice()),
                 ),
                 [Value::String(tag), k] if &**tag == "Remove" => {
-                    batch.remove(encode_key(key_typ, k)?.as_slice())
+                    f(encode_key(key_typ, k)?.as_slice(), None)
                 }
                 _ => bail!("not a batch op: {op}"),
             },
             _ => bail!("not a batch op: {op}"),
         }
     }
+    Ok(())
+}
+
+pub(crate) fn parse_batch_ops(
+    key_typ: Option<Typ>,
+    arr: &ValArray,
+) -> Result<sled::Batch> {
+    let mut batch = sled::Batch::default();
+    for_batch_ops(key_typ, arr, |k, v| match v {
+        Some(v) => batch.insert(k, v),
+        None => batch.remove(k),
+    })?;
     Ok(batch)
 }
 

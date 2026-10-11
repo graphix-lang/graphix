@@ -1,40 +1,206 @@
 use crate::{
-    encoding::decode_value,
+    encoding::for_batch_ops,
     tree::{
         Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes,
-        abstract_arg, batch_arg, get_db, insert_arg, key_arg, meta_key, value_or_null,
+        abstract_arg, blocking, get_db, insert_arg, key_arg, meta_key, value_or_null,
     },
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
-use arcstr::ArcStr;
-use graphix_compiler::errf;
+use arcstr::{ArcStr, literal};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
 use netidx_value::Value;
-use poolshark::global::{GPooled, Pool};
-use std::{
-    cell::{Cell, RefCell},
-    collections::hash_map::Entry,
-    fmt,
-    sync::{Arc, LazyLock, mpsc},
+use parking_lot::Mutex;
+use poolshark::global::GPooled;
+use sled::{
+    IVec,
+    transaction::{
+        ConflictableTransactionError, TransactionError, Transactional, TransactionalTree,
+    },
 };
-use tokio::sync::oneshot;
+use std::{collections::hash_map::Entry, fmt, sync::Arc};
 
-type TxnMsg = (TxnCommand, oneshot::Sender<Value>);
+/// One tree's part of a transaction: each key it read, with the value it
+/// saw, and each write it will make (`None` removes).
+struct TreeTxn {
+    tree: sled::Tree,
+    read: AHashMap<IVec, Option<IVec>>,
+    write: AHashMap<IVec, Option<IVec>>,
+}
 
-enum TxnCommand {
-    OpenTree { name: Option<ArcStr>, types: TreeTypes },
-    Get { tree_idx: usize, key: GPooled<Vec<u8>> },
-    Insert { tree_idx: usize, key: GPooled<Vec<u8>>, value: GPooled<Vec<u8>> },
-    Remove { tree_idx: usize, key: GPooled<Vec<u8>> },
-    Batch { tree_idx: usize, batch: sled::Batch },
-    Commit,
-    Rollback,
+impl TreeTxn {
+    /// The key's value as this transaction sees it: its own write, else
+    /// what it read before, else the tree's, which is recorded.
+    fn current(&mut self, key: &IVec) -> Result<Option<IVec>> {
+        if let Some(v) = self.write.get(key).or_else(|| self.read.get(key)) {
+            return Ok(v.clone());
+        }
+        let v = self.tree.get(key)?;
+        self.read.insert(key.clone(), v.clone());
+        Ok(v)
+    }
+
+    fn get(&mut self, key: &[u8]) -> Result<Value> {
+        value_or_null(self.current(&IVec::from(key))?)
+    }
+
+    /// Buffer a write and answer the value it replaces.
+    fn put(&mut self, key: &[u8], value: Option<IVec>) -> Result<Value> {
+        let key = IVec::from(key);
+        let prev = self.current(&key)?;
+        self.write.insert(key, value);
+        value_or_null(prev)
+    }
+}
+
+/// Why a commit's sled transaction aborted.
+enum Refused {
+    Conflict,
+    Meta(anyhow::Error),
+}
+
+/// A transaction: reads go to the trees as they stand and writes are
+/// buffered, so nothing is held between the program's operations;
+/// `commit` checks every read and applies every write in one sled
+/// transaction.
+struct TxnState {
+    trees: Vec<TreeTxn>,
+    /// The slot of each tree opened, by meta key: a tree opened twice is
+    /// one slot, so both handles see one transaction.
+    opened: AHashMap<ArcStr, usize>,
+    pending_meta: AHashMap<ArcStr, TreeTypes>,
+    /// Declared last: the trees drop while it holds the database, which
+    /// it drops on a blocking thread.
+    db: Db,
+}
+
+impl TxnState {
+    fn open_tree(&mut self, name: Option<ArcStr>, types: TreeTypes) -> Result<usize> {
+        types.concrete()?;
+        let key = ArcStr::from(meta_key(name.as_ref())?);
+        if !self.db.open_tree(META_TREE)?.check(&key, &types)? {
+            match self.pending_meta.entry(key.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert(types);
+                }
+                Entry::Occupied(e) if *e.get() != types => {
+                    bail!("conflicting types for tree '{key}' within transaction")
+                }
+                Entry::Occupied(_) => (),
+            }
+        }
+        if let Some(idx) = self.opened.get(&key) {
+            return Ok(*idx);
+        }
+        let tree = match &name {
+            None => (***self.db).clone(),
+            Some(n) => self.db.open_tree(n.as_bytes())?,
+        };
+        let idx = self.trees.len();
+        self.trees.push(TreeTxn { tree, read: AHashMap::new(), write: AHashMap::new() });
+        self.opened.insert(key, idx);
+        Ok(idx)
+    }
+
+    fn tree(&mut self, idx: usize) -> Result<&mut TreeTxn> {
+        self.trees.get_mut(idx).ok_or_else(|| anyhow!("invalid tree index"))
+    }
+
+    /// Every key read still holds the value read, the new trees' types are
+    /// stored and the writes made, or nothing is.
+    fn check_and_apply(
+        &self,
+        tx: &[TransactionalTree],
+    ) -> Result<(), ConflictableTransactionError<Refused>> {
+        let abort = |r| Err(ConflictableTransactionError::Abort(r));
+        for (t, tx) in self.trees.iter().zip(tx) {
+            for (k, v) in &t.read {
+                if tx.get(k)? != *v {
+                    return abort(Refused::Conflict);
+                }
+            }
+        }
+        if let Some(meta) = tx.get(self.trees.len()) {
+            for (name, types) in &self.pending_meta {
+                if let Err(e) = meta.check_or_store(name, types) {
+                    return abort(Refused::Meta(e));
+                }
+            }
+        }
+        for (t, tx) in self.trees.iter().zip(tx) {
+            for (k, v) in &t.write {
+                match v {
+                    Some(v) => tx.insert(k.clone(), v.clone())?,
+                    None => tx.remove(k.clone())?,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    // XCR claude for claude: [bug] The whole interactive transaction runs inside this
+    // closure: TxnCtx::run waits in rx.recv() for the program's next command. For as
+    // long as the closure runs, sled 0.34 holds stage()'s concurrency_control::write().
+    // That is one static RwLock shared by every sled Db in the process, and every plain
+    // tree op, iterator step, generate_id, flush and sled's log flusher take its read
+    // side. So from a txn's first data op until its commit or rollback, every other db
+    // operation in the process blocks, on any database file. A plain op that the commit
+    // is sequenced after deadlocks, so do two txns interleaved across two databases,
+    // and a txn that is never committed freezes all db I/O for good. probe:
+    // design/review-2026-10-05/repro/db2-01.gx (hangs after "txn insert done";
+    // committing before the get exits 0). (db2-01)
+    // 2026-10-11 claude: Eric ruled option 1, optimistic transactions. The CR moved
+    // here with the code it was about: nothing runs inside a sled transaction while
+    // the program works any more. Reads go to the trees as they stand (recording what
+    // they saw), writes are buffered, and commit runs one short sled transaction that
+    // re-reads every recorded key and applies the writes, or answers `Conflict. The
+    // thread and channel are gone. The repro prints its expected lines and exits 0 in
+    // both engines. Pins: lib_tests::db::{db_txn_open_locks_nothing,
+    // db_txn_interleaved_databases} (hang on the old txn.rs), db_txn_conflict (fails
+    // with the read check undone).
+    // 2026-10-11 claude: Optimistic transactions: no lock is held between the program's
+    // operations; commit validates the reads. Wants the soak: commit can now answer
+    // `Conflict.
+    fn commit(self) -> Result<Value> {
+        let mut trees: Vec<sled::Tree> =
+            self.trees.iter().map(|t| t.tree.clone()).collect();
+        if !self.pending_meta.is_empty() {
+            trees.push(self.db.open_tree(META_TREE)?);
+        }
+        if trees.is_empty() {
+            return Ok(Value::Null);
+        }
+        match (&trees[..]).transaction(|tx| self.check_and_apply(tx)) {
+            Ok(()) => {
+                self.db.flush()?;
+                Ok(Value::Null)
+            }
+            Err(TransactionError::Abort(Refused::Conflict)) => {
+                Ok(Value::Error(Value::String(literal!("Conflict")).into()))
+            }
+            Err(TransactionError::Abort(Refused::Meta(e))) => Err(e),
+            Err(TransactionError::Storage(e)) => Err(e.into()),
+        }
+    }
 }
 
 pub(crate) struct TxnInner {
-    cmd_tx: mpsc::Sender<TxnMsg>,
+    /// `None` once committed or rolled back.
+    state: Mutex<Option<TxnState>>,
+}
+
+impl TxnInner {
+    fn with_state<T>(&self, f: impl FnOnce(&mut TxnState) -> Result<T>) -> Result<T> {
+        match &mut *self.state.lock() {
+            Some(s) => f(s),
+            None => bail!("the transaction has ended"),
+        }
+    }
+
+    fn end(&self) -> Result<TxnState> {
+        self.state.lock().take().ok_or_else(|| anyhow!("the transaction has ended"))
+    }
 }
 
 impl fmt::Debug for TxnInner {
@@ -85,286 +251,18 @@ graphix_package_core::impl_abstract_arc!(
     static TXN_TREE_WRAPPER = "db::txn::TxnTree"
 );
 
-async fn txn_send_recv(cmd_tx: &mpsc::Sender<TxnMsg>, cmd: TxnCommand) -> Value {
-    let (reply_tx, reply_rx) = oneshot::channel();
-    if cmd_tx.send((cmd, reply_tx)).is_err() {
-        return errf!("DbErr", "transaction thread gone");
-    }
-    match reply_rx.await {
-        Ok(v) => v,
-        Err(_) => errf!("DbErr", "transaction thread gone"),
-    }
-}
+type Writes = Vec<(IVec, Option<IVec>)>;
 
-fn db_err(e: anyhow::Error) -> Value {
-    errf!("DbErr", "{e:#}")
-}
-
-struct TxnCtx<'a> {
-    trees: &'a [sled::transaction::TransactionalTree],
-    rx: mpsc::Receiver<TxnMsg>,
-    commit_reply: &'a RefCell<Option<oneshot::Sender<Value>>>,
-    aborted: &'a Cell<bool>,
-    meta_idx: Option<usize>,
-    pending_meta: &'a AHashMap<ArcStr, TreeTypes>,
-}
-
-impl TxnCtx<'_> {
-    fn write_meta(&self) -> Result<()> {
-        let Some(mi) = self.meta_idx else { return Ok(()) };
-        for (tree_name, types) in self.pending_meta {
-            self.trees[mi].check_or_store(tree_name, types)?;
+fn writes_arg(tree: impl KeyTyp, cached: &CachedVals) -> Option<Result<Writes>> {
+    match cached.0.get(1)?.as_ref()? {
+        Value::Array(a) => {
+            let mut writes = Vec::with_capacity(a.len());
+            let res = for_batch_ops(tree.key_typ(), a, |k, v| {
+                writes.push((IVec::from(k), v.map(IVec::from)))
+            });
+            Some(res.map(|()| writes))
         }
-        Ok(())
-    }
-
-    fn tree(&self, tree_idx: usize) -> Result<&sled::transaction::TransactionalTree> {
-        self.trees.get(tree_idx).ok_or_else(|| anyhow!("invalid tree index"))
-    }
-
-    fn abort(&self) -> sled::transaction::ConflictableTransactionResult<(), ()> {
-        self.aborted.set(true);
-        sled::transaction::abort(())
-    }
-
-    fn run(
-        self,
-        first_msg: TxnMsg,
-    ) -> sled::transaction::ConflictableTransactionResult<(), ()> {
-        if let Err(e) = self.write_meta() {
-            let _ = first_msg.1.send(db_err(e));
-            return self.abort();
-        }
-        let mut pending = Some(first_msg);
-        loop {
-            let (cmd, reply) = match pending.take() {
-                Some(msg) => msg,
-                None => match self.rx.recv() {
-                    Ok(msg) => msg,
-                    Err(_) => return self.abort(),
-                },
-            };
-            let res = match cmd {
-                TxnCommand::OpenTree { .. } => {
-                    Err(anyhow!("cannot open trees after data operations"))
-                }
-                TxnCommand::Get { tree_idx, key } => self
-                    .tree(tree_idx)
-                    .and_then(|t| Ok(t.get(key.as_slice())?))
-                    .and_then(|v| v.map_or(Ok(Value::Null), |v| decode_value(&v))),
-                TxnCommand::Insert { tree_idx, key, value } => self
-                    .tree(tree_idx)
-                    .and_then(|t| Ok(t.insert(key.as_slice(), value.as_slice())?))
-                    .and_then(value_or_null),
-                TxnCommand::Remove { tree_idx, key } => self
-                    .tree(tree_idx)
-                    .and_then(|t| Ok(t.remove(key.as_slice())?))
-                    .and_then(value_or_null),
-                TxnCommand::Batch { tree_idx, ref batch } => self
-                    .tree(tree_idx)
-                    .and_then(|t| Ok(t.apply_batch(batch)?))
-                    .map(|()| Value::Null),
-                TxnCommand::Commit => {
-                    *self.commit_reply.borrow_mut() = Some(reply);
-                    return Ok(());
-                }
-                TxnCommand::Rollback => {
-                    *self.commit_reply.borrow_mut() = Some(reply);
-                    return self.abort();
-                }
-            };
-            match res {
-                Ok(v) => {
-                    let _ = reply.send(v);
-                }
-                Err(e) => {
-                    let is_txn_err =
-                        e.is::<sled::transaction::UnabortableTransactionError>();
-                    let _ = reply.send(db_err(e));
-                    if is_txn_err {
-                        return self.abort();
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn run_transaction(
-    trees: &[sled::Tree],
-    meta_idx: Option<usize>,
-    pending_meta: &AHashMap<ArcStr, TreeTypes>,
-    rx: mpsc::Receiver<TxnMsg>,
-    first_msg: TxnMsg,
-) {
-    let state: RefCell<Option<(TxnMsg, mpsc::Receiver<TxnMsg>)>> =
-        RefCell::new(Some((first_msg, rx)));
-    let commit_reply: RefCell<Option<oneshot::Sender<Value>>> = RefCell::new(None);
-    let aborted = Cell::new(false);
-    // CR claude for eric: [bug] The whole interactive transaction runs inside this
-    // closure: TxnCtx::run waits in rx.recv() for the program's next command. For as
-    // long as the closure runs, sled 0.34 holds stage()'s concurrency_control::write().
-    // That is one static RwLock shared by every sled Db in the process, and every plain
-    // tree op, iterator step, generate_id, flush and sled's log flusher take its read
-    // side. So from a txn's first data op until its commit or rollback, every other db
-    // operation in the process blocks, on any database file. A plain op that the commit
-    // is sequenced after deadlocks, so do two txns interleaved across two databases,
-    // and a txn that is never committed freezes all db I/O for good. probe:
-    // design/review-2026-10-05/repro/db2-01.gx (hangs after "txn insert done";
-    // committing before the get exits 0). (db2-01)
-    let result = sled::transaction::Transactional::transaction(
-        trees,
-        |tx_trees: &Vec<sled::transaction::TransactionalTree>| {
-            if let Some((first_msg, rx)) = state.borrow_mut().take() {
-                TxnCtx {
-                    trees: tx_trees,
-                    rx,
-                    commit_reply: &commit_reply,
-                    aborted: &aborted,
-                    meta_idx,
-                    pending_meta,
-                }
-                .run(first_msg)
-            } else {
-                // a conflict retry cannot re-run the program's commands
-                sled::transaction::abort(())
-            }
-        },
-    );
-    if let Some(reply) = commit_reply.borrow_mut().take() {
-        let _ = reply.send(match result {
-            Ok(()) => match trees[0].flush() {
-                Ok(_) => Value::Null,
-                Err(e) => errf!("DbErr", "{e}"),
-            },
-            Err(sled::transaction::TransactionError::Abort(())) if aborted.get() => {
-                Value::Null
-            }
-            Err(sled::transaction::TransactionError::Abort(())) => {
-                errf!("DbErr", "transaction conflict")
-            }
-            Err(sled::transaction::TransactionError::Storage(e)) => errf!("DbErr", "{e}"),
-        });
-    }
-}
-
-struct BeginTxnCtx {
-    trees: GPooled<Vec<sled::Tree>>,
-    /// The slot of each tree opened, by meta key: a tree opened twice is
-    /// one slot, so both handles see one overlay.
-    opened: AHashMap<ArcStr, usize>,
-    pending_meta: AHashMap<ArcStr, TreeTypes>,
-    db: Db,
-    rx: mpsc::Receiver<TxnMsg>,
-}
-
-impl BeginTxnCtx {
-    fn open_tree(&mut self, name: Option<ArcStr>, types: TreeTypes) -> Result<usize> {
-        types.concrete()?;
-        let key = ArcStr::from(meta_key(name.as_ref())?);
-        if !self.db.open_tree(META_TREE)?.check(&key, &types)? {
-            match self.pending_meta.entry(key.clone()) {
-                Entry::Vacant(e) => {
-                    e.insert(types);
-                }
-                Entry::Occupied(e) if *e.get() != types => {
-                    bail!("conflicting types for tree '{key}' within transaction")
-                }
-                Entry::Occupied(_) => (),
-            }
-        }
-        if let Some(idx) = self.opened.get(&key) {
-            return Ok(*idx);
-        }
-        let tree = match &name {
-            None => (***self.db).clone(),
-            Some(n) => self.db.open_tree(n.as_bytes())?,
-        };
-        let idx = self.trees.len();
-        self.trees.push(tree);
-        self.opened.insert(key, idx);
-        Ok(idx)
-    }
-
-    /// A transaction that opened trees and touched no data: its new
-    /// trees' types are all it writes.
-    fn commit(&mut self) -> Result<()> {
-        let meta = self.db.open_tree(META_TREE)?;
-        for (tree_name, types) in self.pending_meta.drain() {
-            meta.check_or_store(&tree_name, &types)?
-        }
-        meta.flush()?;
-        Ok(())
-    }
-
-    fn run(mut self) {
-        loop {
-            let Ok((msg, reply)) = self.rx.recv() else { return };
-            match msg {
-                TxnCommand::OpenTree { name, types } => {
-                    let res = match self.open_tree(name, types) {
-                        Ok(tid) => Value::U64(tid as u64),
-                        Err(e) => db_err(e),
-                    };
-                    let _ = reply.send(res);
-                }
-                TxnCommand::Commit => {
-                    let res = match self.commit() {
-                        Ok(()) => Value::Null,
-                        Err(e) => db_err(e),
-                    };
-                    let _ = reply.send(res);
-                    return;
-                }
-                TxnCommand::Rollback => {
-                    let _ = reply.send(Value::Null);
-                    return;
-                }
-                // the first data op starts the sled transaction
-                first_msg => {
-                    if self.trees.is_empty() {
-                        let _ =
-                            reply.send(errf!("DbErr", "no trees opened in transaction"));
-                        return;
-                    }
-                    let meta_idx = if !self.pending_meta.is_empty() {
-                        match self.db.open_tree(META_TREE) {
-                            Ok(meta) => {
-                                let idx = self.trees.len();
-                                self.trees.push(meta);
-                                Some(idx)
-                            }
-                            Err(e) => {
-                                let _ = reply.send(errf!("DbErr", "{e}"));
-                                return;
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    run_transaction(
-                        &self.trees,
-                        meta_idx,
-                        &self.pending_meta,
-                        self.rx,
-                        (first_msg, reply),
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    fn new(db: Db, rx: mpsc::Receiver<TxnMsg>) -> Self {
-        static TREES: LazyLock<Pool<Vec<sled::Tree>>> =
-            LazyLock::new(|| Pool::new(64, 256));
-        Self {
-            db,
-            rx,
-            opened: AHashMap::new(),
-            pending_meta: AHashMap::new(),
-            trees: TREES.take(),
-        }
+        v => Some(Err(anyhow!("not a batch: {v}"))),
     }
 }
 
@@ -382,16 +280,15 @@ impl EvalCachedAsync for DbTxnBeginEv {
 
     fn eval(db: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            let (cmd_tx, cmd_rx) = mpsc::channel();
-            match std::thread::Builder::new()
-                .name("graphix-db-txn".into())
-                .spawn(move || BeginTxnCtx::new(db, cmd_rx).run())
-            {
-                Ok(_) => {
-                    TXN_WRAPPER.wrap(TxnValue { inner: Arc::new(TxnInner { cmd_tx }) })
-                }
-                Err(e) => errf!("DbErr", "could not start the transaction thread: {e}"),
-            }
+            let state = TxnState {
+                trees: Vec::new(),
+                opened: AHashMap::new(),
+                pending_meta: AHashMap::new(),
+                db,
+            };
+            TXN_WRAPPER.wrap(TxnValue {
+                inner: Arc::new(TxnInner { state: Mutex::new(Some(state)) }),
+            })
         }
     }
 }
@@ -414,29 +311,23 @@ impl TreeOpener for FromTxn {
         name: Option<ArcStr>,
         types: TreeTypes,
     ) -> impl Future<Output = Value> + Send {
-        async move {
+        blocking(move || {
             let key_typ = types.key;
-            match txn_send_recv(&txn.cmd_tx, TxnCommand::OpenTree { name, types }).await {
-                Value::U64(idx) => TXN_TREE_WRAPPER.wrap(TxnTreeValue {
-                    inner: Arc::new(TxnTreeInner {
-                        txn: txn.clone(),
-                        tree_idx: idx as usize,
-                        key_typ,
-                    }),
-                }),
-                v => v,
-            }
-        }
+            let tree_idx = txn.with_state(|s| s.open_tree(name, types))?;
+            Ok(TXN_TREE_WRAPPER.wrap(TxnTreeValue {
+                inner: Arc::new(TxnTreeInner { txn, tree_idx, key_typ }),
+            }))
+        })
     }
 }
 
 pub(crate) type DbTxnTree = CachedArgsAsync<OpenTreeEv<FromTxn>>;
 
-/// A builtin sending one command for a transaction's tree, built from the
-/// encoding of its arguments; a failed encoding is its DbErr.
+/// A builtin applying one operation to a transaction's tree, built from
+/// the encoding of its arguments; a failed encoding is its DbErr.
 macro_rules! txn_op {
     ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
-     |$a:pat_param, $idx:ident| $cmd:expr) => {
+     |$t:ident, $a:pat_param| $body:expr) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
 
@@ -452,15 +343,13 @@ macro_rules! txn_op {
             }
 
             fn eval((tt, arg): Self::Args) -> impl Future<Output = Value> + Send {
-                async move {
-                    match arg {
-                        Err(e) => db_err(e),
-                        Ok($a) => {
-                            let $idx = tt.tree_idx;
-                            txn_send_recv(&tt.txn.cmd_tx, $cmd).await
-                        }
-                    }
-                }
+                blocking(move || {
+                    let $a = arg?;
+                    tt.txn.with_state(|s| {
+                        let $t = s.tree(tt.tree_idx)?;
+                        $body
+                    })
+                })
             }
         }
 
@@ -469,21 +358,15 @@ macro_rules! txn_op {
     };
 }
 
-txn_op!(
-    DbTxnGetEv,
-    DbTxnGet,
-    "db_txn_get",
-    key_arg,
-    GPooled<Vec<u8>>,
-    |key, tree_idx| TxnCommand::Get { tree_idx, key }
-);
+txn_op!(DbTxnGetEv, DbTxnGet, "db_txn_get", key_arg, GPooled<Vec<u8>>, |t, key| t
+    .get(&key));
 txn_op!(
     DbTxnRemoveEv,
     DbTxnRemove,
     "db_txn_remove",
     key_arg,
     GPooled<Vec<u8>>,
-    |key, tree_idx| TxnCommand::Remove { tree_idx, key }
+    |t, key| t.put(&key, None)
 );
 txn_op!(
     DbTxnInsertEv,
@@ -491,43 +374,49 @@ txn_op!(
     "db_txn_insert",
     insert_arg,
     (GPooled<Vec<u8>>, GPooled<Vec<u8>>),
-    |(key, value), tree_idx| TxnCommand::Insert { tree_idx, key, value }
+    |t, (key, value)| t.put(&key, Some(IVec::from(value.as_slice())))
 );
-txn_op!(
-    DbTxnBatchEv,
-    DbTxnBatch,
-    "db_txn_batch",
-    batch_arg,
-    sled::Batch,
-    |batch, tree_idx| TxnCommand::Batch { tree_idx, batch }
-);
+txn_op!(DbTxnBatchEv, DbTxnBatch, "db_txn_batch", writes_arg, Writes, |t, writes| {
+    t.write.extend(writes);
+    Ok(Value::Null)
+});
 
-/// A builtin ending a transaction.
-macro_rules! txn_end {
-    ($ev:ident, $alias:ident, $name:literal, $cmd:expr) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
+#[derive(Debug, Default)]
+pub(crate) struct DbTxnCommitEv;
 
-        impl EvalCachedAsync for $ev {
-            type Args = Arc<TxnInner>;
+impl EvalCachedAsync for DbTxnCommitEv {
+    type Args = Arc<TxnInner>;
 
-            const NAME: &str = $name;
+    const NAME: &str = "db_txn_commit";
 
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                get_txn(cached)
-            }
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        get_txn(cached)
+    }
 
-            fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
-                async move { txn_send_recv(&txn.cmd_tx, $cmd).await }
-            }
-        }
-
-        graphix_package_core::unit_image_state!($ev);
-        pub(crate) type $alias = CachedArgsAsync<$ev>;
-    };
+    fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
+        blocking(move || txn.end()?.commit())
+    }
 }
 
-txn_end!(DbTxnCommitEv, DbTxnCommit, "db_txn_commit", TxnCommand::Commit);
-txn_end!(DbTxnRollbackEv, DbTxnRollback, "db_txn_rollback", TxnCommand::Rollback);
+pub(crate) type DbTxnCommit = CachedArgsAsync<DbTxnCommitEv>;
 
-graphix_package_core::unit_image_state!(DbTxnBeginEv);
+#[derive(Debug, Default)]
+pub(crate) struct DbTxnRollbackEv;
+
+impl EvalCachedAsync for DbTxnRollbackEv {
+    type Args = Arc<TxnInner>;
+
+    const NAME: &str = "db_txn_rollback";
+
+    fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        get_txn(cached)
+    }
+
+    fn eval(txn: Self::Args) -> impl Future<Output = Value> + Send {
+        blocking(move || txn.end().map(|_| Value::Null))
+    }
+}
+
+pub(crate) type DbTxnRollback = CachedArgsAsync<DbTxnRollbackEv>;
+
+graphix_package_core::unit_image_state!(DbTxnBeginEv, DbTxnCommitEv, DbTxnRollbackEv);

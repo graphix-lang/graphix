@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f36f0c42.js";
+            window.path_to_searchindex_js = "searchindex-80fc14a8.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -5089,34 +5089,6 @@ trait Collection {
     val find: fn(self&lt;'a&gt;, f: fn(x: 'a) -&gt; bool throws 'e) -&gt; Option&lt;'a&gt; throws 'e
         = |c, f| {
             let init: Option&lt;'a&gt; = null;
-                // CR claude for eric: [bug] The defaults use null to mean "no element".
-                // map and filter (lines 61, 64) go through filter_map, whose Option&lt;'b&gt;
-                // collapses when the element type holds null. This arm also can't tell
-                // a null match from "not found yet". So over nullable elements, map and
-                // filter drop elements and find returns a later one: for `m:
-                // Map&lt;string, [i64, null]&gt; = {"a" =&gt; null, "b" =&gt; 1}`, `len(filter(m,
-                // |v| opt::is_none(v)))` is 0 and `find(m, |v| true)` is 1, where
-                // Array's and List's intrinsics keep the null. Map's impl (mod.gx:51)
-                // overrides neither filter nor find, every user collection gets all
-                // three defaults, and line 48 ("the built-in collections override all
-                // of them") is false: Map lacks filter/find/find_map and List lacks
-                // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
-                // (gx-stdlib-04)
-                // 2026-10-07 claude: Map overrides filter (map_filter); List keeps the
-                // default len, a counting fold, as a cons list's length is a walk;
-                // find carries a found flag, so a null match ends the search; the
-                // trait doc no longer says the built-ins override everything and names
-                // the limit. What stands: a user collection's derived map and filter
-                // still drop null elements (the repro's `bag map 1`); keeping them needs
-                // a singleton constructor the trait does not have.
-                // 2026-10-08 claude: re-addressed: keeping a user collection's null
-                // elements through the derived map and filter needs a singleton
-                // constructor in the Collection trait (`singleton(x) -&gt; self&lt;'a&gt;`, or
-                // `push`): a language addition, yours to rule.
-                // 2026-10-08 claude: re-addressed: keeping a user collection's null
-                // elements through the derived map and filter needs a singleton
-                // constructor in the Collection trait (`singleton(x) -&gt; self&lt;'a&gt;`, or
-                // `push`): a language addition, yours to rule.
             let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
                 true =&gt; (done, acc),
                 false =&gt; select f(x) { true =&gt; (true, x), false =&gt; (false, acc) }
@@ -5163,26 +5135,6 @@ type ErrChain&lt;'a&gt; = {
     pos: Pos
 };
 
-// CR claude for eric: [structure] Three signatures here are looser than their builtins.
-// `all` returns one of its equal arguments but is typed `fn(@args: Any) -&gt; Any`, so
-// `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -&gt; 'a`, as max/min have, gives it a
-// real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
-// - 1, e)` with count = 0 passes every event (-1 wraps to usize::MAX) and skip(-1)
-// passes none. A string count is parsed, and a non-number leaves the count unset (take
-// passes nothing, skip passes everything); `#n: i64` with a negative read as 0 fixes
-// that. sum/product/divide (123, 181, 184) return the union Number, so `sum(1, 2) + 1`
-// and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
-// would type the result, but it would also refuse the mixed-number array that
-// graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
-// 2026-10-07 claude: all is fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a, and take/skip take
-// #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
-// result needs the Singleton bound, which the mixed-number fixture refuses.
-// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
-// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
-// f64]). Keep Number (casts at the call), or give up the mixed form?
-// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
-// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
-// f64]). Keep Number (casts at the call), or give up the mixed form?
 /// return the first argument when all arguments are equal, otherwise return nothing
 val all: fn&lt;'a: Discernible&gt;(a: 'a, @args: 'a) -&gt; 'a;
 
@@ -7267,8 +7219,12 @@ val read: fn(c: Cursor&lt;'k, 'v&gt;, trigger: Any) -&gt; Result&lt;[('k, 'v), n
 val read_many: fn(c: Cursor&lt;'k, 'v&gt;, n: i64) -&gt; Result&lt;Array&lt;('k, 'v)&gt;, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbtxn"><a class="header" href="#dbtxn">db::txn</a></h2>
-<p>Multi-tree ACID transactions. All trees must be opened before any data
-operations.</p>
+<p>Multi-tree ACID transactions, optimistic: an open transaction locks
+nothing. Its reads see the trees as they stand and its own writes, and
+its writes wait for the commit, which checks that every key it read
+still holds what it read and applies the writes atomically, or fails
+with <code>`Conflict</code> and applies none. A program that gets <code>`Conflict</code>
+runs the transaction again.</p>
 <pre><code class="language-graphix">use super::Db;
 /// An open transaction handle.
 type Txn;
@@ -7277,12 +7233,12 @@ type Txn;
 /// Types are checked against stored metadata, just like db::tree.
 type TxnTree&lt;'k, 'v&gt;;
 
-/// Begin a multi-tree transaction on a database.
+/// Begin a multi-tree transaction on a database. Reads see the trees
+/// as they stand and the transaction's own writes; writes are applied
+/// at commit. Nothing is locked while it is open.
 val begin: fn(db: Db) -&gt; Result&lt;Txn, `DbErr(string)&gt;;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-/// All trees must be opened before any data operations on any tree in
-/// the transaction.
 val tree: fn&lt;'k: Concrete + Ordered, 'v: Concrete&gt;(txn: Txn, name: [string, null]) -&gt; Result&lt;TxnTree&lt;'k, 'v&gt;, `DbErr(string)&gt;;
 
 /// Get a value within the transaction.
@@ -7297,10 +7253,12 @@ val remove: fn(t: TxnTree&lt;'k, 'v&gt;, key: 'k) -&gt; Result&lt;['v, null], `D
 /// Atomically apply a batch of inserts and removes within the transaction.
 val batch: fn(t: TxnTree&lt;'k, 'v&gt;, ops: Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;) -&gt; Result&lt;null, `DbErr(string)&gt;;
 
-/// Commit the transaction. All writes become visible atomically.
+/// Commit the transaction. All writes become visible atomically, or
+/// none do: `Conflict when a key the transaction read has changed
+/// since, after which the program may run the transaction again.
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val commit: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
+val commit: fn(txn: Txn) -&gt; Result&lt;null, [`DbErr(string), `Conflict]&gt;;
 
 /// Abort the transaction. No changes are applied.
 /// If you use any object created from this transaction after commit

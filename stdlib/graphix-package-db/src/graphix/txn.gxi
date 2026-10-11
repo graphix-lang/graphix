@@ -6,12 +6,12 @@ type Txn;
 /// Types are checked against stored metadata, just like db::tree.
 type TxnTree<'k, 'v>;
 
-/// Begin a multi-tree transaction on a database.
+/// Begin a multi-tree transaction on a database. Reads see the trees
+/// as they stand and the transaction's own writes; writes are applied
+/// at commit. Nothing is locked while it is open.
 val begin: fn(db: Db) -> Result<Txn, `DbErr(string)>;
 
 /// Open a tree within the transaction. Pass null for the default tree.
-/// All trees must be opened before any data operations on any tree in
-/// the transaction.
 val tree: fn<'k: Concrete + Ordered, 'v: Concrete>(txn: Txn, name: [string, null]) -> Result<TxnTree<'k, 'v>, `DbErr(string)>;
 
 /// Get a value within the transaction.
@@ -26,10 +26,12 @@ val remove: fn(t: TxnTree<'k, 'v>, key: 'k) -> Result<['v, null], `DbErr(string)
 /// Atomically apply a batch of inserts and removes within the transaction.
 val batch: fn(t: TxnTree<'k, 'v>, ops: Array<[`Insert('k, 'v), `Remove('k)]>) -> Result<null, `DbErr(string)>;
 
-/// Commit the transaction. All writes become visible atomically.
+/// Commit the transaction. All writes become visible atomically, or
+/// none do: `Conflict when a key the transaction read has changed
+/// since, after which the program may run the transaction again.
 /// If you use any object created from this transaction after commit
 /// or rollback you will receive a runtime error
-val commit: fn(txn: Txn) -> Result<null, `DbErr(string)>;
+val commit: fn(txn: Txn) -> Result<null, [`DbErr(string), `Conflict]>;
 
 /// Abort the transaction. No changes are applied.
 /// If you use any object created from this transaction after commit
