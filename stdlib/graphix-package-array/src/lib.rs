@@ -340,28 +340,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
-            // CR claude for eric: [bug] seam_tick reads a bottom answer from the
-            // predicate as "not answered yet", so `ready` stays false. A bottom answer
-            // is a FreshBottom: a `?` raise (which `throws 'e` allows), a div0, or a
-            // `$` on a bad index. When that bottom depends only on n and x, nothing
-            // re-fires the predicate. Group then never emits again, and every later v
-            // is pushed onto `queue` and never popped. The raise is the clear case: the
-            // error reaches the catch and the group is dead, whereas a seq machine
-            // aborts the run and takes the next trigger. A gated predicate (`n >= th$`
-            // with th null for a while) does rely on this wait and recovers today, so
-            // the fix has to tell a raise apart from a pending gate. probe:
-            // design/review-2026-10-05/repro/collections-str-04.gx (collections-str-04)
-            // 2026-10-07 claude: open. A fresh bottom answer is either a raise (the group
-            // should move on) or a gate still closed (it should wait), and the answer's tag
-            // cannot tell them apart; the seq machine's abort is the model for the first.
-            // 2026-10-08 claude: re-addressed, a rule: when array::group's predicate
-            // raises, should the group drop that element and move on (as a seq abort
-            // takes the next trigger), or keep waiting as for a closed gate? The answer's
-            // tag cannot tell the two; the raise reaches the catch either way.
-            // 2026-10-08 claude: re-addressed, a rule: when array::group's predicate
-            // raises, should the group drop that element and move on (as a seq abort
-            // takes the next trigger), or keep waiting as for a closed gate? The answer's
-            // tag cannot tell the two; the raise reaches the catch either way.
             match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {

@@ -765,6 +765,19 @@ const ARRAY_GROUP2: &str = r#"
 
 run!(array_group2, ARRAY_GROUP2, refused("bool throws 'e: unbound does not contain fn(v:"); FuseExpect::None);
 
+// A predicate that answers bottom holds group until it answers: the
+// elements that arrive meanwhile are judged once th has a value.
+run!(array_group_waits_for_an_answer, r#"
+{
+    let th: [i64, null] = null;
+    th <- sys::time::timer(duration:50.ms, false) ~ 2;
+    let a = array::iter([1, 2, 3, 4, 5, 6]);
+    array::group(a, |n, _| n >= th$)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(1), Value::I64(2)])
+}; FuseExpect::None);
+
 const ARRAY_INIT0: &str = r#"
   array::init(5, |i| i * 2)
 "#;
