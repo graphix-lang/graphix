@@ -2629,8 +2629,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
         // annotation could narrow it unsoundly. Its writers are not checked
-        // yet, so a ⊥-fed cell is not ⊥ here.
+        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier of a function
+        // type the signature holds is its callers' to pick.
         {
+            let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            ftype.inner_quantifiers(&mut quantifiers);
             let mut arg_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for a in ftype.args.iter() {
                 a.typ.collect_tvars(&mut arg_tvs);
@@ -2644,7 +2647,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ftype.rtype.collect_tvars(&mut rt_tvs);
             ftype.throws.collect_tvars(&mut rt_tvs);
             for (_, tv) in rt_tvs.drain() {
-                if !arg_cells.contains(&tv.cell_addr()) {
+                let addr = tv.cell_addr();
+                if !arg_cells.contains(&addr) && !quantifiers.contains_key(&addr) {
                     wrap!(self, tv.settle_witness(&ctx.env))?;
                 }
             }

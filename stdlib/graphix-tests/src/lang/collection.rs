@@ -437,6 +437,14 @@ run!(
     "#
 );
 
+// A callback that returns a function with its own quantifier leaves the
+// quantifier open: each call of an element picks it.
+run!(collection_returns_a_generic_function, r#"{
+    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let g = fs[0]$;
+    g(#start: 3, 4)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(7))); FuseExpect::None);
+
 // A collection fires when it resizes or its source comes back from bottom,
 // whatever tag the source arrives with (an arm waking after another arm
 // consumed the source's fire), as the fused loop does.

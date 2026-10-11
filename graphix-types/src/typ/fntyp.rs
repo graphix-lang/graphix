@@ -782,7 +782,7 @@ impl FnType {
 
     /// The open quantifiers of every function type the signature holds
     /// (a rank-2 formal's `fn<'b: C>`), by cell.
-    pub(super) fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
+    pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
         fn go(t: &Type, out: &mut AHashMap<usize, TVar>, seen: &mut AHashSet<usize>) {
             crate::stack::ensure_sufficient(|| match t {
                 Type::TVar(tv) => {
