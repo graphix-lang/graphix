@@ -2446,7 +2446,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     drain_pending_settles(ctx)?;
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
-    analysis::analyze(node, ctx)?;
+    let tail_loops = analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
     if fusion_on(flags) && ctx.fusion.available() {
         let st = Instant::now();
@@ -2456,6 +2456,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
         drop(p);
         fused?;
         info!("fusion time {:?}", st.elapsed());
+        analysis::check_tail_loops(tail_loops, ctx)?;
     }
     Ok(())
 }

@@ -8,8 +8,8 @@
 //! `fusion::lowering::structural_tail_loop`.
 
 use crate::{
-    ApplyView, BindId, CompileCtx, DefAssertionKind, LambdaId, LambdaInstanceId, Node,
-    NodeView, Refs, Rt, Update, UserEvent,
+    ApplyView, BindId, CompileCtx, DefAssertion, DefAssertionKind, LambdaId,
+    LambdaInstanceId, Node, NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{LambdaFacts, RecursionKind},
     env::Env,
@@ -257,12 +257,17 @@ fn strongly_connected<R: Rt, E: UserEvent>(
     res
 }
 
+/// The `#[tail_recursive]` assertions an analysis passed: each holds
+/// once fusion has built its loop ([`check_tail_loops`]).
+#[derive(Default)]
+pub struct TailLoops(LPooled<Vec<DefAssertion>>);
+
 /// Run the analysis over the whole compiled program. Results land via
 /// interior mutability on the nodes reached.
 pub fn analyze<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
     ctx: &CompileCtx<R, E>,
-) -> Result<()> {
+) -> Result<TailLoops> {
     let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(root, None);
     let facts = infer_effects(&graph, ctx);
@@ -274,7 +279,26 @@ pub fn analyze<R: Rt, E: UserEvent>(
     }
     // An assertion whose definition is not yet reached stays pending
     // for a later compile or a runtime bind.
-    check_def_assertions(&graph, ctx)
+    let mut due = TailLoops::default();
+    check_def_assertions(&graph, ctx, &mut due)?;
+    Ok(due)
+}
+
+/// Refuse each passed `#[tail_recursive]` whose loop fusion did not
+/// build: only a fused kernel runs a tail recursion as a loop.
+pub fn check_tail_loops<R: Rt, E: UserEvent>(
+    due: TailLoops,
+    ctx: &CompileCtx<R, E>,
+) -> Result<()> {
+    match due.0.iter().find(|a| !ctx.fusion.has_tail_loop(a.id)) {
+        None => Ok(()),
+        Some(a) => Err(anyhow!(
+            "#[tail_recursive]: no loop is built — the body did not fuse, and \
+             only a fused kernel runs a tail recursion as a loop \
+             (GXDBG_NATIVE_ALL=1 lists the fusion failures)"
+        )
+        .at(&a.spec)),
+    }
 }
 
 /// [`analyze`] for a callee bound at runtime (`CallSite::bind`), whose
@@ -298,18 +322,20 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     plan_blocks(&graph, ctx);
     let parallels =
         graph.parallels.iter().try_for_each(|f| check_parallel(&f.spec, &f.n, ctx));
-    if let Err(e) = parallels.and_then(|()| check_def_assertions(&graph, ctx)) {
+    let mut due = TailLoops::default();
+    if let Err(e) = parallels.and_then(|()| check_def_assertions(&graph, ctx, &mut due)) {
         crate::node::error::report_failure!(&compact_str::format_compact!("{e:#}"));
     }
 }
 
 /// Check every pending assertion whose definition this analysis
-/// reached, retiring all but a `#[sync]`; drop those whose definition
-/// is gone. Stops at the
-/// first failure.
+/// reached, retiring all but a `#[sync]`, a passed `#[tail_recursive]`
+/// into `due`; drop those whose definition is gone. Stops at the first
+/// failure.
 fn check_def_assertions<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     ctx: &CompileCtx<R, E>,
+    due: &mut TailLoops,
 ) -> Result<()> {
     let mut pending = ctx.def_assertions.lock();
     if pending.is_empty() {
@@ -335,7 +361,8 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
         // function async; the other facts are the definition's alone
         match pending[i].kind {
             DefAssertionKind::Sync => i += 1,
-            _ => drop(pending.remove(i)),
+            DefAssertionKind::TailRecursive => due.0.push(pending.remove(i)),
+            DefAssertionKind::Async => drop(pending.remove(i)),
         }
     }
     Ok(())
@@ -372,15 +399,6 @@ fn assertion_failure<R: Rt, E: UserEvent>(
             "#[async]: this function is sync — nothing in its body defers an \
              output to a later cycle",
         ),
-        // CR claude for claude: [bug/medium] #[tail_recursive] promises a
-        // constant-space loop but is decided before fusion, from purity and the
-        // formals' types (mark_recursion's `looped`), and only a kernel runs the loop
-        // (GXLambda::tail_loop is read by lowering alone). A tail recursion whose body
-        // does not fuse whole, and every one under --no-fusion, is accepted and keeps
-        // an activation per iteration: before Effect::Io, a body calling dbg passed
-        // the assertion and 5000 iterations aborted under GRAPHIX_ACTIVATION_BUDGET=1000.
-        // Decide it from the built loop (a kernel with has_tail_loop), refusing it under
-        // --no-fusion or saying the assertion is the JIT's. (tail-recursive-honest-01)
         DefAssertionKind::TailRecursive => match *d.recursion.lock() {
             RecursionKind::TailRecursive => None,
             RecursionKind::TailCalls if !def_facts(d).is_pure() => Some(

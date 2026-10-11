@@ -60,13 +60,17 @@ is labeled (the loop rebinds positional parameters), if the body holds
 memory of its own per call (a collection operation, or a call to a
 function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
-program does not compile.
+program does not compile. Only compiled code runs the loop: the
+interpreter keeps an activation per call, so the assertion holds when
+fusion is on and the body compiles to native code, and a body that
+does not (it takes a reference, say) fails the compile. With
+`--no-fusion` it is not checked, as `#[native]` is not.
 
 Two related assertions document a function's timing: `#[sync]` asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and `#[async]` asserts the opposite.
 Like `#[tail_recursive]` they never change how the function compiles — they
-only fail the compile when the inference disagrees with your expectation.
+only fail the compile when the compiler disagrees with your expectation.
 
 The check needs a call to look at. A function called only through a
 value chosen at runtime (`let g = select b { true => f, false => h };

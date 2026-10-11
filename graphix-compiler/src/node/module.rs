@@ -1005,7 +1005,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx.pending_settles.push(Vec::new());
         let res = self.compile_inner(ctx, &exprs).and_then(|()| {
             crate::check_pending_imports(ctx)?;
-            self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx))
+            self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx).map(drop))
         });
         ctx.pending_settles.pop().expect("load settle frame");
         ctx.attr_census.lock().truncate(census);

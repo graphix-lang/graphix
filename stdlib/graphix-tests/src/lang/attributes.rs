@@ -60,6 +60,18 @@ const TAIL_RECURSIVE_STATEFUL: &str = r#"
 
 run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None; build_only);
 
+// A pure body that does not fuse builds no loop: only a fused kernel runs
+// a tail recursion as one, so the assertion is the JIT's.
+const TAIL_RECURSIVE_UNFUSED: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 select n { i64:0 => acc, _ => f(n - i64:1, *(&acc) + i64:1) };
+  f(i64:10, i64:0)
+}
+"#;
+
+run!(tail_recursive_unfused, TAIL_RECURSIVE_UNFUSED, refused("#[tail_recursive]: no loop is built — the body did not fuse"); FuseExpect::None; jit_only);
+
 // A vacuous assertion is an error: the function never recurses.
 const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
 {

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-50139e32.js";
+            window.path_to_searchindex_js = "../searchindex-cf3a04fa.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -225,12 +225,16 @@ is labeled (the loop rebinds positional parameters), if the body holds
 memory of its own per call (a collection operation, or a call to a
 function that holds one, which each activation keeps apart), if the
 function does not recurse at all, or if it recurses mutually, the
-program does not compile.</p>
+program does not compile. Only compiled code runs the loop: the
+interpreter keeps an activation per call, so the assertion holds when
+fusion is on and the body compiles to native code, and a body that
+does not (it takes a reference, say) fails the compile. With
+<code>--no-fusion</code> it is not checked, as <code>#[native]</code> is not.</p>
 <p>Two related assertions document a function’s timing: <code>#[sync]</code> asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and <code>#[async]</code> asserts the opposite.
 Like <code>#[tail_recursive]</code> they never change how the function compiles — they
-only fail the compile when the inference disagrees with your expectation.</p>
+only fail the compile when the compiler disagrees with your expectation.</p>
 <p>The check needs a call to look at. A function called only through a
 value chosen at runtime (<code>let g = select b { true =&gt; f, false =&gt; h }; g(x)</code>) is checked when that call first reaches it; the program is
 already running then, so a failure is reported the way an unhandled

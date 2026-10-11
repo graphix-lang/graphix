@@ -88,7 +88,11 @@ are not.
 `#[tail_recursive]` asserts the gate and the loop (`GXLambda::tail_loop`
 for every instance, which also needs positional formals the loop can
 rebind): a stateful or async body, or a labeled or variadic formal,
-fails the assertion.
+fails the assertion. The gate is analysis's; the loop is the JIT's: a
+passed assertion holds once fusion has built a kernel of the
+definition with `has_tail_loop` (`analysis::check_tail_loops`, after the
+link), and where fusion does not run (`--no-fusion`, a dynamic module,
+a run-time bind) only the gate is checked, as `#[native]` is not.
 
 What follows for the three kinds of body:
 

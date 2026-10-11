@@ -666,8 +666,9 @@ node graph IS the IR — there is no parallel typed IR
   `#[native]` asserts zero node-walk residue at a source location and is
   THE advertised performance model (an argument a fused call is fed by
   the node-walk is residue; bound outside the annotation it is an
-  input); `#[sync]`/`#[async]`/
-  `#[tail_recursive]` assert analysis facts.
+  input); `#[sync]`/`#[async]` assert analysis facts, and
+  `#[tail_recursive]` analysis's gate plus the loop fusion built
+  (`analysis::check_tail_loops`; unchecked where fusion does not run).
 - **Bottom is dense** (`design/dense_delivery.md`,
   `design/representable_bottom.md`): `update` returns a `TagValue`
   every cycle — `Fired(v)`/`Stale(v)`/`FreshBottom`/`StaleBottom`, the
