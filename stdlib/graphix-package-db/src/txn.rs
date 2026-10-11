@@ -139,29 +139,6 @@ impl TxnState {
         Ok(())
     }
 
-    // XCR claude for claude: [bug] The whole interactive transaction runs inside this
-    // closure: TxnCtx::run waits in rx.recv() for the program's next command. For as
-    // long as the closure runs, sled 0.34 holds stage()'s concurrency_control::write().
-    // That is one static RwLock shared by every sled Db in the process, and every plain
-    // tree op, iterator step, generate_id, flush and sled's log flusher take its read
-    // side. So from a txn's first data op until its commit or rollback, every other db
-    // operation in the process blocks, on any database file. A plain op that the commit
-    // is sequenced after deadlocks, so do two txns interleaved across two databases,
-    // and a txn that is never committed freezes all db I/O for good. probe:
-    // design/review-2026-10-05/repro/db2-01.gx (hangs after "txn insert done";
-    // committing before the get exits 0). (db2-01)
-    // 2026-10-11 claude: Eric ruled option 1, optimistic transactions. The CR moved
-    // here with the code it was about: nothing runs inside a sled transaction while
-    // the program works any more. Reads go to the trees as they stand (recording what
-    // they saw), writes are buffered, and commit runs one short sled transaction that
-    // re-reads every recorded key and applies the writes, or answers `Conflict. The
-    // thread and channel are gone. The repro prints its expected lines and exits 0 in
-    // both engines. Pins: lib_tests::db::{db_txn_open_locks_nothing,
-    // db_txn_interleaved_databases} (hang on the old txn.rs), db_txn_conflict (fails
-    // with the read check undone).
-    // 2026-10-11 claude: Optimistic transactions: no lock is held between the program's
-    // operations; commit validates the reads. Wants the soak: commit can now answer
-    // `Conflict.
     fn commit(self) -> Result<Value> {
         let mut trees: Vec<sled::Tree> =
             self.trees.iter().map(|t| t.tree.clone()).collect();
