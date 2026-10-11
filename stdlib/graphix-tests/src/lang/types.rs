@@ -2353,6 +2353,26 @@ run!(
     FuseExpect::None
 );
 
+/// A binding an earlier input generalized stays generic, its uses having
+/// relied on it: a later write is held to its every instance, and a later
+/// `&mut` of it is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn written_after_generalized_is_held_to_it() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let _f = ctx.rt.compile(ArcStr::from("let f = |x| x")).await?;
+    let _s = ctx.rt.compile(ArcStr::from("let s = f(\"s\")")).await?;
+    let narrow = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 1")).await.unwrap_err();
+    assert!(format!("{narrow:#}").contains("what is written to it must be as general"));
+    let _w = ctx.rt.compile(ArcStr::from("f <- |x| x")).await?;
+    let r = ctx.rt.compile(ArcStr::from("let r = &mut f")).await.unwrap_err();
+    assert!(format!("{r:#}").contains("made generic by an earlier compile"));
+    ctx.shutdown().await;
+    Ok(())
+}
+
 const WRITTEN_BINDING_WRITER_FIRST: &str = r#"
 {
     let f = |x| x;

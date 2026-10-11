@@ -133,6 +133,14 @@ the definition gates:
   reference to a generalized binding copies the same cells, generic
   (`Fresh::Scheme`), so the call instantiates them.
 
+A binding something writes is not generalized (the value restriction,
+`CompileCtx::mark_connect_target`), unless an earlier compile already
+generalized it, which only a later input to the same runtime can see
+(the REPL, `GXHandle::compile`): its uses were checked against the
+scheme, so it stays one, a write is checked against a copy of it with
+every variable rigid (`Connect::typecheck0_with`), and a `&mut` of it
+is refused, since a reference cannot hold the variables rigid.
+
 An image carries each cell's level and each definition's depth.
 
 ### Settling

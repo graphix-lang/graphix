@@ -237,42 +237,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
-        // CR claude for eric: [bug] A binding that `<-` rewrites is generalized here as
-        // if it were immutable. The connect's check (node/mod.rs:2334) then unifies the
-        // written type into the scheme's own generic cells, so a writer narrows the
-        // definition, and only the uses checked after it see that. Statement order
-        // decides acceptance: `let f = |x| x; let n = f(41); f <- |x| "oops"; n + 1`
-        // passes --check but is refused with the use and the writer swapped. At run
-        // time the dynamic call binds the new function at the old type: the run-time
-        // bind logs "did not type" and carries on, the node-walk logs an arith error,
-        // and the fused `n + 1` panics the runtime thread at fusion/kernel.rs:243
-        // ("runtime String("oops") does not match the compiled Scalar(I64) slot"). Two
-        // other paths open the same hole: `let fr = &f; *fr <- ..` (the reference holds
-        // a copy, so f's scheme is never narrowed), and a let over ⊥ that a scheme was
-        // written into, which stays polymorphic because `lower` skips generic cells
-        // (graphix-types/src/typ/tvar.rs:292). probe:
-        // design/review-2026-10-05/repro/t-tvar-03.gx (t-tvar-03)
-        // 2026-10-10 claude: Eric ruled 10-10, the value restriction: a binding something
-        // writes (a <- target, or the referent of a &mut) is not generalized.
-        // mark_connect_target drops it from poly_binds, and the let's value, each <- and
-        // each write through a reference take one instance of a function's generalized
-        // signature (CompileCtx::monomorphic), so its uses, calls and writers share one
-        // type whatever the statement order. The probe is refused in both orders and
-        // through &mut; an unwritten binding stays polymorphic; a write's mismatch no
-        // longer suggests a union of two function types. The REPL case (a writer in a
-        // later input than the uses) still meets an already generalized binding. Pins:
-        // lang::types::written_binding_is_monomorphic and
-        // written_through_a_reference_is_monomorphic (fail with the fix undone),
-        // written_binding_writer_first, written_binding_takes_its_type.
-        // 2026-10-11 claude: reviewed: the value restriction holds within a compile
-        // (pins lang::types written_binding_is_monomorphic, written_binding_writer_first,
-        // written_through_a_reference_is_monomorphic, written_binding_takes_its_type).
-        // What remains is the REPL: a writer in a later input meets an already
-        // generalized binding and is accepted, and the earlier generic uses then run it.
-        // Piped to the shell: let f = |x| x; let s = f("s"); f <- |x: i64| x + 1; f(2)
-        // prints 3, so f("s") now runs the i64 function on a string. Needs a ruling:
-        // refuse a later writer unless it is as general as the binding's generalized
-        // type, or another rule for incremental compiles.
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);
@@ -1255,6 +1219,14 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 Referent::Channel(c) => (&**c as &dyn Any).downcast_ref::<Ref>(),
             };
             if let Some(r) = named {
+                if ctx.generalized_earlier(r.id) {
+                    bailat!(
+                        spec,
+                        "{} was made generic by an earlier compile, and a writable \
+                         reference to it would let a write narrow it: write it with <-",
+                        r.spec
+                    );
+                }
                 ctx.mark_connect_target(r.id);
             }
         }

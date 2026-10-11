@@ -1577,11 +1577,32 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Record `id` as a `<-` target, of this batch and for good. A
     /// binding something writes is never generalized: its uses share one
-    /// type, which every value written takes (the value restriction).
+    /// type, which every value written takes (the value restriction). One
+    /// an earlier compile generalized stays so, its uses having relied on
+    /// it, and a write is held to its type (`Connect::typecheck0_with`).
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
-        self.env.poly_binds.remove(&id);
+        if !self.generalized_earlier(id) {
+            self.env.poly_binds.remove(&id);
+        }
+    }
+
+    /// Whether `id` is a binding an earlier compile generalized: its
+    /// check already made its signature's variables generic.
+    pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
+        self.env.poly_binds.contains(&id)
+            && self.env.by_id.get(&id).is_some_and(|b| {
+                b.typ.with_deref(|t| match t {
+                    Some(Type::Fn(ft)) => {
+                        let mut cells: LPooled<AHashMap<usize, typ::TVar>> =
+                            LPooled::take();
+                        ft.reached_cells(&mut cells);
+                        cells.values().any(|tv| tv.level() == typ::tvar::Level::GENERIC)
+                    }
+                    _ => false,
+                })
+            })
     }
 
     /// A value's type as a written binding holds it: a function's

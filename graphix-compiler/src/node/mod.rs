@@ -25,6 +25,7 @@ use crate::{
         tvar::{AtLevel, InTask, current_level, new_task},
     },
 };
+use ahash::AHashMap;
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
@@ -2416,10 +2417,33 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
         };
+        // a binding an earlier compile generalized holds what is written
+        // as its every instance: a copy of its type, the variables rigid
+        let generic = ctx.env.poly_binds.contains(&self.id);
+        let held = match generic {
+            true => ctx.monomorphic(&bind.typ),
+            false => bind.typ.clone(),
+        };
+        let mut rigid: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        if generic {
+            held.collect_tvars(&mut rigid);
+        }
+        let _gates: LPooled<Vec<_>> = rigid.values().map(|tv| tv.open_rigid()).collect();
         wrap!(
             self,
-            bind.typ.check_contains(&ctx.env, written).map_err(|e| {
+            held.check_contains(&ctx.env, written).map_err(|e| {
                 match e.downcast_ref::<TypeMismatch>() {
+                    Some(_) if generic => format_with_flags(
+                        PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                        || {
+                            anyhow!(
+                                "{} is {}, made generic by an earlier compile, so what \
+                                 is written to it must be as general, and {written} is not",
+                                bind.name,
+                                bind.typ
+                            )
+                        },
+                    ),
                     Some(_) if self.spec.end.get().is_some() => {
                         write_mismatch(bind, written, &self.spec.ori)
                     }
