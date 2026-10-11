@@ -1,6 +1,9 @@
 use anyhow::Result;
 use arcstr::literal;
-use futures::{SinkExt, channel::mpsc};
+use futures::{
+    channel::mpsc,
+    future::{self, Either},
+};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
     Node, Rt, Scope, TagValue, UserEvent,
@@ -22,7 +25,8 @@ use std::{
     any::Any,
     cmp::Ordering,
     hash::{Hash, Hasher},
-    pin::Pin,
+    mem,
+    pin::{Pin, pin},
     sync::LazyLock,
     task::{Context, Poll, Waker},
 };
@@ -120,16 +124,39 @@ async fn watch(
     bind_id: BindId,
     mut tx: mpsc::Sender<GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>>,
 ) {
-    while let Some(first) = (&mut subscriber).await {
-        let mut events = EVENT_POOL.take();
-        push_event(key_typ, first, &mut events);
-        drain_ready(&mut subscriber, key_typ, &mut events);
+    let mut events = EVENT_POOL.take();
+    let mut open = true;
+    while open {
+        if events.is_empty() {
+            match (&mut subscriber).await {
+                Some(ev) => push_event(key_typ, ev, &mut events),
+                None => break,
+            }
+        }
+        // read sled while the runtime has no room: a subscriber that stops
+        // reading fills sled's buffer, which blocks every writer to the tree
+        let room = loop {
+            drain_ready(&mut subscriber, key_typ, &mut events);
+            let room = future::poll_fn(|cx| tx.poll_ready(cx));
+            match future::select(pin!(room), &mut subscriber).await {
+                Either::Left((room, _)) => break room,
+                Either::Right((Some(ev), _)) => push_event(key_typ, ev, &mut events),
+                Either::Right((None, _)) => {
+                    open = false;
+                    break future::poll_fn(|cx| tx.poll_ready(cx)).await;
+                }
+            }
+        };
+        if room.is_err() {
+            break;
+        }
         if events.is_empty() {
             continue;
         }
+        let events = mem::replace(&mut events, EVENT_POOL.take());
         let mut batch = CBATCH_POOL.take();
         batch.push((bind_id, Box::new(DbEvents(events)) as Box<dyn CustomBuiltinType>));
-        if tx.send(batch).await.is_err() {
+        if tx.start_send(batch).is_err() {
             break;
         }
     }
@@ -203,7 +230,7 @@ impl DbSubscribe {
         };
         let Ok(prefix) = prefix else { return };
         let subscriber = tree.tree.watch_prefix(&*prefix);
-        let (tx, rx) = mpsc::channel(10);
+        let (tx, rx) = mpsc::channel(1);
         ctx.rt.watch(rx);
         let jh = tokio::task::spawn(watch(subscriber, tree.key_typ, self.bind_id, tx));
         self.abort = Some(jh.abort_handle());
@@ -411,3 +438,32 @@ db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
     }
     DbEvent::Insert { .. } => None,
 });
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::encoding::encode_value;
+    use std::{sync::mpsc as std_mpsc, thread, time::Duration};
+
+    /// The runtime never takes a delivery, yet writes to the tree finish:
+    /// the watch keeps reading sled, whose full buffer would block them.
+    /// The writer is a thread of its own, so a blocked one fails the test
+    /// instead of holding the runtime's shutdown.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn writes_pass_a_stalled_runtime() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let (tx, _never_read) = mpsc::channel(1);
+        tokio::spawn(watch(db.watch_prefix(vec![]), None, BindId::new(), tx));
+        let (done_tx, done) = std_mpsc::channel();
+        thread::spawn(move || {
+            let value = encode_value(&Value::Null).unwrap();
+            for i in 0u64..3000 {
+                let key = encode_key(None, &Value::U64(i)).unwrap();
+                db.insert(key.as_slice(), value.as_slice()).unwrap();
+            }
+            let _ = done_tx.send(());
+        });
+        done.recv_timeout(Duration::from_secs(10))
+            .expect("a writer blocked on the subscriber's buffer");
+    }
+}
