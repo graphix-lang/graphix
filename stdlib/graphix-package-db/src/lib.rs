@@ -10,7 +10,7 @@ mod tree;
 mod txn;
 
 use cursor::{DbCursorNew, DbCursorRange, DbCursorRead, DbCursorReadMany};
-use subscribe::{DbOnInsert, DbOnRemove, DbSubscribe};
+use subscribe::{DbOnChange, DbOnInsert, DbOnRemove, DbSubscribe};
 use tree::{
     DbBatch, DbChecksum, DbCompareAndSwap, DbContainsKey, DbDropTree, DbExport, DbFirst,
     DbFlush, DbGenerateId, DbGet, DbGetGt, DbGetLt, DbGetMany, DbGetType, DbImport,
@@ -58,6 +58,7 @@ graphix_derive::defpackage! {
         DbCursorReadMany,
         DbCursorRange,
         DbSubscribe,
+        DbOnChange,
         DbOnInsert,
         DbOnRemove,
         DbTxnBegin,

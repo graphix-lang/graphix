@@ -5,8 +5,18 @@ type Subscription<'k, 'v>;
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree<'k, 'v>) -> Subscription<'k, 'v>;
 
-/// Fires reactively when inserts occur on the subscription.
+/// Fires with the changes each delivery carries, each key's in the order
+/// they were made, as the ops `db::batch` takes: a copy that applies each
+/// delivery front to back holds what the tree holds once the deliveries
+/// catch up. A commit or a batch may arrive across several deliveries.
+val on_change: fn(sub: Subscription<'k, 'v>) -> Result<Array<[`Insert('k, 'v), `Remove('k)]>, `DbErr(string)>;
+
+/// Fires reactively when inserts occur on the subscription. It drops the
+/// removes, and with them the order of the two: a copy of the tree
+/// follows `on_change`.
 val on_insert: fn(sub: Subscription<'k, 'v>) -> Result<Array<{key: 'k, value: 'v}>, `DbErr(string)>;
 
-/// Fires reactively when removes occur on the subscription.
+/// Fires reactively when removes occur on the subscription. It drops the
+/// inserts, and with them the order of the two: a copy of the tree
+/// follows `on_change`.
 val on_remove: fn(sub: Subscription<'k, 'v>) -> Result<Array<{key: 'k}>, `DbErr(string)>;

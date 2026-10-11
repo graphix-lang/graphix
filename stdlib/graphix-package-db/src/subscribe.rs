@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arcstr::literal;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
@@ -122,26 +123,6 @@ async fn watch(
     while let Some(first) = (&mut subscriber).await {
         let mut events = EVENT_POOL.take();
         push_event(key_typ, first, &mut events);
-        // CR claude for eric: [bug] A chunk is whatever sled had ready when
-        // this task woke, and the runtime delivers one chunk per bind id
-        // per cycle. So one atomic db::batch or txn::commit reaches
-        // on_insert spread over many cycles: a 2000-insert commit took 51
-        // to 770 cycles, and the commit's reply arrived midway. A
-        // subscriber that derives state from the events sees states the db
-        // never held, such as a debit without its credit. on_insert and
-        // on_remove also split each chunk into two arrays, so when an
-        // insert and a remove of one key arrive in one cycle their order is
-        // lost and a mirror cannot tell whether the key survived. sled's
-        // watch events carry no commit boundary, so delivering a write as
-        // one unit needs this package's own write paths to publish their
-        // write sets. probe: design/review-2026-10-05/repro/db2-07.gx
-        // (db2-07)
-        // 2026-10-07 claude: re-addressed: sled is the process's alone (one handle per
-        // path, tree.rs open_db), so the package's own write paths could publish each
-        // write set as one event in place of sled's watch. Ordering a write set's
-        // publication with the next write's needs a lock per db around apply and publish,
-        // which serializes the db's writes: a trade for Eric. One ordered on_change
-        // stream would also settle the insert/remove interleaving.
         drain_ready(&mut subscriber, key_typ, &mut events);
         if events.is_empty() {
             continue;
@@ -394,6 +375,19 @@ macro_rules! db_event_accessor {
         }
     };
 }
+
+db_event_accessor!(DbOnChange, "db_subscription_on_change", |se| Some(match se {
+    DbEvent::Insert { key, value } => {
+        Value::Array(ValArray::from([
+            literal!("Insert").into(),
+            key.clone(),
+            value.clone(),
+        ]))
+    }
+    DbEvent::Remove { key } => {
+        Value::Array(ValArray::from([literal!("Remove").into(), key.clone()]))
+    }
+}));
 
 db_event_accessor!(DbOnInsert, "db_subscription_on_insert", |se| match se {
     DbEvent::Insert { key, value } => {

@@ -1358,3 +1358,28 @@ run_with_tempdir!(
         Ok(())
     }
 );
+
+// on_change carries inserts and removes in one stream, in order, as the
+// ops db::batch takes.
+run_with_tempdir!(
+    name: db_subscription_on_change,
+    code: r#"{{
+        let db = db::open("{0}/x.db")$;
+        let t: db::Tree<string, i64> = db::tree(db, null)$;
+        let sub = db::subscription::new(t);
+        let changes = db::subscription::on_change(sub)$;
+        let log = [];
+        log <- changes ~ array::concat(log, changes);
+        let a = db::insert(t, sub ~ "a", 1)$;
+        let r = db::remove(t, a ~ "a")$;
+        let b = db::insert(t, r ~ "b", 2)$;
+        sys::time::after_idle(duration:200.ms, b ~ log) ~ log
+    }}"#,
+    setup: |td| { td.path() },
+    expect: |v: Value| -> Result<()> {
+        let ins = |k: &str, v: i64| arr([Value::String("Insert".into()), Value::String(k.into()), Value::I64(v)]);
+        let rm = |k: &str| arr([Value::String("Remove".into()), Value::String(k.into())]);
+        assert_eq!(v, arr([ins("a", 1), rm("a"), ins("b", 2)]));
+        Ok(())
+    }
+);

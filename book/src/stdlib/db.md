@@ -37,6 +37,8 @@ runs the transaction again.
 ## db::subscription
 
 Reactive subscriptions fire when entries are inserted or removed.
+`on_change` carries both, each key's in the order they happened, so a
+copy of a tree follows it; a commit may arrive across several cycles.
 
 ```graphix
 {{#include ../../../stdlib/graphix-package-db/src/graphix/subscription.gxi}}

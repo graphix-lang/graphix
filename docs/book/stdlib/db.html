@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-80fc14a8.js";
+            window.path_to_searchindex_js = "../searchindex-5d5a8450.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -353,7 +353,9 @@ val commit: fn(txn: Txn) -&gt; Result&lt;null, [`DbErr(string), `Conflict]&gt;;
 val rollback: fn(txn: Txn) -&gt; Result&lt;null, `DbErr(string)&gt;;
 </code></pre>
 <h2 id="dbsubscription"><a class="header" href="#dbsubscription">db::subscription</a></h2>
-<p>Reactive subscriptions fire when entries are inserted or removed.</p>
+<p>Reactive subscriptions fire when entries are inserted or removed.
+<code>on_change</code> carries both, each key’s in the order they happened, so a
+copy of a tree follows it; a commit may arrive across several cycles.</p>
 <pre><code class="language-graphix">use super::Tree;
 /// A reactive subscription to changes on a tree.
 type Subscription&lt;'k, 'v&gt;;
@@ -361,10 +363,20 @@ type Subscription&lt;'k, 'v&gt;;
 /// Subscribe to changes on a tree, optionally filtering by key prefix.
 val new: fn(?#prefix: ['k, null], t: Tree&lt;'k, 'v&gt;) -&gt; Subscription&lt;'k, 'v&gt;;
 
-/// Fires reactively when inserts occur on the subscription.
+/// Fires with the changes each delivery carries, each key's in the order
+/// they were made, as the ops `db::batch` takes: a copy that applies each
+/// delivery front to back holds what the tree holds once the deliveries
+/// catch up. A commit or a batch may arrive across several deliveries.
+val on_change: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;[`Insert('k, 'v), `Remove('k)]&gt;, `DbErr(string)&gt;;
+
+/// Fires reactively when inserts occur on the subscription. It drops the
+/// removes, and with them the order of the two: a copy of the tree
+/// follows `on_change`.
 val on_insert: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k, value: 'v}&gt;, `DbErr(string)&gt;;
 
-/// Fires reactively when removes occur on the subscription.
+/// Fires reactively when removes occur on the subscription. It drops the
+/// inserts, and with them the order of the two: a copy of the tree
+/// follows `on_change`.
 val on_remove: fn(sub: Subscription&lt;'k, 'v&gt;) -&gt; Result&lt;Array&lt;{key: 'k}&gt;, `DbErr(string)&gt;;
 </code></pre>
 
