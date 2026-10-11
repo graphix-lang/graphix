@@ -10,11 +10,29 @@ Fusion admits pure computation only. A subtree fuses iff every node in
 it emits CLIF and every builtin it reaches carries a fast fn; a kernel
 is a pure function of its inputs to (result, deliveries), with exactly
 one kind of cross-invocation memory: the firing boundary. Everything
-else — a builtin without a fast fn (stateful, effectful, seam-gated),
-`connect`, async producers — refuses emission and node-walks,
-transitively through callees. The user model is one sentence: *pure
-code over fastcall builtins fuses*; `#[native]` asserts it at a source
-location and turns every cliff into a compile error.
+else — a builtin without a fast fn (stateful, seam-gated), `connect`,
+async producers — refuses emission and node-walks, transitively through
+callees. The user model is one sentence: *pure code over fastcall
+builtins fuses*; `#[native]` asserts it at a source location and turns
+every cliff into a compile error.
+
+The one effect a kernel holds is an `Effect::Io` call (`dbg`, `log`,
+`print`, `println`), so debugging a kernel does not change it. Its
+`IoCall` is a fast fn for the call's value and the index of its trigger
+argument. The call site reads every other argument as stale, so the
+value fires when the trigger does, and when the trigger fires untainted
+`graphix_iocall` queues the site and the arguments beside the run's `?`
+raises (`emit_helpers::Deferred`); after the run the wrapper performs
+each through the builtin's `BuiltIn::perform`, in execution order, a
+forked loop's chunks in slot order. A kernel derives its selection
+fresh each run, so under a select arm a call that performs (an `Io`
+builtin's, or a function's that reaches one) fuses only when each
+argument that can trigger it fires at every entry to the arm: it reads
+the scrutinee or one of the arm's binds, at every select over it, and
+no arm has a guard (`lowering::arm_io_blocker`). Elsewhere a fire the
+arm missed asleep, which the node-walk re-delivers at entry, or a
+constant, which fires at the arm's wake, would print on one engine
+only. A tail recursion that prints by its formals is one native loop.
 
 Eric's ruling: "Complexity needs to pay rent, and this whack of
 complexity can't afford to live in our compiler." The machinery that
@@ -55,11 +73,14 @@ easy to forget after declaring Sync + stateless; now the invalid
 combinations are unrepresentable and declaring a builtin stateless puts
 the fast-fn question in the author's face. The `Option` keeps the
 stateless fact (the JIT's native tail loop, a sleep-free arm) for the
-builtins that can never be fast fns — effects (`print`/`log`/`exit`/`now`) and the
-partial-delivery producers (opt's short-circuits, `divide`,
-`filter_err`), whose result depends on which args arrived while a fast
-fn sees every arg present. Marking those `Sync` would have made a tail
-loop reaching `log` retain an activation per iteration.
+pure builtins that can never be fast fns, the partial-delivery
+producers (opt's short-circuits, `divide`, `filter_err`), whose result
+depends on which args arrived while a fast fn sees every arg present.
+An effect is never `Stateless`: an arm holding only stateless calls
+skips sleep and is re-entered as a birth, where a standing message
+reads fired and would print again. Effects are `Effect::Io` (above;
+`exit` has no `IoCall`), and `now`, which keeps its last reading, is
+`Sync`.
 
 `FastCall::Plain(fn(&[Value]) -> Option<Value>)` is called through
 `graphix_fastcall`: the site stores the args' (disc, payload) pairs in

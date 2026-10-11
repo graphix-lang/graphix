@@ -29,6 +29,7 @@ use crate::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     any::Any,
     cell::{Cell, RefCell},
@@ -586,7 +587,7 @@ unsafe fn graphix_swallowed_error(
 }
 
 /// Raise a `?` site's error onto the invocation's delivery queue
-/// (`QOP_RAISES`). `(disc, payload)` is the error Value, borrowed: the
+/// (`DEFERRED`). `(disc, payload)` is the error Value, borrowed: the
 /// queue takes a clone. `FusedKernel::update` drains the queue in order.
 unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
@@ -594,16 +595,16 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     let v = tv.value_cloned();
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const crate::node::error::QopSite) };
-    QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
+    DEFERRED.with(|q| q.borrow_mut().raises.push((site, v)));
 }
 
 /// Raise a `?` site's `NullError` for a fresh null operand onto the
-/// invocation's delivery queue (`QOP_RAISES`).
+/// invocation's delivery queue (`DEFERRED`).
 unsafe fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const crate::node::error::QopSite) };
     let e = Value::Error(crate::node::error::null_error(&site.spec).into());
-    QOP_RAISES.with(|q| q.borrow_mut().push((site, e)));
+    DEFERRED.with(|q| q.borrow_mut().raises.push((site, e)));
 }
 
 /// A handler-less `?` site meeting a fresh null: the same diagnostic
@@ -661,6 +662,32 @@ unsafe fn graphix_fastcall(
     let f: crate::FastFn =
         unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
     unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
+}
+
+/// Call an `Effect::Io` builtin's result fn with [`graphix_fastcall`]'s
+/// buffer and tag rules, and when its trigger (`trigger`, a mask bit)
+/// fired with no argument tainted, queue the call (`DEFERRED`) for the
+/// wrapper to perform after the run.
+unsafe fn graphix_iocall(
+    fn_ptr: u64,
+    site: u64,
+    args: u64,
+    n: u64,
+    taint_mask: u64,
+    stale_mask: u64,
+    trigger: u64,
+) -> TagValue {
+    // SAFETY: `fn_ptr` is the `FastFn` constant the kernel's record names.
+    let f: crate::FastFn =
+        unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
+    let tv = unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) };
+    if taint_mask == 0 && stale_mask & trigger == 0 {
+        // SAFETY: the call site's buffer holds `n` clean Values for the call.
+        let args = unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
+        let call = (site as *const crate::IoSite, args.iter().cloned().collect());
+        DEFERRED.with(|q| q.borrow_mut().io.push(call));
+    }
+    tv
 }
 
 /// Call a `TypedFastFn` with the site's interned `Type` and the
@@ -1875,6 +1902,22 @@ safe fn graphix_record_jit_invocation() {
 /// error.
 pub(crate) type QopRaise = (*const crate::node::error::QopSite, Value);
 
+/// An `Effect::Io` call a kernel queued: its site and its arguments.
+pub(crate) type IoQueued = (*const crate::IoSite, SmallVec<[Value; 2]>);
+
+/// What a kernel run leaves its wrapper to do, each in execution order:
+/// deliver its `?` raises and perform its `Io` calls.
+pub(crate) struct Deferred {
+    pub(crate) raises: LPooled<Vec<QopRaise>>,
+    pub(crate) io: LPooled<Vec<IoQueued>>,
+}
+
+impl Deferred {
+    pub(crate) fn new() -> Self {
+        Self { raises: LPooled::take(), io: LPooled::take() }
+    }
+}
+
 thread_local! {
     /// Sticky abort flag: set on a whole-kernel abort path, reset by
     /// `FusedKernel::update` before each wrapper call and read after; set
@@ -1890,10 +1933,9 @@ thread_local! {
     pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
 
-    /// The invocation's `?` delivery queue, in execution order, drained
-    /// after the wrapper returns ([`with_qop_raises`]); a kernel never
-    /// delivers mid-run.
-    static QOP_RAISES: RefCell<LPooled<Vec<QopRaise>>> = RefCell::new(LPooled::take());
+    /// The invocation's deferred work, drained after the wrapper returns
+    /// ([`with_deferred`]); a kernel never delivers or performs mid-run.
+    static DEFERRED: RefCell<Deferred> = RefCell::new(Deferred::new());
 }
 
 /// Take the panic a fast fn raised in a chunk run on this thread.
@@ -1906,9 +1948,13 @@ pub(crate) fn set_kernel_panic(p: Box<dyn Any + Send>) {
     KERNEL_PANIC.with(|q| *q.borrow_mut() = Some(p))
 }
 
-/// Append raises a chunk run queued to this thread's delivery queue.
-pub(crate) fn queue_qop_raises(raises: &mut LPooled<Vec<QopRaise>>) {
-    QOP_RAISES.with(|q| q.borrow_mut().extend(raises.drain(..)))
+/// Append what a chunk run deferred to this thread's queue.
+pub(crate) fn queue_deferred(d: &mut Deferred) {
+    DEFERRED.with(|q| {
+        let mut q = q.borrow_mut();
+        q.raises.extend(d.raises.drain(..));
+        q.io.extend(d.io.drain(..))
+    })
 }
 
 /// A chunk's value buf of capacity `cap`, taken on the thread that will
@@ -2047,12 +2093,12 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
     r
 }
 
-/// Run `f` against a fresh `?` delivery queue and return what it raised,
+/// Run `f` against a fresh deferred queue and return what it deferred,
 /// in order; an enclosing invocation's queue is set aside and restored.
-pub(crate) fn with_qop_raises<T>(f: impl FnOnce() -> T) -> (T, LPooled<Vec<QopRaise>>) {
+pub(crate) fn with_deferred<T>(f: impl FnOnce() -> T) -> (T, Deferred) {
     let outer =
-        QOP_RAISES.with(|q| std::mem::replace(&mut *q.borrow_mut(), LPooled::take()));
+        DEFERRED.with(|q| std::mem::replace(&mut *q.borrow_mut(), Deferred::new()));
     let r = f();
-    let mine = QOP_RAISES.with(|q| std::mem::replace(&mut *q.borrow_mut(), outer));
+    let mine = DEFERRED.with(|q| std::mem::replace(&mut *q.borrow_mut(), outer));
     (r, mine)
 }

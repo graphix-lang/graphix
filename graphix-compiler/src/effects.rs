@@ -5,14 +5,16 @@
 //! `FastCall` (`design/strict_fusion.md`): a `Sync` builtin keeps state
 //! and node-walks like an `Async` one.
 
-/// The two facts the fixpoint infers per lambda from an optimistic
-/// start: `effect` (`Sync` degrading to `Async`) and `stateless` (no
-/// per-activation state: every builtin reached is `Effect::Stateless`,
-/// no `<-` targets an own binding, every callee is stateless).
+/// The facts the fixpoint infers per lambda from an optimistic start:
+/// `effect` (`Sync` degrading to `Async`), `stateless` (no
+/// per-activation state: every builtin reached is `Effect::Stateless`
+/// or `Effect::Io`, no `<-` targets an own binding, every callee is
+/// stateless) and `io` (it reaches an `Effect::Io` builtin).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub struct LambdaFacts {
     pub effect: EffectKind,
     pub stateless: bool,
+    pub io: bool,
 }
 
 /// Pure: facts only degrade, and nothing has yet.
@@ -23,21 +25,30 @@ impl Default for LambdaFacts {
 }
 
 impl LambdaFacts {
-    pub const PURE: Self = Self { effect: EffectKind::Sync, stateless: true };
-    pub const ASYNC: Self = Self { effect: EffectKind::Async, stateless: false };
-    pub const STATEFUL: Self = Self { effect: EffectKind::Sync, stateless: false };
+    pub const PURE: Self = Self { effect: EffectKind::Sync, stateless: true, io: false };
+    pub const ASYNC: Self =
+        Self { effect: EffectKind::Async, stateless: false, io: false };
+    pub const STATEFUL: Self =
+        Self { effect: EffectKind::Sync, stateless: false, io: false };
+    pub const IO: Self = Self { effect: EffectKind::Sync, stateless: true, io: true };
 
     pub fn join(self, other: Self) -> Self {
         Self {
             effect: self.effect.join(other.effect),
             stateless: self.stateless && other.stateless,
+            io: self.io || other.io,
         }
     }
 
-    /// Sync and stateless: what a tail loop's single activation and a
-    /// sleep-free arm need.
+    /// Sync and stateless: what a tail loop's single activation needs.
     pub fn is_pure(self) -> bool {
         self.effect.is_sync() && self.stateless
+    }
+
+    /// Whether code with these facts must sleep with its arm: anything
+    /// but pure computation.
+    pub fn sleeps(self) -> bool {
+        !self.is_pure() || self.io
     }
 }
 
@@ -87,14 +98,29 @@ pub enum Effect {
     /// Same-cycle, but the instance holds cross-invocation state or its
     /// result depends on which arguments were delivered.
     Sync,
-    /// Same-cycle and a pure function of its arguments (memos, scratch
-    /// buffers and one-shot effects allowed). A wrong `Stateless` is a
-    /// semantics bug: tail-loop iterations would share state. The
-    /// payload is the JIT's direct-call entry; `None` for a builtin
-    /// that must not be called from a kernel (an effect that may
-    /// re-evaluate, or a raw `Apply` that answers before all its
-    /// arguments arrive: a `CachedArgs` builtin never sees a missing one).
+    /// Same-cycle and a pure function of its arguments (memos and
+    /// scratch buffers allowed, never an effect). A wrong `Stateless`
+    /// is a semantics bug: tail-loop iterations would share state, and
+    /// an arm holding it skips sleep. The payload is the JIT's
+    /// direct-call entry; `None` for a raw `Apply` that answers before
+    /// all its arguments arrive (a `CachedArgs` builtin never sees a
+    /// missing one).
     Stateless(Option<crate::FastCall>),
+    /// Same-cycle and stateless, but it acts on the world each time its
+    /// trigger argument fires (a print, a log line): an arm holding one
+    /// sleeps and a wake does not run it again. The payload is how a
+    /// kernel calls it: [`IoCall`].
+    Io(Option<IoCall>),
+}
+
+/// A fused [`Effect::Io`] call: `result` computes the call's value,
+/// gated with its tag on argument `trigger`'s fire, and each time that
+/// fires the kernel queues the call for [`crate::BuiltIn::perform`],
+/// which its wrapper runs after the kernel returns.
+#[derive(Debug, Clone, Copy)]
+pub struct IoCall {
+    pub result: crate::FastFn,
+    pub trigger: usize,
 }
 
 impl Effect {
@@ -102,17 +128,26 @@ impl Effect {
     pub fn kind(self) -> EffectKind {
         match self {
             Effect::Async => EffectKind::Async,
-            Effect::Sync | Effect::Stateless(_) => EffectKind::Sync,
+            Effect::Sync | Effect::Stateless(_) | Effect::Io(_) => EffectKind::Sync,
         }
     }
 
-    pub fn is_stateless(self) -> bool {
-        matches!(self, Effect::Stateless(_))
+    /// A call's facts, before its function arguments join them.
+    pub fn facts(self) -> LambdaFacts {
+        match self {
+            Effect::Async => LambdaFacts::ASYNC,
+            Effect::Sync => LambdaFacts::STATEFUL,
+            Effect::Stateless(_) => LambdaFacts::PURE,
+            Effect::Io(_) => LambdaFacts::IO,
+        }
     }
 
+    /// The direct-call entry a kernel calls: a `Stateless` builtin's,
+    /// or an `Io` builtin's result.
     pub fn fastcall(self) -> Option<crate::FastCall> {
         match self {
             Effect::Stateless(f) => f,
+            Effect::Io(c) => c.map(|c| crate::FastCall::Plain(c.result)),
             Effect::Async | Effect::Sync => None,
         }
     }

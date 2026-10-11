@@ -3,7 +3,7 @@
 //! level runs as chunks of slots, here, in order or forked.
 
 use super::emit_helpers::{
-    self, KERNEL_ABORT, KERNEL_ENV, QopRaise, SELF_BLOCK_GEN, SELF_BLOCK_MADE,
+    self, Deferred, KERNEL_ABORT, KERNEL_ENV, SELF_BLOCK_GEN, SELF_BLOCK_MADE,
     SELF_BLOCK_REACHED,
 };
 use crate::{
@@ -73,7 +73,7 @@ struct Run {
     panic: Option<Box<dyn Any + Send>>,
     reached: u64,
     made: u64,
-    raises: LPooled<Vec<QopRaise>>,
+    deferred: Deferred,
 }
 
 impl Run {
@@ -92,7 +92,7 @@ impl Run {
             panic: None,
             reached: 0,
             made: 0,
-            raises: LPooled::take(),
+            deferred: Deferred::new(),
         }
     }
 
@@ -112,7 +112,7 @@ impl Run {
 }
 
 // SAFETY: a run's out record names values a worker built for the
-// invoking thread; the raises are the kernel's own sites and values.
+// invoking thread; what it deferred names the kernel's own sites and values.
 unsafe impl Send for Run {}
 
 /// Run `chunk` over slots `lo..hi` on this thread, the run's loans as
@@ -121,10 +121,10 @@ unsafe fn run_here(chunk: Chunk, frame: u64, r: &mut Run) {
     let prev_abort = KERNEL_ABORT.with(|c| c.replace(false));
     let prev_reached = SELF_BLOCK_REACHED.with(|c| c.replace(0));
     let prev_made = SELF_BLOCK_MADE.with(|c| c.replace(0));
-    let ((), raises) = emit_helpers::with_qop_raises(|| unsafe {
+    let ((), deferred) = emit_helpers::with_deferred(|| unsafe {
         chunk(frame, r.lo as u64, r.hi as u64, r.out.as_mut_ptr())
     });
-    r.raises = raises;
+    r.deferred = deferred;
     r.aborted = KERNEL_ABORT.with(|c| c.replace(prev_abort));
     if r.aborted {
         r.panic = emit_helpers::take_kernel_panic();
@@ -283,8 +283,8 @@ unsafe fn in_order(
 }
 
 /// Merge `runs`, in slot order, into `out`, and report through this
-/// thread's loans what they reported through theirs: the raises of every
-/// run up to the first that aborted, its panic, the activations reached
+/// thread's loans what they reported through theirs: what every run up
+/// to the first that aborted deferred, its panic, the activations reached
 /// and made.
 unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     let aborted = runs.iter().position(|r| r.aborted);
@@ -294,7 +294,7 @@ unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     SELF_BLOCK_MADE.with(|c| c.set(c.get() + made));
     let delivered = aborted.map_or(runs.len(), |i| i + 1);
     for r in runs[..delivered].iter_mut() {
-        emit_helpers::queue_qop_raises(&mut r.raises);
+        emit_helpers::queue_deferred(&mut r.deferred);
     }
     if let Some(i) = aborted {
         for r in runs.iter() {

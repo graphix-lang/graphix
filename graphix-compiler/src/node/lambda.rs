@@ -11,7 +11,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn, LambdaId,
     LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     dbgenv,
-    effects::{EffectKind, LambdaFacts, RecursionKind},
+    effects::{LambdaFacts, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
@@ -1577,12 +1577,9 @@ impl Lambda {
             body.clone(),
             table.clone(),
         );
-        let (intrinsic_effect, stateless) = match &body {
-            DefBody::Expr(_) | DefBody::Collection(_) => (EffectKind::Sync, true),
-            DefBody::BuiltIn(name) => {
-                let effect = ctx.builtin_effect(name);
-                (effect.kind(), effect.is_stateless())
-            }
+        let facts = match &body {
+            DefBody::Expr(_) | DefBody::Collection(_) => LambdaFacts::PURE,
+            DefBody::BuiltIn(name) => ctx.builtin_effect(name).facts(),
         };
         // No signature ref seeding here: the module tree is mid-registration
         // and a name's final target may not be registered yet. Cells fill
@@ -1596,7 +1593,7 @@ impl Lambda {
             scope: scope.clone(),
             check: Mutex::new(None),
             table,
-            facts: Mutex::new(LambdaFacts { effect: intrinsic_effect, stateless }),
+            facts: Mutex::new(facts),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: spec.clone() },

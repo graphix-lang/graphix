@@ -15,9 +15,9 @@ let f = |n: i64| -> i64 n;
 f(i64:1)
 "#;
 
-/// A `#[native]` call whose callee prints, which no kernel can hold.
+/// A `#[native]` call whose callee keeps state, which no kernel can hold.
 const FALSE_NATIVE: &str = r#"
-let f = |x: i64| -> i64 { print(x); x * 2 + 1 };
+let f = |x: i64| -> i64 uniq(x) * 2 + 1;
 let r = #[native] f(20);
 r
 "#;

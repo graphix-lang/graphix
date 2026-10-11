@@ -243,7 +243,7 @@ let arr = [1, 2, 3, 4];
 let m = {"a" => 1, "b" => 2};
 let f = |#scale = 2, v: i64| -> i64 v * scale + base;
 let g = |v: i64| -> i64 select v { n if n < 0 => 0 - n, n => n };
-let sum = array::fold(array::map(arr, |x| x * 2), 0, |a, b| a + b);
+let sum = array::fold(array::map(arr, |x| dbg(#dest: `Debug, x * 2)), 0, |a, b| a + b);
 let text = "pt [pt.x] [pt.y] sum [sum]";
 let with = {pt with x: 9};
 let slice = arr[1..3];

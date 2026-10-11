@@ -1142,17 +1142,17 @@ async fn native_reports_callee_cause() -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     for prog in [
-        "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; #[native] g(a) }",
-        "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; \
+        "{ let a = 5; let g = |x: i64| uniq(x) + 1; #[native] g(a) }",
+        "{ let a = 5; let g = |x: i64| uniq(x) + 1; \
          let h = |x: i64| g(x) * 3; #[native] h(a) }",
     ] {
         let error = ctx
             .rt
             .compile(ArcStr::from(prog))
             .await
-            .expect_err("print must reject #[native]");
+            .expect_err("uniq must reject #[native]");
         let message = format!("{error:#}");
-        assert!(message.contains("`print` has no fast-call entry"), "{prog}: {message}");
+        assert!(message.contains("`uniq` has no fast-call entry"), "{prog}: {message}");
     }
     ctx.shutdown().await;
     Ok(())
@@ -1167,7 +1167,7 @@ async fn native_reports_first_refusal() -> Result<()> {
     let error = ctx
         .rt
         .compile(arcstr::literal!(
-            "{ let a = 5; let g = |x: i64| { print(x); x + 1 }; \
+            "{ let a = 5; let g = |x: i64| uniq(x) + 1; \
              let r = { #[native] g(a); #[native] once(a); 0 }; r }"
         ))
         .await

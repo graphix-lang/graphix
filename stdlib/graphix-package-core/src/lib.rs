@@ -6,9 +6,9 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, Node, Refs, Rt, Scope, Tag,
-    TagValue, TagView, TypedFastFn, UserEvent,
-    effects::Effect,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, IoSite, Node, Refs, Rt, Scope,
+    Tag, TagValue, TagView, TypedFastFn, UserEvent,
+    effects::{Effect, IoCall},
     env::Env,
     err, errf,
     expr::{Expr, ExprId},
@@ -1286,7 +1286,7 @@ impl<T> CachedArgs<T> {
                 // Wake catch-up: args may have drifted while asleep. A
                 // stateless eval re-runs from the present slots; a
                 // stateful one must not (its last result is its state).
-                if T::EFFECT.is_stateless() && woke {
+                if matches!(T::EFFECT, Effect::Stateless(_)) && woke {
                     match ev.eval(ctx, cached) {
                         Some(v) => last_result.set(TagValue::stale(v)),
                         None => last_result.set_bottom(false),
@@ -2650,76 +2650,94 @@ impl FromValue for LogDest {
     }
 }
 
+/// The four printers. Each writes a line to `#dest` (argument 0) at
+/// every fire of its message (argument 1), and fused, through the same
+/// [`Printer::emit`] after its kernel's run.
+#[derive(Debug, Clone, Copy)]
+enum Printer {
+    Dbg,
+    Log,
+    Print,
+    Println,
+}
+
+impl Printer {
+    fn default_dest(self) -> LogDest {
+        match self {
+            Self::Dbg => LogDest::Stderr,
+            Self::Log | Self::Print | Self::Println => LogDest::Stdout,
+        }
+    }
+
+    /// The call's value: dbg's is its message, the others' null.
+    fn result(self, v: &Value) -> Value {
+        match self {
+            Self::Dbg => v.clone(),
+            Self::Log | Self::Print | Self::Println => Value::Null,
+        }
+    }
+
+    fn emit<R: Rt, E: UserEvent>(
+        self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        dest: LogDest,
+        arg: &Expr,
+        typ: &Type,
+        v: &Value,
+    ) {
+        let mut line: LPooled<String> = LPooled::take();
+        match self {
+            Self::Dbg => write!(line, "{} dbg({arg}): ", arg.pos),
+            Self::Log => write!(line, "{}: ", arg.pos),
+            Self::Print | Self::Println => Ok(()),
+        }
+        .unwrap();
+        coretraits::with_display_hooks(ctx, |env| {
+            match (self, v) {
+                (Self::Print | Self::Println, Value::String(s)) => write!(line, "{s}"),
+                (_, v) => write!(line, "{}", TVal { env, typ, v }),
+            }
+            .unwrap()
+        });
+        let suffix = match self {
+            Self::Print => "",
+            Self::Dbg | Self::Log | Self::Println => "\n",
+        };
+        emit_line(ctx, dest, &line, suffix)
+    }
+
+    /// A fused call's effect: the arguments its kernel queued.
+    fn perform<R: Rt, E: UserEvent>(
+        self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        site: &IoSite,
+        args: &[Value],
+    ) {
+        let dest = args[0].clone().cast_to::<LogDest>().unwrap_or(self.default_dest());
+        self.emit(ctx, dest, &site.arg, site.typ(), &args[1])
+    }
+}
+
+fn dbg_result(args: &[Value]) -> Option<Value> {
+    Some(args[1].clone())
+}
+
+fn null_result(_: &[Value]) -> Option<Value> {
+    Some(Value::Null)
+}
+
+/// A printer's application. A bottom argument bottoms the call, and its
+/// tag is the message's: the kernel's fast call reads `#dest` as stale.
 #[derive(Debug)]
-struct Dbg {
-    spec: Expr,
+struct PrintCall {
+    printer: Printer,
     dest: LogDest,
-    typ: Type,
-    buf: String,
     out: TagValue,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = ctx;
-        let spec = Expr::decode(buf)?;
-        let dest = LogDest::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let buf_ = String::decode(buf)?;
-        Ok(Box::new(Dbg { spec, dest, typ, buf: buf_, out: TagValue::phantom() }))
-    }
-
-    // CR claude for eric: [bug] dbg is an effect but is declared Stateless(None), as
-    // are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
-    // arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
-    // call skips sleep, and each re-selection enters it as a birth where the standing
-    // argument reads FIRED: dbg and log print again and now resamples although the
-    // argument never fired, while println in the same arm shape prints once. Whether
-    // the arm sleeps also depends on fusion, so the engines disagree: `{ dbg(#dest:
-    // `Stdout, z); 100 }` prints once under the JIT (the fused `100` is a FusedKernel,
-    // counted ASYNC) and at every entry under --no-fusion. Declaring them Sync, as
-    // print/println are, makes both engines print once; the Effect::Stateless doc and
-    // CLAUDE.md's "`None` for effects" say the opposite and need the same correction.
-    // probe: design/review-2026-10-05/repro/x-builtin-effects-05.gx
-    // (x-builtin-effects-05)
-    // 2026-10-07 claude: re-addressed with core-lib-09, which asks the opposite (print
-    // and println Stateless(None)). One Effect variant serves two questions: is_pure
-    // (analysis.rs) decides both that an arm skips sleep and that a tail loop runs as one
-    // activation. An effect without a fast call wants "may skip a tail loop's
-    // activations" but "must sleep with its arm" (dbg, log, print, buffer::decode's
-    // writes, x-builtin-effects-02). A fourth class, or a second predicate for arm sleep,
-    // is the decision.
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_dbg";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Dbg {
-            spec: from[1].spec().clone(),
-            dest: LogDest::Stderr,
-            typ: Type::Bottom,
-            buf: String::new(),
-            out: TagValue::phantom(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
+impl<R: Rt, E: UserEvent> Apply<R, E> for PrintCall {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.spec.encode(buf)?;
-        self.dest.encode(buf)?;
-        self.typ.encode(buf)?;
-        self.buf.encode(buf)
+        self.dest.encode(buf)
     }
 
     fn update(
@@ -2727,34 +2745,26 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
-            && let Ok(d) = v.cast_to::<LogDest>()
+        let dest = from[0].update(ctx);
+        let dest_bottom = dest.is_bottom();
+        if let Some(d) =
+            seam_value(dest).and_then(|tv| tv.value_cloned().cast_to::<LogDest>().ok())
         {
             self.dest = d;
         }
-        let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) else {
-            return self.out.ride();
+        let msg = from[1].update(ctx);
+        let tag = msg.tag();
+        let v = match seam_value(msg) {
+            Some(tv) if !dest_bottom => tv.value_cloned(),
+            _ => return self.out.set_bottom_as(tag),
         };
-        self.buf.clear();
-        write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
-        let (buf, typ) = (&mut self.buf, &self.typ);
-        coretraits::with_display_hooks(ctx, |env| {
-            write!(buf, "{}", TVal { env, typ, v: &v }).unwrap()
-        });
-        emit_line(ctx, self.dest, &self.buf, "\n");
-        self.out.set(TagValue::fired(v))
+        if tag.is_fired() {
+            self.printer.emit(ctx, self.dest, from[1].spec(), from[1].typ(), &v);
+        }
+        self.out.set(TagValue::tagged(self.printer.result(&v), tag))
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-
-    fn typecheck0(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        self.typ = from[1].typ().clone();
-        Ok(())
-    }
 }
 
 /// Where a print builtin's output goes this cycle, and the line it
@@ -2791,114 +2801,14 @@ fn emit_line<R: Rt, E: UserEvent>(
     }
 }
 
-#[derive(Debug)]
-struct Log {
-    dest: LogDest,
-    buf: String,
-    out: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
-    fn image_decode(
-        ctx: &mut ExecCtx<'_, R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let _ = ctx;
-        let dest = LogDest::decode(buf)?;
-        let buf_ = String::decode(buf)?;
-        Ok(Box::new(Self { dest, buf: buf_, out: TagValue::phantom() }))
-    }
-
-    const EFFECT: Effect = Effect::Stateless(None);
-    const NAME: &str = "core_log";
-
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a graphix_compiler::typ::FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        _from: &'c [Node<R, E>],
-        _top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(Self {
-            dest: LogDest::Stdout,
-            buf: String::new(),
-            out: TagValue::phantom(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        self.dest.encode(buf)?;
-        self.buf.encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
-        from: &mut [Node<R, E>],
-    ) -> &TagValue {
-        if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
-            && let Ok(d) = v.cast_to::<LogDest>()
-        {
-            self.dest = d;
-        }
-        let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) else {
-            return self.out.ride();
-        };
-        self.buf.clear();
-        // the logged argument's position: where the call is
-        write!(self.buf, "{}: ", from[1].spec().pos).unwrap();
-        let typ = from[1].typ().clone();
-        let buf = &mut self.buf;
-        coretraits::with_display_hooks(ctx, |env| {
-            write!(buf, "{}", TVal { env, typ: &typ, v: &v }).unwrap()
-        });
-        emit_line(ctx, self.dest, &self.buf, "\n");
-        self.out.set(TagValue::fired(Value::Null))
-    }
-
-    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
-}
-
-macro_rules! printfn {
-    ($type:ident, $name:literal, $suffix:literal) => {
-        #[derive(Debug)]
-        struct $type {
-            dest: LogDest,
-            buf: String,
-            out: TagValue,
-        }
+macro_rules! printer {
+    ($type:ident, $name:literal, $printer:expr, $result:ident) => {
+        struct $type;
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            // CR claude for eric: [perf] print and println are declared Sync, while dbg
-            // and log, which have the same shape (a #dest config, a scratch buffer,
-            // emit_line), are Stateless(None), and design/strict_fusion.md lists print
-            // among the effects kept Stateless(None) so a tail loop that prints stays
-            // one activation. As Sync, a tail recursion that calls println keeps an
-            // activation per iteration, and #[tail_recursive] on it is refused as
-            // stateful, while the same loop with dbg or log is accepted. Declare both
-            // Stateless(None). Dbg, Log and printfn repeat one update body (dest from
-            // arg 0, seam_tick on arg 1, format into buf, emit_line), which is how
-            // their effects drifted apart; one shared body would also stop all four
-            // imaging their scratch buffer. probe:
-            // design/review-2026-10-05/repro/core-lib-09.gx (core-lib-09)
-            // 2026-10-07 claude: re-addressed with x-builtin-effects-05 (the same choice from the
-            // other side).
-            const EFFECT: Effect = Effect::Sync;
+            const EFFECT: Effect =
+                Effect::Io(Some(IoCall { result: $result, trigger: 1 }));
             const NAME: &str = $name;
-
-            fn image_decode(
-                _ctx: &mut ExecCtx<'_, R, E>,
-                _from: &[Node<R, E>],
-                buf: &mut &[u8],
-            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-                let dest = LogDest::decode(buf)?;
-                let buf = String::decode(buf)?;
-                Ok(Box::new(Self { dest, buf, out: TagValue::phantom() }))
-            }
 
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut CompileCtx<R, E>,
@@ -2908,56 +2818,93 @@ macro_rules! printfn {
                 _from: &'c [Node<R, E>],
                 _top_id: ExprId,
             ) -> Result<Box<dyn Apply<R, E>>> {
-                Ok(Box::new(Self {
-                    dest: LogDest::Stdout,
-                    buf: String::new(),
+                let printer = $printer;
+                let dest = printer.default_dest();
+                Ok(Box::new(PrintCall { printer, dest, out: TagValue::phantom() }))
+            }
+
+            fn image_decode(
+                _ctx: &mut ExecCtx<'_, R, E>,
+                _from: &[Node<R, E>],
+                buf: &mut &[u8],
+            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let dest = LogDest::decode(buf)?;
+                Ok(Box::new(PrintCall {
+                    printer: $printer,
+                    dest,
                     out: TagValue::phantom(),
                 }))
             }
-        }
 
-        impl<R: Rt, E: UserEvent> Apply<R, E> for $type {
-            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-                self.dest.encode(buf)?;
-                self.buf.encode(buf)
+            fn perform(ctx: &mut ExecCtx<'_, R, E>, site: &IoSite, args: &[Value]) {
+                $printer.perform(ctx, site, args)
             }
-
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<'_, R, E>,
-                from: &mut [Node<R, E>],
-            ) -> &TagValue {
-                if let Some(v) =
-                    seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
-                    && let Ok(d) = v.cast_to::<LogDest>()
-                {
-                    self.dest = d;
-                }
-                let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
-                else {
-                    return self.out.ride();
-                };
-                self.buf.clear();
-                let typ = from[1].typ().clone();
-                let buf = &mut self.buf;
-                coretraits::with_display_hooks(ctx, |env| {
-                    match &v {
-                        Value::String(s) => write!(buf, "{s}"),
-                        v => write!(buf, "{}", TVal { env, typ: &typ, v }),
-                    }
-                    .unwrap()
-                });
-                emit_line(ctx, self.dest, &self.buf, $suffix);
-                self.out.set(TagValue::fired(Value::Null))
-            }
-
-            fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
         }
     };
 }
 
-printfn!(Print, "core_print", "");
-printfn!(Println, "core_println", "\n");
+// XCR claude for claude: [bug] dbg is an effect but is declared Stateless(None), as
+// are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
+// arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
+// call skips sleep, and each re-selection enters it as a birth where the standing
+// argument reads FIRED: dbg and log print again and now resamples although the
+// argument never fired, while println in the same arm shape prints once. Whether
+// the arm sleeps also depends on fusion, so the engines disagree: `{ dbg(#dest:
+// `Stdout, z); 100 }` prints once under the JIT (the fused `100` is a FusedKernel,
+// counted ASYNC) and at every entry under --no-fusion. Declaring them Sync, as
+// print/println are, makes both engines print once; the Effect::Stateless doc and
+// CLAUDE.md's "`None` for effects" say the opposite and need the same correction.
+// probe: design/review-2026-10-05/repro/x-builtin-effects-05.gx
+// (x-builtin-effects-05)
+// 2026-10-07 claude: re-addressed with core-lib-09, which asks the opposite (print
+// and println Stateless(None)). One Effect variant serves two questions: is_pure
+// (analysis.rs) decides both that an arm skips sleep and that a tail loop runs as one
+// activation. An effect without a fast call wants "may skip a tail loop's
+// activations" but "must sleep with its arm" (dbg, log, print, buffer::decode's
+// writes, x-builtin-effects-02). A fourth class, or a second predicate for arm sleep,
+// is the decision.
+// 2026-10-10 claude: Eric ruled 10-10: a fourth class, Effect::Io(Option<IoCall>), for a
+// stateless builtin that acts on the world at each fire of its trigger argument (dbg,
+// log, print, println; sys::exit and tui::exit with no IoCall). An arm holding one sleeps
+// (LambdaFacts::io, RegionFacts::io, analysis::arm_sleeps), so each prints once per fire
+// and not again at re-entry. Stateless(None) is now pure producers only, never an effect.
+// sys::time::now keeps its last reading and is Sync, one timestamp per trigger. The four
+// printers share one body (Printer/PrintCall), imaging only #dest. Pins:
+// lang::printing::printers_act_once_per_fire (interp and par fail with the arm-sleep rule
+// undone), now_samples_once_per_trigger (all modes fail with now Stateless). Wants the
+// soak.
+// XCR claude for claude: [perf] print and println are declared Sync, while dbg
+// and log, which have the same shape (a #dest config, a scratch buffer,
+// emit_line), are Stateless(None), and design/strict_fusion.md lists print
+// among the effects kept Stateless(None) so a tail loop that prints stays
+// one activation. As Sync, a tail recursion that calls println keeps an
+// activation per iteration, and #[tail_recursive] on it is refused as
+// stateful, while the same loop with dbg or log is accepted. Declare both
+// Stateless(None). Dbg, Log and printfn repeat one update body (dest from
+// arg 0, seam_tick on arg 1, format into buf, emit_line), which is how
+// their effects drifted apart; one shared body would also stop all four
+// imaging their scratch buffer. probe:
+// design/review-2026-10-05/repro/core-lib-09.gx (core-lib-09)
+// 2026-10-07 claude: re-addressed with x-builtin-effects-05 (the same choice from the
+// other side).
+// 2026-10-10 claude: Eric ruled 10-10, with x-builtin-effects-05: Effect::Io, and it
+// fuses. IoCall is a result fast fn plus the trigger's index; the call site reads every
+// other argument as stale, so the value fires with the trigger, and an untainted trigger
+// fire queues the site and arguments (emit_helpers::Deferred, beside the ? raises); the
+// wrapper performs each through BuiltIn::perform after the run, in order, a forked loop's
+// chunks in slot order. A call returning bare null now fuses. Under a select arm a
+// performing call fuses only when each trigger reads the scrutinee or the arm's binds and
+// no arm has a guard (lowering::arm_io_blocker). So a tail recursion that prints is one
+// native loop (100,000 iterations under GRAPHIX_ACTIVATION_BUDGET=1000), and dbg holds
+// under #[native]. Pins: lang::printing::printing_tail_loop_is_native (jit modes fail
+// with null returns refused), dbg_fuses_under_native, dest_alone_neither_prints_nor_fires
+// (jit modes fail without the stale mask), arm_entry_prints_a_constant;
+// lang::image::program_image_restores_kernels runs a dbg in a kernel warm. Format 46.
+// Wants the soak.
+printer!(Dbg, "core_dbg", Printer::Dbg, dbg_result);
+printer!(Log, "core_log", Printer::Log, null_result);
+printer!(Print, "core_print", Printer::Print, null_result);
+printer!(Println, "core_println", Printer::Println, null_result);
 
 crate::fast_builtin!(
     /// `array::len` — registered here (the array package binds the name)

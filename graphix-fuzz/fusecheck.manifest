@@ -106,8 +106,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 3	deref-reads-the-referent-aug2026/04_retarget.gx
 2	deref-reads-the-referent-aug2026/05_expression_ref_paces_like_connect.gx
 0	dynamic-bind-default-sep2026/00_ill_typed_default_via_fn_var.gx
-2	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
-2	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
+3	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
+3	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
 1	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
 1	dyncall-apply-unwired-aug2026/03_abstract_repr_leak.gx
 9	dyncall-arm-init-stale-aug2026/00_reselected_arm_rides_prior_result.gx
@@ -127,8 +127,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 4	dyncall-stale-arg-fired-aug2026/01_escape_per_arg_gating.gx
 4	dyncall-stale-arg-fired-aug2026/02_rand_rerandomizes.gx
 4	dyncall-stale-arg-fired-aug2026/03_now_resamples_clock.gx
-2	dyncall-tagblind-print-aug2026/00_const_arg_effect_refires.gx
-6	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
+3	dyncall-tagblind-print-aug2026/00_const_arg_effect_refires.gx
+5	dyncall-tagblind-print-aug2026/04_hof_callback_effect_per_invocation.gx
 1	dyncall-value-return-stale-aug2026/00_nested_map_count.gx
 1	dyncall-value-return-stale-aug2026/01_bytes_builtin_in_callee_loop.gx
 1	dyncall-value-return-stale-aug2026/02_cast_string_in_callee_loop.gx
@@ -339,7 +339,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx
 2	select-guard-shortcircuit-aug2026/00_guard_never_evaluated_no_history.gx
 2	select-guard-shortcircuit-aug2026/01_guard_cache_ride_wrong_arm.gx
-4	select-guard-shortcircuit-aug2026/02_guard_effect_skipped.gx
+3	select-guard-shortcircuit-aug2026/02_guard_effect_skipped.gx
 2	select-guard-taint-jul2026/00_tainted_init_skips_guard_tick.gx
 11	select-guard-taint-jul2026/01_guarded_select_over_tainted_fold.gx
 1	select-jun2026/01_nullable_pred_arm_order.gx
@@ -541,5 +541,5 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 4	wake-stale-bottom-sep2026/02_let.gx
 4	wake-stale-bottom-sep2026/03_call.gx
 5	wake-stale-bottom-sep2026/04_map_source.gx
-5	wake-stale-bottom-sep2026/05_fold_init.gx
+4	wake-stale-bottom-sep2026/05_fold_init.gx
 1	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

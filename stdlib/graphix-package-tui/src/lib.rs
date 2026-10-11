@@ -668,7 +668,7 @@ type SuspendB = CachedArgsAsync<SuspendEv>;
 struct Exit;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
-    const EFFECT: Effect = Effect::Stateless(None);
+    const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "tui_exit";
 
     fn init<'a, 'b, 'c, 'd>(

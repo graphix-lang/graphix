@@ -587,7 +587,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
 pub(crate) struct Exit;
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
-    const EFFECT: Effect = Effect::Stateless(None);
+    const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(

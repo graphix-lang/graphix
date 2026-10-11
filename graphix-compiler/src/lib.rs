@@ -793,6 +793,29 @@ pub enum FastCall {
     Typed(TypedFastFn),
 }
 
+/// A fused [`Effect::Io`] call site: what [`BuiltIn::perform`] reads
+/// besides the call's arguments.
+pub struct IoSite {
+    /// The builtin's registered name.
+    pub builtin: ArcStr,
+    /// The trigger argument as written.
+    pub arg: Expr,
+    typ: fusion::emit::KernelType,
+}
+
+impl IoSite {
+    pub(crate) fn new(builtin: ArcStr, arg: Expr, typ: Type) -> Self {
+        Self { builtin, arg, typ: fusion::emit::KernelType::new(typ) }
+    }
+
+    /// The trigger argument's type.
+    pub fn typ(&self) -> &Type {
+        &self.typ.typ
+    }
+}
+
+pub type BuiltInPerformFn<R, E> = fn(&mut ExecCtx<'_, R, E>, &IoSite, &[Value]);
+
 /// A Graphix builtin implemented in Rust.
 pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// The builtin's name, `package::unique_name` for a package builtin.
@@ -821,6 +844,14 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
         from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
+
+    /// An [`Effect::Io`] builtin's effect at a fused call: the kernel
+    /// queued the arguments when the trigger fired, and its wrapper
+    /// performs the call after the kernel returns, as the node-walk's
+    /// application would have.
+    fn perform(_ctx: &mut ExecCtx<'_, R, E>, _site: &IoSite, _args: &[Value]) {
+        unreachable!("{} is not an Effect::Io builtin", Self::NAME)
+    }
 }
 
 /// A compile-time check for a `#[..]` attribute, dispatched by the
@@ -1197,6 +1228,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 struct BuiltinEntry<R: Rt, E: UserEvent> {
     init: BuiltInInitFn<R, E>,
     decode: BuiltInDecodeFn<R, E>,
+    perform: BuiltInPerformFn<R, E>,
     effect: Effect,
     ordered: bool,
 }
@@ -1616,6 +1648,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                 e.insert(BuiltinEntry {
                     init: T::init,
                     decode: T::image_decode,
+                    perform: T::perform,
                     effect: T::EFFECT,
                     ordered: T::ORDERED,
                 });
@@ -1657,6 +1690,15 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// A registered builtin's [`Effect`]; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> Effect {
         self.registry.builtins.get(name).map(|b| b.effect).unwrap_or_default()
+    }
+
+    /// A registered [`Effect::Io`] builtin's [`BuiltIn::perform`].
+    pub fn builtin_perform(&self, name: &str) -> Option<BuiltInPerformFn<R, E>> {
+        self.registry
+            .builtins
+            .get(name)
+            .filter(|b| matches!(b.effect, Effect::Io(_)))
+            .map(|b| b.perform)
     }
 
     /// Whether a registered builtin is [`BuiltIn::ORDERED`].

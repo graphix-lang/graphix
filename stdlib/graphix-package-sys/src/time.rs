@@ -311,7 +311,7 @@ pub(crate) struct Now {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
-    const EFFECT: Effect = Effect::Stateless(None);
+    const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(

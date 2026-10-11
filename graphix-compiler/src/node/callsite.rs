@@ -818,6 +818,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.arg(&ArgKey::Positional(idx))
     }
 
+    /// Every argument the call wrote, compiled.
+    pub(crate) fn arg_nodes(&self) -> impl Iterator<Item = &Node<R, E>> {
+        self.args.values().filter_map(|a| a.node.as_ref())
+    }
+
     /// Look up a labeled argument's compiled sub-Node.
     pub fn arg_named(&self, name: &ArcStr) -> Option<&Node<R, E>> {
         self.arg(&ArgKey::Named(name.clone()))

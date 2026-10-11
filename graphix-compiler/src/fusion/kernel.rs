@@ -374,7 +374,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             control: &**ctx.control,
         };
         let mut run = |env: &crate::env::Env| {
-            emit_helpers::with_qop_raises(|| {
+            emit_helpers::with_deferred(|| {
                 emit_helpers::with_kernel_env(env, || {
                     super::par_loop::with_par_loan(Some(loan), || unsafe {
                         f(slots.as_ptr(), out.as_mut_ptr());
@@ -384,11 +384,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         };
         // only a kernel that meets an abstract value takes the value-hook
         // loan, under which its loops never fork
-        let ((), mut raises) = match self.jit.meets_abstract {
+        let ((), mut deferred) = match self.jit.meets_abstract {
             true => crate::node::coretraits::with_display_hooks(ctx, run),
             false => run(&ctx.env),
         };
-        for (site, v) in raises.drain(..) {
+        for (site, v) in deferred.raises.drain(..) {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
             let site = unsafe { &*site };
@@ -406,6 +406,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                     &site.spec,
                     (*e).clone(),
                 );
+            }
+        }
+        for (site, args) in deferred.io.drain(..) {
+            // SAFETY: `site` is an `IoSite` constant of the kernel's
+            // record, which outlives its code.
+            let site = unsafe { &*site };
+            match ctx.builtin_perform(&site.builtin) {
+                Some(perform) => perform(ctx, site, &args),
+                None => unreachable!("{} is not an Effect::Io builtin", site.builtin),
             }
         }
         let pending = KERNEL_ABORT.with(|c| c.replace(outer_abort));

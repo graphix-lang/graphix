@@ -79,9 +79,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     scope_encode(scope, buf)?;
     argspec.encode(buf)?;
     typ.encode(buf)?;
-    let LambdaFacts { effect, stateless } = *facts.lock();
-    effect.encode(buf)?;
-    stateless.encode(buf)?;
+    facts.lock().encode(buf)?;
     recursion.lock().encode(buf)?;
     source.encode(buf)?;
     level.encode(buf)?;
@@ -101,8 +99,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let scope = scope_decode(buf)?;
     let argspec: Arc<[Arg]> = Pack::decode(buf)?;
     let typ: Arc<FnType> = Pack::decode(buf)?;
-    let effect = Pack::decode(buf)?;
-    let stateless = bool::decode(buf)?;
+    let facts = LambdaFacts::decode(buf)?;
     let recursion = Pack::decode(buf)?;
     let source = Pack::decode(buf)?;
     let level = Pack::decode(buf)?;
@@ -130,7 +127,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         init,
         check: Mutex::new(None),
         table,
-        facts: Mutex::new(LambdaFacts { effect, stateless }),
+        facts: Mutex::new(facts),
         recursion: Mutex::new(recursion),
         source,
         origin: DefOrigin::Source { body, flags, spec },

@@ -372,6 +372,15 @@ fn assertion_failure<R: Rt, E: UserEvent>(
             "#[async]: this function is sync — nothing in its body defers an \
              output to a later cycle",
         ),
+        // CR claude for claude: [bug/medium] #[tail_recursive] promises a
+        // constant-space loop but is decided before fusion, from purity and the
+        // formals' types (mark_recursion's `looped`), and only a kernel runs the loop
+        // (GXLambda::tail_loop is read by lowering alone). A tail recursion whose body
+        // does not fuse whole, and every one under --no-fusion, is accepted and keeps
+        // an activation per iteration: before Effect::Io, a body calling dbg passed
+        // the assertion and 5000 iterations aborted under GRAPHIX_ACTIVATION_BUDGET=1000.
+        // Decide it from the built loop (a kernel with has_tail_loop), refusing it under
+        // --no-fusion or saying the assertion is the JIT's. (tail-recursive-honest-01)
         DefAssertionKind::TailRecursive => match *d.recursion.lock() {
             RecursionKind::TailRecursive => None,
             RecursionKind::TailCalls if !def_facts(d).is_pure() => Some(
@@ -690,6 +699,14 @@ fn node_facts<R: Rt, E: UserEvent>(
 // leaving them to the instance analysis. Pins: lang::attributes
 // sync_on_async_builtin_callback, sync_on_async_filter_callback (both fail without the
 // join), sync_builtin_callbacks_stay_sync; the repro is refused.
+/// A call's facts, its callee's joined with every function argument's.
+pub(crate) fn call_facts<R: Rt, E: UserEvent>(
+    cs: &CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> LambdaFacts {
+    callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
+}
+
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
@@ -833,11 +850,7 @@ fn callee_own_facts<R: Rt, E: UserEvent>(
             && let Some(info) =
                 ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
         {
-            let effect = ctx.builtin_effect(info.name.as_str());
-            return LambdaFacts {
-                effect: effect.kind(),
-                stateless: effect.is_stateless(),
-            };
+            return ctx.builtin_effect(info.name.as_str()).facts();
         }
     }
     if gxdbg_effect() {
@@ -992,8 +1005,8 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
     sleeps
 }
 
-/// An arm sleeps when it holds an effect, a raise to a handler (an event
-/// as a write is) or a recursive call; a kernel by the facts of the
+/// An arm sleeps when it holds state, an effect, a raise to a handler (an
+/// event as a write is) or a recursive call; a kernel by the facts of the
 /// region it replaced and its feeders, so fusion decides nothing here.
 fn arm_sleeps<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
@@ -1007,7 +1020,7 @@ fn arm_sleeps<R: Rt, E: UserEvent>(
         match n.view() {
             NodeView::FusedKernel(k) => {
                 let f = k.facts();
-                *sleeps = f.raises || f.recurses;
+                *sleeps = f.raises || f.recurses || f.io;
                 for feeder in k.feeders() {
                     arm_sleeps(ctx, feeder, &mut *sleeps)
                 }
@@ -1017,7 +1030,7 @@ fn arm_sleeps<R: Rt, E: UserEvent>(
                     callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
                 });
                 *sleeps =
-                    !facts.is_pure() || raises_to_handler(n) || calls_recursive(n, ctx);
+                    facts.sleeps() || raises_to_handler(n) || calls_recursive(n, ctx);
             }
         }
     });
@@ -1161,6 +1174,8 @@ pub(crate) struct RegionFacts {
     pub(crate) raises: bool,
     /// It calls a recursive definition.
     pub(crate) recurses: bool,
+    /// It performs an `Effect::Io` call, its callees' included.
+    pub(crate) io: bool,
 }
 
 impl Pack for RegionFacts {
@@ -1169,17 +1184,24 @@ impl Pack for RegionFacts {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let bits =
-            self.hooks as u8 | (self.raises as u8) << 1 | (self.recurses as u8) << 2;
+        let bits = self.hooks as u8
+            | (self.raises as u8) << 1
+            | (self.recurses as u8) << 2
+            | (self.io as u8) << 3;
         Ok(buf.put_u8(bits))
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let bits = u8::decode(buf)?;
-        if bits > 7 {
+        if bits > 15 {
             return Err(PackError::InvalidFormat);
         }
-        Ok(Self { hooks: bits & 1 != 0, raises: bits & 2 != 0, recurses: bits & 4 != 0 })
+        Ok(Self {
+            hooks: bits & 1 != 0,
+            raises: bits & 2 != 0,
+            recurses: bits & 4 != 0,
+            io: bits & 8 != 0,
+        })
     }
 }
 
@@ -1193,6 +1215,10 @@ pub(crate) fn region_facts<R: Rt, E: UserEvent>(
         f.hooks |= runs_hooks(x, &ctx.env);
         f.raises |= raises_to_handler(x);
         f.recurses |= calls_recursive(x, ctx);
+        f.io |= node_facts(x, OwnTargets::All, &mut |cs| {
+            callee_facts(cs, None, ctx, &Unresolved::ASYNC, &mut |_| ())
+        })
+        .io;
     });
     f
 }

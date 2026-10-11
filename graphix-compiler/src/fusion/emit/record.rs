@@ -61,6 +61,7 @@ pub enum KernelConst {
     Value(Box<Value>),
     Type(Box<KernelType>),
     QopSite(Box<QopSite>),
+    IoSite(Box<crate::IoSite>),
     /// A builtin's plain fast fn, by the builtin's name.
     FastFn {
         name: ArcStr,
@@ -88,6 +89,7 @@ impl KernelConst {
             KernelConst::Value(b) => &**b as *const Value as usize,
             KernelConst::Type(b) => &b.typ as *const Type as usize,
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
+            KernelConst::IoSite(b) => &**b as *const crate::IoSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
             KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
@@ -252,6 +254,7 @@ mod tag {
     pub const SITE_LEAF: u8 = 7;
     pub const SITE_BLOCK_WORDS: u8 = 8;
     pub const LOOP_SITE: u8 = 9;
+    pub const IO_SITE: u8 = 10;
 
     pub const HELPER: u8 = 0;
     pub const CALLEE: u8 = 1;
@@ -434,6 +437,9 @@ impl Pack for KernelConst {
                     + q.own_top.encoded_len()
                     + q.spec.encoded_len()
             }
+            KernelConst::IoSite(s) => {
+                s.builtin.encoded_len() + s.arg.encoded_len() + s.typ().encoded_len()
+            }
             KernelConst::FastFn { name, .. } | KernelConst::TypedFn { name, .. } => {
                 name.encoded_len()
             }
@@ -464,6 +470,12 @@ impl Pack for KernelConst {
                 q.own_top.encode(buf)?;
                 q.spec.encode(buf)
             }
+            KernelConst::IoSite(s) => {
+                buf.put_u8(tag::IO_SITE);
+                s.builtin.encode(buf)?;
+                s.arg.encode(buf)?;
+                s.typ().encode(buf)
+            }
             KernelConst::FastFn { name, .. } => {
                 buf.put_u8(tag::FAST_FN);
                 name.encode(buf)
@@ -492,6 +504,12 @@ impl Pack for KernelConst {
                 let own_top = ExprId::decode(buf)?;
                 let spec = Expr::decode(buf)?;
                 KernelConst::QopSite(Box::new(QopSite { handler, own_top, spec }))
+            }
+            tag::IO_SITE => {
+                let builtin = ArcStr::decode(buf)?;
+                let arg = Expr::decode(buf)?;
+                let typ = Type::decode(buf)?;
+                KernelConst::IoSite(Box::new(crate::IoSite::new(builtin, arg, typ)))
             }
             tag::FAST_FN => {
                 let name = ArcStr::decode(buf)?;

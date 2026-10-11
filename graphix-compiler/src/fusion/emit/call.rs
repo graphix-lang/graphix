@@ -54,11 +54,8 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     args: &[&Node<R, E>],
 ) -> Result<CompiledExpr> {
     let ret_abi = kernel_abi::abi_kind(&info.return_type);
-    if matches!(ret_abi, Some(AbiKind::Null) | None) {
-        return Err(anyhow!(
-            "emit_clif: call with bare Null / non-fusable return — \
-             should have widened to Nullable<T> at construction"
-        ));
+    if ret_abi.is_none() {
+        return Err(anyhow!("emit_clif: call with a non-fusable return"));
     }
     // An argument-less call fires like a constant, which the fast
     // fn's arg-derived tag cannot express.
@@ -151,6 +148,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
         cx.b.ins().band(init_b, no_wake)
     };
+    // an `Io` call answers its trigger alone: every other argument reads
+    // as stale
+    let trigger = match &info.dispatch {
+        SiteDispatch::Io { trigger, .. } => Some(*trigger),
+        _ => None,
+    };
     let stale_mask = {
         let mut stale_mask = cx.b.ins().iconst(types::I64, 0);
         for (i, d) in arg_discs.iter().enumerate() {
@@ -161,13 +164,23 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
         let zero = cx.b.ins().iconst(types::I64, 0);
-        cx.b.ins().select(genuine, zero, stale_mask)
+        let stale_mask = cx.b.ins().select(genuine, zero, stale_mask);
+        match trigger {
+            Some(t) => {
+                let others = (u64::MAX >> (64 - args.len())) & !(1u64 << t);
+                cx.b.ins().bor_imm(stale_mask, others as i64)
+            }
+            None => stale_mask,
+        }
     };
     // the result is a wake's own fire when every arg's is, outside a
     // genuine init, as the node-walk's CachedArgs joins it
     let wake_fold = {
         let mut all = cx.b.ins().iconst(types::I64, WAKE);
-        for d in arg_discs.iter() {
+        for (i, d) in arg_discs.iter().enumerate() {
+            if trigger.is_some_and(|t| t != i) {
+                continue;
+            }
             let w = cx.b.ins().band_imm(*d, WAKE);
             all = cx.b.ins().band(all, w);
         }
@@ -180,6 +193,16 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         SiteDispatch::Fast { name, f } => {
             let fp = cx.const_ptr(KernelConst::FastFn { name: name.clone(), f: *f })?;
             cx.call_helper("graphix_fastcall", &[fp, base, n, taint_mask, stale_mask])?
+        }
+        SiteDispatch::Io { name, f, trigger, arg, typ } => {
+            let fp = cx.const_ptr(KernelConst::FastFn { name: name.clone(), f: *f })?;
+            let site = crate::IoSite::new(name.clone(), arg.clone(), typ.clone());
+            let site = cx.const_ptr(KernelConst::IoSite(Box::new(site)))?;
+            let bit = cx.b.ins().iconst(types::I64, 1i64 << *trigger);
+            cx.call_helper(
+                "graphix_iocall",
+                &[fp, site, base, n, taint_mask, stale_mask, bit],
+            )?
         }
         SiteDispatch::Typed { name, f, typ } => {
             let fp = cx.const_ptr(KernelConst::TypedFn { name: name.clone(), f: *f })?;
@@ -221,7 +244,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             let disc = cx.b.ins().bor(base, tagbits);
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(value)]);
         }
-        Some(AbiKind::Unit) => {
+        Some(AbiKind::Unit | AbiKind::Null) => {
             // The tag still rides so a bound unit local reads honestly.
             let base = cx.b.ins().iconst(types::I64, value_disc::NULL);
             let disc = cx.b.ins().bor(base, tagbits);
@@ -295,7 +318,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             };
             cx.b.ins().jump(dmerge, &[BlockArg::Value(disc), BlockArg::Value(pay)]);
         }
-        Some(AbiKind::Null) | None => unreachable!("refused above"),
+        None => unreachable!("refused above"),
     }
     cx.b.switch_to_block(dmerge);
     cx.b.seal_block(dmerge);

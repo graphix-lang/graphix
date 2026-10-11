@@ -402,11 +402,15 @@ register with `ExecCtx::register_builtin::<T>()`; the Graphix signature
 lives in the package's `.gx` with every argument and the return type
 annotated. `EFFECT` is the one classification (`effects.rs`):
 `Async` (may produce later, autonomously, or never), `Sync` (same cycle
-but keeps cross-invocation state, or depends on WHICH args arrived), or
-`Stateless(Option<FastCall>)` (a pure function of its args; the payload
-is the direct-call entry the JIT uses, `Plain` or `Typed` by the site's
-resolved return type; `None` for effects and partial-delivery
-producers). A builtin call's facts also join those of every function
+but keeps cross-invocation state, or depends on WHICH args arrived),
+`Stateless(Option<FastCall>)` (a pure function of its args, never an
+effect; the payload is the direct-call entry the JIT uses, `Plain` or
+`Typed` by the site's resolved return type; `None` for partial-delivery
+producers), or `Io(Option<IoCall>)` (stateless, but it acts on the world
+at each fire of its trigger argument: the printers, `exit`; an arm
+holding one sleeps; `IoCall` is its result fast fn and trigger, and a
+kernel queues each call for `BuiltIn::perform`, which the wrapper runs
+after the run). A builtin call's facts also join those of every function
 argument it is handed (it may call any back at run time, where no
 analysis sees it): a definition's own, which its check records from
 its body (`analysis::def_body_facts`, carried in its `DefTable`), else
@@ -445,8 +449,12 @@ node graph IS the IR — there is no parallel typed IR
 (`design/final_jit_architecture.md`, `design/distributed_jit.md`).
 
 - **Strict fusion** (`design/strict_fusion.md`): fusion admits pure
-  computation only. A builtin fuses iff its `Effect::Stateless` carries a
-  `FastCall`; `?` fuses with or without a covering catch (a handler-ful
+  computation only, and the `Effect::Io` calls gated on their trigger's
+  fire. A builtin fuses iff its `Effect::Stateless` carries a `FastCall`
+  or its `Effect::Io` an `IoCall`; one that performs under a select arm
+  fuses there only when its trigger fires at every entry (it reads the
+  scrutinee or the arm's binds, and no arm has a guard,
+  `lowering::arm_io_blocker`); `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
   `Qop` uses), except a handler-ful `?` under a select arm whose error
   derives from a constant: that raise fires when the arm is ENTERED and
@@ -520,8 +528,8 @@ node graph IS the IR — there is no parallel typed IR
   woken one is a fresh one; configuration (`#n`, `#rate`) survives. A labeled DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Async builtins clear their
   output on sleep and start again over their present arguments at the
-  wake (`design/async_sleep_outputs.md`). An arm with no effect, no
-  raise to a handler (an event, as a write is) and no recursive call
+  wake (`design/async_sleep_outputs.md`). An arm with no state, no
+  effect (an `Io` call included), no raise to a handler (an event, as a write is) and no recursive call
   skips `sleep` and is not updated while untaken; a fused arm is judged
   by the region its kernel replaced (`analysis::RegionFacts`), so fusion
   decides nothing here.

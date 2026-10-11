@@ -7,7 +7,7 @@ use crate::{
     ApplyView, BindId, CompileCtx, LambdaInstanceId, Node, NodeView, PrintFlag, Refs, Rt,
     UserEvent,
     env::Env,
-    expr::{ExprId, ExprKind, ModPath},
+    expr::{Expr, ExprId, ExprKind, ModPath},
     fusion::{
         self, FusionBlocker,
         kernel_abi::{
@@ -76,6 +76,9 @@ pub enum SiteDispatch {
     Typed { name: ArcStr, f: crate::TypedFastFn, typ: Type },
     /// A cast from `source` to `target`, through [`cast_typed`].
     Cast { target: Type, source: Type },
+    /// An `Effect::Io` builtin: `f` is its result, and each fire of
+    /// argument `trigger` (`arg`, typed `typ`) queues it to perform.
+    Io { name: ArcStr, f: crate::FastFn, trigger: usize, arg: Expr, typ: Type },
 }
 
 /// The cast pseudo-site's typed fast fn: the same `cast_from` call
@@ -150,7 +153,10 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure.or_else(|| arm_raise_blocker(node, &selects)) {
+    match failure
+        .or_else(|| arm_raise_blocker(node, &selects))
+        .or_else(|| arm_io_blocker(&selects, ctx))
+    {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
@@ -202,6 +208,101 @@ fn arm_raise_blocker<R: Rt, E: UserEvent>(
                  fire tracker — arm entry is the node-walk's"
             .into(),
     })
+}
+
+/// A call that performs (an `Effect::Io` builtin's, or a function's
+/// that reaches one) under a select arm performs on a fire of its
+/// arguments, and a kernel derives its selection fresh every run: a fire
+/// the arm missed asleep, which the node-walk re-delivers at entry
+/// (design/wake_catchup.md), and a constant, which fires at the arm's
+/// wake, never reach it. So it fuses there only when each argument that
+/// can trigger it fires at every entry: no arm of the select has a guard
+/// (a guard re-enters an arm under a standing scrutinee) and the
+/// argument reads the scrutinee or one of the arm's binds, at every
+/// select it sits under. `selects` are the region's selects.
+fn arm_io_blocker<R: Rt, E: UserEvent>(
+    selects: &[&Node<R, E>],
+    ctx: &CompileCtx<R, E>,
+) -> Option<FusionBlocker> {
+    let mut found: Option<&Node<R, E>> = None;
+    for s in selects {
+        let NodeView::Select(sel) = s.view() else { continue };
+        let guarded = sel.arms.iter().any(|(p, _)| p.guard.is_some());
+        let scrutinee = match sel.arg.node.view() {
+            NodeView::Ref(r) => Some(r.id),
+            _ => None,
+        };
+        for (pat, body) in sel.arms.iter() {
+            let mut binds: LPooled<IntSet<BindId>> = LPooled::take();
+            pat.structure_predicate.ids(&mut |id| {
+                binds.insert(id);
+            });
+            let entered = |n: &Node<R, E>| {
+                let mut reads = false;
+                fusion::for_each_emitted_node(n, &mut |x| {
+                    if let NodeView::Ref(r) = x.view() {
+                        reads |= Some(r.id) == scrutinee || binds.contains(&r.id);
+                    }
+                });
+                reads
+            };
+            fusion::for_each_emitted_node(body, &mut |n| {
+                if found.is_some() {
+                    return;
+                }
+                let NodeView::CallSite(cs) = n.view() else { return };
+                let Some(triggers) = performing_args(cs, ctx) else { return };
+                if guarded || !triggers.iter().all(|t| entered(t)) {
+                    found = Some(n)
+                }
+            });
+            if found.is_some() {
+                return found.map(io_blocker);
+            }
+        }
+    }
+    None
+}
+
+fn io_blocker<R: Rt, E: UserEvent>(n: &Node<R, E>) -> FusionBlocker {
+    FusionBlocker {
+        spec: n.spec().clone(),
+        reason: "an effect under a select arm whose trigger may not fire when the arm \
+                 is entered — arm entry is the node-walk's"
+            .into(),
+    }
+}
+
+/// When `cs` performs, the arguments whose fire can make it perform:
+/// an `Effect::Io` builtin's trigger, or every argument of a function
+/// that reaches one.
+fn performing_args<'a, R: Rt, E: UserEvent>(
+    cs: &'a CallSite<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {
+    let builtin = match cs.fnode().view() {
+        NodeView::Ref(r) => ctx.env.by_id.get(&r.id).and_then(|bind| {
+            ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
+        }),
+        _ => None,
+    };
+    if let Some(info) = builtin {
+        let crate::Effect::Io(Some(io)) = ctx.builtin_effect(&info.name) else {
+            return None;
+        };
+        let args = &info.typ.args;
+        let node = match &args.get(io.trigger)?.kind {
+            FnArgKind::Positional { .. } => cs.arg_positional(
+                args[..io.trigger]
+                    .iter()
+                    .filter(|a| matches!(a.kind, FnArgKind::Positional { .. }))
+                    .count(),
+            ),
+            FnArgKind::Labeled { name, .. } => cs.arg_named(name),
+        };
+        return Some(node.into_iter().collect());
+    }
+    crate::analysis::call_facts(cs, ctx).io.then(|| cs.arg_nodes().collect())
 }
 
 /// A root that can never emit a value. Nested, the same node may sit
@@ -298,7 +399,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(i) => i.clone(),
         None => return None,
     };
-    let fastcall = match ctx.builtin_effect(info.name.as_str()).fastcall() {
+    let effect = ctx.builtin_effect(info.name.as_str());
+    let fastcall = match effect.fastcall() {
         Some(fastcall) => fastcall,
         None => {
             return Some(FusionBlocker {
@@ -325,6 +427,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         }
     }
     let mut arg_types: Vec<Type> = Vec::new();
+    let mut written_types: SmallVec<[Type; 8]> = SmallVec::new();
     let mut marshal_args: Vec<MarshalArg> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
@@ -343,6 +446,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     None => return None,
                 };
                 arg_types.push(kt);
+                written_types.push(arg_typ);
                 marshal_args.push(MarshalArg::Call(*call_idx));
             }
             FnArgKind::Labeled { name, has_default } => {
@@ -368,6 +472,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                     None => return None,
                 };
                 arg_types.push(kt);
+                written_types.push(arg_typ);
                 marshal_args.push(source);
             }
         }
@@ -391,6 +496,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
                 None => return None,
             };
             arg_types.push(kt);
+            written_types.push(arg_typ);
             marshal_args.push(MarshalArg::Call(*call_idx));
         }
     }
@@ -409,9 +515,24 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         return None;
     }
     let name: ArcStr = info.name.as_str().into();
-    let dispatch = match fastcall {
-        crate::FastCall::Plain(f) => SiteDispatch::Fast { name, f },
-        crate::FastCall::Typed(f) => SiteDispatch::Typed { name, f, typ: ret_typ },
+    let dispatch = match (effect, fastcall) {
+        (crate::Effect::Io(Some(io)), _) => {
+            let MarshalArg::Call(i) = marshal_args[io.trigger] else {
+                return Some(FusionBlocker {
+                    spec: apply_expr.clone(),
+                    reason: format_compact!("`{path}`'s trigger is its default"),
+                });
+            };
+            SiteDispatch::Io {
+                name,
+                f: io.result,
+                trigger: io.trigger,
+                arg: a.args[i].1.clone(),
+                typ: written_types[io.trigger].clone(),
+            }
+        }
+        (_, crate::FastCall::Plain(f)) => SiteDispatch::Fast { name, f },
+        (_, crate::FastCall::Typed(f)) => SiteDispatch::Typed { name, f, typ: ret_typ },
     };
     out.apply_sites.insert(
         apply_id,
@@ -1481,8 +1602,9 @@ fn is_call_return_supported(t: &Type) -> bool {
             | AbiKind::Nullable
             | AbiKind::Value
             | AbiKind::Unit
+            | AbiKind::Null
             | AbiKind::String,
         ) => true,
-        Some(AbiKind::Null) | None => false,
+        None => false,
     }
 }
