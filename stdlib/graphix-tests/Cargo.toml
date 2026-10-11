@@ -5,6 +5,9 @@ authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 publish = false
 
+[features]
+slow-tests = []
+
 [dependencies]
 bytes = { workspace = true }
 anyhow = { workspace = true }

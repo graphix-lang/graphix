@@ -41,6 +41,15 @@ fn as_path(v: Value) -> Option<Path> {
     }
 }
 
+fn remote_err(tag: &ArcStr, e: &Value) -> Value {
+    match e {
+        Value::String(msg) => {
+            Value::Error(Value::from((tag.clone(), msg.clone())).into())
+        }
+        e => errf!(tag, "{e}"),
+    }
+}
+
 /// The value written to a path. Values that fire before the path is
 /// known queue and are written, in order, when it arrives.
 #[derive(Debug)]
@@ -289,7 +298,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         let res = self.cur.as_ref().and_then(|_| {
             ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
                 // the pump's unsubscribe, or the publisher's own error
-                Value::Error(e) => errf!(ERR_TAG.clone(), "{e}"),
+                Value::Error(e) => remote_err(&ERR_TAG, &e),
                 v => self.target.cast(&ctx.env, v),
             })
         });
@@ -457,7 +466,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             }
         }
         let res = ctx.event.variables.get(&self.id).map(|v| match v.value_cloned() {
-            Value::Error(e) => errf!(literal!("RpcError"), "{e}"),
+            Value::Error(e) => remote_err(&literal!("RpcError"), &e),
             v => self.target.cast(&ctx.env, v),
         });
         match res {

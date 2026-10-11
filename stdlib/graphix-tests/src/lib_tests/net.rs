@@ -1,23 +1,3 @@
-// CR claude for eric: [test-gap] These pins, and the other sys::net uses under
-// stdlib/graphix-tests, cover successful deliveries only. No test fails if any of these
-// breaks: a write's select arm sleeping and waking, a publisher going away under a
-// subscriber, an rpc server failing or its path missing, a written value or call
-// argument failing its cast, a second subscriber joining a path, updates arriving
-// faster than a cycle, publish's path changing while its value is bottom, or rpc
-// replies arriving out of order. graphix-fuzz marks every program naming sys::net as
-// oracle_tier Excluded (graphix-fuzz/src/lib.rs:798), which never records a divergence,
-// so these pins are the only check sys::net has. Add one per case with its fix.
-// (sys-net-19)
-// 2026-10-07 claude: pinned with their fixes: a write's arm sleeping and waking
-// (net_write_after_wake), a refused cast (net_write_refused_cast), a second
-// subscriber (net_second_subscriber), a burst (net_burst_in_order) and a path
-// moving while the value is bottom (net_publish_path_moves_while_bottom). Still
-// unpinned: a publisher going away, an rpc server failing or missing, and rpc
-// replies out of order (sys-net-09, Eric's).
-// 2026-10-08 claude: re-addressed: what is unpinned (a publisher going away, an rpc
-// server failing or missing, rpc replies out of order) waits on your sys-net-09.
-// 2026-10-09 claude: rpc replies out of order are pinned now (net_rpc_latest_call_wins,
-// with sys-net-09); a publisher going away and an rpc server failing or missing remain.
 use anyhow::Result;
 use graphix_package_core::{
     run,
@@ -359,6 +339,67 @@ run!(net_publish_path_moves_while_bottom, r#"
 "#, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(2)))
 }; FuseExpect::Jit);
+
+// A subscriber sees its publisher go away as an error, and the value again
+// when it comes back.
+run!(net_publisher_gone_and_back, r#"
+{
+  let paths = ["/local/pin/gone"];
+  paths <- sys::time::timer(duration:200.ms, false) ~ [];
+  paths <- sys::time::timer(duration:700.ms, false) ~ ["/local/pin/gone"];
+  array::map(paths, |p| sys::net::publish(p, 1));
+  let v: Result<i64, [`SubscribeError(string), `InvalidCast(string)]> =
+    sys::net::subscribe("/local/pin/gone");
+  array::group(v, |n, _| n == 3)
+}
+"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == r#"[i64:1, error:["SubscribeError", "unsubscribed"], i64:1]"#)
+}; FuseExpect::Jit);
+
+// A handler that raises answers its caller with the error.
+run!(net_rpc_handler_raises, r#"{
+  sys::net::rpc(#path: "/local/pin/raise", #doc: "raise", #spec: null,
+    #f: |a: null| { let e: Result<i64, `Boom> = error(`Boom); a ~ e? });
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
+    sys::net::call("/local/pin/raise", null);
+  r
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(e)) if matches!(&**e, Value::Array(a)
+        if a[0] == Value::from("RpcError")
+            && matches!(&a[1], Value::String(m) if m.contains("Boom"))))
+}; FuseExpect::None);
+
+const NET_RPC_MISSING: &str = r#"{
+  let r: Result<i64, [`RpcError(string), `InvalidCast(string)]> =
+    sys::net::call("/local/pin/missing", null);
+  r
+}"#;
+
+/// netidx's rpc client gives up on an unpublished procedure after 10 s.
+#[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
+async fn net_rpc_missing_path() -> Result<()> {
+    for mode in [Mode::Interp, Mode::Jit] {
+        let (ctx, mut rx) = fixture_runtime(
+            [("/test.gx", result_source(NET_RPC_MISSING))],
+            &crate::TEST_REGISTER,
+            mode,
+            |_| {},
+        )
+        .await?;
+        let res = compile_result(&ctx).await?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
+        ctx.shutdown().await;
+        assert_eq!(
+            v.to_string(),
+            r#"error:["RpcError", "timeout subscribing to procedure"]"#,
+            "{mode:?}"
+        );
+    }
+    Ok(())
+}
 
 // A subscription that moves to another path and back gets the first
 // path's value again.
