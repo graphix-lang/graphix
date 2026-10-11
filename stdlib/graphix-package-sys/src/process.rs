@@ -304,6 +304,7 @@ pub(crate) struct ProcessWaitEv;
 
 impl EvalCachedAsync for ProcessWaitEv {
     const NAME: &str = "sys_process_wait";
+    const LATEST: bool = true;
     /// The status alone, not the handle, so a pending wait does not keep a
     /// dropped child alive.
     type Args = watch::Receiver<Status>;

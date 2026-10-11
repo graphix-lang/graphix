@@ -5,6 +5,7 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
+use futures::future::{AbortHandle, Aborted, abortable};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, IoSite, Node, Refs, Rt, Scope,
     Tag, TagValue, TagView, TypedFastFn, UserEvent,
@@ -1389,6 +1390,12 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static {
     const NAME: &str;
 
+    /// A new invocation aborts the one in flight and drops those queued,
+    /// so the call answers only its latest arguments; otherwise
+    /// invocations run one at a time, in order. Only for an `eval` that
+    /// loses nothing when dropped.
+    const LATEST: bool = false;
+
     type Args: Debug + Any + Send + Sync;
 
     fn init<R: Rt, E: UserEvent>(
@@ -1496,9 +1503,29 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     id: BindId,
     top_id: ExprId,
     queued: VecDeque<T::Args>,
-    running: bool,
+    inflight: Option<AbortHandle>,
     out: TagValue,
     t: T,
+}
+
+impl<T: EvalCachedAsync> CachedArgsAsync<T> {
+    /// Abort the call in flight, drop those queued and release the reply
+    /// id, which is this call's alone, as is what was stored for it.
+    fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        if let Some(h) = self.inflight.take() {
+            h.abort();
+        }
+        self.queued.clear();
+        ctx.release_var(self.id, self.top_id);
+        ctx.rt.store_remove(&self.id);
+    }
+
+    /// `release`, then answer under a fresh reply id.
+    fn renew<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
+        self.release(ctx);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
+    }
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<T> {
@@ -1520,7 +1547,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             top_id,
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
-            running: false,
+            inflight: None,
             out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
@@ -1544,7 +1571,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             id,
             top_id,
             queued: VecDeque::new(),
-            running: false,
+            inflight: None,
             out: TagValue::phantom(),
             t,
         }))
@@ -1555,7 +1582,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     /// The queue holds arguments already prepared for `eval`, and a
     /// running eval is a task, which exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.queued.is_empty() || self.running {
+        if !self.queued.is_empty() || self.inflight.is_some() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
@@ -1578,13 +1605,16 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             Invocation::Quiet => woke,
             Invocation::Bottom { .. } => false,
         };
-        if start && let Some(args) = self.t.prepare_args(&self.cached) {
-            self.queued.push_back(args);
-        }
         let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
-            self.running = false;
+            self.inflight = None;
             self.t.map_value(ctx, tv.value())
         });
+        if start && let Some(args) = self.t.prepare_args(&self.cached) {
+            if T::LATEST && self.inflight.is_some() {
+                self.renew(ctx);
+            }
+            self.queued.push_back(args);
+        }
         // CR claude for eric: [bug] A call site runs one request at a time, FIFO, and
         // nothing cancels or replaces the one in flight. spawn_var keeps no abort
         // handle, and sleep and delete only drop the reply id. So a request whose args
@@ -1596,19 +1626,36 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // sends a ClientHello stalls every later tls::accept at the call site, and
         // there is no handshake timeout. probe:
         // design/review-2026-10-05/repro/sys-io-03.gx (sys-io-03)
-        if !self.running
+        // 2026-10-11 claude: Eric ruled (abort through the existing machinery, plus a
+        // per-builtin policy). Every call in flight is now abortable
+        // (futures::future::abortable, so it works through a forked branch's logged
+        // spawn): delete and sleep abort it, and EvalCachedAsync::LATEST (tcp accept,
+        // process wait) makes a new invocation abort it and answer under a fresh reply
+        // id. The repro's wait and accept now print what it expects. Pins:
+        // lib_tests::process::process_wait_replaced, lib_tests::tcp::
+        // {tcp_accept_replaced_listener, tcp_accept_deleted}; each fails with the abort
+        // undone. STILL OPEN: the tls handshakes stay FIFO. Aborting one drops a live
+        // connection, so LATEST would kill a slow good client to serve the next; a
+        // silent client still stalls a live site. Wants a handshake timeout (a fixed
+        // one, or #timeout on tls::accept/connect): Eric's call.
+        if self.inflight.is_none()
             && let Some(args) = self.queued.pop_front()
         {
-            self.running = true;
             let id = self.id;
-            // a panicking eval still answers, so the site runs its next call
-            let eval = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-                T::eval(args),
+            let (eval, abort) = abortable(futures::FutureExt::catch_unwind(
+                std::panic::AssertUnwindSafe(T::eval(args)),
             ));
+            self.inflight = Some(abort);
             ctx.rt.spawn_var(async move {
-                let v = eval.await.unwrap_or_else(|_| {
-                    errf!(arcstr::literal!("Panicked"), "{} panicked", T::NAME)
-                });
+                let v = match eval.await {
+                    Ok(Ok(v)) => v,
+                    // a panicking eval still answers, so the site runs its next call
+                    Ok(Err(_)) => {
+                        errf!(arcstr::literal!("Panicked"), "{} panicked", T::NAME)
+                    }
+                    // an aborted eval's id was released, which drops this reply
+                    Err(Aborted) => Value::Null,
+                };
                 (id, v)
             });
         }
@@ -1640,21 +1687,15 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // the reply id is this call's alone, and so is what was stored for it
-        ctx.release_var(self.id, self.top_id);
-        ctx.rt.store_remove(&self.id);
-        self.queued.clear();
+        self.release(ctx);
         self.cached.clear();
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        self.delete(ctx);
+        self.renew(ctx);
+        self.cached.clear();
         self.slept = true;
-        self.running = false;
         self.out = TagValue::phantom();
-        let id = BindId::new();
-        ctx.rt.ref_var(id, self.top_id);
-        self.id = id;
     }
 }
 

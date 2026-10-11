@@ -603,7 +603,10 @@ tail loop shares state across iterations); a wrong `Sync` is one too
 where it skips a wake's recompute (`CachedArgs` recomputes only a
 `Stateless` or `Io` value at a wake, through `EvalCached::quiet`, which
 for an `Io` builtin computes the value without the effect), and
-otherwise costs the loop. Bottom never reaches builtin authors: a bottomed arg bottoms the
+otherwise costs the loop. An async call site (`CachedArgsAsync`) runs its
+invocations one at a time, in order; one whose `EvalCachedAsync::LATEST`
+is set (`accept`, `wait`) aborts the call in flight for a new one, and
+`delete` and `sleep` abort it at every site. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded

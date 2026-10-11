@@ -115,6 +115,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     type Args = Arc<TcpListener>;
 
     const NAME: &str = "sys_tcp_accept";
+    const LATEST: bool = true;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let _ = cached.0.get(1)?.as_ref()?;

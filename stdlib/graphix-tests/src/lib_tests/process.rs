@@ -123,6 +123,31 @@ run!(process_concurrent_wait, PROCESS_CONCURRENT_WAIT, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
 
+// The child is replaced while a wait on the old one is pending: the new
+// invocation aborts it, so the first status is the new child's.
+#[cfg(unix)]
+const PROCESS_WAIT_REPLACED: &str = r#"
+{
+  let cmd = sys::process::options(
+    #args: ["-c", "sleep 2; exit 3"],
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  cmd <- sys::time::timer(duration:100.ms, false) ~ sys::process::options(
+    #args: ["-c", "exit 5"],
+    #kill_on_drop: true,
+    "/bin/sh"
+  );
+  let child = sys::process::spawn(cmd)?;
+  sys::process::wait(child.proc)?.code
+}
+"#;
+
+#[cfg(unix)]
+run!(process_wait_replaced, PROCESS_WAIT_REPLACED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+}; FuseExpect::Jit);
+
 #[cfg(unix)]
 const PROCESS_KILL_DURING_WAIT: &str = r#"
 {

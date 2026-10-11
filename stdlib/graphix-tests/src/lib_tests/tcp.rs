@@ -156,3 +156,42 @@ const TCP_WRITE_RETURNS_LEN: &str = r#"
 run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::U64(5)))
 }; FuseExpect::None);
+
+// The listener is replaced while an accept on the old one is pending: the
+// new invocation aborts it, so the new listener's client is accepted.
+const TCP_ACCEPT_REPLACED_LISTENER: &str = r#"
+{
+  use sys::tcp::Socket;
+  let addr = "127.0.0.1:0";
+  addr <- sys::time::timer(duration:100.ms, false) ~ "127.0.0.1:0";
+  let l = sys::tcp::listen(addr)?;
+  let la = sys::tcp::listener_addr(l)?;
+  let srv = sys::tcp::accept(l, null)?;
+  let cl = sys::tcp::connect(sys::time::after_idle(duration:300.ms, la))?;
+  Socket::local_addr(srv)? == (cl ~ la)
+}
+"#;
+
+run!(tcp_accept_replaced_listener, TCP_ACCEPT_REPLACED_LISTENER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; FuseExpect::Jit);
+
+// A deleted slot aborts its pending accept, which drops the listener and
+// frees the port.
+const TCP_ACCEPT_DELETED: &str = r#"
+{
+  let addrs = ["127.0.0.1:0"];
+  addrs <- sys::time::timer(duration:100.ms, false) ~ [];
+  let las = array::map(addrs, |a| {
+    let l = sys::tcp::listen(a)?;
+    let pending = sys::tcp::accept(l, null);
+    sys::tcp::listener_addr(l)?
+  });
+  let first = once(las[0]$);
+  is_err(sys::tcp::connect(sys::time::timer(duration:300.ms, false) ~ first))
+}
+"#;
+
+run!(tcp_accept_deleted, TCP_ACCEPT_DELETED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+}; FuseExpect::Jit);

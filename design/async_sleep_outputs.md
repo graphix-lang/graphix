@@ -25,7 +25,7 @@ those keep their value.
 
 | Family | Sleep action that requires an output reset |
 | --- | --- |
-| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, other packages on the wrapper) | discards queued work and remints the reply ID |
+| `CachedArgsAsync` (files, stream I/O, processes, HTTP requests, other packages on the wrapper) | aborts the call in flight, discards queued work and remints the reply ID |
 | `after_idle`, `timer`, `throttle` | cancels timers and clears timing/input state |
 | `range`, `queue`, array/map/list `iter` and `iterq` | discards the old delivery ID and buffered work |
 | net subscribe, RPC call, list/list_table | detaches the subscription or reply channel |
