@@ -416,8 +416,10 @@ analysis sees it): a definition's own, which its check records from
 its body (`analysis::def_body_facts`, carried in its `DefTable`), else
 async. A wrong `Stateless` is a semantics bug (the JIT's native
 tail loop shares state across iterations); a wrong `Sync` is one too
-where it skips a wake's recompute (`CachedArgs` re-runs only a
-`Stateless` eval), and otherwise costs the loop. Bottom never reaches builtin authors: a bottomed arg bottoms the
+where it skips a wake's recompute (`CachedArgs` recomputes only a
+`Stateless` or `Io` value at a wake, through `EvalCached::quiet`, which
+for an `Io` builtin computes the value without the effect), and
+otherwise costs the loop. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded

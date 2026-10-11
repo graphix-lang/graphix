@@ -363,3 +363,43 @@ const DECODE_SKIP_UNRESOLVED: &str = r#"{
 run!(decode_skip_unresolved, DECODE_SKIP_UNRESOLVED, |v: Result<&Value>| {
     matches!(v, Ok(Value::U8(2)))
 }; FuseExpect::Jit);
+
+// A decode writes its targets at each fire of its arguments, never again
+// when its arm is re-entered with them standing, asleep or not.
+const DECODE_WRITES_ONCE_PER_FIRE: &str = r#"{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let c = select step { 1 | 3 | 5 => true, _ => false };
+  let b = buffer::encode([`U8(u8:7)]);
+  let x: u8 = u8:0;
+  let spec_x = [`U8(&mut x)];
+  let r1 = select c { true => buffer::decode(b, spec_x), false => b };
+  let y: u8 = u8:0;
+  let spec_y = [`U8(&mut y)];
+  let r2 = select c { true => { let q = once(c); buffer::decode(b, spec_y) }, false => b };
+  let counts = (count(x), count(y));
+  select step { 7 => counts, _ => never() }
+}"#;
+
+run!(decode_writes_once_per_fire, DECODE_WRITES_ONCE_PER_FIRE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(2)])
+});
+
+// A decode that cannot finish writes nothing, and nothing again.
+const DECODE_UNFINISHED_WRITES_NOTHING: &str = r#"{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let x: u8 = u8:0;
+  let len: u64 = never();
+  let d: bytes = never();
+  let spec = [`U8(&mut x), `Bytes(&len, &mut d)];
+  let r = buffer::decode(buffer::encode([`U8(u8:7), `U8(u8:1)]), spec);
+  let c = count(x);
+  select step { 5 => c, _ => never() }
+}"#;
+
+run!(decode_unfinished_writes_nothing, DECODE_UNFINISHED_WRITES_NOTHING, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::I64(1)))
+});

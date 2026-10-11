@@ -318,7 +318,7 @@ pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    // CR claude for eric: [bug] core_buffer_decode is Stateless(None), but its eval
+    // XCR claude for claude: [bug] core_buffer_decode is Stateless(None), but its eval
     // writes every target with set_var. An arm holding it is judged pure, so each
     // re-selection runs it as a birth with the standing buf and spec read FIRED. In an
     // arm that sleeps, CachedArgs re-runs a stateless eval at the wake. Either way
@@ -342,23 +342,49 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
     // 2026-10-08 claude: re-addressed: the open part is the effect class that writes only
     // on a fired invocation, the one x-builtin-effects-05 and core-lib-09 ask for
     // (dbg/print). One ruling covers all three.
-    const EFFECT: Effect = Effect::Stateless(None);
+    // 2026-10-10 claude: Eric ruled 10-10 (with x-builtin-effects-05 and core-lib-09):
+    // buffer::decode is Effect::Io(None). Its arm sleeps, so a re-entry is a wake, not a
+    // birth. EvalCached gains quiet (the value without the effect, eval by default),
+    // which CachedArgs runs wherever it recomputes without a fire: at a wake, now for
+    // Stateless and Io alike, and when it first establishes the value channel. The
+    // decode's quiet decodes without committing its writes, so the remainder at a wake is
+    // current and the writes go out on a fired invocation only. The probe (with &mut
+    // targets) gives (2, 2, 2) in both engines, was (4, 4, 2). Pins:
+    // lib_tests::buffer::decode_writes_once_per_fire (every mode fails with
+    // Stateless(None)), decode_unfinished_writes_nothing (fails when quiet writes). Wants
+    // the soak.
+    const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "core_buffer_decode";
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        let buf = from.get::<Bytes>(0)?;
-        let Value::Array(spec) = from.0.get(1)?.as_ref()? else { return None };
-        let chain = ctx.env.byref_chain.clone();
-        let mut d =
-            Decoder { buf: &buf, pos: 0, chain: &chain, written: Default::default() };
-        for elem in spec.iter() {
-            let (tag, args) = variant_tag(elem)?;
-            match d.element(ctx, tag, args) {
-                Ok(Some(())) => (),
-                Ok(None) => return None,
-                Err(e) => return Some(e),
-            }
+        decode(ctx, from, true)
+    }
+
+    fn quiet(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        decode(ctx, from, false)
+    }
+}
+
+/// Decode `from`'s buffer by its spec, and when `commit`, write what the
+/// whole spec decoded to its references.
+fn decode<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    from: &CachedVals,
+    commit: bool,
+) -> Option<Value> {
+    let buf = from.get::<Bytes>(0)?;
+    let Value::Array(spec) = from.0.get(1)?.as_ref()? else { return None };
+    let chain = ctx.env.byref_chain.clone();
+    let mut d = Decoder { buf: &buf, pos: 0, chain: &chain, written: Default::default() };
+    for elem in spec.iter() {
+        let (tag, args) = variant_tag(elem)?;
+        match d.element(ctx, tag, args) {
+            Ok(Some(())) => (),
+            Ok(None) => return None,
+            Err(e) => return Some(e),
         }
+    }
+    if commit {
         for (r, _, v) in d.written.drain(..) {
             // a place reference fires with its root, so a place already
             // holding the value is left alone, or decode would feed itself
@@ -372,8 +398,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
                 crate::write_through(ctx, r, v);
             }
         }
-        Some(Value::Bytes(PBytes::new(buf.slice(d.pos..))))
     }
+    Some(Value::Bytes(PBytes::new(buf.slice(d.pos..))))
 }
 
 pub(crate) type BufferDecode = CachedArgs<DecodeEv>;

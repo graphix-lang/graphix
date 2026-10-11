@@ -1103,6 +1103,12 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value>;
 
+    /// The call's value over arguments that did not fire, without the
+    /// effect an `Effect::Io` builtin's `eval` performs.
+    fn quiet(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
+        self.eval(ctx, from)
+    }
+
     fn typecheck0(
         &mut self,
         _ctx: &mut CompileCtx<R, E>,
@@ -1284,10 +1290,10 @@ impl<T> CachedArgs<T> {
             },
             Some(_) if !last_result.tag().is_bottom() => {
                 // Wake catch-up: args may have drifted while asleep. A
-                // stateless eval re-runs from the present slots; a
-                // stateful one must not (its last result is its state).
-                if matches!(T::EFFECT, Effect::Stateless(_)) && woke {
-                    match ev.eval(ctx, cached) {
+                // stateless value is recomputed from the present slots; a
+                // stateful one must not be (its last result is its state).
+                if matches!(T::EFFECT, Effect::Stateless(_) | Effect::Io(_)) && woke {
+                    match ev.quiet(ctx, cached) {
                         Some(v) => last_result.set(TagValue::stale(v)),
                         None => last_result.set_bottom(false),
                     }
@@ -1296,9 +1302,9 @@ impl<T> CachedArgs<T> {
                 }
             }
             Some(_) => {
-                // Nothing to re-surface yet: run eval once to establish
-                // the value channel, STALE.
-                match ev.eval(ctx, cached) {
+                // Nothing to re-surface yet: compute the value once to
+                // establish the value channel, STALE.
+                match ev.quiet(ctx, cached) {
                     Some(v) => last_result.set(TagValue::stale(v)),
                     None => last_result.ride(),
                 }
