@@ -1086,41 +1086,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             && let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>()
             && let Some(c) = c.0.take()
         {
-            // CR claude for eric: [bug] Calls are answered strictly in order, and only a
-            // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
-            // every later call is blocked forever: they pile up in `queue` without bound,
-            // and their callers hang because netidx's client call has no timeout. Any
-            // client can cause this. An argument that fails the cast in `set!` puts an
-            // InvalidCast error in `x`, and the handler's field read bottoms; a call that
-            // omits an argument fails the same cast, because the spec's defaults are never
-            // filled in. A handler that throws (rpc's type allows `throws 'e`) or bottoms
-            // on one input (integer div0) wedges the server too. A call whose cast fails
-            // should get the error as its reply instead of being dispatched, and one
-            // unanswered call should not hold up the queue. probe:
-            // design/review-2026-10-05/repro/sys-net-03.gx (sys-net-03)
-            // 2026-10-07 claude: the queue, dispatch and reply are graphix-package-core's
-            // Handler now, shared with http::serve: a handler that raises or bottoms on a
-            // call answers it with an error and no longer holds up the rest. A call whose
-            // cast fails is still dispatched, and an omitted argument still fails it.
-            // 2026-10-09 claude: with http-sqlite-db1-02's second fix a call the handler
-            // raises on is answered with the error; one it is bottom for is no longer
-            // answered (a fresh bottom may be an async value still coming), and an rpc reply
-            // cannot tell that its caller gave up, so such a call holds up the queue again.
-            // 2026-10-09 claude: Eric ruled 10-09. Calls run in an instance each through
-            // the Handler (http-sqlite-db1-01), so one unanswered call holds up nothing.
-            // A call's arguments take the spec's defaults under those given, and a call
-            // whose arguments fail the cast is answered with the error and never
-            // dispatched (args_struct; no arguments is null). Pins: lib_tests
-            // net_rpc_defaults (fails without the defaults),
-            // net_rpc_refused_cast_answered.
-            // 2026-10-11 claude: reviewed: the ordering is fixed (an instance per call
-            // through the shared Handler, a refused cast answered at once; pins
-            // net_rpc_defaults, net_rpc_refused_cast_answered, net_rpc_handler_raises).
-            // What remains is the unbounded part: a call the handler never answers keeps
-            // its instance until the rpc is deleted or sleeps, because RpcReply cannot
-            // tell that the caller gave up (netidx's server-side RpcReply has no
-            // is_closed, so abandoned() is false). Needs a ruling: a server-side answer
-            // timeout, a netidx change exposing the caller's departure, or accept it.
             match self.arg(ctx, &c) {
                 e @ Value::Error(_) => RpcReply(c).reply(e),
                 arg => self.handler.push(arg, RpcReply(c)),

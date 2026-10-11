@@ -15,6 +15,9 @@ val call: fn<'b: Concrete>(path: string, args: 'a) -> Result<'b, [`RpcError(stri
 /// - the argument to f ('args) must be a struct with the same fields as 'spec,
 ///   or null if 'spec is null
 /// - every field in 'args must contain the type of the corresponding default in 'spec
+/// Each call runs an instance of f of its own and is answered by its first
+/// value, or by the error it raises. A call runs to its answer whether or not
+/// the caller is still waiting; one f never answers holds the call.
 val rpc: fn(
     #path:string,
     #doc:string,

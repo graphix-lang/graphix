@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-cf3a04fa.js";
+            window.path_to_searchindex_js = "../../searchindex-17d94db4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -194,6 +194,9 @@ val call: fn&lt;'b: Concrete&gt;(path: string, args: 'a) -&gt; Result&lt;'b, [`R
 /// - the argument to f ('args) must be a struct with the same fields as 'spec,
 ///   or null if 'spec is null
 /// - every field in 'args must contain the type of the corresponding default in 'spec
+/// Each call runs an instance of f of its own and is answered by its first
+/// value, or by the error it raises. A call runs to its answer whether or not
+/// the caller is still waiting; one f never answers holds the call.
 val rpc: fn(
     #path:string,
     #doc:string,
