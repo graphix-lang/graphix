@@ -45,6 +45,12 @@ values — graphix's `Option<'a>` is just the structural union
 `['a, null]`, and these functions mirror the most useful parts of
 Rust's `std::option::Option` API in a reactive setting.
 
+The plain combinators (`contains`, `or`, `and`, `zip`, …) are strict,
+like every function and like `&&` and `||`: they produce once every
+argument has a value, so `opt::or(a, b)` waits for `b` even when `a`
+is not null. To decide from the first alone, select on it:
+`select a { null => b, v => v }`.
+
 The higher-order combinators (`map`, `flat_map`, `filter`, `or_else`,
 `ok_or_else`, `is_some_and`, `is_none_or`) are deliberately
 fire-and-forget: they never queue inputs. If a callback is slow or

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5d5a8450.js";
+            window.path_to_searchindex_js = "../searchindex-50139e32.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -679,6 +679,11 @@ val nan: f64;
 values — graphix’s <code>Option&lt;'a&gt;</code> is just the structural union
 <code>['a, null]</code>, and these functions mirror the most useful parts of
 Rust’s <code>std::option::Option</code> API in a reactive setting.</p>
+<p>The plain combinators (<code>contains</code>, <code>or</code>, <code>and</code>, <code>zip</code>, …) are strict,
+like every function and like <code>&amp;&amp;</code> and <code>||</code>: they produce once every
+argument has a value, so <code>opt::or(a, b)</code> waits for <code>b</code> even when <code>a</code>
+is not null. To decide from the first alone, select on it:
+<code>select a { null =&gt; b, v =&gt; v }</code>.</p>
 <p>The higher-order combinators (<code>map</code>, <code>flat_map</code>, <code>filter</code>, <code>or_else</code>,
 <code>ok_or_else</code>, <code>is_some_and</code>, <code>is_none_or</code>) are deliberately
 fire-and-forget: they never queue inputs. If a callback is slow or
@@ -692,21 +697,8 @@ val is_some: fn(v: ['a, null]) -&gt; bool;
 /// true if v is null
 val is_none: fn(v: ['a, null]) -&gt; bool;
 
-// CR claude for eric: [doc-drift] These docs promise results that never come while an
-// argument is pending. `contains`, `or_default`, `or` and `and` (and `zip`, `ok_or`)
-// are CachedArgs builtins, which bottom the call while any argument is bottom or has
-// not produced yet (lib.rs:773). So `opt::or(c, b)` with c = 3 shows nothing until b
-// first produces, and `opt::and(null, b)` waits for b. The `_ =&gt; None` arms written for
-// a missing argument (opt.rs:74, 93, 112, 131, 180, 226) can never run. The six are
-// also Stateless(None), so a lambda that calls one never fuses ("builtin `opt::or` has
-// no fast-call entry"), even though eval only ever sees every argument present. Either
-// document them as strict, delete those arms and give each a FastCall::Plain fn like
-// fc_xor, or make them raw Apply builtins that decide from the arguments that are
-// present. book/src/stdlib/core.md:419-432 copies this text. probe: `let c: [i64, null]
-// = 3; let b: [i64, null] = never(); opt::or(c, b)` prints nothing (with b = null it
-// prints 3). (gx-stdlib-13)
-/// true if v is not null and equals x. Produces false when v is null
-/// regardless of x.
+/// true if v is not null and equals x. Produces false when v is null,
+/// whatever x is.
 val contains: fn(v: ['a, null], x: 'a) -&gt; bool;
 
 /// or_default(v, d): if v is null return d, otherwise return v
@@ -716,8 +708,7 @@ val or_default: fn(v: ['a, null], d: 'a) -&gt; 'a;
 /// be null).
 val or: fn(a: ['a, null], b: ['a, null]) -&gt; ['a, null];
 
-/// and(a, b): return b if a is non-null, otherwise return null. The
-/// value of b is not inspected when a is null.
+/// and(a, b): return b if a is non-null, otherwise return null.
 val and: fn(a: ['a, null], b: ['b, null]) -&gt; ['b, null];
 
 /// xor(a, b): return whichever of a or b is non-null, or null if both
