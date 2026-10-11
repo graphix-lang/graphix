@@ -114,26 +114,6 @@ type ErrChain<'a> = {
     pos: Pos
 };
 
-// CR claude for eric: [structure] Three signatures here are looser than their builtins.
-// `all` returns one of its equal arguments but is typed `fn(@args: Any) -> Any`, so
-// `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -> 'a`, as max/min have, gives it a
-// real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
-// - 1, e)` with count = 0 passes every event (-1 wraps to usize::MAX) and skip(-1)
-// passes none. A string count is parsed, and a non-number leaves the count unset (take
-// passes nothing, skip passes everything); `#n: i64` with a negative read as 0 fixes
-// that. sum/product/divide (123, 181, 184) return the union Number, so `sum(1, 2) + 1`
-// and `sum(1, 2) == 3` are refused until the result is cast. `'a: Number + Singleton`
-// would type the result, but it would also refuse the mixed-number array that
-// graphix-tests lib_tests/core.rs:178-190 pins. (gx-stdlib-15)
-// 2026-10-07 claude: all is fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a, and take/skip take
-// #n: i64 with a negative read as 0. sum/product/divide still return Number: typing the
-// result needs the Singleton bound, which the mixed-number fixture refuses.
-// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
-// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
-// f64]). Keep Number (casts at the call), or give up the mixed form?
-// 2026-10-08 claude: re-addressed: typing sum/product/divide's result needs `'a: Number +
-// Singleton`, which refuses the mixed-number array lib_tests/core.rs pins (sum over [i64,
-// f64]). Keep Number (casts at the call), or give up the mixed form?
 /// return the first argument when all arguments are equal, otherwise return nothing
 val all: fn<'a: Discernible>(a: 'a, @args: 'a) -> 'a;
 
