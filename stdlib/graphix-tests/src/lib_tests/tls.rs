@@ -98,3 +98,41 @@ run!(tls_stream_before_cert, { let cd = crate::lib_tests::cert_dir(); format!(r#
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::None);
+
+/// A client that never speaks fails its server's handshake at the timeout
+/// rather than holding the socket until it hangs up.
+#[tokio::test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
+async fn tls_accept_times_out() -> Result<()> {
+    use graphix_package_core::testing::{
+        Mode, compile_result, fixture_runtime, next_update, result_source,
+    };
+    use std::time::Duration;
+    let cd = crate::lib_tests::cert_dir();
+    let code = format!(
+        r#"{{
+    let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
+    let key = sys::fs::read_all_bin("{cd}/server.key")$;
+    let listener = sys::tcp::listen("127.0.0.1:0")?;
+    let silent = sys::tcp::connect(sys::tcp::listener_addr(listener)?)?;
+    let conn = sys::tcp::accept(listener, silent)?;
+    sys::tls::accept(#cert: cert, #key: key, conn)
+}}"#
+    );
+    let (ctx, mut rx) = fixture_runtime(
+        [("/test.gx", result_source(&code))],
+        &crate::TEST_REGISTER,
+        Mode::Interp,
+        |_| {},
+    )
+    .await?;
+    let res = compile_result(&ctx).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
+    ctx.shutdown().await;
+    assert_eq!(
+        v.to_string(),
+        r#"error:["TLSError", "TLS handshake timed out after 120s"]"#
+    );
+    Ok(())
+}

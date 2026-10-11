@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-17d94db4.js";
+            window.path_to_searchindex_js = "../../searchindex-d1b5686b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -199,10 +199,13 @@ impl Socket for TlsStream;
 /// encrypted session. An upgrade refused before the handshake (a bad
 /// certificate or hostname) leaves it untouched; one that fails in the
 /// handshake has spent it, since a socket partway through a handshake
-/// cannot carry plaintext.
+/// cannot carry plaintext. A handshake that has not finished in 2
+/// minutes fails, the socket spent.
 val connect: fn(?#ca_cert:[bytes, null], hostname: string, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 
-/// Upgrade a TCP stream to a TLS server connection.
+/// Upgrade a TCP stream to a TLS server connection. Each stream's
+/// handshake runs at once, beside any still pending; one that has not
+/// finished in 2 minutes fails, the socket spent.
 val accept: fn(#cert:bytes, #key:bytes, stream: TcpStream) -&gt; Result&lt;TlsStream, `TLSError(string)&gt;;
 </code></pre>
 

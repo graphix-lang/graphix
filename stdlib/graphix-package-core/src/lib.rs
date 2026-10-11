@@ -36,6 +36,12 @@ use std::{
     marker::PhantomData,
     time::Duration,
 };
+
+/// How long a TLS handshake may take before the stream is dropped: the
+/// standard TCP timeout. rustls has no clock of its own, so a peer that
+/// goes quiet mid-handshake would otherwise hold its socket and task until
+/// it hung up.
+pub const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
 use tokio::time::Instant;
 
 pub(crate) mod buffer;

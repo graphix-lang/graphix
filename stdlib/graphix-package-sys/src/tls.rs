@@ -7,6 +7,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, Calls, EvalCachedAsync, ImageState,
+    TLS_HANDSHAKE_TIMEOUT,
 };
 use netidx_core::pack::PackError;
 use netidx_value::Value;
@@ -14,7 +15,17 @@ use std::{
     ptr,
     sync::{Arc, Weak},
 };
+use tokio::time::timeout;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+/// A handshake past `TLS_HANDSHAKE_TIMEOUT`: the stream is dropped.
+fn timed_out() -> Value {
+    errf!(
+        "TLSError",
+        "TLS handshake timed out after {}s",
+        TLS_HANDSHAKE_TIMEOUT.as_secs()
+    )
+}
 
 /// The stream a site last started a handshake on: a site upgrades each
 /// stream once, so a new certificate, key or CA applies to later streams
@@ -124,16 +135,17 @@ impl EvalCachedAsync for TlsConnectEv {
                     return errf!("TLSError", "invalid hostname: {e}");
                 }
             };
-            match connector.connect(server_name, tcp).await {
+            match timeout(TLS_HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
+                .await
+            {
                 // The upgrade CONSUMES the TCP handle: the session moves into its
                 // own handle and the caller's `TcpStream` is left empty, so a stray
                 // plaintext read errors. A failed handshake spends the socket.
-                Ok(tls_stream) => {
+                Ok(Ok(tls_stream)) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Client(tls_stream)))
                 }
-                Err(e) => {
-                    errf!("TLSError", "TLS handshake failed: {e}")
-                }
+                Ok(Err(e)) => errf!("TLSError", "TLS handshake failed: {e}"),
+                Err(_) => timed_out(),
             }
         }
     }
@@ -184,12 +196,13 @@ impl EvalCachedAsync for TlsAcceptEv {
                 }
                 None => return errf!("TLSError", "stream unavailable"),
             };
-            match acceptor.accept(tcp).await {
+            match timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
                 // consumes the TCP handle, as `connect` does
-                Ok(tls_stream) => {
+                Ok(Ok(tls_stream)) => {
                     wrap_tls(StreamKind::Tls(tokio_rustls::TlsStream::Server(tls_stream)))
                 }
-                Err(e) => errf!("TLSError", "TLS accept failed: {e}"),
+                Ok(Err(e)) => errf!("TLSError", "TLS accept failed: {e}"),
+                Err(_) => timed_out(),
             }
         }
     }

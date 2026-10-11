@@ -550,8 +550,6 @@ impl AsyncWrite for MaybeTls {
     }
 }
 
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// One connection: its TLS handshake, if any, then its requests.
 async fn serve_connection(
     stream: tokio::net::TcpStream,
@@ -563,8 +561,11 @@ async fn serve_connection(
     let io = match tls {
         None => MaybeTls::Plain(stream),
         Some(acceptor) => {
-            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
-                .await
+            match tokio::time::timeout(
+                graphix_package_core::TLS_HANDSHAKE_TIMEOUT,
+                acceptor.accept(stream),
+            )
+            .await
             {
                 Ok(Ok(s)) => MaybeTls::Tls(s),
                 Ok(Err(e)) => return log::error!("TLS handshake error: {e}"),
