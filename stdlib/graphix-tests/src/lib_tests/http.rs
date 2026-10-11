@@ -2,30 +2,6 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
-// CR claude for eric: [test-gap] All five http tests send one request to a synchronous
-// handler that reads req.method, the one shape under which the server's reply-pairing,
-// wedge, restart and TLS-accept bugs cannot show. Add pins for: two sequential requests
-// through a handler with two async lookups (each body must match its path), concurrent
-// requests, a raising handler followed by a good request, a constant-body handler, a
-// server restarted on the same fixed port, and an HTTPS request next to an idle TCP
-// connection. (http-sqlite-db1-13)
-// 2026-10-07 claude: pinned now: a handler that bottoms then a good request
-// (http_bottom_handler_then_good), a restart on the same address
-// (http_restart_same_address), #max_body, raw bodies and rest::post. Two async
-// lookups in sequence and concurrent requests wait on the pairing (db1-01); the
-// HTTPS-beside-an-idle-connection case has only its repro (x-panics-09.py).
-// 2026-10-08 claude: re-addressed: the remaining pins (two async lookups in sequence,
-// concurrent requests) wait on your db1-01 (reply pairing), and HTTPS beside an idle
-// connection on x-panics-09.
-// 2026-10-08 claude: re-addressed: the remaining pins (two async lookups in sequence,
-// concurrent requests) wait on your db1-01 (reply pairing), and HTTPS beside an idle
-// connection on x-panics-09.
-// 2026-10-09 claude: http_bottom_handler_then_good is now http_raising_handler_then_good
-// (a `?` raise answers 500); http_abandoned_request_then_good and
-// http_async_handler_answers are new.
-// 2026-10-09 claude: concurrent requests and sequential requests through an async lookup
-// are pinned now (http_concurrent_requests_pair, http_sequential_requests_pair, with
-// db1-01); HTTPS beside an idle connection remains on x-panics-09.
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
         body: "hello [req.method]",
@@ -68,6 +44,33 @@ run!(https_round_trip, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 }; FuseExpect::Jit);
+
+// A client that connects and never speaks holds only its own handshake:
+// a request beside it answers at once, well inside the handshake timeout.
+run!(https_beside_a_silent_client, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
+    let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
+    let key = sys::fs::read_all_bin("{cd}/server.key")$;
+    let handler = |req: http::Request| {{
+        body: "hello [req.method]",
+        headers: [],
+        status: u16:200,
+        url: ""
+    }};
+    let server = http::serve(
+        #addr: "127.0.0.1:0",
+        #cert: cert,
+        #key: key,
+        #handler: handler
+    )$;
+    let addr = http::server_addr(server);
+    let silent = sys::tcp::connect(addr)$;
+    let ca = sys::fs::read_all_bin("{cd}/ca.pem")$;
+    let client = http::client(#ca_cert: ca, server)$;
+    let resp = http::request(client, silent ~ "https://[addr]/")$;
+    resp.body
+}}"#) }, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
+}, timeout: 5; FuseExpect::Jit);
 
 run!(http_status_round_trip, r#"{
     let handler = |req: http::Request| {
