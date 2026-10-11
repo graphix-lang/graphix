@@ -1078,36 +1078,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
-        // XCR claude for claude: [bug] This returns early when the callee's `throws` is an
-        // open cell. In a definition's check that is always true for a call through a
-        // `fn(..) throws 'e` parameter, and for `array::map(xs, f)` over one. So
-        // nothing joins the enclosing catch or the gate's inferred throws: a catch
-        // inside such a function types its variable as bottom, and the function's
-        // signature has no throws, yet at run time the callback's error still reaches
-        // those catches. A `bool` or `i64` binding then holds an Error, and a fused
-        // kernel reading it panics at fusion/kernel.rs:243 (runtime did not respond;
-        // graphix-fuzz check aborts). Join the open cell too (`join_raised` already
-        // handles an unbound type). With 'e rigid in the def check, the bad handler
-        // writes are then refused and the signature carries `throws 'e`. probe:
-        // design/review-2026-10-05/repro/c-callsite-01.gx (c-callsite-01)
-        // 2026-10-07 claude: partly fixed: an open throws joins the catch (a gate's
-        // faux catch keeps the cell, Gate::thrown no longer derefs it to ⊥), so the
-        // gate infers `throws 'e`. The probe still runs: check_contains of the
-        // definition's implicit throws cell against the rigid 'e binds nothing, the
-        // cell stays open and shared with every call, and the top-level catch is
-        // typed by that open cell. Decide with t-tvar-02 (implicit throws).
         // a definition's own `throws 'e` (a call through a `fn(..) throws
         // 'e` parameter) still reaches the catch: it joins as the cell
-        // 2026-10-08 claude: re-addressed: what remains is the implicit-throws question
-        // in t-tvar-02 (graphix-types/src/typ/tvar.rs), which is with you; this follows
-        // from that ruling.
-        // 2026-10-09 claude: fixed with t-tvar-02's ruling: the def check re-scoped the
-        // inferred throws with scope_refs, which re-mints every cell, so the implicit
-        // throws bound to a copy of the rigid 'e. It now checks the thrown type itself, h
-        // infers throws 'e, and the probe is refused by --check at the caller's catch (c
-        // is i64 and cannot hold Error<ErrChain<`Boom>>). Pins:
-        // lang::errors::callback_throws_reach_the_callers_catch (fails with the fix
-        // undone), callback_throws_reach_an_inner_catch.
         let Some(t) = ftype.throws.deref_cloned() else {
             let rigid = match &ftype.throws {
                 Type::TVar(tv) => tv.open_cell().is_some_and(|c| c.is_rigid()),

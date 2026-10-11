@@ -453,41 +453,6 @@ pub fn map_key(k: &Value) -> String {
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
-// XCR claude for claude: [bug] is_struct decides from the value alone, but a struct, an
-// Array<(string, T)> and an array of one-payload variants share one encoding. So json
-// and toml write_str/write_bytes and hbs::render write one type as an object or as an
-// array depending on its contents. `[("a", 1), ("b", 2)]` writes `{"a":1,"b":2}` and
-// `[("b", 1), ("a", 2)]` writes `[["b",1],["a",2]]`; toml::write_str accepts the first
-// and refuses the second; and the hbs template `{{#each
-// p}}{{this.[0]}}={{this.[1]}};{{/each}}` renders `=;=;` for the first. The writers
-// take `value: Any` and a FastCall sees no argument type, so they need the site's
-// argument type to serialize by type, as the readers use the return type; that would
-// also write a List as a flat array instead of its cons cells. probe:
-// design/review-2026-10-05/repro/small-pkgs-11.gx (small-pkgs-11)
-// 2026-10-07 claude: needs the site's argument type at the fast call: TypedFastFn
-// carries only the resolved return type, so this wants a fast-call form carrying the
-// argument types, in the emitter as well as the node-walk. Deferred to the fusion
-// batch.
-// 2026-10-09 claude: Needs a ruling: writing by static type changes output users see.
-// Proposal: the writers take 'a (not Any) and, as the readers do with their return type,
-// read the argument's type in typecheck1; a fast call carries the site's argument types
-// beside its return type (TypedFastFn gains the resolved FnType). Then a struct writes as
-// an object, an Array<(string, T)> as an array of pairs whatever its contents, a List as
-// a flat array (x-stack-06), and toml refuses by type, not by content. Cost: one
-// fast-call signature change across the typed builtins.
-// 2026-10-10 claude: Eric ruled 10-10: write by static type. A typed fast call now
-// receives the site's resolved FnType (TypedFastFn = fn(&Env, &FnType, &[Value]); the
-// cast pseudo-site keeps its (target, source) pair through graphix_castcall), and core's
-// typed_fast_builtin! stores it from typecheck1, str::parse included. The json and toml
-// writers and hbs::render take 'a, not Any, and serialize through core's shape(env, type,
-// value): a struct or a map is an object, an array, tuple, list or a variant's tag and
-// payload a sequence, a union the first member the value inhabits; only where the type
-// says nothing (Any, an open variable) does is_struct's content guess decide. So an
-// Array<(string, T)> writes as pairs in any order, toml refuses it by type, and hbs
-// iterates it as pairs; the template memo is keyed by the partials' type too. The probe
-// gives its expected output in both engines. Pins: lib_tests::json::json_writes_by_type,
-// toml::toml_refuses_pairs_by_type, hbs::hbs_renders_by_type (all 12 runs fail with the
-// type ignored). Book: stdlib/json.md, toml.md.
 pub fn is_struct(arr: &ValArray) -> bool {
     if arr.is_empty() {
         return false;
@@ -1645,47 +1610,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             }
             self.queued.push_back(args);
         }
-        // XCR claude for claude: [bug] A call site runs one request at a time, FIFO, and
-        // nothing cancels or replaces the one in flight. spawn_var keeps no abort
-        // handle, and sleep and delete only drop the reply id. So a request whose args
-        // are already stale blocks every later one for as long as it waits on a peer or
-        // a resource. wait on a replaced Proc reports nothing until the old child
-        // exits, then reports the old child's status while c names the new one. accept
-        // on a replaced listener keeps the old port bound and never accepts on the new
-        // listener until something connects to the old port. One client that never
-        // sends a ClientHello stalls every later tls::accept at the call site, and
-        // there is no handshake timeout. probe:
-        // design/review-2026-10-05/repro/sys-io-03.gx (sys-io-03)
-        // 2026-10-11 claude: Eric ruled (abort through the existing machinery, plus a
-        // per-builtin policy). Every call in flight is now abortable
-        // (futures::future::abortable, so it works through a forked branch's logged
-        // spawn): delete and sleep abort it, and EvalCachedAsync::LATEST (tcp accept,
-        // process wait) makes a new invocation abort it and answer under a fresh reply
-        // id. The repro's wait and accept now print what it expects. Pins:
-        // lib_tests::process::process_wait_replaced, lib_tests::tcp::
-        // {tcp_accept_replaced_listener, tcp_accept_deleted}; each fails with the abort
-        // undone. STILL OPEN: the tls handshakes stay FIFO. Aborting one drops a live
-        // connection, so LATEST would kill a slow good client to serve the next; a
-        // silent client still stalls a live site. Wants a handshake timeout (a fixed
-        // one, or #timeout on tls::accept/connect): Eric's call.
-        // 2026-10-11 claude: Eric ruled the tls handshakes concurrent, so a slow client
-        // blocks only its own. LATEST became EvalCachedAsync::CALLS (Calls::{Fifo,
-        // Latest, Concurrent}), and the per-call abortable became one oneshot per site
-        // whose drop aborts every call in flight. tls accept and connect are
-        // Concurrent; the repro's tls lines now print client 2's handshake at 0.2 s.
-        // Pins: lib_tests::tls::tls_accept_silent_client (fails with the handshakes
-        // Fifo); tcp_accept_replaced_listener now also requires the old port refused
-        // (fails with release's abort undone; a deleted site aborts by its drop
-        // either way). A site starts one handshake per stream (tls.rs Started), so a
-        // new cert, key or CA applies to later streams, a wake restarts nothing, and a
-        // cert read that finishes after the connect still starts it; pins:
-        // lib_tests::tls::{tls_config_update_no_rehandshake, tls_stream_before_cert}.
-        // A silent client still holds its socket and task until it hangs up;
-        // a handshake timeout would bound that and is no longer needed for liveness.
-        // 2026-10-11 claude: All three cases fixed (wait, accept: Calls::Latest; tls:
-        // Calls::Concurrent, one handshake per stream); delete and sleep abort every
-        // call in flight. Wants the soak: it changes when every async builtin's work
-        // stops.
         while (T::CALLS == Calls::Concurrent || self.inflight == 0)
             && let Some(args) = self.queued.pop_front()
         {
@@ -3111,64 +3035,6 @@ macro_rules! printer {
     };
 }
 
-// XCR claude for claude: [bug] dbg is an effect but is declared Stateless(None), as
-// are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
-// arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
-// call skips sleep, and each re-selection enters it as a birth where the standing
-// argument reads FIRED: dbg and log print again and now resamples although the
-// argument never fired, while println in the same arm shape prints once. Whether
-// the arm sleeps also depends on fusion, so the engines disagree: `{ dbg(#dest:
-// `Stdout, z); 100 }` prints once under the JIT (the fused `100` is a FusedKernel,
-// counted ASYNC) and at every entry under --no-fusion. Declaring them Sync, as
-// print/println are, makes both engines print once; the Effect::Stateless doc and
-// CLAUDE.md's "`None` for effects" say the opposite and need the same correction.
-// probe: design/review-2026-10-05/repro/x-builtin-effects-05.gx
-// (x-builtin-effects-05)
-// 2026-10-07 claude: re-addressed with core-lib-09, which asks the opposite (print
-// and println Stateless(None)). One Effect variant serves two questions: is_pure
-// (analysis.rs) decides both that an arm skips sleep and that a tail loop runs as one
-// activation. An effect without a fast call wants "may skip a tail loop's
-// activations" but "must sleep with its arm" (dbg, log, print, buffer::decode's
-// writes, x-builtin-effects-02). A fourth class, or a second predicate for arm sleep,
-// is the decision.
-// 2026-10-10 claude: Eric ruled 10-10: a fourth class, Effect::Io(Option<IoCall>), for a
-// stateless builtin that acts on the world at each fire of its trigger argument (dbg,
-// log, print, println; sys::exit and tui::exit with no IoCall). An arm holding one sleeps
-// (LambdaFacts::io, RegionFacts::io, analysis::arm_sleeps), so each prints once per fire
-// and not again at re-entry. Stateless(None) is now pure producers only, never an effect.
-// sys::time::now keeps its last reading and is Sync, one timestamp per trigger. The four
-// printers share one body (Printer/PrintCall), imaging only #dest. Pins:
-// lang::printing::printers_act_once_per_fire (interp and par fail with the arm-sleep rule
-// undone), now_samples_once_per_trigger (all modes fail with now Stateless). Wants the
-// soak.
-// XCR claude for claude: [perf] print and println are declared Sync, while dbg
-// and log, which have the same shape (a #dest config, a scratch buffer,
-// emit_line), are Stateless(None), and design/strict_fusion.md lists print
-// among the effects kept Stateless(None) so a tail loop that prints stays
-// one activation. As Sync, a tail recursion that calls println keeps an
-// activation per iteration, and #[tail_recursive] on it is refused as
-// stateful, while the same loop with dbg or log is accepted. Declare both
-// Stateless(None). Dbg, Log and printfn repeat one update body (dest from
-// arg 0, seam_tick on arg 1, format into buf, emit_line), which is how
-// their effects drifted apart; one shared body would also stop all four
-// imaging their scratch buffer. probe:
-// design/review-2026-10-05/repro/core-lib-09.gx (core-lib-09)
-// 2026-10-07 claude: re-addressed with x-builtin-effects-05 (the same choice from the
-// other side).
-// 2026-10-10 claude: Eric ruled 10-10, with x-builtin-effects-05: Effect::Io, and it
-// fuses. IoCall is a result fast fn plus the trigger's index; the call site reads every
-// other argument as stale, so the value fires with the trigger, and an untainted trigger
-// fire queues the site and arguments (emit_helpers::Deferred, beside the ? raises); the
-// wrapper performs each through BuiltIn::perform after the run, in order, a forked loop's
-// chunks in slot order. A call returning bare null now fuses. Under a select arm a
-// performing call fuses only when each trigger reads the scrutinee or the arm's binds and
-// no arm has a guard (lowering::arm_io_blocker). So a tail recursion that prints is one
-// native loop (100,000 iterations under GRAPHIX_ACTIVATION_BUDGET=1000), and dbg holds
-// under #[native]. Pins: lang::printing::printing_tail_loop_is_native (jit modes fail
-// with null returns refused), dbg_fuses_under_native, dest_alone_neither_prints_nor_fires
-// (jit modes fail without the stale mask), arm_entry_prints_a_constant;
-// lang::image::program_image_restores_kernels runs a dbg in a kernel warm. Format 46.
-// Wants the soak.
 printer!(Dbg, "core_dbg", Printer::Dbg, dbg_result);
 printer!(Log, "core_log", Printer::Log, null_result);
 printer!(Print, "core_print", Printer::Print, null_result);

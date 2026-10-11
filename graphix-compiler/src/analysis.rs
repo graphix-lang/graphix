@@ -598,29 +598,6 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
-        // XCR claude for claude: [bug] A fused arm body is a FusedKernel. This line calls
-        // it ASYNC and for_each_node does not look inside it, so under fusion
-        // arm_sleeps_on_deselect puts a pure arm to sleep that the node-walk never
-        // sleeps. At re-entry the node-walk runs that arm as a birth (standing reads
-        // fresh, select.rs:1007-1014) and the JIT runs it as a wake (standing reads
-        // stale). So a handler-ful `?` over a standing error raises again at every
-        // re-entry on the node-walk and not on the JIT: probe
-        // design/review-2026-10-05/repro/f-kernel-02.gx (graphix-fuzz check:
-        // DIVERGENCE, 2 raises vs 1). The node-walk's own count also changes with
-        // unrelated purity: adding `let c = count(s);` to the arm gives 1 on both
-        // engines, which is the count CLAUDE.md's wake rule predicts (a reselected arm
-        // reads standing values stale). Which re-entry is intended needs a ruling:
-        // classifying a kernel PURE, joined with its feeders and keeping the recursion
-        // check, makes both engines re-raise; counting a handler-ful `?` as impure
-        // makes both read stale. (f-kernel-02)
-        // 2026-10-09 claude: Eric ruled 10-09: the wake rule decides; re-entry raises
-        // nothing new. An arm sleeps when it holds a raise to a handler
-        // (analysis::arm_sleeps), and a kernel is judged by the region it replaced
-        // (RegionFacts: hooks, raises, recursive calls, carried in the image; format 42)
-        // and its feeders, no longer ASYNC across the board. Both engines give (0, 1).
-        // CLAUDE.md and wake_catchup.md say so. Pin:
-        // lang::async_restart::reentry_raises_once (interp and par fail without the raise
-        // rule). A wake semantics change: wants the soak.
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
             OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::PURE,
@@ -687,36 +664,6 @@ fn node_facts<R: Rt, E: UserEvent>(
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
 /// facts, a builtin its declared `EFFECT`, anything else `Async`.
-// XCR claude for claude: [bug] A builtin call contributes only its declared EFFECT, and a
-// lambda passed to it counts as a PURE literal, so the effect of a callback the builtin
-// calls (filter's predicate, opt::map's f, array::group's f) never reaches the caller's
-// facts. `#[sync] let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms,
-// x > 0))` is accepted although g answers a cycle late, and the same g under #[async]
-// is refused as sync. These builtins are already not stateless, so today only the
-// #[sync]/#[async] verdicts are wrong. A builtin call's facts should join the facts of
-// the function arguments it calls back. probe:
-// design/review-2026-10-05/repro/core-lib-08.gx (core-lib-08)
-// 2026-10-08 claude: re-addressed, a design call (one ruling covers core-aux-11 below). A
-// builtin calls its callback through a call site bound at run time, so the check has no
-// instance of the callback to analyze, and the definition check's own body is pessimistic
-// (a call to a function parameter reads as async there). Options: (a) a builtin HOF call
-// materializes its callback's instance at the check, as MapQ keeps a prototype, and the
-// analysis walks it (memory and check time per call); (b) a builtin declares which
-// arguments it calls back, and those arguments' facts join the call's, computed by a body
-// walk at each literal's definition check where calls to parameters count as their
-// declared types' effects (a new walk; named loss: wrong #[sync] verdicts and
-// core-aux-11's map of len 1); (c) treat every function argument of a builtin as async
-// unless it is a known pure definition (cheap, but de-classifies today's sync uses of
-// opt::map and filter). I lean to (b).
-// 2026-10-09 claude: Eric ruled 10-09: (b) without a declaration. A builtin call joins
-// the facts of each function-typed argument (callee_facts → callback_facts): a lambda
-// literal's or a resolved name's definition facts, else async (in an instance analysis).
-// A definition's check now records its body's own facts (def_body_facts, carried in its
-// DefTable and the image) so a definition no instance reaches starts honest; that walk
-// counts calls through its own parameters, and calls not resolved yet, as nothing,
-// leaving them to the instance analysis. Pins: lang::attributes
-// sync_on_async_builtin_callback, sync_on_async_filter_callback (both fail without the
-// join), sync_builtin_callbacks_stay_sync; the repro is refused.
 /// A call's facts, its callee's joined with every function argument's.
 pub(crate) fn call_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
@@ -835,23 +782,6 @@ fn callee_own_facts<R: Rt, E: UserEvent>(
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return instance(g.instance_id(), g.id());
     }
-    // XCR claude for claude: [bug] A call to a builtin contributes only the builtin's
-    // declared EFFECT, either through the builtin-bodied def that bind_to_lambda names
-    // (opt::map takes this branch) or through builtin_bindings below. The functions
-    // handed to the builtin are never consulted, and a lambda literal argument counts
-    // as PURE without its body being walked. So a Sync HOF builtin given an async
-    // callback (opt::map, flat_map, filter, or_else, ok_or_else, is_some_and,
-    // is_none_or, core filter, array::group) leaves its caller Sync: #[sync] passes and
-    // #[async] is refused, while array::map or a Graphix HOF with the same callback is
-    // refused. The same hole lets a core-trait method escape its implicit #[sync]: an
-    // Ord impl whose cmp goes through opt::map with an after_idle callback compiles,
-    // and a map of three distinct keys of that type has len 1. probe:
-    // design/review-2026-10-05/repro/core-aux-11.gx (core-aux-11)
-    // 2026-10-08 claude: re-addressed with core-lib-08 above: one ruling covers both.
-    // 2026-10-09 claude: built with core-lib-08 (Eric's ruling, 10-09): a builtin call
-    // joins its callbacks' facts, so the repro's opt::map with an after_idle callback is
-    // refused under #[sync], and the core-trait method's implicit #[sync] with it. Pins
-    // as core-lib-08's.
     if let NodeView::Ref(r) = cs.fnode().view() {
         if let Some(ids) = graph.and_then(|graph| graph.self_binds.get(&r.id)) {
             ids.iter().for_each(|iid| pending(*iid));

@@ -756,36 +756,6 @@ fn emit_slots(
     state_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
-    // XCR claude for claude: [bug] Under a tainted source this runs `len` iterations over
-    // the source's placeholder. emit_fold_loop (line 1160) does the same, and so does
-    // emit_init_loop, which clamps only an oversize count (795). The node-walk builds
-    // no slot under a bottom source and runs exactly the slots it kept
-    // (MapQ/FoldQ::update). When the placeholder is longer than the kept slots, the
-    // extra iterations are phantom slots: a tainted run leaves `entered` unchanged, so
-    // each one runs under an init view, a constant error under `?` raises there and
-    // raises again when the source turns valid, and its fires make the bottom result
-    // fresh. When it is shorter, kept slots are skipped: a missing input is staged as
-    // an empty array, so a kept slot's raise is lost. probe:
-    // design/review-2026-10-05/repro/f-scaffold-body-01.gx (interp (2, 2), jit (4, 0)).
-    // A fix also needs a ruling on the bottom-source firing rule: MapQ ignores its kept
-    // slots' fires (collection.rs:1082), while FoldQ counts them (1517).
-    // (f-scaffold-body-01)
-    // 2026-10-08 claude: Needs a ruling before a fix. Under a bottom source the node-walk
-    // re-runs the slots it kept over their standing elements, but a kernel keeps no
-    // per-slot elements: the source's placeholder is all it has. So the JIT cannot match
-    // the node-walk as it stands. Options: (a) a bottom source runs no slot in either
-    // engine (the slots stay asleep until the source returns, as an unselected arm does);
-    // this also settles the MapQ/FoldQ firing-rule split, since no slot fires; (b)
-    // kernels keep each slot's element, which is state a pure kernel does not have today.
-    // I lean (a), which matches 'bottom scrutinee => bottom select'.
-    // 2026-10-09 claude: Eric ruled 10-09: (a). A bottom source runs no slot in either
-    // engine: the node-walk pauses its slots when the source turns bottom (take_source
-    // sleeps them as a deselected arm's, under deselecting_arm) and updates none while it
-    // stays bottom; they wake caught up when it returns, so the MapQ/FoldQ firing split
-    // is gone. A kernel loop runs no iteration over a tainted source (slots_run, inline
-    // and outlined; the slot tables keep their size). The repro gives (2, 0) in both
-    // engines. CLAUDE.md says so. Pin: lang::collection::bottom_source_runs_no_slot
-    // (fails in all four modes on the old code). A semantics change: wants the soak.
     let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
         let lp = outline::Loop { kind, src, src_disc, len, entered, state_sites };

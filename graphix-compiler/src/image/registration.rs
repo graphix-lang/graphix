@@ -313,31 +313,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         nodes: &mut Vec<(ExprId, Node<R, E>)>,
     ) -> Result<(SharedDecoder, Scope, Option<ProgramRoot>), PackError> {
         let mut bytes: &[u8] = &image;
-        // XCR claude for claude: [risk] Nothing checks an entry's contents. Past the
-        // magic, format, ISA, header offsets and id counts, every byte is trusted,
-        // kernel machine code included (define_function_bytes installs it as stored).
-        // One flipped bit in a cached entry can make a warm run print a changed string
-        // literal with exit 0, make a fused fact() return 1, rename a builtin so every
-        // program calling it fails on every run, or crash in restored JIT code
-        // (SIGSEGV/SIGILL). An entry that fails the read is never written again
-        // (graphix-shell/src/lib.rs:287-310), and entries are renamed into place with
-        // no fsync (graphix-shell/src/cache.rs:198), so a crash that leaves an empty
-        // entry means cold starts until the next build. A checksum over each part the
-        // restore reads (the eager part, each heap instance, each kernel record),
-        // checked before use, with a mismatch handled as a failed read that rewrites
-        // the entry, would close this. probe:
-        // design/review-2026-10-05/repro/x-image-03.sh (x-image-03)
-        // 2026-10-10 claude: Eric ruled 10-10: checksum the entries. A registration image
-        // carries, after its magic and format, a crc32 of everything after it
-        // (ImageBuf::seal, image::sealed, crc32fast), checked before anything decodes; a
-        // mismatch is a failed read, so the session compiles cold and rewrites the entry
-        // (checked: a corrupted entry is replaced on the next run that reads it). Format
-        // 44. The fsync before the rename was already there. The probe's flips now all
-        // run correct; it still reads "unchanged, still corrupt" only because its loop
-        // rewrote the entry. Pins: lang::image::a_bad_registration_image_runs_cold (a
-        // letter's case flipped in a string, which decodes; fails with the check
-        // disabled); the part-rewriting image tests re-seal so they still reach their own
-        // guards.
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {
             return Err(PackError::InvalidFormat);
         }

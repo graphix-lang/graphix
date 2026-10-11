@@ -1175,31 +1175,6 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// `Ok(None)`: the root type has no kernel representation, the subtree
 /// is an identity passthrough, or some node does not emit CLIF.
 /// Discovery rejects known effects; emission validates the remaining shapes.
-// XCR claude for claude: [perf] A pure subtree of any size becomes one CLIF function.
-// Cranelift's backtracking register allocator (regalloc2, reached from Jit::link) is
-// superlinear in function size, so cold-start compile time grows roughly quadratically
-// with region size while the node-walk stays linear. Debug build, fused vs --no-fusion:
-// a block of 5000 chained lets, fused as one region, takes 11.3 s vs 1.0 s (2500: 2.9 s
-// vs 0.7 s); a 5000-arm select takes 5.3 s vs 1.0 s; a lambda whose body is a 9000-deep
-// `+` chain takes 44 s vs 0.7 s. Nothing bounds or splits a region. Splitting an
-// oversized region at its parts would keep it native. (x-stack-10)
-// 2026-10-09 claude: Needs a ruling: splitting trades against #[native]. The simple fix
-// refuses a region past a node budget, so fuse() descends to its parts, which fuse
-// separately and keep compile time linear; but the glue between the parts node-walks, so
-// #[native] over an expression that large fails, and fusion stops being predictable from
-// the source alone. Options: (a) split past a budget, and let #[native] mean 'fuses,
-// possibly as several kernels'; (b) split only where no #[native] covers the region; (c)
-// keep one region and bound regalloc instead (cranelift's single-pass allocator for
-// oversized functions), which keeps the semantics and costs code quality there. I lean
-// (c), then (b).
-// 2026-10-10 claude: Eric ruled 10-10 option (c): keep one region and bound the register
-// allocator instead. A function past LARGE_FUNCTION (20,000) instructions compiles with a
-// second host isa set to regalloc_algorithm single_pass (LARGE_FUNCTION_ISA in
-// jit::backend), so #[native] and region shape are untouched. Measured (quick, cold):
-// 5000 chained lets 10.1 s -> 1.15 s, 2000 1.9 s -> 0.62 s, same answers; real kernels
-// stay far below the budget (34 instructions a let, so about 600 lets). Pin:
-// lang::fusion::large_region_fuses_whole (an 800-let region, about 27k instructions,
-// fuses whole and matches the arithmetic).
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &mut CompileCtx<R, E>,

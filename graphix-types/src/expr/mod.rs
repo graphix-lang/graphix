@@ -981,32 +981,6 @@ pub enum Source {
     Vfs(ArcStr),
     /// A program given as text, the text its `Origin` holds.
     Program(ArcStr),
-    // XCR claude for claude: [structure] Internal carries a VFS module's bare leaf name
-    // (graphix-types/src/expr/resolver.rs:233) or an entire program's text (the shell's
-    // embedded main program, graphix-shell/src/lib.rs:247, which GX::load_exprs parses
-    // at graphix-rt/src/gx.rs:761; the fuzzer), and Display prints both as `module
-    // {m}`. An error in a standalone build's main program therefore reads 'in module'
-    // followed by the whole program (graphix-fuzz run on a type error prints `in module
-    // test` included from `module { mod test; test::result }`), two VFS modules named
-    // util in different scopes print alike, and an image stores an embedded program's
-    // text twice, here and in Origin.text. Split it: a VFS variant holding the module
-    // path, and a program variant whose text lives only in Origin.text.
-    // (t-format-resolver-16)
-    // 2026-10-07 claude: re-addressed: the split reaches core's program-visible
-    // `Source` type (`Internal(string)` is what an error's origin holds), so a
-    // Program variant, or Internal carrying a path, is a language change.
-    // 2026-10-10 claude: Eric ruled 10-10: split it. Source::Internal is gone: Vfs(path)
-    // is a VFS module by its full module path (printed `module /a/util`, so two util
-    // modules no longer print alike), and Program(text) is a program given as text
-    // (printed `program`; an error position no longer names its text). Core's Source type
-    // is [`File(string), `Netidx(string), `Vfs(string), `Program, `Unspecified]; a
-    // program origin's value carries its text in the origin's text field. The image
-    // writes Program's source without its text and rebuilds it from the origin's (format
-    // 45), so an embedded program's text is stored once. Pins: graphix-types
-    // image::tests::a_program_origin_writes_its_text_once;
-    // lang::interfaces::interface_error_is_placed and
-    // lang::modules::module_errors_are_framed_by_the_module now pin the module path;
-    // resolver test a_vfs_body_resolves_its_submodules_in_the_vfs.
     #[default]
     Unspecified,
 }

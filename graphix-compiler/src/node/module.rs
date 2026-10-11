@@ -374,40 +374,6 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
-            // XCR claude for claude: [bug] This publishes the rep of every abstract
-            // typedef with a body under a re-exported `mod sub;`. A gxi body is already
-            // public from bind_sig, so the only reps this changes are an interface-less
-            // descendant's own `type T = Abstract<..>`. As a result, a parent gxi that
-            // lists `mod sub;` makes `outer::sub::T(5)`, `.0` and `T(p)` legal from
-            // anywhere, while the same tree without the parent gxi, or a top-level
-            // interface-less module, refuses them: adding an interface widens what the
-            // child exposes. design/nominal_abstract_types.md calls an interface-less
-            // `Abstract<..>` module-private, but book/src/modules/interfaces.md:379 and
-            // the doc on Env::publish_abstract_rep call it public. For module-private,
-            // delete this loop and fix those two docs; for public, register an
-            // interface-less module's reps public in TypeDef::compile and fix the
-            // design table; either way, pin both nestings. probe:
-            // design/review-2026-10-05/repro/x-typecheck-patterns-10.sh (nested_gxi and
-            // deep print "5 6"; nested_plain and flat refuse).
-            // (x-typecheck-patterns-10)
-            // 2026-10-08 claude: needs a ruling. As built, a top-level interface-less
-            // module's rep is private (the flat case refuses), which the design table's
-            // "module-private" row says; the book's "a module with no interface file
-            // exports its definitions too, so its Abstract types are public newtypes"
-            // was written in the same commit (927b1e75) and says the opposite. Private
-            // means deleting this loop; public means TypeDef::compile registers an
-            // interface-less module's reps public.
-            // 2026-10-10 claude: Eric ruled 10-10 option public: a module with no
-            // interface hides nothing, so its abstract type is a public newtype in every
-            // nesting. An interface-less module publishes the reps of the abstract types
-            // defined at its own scope once its body compiles (compile_module_inner,
-            // Env::publish_abstract_reps_at); the loop this CR sits on is gone, so there
-            // is one mechanism. The probe's five nestings: nested_gxi, nested_plain, flat
-            // and deep print "5 6", hidden (a .gxi with type T;) refuses.
-            // design/nominal_abstract_types.md's table now says public; the book already
-            // did. Pins: lang::interfaces::abstract_type_public_without_interface,
-            // abstract_type_public_under_an_interface (both fail with the fix undone),
-            // abstract_type_hidden_by_its_interface.
         }
     }
 }

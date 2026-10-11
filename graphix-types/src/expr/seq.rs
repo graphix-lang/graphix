@@ -538,43 +538,6 @@ fn place_root(e: &Expr) -> Option<&ModPath> {
     }
 }
 
-// XCR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
-// here for until, try-let, let and connect statements: the rebuilt guard, sink
-// write, let_pat and connect_path carry no dec. lower_block drops them the same way
-// for a block's lets and connects. Only an expression statement keeps its
-// attribute, through rewrite. So inside a seq such an attribute is neither applied
-// nor refused. #[sync] on an async function, #[native] on a let, #[parallel] with
-// nothing to fork, and an unknown #[bogus] all compile and run, while the same
-// statement outside a seq is a compile error. probe:
-// design/review-2026-10-05/repro/t-seq-08.gx (prints 42; expected a compile error).
-// (t-seq-08)
-// 2026-10-07 claude: a statement's decorations now ride its computation
-// (`decorated`): #[bogus] is refused, #[native] is verified, and a correct
-// `#[sync] let f = |x| x + 1` in a seq builds. Still open: #[sync] on an
-// async lambda a step binds only logs at run time, because a call through
-// the step's let dispatches dynamically, so the compile's analysis never
-// covers the def and check_def_assertions (analysis.rs) leaves it pending
-// for an instance analysis, which logs instead of refusing.
-// 2026-10-08 claude: the remainder is the documented rule for every dynamically reached
-// definition, not a seq one: an assertion no static analysis reaches is checked at the
-// definition's first runtime bind (analysis::analyze_bound_callee), which logs. Refusing
-// it at compile would need the definition analyzed without an instance.
-// 2026-10-09 reviewer: verified on the quick binary: the repro is refused (unknown
-// attribute #[bogus]); `#[native] let y = f(41) + 1` (f async) is refused (did not fully
-// fuse); `#[parallel] b <- y + 1` is refused; `#[bogus] until ..` is refused. Pin
-// lang::seq_lowering::lowering_refusals fails if `decorated` is undone. What Eric must
-// decide: `seq { #[sync] let f = |x| sys::time::after_idle(duration:1.ms, x); let y =
-// f(41) + 1; y }` logs the #[sync] failure and prints 42, while the same lets at the top
-// level or inside a select arm are a compile error. Per the 10-07 note the difference
-// comes from seq: a call through a step's let dispatches dynamically. Either accept that
-// an assertion on a step-bound definition is a run-time log, or make calls through a
-// step's lambda lets resolve statically.
-// 2026-10-09 claude: Eric ruled 10-09: resolve them statically. A step's (or a { .. }
-// statement's) let of one name to a lambda literal now binds the name to the lambda
-// itself, the step's value being the name fired at entry, so calls through it resolve
-// statically and the #[sync] above is a build error. CLAUDE.md and design/seq_blocks.md
-// say so. Pins: lang::seq_lowering::lowering_refusals (both forms; the step form printed
-// 42 without the change). A seq lowering change: wants the soak.
 /// `value` carrying a statement's decorations too: an attribute on a
 /// seq statement annotates its computation, where the compiler applies
 /// or refuses it.

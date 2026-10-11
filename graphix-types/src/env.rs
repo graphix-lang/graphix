@@ -763,44 +763,6 @@ impl Env {
     /// is the package).
     pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
         match Path::parts(scope).next() {
-            // XCR claude for claude: [bug] This takes any first-level `#do` component for
-            // a loaded script's top level. That holds for the build (load_program
-            // compiles the script as a block, its names under `/#doN`) but not for
-            // --check and the LSP: compile_script (graphix-compiler/src/lib.rs:2087)
-            // compiles the script's names at `/`, so a top-level block `{ .. }`, scoped
-            // `/#doM`, becomes a package of its own. The orphan rule then refuses `type
-            // Key = Abstract<i64>; let out = { impl Eq for Key { .. }; Key(1) ==
-            // Key(11) }` under --check ('must live in the type's package (/)') while
-            // the build prints true. Also, `package::x` inside such a block names the
-            // block's own `x` in the check and the script's in the build: for `let x =
-            // 1; let y = { let x = "s"; package::x + 1 }; y`, --check refuses string +
-            // i64 and the build prints 2. The check and the build should name a
-            // script's top level the same way, or the package root should come from
-            // where the script was compiled, not from the shape of the first component.
-            // probe: design/review-2026-10-05/repro/c-analysis-branch-11.gx
-            // (c-analysis-branch-11)
-            // 2026-10-07 claude: the resolver half of t-format-resolver-01 is fixed (a
-            // program's own `mod str` no longer gets the str package from the VFS), so a
-            // script beside its str.gx runs; --check still refuses it with "duplicate
-            // module definition str", for the reason this CR gives: the check names the
-            // script's top level `/`, where the package is.
-            // 2026-10-07 claude: re-addressed: this is a choice of design. Two ways:
-            // (a) --check and the LSP compile a script inside its `#do` block as the
-            // build does, which moves every script name from `/x` to `/#doN/x` for
-            // the LSP's queries and tests; (b) the env records the scope a script was
-            // compiled at (`/` for the check, `/#doN` for the build) and
-            // package_root returns it for any scope under it, which keeps the LSP's
-            // names but adds a registry to Env (join, swap_lexical, the image codec
-            // and unbind_scope_subtree carry it). (b) also fixes the duplicate
-            // `mod str` above only if the check stops putting script modules at `/`.
-            // 2026-10-10 claude: Eric ruled 10-10 option (c): the run compiles a script
-            // at /, as the check, the LSP and the REPL do (compile_script at
-            // Scope::root()), and Env::package_root lost its #do case, so a block inside
-            // a script is in the script's package. self:: and package:: name the script's
-            // own names in every mode, the block impl and package::x probes agree (true,
-            // 2), and a script's own mod str is a duplicate in both. Pins:
-            // graphix-shell/tests/script_scope.rs (all three fail with the change
-            // undone).
             Some(first) if self.package_roots.contains(first) => {
                 &scope[..1 + first.len()]
             }

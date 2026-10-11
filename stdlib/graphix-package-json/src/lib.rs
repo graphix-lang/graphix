@@ -84,31 +84,6 @@ fn to_json(
             }
             Ok(serde_json::Value::Object(map))
         }
-        // XCR claude for claude: [bug] A List reaches this arm as its private
-        // representation (cons cells of two-slot arrays). It is written as nested
-        // pairs, `[0,[1,[2,[]]]]`, one nesting level per element; design/list_native.md
-        // records this shape. Because of that, json::read refuses this function's own
-        // output for any List of 127 or more elements (serde_json stops at 128 levels).
-        // value_to_toml (graphix-package-toml/src/lib.rs:88) does the same, and
-        // toml::read refuses 80 or more. hbs::render reuses this function, so
-        // `{{#each}}` over `[<"a", "b", "c">]` renders `<a><[b, [c, []]]>`. The writers
-        // take `value: Any`, so at run time they cannot tell a List from a pair. With
-        // the argument's static type they could write a List as a flat array, which the
-        // readers' cast already turns back into a List once its shape guess
-        // (graphix-types/src/typ/cast.rs:373) stops reading `[x, []]` as a cons cell.
-        // probe: design/review-2026-10-05/repro/x-stack-06.gx (x-stack-06)
-        // 2026-10-07 claude: a List is told from an array only by its type, which a fast
-        // call does not see: deferred with small-pkgs-11 to a fast-call form that carries
-        // the argument types. The depth bound keeps a long list from aborting meanwhile.
-        // 2026-10-09 claude: Rides on the small-pkgs-11 ruling: with the argument's
-        // static type a List writes as a flat array, which the readers' cast turns back
-        // into a List.
-        // 2026-10-10 claude: Rides on small-pkgs-11 (ruled 10-10): with the argument's
-        // static type, shape reads a List as a sequence of its elements, so json and toml
-        // write it flat and hbs iterates it flat. The probe round-trips 127 elements
-        // through json and 80 through toml (both refused before) and renders <a><b><c>,
-        // in both engines. Pin: lib_tests::json::json_writes_by_type (a 200-element List
-        // round-trips), hbs::hbs_renders_by_type.
         Shape::Seq(mut elems) => {
             let mut vals: LPooled<Vec<serde_json::Value>> = elems
                 .drain(..)

@@ -886,39 +886,6 @@ impl<X: GXExt> GX<X> {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref()).await?;
-                // XCR claude for claude: [bug] A script root's .gxi is only half applied.
-                // RootFile::load splices its types, uses, mods and traits into the
-                // script, but this line drops root.sig, so the vals are never checked.
-                // `graphix --check foo.gx` and the LSP check a lone module (one that no
-                // file's `mod` reaches) this way. An implementation that does not match
-                // its interface therefore passes. A valid module is refused when its
-                // .gxi puts a type, use or trait after the val of its last binding,
-                // because the splice puts that declaration in the file block's value
-                // slot ("a type definition is not an expression", reported at the
-                // .gxi); through `mod foo;` the same pair checks correctly. probe:
-                // design/review-2026-10-05/repro/t-format-resolver-03.sh
-                // (t-format-resolver-03)
-                // 2026-10-08 claude: the check compiles a lone root with an interface as `mod
-                // <stem>`, as a package root, so the whole interface applies there; a run
-                // still splices it (a script is not a module).
-                // 2026-10-08 claude: re-addressed, a rule: `graphix foo.gx` where foo.gxi
-                // exists. The check now treats foo.gx as `mod foo` (the interface applies
-                // whole); the run treats it as a script (its last value is the output)
-                // and splices the interface, so its vals go unchecked. Options: (a) a run
-                // compiles it as `mod foo` too, with no output value; (b) a run stays a
-                // script but checks the vals against its top-level names; (c) refuse to
-                // run a file that has an interface. I lean to (b): the run and the check
-                // agree on the verdict and a script keeps its output.
-                // 2026-10-09 claude: Eric ruled 10-09 option (b): a root with an
-                // interface runs and checks as a script; its interface is spliced in and
-                // its vals and declared impls are checked over the script's top-level
-                // names (check_script_sig), by the run as by --check, right after the
-                // check and before elaboration (compile_script's verifier: fusion may
-                // delete a bound lambda's env entry). The check no longer compiles a lone
-                // root as mod <stem>. The type-after-the-last-val splice already passed.
-                // Pins: graphix-shell/tests/script_interface.rs
-                // (val_declared_otherwise_is_refused and missing_items_are_refused fail
-                // on the run with the fix undone; matching_interface_checks).
                 (root.ori, root.exprs, root.sig)
             }
             source @ Source::Netidx(_) => {
@@ -1038,30 +1005,6 @@ impl<X: GXExt> GX<X> {
                 false => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_block(stmts.clone(), Arc::new(ori.clone()));
-                    // XCR claude for claude: [bug] The check compiles a script with its
-                    // names at `/` (compile_script at Scope::root()). load_program, the
-                    // run, compiles the same file as a Block that compile() scopes at
-                    // `/#do<id>`, so any verdict that depends on the scope can differ.
-                    // `self::` anchors at mod_root, which strips the `#do` level back
-                    // to `/`. As a result, `self::a`, `self::T` and `use self::m::x`
-                    // over a script's own top-level names pass `--check` and the LSP
-                    // but the run refuses them, and the check refuses `mod str;`
-                    // (duplicate module at `/str`) while the run accepts it. probe:
-                    // design/review-2026-10-05/repro/t-typ-mod-04.sh. Compile both at
-                    // one scope, or anchor `self::` at a script's `#do` level as
-                    // Env::package_root does for `package::`, then correct CLAUDE.md's
-                    // "as it runs, with its names at the root". (t-typ-mod-04)
-                    // 2026-10-08 claude: the same choice as c-analysis-branch-11 (Env::package_root),
-                    // which is with Eric: compile the check at the script's `#do` level, or record
-                    // the scope a script compiled at and anchor `self::` and `package::` there.
-                    // 2026-10-10 claude: Eric ruled 10-10 option (c): the run compiles a
-                    // script at /, as the check, the LSP and the REPL do (compile_script
-                    // at Scope::root()), and Env::package_root lost its #do case, so a
-                    // block inside a script is in the script's package. self:: and
-                    // package:: name the script's own names in every mode, the block impl
-                    // and package::x probes agree (true, 2), and a script's own mod str
-                    // is a duplicate in both. Pins: graphix-shell/tests/script_scope.rs
-                    // (all three fail with the change undone).
                     graphix_compiler::compile_script(
                         &mut self.ctx.view(),
                         flags,

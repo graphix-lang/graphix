@@ -318,41 +318,6 @@ pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    // XCR claude for claude: [bug] core_buffer_decode is Stateless(None), but its eval
-    // writes every target with set_var. An arm holding it is judged pure, so each
-    // re-selection runs it as a birth with the standing buf and spec read FIRED. In an
-    // arm that sleeps, CachedArgs re-runs a stateless eval at the wake. Either way
-    // every re-entry rewrites the targets though nothing the call reads fired, a
-    // phantom fire to every reader, while `*r <- v` in the same arm writes once.
-    // Declaring it Sync alone would leave a stale remainder at a wake, and the writes
-    // would still go out from CachedArgs' eval while the last result is bottom: with a
-    // later length ref absent this rewrites the earlier fields every cycle, a busy loop
-    // (one-liner in the probe header). The writes belong to a fired invocation only;
-    // probe: design/review-2026-10-05/repro/x-builtin-effects-02.gx
-    // (x-builtin-effects-02)
-    // 2026-10-07 claude: the decode now commits its writes only when the whole spec
-    // decodes (no rewrite of earlier fields while a later length is absent, the busy
-    // loop), and reads payloads and references by shape. Writing on a fired
-    // invocation only is the open part: Sync leaves a stale remainder at a wake and
-    // Stateless re-writes at a re-entry; it needs the effect class the dbg/print pair
-    // (x-builtin-effects-05, core-lib-09) does.
-    // 2026-10-08 claude: re-addressed: the open part is the effect class that writes only
-    // on a fired invocation, the one x-builtin-effects-05 and core-lib-09 ask for
-    // (dbg/print). One ruling covers all three.
-    // 2026-10-08 claude: re-addressed: the open part is the effect class that writes only
-    // on a fired invocation, the one x-builtin-effects-05 and core-lib-09 ask for
-    // (dbg/print). One ruling covers all three.
-    // 2026-10-10 claude: Eric ruled 10-10 (with x-builtin-effects-05 and core-lib-09):
-    // buffer::decode is Effect::Io(None). Its arm sleeps, so a re-entry is a wake, not a
-    // birth. EvalCached gains quiet (the value without the effect, eval by default),
-    // which CachedArgs runs wherever it recomputes without a fire: at a wake, now for
-    // Stateless and Io alike, and when it first establishes the value channel. The
-    // decode's quiet decodes without committing its writes, so the remainder at a wake is
-    // current and the writes go out on a fired invocation only. The probe (with &mut
-    // targets) gives (2, 2, 2) in both engines, was (4, 4, 2). Pins:
-    // lib_tests::buffer::decode_writes_once_per_fire (every mode fails with
-    // Stateless(None)), decode_unfinished_writes_nothing (fails when quiet writes). Wants
-    // the soak.
     const EFFECT: Effect = Effect::Io(None);
     const NAME: &str = "core_buffer_decode";
 

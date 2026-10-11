@@ -237,7 +237,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
-        // XCR claude for claude: [bug] A binding that `<-` rewrites is generalized here as
+        // CR claude for eric: [bug] A binding that `<-` rewrites is generalized here as
         // if it were immutable. The connect's check (node/mod.rs:2334) then unifies the
         // written type into the scheme's own generic cells, so a writer narrows the
         // definition, and only the uses checked after it see that. Statement order
@@ -264,6 +264,15 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // lang::types::written_binding_is_monomorphic and
         // written_through_a_reference_is_monomorphic (fail with the fix undone),
         // written_binding_writer_first, written_binding_takes_its_type.
+        // 2026-10-11 claude: reviewed: the value restriction holds within a compile
+        // (pins lang::types written_binding_is_monomorphic, written_binding_writer_first,
+        // written_through_a_reference_is_monomorphic, written_binding_takes_its_type).
+        // What remains is the REPL: a writer in a later input meets an already
+        // generalized binding and is accepted, and the earlier generic uses then run it.
+        // Piped to the shell: let f = |x| x; let s = f("s"); f <- |x: i64| x + 1; f(2)
+        // prints 3, so f("s") now runs the i64 function on a string. Needs a ruling:
+        // refuse a later writer unless it is as general as the binding's generalized
+        // type, or another rule for incremental compiles.
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert(id);

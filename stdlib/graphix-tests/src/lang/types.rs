@@ -2285,6 +2285,23 @@ run!(
     FuseExpect::None
 );
 
+/// An unknown constructor's argument is invariant too: a `'c<i64>` is no
+/// `'c<[i64, string]>`.
+const CONSTRUCTOR_ARGUMENTS_ARE_INVARIANT: &str = r#"
+{
+    let f = 'c: Collection |a: 'c<[i64, string]>| 0;
+    let g = 'c: Collection |b: 'c<i64>| f(b);
+    g([1])
+}
+"#;
+
+run!(
+    constructor_arguments_are_invariant,
+    CONSTRUCTOR_ARGUMENTS_ARE_INVARIANT,
+    refused("Collection<[i64, string]> does not contain 'c: unbound within Collection<i64>");
+    FuseExpect::None
+);
+
 /// The annotation, not the payload, decides a constructed value's
 /// parameters.
 const ANNOTATION_DECIDES_CONSTRUCTED_PARAMETERS: &str = r#"

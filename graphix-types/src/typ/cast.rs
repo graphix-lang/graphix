@@ -400,37 +400,6 @@ impl Type {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
-                // XCR claude for claude: [bug] Every type-directed read (str::parse,
-                // json/toml/pack::read, sys::net subscribe/call, sqlite::query) and
-                // every cast from a string reaches this line, and netidx's Value::cast
-                // parses a string as an i64 literal and converts with Rust `as`, so
-                // out-of-range input silently becomes another number:
-                // str::parse("70000") into u16 is 4464, json::read("300") into u8 is
-                // 44, cast<u32>("4294967296") is 0, yet
-                // cast<u64>("18446744073709551615") is refused. The reads promise an
-                // error when the value does not fit (str.gxi "an error on failure",
-                // sys::net "InvalidCast if the conversion fails"), netidx's own parser
-                // refuses "u16:70000", and netidx-admin's parse_id
-                // (tui/services.gx:146) relies on cast<u32> refusing bad input, so a
-                // typed uid 4294967296 becomes uid 0. A union target takes the first
-                // member in Typ order that converts, so cast<[u8, i64]>("300") is u8:44
-                // although i64 holds 300. Number-to-number cast<T> saturation is pinned
-                // (types::cast_narrow_saturates), so an exact conversion for reads and
-                // strings needs a ruling on that pin, and str::parse's signature must
-                // then admit the InvalidCast it can already return. probe:
-                // design/review-2026-10-05/repro/gx-stdlib-02.gx (gx-stdlib-02)
-                // netidx casts every error as false: an error is no data
-                // 2026-10-10 claude: Eric ruled 10-10 option 1, exact everywhere: a cast
-                // to an integer type (strings, type-directed reads and number-to-number
-                // casts alike) holds the value exactly or is an InvalidCast; a float
-                // drops its fraction but NaN, an infinity or out of range is refused; a
-                // union target takes the first member that holds the value (cast<[u8,
-                // i64]>("300") is i64:300). graphix-types' convert wraps netidx's
-                // Value::cast for integer targets; the JIT inlines only the casts that
-                // always fit (lowering::always_fits), the rest call cast_value.
-                // str::parse already maps a failed cast to its declared ParseError, so
-                // its signature stands. cast_narrow_saturates is replaced. Pin:
-                // lang::types::cast_to_an_integer_is_exact (fails with the fix undone).
                 if let Value::Error(_) = v {
                     return Err(self.cast_fail("an error is not data", v));
                 }
@@ -739,25 +708,6 @@ impl Type {
             }
             // A member the value already inhabits wins; else the first
             // member it converts to.
-            // XCR claude for claude: [bug] The first member a value converts to wins, and
-            // a payload variant also converts an array of exactly its payload's length
-            // as a tagless payload (555-563). So a value carrying one member's tag is
-            // claimed by any member that sorts before it: cast<[`Abc(string, i64),
-            // `Zed(i64)]> of ["Zed", "5"] or ["Zed", i32:5] gives the variant
-            // Abc("Zed", 5), while with the tag order mirrored the tagged member wins.
-            // The type-directed reads (json, toml, pack, sqlite, str::parse, sys::net)
-            // cast external data this way. A member whose tag the value carries should
-            // beat every tagless reading. probe:
-            // design/review-2026-10-05/repro/t-cast-setops-14.gx is the coverage one;
-            // this one is design/review-2026-10-05/repro/t-cast-setops-13.gx
-            // (t-cast-setops-13)
-            // 2026-10-10 claude: Eric ruled 10-10: a member whose tag the value carries
-            // in its own form (a bare variant's tag string, or an array of a payload
-            // variant's tag and payload) is the value's reading; when one exists, only
-            // the tagged members are tried and a payload that does not fit is refused,
-            // never read tagless (carries_tag). The probe gives (Zed(5), Abc(5), Zed(5),
-            // Zed(5)) in both engines. Pin: lang::types::cast_reads_the_tag (fails with
-            // the fix undone).
             Type::Set(ts) => {
                 // a member whose tag the value carries is its reading,
                 // whatever a tagless reading of an earlier member says

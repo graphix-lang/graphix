@@ -309,6 +309,21 @@ run!(
     FuseExpect::None
 );
 
+// Functions have no order: a sort and an ordering over them are refused.
+run!(
+    sort_refuses_functions,
+    "array::sort([|x: i64| x, |x: i64| x + 1])",
+    refused("functions have no order, and only == and != compare them, by identity");
+    FuseExpect::None
+);
+
+run!(
+    ordering_refuses_functions,
+    "{ let f = |x: i64| x; let g = |x: i64| x; f < g }",
+    refused("can't order functions");
+    FuseExpect::None
+);
+
 const MAP_UNION_SECOND_WINS: &str = r#"
 {
   let big = {1 => "a", 2 => "a", 3 => "a", 4 => "a", 5 => "a", 6 => "a", 7 => "a", 8 => "a"};

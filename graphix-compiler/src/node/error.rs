@@ -724,42 +724,8 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             }
         },
         Some(Type::Error(payload)) => payload.with_deref(|et| match et {
-            // XCR claude for claude: [bug] `?` refuses any operand whose error payload is
-            // a type variable. `|r: Result<i64, 'e>| -> i64 r?` stops here with `type
-            // must be known`, although the type is written out and `r$` checks. A bound
-            // that rules out a chain (`'e: [`A, `B]`) and `|e| error(e)?` are refused
-            // the same way, so a function that is generic in its error type cannot
-            // raise that error. Typing the raise as plain `ErrChain<'e>` would be
-            // unsound, because `wrap_error` chains a payload that is itself an ErrChain
-            // instead of wrapping it. So either decide the wrap statically for the
-            // site, or over-approximate as the primitive arm above does
-            // (`ErrChain<Any>`), or refuse with a message that names the generic
-            // payload and asks for a concrete error type. Line 619's `expected error
-            // not []` is false for the operands that reach it (`x: Any`, `[Any, null]`,
-            // a `let r = never()` read by `r?` before its writer) and names nothing to
-            // annotate. probe: design/review-2026-10-05/repro/c-error-op-05.gx
-            // (c-error-op-05)
-            // 2026-10-08 claude: refused with a message that names the payload; the
-            // generic raise (deciding the wrap for a variable payload) remains.
-            // 2026-10-08 claude: re-addressed, a typing rule: what a `?` over `Result<T,
-            // 'e>` raises when 'e is generic. wrap_error chains by the value's shape, so
-            // the raise is ErrChain<'e> unless 'e binds to a chain, which is that chain.
-            // Options: (a) a bound that keeps chains out of 'e (the raise is then
-            // ErrChain<'e>, exact); (b) type the raise ErrChain<Any> (sound, a typed
-            // catch loses the payload's type); (c) keep the refusal, which now names the
-            // payload. I lean to (a): a generic error type that is itself a chain is the
-            // rare case.
             // a chain the variable turns out to be collapses into this one, as
             // `wrap_error` extends it
-            // 2026-10-10 claude: Eric ruled 10-10: model the run time. wrap_error already
-            // extends a chain rather than nesting it, so the types follow:
-            // Type::lookup_ref expands ErrChain<P> as P when P is a chain (the core
-            // ErrChain, or a struct of exactly its fields), making ErrChain<ErrChain<X>>
-            // ErrChain<X>. ? over an unbound payload variable now raises ErrChain<'e>
-            // instead of refusing, and a call that binds 'e to a chain re-raises that
-            // chain with its history. design/catch.md and CLAUDE.md say so. Pins:
-            // lang::errors::generic_error_raises, generic_reraise_keeps_the_chain (both
-            // fail with the fix undone).
             None => Ok(Type::Error(Arc::new(typ_echain((**payload).clone())))),
             Some(Type::Ref(tr)) if tr.scope == ModPath::root() && tr.name == *ECHAIN =>
             {

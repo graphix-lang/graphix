@@ -612,33 +612,6 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 }
 
 /// A regular graph node, as opposed to a function application (Apply).
-// XCR claude for claude: [structure] Node has no child enumeration, unlike Expr's
-// for_each_child/map_children. Every Update impl lists its children again by hand in
-// refs, delete, sleep, fuse, typecheck0/1 and the image codecs (Not and Neg in
-// node/op.rs, and Qop and OrNever in node/error.rs, are line-for-line copies), so a
-// child added to refs but missed in sleep compiles without complaint. Two NodeView
-// walkers list them a third time and disagree. fusion::for_each_node_inner visits
-// select guards, a static module's nodes and impl prototype sites;
-// node_shape::node_children skips all three, and it descends FusedKernel feeders that
-// fusion treats as opaque. So a NodeShape::contains(..) pin cannot see a kernel inside
-// a guard, a module with an interface or an impl prototype. One
-// for_each_child/for_each_child_mut on Update would drive both walkers and could be the
-// default body of the forwarding methods. (x-dup-03)
-// 2026-10-08 claude: re-addressed, a scope call. Fixed: the walkers agree:
-// node_shape::node_children rides fusion::for_each_child, the one child step, except that
-// it opens a kernel's feeders. Left: a for_each_child_mut on Update as the default body
-// of the forwarding methods (refs, delete, sleep, typecheck0/1). That touches all ~80
-// node impls, and most do more than forward (sleep sets bits, delete unbinds), so the
-// default would serve only the pure forwarders (Not, Neg, Qop, OrNever, ...). Worth a
-// pass of its own, or close as accepted?
-// 2026-10-09 claude: Eric ruled 10-09: Update::for_each_child/for_each_child_mut,
-// required, are the one child enumeration; refs, delete, sleep, typecheck0,
-// typecheck0_instance and typecheck1 default to walking them, and a node overrides only
-// what does more (19 files, about 220 lines fewer). fusion::for_each_child and
-// node_shape's walker delegate to it (a kernel stays opaque to fusion's). The five nodes
-// that relied on typecheck0_instance defaulting to the check (FusedKernel, Ref, Module,
-// Trait, Impl) say so explicitly. Pins: the whole gate (every node's refs, sleep, delete
-// and checks now ride the walk).
 pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// Update the node with the event and return its production,
     /// borrowed from the node's own resident slot. Every awake node
@@ -943,30 +916,6 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
-        // XCR claude for claude: [bug] Any FusedKernel passes here, including one that
-        // try_fuse_feeding_args built around arguments left on the node-walk. So
-        // `#[native] f(throttle(i64:5))` compiles, while `#[native] throttle(i64:5)`
-        // and `#[native] { let a = throttle(i64:5); f(a) }` are refused. Feeding only
-        // takes an argument that fails builtin discovery, so the verdict depends on an
-        // unrelated builtin: with `h` a loop that cannot fuse, `#[native] f(h(1000, 0,
-        // &one))` is refused, but `#[native] f(h(once(1000), 0, &one))` passes while
-        // h's recursion runs on the node-walk. CLAUDE.md says #[native] asserts zero
-        // node-walk residue, but lang::fusion::call_fed_by_node_walked_args relies on
-        // this pass, so this needs a ruling. One option: report the recorded blockers
-        // of every feeder that is not a plain variable read, and take #[native] off
-        // that pin's fed calls. The other: document that a call's arguments are inputs,
-        // and feed every argument that does not fuse. probe:
-        // design/review-2026-10-05/repro/f-mod-lowering-04.sh (f-mod-lowering-04)
-        // 2026-10-07 claude: re-addressed: it asks for a ruling on whether #[native]
-        // admits a call fed by node-walked arguments.
-        // 2026-10-09 claude: Eric ruled 10-09 option 1, once the workaround held: a value
-        // bound outside the annotation is an input, so #[native] f(a) over let a =
-        // throttle(..) is native. Native's check now descends into a kernel's feeders and
-        // reports the blockers of every one that is more than a variable read
-        // (native_residue). call_fed_by_node_walked_args keeps the feeding, without
-        // #[native]. Pins: lib_tests::native::native_call_fed_by_node_walk_is_error
-        // (fails with the fix undone: the probe compiled) and
-        // native_call_over_bound_argument_ok.
         let mut report: Vec<&fusion::FusionFailure> = Vec::new();
         let mut walked = false;
         native_residue(ctx, node, &mut report, &mut walked);
@@ -1315,7 +1264,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
-    // XCR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
+    // CR claude for eric: [bug] Nothing removes an entry from lowered_seqs, and the
     // key's scope is minted fresh on many compiles: a try/with body scope is named by
     // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
     // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
@@ -1374,6 +1323,13 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     // until the next reload: bounded, performance only. Tying a lowering to its
     // definition would close it, at the cost of carrying the lowering in LambdaDef.
     // lowered_seqs_len uses len().
+    // 2026-10-11 claude: reviewed: fixed and pinned (lang::modules
+    // reloads_keep_no_old_lowerings, instances_share_their_lowerings). Two residuals for
+    // you to accept or fix: a dynamic-module definition held across a reload
+    // (once(foo::f)) lowers its seq once more under fresh ids, so its instances check
+    // again instead of substituting (bounded, performance only); and an embedder calling
+    // GXHandle::compile in a loop grows lowered_seqs as the REPL does, which the notes
+    // did not answer.
     pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
@@ -2463,26 +2419,6 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
 
 /// Whether a compile under `flags` fuses.
 fn fusion_on(flags: BitFlags<CFlag>) -> bool {
-    // XCR claude for claude: [risk] `not(windows)` turns fusion on for every other
-    // cranelift host. The helper seam passes and returns the 16-byte TagValue by value,
-    // which matches the two-I64 CLIF signatures only where the C ABI uses two registers
-    // for it: SysV x86_64 and AAPCS64 (design/helper_abi_portability.md). On s390x
-    // Linux, which passes such a struct by reference and returns it through a hidden
-    // pointer, the first helper call that takes or returns a TagValue reads a word as a
-    // pointer. Until the out-pointer rule lands, gate on the hosts known to match:
-    // `all(any(target_arch = "x86_64", target_arch = "aarch64"), not(windows))`. The
-    // same doc's last paragraph says a registration image that fails to decode is
-    // fatal, but graphix-rt/src/gx.rs:300 warns and compiles cold. (f-helpers-08)
-    // 2026-10-10 claude: Eric ruled 10-10: fix Windows and the other ABIs rather than
-    // gate. The out-pointer rule landed: a pair (TagValue, ChildBlock) crosses the helper
-    // seam as a pointer to the call site's words, and a pair return through a trailing
-    // out-pointer; HelperRefs::call is the only call path and jit_helpers! writes every
-    // helper's extern C signature, with no by-value impl for a pair type. The Windows
-    // gate is gone. On the win11 guest the language suite passes with fusion on (4823 of
-    // 4823, after fusion_parity stopped reading the source tree).
-    // design/helper_abi_portability.md is rewritten as built, its image paragraph now
-    // saying a bad entry is discarded. Big-endian stays unsupported (f-jit-10). Pins:
-    // every jit/jit_par fixture, fastcall_tags_follow_the_arg_discs.
     !flags.contains(CFlag::FusionDisabled)
 }
 

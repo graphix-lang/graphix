@@ -443,22 +443,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                         .out
                         .set(TagValue::fired(errf!(literal!("RpcError"), "{e}")));
                 }
-                // XCR claude for claude: [bug] Every fire of `path` or `args` spawns
-                // another call onto the same `self.id` while earlier calls are still in
-                // flight. The runtime delivers the replies in completion order, so a
-                // slow reply to an abandoned request that lands after the current
-                // request's reply becomes the settled value. Moving `p` from a slow
-                // proc to a fast one gives 2, then the slow proc's 1 while `p` names
-                // the fast proc. An abandoned call that fails late (an unpublished
-                // path's 10 s subscribe timeout) likewise replaces a good reply with
-                // its error. Either keep one call in flight and queue the rest, as
-                // CachedArgsAsync does, or re-mint the delivery id per request, as
-                // `sleep` already does, so a stale reply lands nowhere. probe:
-                // design/review-2026-10-05/repro/sys-net-09.gx (sys-net-09)
-                // 2026-10-09 claude: Eric ruled 10-09: latest wins. Each call takes a
-                // fresh delivery id (RpcCall::remint, which sleep shares), so a reply to
-                // an earlier call lands nowhere. Pin: lib_tests net_rpc_latest_call_wins
-                // (settles on the slow proc's 1 without the re-mint).
                 Ok((path, args)) => {
                     self.remint(ctx);
                     NetState::get(ctx).call_rpc(ctx, path, args, self.id)
@@ -1102,7 +1086,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             && let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>()
             && let Some(c) = c.0.take()
         {
-            // XCR claude for claude: [bug] Calls are answered strictly in order, and only a
+            // CR claude for eric: [bug] Calls are answered strictly in order, and only a
             // fire of `f` sets `ready` back (line 1219). So if `f` never answers one call,
             // every later call is blocked forever: they pile up in `queue` without bound,
             // and their callers hang because netidx's client call has no timeout. Any
@@ -1129,6 +1113,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             // dispatched (args_struct; no arguments is null). Pins: lib_tests
             // net_rpc_defaults (fails without the defaults),
             // net_rpc_refused_cast_answered.
+            // 2026-10-11 claude: reviewed: the ordering is fixed (an instance per call
+            // through the shared Handler, a refused cast answered at once; pins
+            // net_rpc_defaults, net_rpc_refused_cast_answered, net_rpc_handler_raises).
+            // What remains is the unbounded part: a call the handler never answers keeps
+            // its instance until the rpc is deleted or sleeps, because RpcReply cannot
+            // tell that the caller gave up (netidx's server-side RpcReply has no
+            // is_closed, so abandoned() is false). Needs a ruling: a server-side answer
+            // timeout, a netidx change exposing the caller's departure, or accept it.
             match self.arg(ctx, &c) {
                 e @ Value::Error(_) => RpcReply(c).reply(e),
                 arg => self.handler.push(arg, RpcReply(c)),

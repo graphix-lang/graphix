@@ -580,33 +580,6 @@ impl<R: Rt, E: UserEvent> PartialEq for LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> Eq for LambdaDef<R, E> {}
 
-// XCR claude for claude: [bug] A function value orders by its LambdaId here and a
-// reference by its BindId (`Value::U64`, bind.rs:1282), but both ids are now minted in
-// parallel: in the per-statement compile tasks (`typecheck1_statements`,
-// node/mod.rs:1089), in slot builds (`build_fresh`, collection.rs:927) and in forked
-// branches. So `array::sort`, `<` and map key order over functions, references or
-// values holding them change from run to run in the default configuration, even with
-// GRAPHIX_PAR=off (RAYON_NUM_THREADS=1 makes them stable), and the forked node-walk
-// diverges from the serial one. design/parallel_eval.md §8 still lists both sites as to
-// fix. graphix-fuzz check misses the compile-task case because it drops a serial run
-// that disagrees with itself as nondeterminism. probe:
-// design/review-2026-10-05/repro/x-diff-par-02.gx (x-diff-par-02)
-// 2026-10-08 claude: the reference half is gone: `Ordered` refuses a
-// reference, so the probe's second sort is refused. Functions still order by
-// LambdaId, and `array::sort` over four closures prints a different order per run.
-// Needs a ruling: (a) `Ordered` refuses a function type as it does a reference
-// (== and != keep comparing by identity, which is deterministic); an `Any` holding
-// functions would still order by id at run time; or (b) ids minted in a compile
-// task are relocated to program order at its join, which also fixes the watch/db
-// handle orders §8 lists. I recommend (a): a function has no order a program
-// could mean.
-// 2026-10-10 claude: Eric ruled 10-10 option (a): a function has no order. Ordered
-// refuses a function type wherever it refuses a reference (rep_ambiguity;
-// Indiscernible::Unordered names the kind), so sort, the orderings, min/max and map keys
-// over functions or values holding them are refused at the check; == and != still compare
-// by identity. The run-to-run order this CR found can no longer be asked for. Pins:
-// lib_tests::map::map_key_refuses_a_function (was map_key_mixed_abstract_kinds, which
-// keyed a map by a function).
 impl<R: Rt, E: UserEvent> PartialOrd for LambdaDef<R, E> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.id.cmp(&other.id))

@@ -1689,37 +1689,6 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                // XCR claude for claude: [bug] This reopens every cell bound to ⊥,
-                // including a ⊥ the body required. A `⊥ ⊇ 'x` from a `_` annotation, a
-                // `-> _` return, or a callback formal like publish's `#on_write` is a
-                // fact, not a vacuous observation, so the signature drops it even
-                // though the body was checked with x: ⊥. The (Bottom, TVar) arm at
-                // contains.rs:585 also binds a rigid cell, which every other bind arm
-                // refuses. Result: `'a: Number |x: 'a| { let b: _ = x; x + 1 }` passes
-                // --check as fn<'a: Number>(x: 'a) -> i64. Then `let r: i64 = f(2.5)`
-                // holds f64:3.5 in the node-walk, and the JIT panics linking the
-                // instance (Verifier errors). probe:
-                // design/review-2026-10-05/repro/t-tvar-02.gx (t-tvar-02)
-                // 2026-10-07 claude: re-addressed: half fixed, half a semantics question.
-                // Fixed: a committing `⊥ ⊇ 'x` marks the cell bottom_required and this
-                // reopen skips it, so the probe is refused at `f(2.5)` ("'a: _ does not
-                // contain f64") and `|x| { let b: _ = x; x }` keeps x: ⊥. Open: refusing
-                // the rigid bind in contains' (Bottom, TVar) arm breaks
-                // lang::collection::collection_user_cons_list, whose impl passes the
-                // trait's `fn(..) throws 'e` callback to a helper declared `fn(..)` (an
-                // implicit `throws ⊥`), meeting `⊥ ⊇ 'e` with 'e rigid. Is a fn type's
-                // implicit throws in a parameter a promise that the callback does not
-                // throw (then that impl is wrong and the rigid bind should be refused),
-                // or no statement at all (then an unwritten throws should not be ⊥)?
-                // 2026-10-09 claude: Eric ruled 10-09: a written function type without
-                // throws throws nothing. contains' (Bottom, TVar) arm refuses a rigid
-                // cell as every bind arm does, so the probe is refused at let b: _ = x
-                // ("_ does not contain 'a") and a throws 'e function does not fit a
-                // fn(..) without throws. Nothing in the tree or netidx-admin's tests
-                // relied on the old bind; must-reject family 2 now also binds a declared
-                // variable under _. Pins:
-                // lang::types::bottom_refuses_a_declared_variable,
-                // no_throws_refuses_a_declared_throws (both fail with the fix undone).
                 let required = tv.cell().read().bottom_required;
                 if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()

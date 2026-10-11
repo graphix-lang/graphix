@@ -158,7 +158,7 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 /// Whether one more segment would put the runtime running on this
 /// thread over its budget.
 #[doc(hidden)]
-// XCR claude for claude: [bug] What this charges depends on the thread and the fork
+// CR claude for eric: [bug] What this charges depends on the thread and the fork
 // schedule, not on the program. The serial cycle runs on a 2 MB tokio worker and pays a
 // 32 MB segment after about 1 MB of recursion; a forked part runs on a 16 MB eval-pool
 // stack and pays nothing until about 15 MB; and parts running at the same time add up
@@ -195,6 +195,13 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 // in about 2 s; crash_000004 checks AGREE (contained). The stack budget stays, for native
 // JIT recursion, with its thread dependence. Pin:
 // lang::functions::activation_budget_stops_a_runaway_recursion.
+// 2026-10-11 claude: reviewed: the activation budget is built and pinned
+// (lang::functions::activation_budget_stops_a_runaway_recursion; the fuzzer sets
+// ACTIVATION_BUDGET). The stack budget stays for native JIT recursion with its thread
+// dependence, and graphix-fuzz's Pair::Par has no containment exemption (Verdict::of
+// treats Timeout vs Trace as Unsure), so a non-tail native recursion can still split
+// serial and forked runs. Needs a ruling: accept that leftover, or exempt containment in
+// Pair::Par.
 pub fn grow_exceeds_budget() -> bool {
     match current_control() {
         // SAFETY: see `current_control`.

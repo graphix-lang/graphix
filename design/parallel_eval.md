@@ -685,13 +685,14 @@ T/ids.rs:138) but their values depend on scheduling. That is acceptable
 only if nothing observable depends on id order or value. The phase 1
 audit found the cycle loop, event delivery and every runtime map in the
 compiler order-free (lookups, or iteration into sets; `GX.nodes` is an
-`IndexMap` in insertion order). What does depend on ids, to fix before
-phase 4 mints them in parallel:
+`IndexMap` in insertion order). References and functions have
+no order (`Ordered` refuses them; `==` compares them by identity), so
+their ids reach no sort, ordering or map key, and a reference prints as
+`&ref`. What does depend on ids, to fix before phase 4 mints them in
+parallel:
 
 | site | depends on | reaches |
 |---|---|---|
-| a reference is `Value::U64(BindId)` (C/node/bind.rs:1282) | the id's value | printing, comparison, sorting, map keys of refs |
-| `LambdaDef` `Ord`/`Hash` by `LambdaId` (C/node/lambda.rs:492) | id order | sorting fn values, maps keyed by fns |
 | watch and db subscription handles `Ord`/`Hash` by `BindId` (S/sys/watch.rs:218, S/db/subscribe.rs:47) | id order | the same for those handles |
 | a watch stream queues one cycle's events in `IntSet` order (S/sys/watch.rs, `WatchStream::update`) | id value | the order in which events of different watches arriving in one cycle are output |
 | an inferred tvar is named `'_<TVarId>` (T/typ/tvar.rs:497), synthesized names carry ids (T/expr/seq.rs, `block_component`, `#seam`, `qfn`) | id value | error text that becomes a value (a dynamic module's compile error, `QueueFnErr`) |

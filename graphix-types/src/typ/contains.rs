@@ -533,28 +533,6 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
-    // XCR claude for claude: [readability] When a trait bound refuses a type, the error is
-    // a bare mismatch against the bounded cell. With no `impl Show for i64`,
-    // `Show::show(2)` gives "type mismatch 'self: unbound within Show does not contain
-    // i64", which never says that i64 lacks an impl. When the impl exists in a sibling
-    // module whose .gxi does not declare it (Env::impls_of hides it from the other
-    // modules' checks), the message is the same, and nothing hints that `impl t::Show
-    // for i64;` in that .gxi fixes it. When the refusing side is a cell with trait
-    // conjuncts, say "i64 does not implement Show", naming the member without an impl
-    // for a union self and the module of a hidden impl that would match. In run mode
-    // the module context also shows the script's synthetic block scope ("compiling
-    // module #do4611686018427394750::b", node/module.rs:771), where --check prints
-    // "compiling module b". (x-typecheck-patterns-14)
-    // 2026-10-07 claude: trait_refusal names the member without an impl and a hidden
-    // impl's module (pinned in lang::traits). The run-mode module name ("#do..::b")
-    // still differs from --check's; that is c-analysis-branch-11's naming.
-    // 2026-10-08 claude: re-addressed: what remains is the run-mode module name
-    // (`#do..::b` where --check says `b`), which is c-analysis-branch-11's naming, yours
-    // to rule.
-    // 2026-10-10 claude: the run-mode name is gone with c-analysis-branch-11's ruling
-    // (c): the run compiles a script at /, so its module b is /b in both modes and no
-    // message names #do..::b. Pins: lang::traits (trait_refusal) and
-    // graphix-shell/tests/script_scope.rs.
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
         // A refused open cell on either side is the infinite type,
         // surfacing at a consumer; report it as the settle path does.
@@ -920,31 +898,7 @@ impl Type {
                 if id0 != id1 {
                     return Ok(false);
                 }
-                // XCR claude for claude: [bug] Abstract parameters are checked
-                // covariantly, whatever the representation (or a Rust-backed handle)
-                // does with them. With `type Sink<'a> = Abstract<fn(x: 'a) -> i64>`, a
-                // `Sink<i64>` is accepted as a `Sink<[i64, string]>`, so a string
-                // reaches `|x: i64|`. Likewise a helper taking `db::Tree<i64, [i64,
-                // string]>` accepts a `db::Tree<i64, i64>` and stores a string in the
-                // i64 tree. The JIT then reads the string's pointer as an i64 or panics
-                // at fusion/kernel.rs:243, while the transparent `type Sink<'a> = fn(x:
-                // 'a) -> i64` is refused. Make abstract parameters invariant (check
-                // both directions), or record a variance per parameter at Env::deftype
-                // with Rust-backed types invariant. The open-constructor case in
-                // app_contains (`'c<a0> ⊇ 'c<a1>` by a0 ⊇ a1) is the same rule and
-                // needs the same fix. probe:
-                // design/review-2026-10-05/repro/t-contains-07.gx (t-contains-07)
                 // the representation is hidden, so its parameters are invariant
-                // 2026-10-10 claude: Eric ruled 10-10 option 1: an abstract type's
-                // parameters are invariant (equal_int, both directions), and so is an
-                // unknown constructor's argument in app_contains; declared variance
-                // syntax is the extension if a covariant abstract container is ever
-                // needed. A let annotation over a constructed value pre-unifies first
-                // (Bind::typecheck0, pre_unify_arg, only for abstract-typed values), so
-                // `let b: Box<[i64, string]> = Box(1)` still checks. The probe is refused
-                // at q. Pins: lang::types::abstract_parameters_are_invariant (fails with
-                // the fix undone), annotation_decides_constructed_parameters,
-                // lang::traits::core_eq_bound_names_other_var.
                 Ok(p0.len() == p1.len()
                     && p0
                         .iter()
@@ -1753,44 +1707,6 @@ impl Type {
                 continue;
             }
             let mut covered = false;
-            // XCR claude for claude: [bug] This loop commits the first
-            // non-variable member that covers an rhs member before the residue
-            // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
-            // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
-            // Array<i64>` and then cannot place `Array<Array<i64>>`, though 'b
-            // := Array<i64> covers both. InstanceTypes::new
-            // (node/lambda.rs:402) meets exactly this union for every
-            // array::flat_map or list::flat_map instance whose callback returns
-            // an array of arrays. So `array::flat_map([1, 2], |x| [[x]])`,
-            // `array::flat_map(groups, |g| g)`, a generic wrapper over flat_map
-            // and the book's Bag impl pass --check and the LSP but fail to
-            // build with no reason given; GRAPHIX_NO_SUBST=1 runs them. Making
-            // this containment succeed also admits a callback whose return is
-            // that union itself (`|x| select x { 1 => [x], n => [[n]] }`,
-            // refused today), and the runtime splices its bare-array member, so
-            // decide the fix together with flat_map's signature
-            // (x-engine-collections-03). probe:
-            // design/review-2026-10-05/repro/x-engine-collections-02.gx
-            // (x-engine-collections-02)
-            // 2026-10-07 claude: flat_map is parametric now (x-engine-collections-03), so no
-            // instance meets this union and the probe runs ([[1], [2]]). The greedy commit
-            // stands for a union a program writes with a bare variable beside a constructor of
-            // it; fixing it needs the commit to try the bare member before the constructor
-            // when the constructor's binding cannot place the rest.
-            // 2026-10-08 claude: re-addressed: a rule choice. Not committing a
-            // constructor member that mentions a bare member's own variable (send
-            // it to the residue) makes ['b, Array<'b>] place both, but changes
-            // what `['b, Array<'b>] ⊇ Array<i64>` infers ('b := Array<i64>
-            // instead of i64); trying both needs a rollback contains does not
-            // have. Which solution should inference prefer?
-            // 2026-10-10 claude: Eric ruled 10-10: inference keeps preferring the
-            // constructor member (['b, Array<'b>] ⊇ Array<i64> gives 'b := i64), but
-            // never strands a member: for a union whose bare member's cell a constructor
-            // member mentions (shares_bare_cell), a committing check tries the members in
-            // their order, then deepest first, each on copies of the open cells
-            // (reset_tvars_int over one map), and commits the first order that places all
-            // of them (place_members). The probe gives [[1]]. Pin:
-            // lang::types::union_places_every_member (fails with the fix undone).
             for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                 if c.contains_int(probe, env, hist, m)? {
                     if !c.contains_int(flags, env, hist, m)? {
