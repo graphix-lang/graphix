@@ -5,7 +5,10 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
-use futures::future::{AbortHandle, Aborted, abortable};
+use futures::{
+    channel::oneshot,
+    future::{self, FutureExt, Shared},
+};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastFn, IoSite, Node, Refs, Rt, Scope,
     Tag, TagValue, TagView, TypedFastFn, UserEvent,
@@ -1390,11 +1393,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static {
     const NAME: &str;
 
-    /// A new invocation aborts the one in flight and drops those queued,
-    /// so the call answers only its latest arguments; otherwise
-    /// invocations run one at a time, in order. Only for an `eval` that
-    /// loses nothing when dropped.
-    const LATEST: bool = false;
+    const CALLS: Calls = Calls::Fifo;
 
     type Args: Debug + Any + Send + Sync;
 
@@ -1494,6 +1493,34 @@ impl<T> CachedArgs<T> {
     }
 }
 
+/// How an async call site runs its invocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Calls {
+    /// One at a time, in order.
+    Fifo,
+    /// A new invocation aborts the calls in flight and drops those
+    /// queued, so the call answers only its latest arguments. Only for
+    /// an `eval` that loses nothing when dropped.
+    Latest,
+    /// Each at once; the replies come in the order the calls complete.
+    Concurrent,
+}
+
+/// The abort for every call a site has in flight: dropping it resolves
+/// each call's receiver.
+#[derive(Debug)]
+struct Abort {
+    _tx: oneshot::Sender<()>,
+    rx: Shared<oneshot::Receiver<()>>,
+}
+
+impl Abort {
+    fn new() -> Self {
+        let (tx, rx) = oneshot::channel();
+        Self { _tx: tx, rx: rx.shared() }
+    }
+}
+
 #[derive(Debug)]
 pub struct CachedArgsAsync<T: EvalCachedAsync> {
     /// Set by `sleep()`, taken by the next update: the operation starts
@@ -1503,18 +1530,19 @@ pub struct CachedArgsAsync<T: EvalCachedAsync> {
     id: BindId,
     top_id: ExprId,
     queued: VecDeque<T::Args>,
-    inflight: Option<AbortHandle>,
+    /// calls spawned under `id` and not answered yet
+    inflight: usize,
+    abort: Option<Abort>,
     out: TagValue,
     t: T,
 }
 
 impl<T: EvalCachedAsync> CachedArgsAsync<T> {
-    /// Abort the call in flight, drop those queued and release the reply
+    /// Abort the calls in flight, drop those queued and release the reply
     /// id, which is this call's alone, as is what was stored for it.
     fn release<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        if let Some(h) = self.inflight.take() {
-            h.abort();
-        }
+        self.abort = None;
+        self.inflight = 0;
         self.queued.clear();
         ctx.release_var(self.id, self.top_id);
         ctx.rt.store_remove(&self.id);
@@ -1547,7 +1575,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             top_id,
             cached: CachedVals::new(from),
             queued: VecDeque::new(),
-            inflight: None,
+            inflight: 0,
+            abort: None,
             out: TagValue::phantom(),
             t: T::init(ctx, typ, resolved, scope, from, top_id),
         };
@@ -1571,7 +1600,8 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
             id,
             top_id,
             queued: VecDeque::new(),
-            inflight: None,
+            inflight: 0,
+            abort: None,
             out: TagValue::phantom(),
             t,
         }))
@@ -1582,7 +1612,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     /// The queue holds arguments already prepared for `eval`, and a
     /// running eval is a task, which exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.queued.is_empty() || self.inflight.is_some() {
+        if !self.queued.is_empty() || self.inflight > 0 {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.slept.encode(buf)?;
@@ -1606,16 +1636,16 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
             Invocation::Bottom { .. } => false,
         };
         let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
-            self.inflight = None;
+            self.inflight -= 1;
             self.t.map_value(ctx, tv.value())
         });
         if start && let Some(args) = self.t.prepare_args(&self.cached) {
-            if T::LATEST && self.inflight.is_some() {
+            if T::CALLS == Calls::Latest && self.inflight > 0 {
                 self.renew(ctx);
             }
             self.queued.push_back(args);
         }
-        // CR claude for eric: [bug] A call site runs one request at a time, FIFO, and
+        // XCR claude for claude: [bug] A call site runs one request at a time, FIFO, and
         // nothing cancels or replaces the one in flight. spawn_var keeps no abort
         // handle, and sleep and delete only drop the reply id. So a request whose args
         // are already stale blocks every later one for as long as it waits on a peer or
@@ -1638,23 +1668,40 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         // connection, so LATEST would kill a slow good client to serve the next; a
         // silent client still stalls a live site. Wants a handshake timeout (a fixed
         // one, or #timeout on tls::accept/connect): Eric's call.
-        if self.inflight.is_none()
+        // 2026-10-11 claude: Eric ruled the tls handshakes concurrent, so a slow client
+        // blocks only its own. LATEST became EvalCachedAsync::CALLS (Calls::{Fifo,
+        // Latest, Concurrent}), and the per-call abortable became one oneshot per site
+        // whose drop aborts every call in flight. tls accept and connect are
+        // Concurrent; the repro's tls lines now print client 2's handshake at 0.2 s.
+        // Pins: lib_tests::tls::tls_accept_silent_client (fails with the handshakes
+        // Fifo); tcp_accept_replaced_listener now also requires the old port refused
+        // (fails with release's abort undone; a deleted site aborts by its drop
+        // either way). A site starts one handshake per stream (tls.rs Started), so a
+        // new cert, key or CA applies to later streams, a wake restarts nothing, and a
+        // cert read that finishes after the connect still starts it; pins:
+        // lib_tests::tls::{tls_config_update_no_rehandshake, tls_stream_before_cert}.
+        // A silent client still holds its socket and task until it hangs up;
+        // a handshake timeout would bound that and is no longer needed for liveness.
+        // 2026-10-11 claude: All three cases fixed (wait, accept: Calls::Latest; tls:
+        // Calls::Concurrent, one handshake per stream); delete and sleep abort every
+        // call in flight. Wants the soak: it changes when every async builtin's work
+        // stops.
+        while (T::CALLS == Calls::Concurrent || self.inflight == 0)
             && let Some(args) = self.queued.pop_front()
         {
+            self.inflight += 1;
             let id = self.id;
-            let (eval, abort) = abortable(futures::FutureExt::catch_unwind(
-                std::panic::AssertUnwindSafe(T::eval(args)),
-            ));
-            self.inflight = Some(abort);
+            let aborted = self.abort.get_or_insert_with(Abort::new).rx.clone();
+            let eval = std::panic::AssertUnwindSafe(T::eval(args)).catch_unwind();
             ctx.rt.spawn_var(async move {
-                let v = match eval.await {
-                    Ok(Ok(v)) => v,
+                let v = match future::select(std::pin::pin!(eval), aborted).await {
+                    future::Either::Left((Ok(v), _)) => v,
                     // a panicking eval still answers, so the site runs its next call
-                    Ok(Err(_)) => {
+                    future::Either::Left((Err(_), _)) => {
                         errf!(arcstr::literal!("Panicked"), "{} panicked", T::NAME)
                     }
                     // an aborted eval's id was released, which drops this reply
-                    Err(Aborted) => Value::Null,
+                    future::Either::Right(_) => Value::Null,
                 };
                 (id, v)
             });

@@ -1,19 +1,70 @@
 use crate::{Halves, StreamKind, get_stream, wrap_tls};
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::errf;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_compiler::{
+    ExecCtx, Rt, UserEvent, errf,
+    image::{self, ImageBuf},
+};
+use graphix_package_core::{
+    CachedArgsAsync, CachedVals, Calls, EvalCachedAsync, ImageState,
+};
+use netidx_core::pack::PackError;
 use netidx_value::Value;
-use std::sync::Arc;
+use std::{
+    ptr,
+    sync::{Arc, Weak},
+};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+/// The stream a site last started a handshake on: a site upgrades each
+/// stream once, so a new certificate, key or CA applies to later streams
+/// and a wake restarts nothing.
 #[derive(Debug, Default)]
-pub(crate) struct TlsConnectEv;
+struct Started(Weak<Halves>);
+
+impl Started {
+    /// The stream argument, when it is one this site has not started on.
+    fn take_new(&mut self, cached: &CachedVals) -> Option<Arc<Halves>> {
+        let sv = get_stream(cached, 2)?;
+        if ptr::eq(self.0.as_ptr(), Arc::as_ptr(&sv)) {
+            return None;
+        }
+        self.0 = Arc::downgrade(&sv);
+        Some(sv)
+    }
+}
+
+/// A started handshake exists only once a cycle has run.
+macro_rules! started_image_state {
+    ($($t:ident),*) => {$(
+        impl ImageState for $t {
+            fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+                if self.0.0.strong_count() > 0 {
+                    return Err(PackError::Application(image::NOT_QUIESCENT));
+                }
+                Ok(())
+            }
+
+            fn image_decode<R: Rt, E: UserEvent>(
+                _ctx: &mut ExecCtx<'_, R, E>,
+                _buf: &mut &[u8],
+            ) -> Result<Self, PackError> {
+                Ok(Self::default())
+            }
+        }
+    )*};
+}
+
+started_image_state!(TlsConnectEv, TlsAcceptEv);
+
+#[derive(Debug, Default)]
+pub(crate) struct TlsConnectEv(Started);
 
 impl EvalCachedAsync for TlsConnectEv {
     type Args = (Option<Bytes>, ArcStr, Arc<Halves>);
 
     const NAME: &str = "sys_tls_connect";
+    const CALLS: Calls = Calls::Concurrent;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let ca_cert = match cached.0.first()? {
@@ -22,7 +73,7 @@ impl EvalCachedAsync for TlsConnectEv {
             Some(v) => v.clone().cast_to::<Bytes>().ok(),
         };
         let hostname = cached.get::<ArcStr>(1)?;
-        let sv = get_stream(cached, 2)?;
+        let sv = self.0.take_new(cached)?;
         Some((ca_cert, hostname, sv))
     }
 
@@ -91,17 +142,18 @@ impl EvalCachedAsync for TlsConnectEv {
 pub(crate) type TlsConnect = CachedArgsAsync<TlsConnectEv>;
 
 #[derive(Debug, Default)]
-pub(crate) struct TlsAcceptEv;
+pub(crate) struct TlsAcceptEv(Started);
 
 impl EvalCachedAsync for TlsAcceptEv {
     type Args = (Bytes, Bytes, Arc<Halves>);
 
     const NAME: &str = "sys_tls_accept";
+    const CALLS: Calls = Calls::Concurrent;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let cert = cached.get::<Bytes>(0)?;
         let key = cached.get::<Bytes>(1)?;
-        let sv = get_stream(cached, 2)?;
+        let sv = self.0.take_new(cached)?;
         Some((cert, key, sv))
     }
 
@@ -144,5 +196,3 @@ impl EvalCachedAsync for TlsAcceptEv {
 }
 
 pub(crate) type TlsAccept = CachedArgsAsync<TlsAcceptEv>;
-
-graphix_package_core::unit_image_state!(TlsConnectEv, TlsAcceptEv);

@@ -1,6 +1,6 @@
 use arcstr::ArcStr;
 use graphix_compiler::errf;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, Calls, EvalCachedAsync};
 use netidx_value::Value;
 use std::{
     cmp::Ordering,
@@ -115,7 +115,7 @@ impl EvalCachedAsync for TcpAcceptEv {
     type Args = Arc<TcpListener>;
 
     const NAME: &str = "sys_tcp_accept";
-    const LATEST: bool = true;
+    const CALLS: Calls = Calls::Latest;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
         let _ = cached.0.get(1)?.as_ref()?;

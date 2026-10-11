@@ -3,7 +3,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::errf;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, Calls, EvalCachedAsync};
 use netidx_activation::process::{Job, Spawned, spawn as os_spawn, stop_proc};
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{FromValue as _, Value};
@@ -304,7 +304,7 @@ pub(crate) struct ProcessWaitEv;
 
 impl EvalCachedAsync for ProcessWaitEv {
     const NAME: &str = "sys_process_wait";
-    const LATEST: bool = true;
+    const CALLS: Calls = Calls::Latest;
     /// The status alone, not the handle, so a pending wait does not keep a
     /// dropped child alive.
     type Args = watch::Receiver<Status>;

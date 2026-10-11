@@ -158,17 +158,21 @@ run!(tcp_write_returns_len, TCP_WRITE_RETURNS_LEN, |v: Result<&Value>| {
 }; FuseExpect::None);
 
 // The listener is replaced while an accept on the old one is pending: the
-// new invocation aborts it, so the new listener's client is accepted.
+// new invocation aborts it, so the new listener's client is accepted and
+// the old listener, which nothing holds now, has closed its port.
 const TCP_ACCEPT_REPLACED_LISTENER: &str = r#"
 {
   use sys::tcp::Socket;
   let addr = "127.0.0.1:0";
-  addr <- sys::time::timer(duration:100.ms, false) ~ "127.0.0.1:0";
   let l = sys::tcp::listen(addr)?;
   let la = sys::tcp::listener_addr(l)?;
+  let first = once(la);
+  addr <- first ~ "127.0.0.1:0";
   let srv = sys::tcp::accept(l, null)?;
-  let cl = sys::tcp::connect(sys::time::after_idle(duration:300.ms, la))?;
-  Socket::local_addr(srv)? == (cl ~ la)
+  let settled = sys::time::after_idle(duration:300.ms, la);
+  let cl = sys::tcp::connect(settled)?;
+  let old = sys::tcp::connect(settled ~ first);
+  Socket::local_addr(srv)? == (cl ~ la) && is_err(old)
 }
 "#;
 
@@ -181,14 +185,15 @@ run!(tcp_accept_replaced_listener, TCP_ACCEPT_REPLACED_LISTENER, |v: Result<&Val
 const TCP_ACCEPT_DELETED: &str = r#"
 {
   let addrs = ["127.0.0.1:0"];
-  addrs <- sys::time::timer(duration:100.ms, false) ~ [];
   let las = array::map(addrs, |a| {
     let l = sys::tcp::listen(a)?;
     let pending = sys::tcp::accept(l, null);
     sys::tcp::listener_addr(l)?
   });
   let first = once(las[0]$);
-  is_err(sys::tcp::connect(sys::time::timer(duration:300.ms, false) ~ first))
+  addrs <- first ~ [];
+  let settled = sys::time::after_idle(duration:300.ms, array::len(las));
+  is_err(sys::tcp::connect(settled ~ first))
 }
 "#;
 
