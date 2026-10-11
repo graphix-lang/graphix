@@ -240,8 +240,7 @@ fn head_fits(buf: &mut PrettyBuf, e: &ExprKind) -> Result<bool, fmt::Error> {
     match e {
         Select(se) => {
             write!(buf, "select ")?;
-            se.arg.fmt_pretty(buf)?;
-            buf.kill_newline();
+            pretty_scrutinee(buf, &se.arg)?;
             write!(buf, " {{")?;
         }
         StructWith(sw) => sw.write_head(buf)?,
@@ -1494,7 +1493,10 @@ impl PrettyDisplay for LambdaExpr {
 impl fmt::Display for SelectExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let SelectExpr { arg, arms } = self;
-        write!(f, "select {arg} {{ ")?;
+        match ends_bodyless(arg) {
+            true => write!(f, "select {arg} {{}} {{ ")?,
+            false => write!(f, "select {arg} {{ ")?,
+        }
         for (i, (pat, rhs)) in arms.iter().enumerate() {
             write_leading_flat(f, &rhs.dec)?;
             if let Some(tp) = &pat.type_predicate {
@@ -1517,8 +1519,7 @@ impl PrettyDisplay for SelectExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let SelectExpr { arg, arms } = self;
         write!(buf, "select ")?;
-        arg.fmt_pretty(buf)?;
-        buf.kill_newline();
+        pretty_scrutinee(buf, arg)?;
         writeln!(buf, " {{")?;
         buf.nested(|buf| {
             for (i, (pat, expr)) in arms.iter().enumerate() {
@@ -1567,6 +1568,31 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
 }
 
 /// `(e)`; a decorated `e` stands on lines of its own inside.
+/// Whether `e` ends with an impl that has no body, which reads a `{`
+/// printed after it as its body.
+fn ends_bodyless(e: &Expr) -> bool {
+    use ExprKind::*;
+    match &e.kind {
+        Impl(i) => i.methods.is_empty(),
+        Bind(b) => ends_bodyless(&b.value),
+        Connect { value, .. } => ends_bodyless(value),
+        Lambda(l) => matches!(&l.body, LambdaBody::Expr(b) if ends_bodyless(b)),
+        Not { expr } | Neg(expr) | Deref(expr) | ByRef(_, expr) => ends_bodyless(expr),
+        k => BinOp::of(k).is_some_and(|(_, _, rhs)| ends_bodyless(rhs)),
+    }
+}
+
+/// A select's scrutinee; one ending in a bodyless impl gets the impl's
+/// empty body, which the arms' `{` would otherwise be read as.
+fn pretty_scrutinee(buf: &mut PrettyBuf, arg: &Expr) -> fmt::Result {
+    arg.fmt_pretty(buf)?;
+    buf.kill_newline();
+    if ends_bodyless(arg) {
+        write!(buf, " {{}}")?
+    }
+    Ok(())
+}
+
 fn pretty_parens(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     if decorated(e) {
         writeln!(buf, "(")?;
