@@ -37,6 +37,7 @@ use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
+use std::collections::hash_map::Entry;
 use triomphe::Arc;
 
 /// Every per-kind `compile` recurses back through here or through
@@ -526,21 +527,25 @@ fn compile_kind<R: Rt, E: UserEvent>(
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
         ExprKind::Seq { .. } => {
-            let key = (spec.id, scope.lexical.clone());
-            let lowered = match ctx.lowered_seqs.get(&key) {
-                Some(lowered) => lowered.clone(),
-                None => {
-                    let lowered =
-                        crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
-                    if flags.contains(CFlag::ExpandSeq) {
-                        println!(
-                            "// seq at {}\n{}\n",
-                            spec.pos,
-                            lowered.to_string_pretty(80)
-                        );
+            let lower = |ctx: &CompileCtx<R, E>| -> Result<Expr> {
+                let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
+                if flags.contains(CFlag::ExpandSeq) {
+                    println!(
+                        "// seq at {}\n{}\n",
+                        spec.pos,
+                        lowered.to_string_pretty(80)
+                    );
+                }
+                Ok(lowered)
+            };
+            let lowered = match &ctx.seq_lowerings {
+                None => lower(ctx)?,
+                Some(seqs) => {
+                    let mut seqs = seqs.lock();
+                    match seqs.seqs.entry((spec.id, scope.lexical.clone())) {
+                        Entry::Occupied(e) => e.get().clone(),
+                        Entry::Vacant(e) => e.insert(lower(ctx)?).clone(),
                     }
-                    ctx.lowered_seqs.insert(key, lowered.clone());
-                    lowered
                 }
             };
             compile(ctx, flags, lowered, scope, top_id)

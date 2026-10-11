@@ -13,7 +13,7 @@ use crate::{
     dbgenv,
     effects::{LambdaFacts, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
+    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
     fusion::{
         self,
         emit::{
@@ -480,6 +480,37 @@ impl InstanceTypes {
     }
 }
 
+/// A definition's seq lowerings (`CompileCtx::seq_lowerings`), shared by
+/// every compile of its body.
+pub type SeqLowerings = SArc<Mutex<Lowerings>>;
+
+#[derive(Debug, Default)]
+pub struct Lowerings {
+    /// Each seq's lowering, by expression and lexical scope.
+    pub(crate) seqs: AHashMap<(ExprId, ModPath), Expr>,
+    /// The lowerings of each lambda literal in the body, by its
+    /// expression: every compile of the body makes a definition of it,
+    /// and they share one.
+    pub(crate) literals: AHashMap<ExprId, SeqLowerings>,
+}
+
+impl Lowerings {
+    /// Visit `this` and every literal's lowerings under it, each once.
+    pub(crate) fn visit(
+        this: &SeqLowerings,
+        seen: &mut AHashSet<usize>,
+        f: &mut impl FnMut(&Self),
+    ) {
+        if seen.insert(SArc::as_ptr(this) as usize) {
+            let l = this.lock();
+            f(&l);
+            for child in l.literals.values() {
+                Self::visit(child, seen, f)
+            }
+        }
+    }
+}
+
 pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub id: LambdaId,
     pub env: Env,
@@ -493,6 +524,8 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// What the definition's check settled, for its instances; shared
     /// with `init`, which hands it to each instance.
     pub table: SArc<DefTables>,
+    /// Its body's seq lowerings, shared by every compile of it.
+    pub seqs: SeqLowerings,
     /// Sync/async effect and statelessness, computed by
     /// `analysis::infer_effects`: the body's own, joined with every
     /// instance's an analysis reached (a resolved callback's instance
@@ -1258,6 +1291,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     def_spec: Expr,
     body: DefBody,
     table: SArc<DefTables>,
+    seqs: SeqLowerings,
 ) -> InitFn<R, E> {
     // named by the expression, which every compile of a literal shares,
     // so what is keyed by scope (a seq's lowering) is found again
@@ -1268,21 +1302,25 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
             DefBody::Expr(body) => {
-                instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
-                    let argspec = def_argspec.clone();
-                    GXLambda::new(
-                        ctx,
-                        flags,
-                        id,
-                        typ,
-                        typing,
-                        argspec,
-                        args,
-                        &scope,
-                        tid,
-                        body.clone(),
-                    )
-                })
+                let outer = ctx.seq_lowerings.replace(seqs.clone());
+                let instance =
+                    instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
+                        let argspec = def_argspec.clone();
+                        GXLambda::new(
+                            ctx,
+                            flags,
+                            id,
+                            typ,
+                            typing,
+                            argspec,
+                            args,
+                            &scope,
+                            tid,
+                            body.clone(),
+                        )
+                    });
+                ctx.seq_lowerings = outer;
+                instance
             }
             DefBody::Collection(intrinsic) => {
                 instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
@@ -1539,6 +1577,10 @@ impl Lambda {
         typ.lambda_ids.set_id(id);
         typ.claim(level);
         let table = SArc::new(DefTables::default());
+        let seqs = match &ctx.seq_lowerings {
+            Some(outer) => outer.lock().literals.entry(spec.id).or_default().clone(),
+            None => SeqLowerings::default(),
+        };
         let init = make_init(
             id,
             flags,
@@ -1549,6 +1591,7 @@ impl Lambda {
             spec.clone(),
             body.clone(),
             table.clone(),
+            seqs.clone(),
         );
         let facts = match &body {
             DefBody::Expr(_) | DefBody::Collection(_) => LambdaFacts::PURE,
@@ -1566,6 +1609,7 @@ impl Lambda {
             scope: scope.clone(),
             check: Mutex::new(None),
             table,
+            seqs,
             facts: Mutex::new(facts),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,

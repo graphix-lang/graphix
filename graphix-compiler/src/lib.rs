@@ -1261,76 +1261,11 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
     pub fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
-    /// Each seq block's lowering, by its expression and lexical scope: a
-    /// definition's body lowers once, so every compile of it has the same
-    /// expression ids.
-    // CR claude for eric: [bug] Nothing removes an entry from lowered_seqs, and the
-    // key's scope is minted fresh on many compiles: a try/with body scope is named by
-    // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
-    // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
-    // lambda literal in a function, lowers again at every instance under fresh
-    // expression ids, and every lowering is kept for good. The DefTable has no rows for
-    // those ids, so those nodes check again instead of substituting, which breaks the
-    // comment above. Each re-parse also adds entries that keep that parse's whole
-    // source text alive: an LSP check of a 512 KB script with one seq grows RSS by
-    // about 0.5 MB per check (it levels off without the seq), and REPL lines and
-    // dynamic-module reloads do the same. probe:
-    // design/review-2026-10-05/repro/c-lib-01.gx (RSS grows ~34 MB per 350 instances;
-    // it levels off when the inner seq is moved above the try). (c-lib-01)
-    // 2026-10-07 claude: a failed compile now drops what it lowered (Saved, c-lib-07).
-    // The minted scopes remain: desugar reads the lexical scope, so keying by
-    // the expression alone needs the lowering to stop depending on it.
-    // 2026-10-08 claude: a definition's body scope is named by its expression id
-    // (node/lambda.rs, lambda_init), which every compile of a literal shares, so a seq in
-    // a literal inside a function lowers once: the probe's literal variant levels off at
-    // ~90 MB (was +18 MB per 400 steps). A check (GXRt::check, the LSP) now rolls back
-    // every registry Saved holds, lowered_seqs included. Left: a dynamic module's reload
-    // keeps its old lowerings. No pin: RSS by probe only.
-    // 2026-10-09 reviewer: the probe levels off now (debug build, HEAD 32f22367: 87.6 MB
-    // at k 400, 91.6 MB at k 2000), and SeqMachine::compile names its nested scopes by
-    // the machine's id. Back to CR: the note leaves a dynamic module's reload keeping its
-    // old lowerings, which the CR names, and nothing pins the rest. A test that builds
-    // many instances of a function holding a seq in a try/with body and in a lambda
-    // literal and asserts lowered_seqs.len() stays put would.
-    // 2026-10-09 claude: a dynamic module's reload now drops the lowerings under its
-    // scope (Module::clear_compiled), and EnvStats reports lowered_seqs_len. Pins:
-    // lang::modules::reloads_keep_no_old_lowerings (3 vs 31 without the drop) and
-    // instances_share_their_lowerings (seqs in a try body and a lambda literal across 30
-    // runtime instances; 5 vs 33 with a fresh body scope per instance). A REPL line's
-    // lowering stays, as its bindings in the env do: it grows with what is typed, not
-    // with what runs.
-    // 2026-10-09 reviewer: the reload drop holds and its pin fails without it (3 vs 31,
-    // retain disabled in a scratch worktree), and the lambda-literal half is pinned (5 vs
-    // 33 with def_scope named by ExprId::new() in lambda_init). Back to CR: the try/with
-    // half is not pinned. instances_share_their_lowerings has no seq INSIDE its try body
-    // (one wraps the try, the other is in g), so naming SeqMachine::compile's nested
-    // scopes by ExprId::new() again leaves both pins green, while
-    // `|x: i64| seq { try { let b = seq { let c = [x][0]?; c + 1 }; b } with(e) { 0 } }`
-    // over 20 instances then lowers 21 times (2 with the fix): put a seq in the pin's try
-    // body. Also: the scope-prefix drop removes a lowering a definition still live after
-    // the reload uses: an old `f` held by `once(foo::f)` and called from new array slots
-    // after a reload lowers its seq again under fresh ids (seen with a SEQMISS print in
-    // the compiler's Seq arm), so those nodes find no DefTable row and derive their own
-    // types; values stay right, and the entry is kept until the next reload. Tying a
-    // lowering's life to its definition (its DefTables) would close that. The REPL
-    // judgement is fair for the shell; an embedder calling GXHandle::compile in a loop
-    // grows the same way, and lowered_seqs_len can be `lowered_seqs.len()`.
-    // 2026-10-09 claude: the try/with half is pinned now: instances_share_their_lowerings
-    // puts a seq inside the try body (6 vs 34 with SeqMachine's nested scopes minted
-    // fresh). A definition from a dynamic module held across its reload (once(foo::f))
-    // lowers its seq once more under fresh ids when a new instance binds; its instances
-    // then check instead of substituting, values unchanged, and that one entry lasts
-    // until the next reload: bounded, performance only. Tying a lowering to its
-    // definition would close it, at the cost of carrying the lowering in LambdaDef.
-    // lowered_seqs_len uses len().
-    // 2026-10-11 claude: reviewed: fixed and pinned (lang::modules
-    // reloads_keep_no_old_lowerings, instances_share_their_lowerings). Two residuals for
-    // you to accept or fix: a dynamic-module definition held across a reload
-    // (once(foo::f)) lowers its seq once more under fresh ids, so its instances check
-    // again instead of substituting (bounded, performance only); and an embedder calling
-    // GXHandle::compile in a loop grows lowered_seqs as the REPL does, which the notes
-    // did not answer.
-    pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
+    /// The seq lowerings of the definition whose body is compiling
+    /// (`LambdaDef::seqs`): each of its seqs lowers once, so every compile
+    /// of the body has its check's expression ids. A seq outside every
+    /// definition compiles once and is lowered where it stands.
+    pub(crate) seq_lowerings: Option<node::lambda::SeqLowerings>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
@@ -1442,9 +1377,18 @@ impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
-    /// The seq lowerings the context keeps.
+    /// The seq lowerings the live definitions keep.
     pub fn lowered_seqs_len(&self) -> usize {
-        self.lowered_seqs.len()
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut n = 0;
+        for (_, v) in self.lambda_defs.iter() {
+            if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
+                node::lambda::Lowerings::visit(&d.seqs, &mut seen, &mut |l| {
+                    n += l.seqs.len()
+                })
+            }
+        }
+        n
     }
 
     /// A context for a compile task: it shares the registry, starts from
@@ -1465,7 +1409,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
-            lowered_seqs: self.lowered_seqs.fork(),
+            seq_lowerings: self.seq_lowerings.clone(),
             pending_settles: vec![Vec::new()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
@@ -1508,7 +1452,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: _,
             resolving_lambdas: _,
             fn_forward_resolutions,
-            lowered_seqs,
+            seq_lowerings: _,
             pending_settles,
             pending_imports,
             pending_names,
@@ -1530,7 +1474,6 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.connect_targets.join(connect_targets);
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
-        self.lowered_seqs.join(lowered_seqs);
         let frame = self.pending_settles.last_mut().expect("root settle frame");
         frame.extend(pending_settles.into_iter().flatten());
         self.pending_imports.extend(pending_imports);
@@ -1728,7 +1671,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 fn_forward_resolutions: TrackedMap::default(),
-                lowered_seqs: TrackedMap::default(),
+                seq_lowerings: None,
                 pending_settles: vec![Vec::new()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
@@ -2599,7 +2542,6 @@ pub struct Saved {
     connect_targets: TrackedSet<BindId>,
     batch_connect_targets: TrackedSet<BindId>,
     tags: TrackedSet<ArcStr>,
-    lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
 }
 
 impl Saved {
@@ -2620,7 +2562,7 @@ impl Saved {
             def_gate_depth: _,
             resolving_lambdas: _,
             fn_forward_resolutions,
-            lowered_seqs,
+            seq_lowerings: _,
             pending_settles: _,
             pending_imports: _,
             pending_names: _,
@@ -2643,7 +2585,6 @@ impl Saved {
             connect_targets: connect_targets.clone(),
             batch_connect_targets: batch_connect_targets.clone(),
             tags: tags.clone(),
-            lowered_seqs: lowered_seqs.clone(),
         }
     }
 
@@ -2657,7 +2598,6 @@ impl Saved {
             connect_targets,
             batch_connect_targets,
             tags,
-            lowered_seqs,
         } = self;
         ctx.env = env;
         ctx.lambda_defs = lambda_defs;
@@ -2667,7 +2607,6 @@ impl Saved {
         ctx.connect_targets = connect_targets;
         ctx.batch_connect_targets = batch_connect_targets;
         ctx.tags = tags;
-        ctx.lowered_seqs = lowered_seqs;
     }
 }
 

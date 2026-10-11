@@ -1126,6 +1126,27 @@ async fn reloads_keep_no_old_lowerings() -> Result<()> {
     Ok(())
 }
 
+/// An embedder that compiles and drops programs holding seqs keeps no
+/// lowering of the programs it dropped.
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_compiles_keep_no_lowerings() -> Result<()> {
+    use arcstr::ArcStr;
+    use graphix_package_core::testing::init;
+    async fn kept(n: usize) -> Result<usize> {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+        let ctx = init(tx, crate::TEST_REGISTER).await?;
+        for _ in 0..n {
+            let code = "(|x: i64| seq { let a = x; a + 1 })(1)";
+            drop(ctx.rt.compile(ArcStr::from(code)).await?);
+        }
+        let kept = ctx.rt.env_stats().await?.lowered_seqs_len;
+        ctx.shutdown().await;
+        Ok(kept)
+    }
+    assert_eq!(kept(2).await?, kept(30).await?);
+    Ok(())
+}
+
 /// Instances of a function whose seqs sit in a try body and in a lambda
 /// literal share one lowering of each.
 #[tokio::test(flavor = "current_thread")]

@@ -274,6 +274,16 @@ boundaries once the analysis has decided them (`S0 -> S1 same, S1 ->
 S2 next`); `GXDBG_SEQPLAN=1` adds every step's summary. The completion
 guards are compiler-only nodes and print as their operand.
 
+A seq inside a definition lowers once per definition: the lowering mints
+expression ids, and every compile of the body (the check and each
+instance) must have the check's ids to take its types from the
+definition's table. The lowerings live with the definition
+(`LambdaDef::seqs`, set for the body's compile as
+`CompileCtx::seq_lowerings`), and a lambda literal in the body shares
+one cache across every definition its compiles make; they go when the
+definition does. A seq outside every definition compiles once and is
+lowered where it stands.
+
 ### 6.1 The skeleton
 
 ```graphix
