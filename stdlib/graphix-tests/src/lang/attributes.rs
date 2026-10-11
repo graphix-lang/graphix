@@ -30,7 +30,7 @@ const TAIL_RECURSIVE_NON_TAIL: &str = r#"
 }
 "#;
 
-run!(tail_recursive_non_tail, TAIL_RECURSIVE_NON_TAIL, refused("every recursive call must be in tail position"); FuseExpect::None);
+run!(tail_recursive_non_tail, TAIL_RECURSIVE_NON_TAIL, refused("every recursive call must be in tail position"); FuseExpect::None; build_only);
 
 // One tail self-call does not make a function tail-recursive when
 // another self-call is non-tail.
@@ -46,7 +46,7 @@ const TAIL_RECURSIVE_MIXED: &str = r#"
 }
 "#;
 
-run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, refused("every recursive call must be in tail position"); FuseExpect::None);
+run!(tail_recursive_mixed, TAIL_RECURSIVE_MIXED, refused("every recursive call must be in tail position"); FuseExpect::None; build_only);
 
 // `#[tail_recursive]` asserts a constant-space loop, which needs a
 // stateless body: `count` gives every iteration its own activation.
@@ -58,7 +58,7 @@ const TAIL_RECURSIVE_STATEFUL: &str = r#"
 }
 "#;
 
-run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None);
+run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None; build_only);
 
 // A vacuous assertion is an error: the function never recurses.
 const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
@@ -72,7 +72,7 @@ const TAIL_RECURSIVE_NOT_RECURSIVE: &str = r#"
 run!(
     tail_recursive_not_recursive,
     TAIL_RECURSIVE_NOT_RECURSIVE,
-    refused("#[tail_recursive]: this function is not recursive"); FuseExpect::None);
+    refused("#[tail_recursive]: this function is not recursive"); FuseExpect::None; build_only);
 
 const SYNC_OK: &str = r#"
 {
@@ -104,7 +104,7 @@ const SYNC_PARENS_ON_ASYNC: &str = r#"
 }
 "#;
 
-run!(sync_parens_on_async, SYNC_PARENS_ON_ASYNC, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_parens_on_async, SYNC_PARENS_ON_ASYNC, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 // `throttle` defers deliveries across cycles: the body is async.
 const SYNC_ON_ASYNC: &str = r#"
@@ -115,7 +115,7 @@ const SYNC_ON_ASYNC: &str = r#"
 }
 "#;
 
-run!(sync_on_async, SYNC_ON_ASYNC, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_on_async, SYNC_ON_ASYNC, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 // A `&` evaluates its whole expression: an async builtin two levels
 // under the reference makes the body async.
@@ -127,7 +127,7 @@ const SYNC_ON_ASYNC_UNDER_REF: &str = r#"
 }
 "#;
 
-run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 // A builtin's callbacks join its call's facts: an async callback makes
 // the caller async, a sync one leaves it sync, and a function handing a
@@ -136,13 +136,13 @@ run!(sync_on_async_builtin_callback, r#"{
     #[sync]
     let g = |v: [i64, null]| opt::map(v, |x| sys::time::after_idle(duration:10.ms, x));
     g(1)
-}"#, refused("#[sync]: this function is async"); FuseExpect::None);
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 run!(sync_on_async_filter_callback, r#"{
     #[sync]
     let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms, x > 0));
     g(1)
-}"#, refused("#[sync]: this function is async"); FuseExpect::None);
+}"#, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 run!(sync_builtin_callbacks_stay_sync, r#"{
     #[sync]
@@ -170,7 +170,7 @@ const SYNC_ON_DYNAMIC_MODULE: &str = r#"
 }
 "#;
 
-run!(sync_on_dynamic_module, SYNC_ON_DYNAMIC_MODULE, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_on_dynamic_module, SYNC_ON_DYNAMIC_MODULE, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 // An async builtin in a dynamic module's source expression.
 const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
@@ -208,7 +208,7 @@ const ASYNC_ON_SYNC: &str = r#"
 }
 "#;
 
-run!(async_on_sync, ASYNC_ON_SYNC, refused("#[async]: this function is sync"); FuseExpect::None);
+run!(async_on_sync, ASYNC_ON_SYNC, refused("#[async]: this function is sync"); FuseExpect::None; build_only);
 
 // The definition-asserting attributes reject non-function targets.
 const SYNC_ON_VALUE: &str = r#"
@@ -233,7 +233,7 @@ const SYNC_ON_ASYNC_INSTANCE: &str = r#"
 }
 "#;
 
-run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, refused("#[sync]: this function is async"); FuseExpect::None; build_only);
 
 // A definition's assertion sees every instance: the pure instance of
 // `loop` does not stand in for the one whose callback counts.
@@ -251,7 +251,7 @@ const TAIL_RECURSIVE_STATEFUL_INSTANCE: &str = r#"
 run!(
     tail_recursive_stateful_instance,
     TAIL_RECURSIVE_STATEFUL_INSTANCE,
-    refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None);
+    refused("#[tail_recursive]: this function's body is stateful or async"); FuseExpect::None; build_only);
 
 // The same loop with pure callbacks only.
 const TAIL_RECURSIVE_PURE_INSTANCES: &str = r#"
@@ -278,7 +278,7 @@ const TAIL_RECURSIVE_LABELED: &str = r#"
 }
 "#;
 
-run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, refused("no loop is built"); FuseExpect::None);
+run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, refused("no loop is built"); FuseExpect::None; build_only);
 
 // The instance `h` recurses through is mutually recursive; the tail
 // instance over `|x| x` does not stand in for it.
@@ -291,7 +291,7 @@ const TAIL_RECURSIVE_MUTUAL_INSTANCE: &str = r#"
 }
 "#;
 
-run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, refused("every recursive call must be in tail position"); FuseExpect::None);
+run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, refused("every recursive call must be in tail position"); FuseExpect::None; build_only);
 
 // A lambda literal called in place is an instance like any other: its
 // async body makes the enclosing function async.
@@ -303,4 +303,4 @@ const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
 }
 "#;
 
-run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, refused("#[sync]: this function is async"); FuseExpect::None);
+run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, refused("#[sync]: this function is async"); FuseExpect::None; build_only);

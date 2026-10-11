@@ -646,7 +646,7 @@ run!(
         impl Display for Key { let fmt = |k| sys::time::timer(duration:0.01s, false) ~ k.0 };
         let result = "[Key("a")]"
     "##
-    ; FuseExpect::None
+    ; FuseExpect::None; build_only
 );
 
 // `println`/`dbg`/`log` print through the implementation too, on

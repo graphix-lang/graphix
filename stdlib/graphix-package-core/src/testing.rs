@@ -400,6 +400,26 @@ pub async fn compile_result(ctx: &TestCtx) -> Result<CompRes<NoExt>> {
     ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await
 }
 
+/// The check of a fixture's program, which a run holds against its build:
+/// elaboration refusing what the check accepted is a type-system bug.
+/// A check rolls back everything it compiled.
+pub async fn check_fixture(ctx: &TestCtx) -> Result<()> {
+    let program = Source::Program(arcstr::literal!("{ mod test; test::result }"));
+    ctx.rt.check(program, None).await.map(|_| ())
+}
+
+/// The check refuses exactly when the build does.
+pub fn verdicts_agree(
+    checked: Result<()>,
+    built: Result<(), &anyhow::Error>,
+) -> Result<()> {
+    match (checked, built) {
+        (Ok(()), Ok(())) | (Err(_), Err(_)) => Ok(()),
+        (Ok(()), Err(e)) => bail!("the check accepts what the build refuses: {e:#}"),
+        (Err(e), Ok(())) => bail!("the check refuses what the build accepts: {e:#}"),
+    }
+}
+
 /// The next update of `id`, failing at `deadline`.
 pub async fn next_update(
     rx: &mut Events,
@@ -687,7 +707,10 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// ([`refused`]).
 ///
 /// - **interp**: `CFlag::FusionDisabled`; the program runs purely
-///   through the node-walk.
+///   through the node-walk. It first checks the program alone (the
+///   `--check` path) and fails unless the check refuses exactly when the
+///   build does; the `; build_only` form skips that for a refusal only a
+///   build makes (`#[native]`, the definition assertions).
 /// - **jit**: the full fusion + JIT path. Asserts the `FuseExpect`
 ///   annotation (and the optional `; shape:` NodeShape) against the
 ///   live post-fusion graph; the annotation only in debug builds, where
@@ -697,41 +720,52 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 ///
 /// Expands to `mod $name { … }` holding one
 /// `#[tokio::test(flavor = "current_thread")]` per mode; the
-/// `; jit_only` form holds only the fused two.
+/// `; jit_only` form holds only the fused two (and so no check).
 #[macro_export]
 macro_rules! run {
     // The `; shape:` and `; jit_only` arms must precede the plain
     // `; $fexpect` arms so the longer token sequence matches first.
     // The JIT alone: a program the node-walk cannot run (a native loop
     // deeper than the stack budget allows activations).
+    // A refusal only a build makes (`#[native]`, the definition
+    // assertions): no check test.
+    ($name:ident, $code:expr, $pred:expr; $fexpect:expr; build_only) => {
+        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+    };
+    ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr; build_only) => {
+        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
+    };
+    ($name:ident, $code:expr, $pred:expr; build_only) => {
+        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+    };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; jit_only) => {
-        $crate::run!(@impl cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl true, cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
-        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl true, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
-    (@impl $interp:meta, $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
+    (@impl $check:literal, $interp:meta, $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
         mod $name {
             use super::*;
 
@@ -747,6 +781,7 @@ macro_rules! run {
                 mode: $crate::testing::Mode,
                 reset_counters_after_init: bool,
                 check_shape: bool,
+                check: bool,
             ) -> ::anyhow::Result<(u64, u64)> {
                 let pred = $pred;
                 let (ctx, mut rx) = $crate::testing::fixture_runtime(
@@ -760,7 +795,16 @@ macro_rules! run {
                 if reset_counters_after_init {
                     ctx.rt.control().reset_invocations();
                 }
-                match $crate::testing::compile_result(&ctx).await {
+                let checked = if check {
+                    ::std::option::Option::Some($crate::testing::check_fixture(&ctx).await)
+                } else {
+                    ::std::option::Option::None
+                };
+                let built = $crate::testing::compile_result(&ctx).await;
+                if let ::std::option::Option::Some(checked) = checked {
+                    $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
+                }
+                match built {
                     Err(e) => {
                         if let ::std::result::Result::Err(dead) = ctx.rt.get_env().await {
                             ::anyhow::bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
@@ -805,13 +849,13 @@ macro_rules! run {
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::Interp, false, false).await.map(|_| ())
+                run_mode($crate::testing::Mode::Interp, false, false, $check).await.map(|_| ())
             }
 
             #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn par() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::Par, false, false).await.map(|_| ())
+                run_mode($crate::testing::Mode::Par, false, false, false).await.map(|_| ())
             }
 
             #[::tokio::test(flavor = "current_thread")]
@@ -821,7 +865,7 @@ macro_rules! run {
                 #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
                     let (fusion, jit) =
-                        run_mode($crate::testing::Mode::Jit, true, false).await?;
+                        run_mode($crate::testing::Mode::Jit, true, false, false).await?;
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
@@ -840,7 +884,7 @@ macro_rules! run {
                 #[cfg(debug_assertions)]
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
                     let (fusion, _) =
-                        run_mode($crate::testing::Mode::Jit, true, false).await?;
+                        run_mode($crate::testing::Mode::Jit, true, false, false).await?;
                     let expected = $fexpect;
                     let observed = if fusion > 0 {
                         $crate::testing::FuseExpect::Jit
@@ -856,7 +900,7 @@ macro_rules! run {
                     );
                     return Ok(());
                 }
-                let _invocations = run_mode($crate::testing::Mode::Jit, true, true).await?;
+                let _invocations = run_mode($crate::testing::Mode::Jit, true, true, false).await?;
                 #[cfg(debug_assertions)]
                 $crate::testing::check_fuse_expectation(_invocations, $fexpect);
                 Ok(())
@@ -866,7 +910,7 @@ macro_rules! run {
             /// included.
             #[::tokio::test(flavor = "current_thread")]
             async fn jit_par() -> ::anyhow::Result<()> {
-                run_mode($crate::testing::Mode::JitPar, false, false).await.map(|_| ())
+                run_mode($crate::testing::Mode::JitPar, false, false, false).await.map(|_| ())
             }
         }
     };
