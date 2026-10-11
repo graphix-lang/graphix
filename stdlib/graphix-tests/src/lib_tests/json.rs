@@ -186,3 +186,28 @@ run!(json_round_trips, r#"{
     }
     _ => false,
 }; FuseExpect::Jit);
+
+// A value writes as its type says, whatever its contents: pairs are an
+// array in any order, a struct is an object, and a List is a flat array
+// that reads back at any length.
+run!(
+    json_writes_by_type,
+    r#"{
+    let sorted: Array<(string, i64)> = [("a", 1), ("b", 2)];
+    let unsorted: Array<(string, i64)> = [("b", 1), ("a", 2)];
+    let s = {a: 1, b: 2};
+    let l = list::from_array(array::init(200, |i| i));
+    let l2: List<i64> = json::read(json::write_str(l)$)$;
+    (json::write_str(sorted)$, json::write_str(unsorted)$, json::write_str(s)$, l2 == l)
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.len() == 4
+                && a[0] == Value::String(literal!(r#"[["a",1],["b",2]]"#))
+                && a[1] == Value::String(literal!(r#"[["b",1],["a",2]]"#))
+                && a[2] == Value::String(literal!(r#"{"a":1,"b":2}"#))
+                && a[3] == Value::Bool(true)
+        }
+        _ => false,
+    }
+);

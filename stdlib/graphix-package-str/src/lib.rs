@@ -6,16 +6,11 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
-    effects::Effect,
-    env::Env,
-    err, errf,
-    expr::ExprId,
-    expr::split_escaped,
-    typ::{FnType, Type},
+    ExecCtx, FastCall, Rt, UserEvent, effects::Effect, env::Env, err, errf,
+    expr::split_escaped, typ::FnType,
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, fast_eval, fast_eval_typed,
+    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, fast_eval,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
@@ -583,7 +578,7 @@ fn fc_sub(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(Sub, SubEv, "str_sub", fc_sub);
 
-fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
+fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     static TAG: ArcStr = literal!("ParseError");
     let raw = match args {
         [Value::String(s)] => match s.parse::<Value>() {
@@ -594,7 +589,7 @@ fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
         _ => return None,
     };
     // every failure is the declared ParseError
-    Some(match cast_target(rtype) {
+    Some(match cast_target(&ft.rtype) {
         Some(typ) => match typ.cast_value(env, raw) {
             Value::Error(e) => errf!(TAG, "{e}"),
             v => v,
@@ -603,52 +598,7 @@ fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
     })
 }
 
-#[derive(Debug, Default, netidx_derive::Pack)]
-struct ParseEv {
-    rtype: Option<Type>,
-}
-
-graphix_package_core::pack_image_state!(ParseEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Typed(fc_parse)));
-    const NAME: &str = "str_parse";
-
-    fn init(
-        _ctx: &mut CompileCtx<R, E>,
-        _typ: &FnType,
-        resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: ExprId,
-    ) -> Self {
-        Self { rtype: resolved.map(|ft| ft.rtype.clone()) }
-    }
-
-    fn typecheck0(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn typecheck1(
-        &mut self,
-        _ctx: &mut CompileCtx<R, E>,
-        _from: &mut [Node<R, E>],
-        resolved: &FnType,
-    ) -> Result<()> {
-        self.rtype = Some(resolved.rtype.clone());
-        Ok(())
-    }
-
-    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval_typed(ctx, fc_parse, self.rtype.as_ref()?, from)
-    }
-}
-
-type Parse = CachedArgs<ParseEv>;
+graphix_package_core::typed_fast_builtin!(Parse, ParseEv, "str_parse", fc_parse);
 
 graphix_derive::defpackage! {
     builtins => [

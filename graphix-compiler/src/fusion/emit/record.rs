@@ -73,7 +73,7 @@ pub enum KernelConst {
         f: TypedFastFn,
     },
     /// The cast pseudo-site's fn.
-    Cast(TypedFastFn),
+    Cast(crate::fusion::lowering::CastFn),
     SiteLeaf(Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
@@ -91,7 +91,8 @@ impl KernelConst {
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
             KernelConst::IoSite(b) => &**b as *const crate::IoSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
-            KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
+            KernelConst::TypedFn { f, .. } => *f as usize,
+            KernelConst::Cast(f) => *f as usize,
             KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
@@ -110,8 +111,10 @@ impl KernelConst {
             (KernelConst::FastFn { f: a, .. }, KernelConst::FastFn { f: b, .. }) => {
                 *a as usize == *b as usize
             }
-            (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. })
-            | (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
+            (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. }) => {
+                *a as usize == *b as usize
+            }
+            (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
             (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
             (KernelConst::LoopSite(a), KernelConst::LoopSite(b)) => Arc::ptr_eq(a, b),

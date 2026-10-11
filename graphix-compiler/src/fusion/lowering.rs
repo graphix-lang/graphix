@@ -72,8 +72,8 @@ pub struct CaptureSlot {
 pub enum SiteDispatch {
     /// A builtin's plain fast fn, by the builtin's name.
     Fast { name: ArcStr, f: crate::FastFn },
-    /// A builtin's typed fast fn, directed by the site's return type.
-    Typed { name: ArcStr, f: crate::TypedFastFn, typ: Type },
+    /// A builtin's typed fast fn, directed by the site's resolved type.
+    Typed { name: ArcStr, f: crate::TypedFastFn, typ: Arc<FnType> },
     /// A cast from `source` to `target`, through [`cast_typed`].
     Cast { target: Type, source: Type },
     /// An `Effect::Io` builtin: `f` is its result, and each fire of
@@ -81,9 +81,10 @@ pub enum SiteDispatch {
     Io { name: ArcStr, f: crate::FastFn, trigger: usize, arg: Expr, typ: Type },
 }
 
-/// The cast pseudo-site's typed fast fn: the same `cast_from` call
-/// `TypeCast::update` makes on the node-walk. `typ` is the site's
-/// `(target, source)` pair.
+/// The cast pseudo-site's fn: the same `cast_from` call `TypeCast::update`
+/// makes on the node-walk. `typ` is the site's `(target, source)` pair.
+pub(crate) type CastFn = fn(&Env, &Type, &[Value]) -> Option<Value>;
+
 pub(crate) fn cast_typed(env: &Env, typ: &Type, args: &[Value]) -> Option<Value> {
     let Type::Tuple(ts) = typ else { return None };
     Some(ts[0].cast_from(env, &ts[1], args[0].clone()))
@@ -532,7 +533,9 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             }
         }
         (_, crate::FastCall::Plain(f)) => SiteDispatch::Fast { name, f },
-        (_, crate::FastCall::Typed(f)) => SiteDispatch::Typed { name, f, typ: ret_typ },
+        (_, crate::FastCall::Typed(f)) => {
+            SiteDispatch::Typed { name, f, typ: Arc::new(fn_type.clone()) }
+        }
     };
     out.apply_sites.insert(
         apply_id,

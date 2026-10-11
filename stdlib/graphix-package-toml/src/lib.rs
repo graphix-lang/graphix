@@ -6,9 +6,13 @@ use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use bytes::Bytes;
 use chrono::Utc;
-use graphix_compiler::errf;
+use graphix_compiler::{
+    env::Env,
+    errf,
+    typ::{FnType, Type},
+};
 use graphix_package_core::{
-    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, TypedRead, is_struct,
+    CachedArgsAsync, CachedVals, ReadFormat, ReadInput, Shape, TypedRead, shape,
 };
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::local::LPooled;
@@ -54,15 +58,46 @@ fn toml_to_value(v: toml::Value) -> Value {
 /// reads.
 const MAX_DEPTH: usize = 80;
 
-fn value_to_toml(value: &Value) -> Result<toml::Value, String> {
-    to_toml(value, 0)
+/// `value` as TOML, written as its type `typ` says (`None` reads the
+/// value alone).
+fn value_to_toml(
+    env: &Env,
+    typ: Option<&Type>,
+    value: &Value,
+) -> Result<toml::Value, String> {
+    to_toml(env, typ, value, 0)
 }
 
-fn to_toml(value: &Value, depth: usize) -> Result<toml::Value, String> {
+fn to_toml(
+    env: &Env,
+    typ: Option<&Type>,
+    value: &Value,
+    depth: usize,
+) -> Result<toml::Value, String> {
     if depth > MAX_DEPTH {
         return Err(format!("the value nests deeper than {MAX_DEPTH} levels"));
     }
-    let value_to_toml = |v: &Value| to_toml(v, depth + 1);
+    match shape(env, typ, value) {
+        Shape::Object(mut entries) => {
+            let mut table = toml::map::Map::new();
+            // TOML has no null: a null field is a key left out
+            for (k, v, t) in entries.drain(..).filter(|(_, v, _)| *v != Value::Null) {
+                table.insert(k.to_string(), to_toml(env, t.as_ref(), &v, depth + 1)?);
+            }
+            Ok(toml::Value::Table(table))
+        }
+        Shape::Seq(mut elems) => {
+            let mut vals: LPooled<Vec<toml::Value>> = elems
+                .drain(..)
+                .map(|(v, t)| to_toml(env, t.as_ref(), &v, depth + 1))
+                .collect::<Result<_, _>>()?;
+            Ok(toml::Value::Array(vals.drain(..).collect()))
+        }
+        Shape::Leaf => leaf_to_toml(value),
+    }
+}
+
+fn leaf_to_toml(value: &Value) -> Result<toml::Value, String> {
     match value {
         Value::Null => Err("cannot represent null in TOML".into()),
         Value::Bool(b) => Ok(toml::Value::Boolean(*b)),
@@ -91,34 +126,11 @@ fn to_toml(value: &Value, depth: usize) -> Result<toml::Value, String> {
                 .map(toml::Value::Datetime)
                 .map_err(|e| format!("cannot convert datetime to TOML: {e}"))
         }
-        Value::Array(arr) => {
-            if is_struct(arr) {
-                let mut table = toml::map::Map::new();
-                for v in arr.iter() {
-                    if let Value::Array(pair) = v
-                        && let Value::String(k) = &pair[0]
-                        // TOML has no null: a null field is a key left out
-                        && pair[1] != Value::Null
-                    {
-                        table.insert(k.to_string(), value_to_toml(&pair[1])?);
-                    }
-                }
-                Ok(toml::Value::Table(table))
-            } else {
-                let mut vals: LPooled<Vec<toml::Value>> =
-                    arr.iter().map(value_to_toml).collect::<Result<_, _>>()?;
-                Ok(toml::Value::Array(vals.drain(..).collect()))
-            }
-        }
         Value::Bytes(_) => Err("cannot represent bytes in TOML".into()),
         Value::Duration(_) => Err("cannot represent duration in TOML".into()),
         Value::Decimal(_) => Err("cannot represent decimal in TOML".into()),
-        Value::Map(m) => {
-            let mut table = toml::map::Map::new();
-            for (k, v) in m.into_iter().filter(|(_, v)| **v != Value::Null) {
-                table.insert(graphix_package_core::map_key(k), value_to_toml(v)?);
-            }
-            Ok(toml::Value::Table(table))
+        Value::Array(_) | Value::Map(_) => {
+            unreachable!("shape reads every array and map")
         }
         Value::Error(_) => Err("cannot serialize Error to TOML".into()),
         Value::Abstract(_) => Err("cannot serialize abstract type to TOML".into()),
@@ -156,10 +168,12 @@ impl ReadFormat for Toml {
 
 type TomlRead = CachedArgsAsync<TypedRead<Toml>>;
 
-/// `[pretty, value]` as TOML, or the error to answer with.
-fn encode(args: &[Value]) -> Option<Result<String, Value>> {
+/// `[pretty, value]` as TOML, `value` written as its type at the call
+/// site says, or the error to answer with.
+fn encode(env: &Env, ft: &FnType, args: &[Value]) -> Option<Result<String, Value>> {
     let pretty = graphix_package_core::fast_get::<bool>(args, 0)?;
-    let toml_val = match value_to_toml(args.get(1)?) {
+    let toml_val = match value_to_toml(env, ft.args.get(1).map(|a| &a.typ), args.get(1)?)
+    {
         Ok(t) => t,
         Err(e) => return Some(Err(errf!("TomlErr", "{e}"))),
     };
@@ -171,27 +185,30 @@ fn encode(args: &[Value]) -> Option<Result<String, Value>> {
     Some(res.map_err(|e| errf!("TomlErr", "{e}")))
 }
 
-fn fc_write_str(args: &[Value]) -> Option<Value> {
-    Some(encode(args)?.map_or_else(|e| e, |s| Value::String(ArcStr::from(s.as_str()))))
+fn fc_write_str(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
+    Some(
+        encode(env, ft, args)?
+            .map_or_else(|e| e, |s| Value::String(ArcStr::from(s.as_str()))),
+    )
 }
 
-graphix_package_core::fast_builtin!(
+graphix_package_core::typed_fast_builtin!(
     TomlWriteStr,
     TomlWriteStrEv,
     "toml_write_str",
     fc_write_str
 );
 
-fn fc_write_bytes(args: &[Value]) -> Option<Value> {
+fn fc_write_bytes(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     Some(
-        encode(args)?.map_or_else(
+        encode(env, ft, args)?.map_or_else(
             |e| e,
             |s| Value::Bytes(PBytes::new(Bytes::from(s.into_bytes()))),
         ),
     )
 }
 
-graphix_package_core::fast_builtin!(
+graphix_package_core::typed_fast_builtin!(
     TomlWriteBytes,
     TomlWriteBytesEv,
     "toml_write_bytes",

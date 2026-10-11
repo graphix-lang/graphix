@@ -449,7 +449,7 @@ pub fn map_key(k: &Value) -> String {
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
-// CR claude for eric: [bug] is_struct decides from the value alone, but a struct, an
+// XCR claude for claude: [bug] is_struct decides from the value alone, but a struct, an
 // Array<(string, T)> and an array of one-payload variants share one encoding. So json
 // and toml write_str/write_bytes and hbs::render write one type as an object or as an
 // array depending on its contents. `[("a", 1), ("b", 2)]` writes `{"a":1,"b":2}` and
@@ -471,6 +471,19 @@ pub fn map_key(k: &Value) -> String {
 // an object, an Array<(string, T)> as an array of pairs whatever its contents, a List as
 // a flat array (x-stack-06), and toml refuses by type, not by content. Cost: one
 // fast-call signature change across the typed builtins.
+// 2026-10-10 claude: Eric ruled 10-10: write by static type. A typed fast call now
+// receives the site's resolved FnType (TypedFastFn = fn(&Env, &FnType, &[Value]); the
+// cast pseudo-site keeps its (target, source) pair through graphix_castcall), and core's
+// typed_fast_builtin! stores it from typecheck1, str::parse included. The json and toml
+// writers and hbs::render take 'a, not Any, and serialize through core's shape(env, type,
+// value): a struct or a map is an object, an array, tuple, list or a variant's tag and
+// payload a sequence, a union the first member the value inhabits; only where the type
+// says nothing (Any, an open variable) does is_struct's content guess decide. So an
+// Array<(string, T)> writes as pairs in any order, toml refuses it by type, and hbs
+// iterates it as pairs; the template memo is keyed by the partials' type too. The probe
+// gives its expected output in both engines. Pins: lib_tests::json::json_writes_by_type,
+// toml::toml_refuses_pairs_by_type, hbs::hbs_renders_by_type (all 12 runs fail with the
+// type ignored). Book: stdlib/json.md, toml.md.
 pub fn is_struct(arr: &ValArray) -> bool {
     if arr.is_empty() {
         return false;
@@ -493,6 +506,97 @@ pub fn is_struct(arr: &ValArray) -> bool {
         }
     }
     true
+}
+
+/// How a writer serializes a value: an object's entries or a sequence's
+/// elements, each with the type that directs it, or a leaf.
+pub enum Shape {
+    Object(LPooled<Vec<(ArcStr, Value, Option<Type>)>>),
+    Seq(LPooled<Vec<(Value, Option<Type>)>>),
+    Leaf,
+}
+
+/// `v`'s shape under `t`, the type its call site gave it: a struct or a
+/// map is an object; an array, a list, a tuple or a variant's tag and
+/// payload a sequence; a union reads as the first member `v` inhabits.
+/// Where the type says nothing (`None`, `Any`, an open variable), a
+/// non-empty array of `(string, _)` pairs in key order reads as an object.
+pub fn shape(env: &Env, t: Option<&Type>, v: &Value) -> Shape {
+    let typed = t.and_then(|t| constructor(env, t));
+    match (typed.as_ref(), v) {
+        (Some(Type::Set(ts)), v) => shape(env, ts.iter().find(|m| m.is_a(env, v)), v),
+        (Some(Type::Struct(fs)), Value::Array(a)) if fs.len() == a.len() => {
+            let mut entries: LPooled<Vec<_>> = LPooled::take();
+            for (f, (_, t, _)) in a.iter().zip(fs.iter()) {
+                if let Value::Array(p) = f
+                    && let [Value::String(k), v] = &p[..]
+                {
+                    entries.push((k.clone(), v.clone(), Some(t.clone())));
+                }
+            }
+            Shape::Object(entries)
+        }
+        (Some(Type::Map { value, .. }), Value::Map(m)) => Shape::Object(
+            m.into_iter()
+                .map(|(k, v)| {
+                    (ArcStr::from(map_key(k)), v.clone(), Some(Type::clone(value)))
+                })
+                .collect(),
+        ),
+        (Some(Type::Array(e)), Value::Array(a)) => {
+            Shape::Seq(a.iter().map(|x| (x.clone(), Some(Type::clone(e)))).collect())
+        }
+        (Some(Type::List(e)), v) if graphix_compiler::list::is_list(v) => Shape::Seq(
+            graphix_compiler::list::Iter::new(v.clone())
+                .map(|x| (x, Some(Type::clone(e))))
+                .collect(),
+        ),
+        (Some(Type::Tuple(ts)), Value::Array(a)) if ts.len() == a.len() => Shape::Seq(
+            a.iter().zip(ts.iter()).map(|(x, t)| (x.clone(), Some(t.clone()))).collect(),
+        ),
+        (Some(Type::Variant(_, ps, _)), Value::Array(a)) if a.len() == ps.len() + 1 => {
+            let payload =
+                a[1..].iter().zip(ps.iter()).map(|(x, t)| (x.clone(), Some(t.clone())));
+            Shape::Seq(std::iter::once((a[0].clone(), None)).chain(payload).collect())
+        }
+        (_, v) => untyped_shape(v),
+    }
+}
+
+/// `t` through its variables and names to its constructor; `None` for
+/// `Any` or an open variable.
+fn constructor(env: &Env, t: &Type) -> Option<Type> {
+    let mut t = t.deref_cloned()?;
+    while let Type::Ref(_) = &t {
+        t = t.lookup_ref_peek(env).ok()?.deref_cloned()?;
+    }
+    match t {
+        Type::Any => None,
+        t => Some(t),
+    }
+}
+
+fn untyped_shape(v: &Value) -> Shape {
+    match v {
+        Value::Array(a) if is_struct(a) => Shape::Object(
+            a.iter()
+                .filter_map(|f| match f {
+                    Value::Array(p) => match &p[..] {
+                        [Value::String(k), v] => Some((k.clone(), v.clone(), None)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Shape::Seq(a.iter().map(|x| (x.clone(), None)).collect()),
+        Value::Map(m) => Shape::Object(
+            m.into_iter()
+                .map(|(k, v)| (ArcStr::from(map_key(k)), v.clone(), None))
+                .collect(),
+        ),
+        _ => Shape::Leaf,
+    }
 }
 
 /// The TICK view of a production at a builtin's arg seam — `Some` iff
@@ -813,6 +917,76 @@ macro_rules! fast_builtin {
     };
 }
 
+/// [`fast_builtin`] for a `FastCall::Typed` fn, directed by the call
+/// site's resolved function type.
+#[macro_export]
+macro_rules! typed_fast_builtin {
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
+        $(#[$meta])*
+        #[derive(Debug, Default)]
+        $vis struct $ev {
+            resolved: Option<::graphix_compiler::typ::FnType>,
+        }
+
+        impl $crate::ImageState for $ev {
+            fn image_encode(
+                &self,
+                buf: &mut ::graphix_compiler::image::ImageBuf,
+            ) -> ::std::result::Result<(), ::netidx_core::pack::PackError> {
+                ::netidx_core::pack::Pack::encode(&self.resolved, buf)
+            }
+
+            fn image_decode<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>(
+                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
+                buf: &mut &[u8],
+            ) -> ::std::result::Result<Self, ::netidx_core::pack::PackError> {
+                Ok(Self { resolved: ::netidx_core::pack::Pack::decode(buf)? })
+            }
+        }
+
+        impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
+            $crate::EvalCached<R, E> for $ev
+        {
+            const EFFECT: ::graphix_compiler::effects::Effect =
+                ::graphix_compiler::effects::Effect::Stateless(Some(
+                    ::graphix_compiler::FastCall::Typed($fc),
+                ));
+            const NAME: &str = $name;
+
+            fn init(
+                _ctx: &mut ::graphix_compiler::CompileCtx<R, E>,
+                _typ: &::graphix_compiler::typ::FnType,
+                resolved: Option<&::graphix_compiler::typ::FnType>,
+                _scope: &::graphix_compiler::Scope,
+                _from: &[::graphix_compiler::Node<R, E>],
+                _top_id: ::graphix_compiler::expr::ExprId,
+            ) -> Self {
+                Self { resolved: resolved.cloned() }
+            }
+
+            fn typecheck1(
+                &mut self,
+                _ctx: &mut ::graphix_compiler::CompileCtx<R, E>,
+                _from: &mut [::graphix_compiler::Node<R, E>],
+                resolved: &::graphix_compiler::typ::FnType,
+            ) -> ::anyhow::Result<()> {
+                self.resolved = Some(resolved.clone());
+                Ok(())
+            }
+
+            fn eval(
+                &mut self,
+                ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
+                from: &$crate::CachedVals,
+            ) -> Option<::netidx_value::Value> {
+                $crate::fast_eval_typed(ctx, $fc, self.resolved.as_ref()?, from)
+            }
+        }
+
+        $vis type $alias = $crate::CachedArgs<$ev>;
+    };
+}
+
 /// [`ImageState`] for a unit struct; the destructuring fails to
 /// compile for a payload that has fields.
 #[macro_export]
@@ -1036,11 +1210,11 @@ pub fn fast_eval<R: Rt, E: UserEvent>(
 }
 
 /// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the call site's
-/// resolved return type (`resolved.rtype` from `typecheck1`).
+/// resolved function type (from `typecheck1`).
 pub fn fast_eval_typed<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: TypedFastFn,
-    typ: &Type,
+    typ: &FnType,
     from: &CachedVals,
 ) -> Option<Value> {
     let args = fast_args(from)?;

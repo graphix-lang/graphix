@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b2ba0c10.js";
+            window.path_to_searchindex_js = "searchindex-f36f0c42.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -6961,13 +6961,14 @@ inferred from the type annotation at the call site.</p>
 /// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
-/// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
+/// Serialize a value to a JSON string, as its type says: a struct or a
+/// map is an object, an array, tuple or list an array.
+val write_str: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `JsonErr(string)&gt;;
 
 /// Serialize a value to JSON bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `JsonErr(string)&gt;;
 </code></pre>
 <p>Parsing takes <code>bytes</code> or a <code>string</code>, so parsing from a stream is
 reading the stream (<a href="#sysio">sys::io</a>):</p>
@@ -6990,22 +6991,37 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array&lt;{id: i64, label: string}&gt; = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 </code></pre>
+<h2 id="type-directed-serialization"><a class="header" href="#type-directed-serialization">Type-directed serialization</a></h2>
+<p><code>json::write_str</code> and <code>json::write_bytes</code> write a value as its type at
+the call site says: a struct or a <code>Map</code> is an object; an array, a tuple
+or a <code>List</code> is an array (a <code>List</code> flat); a variant with a payload is an
+array of its tag and payload. An <code>Array&lt;(string, T)&gt;</code> is an array of
+pairs whatever order its keys are in. Only a value whose type says
+nothing (<code>Any</code>) is written by its contents, where an array of
+<code>(string, _)</code> pairs in key order is an object.</p>
+<pre><code class="language-graphix">let pairs: Array&lt;(string, i64)&gt; = [("a", 1), ("b", 2)];
+json::write_str(pairs)$;        // [["a",1],["b",2]]
+json::write_str({a: 1, b: 2})$  // {"a":1,"b":2}
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="toml"><a class="header" href="#toml">toml</a></h1>
 <p>The <code>toml</code> module provides TOML serialization and deserialization.
-Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization.</p>
+Like <code>json::read</code>, <code>toml::read</code> uses type-directed deserialization, and
+the writers write a value as its type says, as <code>json::write_str</code> does: a
+document is a struct or a <code>Map</code>, and an array of pairs is refused
+whatever its contents.</p>
 <pre><code class="language-graphix">/// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`TomlErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a TOML string.
-val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `TomlErr(string)&gt;;
+val write_str: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;string, `TomlErr(string)&gt;;
 
 /// Serialize a value to TOML bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, toml::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: Any) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
+val write_bytes: fn(?#pretty: bool, value: 'a) -&gt; Result&lt;bytes, `TomlErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">

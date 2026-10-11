@@ -702,20 +702,32 @@ unsafe fn graphix_typedcall(
     stale_mask: u64,
 ) -> TagValue {
     // SAFETY: `fn_ptr` and `typ` are constants of the kernel's record,
-    // which outlives its code.
+    // which outlives its code; the site interns its function type.
     let f: crate::TypedFastFn =
         unsafe { std::mem::transmute::<usize, crate::TypedFastFn>(fn_ptr as usize) };
+    let crate::typ::Type::Fn(ft) = (unsafe { &*(typ as *const crate::typ::Type) }) else {
+        unreachable!("a typed fast call's type is its site's function type")
+    };
+    let env = unsafe { kernel_env() };
+    unsafe { fast_dispatch(|args| f(env, ft, args), args, n, taint_mask, stale_mask) }
+}
+
+/// A cast site's call: [`graphix_typedcall`] over its `(target, source)`
+/// pair.
+unsafe fn graphix_castcall(
+    fn_ptr: u64,
+    typ: u64,
+    args: u64,
+    n: u64,
+    taint_mask: u64,
+    stale_mask: u64,
+) -> TagValue {
+    // SAFETY: as graphix_typedcall's
+    let f: crate::fusion::lowering::CastFn = unsafe {
+        std::mem::transmute::<usize, crate::fusion::lowering::CastFn>(fn_ptr as usize)
+    };
     let typ = unsafe { &*(typ as *const crate::typ::Type) };
-    let env = KERNEL_ENV.with(|c| c.get());
-    if env.is_null() {
-        panic!(
-            "graphix_typedcall: no kernel env loaned — FusedKernel::update must \
-             run the wrapper under `with_kernel_env`"
-        );
-    }
-    // SAFETY: the loan is scoped to the enclosing wrapper call, during
-    // which `Env` is not touched mutably.
-    let env = unsafe { &*env };
+    let env = unsafe { kernel_env() };
     unsafe { fast_dispatch(|args| f(env, typ, args), args, n, taint_mask, stale_mask) }
 }
 
@@ -2082,6 +2094,21 @@ mod tests {
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
         assert_eq!(args.len(), 1);
     }
+}
+
+/// The invoking kernel's env loan ([`with_kernel_env`]).
+///
+/// SAFETY: the loan is scoped to the enclosing wrapper call, during which
+/// `Env` is not touched mutably.
+unsafe fn kernel_env<'a>() -> &'a crate::env::Env {
+    let env = KERNEL_ENV.with(|c| c.get());
+    if env.is_null() {
+        panic!(
+            "no kernel env loaned — FusedKernel::update must run the wrapper \
+             under `with_kernel_env`"
+        );
+    }
+    unsafe { &*env }
 }
 
 /// Loan `env` (`KERNEL_ENV`) to the JIT'd code `f` runs; nested

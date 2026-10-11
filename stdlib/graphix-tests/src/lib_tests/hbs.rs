@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arcstr::literal;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
@@ -102,5 +103,26 @@ run!(
             }
             _ => false,
         }
+    }
+);
+
+// The data renders as its type says: an array of pairs iterates as pairs
+// in any order, and a List as a flat sequence.
+run!(
+    hbs_renders_by_type,
+    r#"{
+    let t = "{{#each p}}{{this.[0]}}={{this.[1]}};{{/each}}{{#each l}}<{{this}}>{{/each}}";
+    let sorted: Array<(string, i64)> = [("a", 1), ("b", 2)];
+    let unsorted: Array<(string, i64)> = [("b", 1), ("a", 2)];
+    let l = [<"x", "y">];
+    (hbs::render(t, {p: sorted, l})$, hbs::render(t, {p: unsorted, l})$)
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.len() == 2
+                && a[0] == Value::String(literal!("a=1;b=2;<x><y>"))
+                && a[1] == Value::String(literal!("b=1;a=2;<x><y>"))
+        }
+        _ => false,
     }
 );

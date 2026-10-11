@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arcstr::literal;
 use graphix_package_core::{run, testing::FuseExpect};
 use netidx::subscriber::Value;
 
@@ -114,3 +115,22 @@ run!(toml_map_round_trips, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "1.0")
 }; FuseExpect::Jit);
+
+// An array of pairs is no table, in any order: toml refuses it by its type.
+run!(
+    toml_refuses_pairs_by_type,
+    r#"{
+    let sorted: Array<(string, i64)> = [("a", 1), ("b", 2)];
+    let unsorted: Array<(string, i64)> = [("b", 1), ("a", 2)];
+    (is_err(toml::write_str(sorted)), is_err(toml::write_str(unsorted)), toml::write_str({a: 1})$)
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => {
+            a.len() == 3
+                && a[0] == Value::Bool(true)
+                && a[1] == Value::Bool(true)
+                && a[2] == Value::String(literal!("a = 1\n"))
+        }
+        _ => false,
+    }
+);

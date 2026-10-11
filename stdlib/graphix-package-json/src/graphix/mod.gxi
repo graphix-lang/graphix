@@ -3,10 +3,11 @@
 /// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.
 val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
-/// Serialize a value to a JSON string.
-val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `JsonErr(string)>;
+/// Serialize a value to a JSON string, as its type says: a struct or a
+/// map is an object, an array, tuple or list an array.
+val write_str: fn(?#pretty: bool, value: 'a) -> Result<string, `JsonErr(string)>;
 
 /// Serialize a value to JSON bytes.
 ///
 /// To write to a stream, write the bytes — `Write::write_exact(f, json::write_bytes(v)?)`.
-val write_bytes: fn(?#pretty: bool, value: Any) -> Result<bytes, `JsonErr(string)>;
+val write_bytes: fn(?#pretty: bool, value: 'a) -> Result<bytes, `JsonErr(string)>;

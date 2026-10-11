@@ -4,99 +4,85 @@
 )]
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
-use graphix_compiler::errf;
-use graphix_package_core::{FastMemo, is_struct};
+use graphix_compiler::{
+    env::Env,
+    errf,
+    typ::{FnType, Type},
+};
+use graphix_package_core::{FastMemo, Shape, shape};
 use graphix_package_json::value_to_json;
 use handlebars::Handlebars;
 use netidx_value::Value;
 use std::cell::RefCell;
 
+/// Register each entry of `partials`, a struct or a map of templates by
+/// name as its type `typ` says, or null.
 fn register_partials(
     registry: &mut Handlebars<'static>,
+    env: &Env,
+    typ: Option<&Type>,
     partials: &Value,
 ) -> std::result::Result<(), String> {
-    match partials {
-        Value::Null => Ok(()),
-        Value::Array(arr) if is_struct(arr) => {
-            for field in arr.iter() {
-                if let Value::Array(pair) = field {
-                    if let (Value::String(name), Value::String(tmpl)) =
-                        (&pair[0], &pair[1])
-                    {
-                        registry
-                            .register_partial(name.as_str(), tmpl.as_str())
-                            .map_err(|e| format!("{e}"))?;
-                    } else {
-                        return Err(format!(
-                            "partial values must be strings, got {}",
-                            &pair[1]
-                        ));
-                    }
-                }
+    match shape(env, typ, partials) {
+        _ if *partials == Value::Null => Ok(()),
+        Shape::Object(entries) => {
+            for (name, tmpl, _) in entries.iter() {
+                let Value::String(tmpl) = tmpl else {
+                    return Err(format!("partial values must be strings, got {tmpl}"));
+                };
+                registry
+                    .register_partial(name.as_str(), tmpl.as_str())
+                    .map_err(|e| format!("{e}"))?;
             }
             Ok(())
         }
-        Value::Map(m) => {
-            for (k, v) in m.into_iter() {
-                match v {
-                    Value::String(tmpl) => {
-                        registry
-                            .register_partial(
-                                &graphix_package_core::map_key(k),
-                                tmpl.as_str(),
-                            )
-                            .map_err(|e| format!("{e}"))?;
-                    }
-                    _ => return Err(format!("partial values must be strings, got {v}")),
-                }
-            }
-            Ok(())
+        Shape::Seq(_) | Shape::Leaf => {
+            Err(format!("partials must be a struct, map, or null, got {partials}"))
         }
-        v => Err(format!("partials must be a struct, map, or null, got {v}")),
     }
 }
 
 thread_local! {
-    static TEMPLATES: RefCell<FastMemo<(ArcStr, bool, Value), Handlebars<'static>>> =
+    static TEMPLATES: RefCell<FastMemo<(ArcStr, bool, Value, Option<Type>), Handlebars<'static>>> =
         RefCell::new(FastMemo::new(16));
 }
 
 fn build_registry(
     strict: bool,
+    env: &Env,
+    ft: &FnType,
     partials: &Value,
     template: &str,
 ) -> Result<Handlebars<'static>> {
     let mut registry = Handlebars::new();
     registry.set_strict_mode(strict);
-    register_partials(&mut registry, partials).map_err(|e| anyhow!("{e}"))?;
+    register_partials(&mut registry, env, ft.args.get(1).map(|a| &a.typ), partials)
+        .map_err(|e| anyhow!("{e}"))?;
     registry.register_template_string("main", template).map_err(|e| anyhow!("{e}"))?;
     Ok(registry)
 }
 
-fn fc_render(args: &[Value]) -> Option<Value> {
+fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
     match args {
         [Value::Bool(strict), partials, Value::String(template), data] => {
-            let is_map = match data {
-                Value::Map(_) => true,
-                Value::Array(a) => is_struct(a),
-                _ => false,
-            };
-            if !is_map {
+            let data_type = ft.args.get(3).map(|a| &a.typ);
+            if !matches!(shape(env, data_type, data), Shape::Object(_)) {
                 return Some(errf!(
                     "HbsErr",
                     "the data must be a struct or a map, not {data}"
                 ));
             }
-            let json_data = match value_to_json(data) {
+            let json_data = match value_to_json(env, data_type, data) {
                 Ok(j) => j,
                 Err(e) => return Some(errf!("HbsErr", "{e}")),
             };
-            let key = (template.clone(), *strict, partials.clone());
+            let partials_type = ft.args.get(1).map(|a| a.typ.clone());
+            let key = (template.clone(), *strict, partials.clone(), partials_type);
             Some(TEMPLATES.with(|c| {
                 c.borrow_mut()
                     .with(
                         &key,
-                        || build_registry(*strict, partials, template),
+                        || build_registry(*strict, env, ft, partials, template),
                         // CR claude for eric: [bug] Handlebars::render has no depth
                         // bound. handlebars only refuses a partial that includes itself
                         // while it is the current template, so these all recurse until
@@ -135,7 +121,12 @@ fn fc_render(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(HbsRender, HbsRenderEv, "hbs_render", fc_render);
+graphix_package_core::typed_fast_builtin!(
+    HbsRender,
+    HbsRenderEv,
+    "hbs_render",
+    fc_render
+);
 
 graphix_derive::defpackage! {
     builtins => [

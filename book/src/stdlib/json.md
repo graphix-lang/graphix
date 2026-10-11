@@ -35,3 +35,19 @@ let user: {name: string, age: i64} = json::read("{\"name\": \"Alice\", \"age\": 
 let items: Array<{id: i64, label: string}> = json::read(data)?;
 let maybe: [string, null] = json::read(data)?;
 ```
+
+## Type-directed serialization
+
+`json::write_str` and `json::write_bytes` write a value as its type at
+the call site says: a struct or a `Map` is an object; an array, a tuple
+or a `List` is an array (a `List` flat); a variant with a payload is an
+array of its tag and payload. An `Array<(string, T)>` is an array of
+pairs whatever order its keys are in. Only a value whose type says
+nothing (`Any`) is written by its contents, where an array of
+`(string, _)` pairs in key order is an object.
+
+```graphix
+let pairs: Array<(string, i64)> = [("a", 1), ("b", 2)];
+json::write_str(pairs)$;        // [["a",1],["b",2]]
+json::write_str({a: 1, b: 2})$  // {"a":1,"b":2}
+```

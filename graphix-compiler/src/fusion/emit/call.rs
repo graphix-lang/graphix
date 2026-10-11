@@ -206,7 +206,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         }
         SiteDispatch::Typed { name, f, typ } => {
             let fp = cx.const_ptr(KernelConst::TypedFn { name: name.clone(), f: *f })?;
-            let tp = cx.interned_type(typ)?;
+            let tp = cx.interned_type(&Type::Fn(typ.clone()))?;
             cx.call_helper(
                 "graphix_typedcall",
                 &[fp, tp, base, n, taint_mask, stale_mask],
@@ -218,7 +218,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
                 Type::Tuple(triomphe::Arc::from_iter([target.clone(), source.clone()]));
             let tp = cx.interned_type(&pair)?;
             cx.call_helper(
-                "graphix_typedcall",
+                "graphix_castcall",
                 &[fp, tp, base, n, taint_mask, stale_mask],
             )?
         }

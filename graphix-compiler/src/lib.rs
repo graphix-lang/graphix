@@ -10,8 +10,8 @@ compile_error!("graphix supports little-endian targets only");
 pub use graphix_types::{
     AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
     SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
-    expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block, mod_root,
-    shared_map, tracked, typ,
+    expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block, list,
+    mod_root, shared_map, tracked, typ,
 };
 pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
 
@@ -777,16 +777,16 @@ pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
 /// over present argument values; `None` is bottom this cycle.
 pub type FastFn = fn(&[Value]) -> Option<Value>;
 
-/// [`FastFn`] plus the call site's resolved return `Type` and its env,
-/// for a builtin whose result is directed by its return type.
-pub type TypedFastFn = fn(&env::Env, &Type, &[Value]) -> Option<Value>;
+/// [`FastFn`] plus the call site's resolved function type and its env,
+/// for a builtin directed by its argument or return types.
+pub type TypedFastFn = fn(&env::Env, &FnType, &[Value]) -> Option<Value>;
 
 /// The direct-call entry of a [`Effect::Stateless`] builtin: the JIT
 /// calls it at every fused site with the present argument values (a
 /// tainted argument bottoms the call without invoking it). It may
 /// re-evaluate whenever any region input fires, so keep it cheap.
 /// `eval` should delegate to the same fn (`graphix_package_core::
-/// fast_eval`). `Typed` also receives the site's resolved return type.
+/// fast_eval`). `Typed` also receives the site's resolved function type.
 #[derive(Debug, Clone, Copy)]
 pub enum FastCall {
     Plain(FastFn),
