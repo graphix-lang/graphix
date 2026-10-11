@@ -68,34 +68,6 @@ trait Collection {
     val find: fn(self<'a>, f: fn(x: 'a) -> bool throws 'e) -> Option<'a> throws 'e
         = |c, f| {
             let init: Option<'a> = null;
-                // CR claude for eric: [bug] The defaults use null to mean "no element".
-                // map and filter (lines 61, 64) go through filter_map, whose Option<'b>
-                // collapses when the element type holds null. This arm also can't tell
-                // a null match from "not found yet". So over nullable elements, map and
-                // filter drop elements and find returns a later one: for `m:
-                // Map<string, [i64, null]> = {"a" => null, "b" => 1}`, `len(filter(m,
-                // |v| opt::is_none(v)))` is 0 and `find(m, |v| true)` is 1, where
-                // Array's and List's intrinsics keep the null. Map's impl (mod.gx:51)
-                // overrides neither filter nor find, every user collection gets all
-                // three defaults, and line 48 ("the built-in collections override all
-                // of them") is false: Map lacks filter/find/find_map and List lacks
-                // len. probe: design/review-2026-10-05/repro/gx-stdlib-04.gx
-                // (gx-stdlib-04)
-                // 2026-10-07 claude: Map overrides filter (map_filter); List keeps the
-                // default len, a counting fold, as a cons list's length is a walk;
-                // find carries a found flag, so a null match ends the search; the
-                // trait doc no longer says the built-ins override everything and names
-                // the limit. What stands: a user collection's derived map and filter
-                // still drop null elements (the repro's `bag map 1`); keeping them needs
-                // a singleton constructor the trait does not have.
-                // 2026-10-08 claude: re-addressed: keeping a user collection's null
-                // elements through the derived map and filter needs a singleton
-                // constructor in the Collection trait (`singleton(x) -> self<'a>`, or
-                // `push`): a language addition, yours to rule.
-                // 2026-10-08 claude: re-addressed: keeping a user collection's null
-                // elements through the derived map and filter needs a singleton
-                // constructor in the Collection trait (`singleton(x) -> self<'a>`, or
-                // `push`): a language addition, yours to rule.
             let (_, found) = fold(c, (false, init), |(done, acc), x| select done {
                 true => (done, acc),
                 false => select f(x) { true => (true, x), false => (false, acc) }
