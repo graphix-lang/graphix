@@ -587,17 +587,7 @@ impl Type {
             let Self::Ref(r) = c else { continue };
             let Some(tid) = env.trait_of_ref(r) else { continue };
             let Some(def) = env.trait_def(tid) else { continue };
-            let mut found: SmallVec<[Type; 8]> = SmallVec::new();
-            crate::expr::union_members(env, t, &mut found).ok()?;
-            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-            for m in found.drain(..) {
-                match m {
-                    Self::Primitive(p) => {
-                        members.extend(p.iter().map(|b| Self::Primitive(b.into())))
-                    }
-                    m => members.push(m),
-                }
-            }
+            let members = Self::dispatch_members(env, t).ok()?;
             let seen = env.impls_of(tid).unwrap_or_default();
             for m in members.iter() {
                 if Self::trait_contains(tid, BitFlags::empty(), env, &mut hist, m).ok()? {
@@ -621,8 +611,39 @@ impl Type {
                     ),
                 });
             }
+            if let Some((a, b)) = Self::dispatch_collision(env, &members) {
+                return Some(anyhow::anyhow!(
+                    "a {} call over {t} can't tell {a} from {b}: both have the same \
+                     runtime form; wrap them in distinct variants",
+                    def.name
+                ));
+            }
         }
         None
+    }
+
+    /// The members a dispatch over `t` tests, a union of primitives split
+    /// into its primitives.
+    fn dispatch_members(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
+        let mut found: SmallVec<[Type; 8]> = SmallVec::new();
+        crate::expr::union_members(env, t, &mut found)?;
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        for m in found.drain(..) {
+            match m {
+                Self::Primitive(p) => {
+                    members.extend(p.iter().map(|b| Self::Primitive(b.into())))
+                }
+                m => members.push(m),
+            }
+        }
+        Ok(members)
+    }
+
+    /// Two members a dispatch's runtime test can't tell apart.
+    fn dispatch_collision(env: &Env, members: &[Type]) -> Option<(Type, Type)> {
+        members.iter().enumerate().find_map(|(i, a)| {
+            members[i + 1..].iter().find_map(|b| a.rep_collision(env, b))
+        })
     }
 
     /// Why `self ⊇ t` fails when `self` holds an open `Discernible` or
@@ -1926,6 +1947,13 @@ impl Type {
             _ => false,
         };
         if union && env.trait_def(tid).is_some_and(|d| d.takes_self_beyond_receiver()) {
+            return Ok(false);
+        }
+        // nor when its dispatch, which tests each member, can't tell two apart
+        if union
+            && env.trait_def(tid).is_some_and(|d| !d.hole)
+            && Self::dispatch_collision(env, &Self::dispatch_members(env, t)?).is_some()
+        {
             return Ok(false);
         }
         match t {

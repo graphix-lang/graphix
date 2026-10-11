@@ -2770,15 +2770,6 @@ run!(same_form_references_refused, SAME_FORM_REFERENCES, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
 }; FuseExpect::None);
 
-// CR claude for eric: [bug] `graphix --check` accepts this program and the run refuses
-// it: the union dispatch's select is lowered when `d`'s instance binds, so the
-// same-runtime-form refusal comes from elaboration at a run-time bind
-// ("#bind::..(#t)"), which the check never reaches. CLAUDE.md calls elaboration
-// refusing what the check accepted a type-system bug, and `graphix-fuzz selfcheck`
-// reports this fixture FLAKY under both engines (the refusal's timing varies), so
-// selfcheck fails. The check would need to test a union self's members for one
-// runtime form where it resolves the dispatch. Found 2026-10-07 while running
-// selfcheck for small-pkgs-19; off-topic for that batch. (fuzz-selfcheck-01)
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
@@ -2791,6 +2782,23 @@ const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 
 run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; FuseExpect::None);
+
+// The same dispatch reached through a generic bound: the instance is never
+// checked again, so the bound refuses the union at the call.
+const SAME_FORM_TRAIT_BOUND: &str = r#"
+{
+  trait Show { val show: fn(self) -> string };
+  impl Show for string { let show = |s| "string" };
+  impl Show for `A { let show = |a| "tag" };
+  let g = 'a: Show |x: 'a| Show::show(x);
+  let v: [string, `A] = "A";
+  g(v)
+}
+"#;
+
+run!(same_form_trait_dispatch_bound_refused, SAME_FORM_TRAIT_BOUND, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("can't tell string from `A"))
 }; FuseExpect::None);
 
 // A compared type and a map key type may hold no two members with one
