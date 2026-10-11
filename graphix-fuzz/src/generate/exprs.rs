@@ -694,12 +694,13 @@ pub(super) fn gen_typed(
             format!("&({})", gen_typed(ctx, rng, inner, d.min(1)))
         }
         // an abstract T: a T-typed binding, or the constructor over an i64
-        GenType::Abstract { module } => {
+        GenType::Abstract { module, boxed } => {
             let vars = ctx.vars_of(ty);
             if !vars.is_empty() && rng.below(2) == 0 {
                 vars[rng.below(vars.len())].to_string()
             } else {
-                format!("{module}::mk({})", gen_typed(ctx, rng, &I64, d.min(1)))
+                let mk = if *boxed { "mkb" } else { "mk" };
+                format!("{module}::{mk}({})", gen_typed(ctx, rng, &I64, d.min(1)))
             }
         }
         GenType::Fn { .. } => {

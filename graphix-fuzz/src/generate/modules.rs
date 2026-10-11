@@ -33,7 +33,7 @@ fn sibling_qualified(n: &str) -> bool {
 /// prefix so the main vocabulary stays plain.
 fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
     match t {
-        GenType::Abstract { module } => f(module),
+        GenType::Abstract { module, .. } => f(module),
         GenType::Tuple(ts) => ts.iter_mut().for_each(|t| map_abstract(t, f)),
         GenType::Array(t)
         | GenType::List(t)
@@ -273,7 +273,7 @@ pub(super) fn gen_module(
             "type T = Abstract<{}>;\nlet mk = |x: i64| -> T {mk_body};\nlet un = |t: T| -> i64 {un_body};\n",
             concrete.render()
         ));
-        let aty = GenType::Abstract { module: mname.clone() };
+        let aty = GenType::Abstract { module: mname.clone(), boxed: false };
         // A trait over T: declared in the interface (with a default the
         // impl may override), implemented for T, and a bounded generic
         // `via`. Both enter the main vocabulary as T -> i64 fns.
@@ -455,6 +455,40 @@ pub(super) fn gen_module(
                 ret: Box::new(I64),
             },
         );
+        // a parameterized abstract `B<'a>`, entering the vocabulary at
+        // `B<i64>`: its parameter is invariant, whatever its rep does
+        if chance(rng, 0.5) {
+            if has_gxi {
+                gxi.push_str(
+                    "type B<'a>;\nval mkb: fn(x: 'a) -> B<'a>;\nval unb: fn(b: B<'a>) -> 'a;\n",
+                );
+            }
+            gx.push_str(
+                "type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0;\n",
+            );
+            let bty = GenType::Abstract { module: mname.clone(), boxed: true };
+            ctx.push(
+                format!("{mname}::mkb"),
+                GenType::Fn {
+                    labels: Vec::new(),
+                    params: vec![I64],
+                    ret: Box::new(bty.clone()),
+                },
+            );
+            ctx.push(
+                format!("{mname}::unb"),
+                GenType::Fn {
+                    labels: Vec::new(),
+                    params: vec![bty.clone()],
+                    ret: Box::new(I64),
+                },
+            );
+            let arg = exprs::gen_typed(ctx, rng, &I64, 1);
+            let v = ctx.fresh();
+            stmts.push(format!("let {v} = {mname}::mkb({arg})"));
+            ctx.push(v, bty);
+            stats.abstract_param = true;
+        }
         // seed one T-typed binding; production and consumption are
         // organic vocabulary from here
         let arg = exprs::gen_typed(ctx, rng, &I64, 1);

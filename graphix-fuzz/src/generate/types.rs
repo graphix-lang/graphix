@@ -242,11 +242,13 @@ pub enum GenType {
     /// `random_type`; introduced by dedicated statements, ref-typed
     /// params, and `&literal` leaves.
     Ref(Box<GenType>),
-    /// A generated module's abstract type, identified by its module.
-    /// Produced only by `<module>::mk(i64)`; the only structural consumer
-    /// is `<module>::un(T) -> i64`. Never produced by `random_type`.
+    /// A generated module's abstract type, identified by its module:
+    /// its `T`, or with `boxed` its `B<i64>`. Produced only by
+    /// `<module>::mk(i64)` (`mkb`); the only structural consumer is
+    /// `<module>::un(T) -> i64` (`unb`). Never produced by `random_type`.
     Abstract {
         module: String,
+        boxed: bool,
     },
 }
 
@@ -289,7 +291,8 @@ impl GenType {
             }
             GenType::Map(v) => format!("Map<string, {}>", v.render()),
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
-            GenType::Abstract { module } => format!("{module}::T"),
+            GenType::Abstract { module, boxed: false } => format!("{module}::T"),
+            GenType::Abstract { module, boxed: true } => format!("{module}::B<i64>"),
             GenType::Ref(t) => format!("&{}", t.render()),
             // fn-type annotations name their positional params
             GenType::Fn { labels, params, ret } => {
@@ -551,8 +554,9 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
         GenType::Ref(t) => format!("&{}", literal(rng, t)),
         // no literal form; the constructor over an i64 literal is the
         // closed leaf
-        GenType::Abstract { module } => {
-            format!("{module}::mk({})", literal(rng, &GenType::Num(NumTy::I64)))
+        GenType::Abstract { module, boxed } => {
+            let mk = if *boxed { "mkb" } else { "mk" };
+            format!("{module}::{mk}({})", literal(rng, &GenType::Num(NumTy::I64)))
         }
         GenType::Fn { .. } => unreachable!("fn types have no literal form"),
     }

@@ -168,6 +168,8 @@ pub struct GenStats {
     pub cross_module_call: bool,
     /// An abstract T entered the vocabulary as a first-class value.
     pub abstract_value: bool,
+    /// A parameterized abstract `B<i64>` entered the vocabulary.
+    pub abstract_param: bool,
     /// A module declared a trait, implemented it for its abstract T,
     /// and exported a trait-bounded generic — both callable from MAIN.
     pub trait_call: bool,
@@ -716,7 +718,7 @@ mod test {
         let mut trait_union = 0;
         let mut bounded_hof = 0;
         let mut collection_generic = 0;
-        let (mut konst, mut unret, mut refop) = (0, 0, 0);
+        let (mut konst, mut unret, mut refop, mut abst_param) = (0, 0, 0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -730,6 +732,7 @@ mod test {
             comp_iface += s.composite_iface as usize;
             xmod += s.cross_module_call as usize;
             abst += s.abstract_value as usize;
+            abst_param += s.abstract_param as usize;
             trait_call += s.trait_call as usize;
             core_trait += s.core_trait as usize;
             trait_union += s.trait_union as usize;
@@ -750,6 +753,7 @@ mod test {
             ("composite interface type", comp_iface),
             ("cross-module call", xmod),
             ("first-class abstract value", abst),
+            ("parameterized abstract value", abst_param),
             ("trait declared+implemented+called", trait_call),
             ("core Eq/Display implemented+used", core_trait),
             ("trait union dispatch exported", trait_union),

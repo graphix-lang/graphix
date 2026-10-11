@@ -219,6 +219,18 @@ members collide), has no mutation: the generator's trait unions are of
 abstract types, which never share a form; `lang::select`'s
 `same_form_trait_dispatch*` pins it.
 
+**11. Abstract parameters.** Site: a statement `let v = e` the map types
+`B<i64>`, a generated module's parameterized abstract type (the
+generator's `type B<'a> = Abstract<'a>`, entering the vocabulary at
+`B<i64>` through `mkb`/`unb`). Mutation: the let annotated
+`m::B<[i64, string]>`. Rule: an abstract type's parameters are
+invariant, whatever its rep does with them (`contains.rs`, `equal_int`
+over the parameters). The map holds the type by id, so the module is
+the one whose `mkb`/`unb` the body reaches, or with several the one
+whose `mkb` the let calls; a value with a leaf its uses typed is
+skipped, since a let annotation decides a parameter left open. Right
+site: the let. Built (`abstract-widen`).
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have

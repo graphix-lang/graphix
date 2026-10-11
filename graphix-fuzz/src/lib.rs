@@ -4852,6 +4852,11 @@ mod tests {
                 "{ let s: [string, null] = \"a\"; select s { null as _ => 0, string as v => 1 } }",
                 "same-form#",
             ),
+            (
+                "{ let v = m0::mkb(1); m0::unb(v) }\n// file-v1: m0.gx\n\
+                 type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0\n",
+                "abstract-widen#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

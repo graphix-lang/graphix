@@ -4,8 +4,8 @@
 //! or its rigid consumer is. Families 1 (monomorphic reuse), 2 (rigid
 //! variables), 3 (a shared variable at a call), 4 (widening into a rigid
 //! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels), 8
-//! (a function bound), 9 (writable references) and 10 (one runtime
-//! form).
+//! (a function bound), 9 (writable references), 10 (one runtime form)
+//! and 11 (an abstract type's parameter).
 
 use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
@@ -39,10 +39,11 @@ pub enum Family {
     RefWrite,
     RefWiden,
     SameForm,
+    AbstractWiden,
 }
 
 impl Family {
-    pub const ALL: [Family; 13] = [
+    pub const ALL: [Family; 14] = [
         Family::MonoReuse,
         Family::RigidVar,
         Family::SharedVar,
@@ -56,6 +57,7 @@ impl Family {
         Family::RefWrite,
         Family::RefWiden,
         Family::SameForm,
+        Family::AbstractWiden,
     ];
 }
 
@@ -75,6 +77,7 @@ impl std::fmt::Display for Family {
             Family::RefWrite => "ref-write",
             Family::RefWiden => "ref-widen",
             Family::SameForm => "same-form",
+            Family::AbstractWiden => "abstract-widen",
         })
     }
 }
@@ -242,6 +245,7 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     function_bound(&root, &pre, types, cap, &mut out);
     references(&root, types, cap, &mut out);
     same_form(&root, &pre, cap, &mut out);
+    abstract_widen(&root, &pre, types, cap, &mut out);
     out
 }
 
@@ -346,6 +350,73 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             }));
             widens += 1;
         }
+    }
+}
+
+/// Family 11. A statement `let v = e` the map types `B<i64>`, a
+/// generated module's parameterized abstract type: the let is annotated
+/// `m::B<[i64, string]>`. An abstract type's parameters are invariant,
+/// whatever its rep does with them. The map does not name the module:
+/// it is the one whose `mkb`/`unb` the body reaches, or with several,
+/// the one whose `mkb` the let calls. A value with a leaf its uses typed
+/// is skipped: the annotation would decide it. Right site: the let.
+fn abstract_widen(
+    root: &Expr,
+    pre: &[Expr],
+    types: &TypeMap,
+    cap: usize,
+    out: &mut Vec<RejectProbe>,
+) {
+    let ExprKind::Block { exprs: stmts } = &root.kind else { return };
+    let ctor_module = |e: &Expr| match &e.kind {
+        ExprKind::Ref { name } => {
+            let name = name.to_string();
+            ["::mkb", "::unb"].iter().find_map(|s| name.strip_suffix(s).map(String::from))
+        }
+        _ => None,
+    };
+    let mut modules: Vec<String> = pre.iter().filter_map(ctor_module).collect();
+    modules.sort();
+    modules.dedup();
+    let mut n = 0usize;
+    for (si, stmt) in stmts.iter().enumerate() {
+        if n >= cap {
+            break;
+        }
+        let ExprKind::Bind(b) = &stmt.kind else { continue };
+        let (StructurePattern::Bind(_), None) = (&b.pattern, &b.typ) else { continue };
+        let boxed_i64 = types.of(&b.value).first().is_some_and(|t| {
+            t.to_string() == "B<i64>" && matches!(t, Type::Abstract { .. })
+        });
+        // an annotation decides a parameter a use-typed leaf left open;
+        // a call's own result is such a cell, and no annotation reaches it
+        let open = |e: &Expr| !matches!(e.kind, ExprKind::Apply(_)) && types.cell(e);
+        if !boxed_i64 || mutate::preorder(&b.value).iter().any(open) {
+            continue;
+        }
+        let module = match &modules[..] {
+            [m] => m.clone(),
+            _ => match &b.value.kind {
+                ExprKind::Apply(a) => match ctor_module(&a.function) {
+                    Some(m) => m,
+                    None => continue,
+                },
+                _ => continue,
+            },
+        };
+        let Ok(widened) = parser::parse_type(&format!("{module}::B<[i64, string]>"))
+        else {
+            continue;
+        };
+        let mut stmts = stmts.to_vec();
+        stmts[si] =
+            ExprKind::Bind(Arc::new(BindExpr { typ: Some(widened), ..(**b).clone() }))
+                .to_expr(stmt.pos);
+        let cand = ExprKind::Block { exprs: Arc::from_iter(stmts) }.to_expr_nopos();
+        out.extend(finish(Family::AbstractWiden, si, &cand, |back, _| {
+            vec![nth_stmt(back, si).and_then(span)]
+        }));
+        n += 1;
     }
 }
 

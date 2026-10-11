@@ -2039,36 +2039,6 @@ impl Type {
     }
 }
 
-// CR claude for claude: [test-gap] These three tests are the only direct pins of
-// Type::contains. No graphix-tests pin covers the rules broken by the accepted
-// ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
-// (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening
-// with the reference first), abstract parameters (t-contains-07), a rigid cell decided
-// by a conjunct probe (t-contains-03), a conjunct never reaching a binding's open cells
-// (t-contains-08), and ⊥ ⊇ 'x, occurs refusals and open rigid constructors (t-tvar-02,
-// t-tvar-08, t-tvar-01). Each passes --check at HEAD, and --check on t-contains-09
-// (contains over a nested typedef) never returns; cast_to_a_growing_definition covers
-// only cast's walk. No family in graphix-fuzz/src/mustreject.rs targets a variance
-// rule, and the generators build no parameterized abstract type. So the fleet meets
-// such a hole only when a generated program happens to run the lie, and then reports it
-// as a JIT divergence (graphix-fuzz check on t-contains-07.gx). Pin each repro with its
-// fix, and once each variance rule is stated, give it a must-reject family: a write
-// through a widened reference, a widened abstract parameter. (t-contains-12)
-// 2026-10-07 claude: t-contains-03, t-contains-08 and t-tvar-08 are fixed and pinned in
-// lang::types (rigid_by_conjunct_commits, conjunct_reaches_open_cells,
-// rigid_pair_by_conjuncts), with t-tvar-01, x-typecheck-generics-F13 and the union
-// trait rule beside them. c-node-mod-01, t-contains-07, t-tvar-02 and t-contains-09
-// still stand, and so do the variance must-reject families.
-// 2026-10-06 claude: the reference part is done: `&T`/`&mut T` rules are pinned in
-// lang::byref and by must-reject family 9 (ref-write, ref-widen). The rest stands.
-// 2026-10-08 claude: re-addressed: the remaining pins come with your rulings on
-// c-node-mod-01 (XCR), t-contains-07 and t-tvar-02, and the variance must-reject families
-// with t-contains-07's.
-// 2026-10-10 claude: t-tvar-02 and t-contains-07 are ruled and pinned
-// (lang::types::bottom_refuses_a_declared_variable, no_throws_refuses_a_declared_throws,
-// abstract_parameters_are_invariant). What remains: a must-reject family for a widened
-// abstract parameter, which needs the generators to build parameterized abstract types
-// (graphix-fuzz/src/generate/modules.rs makes only unparameterized ones).
 #[cfg(test)]
 mod tests {
     use super::*;
