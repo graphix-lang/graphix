@@ -441,7 +441,7 @@ impl Callback {
                 genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
             }
             CallKind::Slot(Some(def)) => {
-                let function = super::Constant::new(def, fty, Expr::clone(&NOP));
+                let function = super::Constant::new(def, fty, NOP.clone());
                 let mut call = genn::apply(function, scope.clone(), args, typ, *top_id);
                 if let Some(cs) =
                     call.downcast_mut::<CallNode<R, E>>().and_then(CallNode::call_mut)

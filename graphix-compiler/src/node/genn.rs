@@ -55,7 +55,7 @@ pub fn reference<R: Rt, E: UserEvent>(
 
 /// A constant `v` of the Graphix type `typ`.
 pub fn constant<R: Rt, E: UserEvent>(v: Value, typ: Type) -> Node<R, E> {
-    Constant::new(v, typ, (**NOP).clone())
+    Constant::new(v, typ, NOP.clone())
 }
 
 /// generate and return an apply node for the given lambda
@@ -79,7 +79,7 @@ pub fn apply_value<R: Rt, E: UserEvent>(
     typ: &Arc<FnType>,
     top_id: ExprId,
 ) -> Node<R, E> {
-    let fnode = Constant::new(f, Type::Fn(typ.clone()), crate::expr::Expr::clone(&NOP));
+    let fnode = Constant::new(f, Type::Fn(typ.clone()), NOP.clone());
     apply(fnode, scope, args, typ, top_id)
 }
 

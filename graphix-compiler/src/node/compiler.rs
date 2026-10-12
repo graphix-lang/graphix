@@ -407,7 +407,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ),
         ExprKind::Constant(v) => {
             let typ = constant_type(v).at(spec)?;
-            Ok(Constant::new(v.clone(), typ, spec.clone()))
+            Ok(Constant::new(v.clone(), typ, ctx.shared_spec(spec.clone())))
         }
         ExprKind::Block { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
@@ -538,7 +538,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
                 }
                 Ok(lowered)
             };
-            let lowered = match &ctx.seq_lowerings {
+            let lowered = match ctx.body.as_ref().map(|b| &b.share) {
                 None => lower(ctx)?,
                 Some(seqs) => {
                     let mut seqs = seqs.lock();

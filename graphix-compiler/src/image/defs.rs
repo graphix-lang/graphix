@@ -13,8 +13,7 @@ use crate::{
     effects::LambdaFacts,
     expr::{Arg, Expr},
     node::lambda::{
-        DefBody, DefOrigin, LambdaDef, SeqLowerings, make_init, tables_decode,
-        tables_encode,
+        BodyShare, DefBody, DefOrigin, LambdaDef, make_init, tables_decode, tables_encode,
     },
     typ::FnType,
 };
@@ -65,7 +64,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         init: _,
         check: _,
         table,
-        seqs: _,
+        shared: _,
         facts,
         recursion,
         source,
@@ -109,7 +108,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
     let table = std::sync::Arc::new(tables_decode(buf)?);
-    let seqs = SeqLowerings::default();
+    let shared = BodyShare::default();
     let init = make_init(
         id,
         flags,
@@ -120,7 +119,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         spec.clone(),
         body.clone(),
         table.clone(),
-        seqs.clone(),
+        shared.clone(),
     );
     ctx.wrap_lambda(LambdaDef {
         id,
@@ -131,7 +130,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         init,
         check: Mutex::new(None),
         table,
-        seqs,
+        shared,
         facts: Mutex::new(facts),
         recursion: Mutex::new(recursion),
         source,

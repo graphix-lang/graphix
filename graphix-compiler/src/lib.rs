@@ -1265,7 +1265,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// (`LambdaDef::seqs`): each of its seqs lowers once, so every compile
     /// of the body has its check's expression ids. A seq outside every
     /// definition compiles once and is lowered where it stands.
-    pub(crate) seq_lowerings: Option<node::lambda::SeqLowerings>,
+    pub(crate) body: Option<node::lambda::BodyCompile>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
@@ -1377,13 +1377,31 @@ impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
+    /// `spec` in an `Arc` a node holds: an instance's node takes the one
+    /// its definition's check made of the same expression, so instances
+    /// share their specs; the check records each it makes.
+    pub(crate) fn shared_spec(&self, spec: Expr) -> Arc<Expr> {
+        let Some(body) = &self.body else { return Arc::new(spec) };
+        let mut share = body.share.lock();
+        match share.specs.get(&spec.id) {
+            Some(held) if **held == spec && held.dec == spec.dec => held.clone(),
+            _ => {
+                let spec = Arc::new(spec);
+                if body.checking {
+                    share.specs.insert(spec.id, spec.clone());
+                }
+                spec
+            }
+        }
+    }
+
     /// The seq lowerings the live definitions keep.
     pub fn lowered_seqs_len(&self) -> usize {
         let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
         let mut n = 0;
         for (_, v) in self.lambda_defs.iter() {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
-                node::lambda::Lowerings::visit(&d.seqs, &mut seen, &mut |l| {
+                node::lambda::BodyShared::visit(&d.shared, &mut seen, &mut |l| {
                     n += l.seqs.len()
                 })
             }
@@ -1409,7 +1427,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
-            seq_lowerings: self.seq_lowerings.clone(),
+            body: self.body.clone(),
             pending_settles: vec![Vec::new()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
@@ -1452,7 +1470,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: _,
             resolving_lambdas: _,
             fn_forward_resolutions,
-            seq_lowerings: _,
+            body: _,
             pending_settles,
             pending_imports,
             pending_names,
@@ -1671,7 +1689,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 fn_forward_resolutions: TrackedMap::default(),
-                seq_lowerings: None,
+                body: None,
                 pending_settles: vec![Vec::new()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
@@ -2562,7 +2580,7 @@ impl Saved {
             def_gate_depth: _,
             resolving_lambdas: _,
             fn_forward_resolutions,
-            seq_lowerings: _,
+            body: _,
             pending_settles: _,
             pending_imports: _,
             pending_names: _,

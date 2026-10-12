@@ -626,7 +626,7 @@ fn arg_ref<R: Rt, E: UserEvent>(
     typ: &Type,
 ) -> Node<R, E> {
     let (typ, spec) = match &arg.node {
-        Some(n) => (n.typ().clone(), TArc::new(n.spec().clone())),
+        Some(n) => (n.typ().clone(), ctx.shared_spec(n.spec().clone())),
         None => (typ.clone(), NOP.clone()),
     };
     Ref::new(ctx, arg.id, typ, top_id, spec)
@@ -866,7 +866,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
         let site = Self::unbound(
-            TArc::new(spec),
+            ctx.shared_spec(spec),
             None,
             Type::empty_tvar(),
             fnode,

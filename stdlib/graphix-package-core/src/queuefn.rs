@@ -335,7 +335,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             init,
             check: Mutex::new(None),
             table: Default::default(),
-            seqs: Default::default(),
+            shared: Default::default(),
             facts: Mutex::new(LambdaFacts::ASYNC),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,

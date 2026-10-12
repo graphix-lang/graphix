@@ -64,6 +64,15 @@ use triomphe::Arc;
 // arm's pattern nodes ~0.7 KB; Constant/Add/Sub/Select nodes ~2.4 KB. The large lever
 // is an instance building its nodes from its definition's types, with no placeholder
 // cells.
+// 2026-10-11 claude: re-measured (quick build, --no-fusion, GRAPHIX_PAR=off, the probe
+// with 1000 slots): peak RSS grows 15.9-16.2 KB per activation; massif (no LTO, 200 slots,
+// depth 4 minus depth 2) puts the heap at 18.4 KB: Vecs 3.4 KB, Arc<Expr> spec copies 2.7
+// KB, type cells 1.6 KB, Type/FnType values 1.6 KB, node boxes 1.2 KB, other Arcs 1.1 KB,
+// hash maps 1.0 KB. Done: an instance's nodes share the Arc<Expr> specs its definition's
+// check made (CompileCtx::shared_spec, by expression id, exact match only; Ref,
+// Constant, CallSite, arg_ref), and NOP is no longer re-wrapped: 13.7-14.1 KB per
+// activation. Next: Vec and map sites to boxed slices or inline storage by their lengths;
+// then shared types for closed definitions.
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
 pub use error::ErrorRelay;
@@ -587,11 +596,15 @@ pub struct Constant {
 
 impl Constant {
     /// Construct a `Constant` node from its final components.
-    pub fn new<R: Rt, E: UserEvent>(value: Value, typ: Type, spec: Expr) -> Node<R, E> {
+    pub fn new<R: Rt, E: UserEvent>(
+        value: Value,
+        typ: Type,
+        spec: Arc<Expr>,
+    ) -> Node<R, E> {
         // the resident starts Stale so an instance bound without an init
         // view still computes; firing stays init-gated
         let resident = TagValue::stale(value.clone());
-        Node::new(Self { spec: Arc::new(spec), value, typ, resident })
+        Node::new(Self { spec, value, typ, resident })
     }
 }
 
@@ -603,7 +616,7 @@ impl Constant {
         let spec = Expr::decode(buf)?;
         let value = Value::decode(buf)?;
         let typ = Type::decode(buf)?;
-        Ok(Self::new(value, typ, spec))
+        Ok(Self::new(value, typ, Arc::new(spec)))
     }
 }
 

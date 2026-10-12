@@ -649,6 +649,7 @@ impl Ref {
                         def_ori,
                     });
                 }
+                let spec = ctx.shared_spec(spec);
                 Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))
             }
         }
