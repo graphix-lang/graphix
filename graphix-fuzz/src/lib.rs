@@ -1788,11 +1788,12 @@ impl<'a> Oracle<'a> {
             return Settled::Drop;
         }
         // `#[tail_recursive]`'s loop is the JIT's assertion: the node-walk
-        // checks only its shape, so a body that does not fuse runs there and
-        // is refused by the JIT
+        // checks only its shape, so a body that does not fuse runs there,
+        // to a trace or a containment, and is refused by the JIT
         if ra.mode.node_walk()
             && !rb.mode.node_walk()
-            && let (Outcome::Trace(_), Outcome::CompileErr(e)) = (&a, &b)
+            && !matches!(a, Outcome::CompileErr(_))
+            && let Outcome::CompileErr(e) = &b
             && e.contains("#[tail_recursive]: no loop is built")
         {
             eprintln!("JIT ASSERTION — #[tail_recursive] built no loop; not recorded");
@@ -5082,10 +5083,16 @@ mod tests {
     /// the oracle records nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn tail_recursive_loop_is_the_jits() {
-        let code = "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
-                    select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }";
-        let (d, _) = check_verdict(code, Duration::from_secs(60)).await;
-        assert!(d.is_none(), "{d:?}");
+        for code in [
+            "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
+             select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }",
+            // the node-walk's run is a runaway the activation budget stops
+            "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 f(n, *(&acc)); \
+             f(0, 0) }",
+        ] {
+            let (d, _) = check_verdict(code, Duration::from_secs(10)).await;
+            assert!(d.is_none(), "{code}: {d:?}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
