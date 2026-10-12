@@ -327,7 +327,7 @@ pub async fn run_program_routed(
     route: Route,
     timeout: Duration,
 ) -> Outcome {
-    run_program_with_stats_routed(code, mode, route, timeout).await.0
+    run_subject(code, mode, route, SessionImage::None, timeout, false).await.outcome
 }
 
 /// Everything needed to compile and drive one subject, derived from its
@@ -552,12 +552,13 @@ async fn program_result(ctx: &TestCtx) -> anyhow::Result<CompRes<NoExt>> {
 
 /// [`run_program`], also returning the compile-time [`FusionStats`]
 /// delta for the program itself (stats accumulate per `ExecState`, so the
-/// post-init baseline is subtracted).
+/// post-init baseline is subtracted); `None` when the runtime did not
+/// answer.
 pub async fn run_program_with_stats(
     code: &str,
     mode: Mode,
     timeout: Duration,
-) -> (Outcome, FusionStats) {
+) -> (Outcome, Option<FusionStats>) {
     run_program_with_stats_routed(code, mode, Route::InLanguage, timeout).await
 }
 
@@ -566,8 +567,8 @@ pub async fn run_program_with_stats_routed(
     mode: Mode,
     route: Route,
     timeout: Duration,
-) -> (Outcome, FusionStats) {
-    let run = run_subject(code, mode, route, SessionImage::None, timeout).await;
+) -> (Outcome, Option<FusionStats>) {
+    let run = run_subject(code, mode, route, SessionImage::None, timeout, true).await;
     (run.outcome, run.stats)
 }
 
@@ -1089,8 +1090,9 @@ struct SubjectRun {
     /// The program image a `Write` produced.
     image: Result<Bytes, String>,
     /// The program's own fusion stats: the registration compiles with
-    /// fusion off (or is restored), so nothing else contributes.
-    stats: FusionStats,
+    /// fusion off (or is restored), so nothing else contributes. `None`
+    /// when the runtime did not answer.
+    stats: Option<FusionStats>,
 }
 
 fn no_image() -> Result<Bytes, String> {
@@ -1099,20 +1101,22 @@ fn no_image() -> Result<Bytes, String> {
 
 impl SubjectRun {
     fn failed(outcome: Outcome) -> Self {
-        SubjectRun { outcome, image: no_image(), stats: FusionStats::default() }
+        SubjectRun { outcome, image: no_image(), stats: None }
     }
 }
 
 /// Run `code` under `mode` on the program route (`GXConfig::program`,
 /// the shell's script path): the subject's module table behind a
 /// resolver, the registration image restored, the program compiled or
-/// restored at the runtime's construction, then driven.
+/// restored at the runtime's construction, then driven. With `stats`,
+/// the run also asks the runtime for its fusion stats.
 async fn run_subject(
     code: &str,
     mode: Mode,
     route: Route,
     image: SessionImage,
     timeout: Duration,
+    stats: bool,
 ) -> SubjectRun {
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
@@ -1175,9 +1179,13 @@ async fn run_subject(
             Ok(Err(_)) | Err(_) => no_image(),
         },
     };
-    let stats = match tokio::time::timeout(grace, ctx.fusion_stats()).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(_)) | Err(_) => FusionStats::default(),
+    let stats = match outcome {
+        _ if !stats => None,
+        Outcome::Timeout(_) => None,
+        _ => tokio::time::timeout(timeout, ctx.fusion_stats())
+            .await
+            .ok()
+            .and_then(Result::ok),
     };
     let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
     SubjectRun { outcome, image, stats }
@@ -1192,7 +1200,7 @@ async fn run_session(
     image: SessionImage,
     timeout: Duration,
 ) -> (Outcome, Result<Bytes, String>) {
-    let run = run_subject(code, mode, route, image, timeout).await;
+    let run = run_subject(code, mode, route, image, timeout, false).await;
     (run.outcome, run.image)
 }
 
@@ -5036,19 +5044,21 @@ mod tests {
             interp.agrees_with(&jit),
             "Interp vs Jit disagree for `{code}`: {interp:?} vs {jit:?}"
         );
-        if fuse != Fuse::No {
-            let why: String = stats
-                .failed
-                .iter()
-                .map(|failure| format!("\n  {:?}: {}", failure.id, failure.reason))
-                .collect();
-            assert!(
-                stats.fused > 0,
-                "expected `{code}` to fuse under the JIT but no region \
-                 compiled (attempted={}); failures:{why}",
-                stats.attempted,
-            );
+        if fuse == Fuse::No {
+            return;
         }
+        let stats = stats.expect("the runtime answered the stats request");
+        let why: String = stats
+            .failed
+            .iter()
+            .map(|failure| format!("\n  {:?}: {}", failure.id, failure.reason))
+            .collect();
+        assert!(
+            stats.fused > 0,
+            "expected `{code}` to fuse under the JIT but no region \
+             compiled (attempted={}); failures:{why}",
+            stats.attempted,
+        );
         if fuse == Fuse::Clean {
             for failure in &stats.failed {
                 let id = failure.id;
@@ -5575,6 +5585,7 @@ mod tests {
                      lp(i64:5000000, i64:0) }";
         let (out, stats) =
             run_program_with_stats(code, Mode::Jit, Duration::from_secs(30)).await;
+        let stats = stats.expect("the runtime answered the stats request");
         assert!(
             stats.fused > 0,
             "deep tail probe did not fuse (attempted={}): {:?}",
@@ -5597,6 +5608,7 @@ mod tests {
                      f(i64:2000000) }";
         let (out, stats) =
             run_program_with_stats(code, Mode::Jit, Duration::from_secs(60)).await;
+        let stats = stats.expect("the runtime answered the stats request");
         assert!(
             stats.fused > 0,
             "deep non-tail probe did not fuse (attempted={}): {:?}",
@@ -5803,7 +5815,7 @@ mod tests {
                 run_program(&code, Mode::Interp, t),
                 run_program_with_stats(&code, Mode::Jit, t),
             );
-            fused += stats.fused;
+            fused += stats.map_or(0, |s| s.fused);
             // at the strength the oracle compares this program at: an
             // async reply lands in whichever cycle the scheduler allows
             let strength = Strength::of(Pair::Engine, oracle_tier(&code));

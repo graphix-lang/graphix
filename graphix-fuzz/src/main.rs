@@ -992,13 +992,20 @@ async fn main() -> Result<()> {
                         )
                         .await;
                         println!("{mode:?}/{route:?}: {}", render(&o));
-                        if !matches!(mode, Mode::Interp) {
-                            println!(
-                                "  fusion: attempted={} fused={} jit_generations={}",
-                                stats.attempted, stats.fused, stats.jit_generations
-                            );
-                            for failure in &stats.failed {
-                                println!("  failed {:?}: {}", failure.id, failure.reason);
+                        match stats {
+                            _ if matches!(mode, Mode::Interp) => (),
+                            None => println!("  fusion: the runtime did not answer"),
+                            Some(stats) => {
+                                println!(
+                                    "  fusion: attempted={} fused={} jit_generations={}",
+                                    stats.attempted, stats.fused, stats.jit_generations
+                                );
+                                for failure in &stats.failed {
+                                    println!(
+                                        "  failed {:?}: {}",
+                                        failure.id, failure.reason
+                                    );
+                                }
                             }
                         }
                     }
