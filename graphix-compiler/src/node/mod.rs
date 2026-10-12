@@ -39,46 +39,6 @@ use smallvec::SmallVec;
 use std::{cell::Cell, iter, mem, sync::OnceLock};
 use triomphe::Arc;
 
-// CR claude for eric: [perf] Investigate reducing the runtime's heap usage. Every call
-// is a retained activation, and a node-walked activation keeps about 21 KB (c-cost-misc-06
-// measured 20.4-21.6 KB per activation of a 22-node body), so memory, not the stack, is
-// what limits how deep or wide a node-walked program can go. An unbounded recursion
-// fills 8 GB in 14 s under --no-fusion and is OOM-killed before the stack budget fires:
-// `let rec go = |n: i64, acc: string| -> string select n { 0 => acc, _ => go(n - 1,
-// "x") }; go(-100, "x")`, and the fuzzer's children hit their memory limit on its
-// shapes (a 10-09 gate run recorded one as a crash). Measure what one activation holds:
-// its nodes, its per-instance types and env entries, its residents and CachedVals,
-// the bind ids it registers; then see what can be shared with its definition or not
-// kept at all. Containment of a runaway recursion is folded into t-misc-01.
-// (runtime-heap-01)
-// 2026-10-09 claude: Eric folded x-alloc-06 and c-cost-misc-06 into this; scheduled
-// after the CR walk and the combined soak. What they measured (massif, debug,
-// --no-fusion, GRAPHIX_PAR=off; probe design/review-2026-10-05/repro/c-cost-misc-06.gx):
-// 100 slots of f(2, x) vs f(4, x) peak at 41.9 vs 79.2 MB, 15.5 KB per instance. Per
-// instance, by allocation site: fresh type cells made at each node's compile and then
-// replaced by the substitution (Type::empty_tvar, TVar::default, empty_generic) ~2.5
-// KB; Ref nodes (Ref::compile, with_signature) ~2.2 KB; the call site (compile,
-// prepare_bind, resolve_static, arg_ref) ~1.8 KB, a few hundred bytes of it the spec
-// copies (arg_ref's TArc::new(n.spec().clone()) per argument and genn::apply_inner's
-// synthesized ApplyExpr per slot; the call site's two FnTypes are already Arc'd); the
-// arm's pattern nodes ~0.7 KB; Constant/Add/Sub/Select nodes ~2.4 KB. The large lever
-// is an instance building its nodes from its definition's types, with no placeholder
-// cells.
-// 2026-10-11 claude: re-measured (quick build, --no-fusion, GRAPHIX_PAR=off, the probe
-// with 1000 slots): peak RSS grows 15.9-16.2 KB per activation; massif (no LTO, 200 slots,
-// depth 4 minus depth 2) puts the heap at 18.4 KB: Vecs 3.4 KB, Arc<Expr> spec copies 2.7
-// KB, type cells 1.6 KB, Type/FnType values 1.6 KB, node boxes 1.2 KB, other Arcs 1.1 KB,
-// hash maps 1.0 KB. Done: an instance's nodes share the Arc<Expr> specs its definition's
-// check made (CompileCtx::shared_spec, by expression id, exact match only; Ref,
-// Constant, CallSite, arg_ref), and NOP is no longer re-wrapped: 13.7-14.1 KB per
-// activation. Next: Vec and map sites to boxed slices or inline storage by their lengths;
-// then shared types for closed definitions.
-// 2026-10-11 claude: every node now holds its definition's shared Arc<Expr> (128 bytes
-// inline before), and Expr shrank to 80 bytes (ExprKind 80 to 32: TypeDef, ModuleKind, Seq
-// and Never's and TypeCast's types behind an Arc): 12.3 KB per activation, peak at depth 6
-// 2.11 GB to 1.66 GB. massif, correctly attributed: single boxed allocations (node
-// structs, type data) dominate; Vec buffers are about 1 KB, maps 0.4 KB. Left: type cells
-// and Type values (about 3 KB), the Ref and call-site node structs.
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
 pub use error::ErrorRelay;
