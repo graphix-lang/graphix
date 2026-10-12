@@ -169,7 +169,7 @@ pub(crate) fn compile_use_items(
 pub(crate) fn compile_use<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
-    spec: Expr,
+    spec: Arc<Expr>,
     scope: &Scope,
     reexport: bool,
     items: &Arc<[UseItem]>,
@@ -785,7 +785,7 @@ enum Body<R: Rt, E: UserEvent> {
 
 #[derive(Debug)]
 pub struct Module<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     flags: BitFlags<CFlag>,
     body: Body<R, E>,
     env: Env,
@@ -821,7 +821,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let flags = image::flags_decode(buf)?;
         let body = match u8::decode(buf)? {
             0 => Body::Static,
@@ -862,7 +862,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     pub(super) fn compile_dynamic(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         enclosing: &Scope,
         scope: &Scope,
         sandbox: Sandbox,
@@ -905,7 +905,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     pub(super) fn compile_static(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         sig: Sig,
         exprs: Arc<[Expr]>,

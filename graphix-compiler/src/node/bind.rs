@@ -45,7 +45,7 @@ use triomphe::Arc;
 #[derive(Debug)]
 pub struct Bind<R: Rt, E: UserEvent> {
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub(crate) typ: Type,
     pub(crate) pattern: StructPatternNode,
     pub(crate) node: Node<R, E>,
@@ -87,7 +87,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             })),
         );
         children.push(Node::new(Bind {
-            spec: bspec,
+            spec: Arc::new(bspec),
             typ,
             pattern,
             node,
@@ -107,7 +107,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
         },
     );
     children.push(body);
-    Ok(super::Block::new(false, children.into_boxed_slice(), bspec))
+    Ok(super::Block::new(false, children.into_boxed_slice(), Arc::new(bspec)))
 }
 
 /// What `let name = |..| 'builtin` records of the builtin it binds;
@@ -137,7 +137,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         b: &expr::BindExpr,
@@ -291,7 +291,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
                 tv: tv.clone(),
                 init: self.node.typ().clone(),
-                spec: Arc::new(self.spec.clone()),
+                spec: self.spec.clone(),
             });
         }
         if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
@@ -331,7 +331,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let pattern = StructPatternNode::decode(buf)?;
         let node = decode_node(ctx, buf)?;
@@ -609,7 +609,7 @@ impl Ref {
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
@@ -649,7 +649,6 @@ impl Ref {
                         def_ori,
                     });
                 }
-                let spec = ctx.shared_spec(spec);
                 Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))
             }
         }
@@ -1146,7 +1145,7 @@ impl<R: Rt, E: UserEvent> Referent<R, E> {
 
 #[derive(Debug)]
 pub struct ByRef<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     referent: Referent<R, E>,
     pub id: BindId,
@@ -1159,7 +1158,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let id = BindId::decode(buf)?;
         let referent = match bool::decode(buf)? {
@@ -1179,7 +1178,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         mutability: Mutability,
@@ -1394,7 +1393,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 
 #[derive(Debug)]
 pub struct Deref<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub child: Node<R, E>,
     pub(super) top_id: ExprId,
@@ -1429,7 +1428,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let child = decode_node(ctx, buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -1453,7 +1452,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         expr: &Expr,
@@ -1665,7 +1664,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 super::defer_settle(ctx, || crate::PendingSettle::Contains {
                     outer: (**cell).clone(),
                     inner: n.typ().clone(),
-                    spec: Arc::new(self.spec.clone()),
+                    spec: self.spec.clone(),
                 });
                 return Ok(());
             }

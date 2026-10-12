@@ -87,7 +87,7 @@ pub(super) use {composite_plumbing, gathered};
 pub struct Struct<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub names: Box<[ArcStr]>,
     pub n: Box<[Node<R, E>]>,
@@ -99,7 +99,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[(ArcStr, Expr)],
@@ -131,7 +131,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let names: Box<[ArcStr]> =
             Vec::<ArcStr>::decode(buf)?.iter().map(|n| ctx.tag(n)).collect();
@@ -207,7 +207,7 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
 pub struct StructWith<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub source: Node<R, E>,
     pub replace: Box<[Replace<R, E>]>,
@@ -219,7 +219,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
         let n = crate::image::count_decode(buf)?;
@@ -240,7 +240,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
@@ -353,7 +353,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
 #[derive(Debug)]
 pub struct StructRef<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub source: Node<R, E>,
     pub sorted_field_idx: Option<usize>,
@@ -366,7 +366,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
         let sorted_field_idx = Option::<usize>::decode(buf)?;
@@ -384,7 +384,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
@@ -481,7 +481,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 pub struct Tuple<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
@@ -492,7 +492,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
@@ -518,7 +518,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Node::new(Self {
@@ -558,7 +558,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
 pub struct Variant<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub tag: ArcStr,
     pub n: Box<[Node<R, E>]>,
@@ -570,7 +570,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         tag: &ArcStr,
@@ -600,7 +600,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let tag = ctx.tag(&ArcStr::decode(buf)?);
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -644,7 +644,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
 /// the type's tag. Compiles only where the definition is visible.
 #[derive(Debug)]
 pub struct Construct<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub id: AbstractId,
     pub name: ArcStr,
@@ -665,7 +665,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let id = AbstractId::decode(buf)?;
         let name = ArcStr::decode(buf)?;
@@ -687,7 +687,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
@@ -843,7 +843,7 @@ pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
 
 #[derive(Debug)]
 pub struct TupleRef<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub source: Node<R, E>,
     pub field: usize,
@@ -856,7 +856,7 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let source = decode_node(ctx, buf)?;
         let field = usize::decode(buf)?;
@@ -874,7 +874,7 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,

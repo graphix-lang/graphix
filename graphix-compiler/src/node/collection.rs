@@ -132,7 +132,7 @@ impl CollectionIntrinsic {
     pub(crate) fn build<R: Rt, E: UserEvent>(
         self,
         ctx: &mut CompileCtx<R, E>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
@@ -627,7 +627,7 @@ pub struct MapQBase<R: Rt, E: UserEvent> {
     flavor: Flavor,
     element_type: Type,
     prototype_id: BindId,
-    spec: Expr,
+    spec: Arc<Expr>,
     typ: Type,
 }
 
@@ -743,7 +743,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
     fn new(
         intrinsic: CollectionIntrinsic,
         ctx: &mut CompileCtx<R, E>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
@@ -803,7 +803,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
             flavor,
             element_type: Type::decode(buf)?,
             prototype_id: BindId::decode(buf)?,
-            spec: Expr::decode(buf)?,
+            spec: Arc::new(Expr::decode(buf)?),
             typ: Type::decode(buf)?,
         };
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
@@ -1168,7 +1168,7 @@ pub struct FoldQBase<R: Rt, E: UserEvent> {
     flavor: Flavor,
     element_type: Type,
     prototype_ids: [BindId; 2],
-    spec: Expr,
+    spec: Arc<Expr>,
     typ: Type,
 }
 
@@ -1261,7 +1261,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
     fn new(
         intrinsic: CollectionIntrinsic,
         ctx: &mut CompileCtx<R, E>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Arc<FnType>,
@@ -1327,7 +1327,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
             flavor,
             element_type: Type::decode(buf)?,
             prototype_ids: [BindId::decode(buf)?, BindId::decode(buf)?],
-            spec: Expr::decode(buf)?,
+            spec: Arc::new(Expr::decode(buf)?),
             typ: Type::decode(buf)?,
         };
         let callback = Callback::image_decode(ctx, buf)?;

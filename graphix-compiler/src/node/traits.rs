@@ -156,7 +156,7 @@ pub(crate) fn trait_ref(
 
 #[derive(Debug)]
 pub struct Trait<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     def: Arc<TraitDef>,
     defaults: Node<R, E>,
 }
@@ -165,7 +165,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         t: &TraitExpr,
         top_id: ExprId,
@@ -240,7 +240,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<TraitDef>::decode(buf)?;
         let defaults = decode_node(ctx, buf)?;
         Ok(Node::new(Self { spec, def, defaults }))
@@ -320,7 +320,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
 
 #[derive(Debug)]
 pub struct Impl<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     pub(crate) def: Arc<ImplDef>,
     /// The interface declaration (`impl T for X;`) this implementation
     /// fulfils, when there is one; the declaration is the registered
@@ -511,7 +511,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         im: &ImplExpr,
         top_id: ExprId,
@@ -661,7 +661,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let def = Arc::<ImplDef>::decode(buf)?;
         let fulfils = Option::<Arc<ImplDef>>::decode(buf)?;
         let trait_def = Arc::<TraitDef>::decode(buf)?;

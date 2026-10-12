@@ -36,6 +36,7 @@ use std::{
     fmt::Write,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+use triomphe::Arc;
 
 #[derive(Debug)]
 pub(crate) struct Step<R: Rt, E: UserEvent> {
@@ -90,7 +91,7 @@ impl<R: Rt, E: UserEvent> Step<R, E> {
 
 #[derive(Debug)]
 pub struct SeqMachine<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     /// The seq's id, which its `seqq` captures name.
     pub(crate) id: ExprId,
     pub(crate) pc: Node<R, E>,
@@ -181,7 +182,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         m: &SeqMachineExpr,
@@ -225,7 +226,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let id = ExprId::decode(buf)?;
         let pc = decode_node(ctx, buf)?;
         let pc_id = pc_id(&pc).map_err(|_| PackError::InvalidFormat)?;
@@ -439,7 +440,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
 /// machine writes it (`live`, set before the first update).
 #[derive(Debug)]
 pub struct SeqCapture<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     pub(crate) machine: ExprId,
     pub(crate) snapshot: Node<R, E>,
     pub(crate) live: Node<R, E>,
@@ -451,7 +452,7 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         c: &SeqCaptureExpr,
@@ -468,7 +469,7 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let machine = ExprId::decode(buf)?;
         let snapshot = decode_node(ctx, buf)?;
         let live = decode_node(ctx, buf)?;

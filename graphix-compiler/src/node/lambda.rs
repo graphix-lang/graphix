@@ -998,7 +998,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         args: &[Node<R, E>],
         scope: &Scope,
         tid: ExprId,
-        spec: Expr,
+        spec: Arc<Expr>,
         intrinsic: CollectionIntrinsic,
     ) -> Result<Self> {
         let origin = spec.ori.clone();
@@ -1265,7 +1265,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
 #[derive(Debug)]
 pub struct Lambda {
-    spec: Expr,
+    spec: Arc<Expr>,
     def: Value,
     typ: Type,
     resident: TagValue,
@@ -1299,7 +1299,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     scope: &Scope,
     def_typ: Arc<FnType>,
     def_argspec: Arc<[Arg]>,
-    def_spec: Expr,
+    def_spec: Arc<Expr>,
     body: DefBody,
     table: SArc<DefTables>,
     shared: BodyShare,
@@ -1420,7 +1420,7 @@ impl Lambda {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         l: &expr::LambdaExpr,
         _top_id: ExprId,
@@ -1630,7 +1630,7 @@ impl Lambda {
             facts: Mutex::new(facts),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
-            origin: DefOrigin::Source { body, flags, spec: spec.clone() },
+            origin: DefOrigin::Source { body, flags, spec: (*spec).clone() },
             level,
         });
         ctx.lambda_defs.insert(id, def.clone());
@@ -1649,7 +1649,7 @@ impl Lambda {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let id = LambdaId::decode(buf)?;
         let typ = Type::decode(buf)?;
         let def = ctx.lambda_defs.get(&id).ok_or(PackError::InvalidFormat)?.clone();
@@ -1857,7 +1857,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
-        let spec = &self.spec;
+        let spec: &Expr = &self.spec;
         crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec);
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after

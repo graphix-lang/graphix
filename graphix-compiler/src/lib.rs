@@ -2519,8 +2519,15 @@ pub fn compile_script<R: Rt, E: UserEvent>(
         None => Ok(()),
     };
     compile_top(ctx, flags, spec, &verify, |ctx, spec, top_id| {
-        let n =
-            node::Block::compile(ctx, flags, spec.clone(), scope, top_id, false, exprs)?;
+        let n = node::Block::compile(
+            ctx,
+            flags,
+            Arc::new(spec.clone()),
+            scope,
+            top_id,
+            false,
+            exprs,
+        )?;
         Ok((n, scope.clone()))
     })
     .map(|(n, _)| n)

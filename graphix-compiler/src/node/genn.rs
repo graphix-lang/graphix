@@ -115,7 +115,9 @@ fn apply_inner<R: Rt, E: UserEvent>(
     spec.ori = fnode.spec().ori.clone();
     let args: ArgMap<R, E> = ArgKey::of_formals(&typ.args)
         .zip(args)
-        .map(|(key, node)| (key, Arg::new(BindId::new(), Some(node), ArgStage::Given)))
+        .map(|(key, node)| {
+            (key, Arg::new(BindId::new(), Some(node), ArgStage::Given, NOP.clone()))
+        })
         .collect();
     Node::new(CallNode::Call(CallSite::unbound(
         Arc::new(spec),

@@ -45,7 +45,7 @@ pub struct ArrayRef<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub source: Node<R, E>,
     pub i: Node<R, E>,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub etyp: Type,
     resident: TagValue,
@@ -58,7 +58,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let source = decode_node(ctx, buf)?;
         let i = decode_node(ctx, buf)?;
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let etyp = Type::decode(buf)?;
         Ok(Node::new(Self {
@@ -75,7 +75,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
@@ -259,7 +259,7 @@ pub struct ArraySlice<R: Rt, E: UserEvent> {
     pub source: Node<R, E>,
     pub start: Option<Node<R, E>>,
     pub end: Option<Node<R, E>>,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     resident: TagValue,
 }
@@ -272,7 +272,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
         let source = decode_node(ctx, buf)?;
         let start = opt_node_decode(ctx, buf)?;
         let end = opt_node_decode(ctx, buf)?;
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         Ok(Node::new(Self {
             slept: WakeBit::default(),
@@ -288,7 +288,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,
@@ -496,7 +496,7 @@ pub type ListLit<R, E> = SeqLit<R, E, ListKind>;
 pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
@@ -505,7 +505,7 @@ pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
-    fn with(spec: Expr, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -520,7 +520,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &Arc<[Expr]>,
@@ -536,7 +536,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Self::with(spec, typ, n))

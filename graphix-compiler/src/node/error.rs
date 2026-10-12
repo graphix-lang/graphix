@@ -91,7 +91,7 @@ pub(crate) fn wrap_error(spec: &Expr, e: Value) -> Value {
 
 #[derive(Debug)]
 pub struct Catch<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub handler: Node<R, E>,
     pub(crate) action: Option<CatchAction<R, E>>,
     own_handler: ErrorHandler,
@@ -213,7 +213,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let handler = decode_node(ctx, buf)?;
         let action = match opt_node_decode(ctx, buf)? {
             None => None,
@@ -252,7 +252,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         c: &Arc<expr::CatchExpr>,
@@ -799,12 +799,12 @@ fn is_chain_type(env: &Env, t: &Type) -> Result<bool> {
 pub struct QopSite {
     pub(crate) handler: ErrorHandler,
     pub own_top: ExprId,
-    pub spec: Expr,
+    pub spec: Arc<Expr>,
 }
 
 #[derive(Debug)]
 pub struct Qop<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     /// The resolved handler: its error-variable bind and the top the
     /// handler node lives under.
@@ -821,7 +821,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let handler = match bool::decode(buf)? {
             true => Some(image::handler_decode(buf)?),
@@ -846,7 +846,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
@@ -993,7 +993,7 @@ enum GuardState {
 
 #[derive(Debug)]
 pub struct SeqGuard<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     pub(crate) n: Node<R, E>,
     handler: ErrorHandler,
     /// The machine's handler: an `abort(..)` fails the run there, and a
@@ -1008,7 +1008,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         let handler = image::handler_decode(buf)?;
         let machine = image::handler_decode(buf)?;
@@ -1025,7 +1025,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
@@ -1161,7 +1161,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 /// catches after their covered children, which is too late for that.
 #[derive(Debug)]
 pub struct SeqAbort<R: Rt, E: UserEvent> {
-    spec: Expr,
+    spec: Arc<Expr>,
     pub(crate) n: Node<R, E>,
     machine: ErrorHandler,
 }
@@ -1171,7 +1171,7 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         let machine = image::handler_decode(buf)?;
         Ok(Node::new(Self { spec, n, machine }))
@@ -1180,7 +1180,7 @@ impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
@@ -1250,7 +1250,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbort<R, E> {
 
 #[derive(Debug)]
 pub struct OrNever<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Node<R, E>,
     pub(crate) strip: Strip,
@@ -1262,7 +1262,7 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         let strip = Strip::decode(buf)?;
@@ -1272,7 +1272,7 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         e: &Expr,
@@ -1385,7 +1385,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             // the check's settle
             if check {
                 let inner = self.thrown.clone().unwrap_or(Type::Bottom);
-                let spec = Arc::new(self.spec.clone());
+                let spec = self.spec.clone();
                 ctx.pending_settles
                     .last_mut()
                     .expect("settle frame")

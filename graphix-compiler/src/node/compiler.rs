@@ -247,10 +247,11 @@ fn compile_inner<R: Rt, E: UserEvent>(
             attrs: fork.into_iter().collect(),
         }));
         let node = compile_inner(ctx, flags, child, scope, top_id, statement)?;
-        return Ok(ForkControl::new(wrapper, kind, node));
+        return Ok(ForkControl::new(ctx.shared_spec(wrapper), kind, node));
     }
     if !def_asserts.is_empty() {
-        let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
+        let shared = ctx.shared_spec(spec.clone());
+        let node = compile_kind(ctx, flags, &shared, scope, top_id, statement)?;
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
@@ -266,6 +267,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
         }
         return Ok(node);
     }
+    let spec = ctx.shared_spec(spec);
     compile_kind(ctx, flags, &spec, scope, top_id, statement)
 }
 
@@ -276,7 +278,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
 pub(crate) fn compile_module<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
-    spec: Expr,
+    spec: Arc<Expr>,
     scope: &Scope,
     top_id: ExprId,
     name: &Name,
@@ -291,7 +293,7 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
 fn compile_module_inner<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
-    spec: Expr,
+    spec: Arc<Expr>,
     scope: &Scope,
     top_id: ExprId,
     name: &Name,
@@ -385,7 +387,7 @@ fn constant_type(v: &Value) -> Result<Type> {
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
-    spec: &Expr,
+    spec: &Arc<Expr>,
     scope: &Scope,
     top_id: ExprId,
     statement: bool,
@@ -407,7 +409,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ),
         ExprKind::Constant(v) => {
             let typ = constant_type(v).at(spec)?;
-            Ok(Constant::new(v.clone(), typ, ctx.shared_spec(spec.clone())))
+            Ok(Constant::new(v.clone(), typ, spec.clone()))
         }
         ExprKind::Block { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());

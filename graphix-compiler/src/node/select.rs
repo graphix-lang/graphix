@@ -48,7 +48,7 @@ pub struct Select<R: Rt, E: UserEvent> {
     pub arg: Held<R, E>,
     pub arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
     pub typ: Type,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     /// Bit i = arm i's guard was consulted by the last re-match. Quiet
     /// cycles read it so a standing bottom on a consulted guard keeps
     /// the select bottom.
@@ -194,7 +194,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arg: Held<R, E>,
         arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
         typ: Type,
-        spec: Expr,
+        spec: Arc<Expr>,
     ) -> Node<R, E> {
         Node::new(Self {
             selected: None,
@@ -222,14 +222,14 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms.push((pat, body));
         }
         let typ = Type::decode(buf)?;
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         Ok(Self::new(arg, arms, typ, spec))
     }
 
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         arg: &Expr,

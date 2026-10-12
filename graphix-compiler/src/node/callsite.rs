@@ -156,11 +156,19 @@ pub(crate) struct Arg<R: Rt, E: UserEvent> {
     pub id: BindId,
     pub node: Option<Node<R, E>>,
     pub stage: ArgStage,
+    /// The argument's expression, which a reference to it shows: the
+    /// node's own, so a bind's reference allocates none.
+    pub spec: TArc<Expr>,
 }
 
 impl<R: Rt, E: UserEvent> Arg<R, E> {
-    pub(crate) fn new(id: BindId, node: Option<Node<R, E>>, stage: ArgStage) -> Self {
-        Arg { id, node, stage }
+    pub(crate) fn new(
+        id: BindId,
+        node: Option<Node<R, E>>,
+        stage: ArgStage,
+        spec: TArc<Expr>,
+    ) -> Self {
+        Arg { id, node, stage, spec }
     }
 }
 
@@ -255,11 +263,12 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
 ) -> Result<ArgMap<R, E>> {
     let mut res = ArgMap::default();
     for ((_, expr), key) in args.iter().zip(ArgKey::of_written(args)) {
+        let arg_spec = ctx.shared_spec(expr.clone());
         let node = Some(compile(ctx, flags, expr.clone(), scope, top_id)?);
         match res.entry(key) {
             ArgEntry::Occupied(e) => bailat!(spec, "duplicate argument {}", e.key()),
             ArgEntry::Vacant(e) => {
-                e.insert(Arg::new(BindId::new(), node, ArgStage::Given));
+                e.insert(Arg::new(BindId::new(), node, ArgStage::Given, arg_spec));
             }
         }
     }
@@ -305,7 +314,12 @@ fn fill_omitted<R: Rt, E: UserEvent>(
                 ArgEntry::Occupied(_) => (),
                 ArgEntry::Vacant(e) if *has_default => {
                     let nop = Nop::new(arg.typ.clone());
-                    e.insert(Arg::new(BindId::new(), Some(nop), ArgStage::Placeholder));
+                    e.insert(Arg::new(
+                        BindId::new(),
+                        Some(nop),
+                        ArgStage::Placeholder,
+                        NOP.clone(),
+                    ));
                 }
                 ArgEntry::Vacant(_) => bail!("missing required argument {name}"),
             }
@@ -626,7 +640,7 @@ fn arg_ref<R: Rt, E: UserEvent>(
     typ: &Type,
 ) -> Node<R, E> {
     let (typ, spec) = match &arg.node {
-        Some(n) => (n.typ().clone(), ctx.shared_spec(n.spec().clone())),
+        Some(n) => (n.typ().clone(), arg.spec.clone()),
         None => (typ.clone(), NOP.clone()),
     };
     Ref::new(ctx, arg.id, typ, top_id, spec)
@@ -849,7 +863,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: TArc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &TArc<[(Option<ArcStr>, Expr)]>,
@@ -859,14 +873,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // a call's function is compiled as written: a trait method named
         // here is the dispatcher itself, never its eta-expansion
         let fnode = match &f.kind {
-            ExprKind::Ref { name } => {
-                Ref::compile(ctx, (**f).clone(), scope, top_id, name)?
-            }
+            ExprKind::Ref { name } => Ref::compile(ctx, f.clone(), scope, top_id, name)?,
             _ => compile(ctx, flags, (**f).clone(), scope, top_id)?,
         };
         let args = compile_apply_args(ctx, flags, scope, top_id, &spec, args)?;
         let site = Self::unbound(
-            ctx.shared_spec(spec),
+            spec,
             None,
             Type::empty_tvar(),
             fnode,
@@ -930,8 +942,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let typ = default_node.typ().clone();
             let id = BindId::new();
             let spec = TArc::new(default_node.spec().clone());
-            self.arg_refs.push(Ref::new(ctx, id, typ, self.top_id, spec));
-            self.args.insert(key, Arg::new(id, Some(default_node), ArgStage::Compiled));
+            self.arg_refs.push(Ref::new(ctx, id, typ, self.top_id, spec.clone()));
+            self.args
+                .insert(key, Arg::new(id, Some(default_node), ArgStage::Compiled, spec));
         }
         if f.typ.vargs.is_some() {
             let positional = f.typ.args.iter().filter(|a| a.is_positional()).count();
@@ -2075,7 +2088,11 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
             3 => ArgStage::Running,
             _ => return Err(PackError::UnknownTag),
         };
-        Ok((key, Arg { id, node, stage }))
+        let spec = match &node {
+            Some(n) => TArc::new(n.spec().clone()),
+            None => NOP.clone(),
+        };
+        Ok((key, Arg { id, node, stage, spec }))
     }
 }
 

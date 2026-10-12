@@ -18,6 +18,7 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use netidx_core::pack::{Pack, PackError};
+use triomphe::Arc;
 
 /// What the attribute asks of the code it decorates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,13 +51,13 @@ impl ForkKind {
 
 #[derive(Debug)]
 pub struct ForkControl<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub(crate) kind: ForkKind,
     pub(crate) n: Node<R, E>,
 }
 
 impl<R: Rt, E: UserEvent> ForkControl<R, E> {
-    pub(crate) fn new(spec: Expr, kind: ForkKind, n: Node<R, E>) -> Node<R, E> {
+    pub(crate) fn new(spec: Arc<Expr>, kind: ForkKind, n: Node<R, E>) -> Node<R, E> {
         Node::new(Self { spec, kind, n })
     }
 
@@ -64,7 +65,7 @@ impl<R: Rt, E: UserEvent> ForkControl<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let kind = match Option::<u32>::decode(buf)? {
             None => ForkKind::Serial,
             Some(g) => ForkKind::Parallel(g),

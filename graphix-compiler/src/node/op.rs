@@ -61,7 +61,7 @@ macro_rules! binary_node {
     ($name:ident, $typ:expr, $(state: $state:ty,)? $(settles: $settles:literal,)? { $($methods:tt)* }) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
-            pub(crate) spec: Expr,
+            pub(crate) spec: Arc<Expr>,
             pub typ: Type,
             pub lhs: Node<R, E>,
             pub rhs: Node<R, E>,
@@ -79,7 +79,7 @@ macro_rules! binary_node {
             pub(crate) fn compile(
                 ctx: &mut CompileCtx<R, E>,
                 flags: BitFlags<CFlag>,
-                spec: Expr,
+                spec: Arc<Expr>,
                 scope: &Scope,
                 top_id: ExprId,
                 lhs: &Expr,
@@ -94,14 +94,14 @@ macro_rules! binary_node {
                 ctx: &mut ExecCtx<'_, R, E>,
                 buf: &mut &[u8],
             ) -> Result<Node<R, E>, PackError> {
-                let spec = Expr::decode(buf)?;
+                let spec = Arc::new(Expr::decode(buf)?);
                 let typ = Type::decode(buf)?;
                 let lhs = decode_node(ctx, buf)?;
                 let rhs = decode_node(ctx, buf)?;
                 Ok(Self::node(spec, typ, lhs, rhs))
             }
 
-            fn node(spec: Expr, typ: Type, lhs: Node<R, E>, rhs: Node<R, E>) -> Node<R, E> {
+            fn node(spec: Arc<Expr>, typ: Type, lhs: Node<R, E>, rhs: Node<R, E>) -> Node<R, E> {
                 Node::new(Self {
                     spec,
                     typ,
@@ -311,7 +311,7 @@ macro_rules! compare_op {
                         let judgment = crate::PendingSettle::Discernible {
                             typ: t.clone(),
                             what: crate::Discerned::Compared { ordered: $ordered },
-                            spec: Arc::new(self.spec.clone()),
+                            spec: self.spec.clone(),
                         };
                         super::defer_judgment(ctx, judgment);
                         Ok(())
@@ -396,7 +396,7 @@ bool_op!(Or, ||);
 
 #[derive(Debug)]
 pub struct Not<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Node<R, E>,
     resident: TagValue,
@@ -408,7 +408,7 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         n: &Expr,
@@ -421,13 +421,13 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         Ok(Self::node(spec, typ, n))
     }
 
-    fn node(spec: Expr, typ: Type, n: Node<R, E>) -> Node<R, E> {
+    fn node(spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
         Node::new(Self {
             spec,
             typ,
@@ -500,7 +500,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
 
 #[derive(Debug)]
 pub struct Neg<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Node<R, E>,
     resident: TagValue,
@@ -512,7 +512,7 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         n: &Expr,
@@ -525,13 +525,13 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         Ok(Self::node(spec, typ, n))
     }
 
-    fn node(spec: Expr, typ: Type, n: Node<R, E>) -> Node<R, E> {
+    fn node(spec: Arc<Expr>, typ: Type, n: Node<R, E>) -> Node<R, E> {
         Node::new(Self {
             spec,
             typ,

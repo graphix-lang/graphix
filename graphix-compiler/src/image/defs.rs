@@ -116,7 +116,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         &scope,
         typ.clone(),
         argspec.clone(),
-        spec.clone(),
+        Arc::new(spec.clone()),
         body.clone(),
         table.clone(),
         shared.clone(),

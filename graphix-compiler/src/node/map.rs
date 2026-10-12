@@ -37,7 +37,7 @@ defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
 pub struct Map<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     /// Every key in written order, then every value: the order they
     /// update in.
@@ -47,7 +47,7 @@ pub struct Map<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
-    fn with(spec: Expr, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+    fn with(spec: Arc<Expr>, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
         Node::new(Self {
             slept: WakeBit::default(),
             spec,
@@ -67,7 +67,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = crate::image::count_decode(buf)?;
         let (mut keys, mut values) = (Vec::with_capacity(n), Vec::with_capacity(n));
@@ -82,7 +82,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &Arc<[(Expr, Expr)]>,
@@ -168,7 +168,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let judgment = crate::PendingSettle::Discernible {
             typ: self.typ.clone(),
             what: crate::Discerned::Keys,
-            spec: Arc::new(self.spec.clone()),
+            spec: self.spec.clone(),
         };
         super::defer_judgment(ctx, judgment);
         Ok(())
@@ -181,7 +181,7 @@ pub struct MapRef<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub source: Node<R, E>,
     pub key: Node<R, E>,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub vtyp: Type,
     resident: TagValue,
@@ -223,7 +223,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let source = decode_node(ctx, buf)?;
         let key = decode_node(ctx, buf)?;
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let vtyp = Type::decode(buf)?;
         Ok(Node::new(Self {
@@ -240,7 +240,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         source: &Expr,

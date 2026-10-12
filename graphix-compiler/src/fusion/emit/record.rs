@@ -506,7 +506,11 @@ impl Pack for KernelConst {
                 let handler = image::handler_decode(buf)?;
                 let own_top = ExprId::decode(buf)?;
                 let spec = Expr::decode(buf)?;
-                KernelConst::QopSite(Box::new(QopSite { handler, own_top, spec }))
+                KernelConst::QopSite(Box::new(QopSite {
+                    handler,
+                    own_top,
+                    spec: Arc::new(spec),
+                }))
             }
             tag::IO_SITE => {
                 let builtin = ArcStr::decode(buf)?;

@@ -277,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
 #[derive(Debug)]
 pub struct ExplicitParens<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub n: Node<R, E>,
 }
 
@@ -286,7 +286,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let n = decode_node(ctx, buf)?;
         Ok(Node::new(Self { spec, n }))
     }
@@ -294,7 +294,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         inner: Expr,
         scope: &Scope,
         top_id: ExprId,
@@ -497,7 +497,7 @@ pub(crate) use typed_by_row;
 
 #[derive(Debug)]
 pub struct TypeDef {
-    spec: Expr,
+    spec: Arc<Expr>,
     scope: ModPath,
     name: ArcStr,
 }
@@ -505,7 +505,7 @@ pub struct TypeDef {
 impl TypeDef {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         ctx: &mut CompileCtx<R, E>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         name: &Name,
         params: &Arc<[(TVar, Option<Type>)]>,
@@ -530,7 +530,7 @@ impl TypeDef {
             ctx.pending_names.push(crate::Pending::Contractive(
                 scope.lexical.clone(),
                 name.clone(),
-                spec.clone(),
+                (*spec).clone(),
             ));
         }
         Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
@@ -542,7 +542,7 @@ impl TypeDef {
         _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let scope = ModPath::decode(buf)?;
         let name = ArcStr::decode(buf)?;
         Ok(Node::new(Self { spec, scope, name }))
@@ -613,10 +613,10 @@ impl Constant {
         _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let value = Value::decode(buf)?;
         let typ = Type::decode(buf)?;
-        Ok(Self::new(value, typ, Arc::new(spec)))
+        Ok(Self::new(value, typ, spec))
     }
 }
 
@@ -679,7 +679,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
 #[derive(Debug)]
 pub struct Block<R: Rt, E: UserEvent> {
     pub(crate) module: bool,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub(crate) children: Box<[Node<R, E>]>,
     /// Indices of `catch(e) expr` children, in syntactic order.
     /// update/typecheck run the covered children first, then catches in
@@ -730,7 +730,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 
     /// Build a `Block` from compiled children. A module produces no
     /// value; a non-module block's value is its last child's.
-    pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Expr) -> Node<R, E> {
+    pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Arc<Expr>) -> Node<R, E> {
         Node::new(Self {
             module,
             spec,
@@ -745,7 +745,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         module: bool,
@@ -882,10 +882,12 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             )
         }
         ExprKind::Catch(c) => {
-            return error::Catch::compile(ctx, flags, e.clone(), scope, top_id, c);
+            let spec = ctx.shared_spec(e.clone());
+            return error::Catch::compile(ctx, flags, spec, scope, top_id, c);
         }
         ExprKind::Module { name, value: value @ ModuleKind::Dynamic { .. } } => {
-            compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
+            let spec = ctx.shared_spec(e.clone());
+            compile_module(ctx, flags, spec, scope, top_id, name, value, predeclared)
         }
         ExprKind::Bind(_) => {
             compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
@@ -894,19 +896,24 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             compile(ctx, flags, e.clone(), scope, top_id)
         }
         ExprKind::Use { reexport, names } => {
-            module::compile_use(ctx, flags, e.clone(), scope, *reexport, names)
+            let spec = ctx.shared_spec(e.clone());
+            module::compile_use(ctx, flags, spec, scope, *reexport, names)
         }
         ExprKind::Module { name, value } => {
-            compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
+            let spec = ctx.shared_spec(e.clone());
+            compile_module(ctx, flags, spec, scope, top_id, name, value, predeclared)
         }
         ExprKind::TypeDef(td) => {
-            TypeDef::compile(ctx, e.clone(), scope, &td.name, &td.params, &td.body)
+            let spec = ctx.shared_spec(e.clone());
+            TypeDef::compile(ctx, spec, scope, &td.name, &td.params, &td.body)
         }
         ExprKind::Trait(t) => {
-            traits::Trait::compile(ctx, flags, e.clone(), scope, t, top_id)
+            let spec = ctx.shared_spec(e.clone());
+            traits::Trait::compile(ctx, flags, spec, scope, t, top_id)
         }
         ExprKind::Impl(im) => {
-            traits::Impl::compile(ctx, flags, e.clone(), scope, im, top_id)
+            let spec = ctx.shared_spec(e.clone());
+            traits::Impl::compile(ctx, flags, spec, scope, im, top_id)
         }
         _ => compile(ctx, flags, e.clone(), scope, top_id),
     }?;
@@ -1197,7 +1204,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let module = bool::decode(buf)?;
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
         let planned = OnceLock::new();
@@ -1314,7 +1321,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
 pub struct StringInterpolate<R: Rt, E: UserEvent> {
     /// set by `sleep()`, taken by the next update
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
@@ -1327,7 +1334,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let typs = Vec::<Type>::decode(buf)?.into_boxed_slice();
         let args = decode_nodes(ctx, buf)?.into_boxed_slice();
@@ -1345,7 +1352,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
@@ -1464,7 +1471,7 @@ fn part_type(t: &Type) -> Type {
 
 #[derive(Debug)]
 pub struct Connect<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub(super) node: Node<R, E>,
     pub(crate) id: BindId,
 }
@@ -1474,7 +1481,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let node = decode_node(ctx, buf)?;
         let id = BindId::decode(buf)?;
         Ok(Node::new(Self { spec, node, id }))
@@ -1483,7 +1490,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
@@ -1612,7 +1619,7 @@ pub(super) enum WriteTarget {
 
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub(super) rhs: Node<R, E>,
     pub(crate) src_id: BindId,
     pub(super) target: Option<WriteTarget>,
@@ -1628,7 +1635,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let rhs = decode_node(ctx, buf)?;
         let src_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -1647,7 +1654,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         name: &ModPath,
@@ -1802,7 +1809,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 #[derive(Debug)]
 pub struct TypeCast<R: Rt, E: UserEvent> {
     slept: WakeBit,
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub target: Type,
     pub n: Node<R, E>,
@@ -1818,7 +1825,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let target = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
@@ -1837,7 +1844,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         expr: &Expr,
@@ -1946,7 +1953,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 /// carries the declared shape.
 #[derive(Debug)]
 pub struct Never<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
 }
@@ -1955,7 +1962,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         typ: &Option<Type>,
@@ -1978,7 +1985,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Node::new(Self { spec, typ, n }))
@@ -2058,7 +2065,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
 
 #[derive(Debug)]
 pub struct Any<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
@@ -2072,7 +2079,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Node::new(Self {
@@ -2088,7 +2095,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         args: &[Expr],
@@ -2193,7 +2200,7 @@ enum Banking {
 
 #[derive(Debug)]
 pub struct Sample<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
+    pub(crate) spec: Arc<Expr>,
     banking: Banking,
     pub typ: Type,
     top_id: ExprId,
@@ -2207,7 +2214,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
+        let spec = Arc::new(Expr::decode(buf)?);
         let typ = Type::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let banking = match Option::<BindId>::decode(buf)? {
@@ -2233,7 +2240,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
-        spec: Expr,
+        spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
         lhs: &Arc<Expr>,
