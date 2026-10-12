@@ -1,0 +1,5 @@
+// The node-walk keeps an activation per call, so a 500000-deep tail
+// recursion passes the fuzzer's activation budget and is contained,
+// while the kernel runs it as a loop and answers: containment, not a
+// divergence (Oracle::settle). Found by the oct04d soak (katana).
+{ let rec count = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => count(n - 1, acc + 1) }; count(500000, 0) }

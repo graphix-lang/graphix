@@ -88,6 +88,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	declared-rtype-open-callee-aug2026/04_called_by_name_always_caught.gx
 1	declared-rtype-open-callee-aug2026/05_expectation_drives_callee.gx
 1	declared-rtype-open-callee-aug2026/06_obligation_is_per_instance.gx
+1	deep-tail-activation-budget-oct2026/01_tail_loop_past_the_activation_budget.gx
 1	default-arg-birth-sep2026/00_escape_default_in_arm.gx
 2	default-arg-birth-sep2026/01_escape_default_rewake.gx
 1	depth-guard-jul2026/01_depth_limit_boundary.gx

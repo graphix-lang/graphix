@@ -1777,12 +1777,17 @@ impl<'a> Oracle<'a> {
         // containment: the kernel's value stands unrefuted.
         if ra.mode.node_walk()
             && !rb.mode.node_walk()
-            && matches!(a, Outcome::Timeout(Containment::StackBudget))
+            && matches!(
+                a,
+                Outcome::Timeout(
+                    Containment::StackBudget | Containment::ActivationBudget
+                )
+            )
             && matches!(b, Outcome::Trace(_))
         {
             eprintln!(
-                "CONTAINED — the node-walk exceeded the stack budget; the kernel's \
-                 value stands unrefuted, not recorded"
+                "CONTAINED — the node-walk exceeded its stack or activation budget; the \
+                 kernel's value stands unrefuted, not recorded"
             );
             eprintln!("    program: {}", self.code.replace('\n', "\\n"));
             return Settled::Drop;

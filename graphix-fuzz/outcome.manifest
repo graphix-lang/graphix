@@ -88,6 +88,7 @@ reject	declared-rtype-open-callee-aug2026/03_through_alias.gx
 reject	declared-rtype-open-callee-aug2026/04_called_by_name_always_caught.gx
 trace	declared-rtype-open-callee-aug2026/05_expectation_drives_callee.gx
 trace	declared-rtype-open-callee-aug2026/06_obligation_is_per_instance.gx
+unsure	deep-tail-activation-budget-oct2026/01_tail_loop_past_the_activation_budget.gx
 trace	default-arg-birth-sep2026/00_escape_default_in_arm.gx
 trace	default-arg-birth-sep2026/01_escape_default_rewake.gx
 trace	depth-guard-jul2026/01_depth_limit_boundary.gx
@@ -108,7 +109,7 @@ trace	deref-reads-the-referent-aug2026/05_expression_ref_paces_like_connect.gx
 reject	dynamic-bind-default-sep2026/00_ill_typed_default_via_fn_var.gx
 trace	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
 trace	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
-unsure	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
+trace	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
 trace	dyncall-apply-unwired-aug2026/03_abstract_repr_leak.gx
 trace	dyncall-arm-init-stale-aug2026/00_reselected_arm_rides_prior_result.gx
 trace	dyncall-fire-gate-aug2026/00_intermediate_callee_lost_fire.gx
