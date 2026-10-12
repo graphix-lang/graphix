@@ -73,6 +73,12 @@ use triomphe::Arc;
 // Constant, CallSite, arg_ref), and NOP is no longer re-wrapped: 13.7-14.1 KB per
 // activation. Next: Vec and map sites to boxed slices or inline storage by their lengths;
 // then shared types for closed definitions.
+// 2026-10-11 claude: every node now holds its definition's shared Arc<Expr> (128 bytes
+// inline before), and Expr shrank to 80 bytes (ExprKind 80 to 32: TypeDef, ModuleKind, Seq
+// and Never's and TypeCast's types behind an Arc): 12.3 KB per activation, peak at depth 6
+// 2.11 GB to 1.66 GB. massif, correctly attributed: single boxed allocations (node
+// structs, type data) dominate; Vec buffers are about 1 KB, maps 0.4 KB. Left: type cells
+// and Type values (about 3 KB), the Ref and call-site node structs.
 pub(crate) mod array;
 pub use collection::MAX_ARRAY_INIT_LEN;
 pub use error::ErrorRelay;
