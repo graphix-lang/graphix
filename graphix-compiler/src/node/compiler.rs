@@ -452,7 +452,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         // Declarations (`let`, `use`, static `mod`, `type`, `trait`, `impl`)
         // are compiled in statement position only; a dynamic module
         // produces a real `[error, null]` value, so it is an expression.
-        ExprKind::Module { name, value } => match value {
+        ExprKind::Module { name, value } => match &**value {
             ModuleKind::Dynamic { .. } => compile_module(
                 ctx,
                 flags,
@@ -528,7 +528,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::StructWith(StructWithExpr { source, replace }) => {
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
-        ExprKind::Seq { .. } => {
+        ExprKind::Seq(_) => {
             let lower = |ctx: &CompileCtx<R, E>| -> Result<Expr> {
                 let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
                 if flags.contains(CFlag::ExpandSeq) {

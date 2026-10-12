@@ -1,7 +1,7 @@
 use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, CatchRole, Decorations, Doc, Expr, ExprKind, ModPath,
-        Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqKind,
+        Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqExpr, SeqKind,
         SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
     },
     profile::{self, Phase},
@@ -660,7 +660,11 @@ where
         ),
     )
         .map(|(pos, _, typ, mut args): (_, _, Option<Type>, LPooled<Vec<Expr>>)| {
-            ExprKind::Never { typ, args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
+            ExprKind::Never {
+                typ: typ.map(Arc::new),
+                args: Arc::from_iter(args.drain(..)),
+            }
+            .to_expr(pos)
         })
 }
 
@@ -1031,7 +1035,8 @@ where
                 grow::refuse(end, "a seq block must contain at least one step").right()
             } else {
                 let body = Arc::from_iter(body.drain(..));
-                value(ExprKind::Seq { kind, trigger, abort, body }.to_expr(pos)).left()
+                let seq = SeqExpr { kind, trigger, abort, body };
+                value(ExprKind::Seq(Arc::new(seq)).to_expr(pos)).left()
             }
         })
 }
@@ -1082,7 +1087,9 @@ where
         )),
         between(sptoken('('), sptoken(')'), expr()),
     )
-        .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
+        .map(|(pos, typ, e)| {
+            ExprKind::TypeCast { expr: Arc::new(e), typ: Arc::new(typ) }.to_expr(pos)
+        })
 }
 
 /// Sort `items` by name; false when a name repeats.
@@ -1398,7 +1405,8 @@ parser! {
                 use_module(),
                 catch_stmt(),
                 try_with(),
-                (position(), typedef()).map(|(pos, td)| ExprKind::TypeDef(td).to_expr(pos)),
+                (position(), typedef())
+                    .map(|(pos, td)| ExprKind::TypeDef(Arc::new(td)).to_expr(pos)),
                 (position(), trait_decl(false))
                     .map(|(pos, t)| ExprKind::Trait(Arc::new(t)).to_expr(pos)),
                 (position(), impl_decl()).map(|(pos, i)| ExprKind::Impl(Arc::new(i)).to_expr(pos)),

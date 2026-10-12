@@ -1,8 +1,8 @@
 use crate::{
     PrintFlag,
     expr::{
-        Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind, StrForm,
-        StructurePattern, TraitExpr, TraitMethod, TryWithExpr, UseItem,
+        Decorations, Expr, ExprKind, ModuleKind, Origin, SeqExpr, Sig, SigItem, SigKind,
+        StrForm, StructurePattern, TraitExpr, TraitMethod, TryWithExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
             PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
@@ -263,25 +263,26 @@ fn merge_uses_within(e: &Expr) -> Expr {
     let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
         Block { exprs } => Block { exprs: merge_expr_uses(exprs) },
-        Seq { kind, trigger, abort, body } => Seq {
-            kind: kind.clone(),
-            trigger: trigger.clone(),
-            abort: abort.clone(),
-            body: merge_expr_uses(body),
-        },
+        Seq(s) => {
+            Seq(Arc::new(SeqExpr { body: merge_expr_uses(&s.body), ..(**s).clone() }))
+        }
         TryWith(t) => TryWith(Arc::new(TryWithExpr {
             body: merge_expr_uses(&t.body),
             handler: merge_expr_uses(&t.handler),
             ..(**t).clone()
         })),
-        Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => Module {
-            name: name.clone(),
-            value: ModuleKind::Dynamic {
-                sandbox: sandbox.clone(),
-                sig: merge_sig_uses(sig),
-                source: source.clone(),
-            },
-        },
+        Module { name, value }
+            if let ModuleKind::Dynamic { sandbox, sig, source } = &**value =>
+        {
+            Module {
+                name: name.clone(),
+                value: Arc::new(ModuleKind::Dynamic {
+                    sandbox: sandbox.clone(),
+                    sig: merge_sig_uses(sig),
+                    source: source.clone(),
+                }),
+            }
+        }
         _ => return e,
     };
     e.with_kind(kind)
@@ -430,7 +431,9 @@ impl<'a> Ornaments<'a> {
                         self.push(Ornament::Comments(m.comments.lines()))
                     }
                 }
-                ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
+                ExprKind::Module { value, .. }
+                    if let ModuleKind::Dynamic { sig, .. } = &**value =>
+                {
                     self.sig(sig)
                 }
                 _ => (),

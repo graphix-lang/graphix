@@ -11,8 +11,8 @@
 use super::{
     ApplyExpr, Arg, ArgKind, BindExpr, CatchExpr, CatchRole, Decorations, Expr, ExprId,
     ExprKind, LambdaBody, LambdaExpr, ModPath, ModuleKind, Pattern, SelectExpr,
-    SeqCaptureExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger, StructurePattern,
-    TryWithExpr, WrittenAt,
+    SeqCaptureExpr, SeqExpr, SeqKind, SeqMachineExpr, SeqStep, SeqTrigger,
+    StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
     BindId,
@@ -97,9 +97,8 @@ struct Parts<'a> {
 /// comes from `spec`'s source.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
-    let ExprKind::Seq { kind, trigger, abort, body } = &spec.kind else {
-        bail!("BUG: seq lowering of a non-seq")
-    };
+    let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
+    let SeqExpr { kind, trigger, abort, body } = &**s;
     let seq = Parts {
         spec,
         trigger: trigger.as_ref(),
@@ -163,12 +162,12 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
         }
         None => seq.body.clone(),
     };
-    let queued = ExprKind::Seq {
+    let queued = ExprKind::Seq(Arc::new(SeqExpr {
         kind: SeqKind::Queued { flush: seq.flush.map(&event) },
         trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, &name)))),
         abort: seq.abort.map(&event),
         body,
-    }
+    }))
     .to_expr(pos);
     Ok(block(pos, [let_bind(pos, &name, typ.clone(), value.clone()), queued]))
 }
@@ -562,7 +561,7 @@ fn is_declaration(e: &Expr) -> bool {
         | ExprKind::TypeDef(_)
         | ExprKind::Trait(_)
         | ExprKind::Impl(_) => true,
-        ExprKind::Module { value, .. } => !matches!(value, ModuleKind::Dynamic { .. }),
+        ExprKind::Module { value, .. } => !matches!(&**value, ModuleKind::Dynamic { .. }),
         _ => false,
     }
 }
@@ -1374,7 +1373,7 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
 /// and after.
 fn has_call(e: &Expr) -> bool {
     ensure_sufficient(|| match &e.kind {
-        ExprKind::Apply(_) | ExprKind::Seq { .. } => true,
+        ExprKind::Apply(_) | ExprKind::Seq(_) => true,
         ExprKind::Lambda(_) => false,
         _ => {
             let mut found = false;
@@ -1538,7 +1537,8 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
-        ExprKind::Seq { kind, trigger, abort, body } => {
+        ExprKind::Seq(s) => {
+            let SeqExpr { kind, trigger, abort, body } = &**s;
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
             let mut inner = scope(map);
             if let Some(SeqTrigger::Bind(b)) = &trigger {
@@ -1556,7 +1556,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 }
             };
             let body = rewrite_stmts(body, &inner, mode.deferred());
-            ExprKind::Seq { kind, trigger, abort, body }
+            ExprKind::Seq(Arc::new(SeqExpr { kind, trigger, abort, body }))
         }
         ExprKind::Qop { arg: x, written } => {
             let original = written.clone().unwrap_or_else(|| x.clone());

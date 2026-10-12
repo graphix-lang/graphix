@@ -567,7 +567,8 @@ fn walk_body<R: Rt, E: UserEvent>(
 /// A dynamic module runs code its source delivers at run time, whose
 /// effects nothing here can see.
 fn is_dynamic_module<R: Rt, E: UserEvent>(m: &Module<R, E>) -> bool {
-    matches!(&m.spec().kind, ExprKind::Module { value: ModuleKind::Dynamic { .. }, .. })
+    matches!(&m.spec().kind, ExprKind::Module { value, .. }
+        if matches!(&**value, ModuleKind::Dynamic { .. }))
 }
 
 /// Which `<-` targets count as state of the code being classified.

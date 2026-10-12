@@ -990,7 +990,7 @@ fn connect() {
 fn module() {
     let exp = ExprKind::Module {
         name: literal!("foo").into(),
-        value: ModuleKind::Unresolved { from_interface: false },
+        value: Arc::new(ModuleKind::Unresolved { from_interface: false }),
     }
     .to_expr_nopos();
     let s = r#"mod foo"#;
@@ -2256,21 +2256,21 @@ fn seq_parses() {
         "seqq (flush(s)) { 1 }",
     ] {
         let e = parse_one(s).unwrap();
-        assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
+        assert!(matches!(e.kind, ExprKind::Seq(_)), "{s} -> {:?}", e.kind);
         let again = parse_one(&e.to_string()).unwrap();
         assert_eq!(again, e, "{s}");
         assert_eq!(parse_one(&e.to_string_pretty(0)).unwrap(), e, "{s}");
         match (&e.kind, &again.kind) {
-            (ExprKind::Seq { kind: a, .. }, ExprKind::Seq { kind: b, .. }) => {
-                assert_eq!(a.queued(), s.starts_with("seqq"));
-                assert_eq!(a.queued(), b.queued());
+            (ExprKind::Seq(a), ExprKind::Seq(b)) => {
+                assert_eq!(a.kind.queued(), s.starts_with("seqq"));
+                assert_eq!(a.kind.queued(), b.kind.queued());
             }
             _ => panic!("round-trip of {s}: {e}"),
         }
     }
     let clauses = |s: &str| match &parse_one(s).unwrap().kind {
-        ExprKind::Seq { kind, trigger, abort, .. } => {
-            (trigger.is_some(), abort.is_some(), kind.flush().is_some())
+        ExprKind::Seq(s) => {
+            (s.trigger.is_some(), s.abort.is_some(), s.kind.flush().is_some())
         }
         k => panic!("{s} -> {k:?}"),
     };
@@ -2338,9 +2338,8 @@ fn a_prefix_trigger_leaves_the_body_alone() {
         ("seq &x { a }", "&x"),
     ] {
         let e = parse_one(src).unwrap();
-        let ExprKind::Seq { trigger: Some(t), body, .. } = &e.kind else {
-            panic!("{e:?}")
-        };
+        let ExprKind::Seq(s) = &e.kind else { panic!("{e:?}") };
+        let (Some(t), body) = (&s.trigger, &s.body) else { panic!("{e:?}") };
         assert_eq!(t.expr().to_string(), trigger, "{src}");
         assert_eq!(body.len(), 1, "{src}");
         assert_eq!(parse_one(&e.to_string()).unwrap(), e, "{src}");
@@ -2398,7 +2397,8 @@ fn a_qop_chain_counts_against_the_nesting_limit() {
 #[test]
 fn a_seq_statement_carries_what_stands_above_it() {
     let e = parse_one("seq t {\n  // wait\n  #[native]\n  until ready;\n  x\n}").unwrap();
-    let ExprKind::Seq { body, .. } = &e.kind else { panic!("{e:?}") };
+    let ExprKind::Seq(s) = &e.kind else { panic!("{e:?}") };
+    let body = &s.body;
     let dec = body[0].dec.as_ref().expect("until lost its decorations");
     assert_eq!(&dec.comments[..], &[literal!(" wait")]);
     assert_eq!(&dec.attrs[0].name, "native");

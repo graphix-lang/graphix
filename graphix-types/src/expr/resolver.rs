@@ -537,9 +537,9 @@ pub fn add_interface_modules(
         let kind = match &si.kind {
             SigKind::Module(name) => ExprKind::Module {
                 name: name.clone(),
-                value: ModuleKind::Unresolved { from_interface: true },
+                value: Arc::new(ModuleKind::Unresolved { from_interface: true }),
             },
-            SigKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
+            SigKind::TypeDef(td) => ExprKind::TypeDef(Arc::new(td.clone())),
             SigKind::Trait(t) => ExprKind::Trait(t.clone()),
             SigKind::Use { reexport, names } => {
                 ExprKind::Use { reexport: *reexport, names: names.clone() }
@@ -723,7 +723,8 @@ impl RootFile {
         let name = Name::from(name);
         let Self { ori, exprs, sig } = self;
         let value = ModuleKind::Resolved { exprs, sig, from_interface: false };
-        let mut e = ExprKind::Module { name, value }.to_expr(SourcePosition::default());
+        let mut e = ExprKind::Module { name, value: Arc::new(value) }
+            .to_expr(SourcePosition::default());
         e.ori = Arc::new(ori);
         e
     }
@@ -765,7 +766,7 @@ async fn resolve(
             ts.elapsed()
         );
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
-        let kind = ExprKind::Module { name: module.clone(), value };
+        let kind = ExprKind::Module { name: module.clone(), value: Arc::new(value) };
         return Ok(stmt.rekind(kind));
     }
     let mut why = CompactString::new("");
@@ -798,7 +799,11 @@ impl Expr {
     /// Whether an unresolved `mod` sits at or beneath this expression.
     fn holds_unresolved(&self) -> bool {
         crate::stack::ensure_sufficient(|| match &self.kind {
-            ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => true,
+            ExprKind::Module { value, .. }
+                if matches!(&**value, ModuleKind::Unresolved { .. }) =>
+            {
+                true
+            }
             _ => {
                 let mut found = false;
                 self.for_each_child(&mut |c| found = found || c.holds_unresolved());
@@ -848,82 +853,90 @@ impl Expr {
         resolvers: &'a Resolvers,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
         match &self.kind {
-            ExprKind::Module {
-                value: ModuleKind::Unresolved { from_interface },
-                name,
-            } => Box::pin(async move {
-                let e = resolve(
-                    scope.clone(),
-                    prepend.clone(),
-                    resolvers.clone(),
-                    self,
-                    name,
-                    *from_interface,
-                )
-                .await
-                .at(self)?;
-                let scope = ModPath(scope.append(&**name));
-                let r = e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
-                Ok(Some(r.unwrap_or(e)))
-            }),
-            ExprKind::Module {
-                value: ModuleKind::Resolved { exprs, sig, from_interface },
-                name,
-            } => Box::pin(async move {
-                let source = self_kind_origin(&self.kind).map(|o| &o.source);
-                // a file or a netidx path is one place; a VFS lookup is
-                // scoped by the module path, so it cannot come round again
-                let chain = match source {
-                    Some(s @ (Source::File(_) | Source::Netidx(_))) => {
-                        Some(LoadChain::push(chain, s, name).at(self)?)
-                    }
-                    _ => chain.clone(),
-                };
-                let files = |base: PathBuf| {
-                    let overrides = resolvers.iter().find_map(|m| m.overrides());
-                    SArc::new(FilesResolver { base, overrides }) as ResolverRef
-                };
-                // Sub-modules resolve beside the body's own source: relative
-                // to the implementation file's directory (`<dir>/foo/` for
-                // `foo.gx`, `<dir>/` for `foo/mod.gx`), by the module path
-                // for a VFS body, through the transport for a netidx one.
-                let prepend = match source {
-                    Some(Source::File(p)) => {
-                        let Some(p) = p.to_str() else { return Ok(None) };
-                        Some(files(PathBuf::from(submodule_base(p))))
-                    }
-                    Some(Source::Vfs(_) | Source::Program(_) | Source::Unspecified) => {
-                        None
-                    }
-                    Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
-                    None => match &self.ori.source {
-                        Source::Unspecified | Source::Vfs(_) | Source::Program(_) => None,
-                        Source::File(p) => p.parent().map(|p| files(p.into())),
-                        s => resolvers.iter().find_map(|m| m.for_source(s)),
-                    },
-                };
-                let Some(resolved) = Self::resolve_children(
-                    exprs.iter(),
-                    scope,
-                    &prepend,
-                    &chain,
-                    resolvers,
-                )
-                .await?
-                else {
-                    return Ok(None);
-                };
-                let exprs = resolved
-                    .into_iter()
-                    .zip(exprs.iter())
-                    .map(|(r, e)| r.unwrap_or_else(|| e.clone()));
-                let value = ModuleKind::Resolved {
-                    exprs: Arc::from_iter(exprs),
-                    sig: sig.clone(),
-                    from_interface: *from_interface,
-                };
-                Ok(Some(self.rekind(ExprKind::Module { value, name: name.clone() })))
-            }),
+            ExprKind::Module { value, name }
+                if let ModuleKind::Unresolved { from_interface } = &**value =>
+            {
+                Box::pin(async move {
+                    let e = resolve(
+                        scope.clone(),
+                        prepend.clone(),
+                        resolvers.clone(),
+                        self,
+                        name,
+                        *from_interface,
+                    )
+                    .await
+                    .at(self)?;
+                    let scope = ModPath(scope.append(&**name));
+                    let r =
+                        e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
+                    Ok(Some(r.unwrap_or(e)))
+                })
+            }
+            ExprKind::Module { value, name }
+                if let ModuleKind::Resolved { exprs, sig, from_interface } = &**value =>
+            {
+                Box::pin(async move {
+                    let source = self_kind_origin(&self.kind).map(|o| &o.source);
+                    // a file or a netidx path is one place; a VFS lookup is
+                    // scoped by the module path, so it cannot come round again
+                    let chain = match source {
+                        Some(s @ (Source::File(_) | Source::Netidx(_))) => {
+                            Some(LoadChain::push(chain, s, name).at(self)?)
+                        }
+                        _ => chain.clone(),
+                    };
+                    let files = |base: PathBuf| {
+                        let overrides = resolvers.iter().find_map(|m| m.overrides());
+                        SArc::new(FilesResolver { base, overrides }) as ResolverRef
+                    };
+                    // Sub-modules resolve beside the body's own source: relative
+                    // to the implementation file's directory (`<dir>/foo/` for
+                    // `foo.gx`, `<dir>/` for `foo/mod.gx`), by the module path
+                    // for a VFS body, through the transport for a netidx one.
+                    let prepend = match source {
+                        Some(Source::File(p)) => {
+                            let Some(p) = p.to_str() else { return Ok(None) };
+                            Some(files(PathBuf::from(submodule_base(p))))
+                        }
+                        Some(
+                            Source::Vfs(_) | Source::Program(_) | Source::Unspecified,
+                        ) => None,
+                        Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
+                        None => match &self.ori.source {
+                            Source::Unspecified | Source::Vfs(_) | Source::Program(_) => {
+                                None
+                            }
+                            Source::File(p) => p.parent().map(|p| files(p.into())),
+                            s => resolvers.iter().find_map(|m| m.for_source(s)),
+                        },
+                    };
+                    let Some(resolved) = Self::resolve_children(
+                        exprs.iter(),
+                        scope,
+                        &prepend,
+                        &chain,
+                        resolvers,
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+                    let exprs = resolved
+                        .into_iter()
+                        .zip(exprs.iter())
+                        .map(|(r, e)| r.unwrap_or_else(|| e.clone()));
+                    let value = ModuleKind::Resolved {
+                        exprs: Arc::from_iter(exprs),
+                        sig: sig.clone(),
+                        from_interface: *from_interface,
+                    };
+                    Ok(Some(self.rekind(ExprKind::Module {
+                        value: Arc::new(value),
+                        name: name.clone(),
+                    })))
+                })
+            }
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
                 self.for_each_child(&mut |c| children.push(c));
@@ -1074,9 +1087,11 @@ mod test {
 
     fn body(e: &Expr) -> (&Arc<[Expr]>, &Option<Sig>) {
         match &e.kind {
-            ExprKind::Module {
-                value: ModuleKind::Resolved { exprs, sig, .. }, ..
-            } => (exprs, sig),
+            ExprKind::Module { value, .. }
+                if let ModuleKind::Resolved { exprs, sig, .. } = &**value =>
+            {
+                (exprs, sig)
+            }
             k => panic!("not a resolved module: {k:?}"),
         }
     }

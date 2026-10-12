@@ -60,7 +60,7 @@ fn wrong(text: &str, e: &Expr, parent: Option<&Expr>) -> Option<String> {
     if let ExprKind::Until(_) = e.kind {
         let wrapped = format!("seq {{ {slice} }}");
         return match parser::parse_one(&wrapped).as_ref().map(|s| &s.kind) {
-            Ok(ExprKind::Seq { body, .. }) if body.len() == 1 && body[0] == *e => None,
+            Ok(ExprKind::Seq(s)) if s.body.len() == 1 && s.body[0] == *e => None,
             _ => Some(format!("does not read back: `{slice}`")),
         };
     }

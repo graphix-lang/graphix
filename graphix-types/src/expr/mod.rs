@@ -404,6 +404,17 @@ impl ModuleKind {
     }
 }
 
+/// A `seq` or `seqq` block.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct SeqExpr {
+    pub kind: SeqKind,
+    pub trigger: Option<SeqTrigger>,
+    /// `abort(e)`: a fire of `e` during a run ends it
+    pub abort: Option<Arc<Expr>>,
+    pub body: Arc<[Expr]>,
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct BindExpr {
@@ -624,7 +635,7 @@ pub enum ExprKind {
     Constant(Value),
     Module {
         name: Name,
-        value: ModuleKind,
+        value: Arc<ModuleKind>,
     },
     ExplicitParens(Arc<Expr>),
     Block {
@@ -669,19 +680,19 @@ pub enum ExprKind {
     },
     StructWith(StructWithExpr),
     Lambda(Arc<LambdaExpr>),
-    TypeDef(TypeDefExpr),
+    TypeDef(Arc<TypeDefExpr>),
     Trait(Arc<TraitExpr>),
     Impl(Arc<ImplExpr>),
     TypeCast {
         expr: Arc<Expr>,
-        typ: Type,
+        typ: Arc<Type>,
     },
     Apply(ApplyExpr),
     /// `never<T>(args…)`: a value that never arrives, typed `T` where
     /// given and bottom otherwise; the arguments are kept live and
     /// consumed.
     Never {
-        typ: Option<Type>,
+        typ: Option<Arc<Type>>,
         args: Arc<[Expr]>,
     },
     Any {
@@ -712,13 +723,7 @@ pub enum ExprKind {
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable.
-    Seq {
-        kind: SeqKind,
-        trigger: Option<SeqTrigger>,
-        /// `abort(e)`: a fire of `e` during a run ends it
-        abort: Option<Arc<Expr>>,
-        body: Arc<[Expr]>,
-    },
+    Seq(Arc<SeqExpr>),
     /// `until expr` — wait until a bool level is true. Legal only as a
     /// seq step.
     Until(Arc<Expr>),
@@ -846,11 +851,11 @@ impl ExprKind {
         use ExprKind::*;
         match self {
             NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) => (),
-            Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
-                exprs.iter().for_each(|e| f(e))
-            }
-            Module { value: ModuleKind::Dynamic { source, .. }, .. } => f(source),
-            Module { value: ModuleKind::Unresolved { .. }, .. } => (),
+            Module { value, .. } => match &**value {
+                ModuleKind::Resolved { exprs, .. } => exprs.iter().for_each(|e| f(e)),
+                ModuleKind::Dynamic { source, .. } => f(source),
+                ModuleKind::Unresolved { .. } => (),
+            },
             ExplicitParens(x)
             | Qop { arg: x, .. }
             | Rethrow(x)
@@ -928,7 +933,8 @@ impl ExprKind {
                 c.role.action().iter().for_each(|e| f(e));
                 c.role.manual().iter().for_each(|e| f(e));
             }
-            Seq { kind, trigger, abort, body } => {
+            Seq(s) => {
+                let SeqExpr { kind, trigger, abort, body } = &**s;
                 trigger.iter().for_each(|t| f(t.expr()));
                 abort.iter().for_each(|e| f(e));
                 kind.flush().iter().for_each(|e| f(e));
@@ -1506,33 +1512,28 @@ impl Expr {
             Arc::from_iter(xs.iter().map(|x| f(x)))
         };
         let kind = match &self.kind {
-            NoOp
-            | Constant(_)
-            | Use { .. }
-            | Ref { .. }
-            | TypeDef(_)
-            | Module { value: ModuleKind::Unresolved { .. }, .. } => self.kind.clone(),
-            Module {
-                name,
-                value: ModuleKind::Resolved { exprs, sig, from_interface },
-            } => Module {
-                name: name.clone(),
-                value: ModuleKind::Resolved {
-                    exprs: xs(f, exprs),
-                    sig: sig.clone(),
-                    from_interface: *from_interface,
-                },
-            },
-            Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => {
-                Module {
+            NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) => {
+                self.kind.clone()
+            }
+            Module { name, value } => match &**value {
+                ModuleKind::Unresolved { .. } => self.kind.clone(),
+                ModuleKind::Resolved { exprs, sig, from_interface } => Module {
                     name: name.clone(),
-                    value: ModuleKind::Dynamic {
+                    value: Arc::new(ModuleKind::Resolved {
+                        exprs: xs(f, exprs),
+                        sig: sig.clone(),
+                        from_interface: *from_interface,
+                    }),
+                },
+                ModuleKind::Dynamic { sandbox, sig, source } => Module {
+                    name: name.clone(),
+                    value: Arc::new(ModuleKind::Dynamic {
                         sandbox: sandbox.clone(),
                         sig: sig.clone(),
                         source: a(f, source),
-                    },
-                }
-            }
+                    }),
+                },
+            },
             ExplicitParens(x) => ExplicitParens(a(f, x)),
             Qop { arg, written } => Qop { arg: a(f, arg), written: written.clone() },
             Rethrow(x) => Rethrow(a(f, x)),
@@ -1656,17 +1657,17 @@ impl Expr {
                     }
                 },
             })),
-            Seq { kind, trigger, abort, body } => Seq {
-                trigger: trigger.as_ref().map(|t| t.map(|e| f(e))),
-                abort: abort.as_ref().map(|e| a(f, e)),
-                kind: match kind {
+            Seq(s) => Seq(Arc::new(SeqExpr {
+                trigger: s.trigger.as_ref().map(|t| t.map(|e| f(e))),
+                abort: s.abort.as_ref().map(|e| a(f, e)),
+                kind: match &s.kind {
                     SeqKind::Plain => SeqKind::Plain,
                     SeqKind::Queued { flush } => {
                         SeqKind::Queued { flush: flush.as_ref().map(|e| a(f, e)) }
                     }
                 },
-                body: xs(f, body),
-            },
+                body: xs(f, &s.body),
+            })),
             TryWith(t) => TryWith(Arc::new(TryWithExpr {
                 body: xs(f, &t.body),
                 bind: t.bind.clone(),

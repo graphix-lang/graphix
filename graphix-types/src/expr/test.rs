@@ -699,7 +699,7 @@ fn typedef() -> impl Strategy<Value = Expr> {
     (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), body).prop_map(
         |(name, params, body)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(TypeDefExpr { name: name.into(), params, body })
+            ExprKind::TypeDef(Arc::new(TypeDefExpr { name: name.into(), params, body }))
                 .to_expr_nopos()
         },
     )
@@ -1137,7 +1137,8 @@ macro_rules! mapref {
 macro_rules! typecast {
     ($inner:expr) => {
         ($inner, typexp()).prop_map(|(expr, typ)| {
-            ExprKind::TypeCast { expr: Arc::new(expr), typ }.to_expr_nopos()
+            ExprKind::TypeCast { expr: Arc::new(expr), typ: Arc::new(typ) }
+                .to_expr_nopos()
         })
     };
 }
@@ -1145,7 +1146,8 @@ macro_rules! typecast {
 macro_rules! never {
     ($inner:expr) => {
         (collection::vec($inner, 0..3), option::of(typexp())).prop_map(|(args, typ)| {
-            ExprKind::Never { typ, args: Arc::from(args) }.to_expr_nopos()
+            ExprKind::Never { typ: typ.map(Arc::new), args: Arc::from(args) }
+                .to_expr_nopos()
         })
     };
 }
@@ -1246,7 +1248,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
         (typedef(), option::of(doc_text())).prop_map(|(mut td, doc)| {
             match std::mem::replace(&mut td.kind, ExprKind::NoOp) {
                 ExprKind::TypeDef(td) => SigItem {
-                    kind: SigKind::TypeDef(td),
+                    kind: SigKind::TypeDef((*td).clone()),
                     comments: Comments::default(),
                     doc: Doc(doc),
                     pos: Default::default(),
@@ -1355,11 +1357,11 @@ macro_rules! dynamic_module {
             .prop_map(|(name, sandbox, sig, source)| {
                 ExprKind::Module {
                     name: name.into(),
-                    value: ModuleKind::Dynamic {
+                    value: Arc::new(ModuleKind::Dynamic {
                         sandbox,
                         sig: Sig { items: Arc::from(sig), toplevel: false },
                         source: Arc::new(source),
-                    },
+                    }),
                 }
                 .to_expr_nopos()
             })
@@ -1370,7 +1372,7 @@ fn module() -> impl Strategy<Value = Expr> {
     (random_fname()).prop_map(|name| {
         ExprKind::Module {
             name: name.into(),
-            value: ModuleKind::Unresolved { from_interface: false },
+            value: Arc::new(ModuleKind::Unresolved { from_interface: false }),
         }
         .to_expr_nopos()
     })
@@ -1552,7 +1554,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 collection::vec(decorated(seq_item!(inner.clone())), 1..5),
             )
                 .prop_map(|(queued, trigger, abort, flush, body)| {
-                    ExprKind::Seq {
+                    ExprKind::Seq(Arc::new(SeqExpr {
                         kind: if queued {
                             SeqKind::Queued { flush: flush.map(Arc::new) }
                         } else {
@@ -1561,7 +1563,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                         trigger,
                         abort: abort.map(Arc::new),
                         body: Arc::from(body),
-                    }
+                    }))
                     .to_expr_nopos()
                 }),
             lambda!(inner.clone()),
@@ -2005,25 +2007,23 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             check(expr0, expr1)
         }
         (
-            ExprKind::Module {
-                name: name0,
-                value: ModuleKind::Unresolved { from_interface: fi0 },
-            },
-            ExprKind::Module {
-                name: name1,
-                value: ModuleKind::Unresolved { from_interface: fi1 },
-            },
-        ) => (name0 == name1) && fi0 == fi1,
+            ExprKind::Module { name: name0, value: v0 },
+            ExprKind::Module { name: name1, value: v1 },
+        ) if let (
+            ModuleKind::Unresolved { from_interface: fi0 },
+            ModuleKind::Unresolved { from_interface: fi1 },
+        ) = (&**v0, &**v1) =>
+        {
+            (name0 == name1) && fi0 == fi1
+        }
         (
-            ExprKind::Module {
-                name: name0,
-                value: ModuleKind::Dynamic { sandbox: sb0, sig: si0, source: sr0 },
-            },
-            ExprKind::Module {
-                name: name1,
-                value: ModuleKind::Dynamic { sandbox: sb1, sig: si1, source: sr1 },
-            },
-        ) => {
+            ExprKind::Module { name: name0, value: v0 },
+            ExprKind::Module { name: name1, value: v1 },
+        ) if let (
+            ModuleKind::Dynamic { sandbox: sb0, sig: si0, source: sr0 },
+            ModuleKind::Dynamic { sandbox: sb1, sig: si1, source: sr1 },
+        ) = (&**v0, &**v1) =>
+        {
             (name0 == name1)
                 && (sb0 == sb1)
                 && (check_module_sig(si0, si1))
@@ -2195,10 +2195,9 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::StrictSample { lhs: l1, rhs: r1 },
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
-        (
-            ExprKind::Seq { kind: k0, trigger: t0, abort: a0, body: b0 },
-            ExprKind::Seq { kind: k1, trigger: t1, abort: a1, body: b1 },
-        ) => {
+        (ExprKind::Seq(s0), ExprKind::Seq(s1)) => {
+            let SeqExpr { kind: k0, trigger: t0, abort: a0, body: b0 } = &**s0;
+            let SeqExpr { kind: k1, trigger: t1, abort: a1, body: b1 } = &**s1;
             let clause = |a: Option<&Arc<Expr>>, b: Option<&Arc<Expr>>| match (a, b) {
                 (None, None) => true,
                 (Some(a), Some(b)) => check(a, b),
@@ -2726,11 +2725,11 @@ fn compiler_kinds_children_agree() {
         (
             Module {
                 name: literal!("m").into(),
-                value: ModuleKind::Resolved {
+                value: Arc::new(ModuleKind::Resolved {
                     exprs: Arc::from_iter([leaf("a"), leaf("b")]),
                     sig: None,
                     from_interface: false,
-                },
+                }),
             },
             2,
         ),

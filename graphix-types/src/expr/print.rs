@@ -2,7 +2,7 @@ use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comments, Decorations,
         Doc, Expr, ExprKind, ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox,
-        SelectExpr, SeqKind, SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr,
+        SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr,
         StructWithExpr, StructurePattern, TraitExpr, TraitMethod, TypeDefBody,
         TypeDefExpr, UseItem, format::FormatConfig, parser,
     },
@@ -77,7 +77,7 @@ fn trigger_needs_parens(t: &Expr, bound: bool) -> bool {
             | StructWith(_)
             | Block { .. }
             | Select(_)
-            | Seq { .. }
+            | Seq(_)
             | Variant { .. }
             | Construct { .. }
             | TypeCast { .. }
@@ -187,7 +187,7 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         Block { .. }
         | Lambda(_)
         | Select(_)
-        | Seq { .. }
+        | Seq(_)
         | TryWith(_)
         | Struct(_)
         | StructWith(_)
@@ -200,8 +200,8 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | Never { .. }
         | Construct { .. }
         | TypeCast { .. }
-        | ExplicitParens(_)
-        | Module { value: ModuleKind::Dynamic { .. }, .. } => true,
+        | ExplicitParens(_) => true,
+        Module { value, .. } => matches!(&**value, ModuleKind::Dynamic { .. }),
         Variant { args, .. } => !args.is_empty(),
         Qop { arg: e, .. }
         | OrNever(e)
@@ -269,8 +269,8 @@ fn head_min(e: &ExprKind) -> usize {
     match e {
         List { .. } => 2,
         TryWith(_) => "try {".len(),
-        Seq { kind: SeqKind::Queued { .. }, .. } => "seqq {".len(),
-        Seq { kind: SeqKind::Plain, .. } => "seq {".len(),
+        Seq(s) if s.kind.queued() => "seqq {".len(),
+        Seq(_) => "seq {".len(),
         Select(_) => "select _ {".len(),
         StructWith(_) => "{ _ with".len(),
         Any { .. } => "any(".len(),
@@ -398,7 +398,9 @@ fn kind_decorated(k: &ExprKind) -> bool {
     ensure_sufficient(|| {
         let mut any = match k {
             ExprKind::Trait(t) => t.decorated(),
-            ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
+            ExprKind::Module { value, .. }
+                if let ModuleKind::Dynamic { sig, .. } = &**value =>
+            {
                 sig.decorated()
             }
             _ => false,
@@ -1645,13 +1647,7 @@ impl PrettyDisplay for ExprKind {
         match self {
             NoOp => Ok(()),
             Use { reexport, names } => UseStmt(*reexport, names).fmt_pretty_inner(buf),
-            Constant(_)
-            | Ref { .. }
-            | StringInterpolate { .. }
-            | Module {
-                value: ModuleKind::Unresolved { .. } | ModuleKind::Resolved { .. },
-                ..
-            } => {
+            Constant(_) | Ref { .. } | StringInterpolate { .. } => {
                 writeln!(buf, "{self}")
             }
             StructRef { source, field } => {
@@ -1675,7 +1671,8 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             Block { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
-            Seq { kind, trigger, abort, body } => {
+            Seq(s) => {
+                let SeqExpr { kind, trigger, abort, body } = &**s;
                 write!(buf, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     let bound = matches!(t, SeqTrigger::Bind(_));
@@ -1729,7 +1726,10 @@ impl PrettyDisplay for ExprKind {
             Trait(t) => t.fmt_pretty_inner(buf),
             Impl(i) => i.fmt_pretty_inner(buf),
             StructWith(sw) => sw.fmt_pretty_inner(buf),
-            Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => {
+            Module { name, value } => {
+                let ModuleKind::Dynamic { sandbox, sig, source } = &**value else {
+                    return writeln!(buf, "{self}");
+                };
                 writeln!(buf, "mod {name} dynamic {{")?;
                 buf.nested(|buf| {
                     sandbox.fmt_pretty(buf)?;
@@ -2363,15 +2363,18 @@ impl ExprKind {
             ExprKind::TupleRef { source, field } => {
                 write!(f, "{}.{field}", Postfix(source))
             }
-            ExprKind::Module {
-                value:
+            ExprKind::Module { value, .. }
+                if matches!(
+                    &**value,
                     ModuleKind::Resolved { from_interface: true, .. }
-                    | ModuleKind::Unresolved { from_interface: true },
-                ..
-            } => Ok(()),
+                        | ModuleKind::Unresolved { from_interface: true }
+                ) =>
+            {
+                Ok(())
+            }
             ExprKind::Module { name, value } => {
                 write!(f, "mod {name}")?;
-                match value {
+                match &**value {
                     ModuleKind::Resolved { .. } | ModuleKind::Unresolved { .. } => Ok(()),
                     ModuleKind::Dynamic { sandbox, sig, source } => {
                         write!(f, " dynamic {{ {sandbox};")?;
@@ -2385,7 +2388,8 @@ impl ExprKind {
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Block { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
-            ExprKind::Seq { kind, trigger, abort, body } => {
+            ExprKind::Seq(s) => {
+                let SeqExpr { kind, trigger, abort, body } = &**s;
                 write!(f, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     let bound = matches!(t, SeqTrigger::Bind(_));

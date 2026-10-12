@@ -141,7 +141,9 @@ fn summarize(path: &Path, kind: FileKind, text: ArcStr) -> (Vec<ArcStr>, Arc<[Sy
 /// loads one in a block or a lambda as at the top; a `dynamic` module
 /// loads none.
 fn file_mods(e: &Expr, out: &mut Vec<ArcStr>) {
-    if let ExprKind::Module { name, value: ModuleKind::Unresolved { .. } } = &e.kind {
+    if let ExprKind::Module { name, value } = &e.kind
+        && let ModuleKind::Unresolved { .. } = &**value
+    {
         out.push(name.name.clone());
     }
     e.for_each_child(&mut |c| file_mods(c, out));

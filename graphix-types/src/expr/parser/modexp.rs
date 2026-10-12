@@ -141,7 +141,9 @@ where
         optional(dynamic_module())
             .map(|m| m.unwrap_or(ModuleKind::Unresolved { from_interface: false })),
     )
-        .map(|(pos, name, value)| ExprKind::Module { name, value }.to_expr(pos))
+        .map(|(pos, name, value)| {
+            ExprKind::Module { name, value: Arc::new(value) }.to_expr(pos)
+        })
 }
 
 /// A use-tree path segment: an ordinary name or a path keyword

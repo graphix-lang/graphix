@@ -179,10 +179,8 @@ fn program_sources(root: &Expr, sources: &mut Vec<Arc<Origin>>) {
     let mut todo = vec![root];
     while let Some(e) = todo.pop() {
         add(&e.ori);
-        if let ExprKind::Module {
-            value: ModuleKind::Resolved { sig: Some(sig), .. },
-            ..
-        } = &e.kind
+        if let ExprKind::Module { value, .. } = &e.kind
+            && let ModuleKind::Resolved { sig: Some(sig), .. } = &**value
         {
             for item in sig.iter() {
                 if let Some(o) = &item.ori {

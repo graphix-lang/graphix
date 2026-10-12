@@ -863,7 +863,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         | ExprKind::TypeDef(_)
         | ExprKind::Trait(_)
         | ExprKind::Impl(_) => true,
-        ExprKind::Module { value, .. } => !matches!(value, ModuleKind::Dynamic { .. }),
+        ExprKind::Module { value, .. } => !matches!(&**value, ModuleKind::Dynamic { .. }),
         _ => false,
     };
     if declaration && let Some(attr) = e.dec.as_ref().and_then(|d| d.attrs.first()) {
@@ -885,7 +885,9 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             let spec = ctx.shared_spec(e.clone());
             return error::Catch::compile(ctx, flags, spec, scope, top_id, c);
         }
-        ExprKind::Module { name, value: value @ ModuleKind::Dynamic { .. } } => {
+        ExprKind::Module { name, value }
+            if matches!(&**value, ModuleKind::Dynamic { .. }) =>
+        {
             let spec = ctx.shared_spec(e.clone());
             compile_module(ctx, flags, spec, scope, top_id, name, value, predeclared)
         }
@@ -1965,7 +1967,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
         spec: Arc<Expr>,
         scope: &Scope,
         top_id: ExprId,
-        typ: &Option<Type>,
+        typ: &Option<Arc<Type>>,
         args: &[Expr],
     ) -> Result<Node<R, E>> {
         let n = args

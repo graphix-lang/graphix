@@ -17,7 +17,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
         ApplyExpr, ArgKind, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr, ModPath,
-        Name, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
+        Name, SeqExpr, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
@@ -323,7 +323,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 .value
                 .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
             if under(|k| matches!(k, ExprKind::ByRef(..)))
-                || (holds_catch && under(|k| matches!(k, ExprKind::Seq { .. })))
+                || (holds_catch && under(|k| matches!(k, ExprKind::Seq(_))))
             {
                 continue;
             }
@@ -431,11 +431,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
             let Some(t) = &b.typ else { continue };
-            let td = ExprKind::TypeDef(TypeDefExpr {
+            let td = ExprKind::TypeDef(Arc::new(TypeDefExpr {
                 name: Name::from(TYP),
                 params: Arc::from_iter(std::iter::empty::<(TVar, Option<Type>)>()),
                 body: TypeDefBody::Alias(t.clone()),
-            })
+            }))
             .to_expr_nopos();
             let nb = ExprKind::Bind(Arc::new(BindExpr {
                 rec: b.rec,
@@ -506,7 +506,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
                 | ExprKind::Select(_)
                 | ExprKind::Catch(_)
                 | ExprKind::Block { .. }
-                | ExprKind::Seq { .. }
+                | ExprKind::Seq(_)
                 | ExprKind::TryWith(_)
         );
     *idx += 1;
@@ -702,7 +702,8 @@ pub(crate) fn for_each_reached(
     let inner = reached && !binds(e, f);
     match &e.kind {
         ExprKind::Block { exprs } => stmts(exprs, f, reached, idx, visit),
-        ExprKind::Seq { kind, trigger, abort, body } => {
+        ExprKind::Seq(s) => {
+            let SeqExpr { kind, trigger, abort, body } = &**s;
             let heads = trigger
                 .iter()
                 .map(|t| t.expr())
@@ -757,7 +758,7 @@ pub(crate) fn binds(n: &Expr, name: &str) -> bool {
         }
         ExprKind::Catch(c) => &*c.bind == name,
         ExprKind::TryWith(t) => &*t.bind == name,
-        ExprKind::Seq { trigger: Some(SeqTrigger::Bind(b)), .. } => {
+        ExprKind::Seq(s) if let Some(SeqTrigger::Bind(b)) = &s.trigger => {
             pattern_binds(&b.pattern, name)
         }
         ExprKind::Use { names, .. } => names.iter().any(|u| {
