@@ -187,7 +187,10 @@ a group at a time, and shared. A batch child's first pass agrees only
 when every comparison agrees at once and no run timed out or failed;
 anything else is a suspect. The individual check takes each comparison
 through one confirm ladder: the node-walk's stack budget beside a JIT
-trace, or either schedule's beside the other's trace, is containment; a one-sided Timeout reruns that side at the slow
+trace, or either schedule's beside the other's trace, is containment;
+the JIT refusing a `#[tail_recursive]` whose loop it did not build,
+beside a node-walk trace, is that assertion being the JIT's (as
+`#[native]`, which the seed harvest strips); a one-sided Timeout reruns that side at the slow
 budget (a session's cold and warm together) and the comparison goes on
 with the rerun's outcome; a reference that burned seconds of CPU and
 still timed out is honest slowness; a reference that disagrees with its

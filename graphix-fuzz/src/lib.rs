@@ -1787,6 +1787,18 @@ impl<'a> Oracle<'a> {
             eprintln!("    program: {}", self.code.replace('\n', "\\n"));
             return Settled::Drop;
         }
+        // `#[tail_recursive]`'s loop is the JIT's assertion: the node-walk
+        // checks only its shape, so a body that does not fuse runs there and
+        // is refused by the JIT
+        if ra.mode.node_walk()
+            && !rb.mode.node_walk()
+            && let (Outcome::Trace(_), Outcome::CompileErr(e)) = (&a, &b)
+            && e.contains("#[tail_recursive]: no loop is built")
+        {
+            eprintln!("JIT ASSERTION — #[tail_recursive] built no loop; not recorded");
+            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+            return Settled::Drop;
+        }
         // The stack budget charges by thread (a forked part runs on a larger
         // stack than the serial cycle), so whether it stops a deep native
         // recursion depends on the fork schedule: containment either way.
@@ -5063,6 +5075,17 @@ mod tests {
     /// for new probes.
     async fn agree_fused_clean(code: &str) {
         check_jit(code, Fuse::Clean).await
+    }
+
+    /// `#[tail_recursive]` over a body that does not fuse runs on the
+    /// node-walk and is refused by the JIT, which alone builds the loop:
+    /// the oracle records nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tail_recursive_loop_is_the_jits() {
+        let code = "{ #[tail_recursive] let rec f = |n: i64, acc: i64| -> i64 \
+                    select n { 0 => acc, _ => f(n - 1, *(&acc) + 1) }; f(10, 0) }";
+        let (d, _) = check_verdict(code, Duration::from_secs(60)).await;
+        assert!(d.is_none(), "{d:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
