@@ -1,0 +1,4 @@
+// Forked slots print as they run, so a cycle's print calls are a
+// multiset; a print without a newline must not glue them into one line
+// whose order decides agreement. Found by the oct04d soak (ryouko).
+{ let f = |a: string| print(a); array::init(100, |i| f("[3][i]")) }

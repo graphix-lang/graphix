@@ -311,54 +311,29 @@ impl ExitRequest {
 #[derive(Debug, Default, Clone)]
 pub struct PrintSink(triomphe::Arc<parking_lot::Mutex<SinkBuf>>);
 
-/// The captured text with the end offset of every cycle that wrote.
+/// Every captured write, with the cycle that made it, in the order made.
 #[derive(Debug, Default)]
-struct SinkBuf {
-    text: String,
-    marks: Vec<(u64, usize)>,
-}
+struct SinkBuf(Vec<(u64, String)>);
 
 impl PrintSink {
     fn push(&self, cycle: u64, line: &str, suffix: &str) {
-        let mut b = self.0.lock();
-        b.text.push_str(line);
-        b.text.push_str(suffix);
-        let end = b.text.len();
-        match b.marks.last_mut() {
-            Some((c, at)) if *c == cycle => *at = end,
-            _ => b.marks.push((cycle, end)),
-        }
+        let mut text = String::with_capacity(line.len() + suffix.len());
+        text.push_str(line);
+        text.push_str(suffix);
+        self.0.lock().0.push((cycle, text));
     }
 
     /// Take the captured text, leaving the sink empty.
     pub fn take(&self) -> String {
-        let mut b = self.0.lock();
-        b.marks.clear();
-        std::mem::take(&mut b.text)
+        self.0.lock().0.drain(..).map(|(_, t)| t).collect()
     }
 
-    /// Take the text written in cycles up to and including `cycle`, each
-    /// cycle's apart; later writes stay in the sink.
+    /// Take the writes made in cycles up to and including `cycle`, one
+    /// entry a print call; later writes stay in the sink.
     pub fn take_through(&self, cycle: u64) -> Vec<(u64, String)> {
         let mut b = self.0.lock();
-        let keep = b.marks.iter().position(|(c, _)| *c > cycle).unwrap_or(b.marks.len());
-        let at = keep.checked_sub(1).map_or(0, |i| b.marks[i].1);
-        let rest = b.text.split_off(at);
-        let taken = std::mem::replace(&mut b.text, rest);
-        let mut start = 0;
-        let cycles = b
-            .marks
-            .drain(..keep)
-            .map(|(c, end)| {
-                let text = taken[start..end].to_string();
-                start = end;
-                (c, text)
-            })
-            .collect();
-        for (_, end) in b.marks.iter_mut() {
-            *end -= at;
-        }
-        cycles
+        let keep = b.0.iter().position(|(c, _)| *c > cycle).unwrap_or(b.0.len());
+        b.0.drain(..keep).collect()
     }
 }
 

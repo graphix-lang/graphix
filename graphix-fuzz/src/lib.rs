@@ -811,11 +811,11 @@ async fn drive_inner(
                 continue;
             };
             for (cycle, text) in cycles {
-                lines.extend(text.lines().map(|l| trace::Printed {
+                lines.push(trace::Printed {
                     epoch: epoch as u32,
                     offset: cycle as i64 - base as i64,
-                    line: l.to_string(),
-                }));
+                    text,
+                });
             }
         }
         lines.sort_unstable();

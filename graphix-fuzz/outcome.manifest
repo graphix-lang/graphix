@@ -172,6 +172,7 @@ trace	foldq-empty-overfire-jul2026/01_empty_fold_reemits_init.gx
 trace	foldq-empty-overfire-jul2026/02_init_runaway_local_bottom.gx
 trace	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 trace	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
+trace	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 trace	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 trace	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx
 trace	frame-formal-init-view-aug2026/01_count_observes_fires.gx

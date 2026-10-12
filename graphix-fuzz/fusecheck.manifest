@@ -172,6 +172,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	foldq-empty-overfire-jul2026/02_init_runaway_local_bottom.gx
 2	foldq-reactive-size-jul2026/01_fold_over_growing_init.gx
 2	foldq-reactive-size-jul2026/02_fold_shrink_emits_held.gx
+0	forked-print-order-oct2026/01_forked_prints_are_unordered.gx
 5	formal-bottom-persists-aug2026/00_wrapper_formal_resurrection.gx
 2	frame-formal-init-view-aug2026/00_guard_flip_rec_arm.gx
 4	frame-formal-init-view-aug2026/01_count_observes_fires.gx

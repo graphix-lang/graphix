@@ -170,29 +170,28 @@ impl Epoch {
     }
 }
 
-/// A captured print-family line: its epoch, its cycle's offset from the
+/// A captured print-family call: its epoch, its cycle's offset from the
 /// epoch's anchor (the first event, or in an epoch without one its
-/// first printing cycle) and the text.
+/// first printing cycle) and the text it wrote.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Printed {
     pub epoch: u32,
     pub offset: i64,
-    pub line: String,
+    pub text: String,
 }
 
 impl fmt::Display for Printed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}+{}:{}", self.epoch, self.offset, self.line)
+        write!(f, "{}+{}:{}", self.epoch, self.offset, self.text.escape_debug())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub epochs: Vec<Epoch>,
-    /// The run's captured print-family output, Exact tier only, sorted:
-    /// within one cycle the emission order is an evaluation-order
-    /// artifact the backends do not share, so a cycle's lines are a
-    /// multiset.
+    /// The run's captured print-family calls, Exact tier only, sorted:
+    /// within one cycle the order is the evaluation's (forked branches
+    /// print as they run), so a cycle's calls are a multiset.
     pub stdout: Vec<Printed>,
 }
 
