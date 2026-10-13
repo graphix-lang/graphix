@@ -5,7 +5,7 @@ type Layer = {
   child: Tui,
   width: &Constraint,
   height: &Constraint,
-  size: &[Size, null]
+  size: [&mut Size, null]
 };
 
 /// Build a layer. Defaults to 60% of the overlay area in each axis.
@@ -14,7 +14,7 @@ type Layer = {
 val layer: fn(
   ?#width: &Constraint,
   ?#height: &Constraint,
-  ?#size: &[Size, null],
+  ?#size: [&mut Size, null],
   child: Tui
 ) -> Layer;
 

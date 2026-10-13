@@ -255,3 +255,36 @@ let result = text(&"[tui::size.width]x[tui::size.height] [n]")
     h.dispatch_event(key('d')).await?;
     h.assert_lines(&["12x1 2"])
 }
+
+#[tokio::test]
+async fn size_outputs_require_writable_references() -> Result<()> {
+    use compact_str::format_compact;
+    for body in [
+        "tui::block::block(#size: OUTPUT, &w)",
+        "tui::scrollbar::scrollbar(#size: OUTPUT, &w)",
+        "tui::tabs::tabs(#size: OUTPUT, &[(tui::line(\"tab\"), w)])",
+        "tui::layout::layout(&[tui::layout::child(#size: OUTPUT, #constraint: `Fill(1), w)])",
+        "tui::overlay::overlay(#layers: &[tui::overlay::layer(#size: OUTPUT, w)], w)",
+    ] {
+        for output in ["&n", "&mut n"] {
+            let code = format_compact!(
+                "let n: null = null; let w = tui::text::text(&\"hello\"); let result = {}",
+                body.replace("OUTPUT", output)
+            );
+            match TuiTestHarness::new(&code).await {
+                Ok(_) => panic!("invalid size output accepted: {code}"),
+                Err(e) => assert!(format_compact!("{e:#}").contains("type"), "{e:#}"),
+            }
+        }
+        let code = format_compact!(
+            "let n: tui::Size = never(); let w = tui::text::text(&\"hello\"); let result = {}",
+            body.replace("OUTPUT", "&mut n")
+        );
+        let mut h = TuiTestHarness::new(&code).await?;
+        h.watch("test::n").await?;
+        h.render()?;
+        h.drain().await?;
+        assert!(matches!(h.get_watched("test::n"), Some(Value::Array(_))));
+    }
+    Ok(())
+}

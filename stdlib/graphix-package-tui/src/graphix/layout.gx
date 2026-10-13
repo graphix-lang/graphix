@@ -1,5 +1,5 @@
 let child = |
-  #size: &[Size, null] = &null,
+  #size: [&mut Size, null] = null,
   #constraint: Constraint,
   child: Tui
 | -> Child {

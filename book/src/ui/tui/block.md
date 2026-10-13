@@ -16,7 +16,7 @@ The `block` widget is a container that wraps other widgets with optional borders
 - **title** - Line displayed at the top of the block
 - **title_bottom** - Line displayed at the bottom of the block
 - **style** - Style for the block's interior
-- **size** (output) - Rendered size of the block
+- **size** (output) - Rendered size of the block; pass `&mut size` where `size: tui::Size`
 
 ## Examples
 

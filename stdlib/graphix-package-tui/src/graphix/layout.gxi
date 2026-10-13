@@ -7,11 +7,11 @@ type Spacing = [
 type Child = {
   child: Tui,
   constraint: Constraint,
-  size: &[Size, null]
+  size: [&mut Size, null]
 };
 
 val child: fn(
-  ?#size: &[Size, null],
+  ?#size: [&mut Size, null],
   #constraint: Constraint,
   child: Tui
 ) -> Child;

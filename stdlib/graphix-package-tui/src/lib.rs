@@ -527,13 +527,21 @@ async fn compile_each<T, F: Future<Output = Result<T>>>(
 /// Where a widget tells the program the size its content draws in: the
 /// struct field `size`, written when the size changes.
 struct SizeReport<X: GXExt> {
-    r: graphix_rt::Ref<X>,
+    r: Option<graphix_rt::Ref<X>>,
     last: SizeV,
 }
 
 impl<X: GXExt> SizeReport<X> {
     async fn compile(gx: &GXHandle<X>, v: &Value) -> Result<Self> {
-        let r = gx.compile_field(v, "size").await?;
+        #[derive(FromValue)]
+        struct Fields {
+            size: Option<u64>,
+        }
+        let Fields { size } = v.clone().cast_to().context("size output")?;
+        let r = match size {
+            Some(id) => Some(gx.compile_ref(id).await?),
+            None => None,
+        };
         // CR claude for claude: [bug/low] last starts at 0x0, which means both "never
         // reported" and "reported 0x0". A widget whose first draw gets an empty area (a
         // Length(0) slot, a bordered block in a two-row area) compares equal and never
@@ -548,7 +556,9 @@ impl<X: GXExt> SizeReport<X> {
         let size = SizeV::from(rect);
         if self.last != size {
             self.last = size;
-            self.r.set_deref(size)?
+            if let Some(r) = &mut self.r {
+                r.set_deref(size)?;
+            }
         }
         Ok(())
     }

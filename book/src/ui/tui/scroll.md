@@ -16,7 +16,7 @@ The `scrollbar` widget adds a visual scrollbar indicator to scrollable content, 
 - **begin_symbol**, **end_symbol** - The arrows at each end; null, the default, draws none
 - **track_symbol** - The track the thumb runs along; null, the default, draws none
 - **thumb_symbol** - The thumb; null, the default, keeps ratatui's own
-- **size** (output) - Rendered size of the scrollbar area
+- **size** (output) - Rendered size of the scrollbar area; pass `&mut size` where `size: tui::Size`
 
 ## Examples
 

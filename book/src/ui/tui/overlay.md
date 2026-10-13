@@ -22,7 +22,7 @@ by deriving the layers array from your state with `select`.
   (default `` `Percentage(60) ``)
 - **height** - Vertical size (default `` `Percentage(60) ``)
 - **size** - Observes the rectangle the layer was actually given, like
-  `layout::child`'s
+  `layout::child`'s; pass `&mut size` where `size: tui::Size`
 - **child** - The widget drawn in the layer
 
 ### overlay

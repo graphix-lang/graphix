@@ -40,7 +40,7 @@ type Block = {
   child: &Tui,
   merge_borders: &[MergeStrategy, null],
   padding: &[Padding, null],
-  size: &[Size, null],
+  size: [&mut Size, null],
   style: &[Style, null],
   title: &[Line, null],
   title_alignment: &[Alignment, null],
@@ -50,27 +50,6 @@ type Block = {
   title_top: &[Line, null]
 };
 
-// CR claude for claude: [bug/high] tui #size outputs are written through a covariant
-// read-only &[Size, null]: type hole. block, layout::child, tabs, scrollbar and
-// overlay declare `?#size: &[Size, null]`, a read-only and therefore covariant
-// reference. The widget writes its drawn area through it (SizeReport::report ->
-// `self.r.set_deref(size)`, stdlib/graphix-package-tui/src/lib.rs). The examples
-// teach this as the size-output idiom (browser_commands.gx `#size:&size`). Because
-// `&T` is covariant, `&n` with `n: null` (or any narrower binding) type-checks, and
-// the widget then stores a Size struct in a binding the checker believes is `null`.
-// This breaks CLAUDE.md's rule that `&T` is read-only and `*r <- v` requires `&mut`,
-// and it makes the check unsound. Failure: `let n = null; let shown = select n { null
-// as _ => "still null" }; block(#size: &n, &text(&"<[shown]> [n]"))` passes --check.
-// Run, it prints `[["height", 20], ["width", 60]]` for n and logs `select n { null as
-// _ => .. }: no arm matches [["height", i64:20], ["width", i64:60]]: a coverage hole
-// in the check`. Under GRAPHIX_ABORT_ON_NO_MATCH=1 that is an abort. The same holds
-// inside a function: `|x: null| select x {..}`. Passing `&tui::size` would overwrite
-// the terminal-size val. Fix: Declare the outputs writable: `?#size: [&mut Size,
-// null]`, the optional-writable form CLAUDE.md prescribes, the way browser's
-// `#selected_row: &mut string` already is. Update the examples to pass `&mut size`.
-// Alternatively make SizeReport refuse to write through a reference the type does not
-// mark writable. Unverified: the reviewer's report, not checked by a verifier.
-// (examples-tui-01)
 val block: fn(
   ?#border: &[Array<Border>, `All, `None, null],
   ?#border_type: &[BorderType, null],
@@ -84,6 +63,6 @@ val block: fn(
   ?#title_style: &[Style, null],
   ?#title_position: &[Position, null],
   ?#title_alignment: &[Alignment, null],
-  ?#size: &[Size, null],
+  ?#size: [&mut Size, null],
   child: &Tui
 ) -> Tui;

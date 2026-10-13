@@ -11,7 +11,7 @@ let block = |
   #title_style: &[Style, null] = &null,
   #title_position: &[Position, null] = &null,
   #title_alignment: &[Alignment, null] = &null,
-  #size: &[Size, null] = &null,
+  #size: [&mut Size, null] = null,
   child: &Tui
 | -> Tui `Block({
   border,

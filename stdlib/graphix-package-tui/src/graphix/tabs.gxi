@@ -5,7 +5,7 @@ type Tabs = {
   padding_left: &[Line, null],
   padding_right: &[Line, null],
   selected: &[i64, null],
-  size: &[Size, null],
+  size: [&mut Size, null],
   style: &[Style, null],
   tabs: &Array<(Line, Tui)>
 };
@@ -16,7 +16,7 @@ val tabs: fn(
   ?#padding_left: &[Line, null],
   ?#padding_right: &[Line, null],
   ?#selected: &[i64, null],
-  ?#size: &[Size, null],
+  ?#size: [&mut Size, null],
   ?#style: &[Style, null],
   tabs: &Array<(Line, Tui)>
 ) -> Tui;
