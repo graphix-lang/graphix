@@ -4413,7 +4413,7 @@
               "members": [
                 {
                   "type": "SYMBOL",
-                  "name": "_unit_extension"
+                  "name": "unit_extension"
                 },
                 {
                   "type": "BLANK"
@@ -7610,7 +7610,7 @@
     },
     {
       "type": "SYMBOL",
-      "name": "_unit_extension"
+      "name": "unit_extension"
     },
     {
       "type": "SYMBOL",

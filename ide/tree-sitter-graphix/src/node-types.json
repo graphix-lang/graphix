@@ -582,6 +582,10 @@
           "named": true
         },
         {
+          "type": "any",
+          "named": true
+        },
+        {
           "type": "apply",
           "named": true
         },
@@ -602,7 +606,15 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
           "named": true
         },
         {
@@ -619,6 +631,10 @@
         },
         {
           "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -642,6 +658,14 @@
           "named": true
         },
         {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "seq_block",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -659,6 +683,10 @@
         },
         {
           "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "try_with",
           "named": true
         },
         {
@@ -9670,6 +9698,10 @@
           "named": true
         },
         {
+          "type": "any",
+          "named": true
+        },
+        {
           "type": "apply",
           "named": true
         },
@@ -9686,7 +9718,15 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
           "named": true
         },
         {
@@ -9710,6 +9750,10 @@
           "named": true
         },
         {
+          "type": "never",
+          "named": true
+        },
+        {
           "type": "or_never",
           "named": true
         },
@@ -9730,6 +9774,14 @@
           "named": true
         },
         {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "seq_block",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -9747,6 +9799,10 @@
         },
         {
           "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "try_with",
           "named": true
         },
         {
@@ -11315,6 +11371,10 @@
           "named": true
         },
         {
+          "type": "any",
+          "named": true
+        },
+        {
           "type": "apply",
           "named": true
         },
@@ -11331,7 +11391,15 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
           "named": true
         },
         {
@@ -11348,6 +11416,10 @@
         },
         {
           "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "never",
           "named": true
         },
         {
@@ -11375,6 +11447,14 @@
           "named": true
         },
         {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "seq_block",
+          "named": true
+        },
+        {
           "type": "string",
           "named": true
         },
@@ -11392,6 +11472,10 @@
         },
         {
           "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "try_with",
           "named": true
         },
         {
@@ -11609,6 +11693,10 @@
         },
         {
           "type": "type_identifier",
+          "named": true
+        },
+        {
+          "type": "unit_extension",
           "named": true
         },
         {
@@ -13258,6 +13346,10 @@
   {
     "type": "u8",
     "named": false
+  },
+  {
+    "type": "unit_extension",
+    "named": true
   },
   {
     "type": "unrestricted",

@@ -26,7 +26,7 @@ module.exports = grammar({
                          // comparison `>`, so `[<1 != 2>]` needs no shift/reduce
                          // choice on `>` (static precedence resolved it toward the
                          // comparison and equality-tailed last elements errored)
-    $._unit_extension,   // a unit after a literal in a non-bytes ascription (`500.ms`)
+    $.unit_extension,    // a unit after a literal in a non-bytes ascription (`500.ms`)
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
@@ -759,7 +759,7 @@ module.exports = grammar({
       // A literal and its unit (`500.ms`, `1.5s`, a trailing-dot `0.`):
       // the external scanner refuses when no unit is adjacent, which lets
       // the parser skip the optional.
-      seq($.literal, optional($._unit_extension)),
+      seq($.literal, optional($.unit_extension)),
       // Values that look like names (`f64:inf`, `f64:NaN`)
       $._binding_name,
       $.type_identifier,
