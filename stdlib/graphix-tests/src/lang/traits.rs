@@ -1624,17 +1624,6 @@ run!(default_calls_its_sibling_through_dispatch, r#"{
 // target, an impl in a function body would register per call, and a method
 // may not need a bound the trait does not declare.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/medium] Only the union, function-body and
-// undeclared-bound refusals are pinned here. No test anywhere pins the orphan rule that
-// `check_target` enforces. A regression that let a user program write `impl Display for
-// i64` or `impl Eq for {x: i64}` would silently change printing or `==` for every such
-// value, and nothing would fail. Add these rows: `impl Display for i64` and `impl Eq
-// for` a struct alias, expecting "only the trait's own package"; `impl<'a> T for 'a`,
-// expecting "a bare type variable is not an implementation target"; `impl T for Any`,
-// expecting "not an implementation target". Also add a multi-module case where a
-// package implements a foreign trait for a foreign abstract type, expecting "must live
-// in the type's package". Probe:
-// design/review-2026-10-12/repro/tests-fusion-traits-07.gx. (tests-fusion-traits-04)
 async fn implementations_are_declared_ones() {
     use graphix_package_core::testing::refusal;
     for (src, why) in [
@@ -1649,6 +1638,28 @@ async fn implementations_are_declared_ones() {
         (
             "{ type Counter = Abstract<i64>; trait Twice { val twice: fn(self, x: 'a) -> 'a }; impl Twice for Counter { let twice = |c, x| x + x }; Twice::twice(Counter(1), 2) }",
             "which the signature does not declare",
+        ),
+        // the orphan rule: a non-abstract type is the trait's package's
+        (
+            "{ impl Display for i64 { let fmt = |x| \"boo\" }; \"[1]\" }",
+            "only the trait's own package (/core) may implement it",
+        ),
+        (
+            "{ type P = {x: i64}; impl Eq for P { let eq = |a, b| true }; 0 }",
+            "only the trait's own package (/core) may implement it",
+        ),
+        // an abstract type's, the trait's or the type's package's
+        (
+            "{ impl sys::io::Close for sys::process::Proc { let close = |p| Ok(null) }; 0 }",
+            "an abstract type's implementation must live in the type's package",
+        ),
+        (
+            "{ trait T { val t: fn(self) -> i64 }; impl<'a> T for 'a { let t = |x| 1 }; 0 }",
+            "a bare type variable is not an implementation target",
+        ),
+        (
+            "{ trait T { val t: fn(self) -> i64 }; impl T for Any { let t = |x| 1 }; 0 }",
+            "impl T for Any: not an implementation target",
         ),
     ] {
         let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
