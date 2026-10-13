@@ -535,16 +535,8 @@ run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // A block issues its statements at entry, so two calls in one block are
-// in flight together; at the seq level a call is opaque, so the second
-// waits for the write before it. 100 ms apart either way, so a stall
-// cannot reorder them.
-// CR claude for claude: [doc-drift/low] The comment gives the wrong reason for 'late'.
-// A call to a static target is not opaque to the planner: `b <- f(2)` neither reads nor
-// writes `a`, and the plan is `S0 -> S1 same`. The second statement starts in the cycle
-// the first step completes, which is when `f(1)` produces, not a cycle after the write.
-// Reword to: 'A block issues its statements at entry, so two calls in one block are in
-// flight together; as separate steps the second starts only when the first completes.'
-// (tests-seq-04)
+// in flight together; as separate steps the second starts only when the
+// first completes. 100 ms apart either way, so a stall cannot reorder them.
 async fn block_issues_together(mode: Mode) -> Result<()> {
     for (body, expected) in
         [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
