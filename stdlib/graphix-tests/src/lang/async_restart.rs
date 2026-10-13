@@ -58,23 +58,9 @@ async fn seq_iterators(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn seq_projected_iterator() -> Result<()> {
-    for mode in Mode::ALL {
-        let code = r#"{
-            let step = 0;
-            step <- select step { s if s < 20 => s + 1, _ => never() };
-            let go = select step { 1 | 10 => step, _ => never() };
-            seq go { let reply = (map::iter({go => go})).1; reply }
-        }"#;
-        let (values, _) = run_delta(code, mode).await?;
-        assert_eq!(as_i64s(&values), [1, 10]);
-    }
-    Ok(())
-}
-
 async fn seq_composed_iterators(mode: Mode) -> Result<()> {
     for expr in [
+        "(map::iter({go => go})).1",
         "(map::iter({go => go})).1 + 0",
         "(array::iter([go]), 0).0",
         "({x: array::iter([go])}).x",

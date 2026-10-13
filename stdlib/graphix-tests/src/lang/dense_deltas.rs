@@ -3,6 +3,7 @@
 // expectations without a ruling.
 
 use anyhow::Result;
+use graphix_compiler::ParMode;
 use graphix_package_core::{
     PrintSink,
     testing::{
@@ -13,10 +14,34 @@ use netidx::publisher::Value;
 use std::time::Duration;
 use tokio::time::Instant;
 
+/// What a run made.
+pub(super) struct Delta {
+    /// Every update of the result.
+    pub values: Vec<Value>,
+    /// The captured print output.
+    pub out: String,
+    /// Forks of evaluation.
+    pub forks: u64,
+    /// Runs of compile tasks building instances.
+    pub build_forks: u64,
+}
+
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until no
 /// event arrives for 700ms, collecting every update of the result and the
 /// captured print output.
 pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
+    let d = run_delta_with(code, mode, None, Duration::from_millis(700)).await?;
+    Ok((d.values, d.out))
+}
+
+/// [`run_delta`] forking under `par` when given, else as `mode` does,
+/// until no event arrives for `quiet`.
+pub(super) async fn run_delta_with(
+    code: &str,
+    mode: Mode,
+    par: Option<ParMode>,
+    quiet: Duration,
+) -> Result<Delta> {
     let sink = PrintSink::default();
     let seeded = sink.clone();
     let (ctx, mut rx) = fixture_runtime(
@@ -25,21 +50,20 @@ pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, Str
         mode,
         move |ctx| {
             ctx.libstate.set(seeded);
+            if let Some(par) = par {
+                ctx.control.set_par_mode(par)
+            }
         },
     )
     .await?;
     let res = compile_result(&ctx).await?;
     let deadline = Instant::now() + Duration::from_secs(20);
-    let values = updates_until_quiet(
-        &mut rx,
-        res.exprs[0].id,
-        Duration::from_millis(700),
-        deadline,
-    )
-    .await?;
+    let values = updates_until_quiet(&mut rx, res.exprs[0].id, quiet, deadline).await?;
     let out = sink.take();
+    let control = ctx.rt.control();
+    let (forks, build_forks) = (control.forks(), control.build_forks());
     ctx.shutdown().await;
-    Ok((values, out))
+    Ok(Delta { values, out, forks, build_forks })
 }
 
 pub(super) fn as_i64s(values: &[Value]) -> Vec<i64> {

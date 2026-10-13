@@ -1,81 +1,40 @@
 // `#[parallel]` and `#[serial]` (design/parallel_eval.md §7), and how a
 // collection's growth runs under `Auto` (§8).
 
+use super::dense_deltas::{Delta, run_delta_with};
 use anyhow::Result;
 use graphix_compiler::ParMode;
-use graphix_package_core::testing::{
-    Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
-};
+use graphix_package_core::testing::Mode;
 use netidx::publisher::Value;
 use std::time::Duration;
-use tokio::time::Instant;
-
-/// What a run made.
-struct Ran {
-    /// The result's updates.
-    values: Vec<Value>,
-    /// Forks of evaluation.
-    forks: u64,
-    /// Runs of compile tasks building instances.
-    build_forks: u64,
-}
 
 /// Run `code` (as `let result = {code}`) node-walked under `par` until it
 /// is quiet for 300ms.
-async fn run_par(code: &str, par: ParMode) -> Result<Ran> {
+async fn run_par(code: &str, par: ParMode) -> Result<Delta> {
     run_with(code, par, Mode::Interp).await
 }
 
 /// [`run_par`] fused: a kernel's loops fork as chunks of its slots.
-async fn run_fused(code: &str, par: ParMode) -> Result<Ran> {
+async fn run_fused(code: &str, par: ParMode) -> Result<Delta> {
     run_with(code, par, Mode::Jit).await
 }
 
 /// Run `code` built as `mode` builds it, forking under `par`, until it is
 /// quiet for 300ms. Under `Auto` the run waits for the fork threshold's
 /// calibration first: nothing forks until it.
-// CR claude for claude: [structure/low] run_with is dense_deltas::run_delta again
-// (fixture_runtime, compile_result, updates_until_quiet, shutdown) with a par mode, a
-// 300ms quiet window and the Control fork counters added, so the two copies drift
-// apart. Give run_delta the par mode and quiet window as parameters and have it return
-// the counters, then build run_par and run_fused on it. refusal below routes through
-// ParMode::Auto, so every refusal test first waits, with no deadline, for the fork
-// calibration. It never forks anything because the program is refused, so build it with
-// ParMode::Off, or with a mode-taking version of testing::refusal. In async_restart.rs,
-// seq_projected_iterator loops over Mode::ALL by hand: a failure names no mode and the
-// modes run serially. Its case belongs in seq_composed_iterators' list as
-// `(map::iter({go => go})).1`. (tests-lang-rest-a-12)
-async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Ran> {
+async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Delta> {
     if par == ParMode::Auto {
         while graphix_compiler::cost::calibration().is_none() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    let (ctx, mut rx) = fixture_runtime(
-        [("/test.gx", result_source(code))],
-        &crate::TEST_REGISTER,
-        mode,
-        move |ctx| ctx.control.set_par_mode(par),
-    )
-    .await?;
-    let res = compile_result(&ctx).await?;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let values = updates_until_quiet(
-        &mut rx,
-        res.exprs[0].id,
-        Duration::from_millis(300),
-        deadline,
-    )
-    .await?;
-    let control = ctx.rt.control();
-    let (forks, build_forks) = (control.forks(), control.build_forks());
-    ctx.shutdown().await;
-    Ok(Ran { values, forks, build_forks })
+    run_delta_with(code, mode, Some(par), Duration::from_millis(300)).await
 }
 
-/// The compile error `code` gets.
+/// The compile error `code` gets; a refused program forks nothing, so it
+/// needs no calibration.
 async fn refusal(code: &str) -> String {
-    match run_par(code, ParMode::Auto).await {
+    match run_par(code, ParMode::Off).await {
         Ok(_) => panic!("compiled: {code}"),
         Err(e) => format!("{e:#}"),
     }
