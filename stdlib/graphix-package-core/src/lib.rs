@@ -2420,6 +2420,8 @@ crate::fast_builtin!(Shr, ShrEv, "core_shr", fc_shr);
 // released has to find every copy. Put `feed` beside `genn::bind` in
 // graphix_compiler::node::genn, use it at each of these sites, and build `Filter` on
 // the same callback struct `OptHof` uses. (x-node-contract-06)
+// 2026-10-13 claude: OptHof is gone (opt's unary HOFs are now selects in opt.gx);
+// Filter's callback scaffolding and the inlined feeds remain.
 #[derive(Debug)]
 struct Filter<R: Rt, E: UserEvent> {
     pred: Node<R, E>,

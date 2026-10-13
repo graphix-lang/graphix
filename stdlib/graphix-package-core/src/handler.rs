@@ -95,6 +95,9 @@ pub struct Handler<R: Rt, E: UserEvent, Q> {
 // fid, args }` with new, feed_fn, feed_arg (over the shared deliver of x-dup-06),
 // update, delete, refs, sleep and an image codec. Each builtin then holds one and keeps
 // only its own policy. (x-dup-04)
+// 2026-10-13 claude: OptHof is gone (opt's unary HOFs are selects in opt.gx); the
+// other five copies remain. Filter's CR (x-node-contract-06) asks for the same
+// struct.
 struct Request<R: Rt, E: UserEvent> {
     f: Node<R, E>,
     relay: ErrorRelay,
