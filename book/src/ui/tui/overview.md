@@ -25,22 +25,11 @@ mismatch fn(e: Event) -> [`Continue, `Stop] does not contain fn(e: Event) -> [`C
 the alignment bullet with the Flex variants, and copy input_handler's signature from
 input_handler.gxi. Unverified: the reviewer's report, not checked by a verifier.
 (examples-tui-10) -->
-<!-- CR claude for claude: [doc-drift/low] This page promises features the TUI library
-does not have. table has no sorting. calendar takes no input, so it is no date picker.
-The Layout System section lists an "Alignment" bullet (Left/Center/Right,
-Top/Center/Bottom), but layout has no alignment parameter, only #flex (Flex:
-Start/Center/End/SpaceBetween/..). The Input Handling section calls input_handler "the
-input widget" without naming or linking it. overview_state.gx says the event is "handled
-as shown above", but the include just above it is overview_layout.gx, which handles no
-events. Fix: drop the sortable and date-picker claims, replace the Alignment bullet with
-Flex, name `input_handler` and link input.md, and in overview_state.gx either show the
-on_press handler that writes arrow_pressed or point the comment at input.md.
-(examples-tui-06) -->
-- **Table**: Sortable, selectable data tables with custom styling
+- **Table**: Selectable data tables with custom styling
 - **List**: Scrollable lists with selection and highlighting
 - **Tabs**: Tabbed interface for organizing content
 - **Browser**: Netidx browser component
-- **Calendar**: Date picker and event display
+- **Calendar**: Month calendar with highlighted dates and events
 
 ### Data Visualization
 
@@ -52,10 +41,10 @@ on_press handler that writes arrow_pressed or point the comment at input.md.
 
 ### Input Handling
 
-Interactive components use the input widget to handle UI events that
-flow through the widget graph from parent to child. Parents can choose
-to pass on events they receive or not. See the input widget for more
-details.
+Interactive components wrap a widget in an `input_handler` to handle
+UI events that flow through the widget graph from parent to child.
+Parents can choose to pass on events they receive or not. See
+[Input Handling](input.md) for details.
 
 ## Building Your First TUI
 
@@ -89,20 +78,8 @@ Many widgets take optional style arguments, allowing styling to be applied at ma
 The layout system provides flexible component arrangement:
 
 - **Direction**: `Horizontal` or `Vertical`
-- **Constraints**: `Percentage(50)`, `Length(20)`, `Min(10)`, `Max(100)`
-<!-- CR claude for claude: [doc-drift/low] tui/overview.md promises layout alignment,
-sortable tables and a date picker, none of which exist. Line 70 says layout offers
-'Alignment: Left, Center, Right for horizontal; Top, Center, Bottom for vertical'.
-layout.gxi has no alignment, but has `#flex` (Start/End/Center/SpaceBetween/...) and
-`#spacing`. Line 16 says 'Table: Sortable', but table.gxi has no sorting. Line 20 says
-'Calendar: Date picker', but calendar.gxi is display-only (no selection callback). Line
-69 lists four constraints and leaves out `Ratio` and `Fill`. overview_state.gx says
-'assume the event is handled as shown above', but nothing is shown above it on this
-page. Failure: A reader looks for `#alignment` on layout, or for table sorting, and
-finds neither. Fix: Replace Alignment with Flex, drop 'Sortable' and 'Date picker', list
-all six Constraint variants, and point overview_state's comment at input.md. Unverified:
-the reviewer's report, not checked by a verifier. (book-ui-a-16) -->
-- **Alignment**: `Left`, `Center`, `Right` for horizontal; `Top`, `Center`, `Bottom` for vertical
+- **Constraints**: `Percentage(50)`, `Length(20)`, `Min(10)`, `Max(100)`, `Ratio(1, 3)`, `Fill(1)`
+- **Flex**: how leftover space is distributed: `Start`, `End`, `Center`, `SpaceBetween`, `SpaceEvenly`, `SpaceAround`
 - **Focus Management**: Built-in focus handling for interactive components
 
 ```graphix

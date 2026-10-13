@@ -4,8 +4,8 @@ let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
 let arrow_pressed = never();
 
-// When user presses down arrow assume the event is handled as
-// shown above and arrow_pressed is set using connect
+// an input_handler (see the Input Handling page) sets arrow_pressed
+// when the user presses the down arrow
 selected_item <- arrow_pressed ~ ((selected_item + 1) % array::len(items));
 
 // UI automatically reflects the change

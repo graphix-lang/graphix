@@ -1,6 +1,6 @@
 # The Calendar Widget
 
-The `calendar` widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It's perfect for date pickers, event schedulers, and time-based visualizations.
+The `calendar` widget displays a monthly calendar view with support for highlighting specific dates and displaying events. It displays dates and takes no input, which suits schedules, event views, and time-based visualizations.
 
 ## Interface
 

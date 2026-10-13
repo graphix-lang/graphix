@@ -2,58 +2,10 @@
 
 The `menu` module provides menu bars and context menus. Both are built from the same `MenuItem` building blocks — actions (clickable items with optional keyboard shortcuts) and dividers.
 
-<!-- CR claude for claude: [doc-drift/low] `MenuAction.on_click` below is written
-`&fn(a: null) -> Any`. The real field (menu.gxi) is `&[fn(e: null) -> Any, null]`: copy
-the block from the gxi. The TUI overview overclaims in the same way. It calls the table
-'Sortable', but there is no sorting. It calls the calendar a 'Date picker', but it only
-displays (no selection callback). The overview_styling.gx it includes evaluates to a
-`Style`, so running it draws nothing. overview_state.gx says 'as shown above' about a
-handler that does not appear on that page. Write 'selectable' and 'month calendar with
-highlighted dates', wrap the styling example in a widget, and point the state example's
-comment at input.md. (book-ui-a-14) -->
 ## Interface
 
 ```graphix
-type Shortcut;
-
-val shortcut: fn(
-  ?#ctrl: bool,
-  ?#shift: bool,
-  ?#alt: bool,
-  ?#logo: bool,
-  s: string
-) -> [Shortcut, Error<`InvalidKey(string)>];
-
-type MenuAction = {
-  label: &string,
-  shortcut: &[Shortcut, null],
-  on_click: &fn(a: null) -> Any,
-  disabled: &bool
-};
-
-type MenuItem = [`Action(MenuAction), `Divider];
-
-type MenuGroup = {
-  label: &string,
-  items: &Array<MenuItem>
-};
-
-type ContextMenu = { child: &Widget, items: &Array<MenuItem> };
-
-val action: fn(
-  ?#on_click: [fn(a: null) -> Any, null],
-  ?#shortcut: &[Shortcut, null],
-  ?#disabled: &bool,
-  s: &string
-) -> MenuItem;
-
-val divider: fn() -> MenuItem;
-
-val menu: fn(s: &string, a: &Array<MenuItem>) -> MenuGroup;
-
-val bar: fn(?#width: &Length, a: &Array<MenuGroup>) -> Widget;
-
-val context_menu: fn(a: &Array<MenuItem>, a2: &Widget) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/menu.gxi}}
 ```
 
 ## `menu::shortcut`
