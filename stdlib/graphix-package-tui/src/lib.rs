@@ -39,14 +39,12 @@ use layout::LayoutW;
 use line_gauge::LineGaugeW;
 use list::ListW;
 use log::error;
-use netidx::{
-    protocol::valarray::ValArray,
-    publisher::{FromValue, Value},
-};
+use netidx::publisher::{FromValue, Value};
 use netidx_core::pack::PackError;
 use netidx_derive::{FromValue, IntoValue};
 use paragraph::ParagraphW;
 use parking_lot::Mutex;
+use poolshark::local::LPooled;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Direction, Flex, Rect},
@@ -432,19 +430,6 @@ trait TuiWidget {
     async fn handle_event(&mut self, _v: Value) -> Result<()> {
         Ok(())
     }
-    // XCR claude for claude: [perf/low] handle_update is an async_trait method, so every
-    // call allocates a boxed future. LayoutW, OverlayW and BlockW/ChildW pass each
-    // update to every child and clone the Value at each level. One program update
-    // therefore costs one heap allocation per widget in the tree, although nearly every
-    // visit is a synchronous prop update that matches nothing. Fix: take the GUI
-    // package's shape, a synchronous handle_update(&mut self, id, &Value) that borrows
-    // the value and does the rare child recompile (ChildW, LayoutW's children,
-    // OverlayW's layers) by blocking on the runtime handle, as the GUI widgets do.
-    // (tui-core-08)
-    // 2026-10-13 codex: Ordinary updates borrow Value and finish synchronously.
-    // Only recompilation or callback work returns a boxed future, avoiding a
-    // blocking runtime call on current-thread executors. Pin:
-    // testing::tests::ordinary_updates_complete_synchronously.
     fn handle_update<'a>(
         &'a mut self,
         id: ExprId,
@@ -573,21 +558,31 @@ async fn compile_each<T, F: Future<Output = Result<T>>>(
         .await
 }
 
+/// Make `items` follow `sources`, keeping each item whose source is
+/// unchanged and compiling the others together.
 async fn reconcile<T, F: Future<Output = Result<T>>>(
     items: &mut Vec<(Value, T)>,
-    v: Value,
+    sources: impl IntoIterator<Item = Value>,
     mut compile: impl FnMut(Value) -> F,
 ) -> Result<()> {
-    let values = v.cast_to::<ValArray>()?;
-    items.truncate(values.len());
-    for (i, value) in values.iter().enumerate() {
-        if items.get(i).is_some_and(|(source, _)| source == value) {
-            continue;
+    let mut len = 0;
+    let mut changed: LPooled<Vec<(usize, Value)>> = LPooled::take();
+    for (i, source) in sources.into_iter().enumerate() {
+        len = i + 1;
+        if items.get(i).is_none_or(|(old, _)| *old != source) {
+            changed.push((i, source));
         }
-        let item = (value.clone(), compile(value.clone()).await?);
+    }
+    let built = futures::future::try_join_all(changed.drain(..).map(|(i, source)| {
+        let t = compile(source.clone());
+        async move { Ok::<_, anyhow::Error>((i, source, t.await?)) }
+    }))
+    .await?;
+    items.truncate(len);
+    for (i, source, t) in built {
         match items.get_mut(i) {
-            Some(slot) => *slot = item,
-            None => items.push(item),
+            Some(slot) => *slot = (source, t),
+            None => items.push((source, t)),
         }
     }
     Ok(())
@@ -1062,52 +1057,8 @@ struct Live {
 impl Live {
     fn take(mouse: bool) -> Result<Self> {
         static HOOK: std::sync::Once = std::sync::Once::new();
-        // XCR claude for claude: [bug/medium] This hook is process-wide and stays
-        // installed for good, so every panic gives the terminal back. That includes
-        // panics the runtime catches and continues past: `sort_values` and
-        // `pairs_to_map` over an Ord that is no total order, a panicking async
-        // `EvalCachedAsync::eval`, and any tokio task. After such a panic the display
-        // keeps running, but the terminal is in cooked mode and off the alternate
-        // screen: keys echo, input is line-buffered, the mouse is off, and frames draw
-        // over the shell's scrollback until exit. The hook also stays after the display
-        // ends, while the REPL's line editor holds raw mode. probe:
-        // design/review-2026-10-12/repro/tui-core-04.sh (a rock-paper-scissors user Ord
-        // under array::sort cooks the pty mid-run, and the display then draws "sorted
-        // 32" on the main screen). Fix: gate the hook on a flag that `Live::take` sets
-        // and `Live`'s drop clears. A panic that unwinds through the display already
-        // restores the terminal through `GiveBack`, so the hook only needs to restore
-        // for a panic that will abort the process. Alternatively, re-take the terminal
-        // after a caught panic. (tui-core-04)
-        // 2026-10-13 codex: Gate cleanup on Live ownership and re-take the
-        // terminal before the next frame after a caught panic. The PTY pin
-        // caught_panics_do_not_leave_the_display_cooked checks recovery and a
-        // later raw-mode owner after Live drops. Review the recovery path.
         HOOK.call_once(|| {
             let prev = std::panic::take_hook();
-            // XCR claude for claude: [risk/low] This hook gives back the terminal but
-            // leaves fd 2 on StderrHeld's unlinked tempfile, so `prev(info)` writes the
-            // panic message there. A panic that then aborts, such as any assert in an
-            // extern "C" JIT helper (graphix_value_drop's sentinel check, the
-            // shape-mismatch panics), never runs StderrHeld's Drop. The message
-            // disappears with the file, while the same bug in a non-TUI script prints
-            // it. Fix: have the hook restore fd 2 from the saved descriptor (kept where
-            // the hook can reach it, for example a static set by StderrHeld::hold) and
-            // copy out what the file held so far, before calling `prev`. (x-unsafe-07)
-            // XCR claude for claude: [risk/low] While a display is live, fd 2 is
-            // StderrHeld's unlinked temp file, so prev(info) writes the panic message
-            // into that file. The message reaches the terminal only when
-            // StderrHeld::drop runs, either at the display's end or while unwinding. If
-            // the process aborts instead of unwinding (a panic during unwinding, or a
-            // panic in a nounwind extern "C" frame), the file goes away with the
-            // process. The terminal comes back clean but the panic is never printed.
-            // Fix: keep the saved stderr fd somewhere the hook can reach it, set by
-            // StderrHeld::hold and cleared by its drop. The hook then dup2s it back
-            // onto fd 2 and copies the held file out before calling prev(info).
-            // (tui-core-06)
-            // 2026-10-13 codex: The hook restores and replays the bounded capture
-            // before invoking the previous hook. aborting_panics_replay_stderr_and_the_diagnostic
-            // pins both held bytes and a nounwind panic's diagnostic in a PTY child.
-            // Review the process-wide capture ownership and panic-time shutdown.
             std::panic::set_hook(Box::new(move |info| {
                 if TERMINAL_ACTIVE.load(Ordering::Acquire) {
                     give_back_terminal();

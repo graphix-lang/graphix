@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
-use netidx::publisher::Value;
+use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
@@ -76,7 +76,11 @@ impl<X: GXExt> OverlayW<X> {
     }
 
     async fn set_layers(&mut self, v: Value) -> Result<()> {
-        reconcile(&mut self.layers, v, |v| LayerW::compile(self.gx.clone(), v)).await?;
+        let sources = v.cast_to::<ValArray>()?;
+        reconcile(&mut self.layers, sources.iter().cloned(), |v| {
+            LayerW::compile(self.gx.clone(), v)
+        })
+        .await?;
         Ok(())
     }
 }

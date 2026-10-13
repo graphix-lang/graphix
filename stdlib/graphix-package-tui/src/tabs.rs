@@ -1,12 +1,13 @@
 use super::{
     LineV, SizeReport, SpanV, StyleV, TuiW, TuiWidget, compile, finish_update,
-    into_borrowed_line, update_children, validate::Index,
+    into_borrowed_line, reconcile, update_children, validate::Index,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use poolshark::local::LPooled;
 use ratatui::{Frame, layout::Rect, widgets::Tabs};
 
 graphix_rt::props! {
@@ -23,7 +24,8 @@ graphix_rt::props! {
 pub(super) struct TabsW<X: GXExt> {
     gx: GXHandle<X>,
     p: Props<X>,
-    tabs: Vec<(LineV, Value, TuiW)>,
+    titles: Vec<LineV>,
+    tabs: Vec<(Value, TuiW)>,
     tabs_ref: Ref<X>,
     size: SizeReport<X>,
 }
@@ -33,7 +35,7 @@ impl<X: GXExt> TabsW<X> {
         let p = Props::compile(&gx, &v).await.context("tabs")?;
         let size = SizeReport::compile(&gx, &v).await?;
         let tabs_ref = gx.compile_field(&v, "tabs").await?;
-        let mut t = Self { gx, p, tabs: vec![], tabs_ref, size };
+        let mut t = Self { gx, p, titles: vec![], tabs: vec![], tabs_ref, size };
         if let Some(v) = t.tabs_ref.last.take() {
             t.set_tabs(v).await?;
         }
@@ -41,25 +43,15 @@ impl<X: GXExt> TabsW<X> {
     }
 
     async fn set_tabs(&mut self, v: Value) -> Result<()> {
-        let values = v.cast_to::<ValArray>()?;
-        self.tabs.truncate(values.len());
-        for (i, value) in values.iter().enumerate() {
-            let (title, source) = value.clone().cast_to::<(LineV, Value)>()?;
-            match self.tabs.get_mut(i) {
-                Some((old_title, old_source, child)) => {
-                    if *old_source != source {
-                        *child = compile(self.gx.clone(), source.clone()).await?;
-                        *old_source = source;
-                    }
-                    *old_title = title;
-                }
-                None => {
-                    let child = compile(self.gx.clone(), source.clone()).await?;
-                    self.tabs.push((title, source, child));
-                }
-            }
+        let mut sources: LPooled<Vec<Value>> = LPooled::take();
+        self.titles.clear();
+        for tab in v.cast_to::<ValArray>()?.iter() {
+            let (title, source) = tab.clone().cast_to::<(LineV, Value)>()?;
+            self.titles.push(title);
+            sources.push(source);
         }
-        Ok(())
+        reconcile(&mut self.tabs, sources.drain(..), |v| compile(self.gx.clone(), v))
+            .await
     }
 
     /// The tab shown: `selected`, at most the last tab.
@@ -73,7 +65,7 @@ impl<X: GXExt> TabsW<X> {
 impl<X: GXExt> TuiWidget for TabsW<X> {
     async fn handle_event(&mut self, v: Value) -> Result<()> {
         let idx = self.selected();
-        if let Some((_, _, child)) = self.tabs.get_mut(idx) {
+        if let Some((_, child)) = self.tabs.get_mut(idx) {
             child.handle_event(v).await?;
         }
         Ok(())
@@ -89,20 +81,20 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
             return Ok(Some(Box::pin(async move {
                 self.set_tabs(v.clone()).await?;
                 finish_update(update_children(
-                    self.tabs.iter_mut().map(|(_, _, c)| c),
+                    self.tabs.iter_mut().map(|(_, c)| c),
                     id,
                     v,
                 )?)
                 .await
             })));
         }
-        update_children(self.tabs.iter_mut().map(|(_, _, c)| c), id, v)
+        update_children(self.tabs.iter_mut().map(|(_, c)| c), id, v)
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let idx = self.selected();
         let p = &self.p;
-        let titles = self.tabs.iter().map(|(l, _, _)| into_borrowed_line(&l.0));
+        let titles = self.titles.iter().map(|l| into_borrowed_line(&l.0));
         let mut t = Tabs::new(titles).select(idx);
         if let Some(Some(s)) = &p.style.t {
             t = t.style(s.0);
@@ -128,7 +120,7 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
             child_rect.height -= 1;
         }
         self.size.report(child_rect)?;
-        if let Some((_, _, child)) = self.tabs.get_mut(idx) {
+        if let Some((_, child)) = self.tabs.get_mut(idx) {
             child.draw(frame, child_rect)?;
         }
         Ok(())

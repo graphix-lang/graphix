@@ -313,29 +313,12 @@ let result = browser(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_browser_scroll_keeps_the_rows_that_stay() -> Result<()> {
     let mut h = TuiTestHarness::with_viewport(
-        // XCR claude for claude: [risk/low] Browser scroll test relies on a fixed 600 ms
-        // load window and is flaky under load.
-        // a_browser_scroll_keeps_the_rows_that_stay counts #SUB rows only once i >= 6,
-        // that is 600 ms after start, 400 ms after the path arrives at 200 ms. It
-        // asserts the worst count is exactly 1. If listing and subscribing the 12
-        // published rows takes longer than ~400 ms on a loaded machine, the initial
-        // all-#SUB rows count, worst becomes 3 or 4, and the test fails although
-        // scrolling is correct. Failure: A slow CI box or a busy shared machine: the
-        // initial load lands after the timer reaches 6 and the test reports worst=3.
-        // Fix: Gate the scrolling on the load: start the Down moves only after a
-        // `flashed == 0` frame has been seen (e.g. a `loaded` latch), not after a fixed
-        // tick count. Unverified: the reviewer's report, not checked by a verifier.
-        // (tests-tui-10)
-        // 2026-10-13 codex: Gate the timer on three visible rows with no #SUB
-        // cells. a_browser_scroll_keeps_the_rows_that_stay now measures only
-        // scrolling; socket creation is refused in this sandbox, so its live
-        // network run still needs review outside the sandbox.
         r##"
 use tui::{Tui, browser::{MoveCursor, browser}};
 let pubs = array::init(12, |k| sys::net::publish("/local/ring/r[k]", k));
 let path = sys::time::after_idle(duration:200.ms, "/local/ring");
 let cur: MoveCursor = never();
-let b: Tui = browser(#size: {width: 40, height: 4}, #cursor: cur, path);
+let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 4}, #cursor: cur, path);
 let progress = select b {
   `Table(t) => {
     let rows = *t.rows;

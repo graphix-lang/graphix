@@ -7,7 +7,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
-use netidx::publisher::{FromValue, Value};
+use netidx::{
+    protocol::valarray::ValArray,
+    publisher::{FromValue, Value},
+};
 use netidx_derive::FromValue;
 use ratatui::{
     Frame,
@@ -111,7 +114,11 @@ impl<X: GXExt> LayoutW<X> {
     }
 
     async fn set_children(&mut self, v: Value) -> Result<()> {
-        reconcile(&mut self.children, v, |v| Slot::compile(self.gx.clone(), v)).await?;
+        let sources = v.cast_to::<ValArray>()?;
+        reconcile(&mut self.children, sources.iter().cloned(), |v| {
+            Slot::compile(self.gx.clone(), v)
+        })
+        .await?;
         Ok(())
     }
 }

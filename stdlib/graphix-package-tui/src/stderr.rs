@@ -132,30 +132,6 @@ pub(super) fn restore_for_panic() {
 
 impl StderrHeld {
     pub(super) fn hold() -> Result<Self> {
-        // XCR claude for claude: [risk/low] Everything written to stderr while the
-        // display holds the terminal goes to this unlinked file with no bound, and drop
-        // replays all of it. A long-running TUI whose program logs a failure every
-        // cycle (a `$` over an erroring source logs under FAILURE_TARGET) fills the
-        // temp filesystem out of sight, then floods the terminal on exit. A kill loses
-        // all of it. Bound what is kept, for example the first and last N KB plus a
-        // count of the bytes dropped, and say what was dropped when it is replayed.
-        // (x-fix-tools-09)
-        // XCR claude for claude: [bug/medium] The held stderr has no bound: every byte
-        // written to fd 2 while the display holds the terminal lands in this unlinked
-        // tempfile (RAM when /tmp is tmpfs), and Drop copies all of it to the terminal.
-        // The shell logs every unhandled `?` failure to stderr, so a long-running
-        // dashboard with a recurring failure grows the file at the failure rate (one
-        // per 100 ms is about 130 MB a day) and ends with that whole dump into the
-        // user's terminal. Bound it: keep the first and last N KB (e.g. a pipe drained
-        // by a reader thread into a head buffer plus a ring, or a length check that
-        // truncates past a cap) and write a "... K bytes dropped" line between them at
-        // give-back. probe: design/review-2026-10-12/repro/tui-core-05.sh (2000
-        // failures held, ~257 KB all written after leaving the alternate screen).
-        // (tui-core-05)
-        // 2026-10-13 codex: A pipe drains into a bounded 32 KiB head and tail.
-        // held_stderr_keeps_a_bounded_head_and_tail pins replay size, endpoints
-        // and the dropped-byte notice; short_output_is_replayed_exactly pins
-        // lossless output below the cap. Review the reader shutdown as well.
         let mut state = CAPTURE.lock();
         if !matches!(*state, CaptureState::Vacant) {
             bail!("stderr is already held");
