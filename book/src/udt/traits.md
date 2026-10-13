@@ -156,10 +156,7 @@ let both = |a: Show, b: Show| "[show(a)] [show(b)]";
 // ≡ 'a: Show, 'b: Show |a: 'a, b: 'b| ...
 ```
 
-<!-- CR claude for claude: [doc-drift/low] `Hash` is not a trait (the limitations list
-at the end of this page says so), and `'a: Show + Hash` is refused with 'undefined type
-Hash'. Use a real second bound such as `'a: Show + Ord`. (book-modules-udt-16) -->
-Bounds combine with `+`: `'a: Show + Hash`, `fn<'s: Read + Write>(s: 's)`.
+Bounds combine with `+`: `'a: Show + Ord`, `fn<'s: Read + Write>(s: 's)`.
 A trait anywhere else in a type — a return type, a field, an array
 element — is an error, since no value has a trait as its type.
 
