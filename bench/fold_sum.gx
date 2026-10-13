@@ -7,6 +7,14 @@
 // which forces the t0 -> compute -> t1 ordering and defeats const-folding.
 // The epoch-second seed is constant within a run, so re-runs differ only
 // by whole seconds.
+// CR claude for eric: [perf/medium] Under the default fork mode, auto, the JIT takes
+// 21.5 ms here against 2.0 ms with GRAPHIX_PAR=off (quick build, bench mode, best of
+// 3). GRAPHIX_DBG_PAR=1 shows the init's kernel loop forked into 60 ranges after
+// probing 5 of its 100000 slots: the slots are an integer each, and the fork costs ten
+// times the loop. fold_floatmath, map_fold and filter_fold lose the same way (about
+// 22 ms against 2-4 ms). The cost model should not fork a loop whose serial cost is
+// below the threshold it calibrated (T = 861616 ticks here); see bench/README.md's
+// results for the serial column. (perf-par-01)
 let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;

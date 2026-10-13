@@ -23,7 +23,7 @@ best() {
     local prog="$1"; shift
     local best="" t out
     for _ in $(seq 1 "$iters"); do
-        out=$(timeout "$timeout_s" "${prefix[@]}" "$graphix" --no-netidx --no-cache "$@" "$prog" 2>/dev/null)
+        out=$(timeout -k 10 "$timeout_s" "${prefix[@]}" "$graphix" --no-netidx --no-cache "$@" "$prog" 2>/dev/null)
         if [[ $? -eq 124 ]]; then echo "timeout"; return; fi
         t=$(sed -n 's/.*elapsed_s=\([0-9.eE+-]*\).*/\1/p' <<<"$out" | head -1)
         [[ -z "$t" ]] && { echo "fail"; return; }

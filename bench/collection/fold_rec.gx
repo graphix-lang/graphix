@@ -1,5 +1,14 @@
 // array fold written in Graphix — tail recursion over indexes,
 // callback threaded as a parameter (the stdlib-body shape).
+// CR claude for eric: [perf/high] The node-walk of this program does not finish in 120 s
+// at n = 100k (bench/collection/README.md says `fail`); the 08-30 table had it at
+// 0.22 s. It is quadratic in n: 0.26 s, 0.85 s, 3.3 s at 2k, 4k, 8k (quick build,
+// --no-fusion). The cause is the threaded callback: the same index loop with no
+// function parameter is linear (0.19, 0.35, 0.68 s at 4k, 8k, 16k), and a loop that
+// threads only `f` is quadratic (0.73, 2.8, 11.4 s). find_rec and lfold_rec_100k fail
+// the same way. The 08-30 notes on the nested-HOF quadratic (an instance hub every
+// activation's callback linked into) describe the same shape. probe:
+// design/review-2026-10-12/repro/node-walk-fn-param-quadratic.gx (perf-fnparam-01)
 let n = 100000;
 let src = array::init(n, |i| i);
 let rec fold_go = |a: Array<i64>, f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64

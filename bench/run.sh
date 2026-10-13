@@ -39,7 +39,7 @@ for prog in "$dir"/*.gx; do
     jit=$(best "$prog")
     nw=$(best "$prog" --no-fusion)
     if [[ "$jit" =~ ^[0-9.eE+-]+$ && "$nw" =~ ^[0-9.eE+-]+$ ]]; then
-        speedup=$(awk -v n="$nw" -v j="$jit" 'BEGIN{ if (j>0) printf "%.0fx", n/j; else printf "n/a" }')
+        speedup=$(awk -v n="$nw" -v j="$jit" 'BEGIN{ if (j<=0) printf "n/a"; else if (n/j < 10) printf "%.2gx", n/j; else printf "%.0fx", n/j }')
     else
         speedup="-"
     fi

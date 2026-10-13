@@ -72,45 +72,13 @@ time to cut scheduler noise, and prints the node-walk / JIT ratio. A
 node-walk cell of `fail` means the program produced no timing line and
 `timeout` means it exceeded the per-run limit.
 
-<!-- CR claude for claude: [doc-drift/low] Fix these doc errors against the tree. - This
-paragraph says `symbolic` has no fixed kernel ABI and its hot path node-walks. The
-symbolic section below and symbolic.gx's header say build, deriv and eval_at fuse and
-only simplify node-walks. - The fused list here and the Benches table omit
-`list_fold_sum`, `list_map_fold` and `composite_seams`, which all fuse under #[native].
-- In bench/collection/README.md: `run.sh` is a wrapper over ../run.sh, not a copy. The
-List `_rec` rows use `[<>]`/`[<x, rest..>]` patterns, not Cons/Nil. The `1x` legend
-should read 'jit about equal to node-walk', since flatmap_fold's loop fuses and is
-copy-bound. - Delete the '#203 now fully fuses' history here and in mandelbrot.gx's
-header. - par_wide.gx's header should say 4095 activations per slot, since f(11, x)
-makes 2^12-1 calls. (examples-rest-06) -->
-The corpus is no longer all-fused: the seven pure-compute benches
-(`fold_*`, `map_fold`, `filter_fold`, `tail_sum`, `leibniz_pi`,
-`mandelbrot`) fuse fully, so their ratios reflect native code vs the
-interpreter. The three newer benches deliberately probe workload
-classes at the edge of fusion coverage — `stream_stats` and
-`netidx_stream` have an async event spine that can never fuse (only the
-per-event sync compute does), and `symbolic` works over a recursive ADT
-<!-- CR claude for claude: [doc-drift/low] bench READMEs contradict themselves and the
-code; results tables are stale. bench/README.md says symbolic's recursive ADT 'has no
-fixed kernel ABI, so its hot path node-walks', while :172-177 (and symbolic.gx) say
-build/deriv/eval_at fuse over the opaque two-word ABI. The latter is true (verified with
-#[native]). Its results table (07-02, with a NOTE to re-run) reports symbolic JIT 0.66x
-of the node-walk; at HEAD (debug, PAR=off) the JIT takes 5.96 s and the node-walk 9.39
-s, so fusion now wins. The 'seven pure-compute benches' list omits list_* and
-composite_seams. bench/collection/README.md says '`run.sh` here is a copy' (it is a
-3-line exec of ../run.sh). :21 describes the `*_rec` List rows as '`Cons`/`Nil`
-recursion' (lfold_rec uses native `[<>]`/`[<x, rest..>]`). :108 says 'lfold_rec still
-native-recurses per level', which the same file later refutes. Both READMEs narrate
-history (dated fixes, commit hashes) where rules belong, against design/'s 'as built'
-convention. Failure: A reader trusting the README concludes fusion makes recursive-ADT
-code slower and skips it, or edits collection/run.sh thinking it is an independent copy.
-Fix: Re-run both corpora and replace the tables. Delete the contradicting paragraph
-(README.md) and the stale bullets. Keep only what each bench measures and how to run it;
-history lives in git log. Unverified: the reviewer's report, not checked by a verifier.
-(examples-rest-08) -->
-that has no fixed kernel ABI, so its hot path node-walks even with
-fusion on. Their ratios measure fusion *coverage* as much as codegen
-quality, which is the point.
+Every bench but four fuses its whole computation, `#[native]`
+included: the folds and maps over arrays and lists, `composite_seams`,
+the tail loops and `mandelbrot`. The other four probe the edge of fusion
+coverage: `stream_stats` and `netidx_stream` have an async event spine
+that can never fuse (only the per-event sync compute does), and
+`symbolic` fuses `build`, `deriv` and `eval_at` over its recursive ADT
+while `simplify` node-walks.
 
 The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) run 100k
 iterations: the node-walk keeps every activation of a tail loop
@@ -119,47 +87,34 @@ outgrew the machine. The JIT runs them as one native loop.
 
 ## Results
 
-Release build, best-of-3 per mode (2026-07-02). NOTE: the fixes that
-landed later the same day (the never()-gate threading fix and the
-clone_rebind remap) improve `stream_stats` (its three window folds now
-fuse as native loops) and make `symbolic`'s two modes agree on values —
-re-run `run.sh` at the next release build to refresh these rows:
+Quick build, `bench` CPU mode, best of 3 per mode (2026-10-13). `run.sh`
+runs under the default fork mode, `auto`; the last column is the JIT
+with `GRAPHIX_PAR=off`:
 
-| bench            | jit       | node-walk | speedup |
-|------------------|-----------|-----------|---------|
-| `fold_floatmath` | 2.2 ms    | 5.80 s    | 2597x   |
-| `fold_sum`       | 2.2 ms    | 4.71 s    | 2129x   |
-| `map_fold`       | 4.6 ms    | 7.10 s    | 1532x   |
-| `filter_fold`    | 3.8 ms    | 5.20 s    | 1383x   |
-| `list_fold_sum`  | 38.3 ms   | 5.80 s    | 151x    |
-| `list_map_fold`  | 64.0 ms   | 9.06 s    | 142x    |
-| `mandelbrot`     | 80.0 ms   | 7.09 s    | 89x     |
-| `tail_sum`       | 35.8 ms   | 1.93 s    | 54x     |
-| `leibniz_pi`     | 74.3 ms   | 3.64 s    | 49x     |
-| `stream_stats`   | 0.65 s    | 20.8 s    | 32x     |
-| `netidx_stream`  | 0.68 s    | 0.69 s    | 1.0x    |
-| `symbolic`       | 18.5 s    | 12.2 s    | 0.66x   |
+| bench             | jit      | node-walk | speedup | jit, serial |
+|-------------------|----------|-----------|---------|-------------|
+| `mandelbrot`      | 0.86 ms  | 9.15 s    | 10630x  | 1.17 ms     |
+| `tail_sum`        | 0.26 ms  | 2.36 s    | 8926x   | 0.26 ms     |
+| `leibniz_pi`      | 0.54 ms  | 3.56 s    | 6542x   | 0.49 ms     |
+| `fold_floatmath`  | 21.4 ms  | 4.32 s    | 202x    | 2.36 ms     |
+| `map_fold`        | 22.3 ms  | 3.16 s    | 142x    | 4.19 ms     |
+| `filter_fold`     | 22.5 ms  | 2.34 s    | 104x    | 3.54 ms     |
+| `fold_sum`        | 21.5 ms  | 2.09 s    | 97x     | 2.04 ms     |
+| `stream_stats`    | 79.5 ms  | 6.91 s    | 87x     | 81.1 ms     |
+| `composite_seams` | 59.1 ms  | 4.84 s    | 82x     | 27.3 ms     |
+| `list_map_fold`   | 71.0 ms  | 3.33 s    | 47x     | 55.2 ms     |
+| `list_fold_sum`   | 55.0 ms  | 2.11 s    | 38x     | 37.0 ms     |
+| `netidx_stream`   | 51.8 ms  | 0.65 s    | 13x     | 44.0 ms     |
+| `symbolic`        | 3.73 s   | 5.77 s    | 1.5x    | 3.65 s      |
 
-(`run.sh` rounds the ratio to a whole number, so it prints `symbolic`
-as `1x`; the honest ratio is 0.66x — with fusion *on* it runs ~1.5x
-slower than the node-walk. See the `symbolic` notes below.)
-
-The LIST HOF rows (added 2026-07-14, single-run measurements) lower
-through the flatten boundary: cons chain → ValArray → native loop →
-rebuilt chain. The ~15x gap to their array twins is the honest cost of
-the cons representation — each of the 100k elements is a 3-slot
-ValArray allocated at build and walked at flatten, on both sides of
-every loop.
-
-The HOF benches show the largest gap (node-walk builds a per-element node
-graph); the fully-fused scalar loops (`mandelbrot`, `tail_sum`,
-`leibniz_pi`) show the smallest. `stream_stats` shows what fusing only the
-per-event compute buys on a stream (32x end-to-end); `netidx_stream`
-shows the same compute hidden behind a real network round trip (~1x);
-`symbolic` shows a recursive-ADT workload whose `simplify` still
-node-walks. Re-run
-with `run.sh` to reproduce; absolute times vary with machine load, the
-ratios less so.
+Under `auto` the array benches pay for forking their 100k-slot
+`array::init` (60 chunks of cheap slots), which costs several times the
+serial loop. The list rows pay the flatten boundary (the list's cells to
+an array and back) around each native loop. `stream_stats` shows what
+fusing only the per-event compute buys on a stream; `netidx_stream`
+shows the same compute behind a real network round trip; `symbolic`
+shows a recursive-ADT workload whose `simplify` still node-walks.
+Absolute times vary with machine load, the ratios less so.
 
 ## Benches
 
@@ -169,6 +124,9 @@ ratios less so.
 | `fold_floatmath`   | heavy f64 math `fold` over 100k                  | yes           |
 | `map_fold`         | `map (*3)` then `fold (+)`, 100k                 | yes (1 kernel)|
 | `filter_fold`      | `filter (even)` then `fold (+)`, 100k            | yes (1 kernel)|
+| `list_fold_sum`    | `fold (+)` over a 100k list                      | yes           |
+| `list_map_fold`    | `map (*3)` then `fold (+)` over a 100k list      | yes (1 kernel)|
+| `composite_seams`  | tuple elements through a map, a cross-kernel call per element | yes |
 | `tail_sum`         | scalar int tail loop, 100k                       | yes           |
 | `leibniz_pi`       | scalar f64 tail loop, 100k                       | yes           |
 | `mandelbrot`       | per-pixel escape-time, 100x75                    | yes           |
@@ -177,28 +135,23 @@ ratios less so.
 | `symbolic`         | build/deriv/simplify/eval over a recursive ADT   | build, deriv, eval (simplify's tuple-of-variant patterns node-walk) |
 
 `mandelbrot`'s per-pixel `iterate` is a recursive function called inside
-`array::init`'s callback (a nested recursive lambda). That case (#203)
-now fully fuses, so the whole hot loop JITs to native code like the flat
-fold/map benches.
+`array::init`'s callback (a nested recursive lambda); the whole hot loop
+fuses.
 
 `stream_stats` delivers n simulated market ticks one per reactive cycle
 via `array::iter`; each tick recomputes sum/mean/variance/min over a
 64-element sliding window plus an EMA. The async boundaries (`iter`,
-`~`, connect scheduling) can never fuse — the 32x speedup is what
-fusing just the per-event window folds buys end-to-end.
+`~`, connect scheduling) can never fuse.
 
 `netidx_stream` is the same per-tick pipeline, but every tick makes a
 real netidx round trip (publish → subscribe, self-clocked so coalescing
-can't drop ticks). The round trip dominates per-event cost, so the two
-modes tie (~1x): fusion doesn't help a workload whose bottleneck is the
-network, and the bench documents that honestly.
+can't drop ticks).
 
 `symbolic` builds, differentiates, simplifies, and evaluates expression
 trees over a recursive ADT (`` `Num/`Var/`Add/`Mul ``). A recursive
 ADT is an opaque two-word value in a kernel, so `build`, `deriv` and
 `eval_at` fuse; `simplify`'s tuple-of-variant patterns
 (`` (`Num(x), `Num(y)) ``) do not lower, so it node-walks.
-graphix-fuzz/findings/audit-jul2026/03 is the divergence it once found.
 
 ## Parallel evaluation
 

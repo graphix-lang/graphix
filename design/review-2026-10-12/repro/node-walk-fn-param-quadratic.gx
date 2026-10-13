@@ -1,0 +1,16 @@
+// The node-walk is quadratic in a recursion that threads a function
+// parameter: replace NN with 4000, 8000, 16000 and run with --no-fusion
+// (quick build: 0.73 s, 2.8 s, 11.4 s). The same loop over an array
+// parameter, calling nothing, is linear.
+let n = NN;
+let rec go = |f: fn(acc: i64, x: i64) -> i64, i: i64, acc: i64| -> i64
+    select i < n {
+        true => go(f, i + 1, f(acc, i)),
+        false => acc
+    };
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$;
+let result = go(|a, x| a + x, 0, seed);
+let t1 = sys::time::now(result);
+println("elapsed_s=[cast<f64>(t1)$ - cast<f64>(t0)$]");
+sys::exit(t1 ~ 0)
