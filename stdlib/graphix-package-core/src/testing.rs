@@ -1006,17 +1006,6 @@ macro_rules! run {
     };
 }
 
-// CR claude for claude: [test-gap/medium] run_with_tempdir! expands to one
-// #[tokio::test] over testing::init: fusion on, the default par mode, no check_fixture,
-// and compiled through rt.compile instead of the script path. Every db.rs fixture uses
-// it, and so do fs/{read,write,readdir,metadata,dir_ops} and xls.rs. Their
-// transactions, conflicts and subscriptions across an arm's sleep and wake therefore
-// never run under the node-walk, with every fork point forced, or with the
-// check-versus-build agreement that run! enforces. A node-walk-only or forced-fork
-// regression in an async db builtin ships with these suites green. Fix: expand per
-// testing::Mode like run! does (fixture_runtime(mode) plus check_fixture in interp,
-// with the tempdir setup run per mode), or move these fixtures onto run! with a setup
-// hook. (tests-lib-a-04)
 #[macro_export]
 macro_rules! run_with_tempdir {
     (
@@ -1064,47 +1053,76 @@ macro_rules! run_with_tempdir {
         expect: $expect_payload:expr
         $(, verify: |$verify_dir:ident| $verify:block)?
     ) => {
-        #[tokio::test(flavor = "current_thread")]
-        async fn $test_name() -> ::anyhow::Result<()> {
-            let (tx, mut rx) = ::tokio::sync::mpsc::channel::<
-                ::poolshark::global::GPooled<Vec<::graphix_rt::GXEvent>>
-            >(10);
-            let ctx = $crate::testing::init(tx, &crate::TEST_REGISTER).await?;
-            let $temp_dir = ::tempfile::tempdir()?;
+        /// One test per `testing::Mode`, each over a fresh directory; the
+        /// node-walk also holds the check to the build.
+        mod $test_name {
+            #[allow(unused_imports)]
+            use super::*;
 
-            let test_file = { $setup };
-
-            let code = format!(
-                $code,
-                $crate::testing::escape_path(test_file.display())
-            );
-            // an error the fixture raises and does not catch is printed, so a
-            // failing operation names itself beside the timeout
-            let code = format!("{{ catch(e) println(\"uncaught: [e]\"); {code} }}");
-            let compiled = ctx.rt.compile(::arcstr::ArcStr::from(code)).await?;
-            let eid = compiled.exprs[0].id;
-
-            let timeout = ::tokio::time::sleep(::std::time::Duration::from_secs(2));
-            ::tokio::pin!(timeout);
-
-            loop {
-                ::tokio::select! {
-                    _ = &mut timeout => panic!("timeout waiting for result"),
-                    Some(mut batch) = rx.recv() => {
-                        for event in batch.drain(..) {
-                            if let ::graphix_rt::GXEvent::Updated(id, v) = event {
-                                if id == eid {
-                                    $expect_payload(v)?;
-                                    $(
-                                        let $verify_dir = &$temp_dir;
-                                        $verify
-                                    )?
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
+            async fn run_mode(mode: $crate::testing::Mode) -> ::anyhow::Result<()> {
+                let $temp_dir = ::tempfile::tempdir()?;
+                let test_file = { $setup };
+                let code = format!(
+                    $code,
+                    $crate::testing::escape_path(test_file.display())
+                );
+                // an error the fixture raises and does not catch is printed, so a
+                // failing operation names itself beside the timeout
+                let code = format!(
+                    "let result = {{ catch(e) println(\"uncaught: [e]\"); {code} }}"
+                );
+                let (ctx, mut rx) = $crate::testing::fixture_runtime(
+                    [(
+                        "/test.gx",
+                        ::graphix_compiler::expr::VfsEntry::from(::arcstr::ArcStr::from(code)),
+                    )],
+                    &crate::TEST_REGISTER,
+                    mode,
+                    |_| {},
+                )
+                .await?;
+                let checked = if mode == $crate::testing::Mode::Interp {
+                    ::std::option::Option::Some($crate::testing::check_fixture(&ctx).await)
+                } else {
+                    ::std::option::Option::None
+                };
+                let built = $crate::testing::compile_result(&ctx).await;
+                if let ::std::option::Option::Some(checked) = checked {
+                    $crate::testing::verdicts_agree(checked, built.as_ref().map(|_| ()))?;
                 }
+                // the fixture's expression lives as long as `built`
+                let built = built?;
+                let eid = built.exprs[0].id;
+                let deadline =
+                    ::tokio::time::Instant::now() + ::std::time::Duration::from_secs(10);
+                let v = $crate::testing::next_update(&mut rx, eid, deadline).await?;
+                ($expect_payload)(v)?;
+                $(
+                    let $verify_dir = &$temp_dir;
+                    $verify
+                )?
+                ctx.shutdown().await;
+                Ok(())
+            }
+
+            #[::tokio::test(flavor = "current_thread")]
+            async fn interp() -> ::anyhow::Result<()> {
+                run_mode($crate::testing::Mode::Interp).await
+            }
+
+            #[::tokio::test(flavor = "current_thread")]
+            async fn jit() -> ::anyhow::Result<()> {
+                run_mode($crate::testing::Mode::Jit).await
+            }
+
+            #[::tokio::test(flavor = "current_thread")]
+            async fn par() -> ::anyhow::Result<()> {
+                run_mode($crate::testing::Mode::Par).await
+            }
+
+            #[::tokio::test(flavor = "current_thread")]
+            async fn jit_par() -> ::anyhow::Result<()> {
+                run_mode($crate::testing::Mode::JitPar).await
             }
         }
     };
