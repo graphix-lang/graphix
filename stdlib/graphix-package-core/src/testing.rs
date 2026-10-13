@@ -808,29 +808,16 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 macro_rules! run {
     // The `; shape:` and `; jit_only` arms must precede the plain
     // `; $fexpect` arms so the longer token sequence matches first.
-    // The JIT alone: a program the node-walk cannot run (a native loop
-    // deeper than the stack budget allows activations).
     // A refusal only a build makes (`#[native]`, the definition
     // assertions): no check test.
-    // CR claude for claude: [readability/low] The comment above this arm, "The JIT
-    // alone: a program the node-walk cannot run ...", describes the `; jit_only` arm
-    // further down, not this build_only arm, so it reads as the wrong arm's rationale.
-    // Move it directly above the jit_only arm. Keep the ordering note at the top of the
-    // macro and only the build_only sentence above this arm. (core-aux-11)
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr; build_only) => {
         $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
-    // CR claude for claude: [dead/low] No fixture uses this arm: every `; build_only`
-    // fixture passes FuseExpect::None. The arm also could never pass. A build_only
-    // fixture is a refusal, a refusal fuses nothing, and so its jit test fails
-    // check_fuse_expectation under the FuseExpect::Jit this arm hard-codes. Delete the
-    // arm. (tests-lang-rest-b-10)
-    ($name:ident, $code:expr, $pred:expr; build_only) => {
-        $crate::run!(@impl false, cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
-    };
+    // The JIT alone: a program the node-walk cannot run (a native loop
+    // deeper than the stack budget allows activations).
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; jit_only) => {
         $crate::run!(@impl true, cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
