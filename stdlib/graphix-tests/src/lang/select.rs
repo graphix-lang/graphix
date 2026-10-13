@@ -1895,18 +1895,9 @@ run!(or_capture_union, OR_CAPTURE_UNION, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "up")
 }; FuseExpect::Jit);
 
-// An enclosing select's pattern binds are facets of one delivery: arm 0
-// handles the key through `ev`, so `k` is spent and the flip to arm 1
-// does not re-raise it.
-// CR claude for claude: [doc-drift/low] The comment above says `k` is spent because arm
-// 0 reads `ev`. But `TrackedFires` never delivers a pattern bind of an enclosing
-// select, read or not, so `fired` is 0 even with `0 => null`. The test pins the
-// pattern-bind exclusion, not the facet consumption through `ev`
-// (alias_read_consumes_the_formals_fire covers that). Reword the comment to say what it
-// pins. In CLAUDE.md's wake catch-up rule, also say that an enclosing select's pattern
-// binds are only consumed, never delivered, unlike a destructuring let's siblings.
-// Probe: design/review-2026-10-12/repro/tests-select-02.gx gives (bound, plain, lt) =
-// (0, 1, 1). (tests-select-03)
+// An enclosing select's pattern bind is never delivered at a wake: the
+// flip to arm 1 does not re-raise `k`, which the key fire bound while
+// arm 0 was selected (design/wake_catchup.md, the tracker).
 const SELECT_SIBLING_BINDS_SPENT: &str = r#"
 {
   type Ev = [`Key([`Enter, `Other]), `Mouse];

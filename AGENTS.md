@@ -708,8 +708,10 @@ node graph IS the IR — there is no parallel typed IR
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
   once, at their current value (one fire bit per arm-body input per
-  select, consumed by whichever arm reads it; pattern binds and a
-  destructuring let's siblings are facets of one input). An input that
+  select, consumed by whichever arm reads it; a destructuring let's
+  siblings are facets of one input; a pattern bind, of this select or
+  an enclosing one, is a facet of its scrutinee's delivery: reading it
+  consumes that input's bit, and it is never delivered). An input that
   went bottom during the sleep is bottom at the wake: a bottom input
   SETS a node's resident (`TagValue::set_bottom`), never rides it, and
   every wake refresh stands a stale bottom like a value. Sleep state is
