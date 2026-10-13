@@ -391,24 +391,7 @@ pub(super) fn gen_error_arm_lambda(
     );
     // call so the ok arm or the error arm is taken, then consume the union
     let arg = if rng.below(2) == 0 { "i64:0" } else { "i64:1" };
-    let dflt = exprs::gen_typed(ctx, rng, &ret, 1);
-    // CR claude for claude: [structure/low] The same `$` / select-with-error-arm / `{
-    // catch(e) dflt; x? }` consumer is also written in exprs.rs, in gen_typed's
-    // checked-arithmetic arm and try_accessor's nullable arm. Those two copies check
-    // ctx.no_catch and this one does not, so reaching gen_error_arm_lambda from a seq
-    // body would emit a `catch` that the compiler refuses. Also, `dflt` is not a
-    // fallback: a catch handler's value goes nowhere, and the block's value is `x?`,
-    // which is bottom on error. Fix: one `consume_fallible` helper in exprs.rs that
-    // checks no_catch, called from all three sites. Its catch form should name the
-    // handler body for what it is, or give it an observable effect. (fuzz-gen-a-07)
-    let consume = match rng.below(3) {
-        0 => format!("{f}({arg})$"),
-        1 => format!(
-            "select {f}({arg}) {{ error as _ => {dflt}, {} as x => x }}",
-            ret.render()
-        ),
-        _ => format!("{{ catch(e) {dflt}; ({f}({arg}))? }}"),
-    };
+    let consume = exprs::consume_fallible(ctx, rng, &format!("{f}({arg})"), &ret, "error", 1);
     let call = ctx.fresh();
     let stmts = vec![lam, format!("let {call} = {consume}")];
     ctx.push(call, ret);

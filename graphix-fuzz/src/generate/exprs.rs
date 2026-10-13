@@ -164,15 +164,7 @@ fn try_accessor(
             // `?` whose null a catch takes
             GenType::Nullable(t) => {
                 if **t == *ty && ty.is_scalar() {
-                    let dflt = gen_typed(ctx, rng, ty, depth);
-                    cands.push(format!(
-                        "select {name} {{ null as _ => {dflt}, {} as n => n }}",
-                        ty.render()
-                    ));
-                    cands.push(format!("{name}$"));
-                    if !ctx.no_catch {
-                        cands.push(format!("{{ catch(e) {dflt}; {name}? }}"));
-                    }
+                    cands.push(consume_fallible(ctx, rng, name, ty, "null", depth));
                 }
             }
             GenType::Num(_)
@@ -522,22 +514,7 @@ pub(super) fn gen_typed(
                 let op = *rng.pick(&["+?", "-?", "*?", "/?", "%?"]);
                 let a = gen_typed(ctx, rng, ty, d);
                 let b = gen_typed(ctx, rng, ty, d);
-                let dflt = gen_typed(ctx, rng, ty, d);
-                return match rng.below(4) {
-                    0 => format!("({a} {op} {b})$"),
-                    1 => format!(
-                        "select ({a} {op} {b}) {{ error as _ => {dflt}, {} as n => n }}",
-                        ty.render()
-                    ),
-                    // the bare-wildcard form is the only one that reaches
-                    // the kernel's result-union predicate lowering
-                    2 => format!(
-                        "select ({a} {op} {b}) {{ {} as n => n, _ => {dflt} }}",
-                        ty.render()
-                    ),
-                    _ if ctx.no_catch => format!("({a} {op} {b})$"),
-                    _ => format!("{{ catch(e) {dflt}; (({a} {op} {b}))? }}"),
-                };
+                return consume_fallible(ctx, rng, &format!("({a} {op} {b})"), ty, "error", d);
             }
             // unary minus: signed/float only; parenthesized so `-(i64:5)`
             // stays a `Neg` rather than a negative literal
@@ -780,6 +757,39 @@ fn try_map_builtin(
 /// json for any data, toml for a struct (its documents are tables), pack
 /// for any data. The reader's target is the annotation, so the imaged cast
 /// target meets the cold/warm comparison.
+/// A value of `ty` from `x`, which may instead be `absent` (`error` or
+/// `null`): `$`, a type-match select with a fallback arm, or a `?` under
+/// a catch, whose handler's value goes nowhere (the block is bottom when
+/// `x` is absent).
+pub(super) fn consume_fallible(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    x: &str,
+    ty: &GenType,
+    absent: &str,
+    depth: usize,
+) -> String {
+    let t = ty.render();
+    match rng.below(4) {
+        0 => format!("{x}$"),
+        1 => {
+            let dflt = gen_typed(ctx, rng, ty, depth);
+            format!("select {x} {{ {absent} as _ => {dflt}, {t} as n => n }}")
+        }
+        // the bare-wildcard form is the only one that reaches the
+        // kernel's result-union predicate lowering
+        2 => {
+            let dflt = gen_typed(ctx, rng, ty, depth);
+            format!("select {x} {{ {t} as n => n, _ => {dflt} }}")
+        }
+        _ if ctx.no_catch => format!("{x}$"),
+        _ => {
+            let handler = gen_typed(ctx, rng, ty, depth);
+            format!("{{ catch(e) {handler}; {x}? }}")
+        }
+    }
+}
+
 /// `==`/`!=` over two visible references of one type, compared by what
 /// they name.
 fn ref_comparison(ctx: &GenCtx, rng: &mut Rng) -> Option<String> {
