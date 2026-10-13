@@ -320,6 +320,20 @@ impl<X: GXExt, T: Into<Value> + FromValue + Clone> TRef<X, T> {
 
 atomic_id!(CallableId);
 
+/// Whether `args` fit the signature `typ`: its arity, and each argument
+/// a value of its type.
+fn check_args(typ: &FnType, env: &Env, args: &ValArray) -> Result<()> {
+    if typ.args.len() != args.len() {
+        bail!("expected {} args", typ.args.len())
+    }
+    for (i, (a, v)) in typ.args.iter().zip(args.iter()).enumerate() {
+        if !a.typ.is_a(env, v) {
+            bail!("type mismatch arg {i} expected {}", a.typ)
+        }
+    }
+    Ok(())
+}
+
 pub struct Callable<X: GXExt> {
     rt: GXHandle<X>,
     id: CallableId,
@@ -356,7 +370,7 @@ impl<X: GXExt> Callable<X> {
     /// returns there is no guarantee that the returns will arrive in the order
     /// of the calls. There is no guarantee that a function must return.
     pub async fn call(&self, args: ValArray) -> Result<()> {
-        self.check_args(&args)?;
+        check_args(&self.typ, &self.env, &args)?;
         self.send(args, false)
     }
 
@@ -365,20 +379,8 @@ impl<X: GXExt> Callable<X> {
     /// site produced in that cycle, null when it produced nothing. A later
     /// output of the call site answers nothing.
     pub async fn call_answered(&self, args: ValArray) -> Result<()> {
-        self.check_args(&args)?;
+        check_args(&self.typ, &self.env, &args)?;
         self.send(args, true)
-    }
-
-    fn check_args(&self, args: &ValArray) -> Result<()> {
-        if self.typ.args.len() != args.len() {
-            bail!("expected {} args", self.typ.args.len())
-        }
-        for (i, (a, v)) in self.typ.args.iter().zip(args.iter()).enumerate() {
-            if !a.typ.is_a(&self.env, v) {
-                bail!("type mismatch arg {i} expected {}", a.typ)
-            }
-        }
-        Ok(())
     }
 
     fn send(&self, args: ValArray, answered: bool) -> Result<()> {
@@ -389,9 +391,8 @@ impl<X: GXExt> Callable<X> {
             .map_err(|_| self.rt.stopped("runtime is dead"))
     }
 
-    /// Call the lambda with args. Argument types and arity will NOT
-    /// be checked. This can result in a runtime panic, invalid
-    /// results, and probably other bad things.
+    /// Call the lambda with args, unchecked here: the runtime refuses,
+    /// and logs, a call whose arguments do not fit.
     pub async fn call_unchecked(&self, args: ValArray) -> Result<()> {
         self.send(args, false)
     }
@@ -1012,8 +1013,8 @@ impl<X: GXExt> GXHandle<X> {
     /// Call a callable by id with the given arguments
     ///
     /// This is a fire-and-forget call that does not wait for the result.
-    /// The runtime checks the arity, logging a call it refuses; unlike
-    /// `Callable::call`, the argument types are not checked.
+    /// The runtime checks the arity and the argument types, logging a call
+    /// it refuses.
     pub fn call(&self, id: CallableId, args: ValArray) -> Result<()> {
         self.0
             .tx

@@ -15,6 +15,7 @@ const PROG: &str = r#"
 let h = 'a: Number |x: 'a| -> 'a x;
 let g = |x| x;
 let k = |x| x;
+let i = |x: i64| -> i64 x;
 let kref: &fn(x: i64) -> i64 = &k;
 let sx = 0;
 let sy = 0;
@@ -104,6 +105,44 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
     drop(m);
     ctx.shutdown().await;
     drain.abort();
+    Ok(())
+}
+
+/// The runtime refuses a call whose argument does not fit the callable's
+/// signature, however the call was sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mistyped_call_is_refused() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = runtime(tx).await?;
+    let gx = ctx.rt.clone();
+    let m = gx.compile(literal!("mod test")).await?;
+    let r = gx.compile_ref(find_bind_id(&m.env, "test::i")?).await?;
+    let c = gx.compile_callable(r.last.clone().context("i has no value")?).await?;
+    let outputs = |rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>| {
+        let mut out = vec![];
+        while let Ok(mut b) = rx.try_recv() {
+            for e in b.drain(..) {
+                if let GXEvent::Updated(id, v) = e
+                    && id == c.expr
+                {
+                    out.push(v)
+                }
+            }
+        }
+        out
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    outputs(&mut rx);
+    let bad = ValArray::from_iter_exact([Value::String(literal!("no"))].into_iter());
+    c.call_unchecked(bad.clone()).await?;
+    gx.call(c.id(), bad)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(outputs(&mut rx), Vec::<Value>::new());
+    c.call(ValArray::from_iter_exact([Value::I64(3)].into_iter())).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(outputs(&mut rx), [Value::I64(3)]);
+    drop((c, r, m));
+    ctx.shutdown().await;
     Ok(())
 }
 

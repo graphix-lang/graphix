@@ -247,6 +247,8 @@ struct CallableInt {
     expr: ExprId,
     answer: ExprId,
     args: Box<[BindId]>,
+    /// The signature a call's arguments are checked against.
+    typ: FnType,
 }
 
 pub(super) struct GX<X: GXExt> {
@@ -1199,7 +1201,8 @@ impl<X: GXExt> GX<X> {
         self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();
         let answer = ExprId::new();
-        self.callables.insert(cid, CallableInt { expr: eid, answer, args });
+        self.callables
+            .insert(cid, CallableInt { expr: eid, answer, args, typ: ftype.clone() });
         self.nodes.insert(eid, n);
         let env = self.ctx.env.clone();
         Ok(Callable { expr: eid, answer, rt, env, id: cid, lambda: lb.id, typ: ftype })
@@ -1229,27 +1232,7 @@ impl<X: GXExt> GX<X> {
     ) -> Result<()> {
         let c =
             self.callables.get(&id).ok_or_else(|| anyhow!("unknown callable {id:?}"))?;
-        // CR claude for claude: [risk/medium] GXHandle::call skips argument type
-        // checks; the runtime checks only arity (b-16's root cause). gui-widgets-b-16
-        // (a radio sent null into a callback typed from its value, and a fused reader
-        // panicked) was fixed in RadioW alone. The root cause is still there.
-        // Callable::call/call_answered check the argument types (graphix-rt/src/lib.rs
-        // check_args), but GXHandle::call(id, args) (lib.rs), which the GUI event loop
-        // uses for every Message::Call, sends unchecked. The runtime's call_callable
-        // (gx.rs) checks only `args.len()`. A widget that ever sends a value outside
-        // the callback's declared type stores a mistyped value in a binding the checker
-        // typed, and fused code reads it through the compiled ABI. Failure: I found no
-        // mistyped send in the current widgets (data_table toggle/spin/button send the
-        // declared types). Any future widget, or an embedder calling GXHandle::call
-        // with a wrong value, reproduces b-16: a kernel reading the parameter panics or
-        // misreads, the runtime dies. Fix: Check `is_a` against the callable's argument
-        // types in call_callable, on the runtime side, so every entry is checked; or
-        // make GXHandle::call take a Callable and route it through check_args. Refuse a
-        // mismatched call with a logged error. Unverified: the reviewer's report, not
-        // checked by a verifier. (x-rerun-4-04)
-        if args.len() != c.args.len() {
-            bail!("expected {} arguments", c.args.len());
-        }
+        crate::check_args(&c.typ, &self.ctx.env, &args)?;
         // CR claude for claude: [bug/low] A callable with no arguments to deliver (a
         // `||` lambda, or one whose arguments are all labeled defaults, which
         // compile_callable drops) records `arg: None` and an empty set. calls_made
