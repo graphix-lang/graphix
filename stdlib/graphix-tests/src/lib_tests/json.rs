@@ -11,7 +11,7 @@ run!(json_i64, r#"{let v: i64 = json::read(json::write_str(42)$)?; v}"#, |v: Res
 }; FuseExpect::None);
 
 run!(json_f64, r#"{let v: f64 = json::read(json::write_str(3.14)$)?; v}"#, |v: Result<&Value>| {
-    matches!(v, Ok(Value::F64(f)) if (*f - 3.14).abs() < 1e-10)
+    matches!(v, Ok(Value::F64(f)) if *f == 3.14)
 }; FuseExpect::None);
 
 run!(json_bool, r#"{let v: bool = json::read(json::write_str(true)$)?; v}"#, |v: Result<&Value>| {
