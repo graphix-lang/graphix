@@ -41,18 +41,29 @@ const REJECTED: usize = 100_000;
 /// cannot refuse.
 const FLAT_AT_REJECTED: &[&str] = &["uniontyp", "seqarm"];
 
-/// Deepest nesting the limit admits for every shape; derived from the
-/// limit so the deep path stays exercised if the limit moves.
-// CR claude for claude: [test-gap/low] `max_nesting() / 8` is 125 for every shape, but
-// the parser admits about 247 levels of parens, call and interp, about 330 of array,
-// block, select and structlit, and about 994 of lambda and typ. An unguarded walk
-// costing under about 4KB per level survives 125 levels on the 512KB child stack. It
-// then overflows on a program the parser accepts. Fix: give each shape its own accepted
-// depth, the deepest below the limit that the parser admits (knots per level in a
-// table, or found by bisection). Also add fn, struct and tuple type shapes; `typ`
-// covers only `Array<..>`. (tests-shell-compiler-03)
-fn accepted() -> usize {
-    graphix_compiler::expr::parser::max_nesting() / 8
+/// The deepest nesting of `shape` the parser admits, found by bisection,
+/// so each shape runs as deep as a program may be.
+fn accepted(shape: &str) -> usize {
+    use graphix_compiler::expr::{Origin, parser};
+    let admitted = |d: usize| {
+        let text = arcstr::ArcStr::from(program(shape, d));
+        let origin = Origin { parent: None, source: Source::Unspecified, text };
+        match parser::parse(origin) {
+            Ok(_) => true,
+            Err(e) => !format!("{e:#}").contains("nesting too deep"),
+        }
+    };
+    if FLAT_AT_REJECTED.contains(&shape) {
+        return parser::max_nesting();
+    }
+    // every level costs the parser at least one knot
+    let (mut lo, mut hi) = (1, parser::max_nesting() + 1);
+    assert!(admitted(lo) && !admitted(hi), "{shape} is not refused at {hi}");
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if admitted(mid) { lo = mid } else { hi = mid }
+    }
+    lo
 }
 
 const SHAPE_VAR: &str = "GRAPHIX_DEEP_SHAPE";
@@ -62,6 +73,10 @@ const MODE_VAR: &str = "GRAPHIX_DEEP_MODE";
 /// What a child does with the program: check it, run it (fusion on or
 /// off), or format it.
 const MODES: [&str; 4] = ["check", "run", "nofusion", "fmt"];
+
+/// Exit code the child uses for any other failure where the program must
+/// build and run.
+const FAILED: i32 = 5;
 
 /// The longest operator or postfix run a paren-chain shape writes.
 const RUN: usize = 999;
@@ -76,8 +91,9 @@ fn program(shape: &str, d: usize) -> String {
         "array" => format!("let x = {}1{}", "[".repeat(d), "]".repeat(d)),
         "maplit" => format!("let x = {}1{}", r#"{"k" => "#.repeat(d), "}".repeat(d)),
         "slicepat" => {
+            let v = format!("{}1{}", "[".repeat(d), "]".repeat(d));
             let pat = format!("{}x{}", "[".repeat(d), "]".repeat(d));
-            format!("let v = [1];\nlet x = select v {{ {pat} => 1, _ => 0 }}")
+            format!("let v = {v};\nlet x = select v {{ {pat} => 1, _ => 0 }}")
         }
         "tuple" => format!("let x = {}(1, 1){}", "(1, ".repeat(d), ")".repeat(d)),
         "structlit" => format!("let x = {}1{}", "{a: ".repeat(d), "}".repeat(d)),
@@ -85,15 +101,36 @@ fn program(shape: &str, d: usize) -> String {
         "typ" => {
             format!("let x: {}i64{} = never()", "Array<".repeat(d), ">".repeat(d))
         }
+        "structtyp" => {
+            format!("let x: {}i64{} = never()", "{a: ".repeat(d), "}".repeat(d))
+        }
+        "tupletyp" => {
+            format!("let x: {}i64{} = never()", "(i64, ".repeat(d), ")".repeat(d))
+        }
         "uniontyp" => format!("let x: [{}null] = null", "i64, ".repeat(d)),
         "lambda" => format!("let f = {}1", "|x| ".repeat(d)),
         "call" => {
             format!("let f = |x| x;\nlet y = {}1{}", "f(".repeat(d), ")".repeat(d))
         }
         "block" => format!("let x = {}1{}", "{ let a = 1; ".repeat(d), " }".repeat(d)),
-        "field" => format!("let s = {{a: 1}};\nlet x = s{}", ".a".repeat(d)),
-        "index" => format!("let a = [1];\nlet x = a{}", "[0]".repeat(d)),
-        "deref" => format!("let v = 1;\nlet r = &v;\nlet x = {}r", "*".repeat(d)),
+        "field" => format!(
+            "let s = {}1{};\nlet x = s{}",
+            "{a: ".repeat(d),
+            "}".repeat(d),
+            ".a".repeat(d)
+        ),
+        "index" => format!(
+            "let a = {}1{};\nlet x = a{}",
+            "[".repeat(d),
+            "]".repeat(d),
+            "[0]$".repeat(d)
+        ),
+        "deref" => format!(
+            "let v = 1;\nlet r = {}v{};\nlet x = {}r",
+            "&(".repeat(d),
+            ")".repeat(d),
+            "*".repeat(d)
+        ),
         "interp" => {
             let mut s = String::from("1");
             for _ in 0..d {
@@ -102,8 +139,9 @@ fn program(shape: &str, d: usize) -> String {
             format!("let x = {s}")
         }
         "tuplepat" => {
+            let v = format!("{}1{}", "(1, ".repeat(d), ")".repeat(d));
             let pat = format!("{}x{}", "(1, ".repeat(d), ")".repeat(d));
-            format!("let v = (1, 1);\nlet x = select v {{ {pat} => 1, _ => 0 }}")
+            format!("let v = {v};\nlet x = select v {{ {pat} => 1, _ => 0 }}")
         }
         "select" => {
             let mut s = String::from("1");
@@ -112,7 +150,7 @@ fn program(shape: &str, d: usize) -> String {
             }
             format!("let x = {s}")
         }
-        "qop" => format!("let a = [1];\nlet x = a[0]{}", "$".repeat(d)),
+        "qop" => format!("let x = {}1{}", "cast<i64>(".repeat(d), ")$".repeat(d)),
         // Runs inside parens: each fold is under the limit, the AST they
         // build together is `d` deep.
         "parenchain" => format!("let x = {}", paren_chain(d)),
@@ -144,7 +182,7 @@ fn program(shape: &str, d: usize) -> String {
             for i in 1..=d {
                 s.push_str(&format!("let x{i} = [x{}];\n", i - 1));
             }
-            s.push_str(&format!("x{d}"));
+            s.push_str(&format!("x{d} == x{d}"));
             s
         }
         // A chain of bounds as long as the program, every cell a position
@@ -152,7 +190,7 @@ fn program(shape: &str, d: usize) -> String {
         "chainbounds" => {
             let bounds = (0..d)
                 .map(|i| format!("'a{i}: Array<'a{}>", i + 1))
-                .chain([format!("'a{d}: Concrete")])
+                .chain([format!("'a{d}: Number")])
                 .collect::<Vec<_>>()
                 .join(", ");
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
@@ -163,7 +201,7 @@ fn program(shape: &str, d: usize) -> String {
             for i in 1..=d {
                 s.push_str(&format!("type A{i} = [`N(A{}), `Z];\n", i - 1));
             }
-            s.push_str(&format!("let x = cast<A{d}>(`Z)"));
+            s.push_str(&format!("let x = cast<A{d}>(`Z)$;\nx == x"));
             s
         }
         _ => panic!("unknown shape {shape}"),
@@ -211,6 +249,8 @@ const SHAPES: &[&str] = &[
     "structlit",
     "variant",
     "typ",
+    "structtyp",
+    "tupletyp",
     "uniontyp",
     "lambda",
     "call",
@@ -232,9 +272,17 @@ const SHAPES: &[&str] = &[
     "seqabort",
 ];
 
+/// What a child may map: a runaway case dies alone, by a signal.
+const CHILD_MEMORY: u64 = 4 << 30;
+
 /// The child half: check, run or format one shape on a small-stack
 /// runtime. Returning at all is the assertion.
 fn run_child(shape: &str, depth: usize, mode: &str) {
+    #[cfg(unix)]
+    unsafe {
+        let limit = libc::rlimit { rlim_cur: CHILD_MEMORY, rlim_max: CHILD_MEMORY };
+        libc::setrlimit(libc::RLIMIT_AS, &limit);
+    }
     let dir = env::temp_dir().join(format!("gx-deep-{shape}-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("tmpdir");
     let file = dir.join("deep.gx");
@@ -278,7 +326,11 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
             .expect("join");
         let _ = fs::remove_dir_all(&dir);
         if let Err(e) = r {
-            refused(&e)
+            if depth == REJECTED {
+                refused(&e)
+            }
+            eprintln!("{shape}@{depth} fmt: {e}");
+            std::process::exit(FAILED)
         }
         return;
     }
@@ -292,40 +344,42 @@ fn run_child(shape: &str, depth: usize, mode: &str) {
         .build()
         .expect("runtime");
     let r = rt.block_on(async {
-        let shell = ShellBuilder::<NoExt>::default()
-            .cache(CacheMode::Off)
-            .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
-            .disable_flags(match mode {
-                "nofusion" => CFlag::FusionDisabled.into(),
-                _ => BitFlags::empty(),
-            })
-            .mode(match mode {
-                "check" => Mode::Check(Source::File(file.clone())),
-                _ => Mode::Script(Source::File(file.clone())),
-            })
-            .build()
-            .expect("building shell");
+        let shell = |cache| {
+            ShellBuilder::<NoExt>::default()
+                .cache(cache)
+                .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
+                .disable_flags(match mode {
+                    "nofusion" => CFlag::FusionDisabled.into(),
+                    _ => BitFlags::empty(),
+                })
+                .mode(match mode {
+                    "check" => Mode::Check(Source::File(file.clone())),
+                    _ => Mode::Script(Source::File(file.clone())),
+                })
+                .build()
+                .expect("building shell")
+        };
         match mode {
-            "check" => shell.check().await,
-            _ => shell.run(MainThreadHandle::new().0).await.map(|_| ()),
+            "check" => shell(CacheMode::Off).check().await,
+            // cold, writing the images under the parent's cache, then warm
+            "image" => {
+                for _ in 0..2 {
+                    shell(CacheMode::On).run(MainThreadHandle::new().0).await?;
+                }
+                Ok(())
+            }
+            _ => shell(CacheMode::Off).run(MainThreadHandle::new().0).await.map(|_| ()),
         }
     });
     let _ = fs::remove_dir_all(&dir);
-    // Any other error means the AST was built, walked and torn down.
-    // Only a parse error means the deep path never ran.
-    // CR claude for claude: [test-gap/medium] Any error other than a parse error passes
-    // here, and six SHAPES are ill-typed at every depth above 1: slicepat, tuplepat
-    // (the pattern never matches), field (`expected struct not i64`), index (Array vs
-    // Result), deref (`expected reference`) and qop (`$` on i64). Their check, run and
-    // nofusion cases stop at the type error, so the update, delete, sleep and fusion
-    // walks of field access, indexing, deref and `$` never run deep. Removing a stack
-    // guard from any of them would go unnoticed. An Err from a dead runtime task would
-    // pass the same way. Fix: make each of these shapes well-typed (nested values of
-    // the matching shape, `$` after each index, `*..*&..&v`), and at the accepted depth
-    // require Ok, exiting non-zero on any error. Keep `refused` only for the REJECTED
-    // cases. (tests-shell-compiler-02)
     if let Err(e) = r {
-        refused(&format!("{e:#}"))
+        let e = format!("{e:#}");
+        if depth == REJECTED {
+            refused(&e)
+        }
+        // short of the limit the program must build and run
+        eprintln!("{shape}@{depth} {mode}: {e}");
+        std::process::exit(FAILED)
     }
 }
 
@@ -338,6 +392,7 @@ fn deep_nesting_does_not_overflow() {
         return run_child(&shape, depth, &mode);
     }
     let exe = env::current_exe().expect("current exe");
+    let cache = tempfile::tempdir().expect("a cache for the image cases");
     // Batched: each child pays a full stdlib compile.
     const CONCURRENCY: usize = 8;
     let spawn = |shape: &str, depth: usize, mode: &str| {
@@ -351,6 +406,7 @@ fn deep_nesting_does_not_overflow() {
             .env(SHAPE_VAR, shape)
             .env(DEPTH_VAR, depth.to_string())
             .env(MODE_VAR, mode)
+            .env("XDG_CACHE_HOME", cache.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -359,21 +415,14 @@ fn deep_nesting_does_not_overflow() {
     };
     let cases: Vec<(&str, usize, &str)> = SHAPES
         .iter()
-        .flat_map(|s| MODES.map(|m| (*s, accepted(), m)))
+        .flat_map(|s| {
+            let depth = accepted(s);
+            MODES.map(|m| (*s, depth, m))
+        })
         .chain(SHAPES.iter().map(|s| (*s, REJECTED, "check")))
-        // CR claude for claude: [test-gap/low] Type depth is what the parser limit
-        // cannot bound, yet the flat shapes are only checked, at 3000. They never run
-        // with or without fusion, never go through an image, and nothing operates on
-        // the deep value. A 6000-deep type compared with `==` aborts under fusion in a
-        // run, and this pin would not see it
-        // (design/review-2026-10-12/repro/x-stack-type-debug-overflow.py). accepted()
-        // is a flat max_nesting()/8, so every source shape also stops far below the
-        // depth the parser admits (arrays and blocks about 331, field and neg chains
-        // about 996). Run FLAT_SHAPES in every mode at about 10000, ending the program
-        // with an operation on the deep value (`x == x`, a print). Add a cold-and-warm
-        // image mode. Derive each shape's depth from the parser's per-knot cost instead
-        // of /8. (x-stack-06)
-        .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH, "check")))
+        .chain(FLAT_SHAPES.iter().flat_map(|s| {
+            MODES.into_iter().chain(["image"]).map(|m| (*s, FLAT_DEPTH, m))
+        }))
         .chain([("modchain", MODCHAIN_DEPTH, "check")])
         .chain([("chainbounds", CHAIN_DEPTH, "check")])
         .collect();

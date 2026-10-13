@@ -637,6 +637,9 @@ impl FnType {
         // the whole top-level walk, so each signature's cells are visited once. Then
         // add a `fn() -> ` shape to deep_nesting.rs `program()`.
         // (tests-shell-compiler-01)
+        // 2026-10-13 claude: also `fn(x: fn(x: .. i64) -> i64) -> i64`: deep_nesting's
+        // bisection of the parser's limit never finished it. Add a `fntyp` shape to
+        // program() and SHAPES with the fix.
         // CR claude for claude: [perf/medium] Visiting the conjuncts calls `sig_tvars`,
         // which walks every position again through `collect_tvars`, and `collect_tvars`
         // on a nested function type re-enters that type's `for_each_part`, which does

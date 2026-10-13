@@ -67,6 +67,12 @@ impl TVar {
             // and share every live cell. For example, have the caller pass the
             // `Fresh::Instantiate` open set. Probe:
             // design/review-2026-10-12/repro/t-tvar-03.sh. (t-tvar-03)
+            // 2026-10-13 claude: the copy also makes a chain of bounds exponential: a
+            // call of `'a0: Array<'a1>, .., 'aN-1: Array<'aN> |x: ('a0, .., 'aN)| x` on
+            // `never()` settles each cell to a fresh copy of the rest of the chain, and
+            // the copies settle in turn. 20 links check in 2.6 s and each one more
+            // doubles it; 24 pass 4 GB. deep_nesting's `chainbounds` shape (10000 links)
+            // pins it.
             return Ok(Ok(c.reset_tvars()));
         }
         Ok(Err(candidates))
