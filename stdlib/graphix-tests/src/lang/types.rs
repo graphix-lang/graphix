@@ -532,34 +532,24 @@ async fn a_signature_types_its_calls() -> Result<()> {
 const CAST_LET_WIRE_SHAPE: &str = r#"
 {
   let v = cast<f64>(i64:-9223372036854775808);
-  v;
-  42
+  (v, 42)
 }
 "#;
 
-// CR claude for claude: [test-gap/low] The fixture throws `v` away and asserts only the
-// constant 42, and the f32 twin below does the same. A wrong value or a wrong
-// marshalling of the let-bound fallible cast (a bare f64, an error, a wrong number)
-// would still pass. Only a panic or a refusal fails these tests. Fix: return `(v, 42)`
-// and pin v as f64:-9223372036854775808. (every mode gives that today), and in the twin
-// return `(v, cast<f32>(f64:1.5)$)` with v pinned as f32:3. (tests-types-06)
-run!(cast_let_wire_shape, CAST_LET_WIRE_SHAPE, |v: Result<&Value>| match v {
-    Ok(&Value::I64(42)) => true,
-    _ => false,
+run!(cast_let_wire_shape, CAST_LET_WIRE_SHAPE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[f64:-9223372036854776000., i64:42]"
 });
 
 // The f32 twin, plus a `$` consumer over the widened shape.
 const CAST_LET_WIRE_SHAPE_F32: &str = r#"
 {
   let v = cast<f32>(i64:3);
-  v;
-  cast<f32>(f64:1.5)$
+  (v, cast<f32>(f64:1.5)$)
 }
 "#;
 
-run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| match v {
-    Ok(&Value::F32(f)) => f == 1.5,
-    _ => false,
+run!(cast_let_wire_shape_f32, CAST_LET_WIRE_SHAPE_F32, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[f32:3., f32:1.5]"
 });
 
 // A union member whose tag the value carries is its reading, whatever a
