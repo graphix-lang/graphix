@@ -94,7 +94,7 @@ each page. (book-ui-a-09) -->
 
 ### Focus Indication
 
-Use dynamic styling to show which block has focus:
+Use dynamic styling to show which block has focus; Tab moves it:
 
 ```graphix
 {{#include ../../examples/tui/block_focus.gx}}

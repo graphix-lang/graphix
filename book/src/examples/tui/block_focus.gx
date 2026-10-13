@@ -1,27 +1,35 @@
-use tui::{line, style, block::block, paragraph::paragraph};
+use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  paragraph::paragraph
+};
 
-// CR claude for claude: [readability/low] 'Focus' and 'auto-scroll' examples whose
-// state never changes. block_focus ('Focus Indication: use dynamic styling to show
-// which block has focus') has one block and `focused_block = 0` with no writer, so the
-// select is constant. scroll_list.gx has `selected` constant, 5 items and `visible =
-// 10`, so the auto-scroll select never takes an arm. Both show the machinery without
-// exercising it. The same scroll logic is driven correctly in list_interactive.
-// Failure: Running either one shows nothing dynamic. Fix: Give block_focus two blocks
-// and a Tab handler (as layout_focus does), and drive scroll_list's `selected` from
-// keys with more items than `visible`. Or drop them in favour of layout_focus and
-// list_interactive. Unverified: the reviewer's report, not checked by a verifier.
-// (examples-tui-14)
-let focused_block = 0;
-let content = paragraph(&"Content here");
+let focused = 0;
 
-block(
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Tab => {
+        focused <- ((k ~ focused) + 1) % 2;
+        `Stop
+    },
+    _ => `Continue
+});
+
+let pane = |i, title| block(
     #border: &`All,
-    #border_style: &style(
-        #fg: select focused_block {
-            0 => `Red,
-            _ => `Yellow
-        }
-    ),
-    #title: &line("Block 1"),
-    &content
+    #border_style: &style(#fg: select focused { n if n == i => `Red, _ => `Yellow }),
+    #title: &line(title),
+    &paragraph(&"Tab moves the focus")
+);
+
+input_handler(
+    #handle: &handle_event,
+    &layout(
+        #direction: &`Horizontal,
+        &[
+            child(#constraint: `Percentage(50), pane(0, "Block 1")),
+            child(#constraint: `Percentage(50), pane(1, "Block 2"))
+        ]
+    )
 )
