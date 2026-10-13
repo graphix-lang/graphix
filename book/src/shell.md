@@ -99,13 +99,13 @@ The shell only prints values from expressions that are considered "output expres
 - **Lambdas**: `|x| x + 1` defines a function but doesn't output
 - **Use statements**: `use sys::time` imports a module but doesn't output
 - **Connect operations**: `x <- y` schedules updates but doesn't output
-- **Module definitions**: `mod m { ... }` defines a module but doesn't output
+- **Module declarations**: `mod m` loads a module but doesn't output
 - **Type definitions**: `type Point = {x: f64, y: f64}` defines a type but doesn't output
 
 Everything else **is** considered an output expression:
 - Values: `42`, `"hello"`, `true`
 - Arithmetic: `2 + 2`
-- Function calls: `sys::time::now()`
+- Function calls: `sys::time::now(null)`
 - Variable references: `x`
 - Struct/variant/tuple construction: `{x: 10, y: 20}`
 - Blocks with output expressions as their last value
@@ -157,8 +157,8 @@ x * y
 
 This file has multiple top-level expressions. The first two are
 bindings (no output). The third (`x + y`) is an output expression but
-not the last. The fourth calls `print` which has side effects but
-returns `_` (bottom). The fifth and final expression (`x * y`) is the
+not the last. The fourth calls `print` which has side effects and
+returns `null`. The fifth and final expression (`x * y`) is the
 output expression that the shell will print.
 
 When you run this file:
@@ -264,7 +264,7 @@ The complete module search path, in order of priority:
 3. **GRAPHIX_MODPATH** entries (from the environment variable)
 4. **Platform-specific init directory**:
    - Linux: `~/.local/share/graphix`
-   - Windows: `%APPDATA%\Roaming\graphix`
+   - Windows: `%APPDATA%\graphix`
    - macOS: `~/Library/Application Support/graphix`
 
 The shell searches these paths in order, returning the first match found.
@@ -405,30 +405,14 @@ In REPL mode only, the shell automatically tries to load a module named `init`. 
 Create an `init.gx` file in your init directory to define commonly
 used utilities.
 
-<!-- CR claude for claude: [doc-drift/low] The example below does not parse. `clear`'s
-string uses `\x1b`, and the string lexer knows only the escapes \n \r \t \0 \\ \" \[ \].
-The `[2J` would also be read as an interpolation. A user who copies this init.gx gets
-'error in init module' and none of its helpers. Fix: replace `clear` with a helper that
-can be written today, or add a `\u{..}` escape to the lexer and printer if one is
-wanted. Also correct book/src/core/fundamental_types.md, which says 'C style escape
-sequences are supported', to list the escapes the lexer actually accepts. (x-rerun-8-13)
--->
-<!-- CR claude for claude: [doc-drift/medium] The sample init.gx below does not parse.
-`\x1b` is not a string escape, and `[2J..` would open an interpolation, so with this
-file every REPL start prints 'error in init module'. Fix: use a raw string or a template
-for the escape sequence, or drop `clear`. Other stale claims on this page: print returns
-null, not bottom (core `print: fn(?#dest: Log, msg: 'a) -> null`). `mod m { ... }` is
-not syntax (only `mod m;`). `sys::time::now()` needs its trigger argument. The Windows
-init directory is `%APPDATA%\graphix`, because search_path joins dirs::data_dir(), which
-is already Roaming. (book-core-06) -->
 Example `~/.local/share/graphix/init.gx`:
 ```graphix
-let debug = |x| { print("DEBUG: [x]"); x };
-let clear = || print("\x1b[2J\x1b[H");
+let debug = |x| { println("DEBUG: [x]"); x };
+let twice = |f, x| f(f(x));
 ```
 
 The shell loads this as the module `init`, so in any REPL session the
-utilities are available as `init::debug`, `init::clear`, etc. — or
+utilities are available as `init::debug`, `init::twice`, etc. — or
 bare after a `use init::*`.
 
 ## Command-Line Options

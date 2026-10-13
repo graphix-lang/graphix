@@ -183,8 +183,9 @@ You can enter `datetime` literals in local time and they will be converted to UT
 ## String
 
 Strings in Graphix are UTF8 encoded text. The type name is `string` and the
-literal is written in quotes `"this is a string"`. C style escape sequences are
-supported, `"this is \" a string with a quote and a \n"`. Non printable
+literal is written in quotes `"this is a string"`. The escapes are `\n`, `\r`,
+`\t`, `\0`, `\\`, `\"`, and `\[` / `\]` for a literal bracket (a bare `[`
+starts an interpolation): `"this is \" a string with a quote and a \n"`. Non printable
 characters such as newline will be escaped by default when strings are printed
 to the console, you can use `print` to print the raw string including control
 characters.
