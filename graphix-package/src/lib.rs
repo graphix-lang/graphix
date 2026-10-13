@@ -645,22 +645,11 @@ fn with_external(
     let deps = doc["dependencies"]
         .as_table_mut()
         .ok_or_else(|| anyhow!("Cargo.toml missing [dependencies]"))?;
-    // CR claude for claude: [bug/medium] If an external package has the same name as a
-    // stdlib package the source ships, this loop replaces the shell's optional
-    // `graphix-package-<name>` dependency with a plain one. The shell's `<name> =
-    // ["dep:graphix-package-<name>"]` feature then names a non-optional dependency, and
-    // cargo rejects the manifest. Every rebuild, add, remove and update fails from then
-    // on. This happens when a later shell adopts a crate the user already has as an
-    // external package. Nothing prevents it: `reconcile` and
-    // `Packages::enforce_invariants` never compare `external` with the stdlib set. Once
-    // the shell knows the name, `remove_packages` sends it to the stdlib branch, so the
-    // external entry can only be removed by editing packages.toml. Fix: in `reconcile`,
-    // drop (with a warning) or refuse any external entry whose name is in `shipped`.
-    // Here, refuse to overwrite a key the manifest already has, so a collision gives a
-    // clear error instead of a cargo manifest error. probe:
-    // design/review-2026-10-12/repro/package-03.sh (package-03)
     for (name, entry) in external {
         let crate_name = format!("graphix-package-{name}");
+        if deps.contains_key(&crate_name) {
+            bail!("the package {name} is already a dependency of the shell")
+        }
         match entry {
             PackageEntry::Version(version) => {
                 deps[&crate_name] = toml_edit::value(version.as_str());
@@ -692,8 +681,9 @@ async fn rewrite_manifest(
 }
 
 /// Bring the record in line with the source about to be built: a recorded
-/// stdlib package the source no longer ships is dropped, and one it ships
-/// that the record never named is announced.
+/// stdlib package the source no longer ships is dropped, as is an external
+/// package named like one it ships, and one it ships that the record never
+/// named is announced.
 async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
     let shipped = stdlib_packages_in_source(source_dir).await?;
     let gone: Vec<CompactString> = packages
@@ -707,6 +697,14 @@ async fn reconcile(source_dir: &Path, packages: &mut Packages) -> Result<()> {
         packages.stdlib_installed.remove(&name);
     }
     packages.stdlib_removed.retain(|n| shipped.contains(n));
+    let shadowed: Vec<CompactString> =
+        packages.external.keys().filter(|n| shipped.contains(*n)).cloned().collect();
+    for name in shadowed {
+        println!(
+            "warning: {name} is now part of graphix; dropping the external package of that name"
+        );
+        packages.external.remove(&name);
+    }
     for name in shipped.iter().filter(|n| {
         DEFAULT_PACKAGES.contains(&n.as_str())
             && !packages.stdlib_installed.contains(*n)

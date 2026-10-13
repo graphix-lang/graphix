@@ -137,6 +137,19 @@ async fn download_source_extracts_package_at_expected_root() {
     );
 }
 
+/// An external package named like a dependency the shell already has is
+/// refused, never written over it.
+#[test]
+fn with_external_refuses_a_shell_dependency() {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let content =
+        std::fs::read_to_string(ws.join("graphix-shell").join("Cargo.toml")).unwrap();
+    let mut external = std::collections::BTreeMap::new();
+    external.insert("json".into(), super::PackageEntry::Version("1.2.3".into()));
+    let e = super::with_external(&content, &external).unwrap_err();
+    assert!(e.to_string().contains("already a dependency"), "{e}");
+}
+
 // The package manager only adds external deps: the stdlib optional deps
 // and the [features] table must survive untouched.
 #[test]
