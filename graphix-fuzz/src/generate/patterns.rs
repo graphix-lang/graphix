@@ -80,7 +80,7 @@ fn gen_pattern(
                 leaf(inner, rng)
             }
         }
-        GenType::Map(_) | GenType::Nullable(_) => leaf(inner, rng),
+        GenType::Map { .. } | GenType::Nullable(_) => leaf(inner, rng),
         GenType::Tuple(elems) if depth > 0 => {
             let parts: Vec<Pat> = elems
                 .iter()

@@ -495,7 +495,7 @@ fn places_of(ctx: &GenCtx, ty: &GenType) -> Vec<String> {
                 out.push(format!("{name}[0]"));
                 out.push(format!("{name}[1]"));
             }
-            GenType::Map(e) if **e == *ty => {
+            GenType::Map { key, val } if **val == *ty && **key == GenType::Str => {
                 out.push(format!("{name}{{\"k0\"}}"));
                 out.push(format!("{name}{{\"a\"}}"));
             }

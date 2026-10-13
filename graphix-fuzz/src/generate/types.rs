@@ -250,8 +250,12 @@ pub enum GenType {
     /// A tag union (`` [`A(i64), `B] ``). Only produced by dedicated let
     /// emission: a bare variant literal's type is its single tag.
     Variant(Vec<(String, Vec<GenType>)>),
-    /// String-keyed map over a small key pool so accesses mostly hit.
-    Map(Box<GenType>),
+    /// A map keyed by a string, an i64 or an `(i64, string)` pair
+    /// ([`map_key`]), its keys from a small pool so accesses mostly hit.
+    Map {
+        key: Box<GenType>,
+        val: Box<GenType>,
+    },
     /// An option (`[T, null]`).
     Nullable(Box<GenType>),
     /// A lambda with fully annotated params/return. Never produced by
@@ -316,7 +320,9 @@ impl GenType {
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
-            GenType::Map(v) => format!("Map<string, {}>", v.render()),
+            GenType::Map { key, val } => {
+                format!("Map<{}, {}>", key.render(), val.render())
+            }
             GenType::Nullable(t) => format!("[{}, null]", t.render()),
             GenType::Abstract { module, boxed: false } => format!("{module}::T"),
             GenType::Abstract { module, boxed: true } => format!("{module}::B<i64>"),
@@ -354,7 +360,7 @@ impl GenType {
             GenType::Variant(ts) => {
                 ts.iter().any(|(_, args)| args.iter().any(|t| t.contains_nullable()))
             }
-            GenType::Array(e) | GenType::List(e) | GenType::Map(e) => {
+            GenType::Array(e) | GenType::List(e) | GenType::Map { val: e, .. } => {
                 e.contains_nullable()
             }
             GenType::Ref { inner, .. } => inner.contains_nullable(),
@@ -380,7 +386,7 @@ impl GenType {
             }
             GenType::Array(e)
             | GenType::List(e)
-            | GenType::Map(e)
+            | GenType::Map { val: e, .. }
             | GenType::Nullable(e) => e.printable(),
             GenType::Ref { .. } | GenType::Fn { .. } => false,
         }
@@ -404,7 +410,8 @@ impl GenType {
             | GenType::Fn { .. } => false,
             GenType::Tuple(es) => es.iter().all(|e| e.infers_exact()),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| t.infers_exact()),
-            GenType::Array(e) | GenType::List(e) | GenType::Map(e) => e.infers_exact(),
+            GenType::Array(e) | GenType::List(e) => e.infers_exact(),
+            GenType::Map { key, val } => key.infers_exact() && val.infers_exact(),
         }
     }
 }
@@ -437,6 +444,47 @@ pub(super) const FIELDS: &[&str] = &["a", "b", "c", "x", "y", "n"];
 
 /// Map keys: a small pool so generated accesses mostly hit.
 pub(super) const KEYS: &[&str] = &["k0", "k1", "k2", "a", "b"];
+
+/// A map's key type: mostly a string, else an i64 or an `(i64, string)`
+/// pair, whose order and hash go through the core Eq/Ord hooks.
+pub(super) fn map_key(rng: &mut Rng) -> GenType {
+    match rng.below(10) {
+        0..7 => GenType::Str,
+        7..9 => I64,
+        _ => GenType::Tuple(vec![I64, GenType::Str]),
+    }
+}
+
+/// A map of string keys.
+pub(super) fn str_map(val: GenType) -> GenType {
+    GenType::Map { key: Box::new(GenType::Str), val: Box::new(val) }
+}
+
+/// A key of `key`'s type from a small pool.
+pub(super) fn key_literal(rng: &mut Rng, key: &GenType) -> String {
+    const INTS: &[&str] = &["0", "1", "2", "7"];
+    match key {
+        GenType::Str => format!("\"{}\"", KEYS[rng.below(KEYS.len())]),
+        GenType::Num(NumTy::I64) => format!("i64:{}", INTS[rng.below(INTS.len())]),
+        GenType::Tuple(ts) => {
+            let parts: Vec<_> = ts.iter().map(|t| key_literal(rng, t)).collect();
+            format!("({})", parts.join(", "))
+        }
+        t => literal(rng, t),
+    }
+}
+
+/// One to three distinct keys of `key`'s type.
+pub(super) fn distinct_keys(rng: &mut Rng, key: &GenType) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for _ in 0..1 + rng.below(3) {
+        let k = key_literal(rng, key);
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    keys
+}
 
 /// Variant tags.
 pub(super) const TAGS: &[&str] = &["A", "B", "C", "Some", "Nil"];
@@ -499,7 +547,10 @@ pub(super) fn random_type(rng: &mut Rng, depth: usize) -> GenType {
             GenType::Tuple((0..n).map(|_| random_type(rng, depth - 1)).collect())
         }
         7 => random_struct(rng, depth - 1),
-        8 => GenType::Map(Box::new(random_type(rng, depth - 1))),
+        8 => GenType::Map {
+            key: Box::new(map_key(rng)),
+            val: Box::new(random_type(rng, depth - 1)),
+        },
         9 => GenType::Nullable(Box::new(scalar_type(rng))),
         10 => GenType::List(Box::new(random_type(rng, depth - 1))),
         _ => GenType::Array(Box::new(random_type(rng, depth - 1))),
@@ -558,17 +609,11 @@ pub(super) fn literal(rng: &mut Rng, ty: &GenType) -> String {
                 format!("`{tag}({})", parts.join(", "))
             }
         }
-        GenType::Map(v) => {
-            let n = 1 + rng.below(3);
-            let mut keys: Vec<&str> = Vec::new();
-            for _ in 0..n {
-                let k = KEYS[rng.below(KEYS.len())];
-                if !keys.contains(&k) {
-                    keys.push(k);
-                }
-            }
-            let parts: Vec<_> =
-                keys.iter().map(|k| format!("\"{k}\" => {}", literal(rng, v))).collect();
+        GenType::Map { key, val } => {
+            let parts: Vec<_> = distinct_keys(rng, key)
+                .iter()
+                .map(|k| format!("{k} => {}", literal(rng, val)))
+                .collect();
             format!("{{{}}}", parts.join(", "))
         }
         GenType::Nullable(t) => {

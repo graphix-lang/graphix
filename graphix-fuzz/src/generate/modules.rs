@@ -37,7 +37,7 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
         GenType::Tuple(ts) => ts.iter_mut().for_each(|t| map_abstract(t, f)),
         GenType::Array(t)
         | GenType::List(t)
-        | GenType::Map(t)
+        | GenType::Map { val: t, .. }
         | GenType::Nullable(t)
         | GenType::Ref { inner: t, .. } => map_abstract(t, f),
         GenType::Struct(fs) => fs.iter_mut().for_each(|(_, t)| map_abstract(t, f)),
@@ -414,7 +414,7 @@ pub(super) fn gen_module(
             gx.push_str(body);
             for pty in [
                 GenType::Array(Box::new(I64)),
-                GenType::Map(Box::new(I64)),
+                types::str_map(I64),
                 GenType::Array(Box::new(GenType::Str)),
             ] {
                 ctx.push(

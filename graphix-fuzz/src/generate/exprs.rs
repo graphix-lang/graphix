@@ -40,7 +40,7 @@ pub(super) fn gen_pinned(
     let v = gen_typed(ctx, rng, ty, depth);
     let narrows = |e: &GenType| e.contains_nullable() || matches!(e, GenType::Variant(_));
     let wide = match ty {
-        GenType::Array(e) | GenType::List(e) | GenType::Map(e) => narrows(e),
+        GenType::Array(e) | GenType::List(e) | GenType::Map { val: e, .. } => narrows(e),
         t => narrows(t),
     };
     match wide {
@@ -137,10 +137,10 @@ fn try_accessor(
                     }
                 }
             }
-            GenType::Map(v) => {
-                if **v == *ty {
-                    let k = types::KEYS[rng.below(types::KEYS.len())];
-                    cands.push(format!("{name}{{\"{k}\"}}$"));
+            GenType::Map { key, val } => {
+                if **val == *ty {
+                    let k = types::key_literal(rng, key);
+                    cands.push(format!("{name}{{{k}}}$"));
                 }
             }
             // a visible list read through the pattern ladder
@@ -650,18 +650,10 @@ pub(super) fn gen_typed(
                 format!("`{tag}({})", parts.join(", "))
             }
         }
-        GenType::Map(v) => {
-            let n = 1 + rng.below(3);
-            let mut keys: Vec<&str> = Vec::new();
-            for _ in 0..n {
-                let k = types::KEYS[rng.below(types::KEYS.len())];
-                if !keys.contains(&k) {
-                    keys.push(k);
-                }
-            }
-            let parts: Vec<_> = keys
+        GenType::Map { key, val } => {
+            let parts: Vec<_> = types::distinct_keys(rng, key)
                 .iter()
-                .map(|k| format!("\"{k}\" => {}", gen_typed(ctx, rng, v, d)))
+                .map(|k| format!("{k} => {}", gen_typed(ctx, rng, val, d)))
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
@@ -714,34 +706,42 @@ fn try_map_builtin(
     match ty {
         GenType::Num(NumTy::I64) if rng.below(2) == 0 => {
             let elem = types::scalar_type(rng);
-            let m = gen_typed(ctx, rng, &GenType::Map(Box::new(elem)), d);
+            let mty =
+                GenType::Map { key: Box::new(types::map_key(rng)), val: Box::new(elem) };
+            let m = gen_typed(ctx, rng, &mty, d);
             Some(format!("map::len({m})"))
         }
         // a fold over the (key, value) pairs, now and then: every scalar
         // target reaches here
         t if t.is_scalar() && rng.below(8) == 0 => {
             let elem = types::scalar_type(rng);
-            let m = gen_typed(ctx, rng, &GenType::Map(Box::new(elem.clone())), d);
+            let key = types::map_key(rng);
+            let mty =
+                GenType::Map { key: Box::new(key.clone()), val: Box::new(elem.clone()) };
+            let m = gen_typed(ctx, rng, &mty, d);
             let init = gen_typed(ctx, rng, t, d);
             let mut inner = ctx.clone();
             let acc = inner.name_avoiding(rng, |_, _| false);
             inner.push(acc.clone(), t.clone());
-            let kv = GenType::Tuple(vec![GenType::Str, elem]);
+            let kv = GenType::Tuple(vec![key, elem]);
             let binder = callback_binder(&mut inner, rng, &kv, &[acc.clone()]);
             let body = gen_typed(&inner, rng, t, d);
             Some(format!("map::fold({m}, {init}, |{acc}, {binder}| {body})"))
         }
-        GenType::Map(e) => {
+        GenType::Map { key, val: e } => {
             let m = gen_pinned(ctx, rng, ty, d);
-            let k = types::KEYS[rng.below(types::KEYS.len())];
-            let kv = GenType::Tuple(vec![GenType::Str, (**e).clone()]);
+            let k = types::key_literal(rng, key);
+            let kv = GenType::Tuple(vec![(**key).clone(), (**e).clone()]);
             match rng.below(6) {
                 0 => {
                     let v = gen_typed(ctx, rng, e, d);
-                    Some(format!("map::insert({m}, \"{k}\", {v})"))
+                    Some(format!("map::insert({m}, {k}, {v})"))
                 }
-                1 => Some(format!("map::remove({m}, \"{k}\")")),
-                2 => Some(format!("map::filter({m}, |kv| str::len(kv.0) > i64:1)")),
+                1 => Some(format!("map::remove({m}, {k})")),
+                2 if **key == GenType::Str => {
+                    Some(format!("map::filter({m}, |kv| str::len(kv.0) > i64:1)"))
+                }
+                2 => Some(format!("map::filter({m}, |kv| kv.0 != {k})")),
                 3 => {
                     let mut inner = ctx.clone();
                     let binder = callback_binder(&mut inner, rng, &kv, &[]);
@@ -837,7 +837,9 @@ fn try_format_round_trip(
         match ty {
             GenType::Num(_) | GenType::Bool | GenType::Str => true,
             GenType::Tuple(ts) => ts.iter().all(data),
-            GenType::Array(t) | GenType::Map(t) | GenType::Nullable(t) => data(t),
+            GenType::Array(t) | GenType::Nullable(t) => data(t),
+            // json and toml keys are strings
+            GenType::Map { key, val } => **key == GenType::Str && data(val),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| data(t)),
             GenType::Variant(vs) => vs.iter().all(|(_, ts)| ts.iter().all(data)),
             GenType::List(_)
