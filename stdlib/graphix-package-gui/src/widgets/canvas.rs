@@ -8,6 +8,10 @@ use netidx::publisher::{FromValue, Value};
 use netidx_derive::FromValue;
 
 use iced_widget::canvas as iced_canvas;
+use std::cell::Cell;
+
+mod path;
+use path::CheckedPath;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PointV(pub(crate) Point);
@@ -126,6 +130,7 @@ graphix_rt::props! {
 pub(crate) struct CanvasW<X: GXExt> {
     p: Props<X>,
     cache: iced_canvas::Cache<Renderer>,
+    invalid_geometry: Cell<bool>,
 }
 
 impl<X: GXExt> CanvasW<X> {
@@ -135,13 +140,22 @@ impl<X: GXExt> CanvasW<X> {
     }
 
     #[cfg(test)]
+    pub(crate) fn has_invalid_geometry(&self) -> bool {
+        self.invalid_geometry.get()
+    }
+
+    #[cfg(test)]
     pub(crate) fn shapes(&self) -> Option<&[CanvasShape]> {
         self.p.shapes.t.as_ref().map(|shapes| shapes.0.as_slice())
     }
 
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let p = Props::compile(&gx, &source).await.context("canvas")?;
-        Ok(Box::new(Self { p, cache: iced_canvas::Cache::new() }))
+        Ok(Box::new(Self {
+            p,
+            cache: iced_canvas::Cache::new(),
+            invalid_geometry: Cell::new(false),
+        }))
     }
 }
 
@@ -158,6 +172,9 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
         v: &Value,
     ) -> Result<bool> {
         let changed = self.p.update(id, v).context("canvas")?;
+        if id == self.p.shapes.r.id {
+            self.invalid_geometry.set(false);
+        }
         if id == self.p.shapes.r.id || id == self.p.background.r.id {
             self.cache.clear();
         }
@@ -195,7 +212,9 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
             }
             if let Some(shapes) = self.p.shapes.t.as_ref() {
                 for shape in &shapes.0 {
-                    draw_shape(frame, shape);
+                    if draw_shape(frame, shape).is_none() && !self.invalid_geometry.replace(true) {
+                        log::error!(target: graphix_compiler::FAILURE_TARGET, "canvas skipped non-finite geometry");
+                    }
                 }
             }
         });
@@ -203,7 +222,7 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
-// CR claude for claude: [bug/high] `Finite` checks only the numbers a shape is read
+// XCR claude for claude: [bug/high] `Finite` checks only the numbers a shape is read
 // from. The geometry built from them can still be NaN or infinite, and lyon then
 // asserts (debug), or iced_wgpu's tessellate `.expect` panics on PositionIsNaN
 // (release), which kills the GUI process. Two cases: an `ArcTo` whose path doubles back
@@ -214,20 +233,31 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
 // covers the `fill_rectangle` corner. In `PathSegment::ArcTo`, fall back to
 // `line_to(a)` when the turn is degenerate. probe:
 // design/review-2026-10-12/repro/gui-widgets-a-01.sh (gui-widgets-a-01)
-fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasShape) {
-    use iced_widget::canvas::{Path, Stroke};
+// 2026-10-13 codex: canvas_arc_to_reversal_draws and canvas_overflowing_circle_is_skipped
+// reproduce the lyon builder panic. CheckedPath validates generated coordinates before
+// emission as well as the completed path, and computes arcs in f64; the original
+// suggestion to check only the finished path cannot prevent the debug builder panic.
+// Review the geometry conversion and the degenerate-turn fallback.
+fn draw_shape(
+    frame: &mut iced_widget::canvas::Frame<Renderer>,
+    shape: &CanvasShape,
+) -> Option<()> {
+    use iced_widget::canvas::Stroke;
 
     fn stroke(s: &StrokeV) -> Stroke<'static> {
         Stroke::default().with_color(s.color.0).with_width(s.width.0)
     }
     match shape {
         CanvasShape::Line { from, to, color, width } => {
-            let path = Path::line(from.0, to.0);
+            let path = CheckedPath::build(|b| {
+                b.move_to(from.0);
+                b.line_to(to.0);
+            })?;
             frame
                 .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
         CanvasShape::Circle { center, radius, fill, stroke: s } => {
-            let path = Path::circle(center.0, radius.0);
+            let path = CheckedPath::build(|b| b.circle(center.0, radius.0))?;
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
             }
@@ -236,17 +266,21 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             }
         }
         CanvasShape::Rect { top_left, size, fill, stroke: s } => {
+            if !CheckedPath::rectangle_fits(top_left.0, size.0) {
+                return None;
+            }
             if let Some(c) = fill {
                 frame.fill_rectangle(top_left.0, size.0, c.0);
             }
             if let Some(s) = s {
-                let path = Path::rectangle(top_left.0, size.0);
+                let path = CheckedPath::build(|b| b.rectangle(top_left.0, size.0))?;
                 frame.stroke(&path, stroke(s));
             }
         }
         CanvasShape::RoundedRect { top_left, size, radius, fill, stroke: s } => {
-            let border_radius = iced_core::border::Radius::from(radius.0);
-            let path = Path::rounded_rectangle(top_left.0, size.0, border_radius);
+            let path = CheckedPath::build(|b| {
+                b.rounded_rectangle(top_left.0, size.0, radius.0)
+            })?;
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
             }
@@ -255,14 +289,14 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             }
         }
         CanvasShape::Arc { center, radius, start_angle, end_angle, stroke: s } => {
-            let path = Path::new(|b| {
+            let path = CheckedPath::build(|b| {
                 b.arc(iced_widget::canvas::path::Arc {
                     center: center.0,
                     radius: radius.0,
                     start_angle: iced_core::Radians(start_angle.0),
                     end_angle: iced_core::Radians(end_angle.0),
                 });
-            });
+            })?;
             frame.stroke(&path, stroke(s));
         }
         CanvasShape::Ellipse {
@@ -274,7 +308,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             fill,
             stroke: s,
         } => {
-            let path = Path::new(|b| {
+            let path = CheckedPath::build(|b| {
                 b.ellipse(iced_widget::canvas::path::arc::Elliptical {
                     center: center.0,
                     radii: iced_core::Vector::new(radii.0.x, radii.0.y),
@@ -282,7 +316,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                     start_angle: iced_core::Radians(start_angle.0),
                     end_angle: iced_core::Radians(end_angle.0),
                 });
-            });
+            })?;
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
             }
@@ -291,18 +325,18 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             }
         }
         CanvasShape::BezierCurve { from, control_a, control_b, to, color, width } => {
-            let path = Path::new(|b| {
+            let path = CheckedPath::build(|b| {
                 b.move_to(from.0);
                 b.bezier_curve_to(control_a.0, control_b.0, to.0);
-            });
+            })?;
             frame
                 .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
         CanvasShape::QuadraticCurve { from, control, to, color, width } => {
-            let path = Path::new(|b| {
+            let path = CheckedPath::build(|b| {
                 b.move_to(from.0);
                 b.quadratic_curve_to(control.0, to.0);
-            });
+            })?;
             frame
                 .stroke(&path, Stroke::default().with_color(color.0).with_width(width.0));
         }
@@ -316,7 +350,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             });
         }
         CanvasShape::Path { segments, fill, stroke: s } => {
-            let path = Path::new(|b| {
+            let path = CheckedPath::build(|b| {
                 for seg in segments {
                     match seg {
                         PathSegment::MoveTo(p) => b.move_to(p.0),
@@ -333,7 +367,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                         PathSegment::Close => b.close(),
                     }
                 }
-            });
+            })?;
             if let Some(c) = fill {
                 frame.fill(&path, c.0);
             }
@@ -342,4 +376,5 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
             }
         }
     }
+    Some(())
 }

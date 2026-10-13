@@ -188,3 +188,55 @@ fn decoded_fields() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn canvas_arc_to_reversal_draws() -> Result<()> {
+    let mut h = canvas_harness(1,
+        "`Path({segments: [`MoveTo({x: 0.0, y: 0.0}), \
+         `ArcTo({a: {x: 100.0, y: 0.0}, b: {x: 0.0, y: 0.00001}, radius: 10.0}), `Close], \
+         fill: color(#r: 1.0)$, stroke: null})",
+    ).await?;
+    h.render().await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canvas_overflowing_circle_is_skipped() -> Result<()> {
+    let mut h = canvas_harness(1,
+        "`Circle({center: {x: 300000000000000000000000000000000000000.0, y: 50.0}, \
+         radius: 300000000000000000000000000000000000000.0, fill: color(#g: 1.0)$, stroke: null})",
+    ).await?;
+    h.render().await?;
+    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
+    assert!(canvas.has_invalid_geometry());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canvas_huge_line_keeps_finite_endpoints() -> Result<()> {
+    let mut h = canvas_harness(
+        1,
+        "`Line({from: {x: -300000000000000000000000000000000000000.0, y: 10.0}, \
+         to: {x: 300000000000000000000000000000000000000.0, y: 20.0}, \
+         color: color(#b: 1.0)$, width: 2.0})",
+    )
+    .await?;
+    h.render().await?;
+    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
+    assert!(!canvas.has_invalid_geometry());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canvas_overflowing_filled_rectangle_is_skipped() -> Result<()> {
+    let mut h = canvas_harness(
+        1,
+        "`Rect({top_left: {x: 300000000000000000000000000000000000000.0, y: 0.0}, \
+         size: {width: 300000000000000000000000000000000000000.0, height: 10.0}, \
+         fill: color(#g: 1.0)$, stroke: null})",
+    )
+    .await?;
+    h.render().await?;
+    let canvas = h.widget.as_any().downcast_ref::<CanvasW<NoExt>>().unwrap();
+    assert!(canvas.has_invalid_geometry());
+    Ok(())
+}
