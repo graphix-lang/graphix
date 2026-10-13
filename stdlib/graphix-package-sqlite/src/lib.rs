@@ -237,16 +237,15 @@ impl ReadFormat for Query {
                         sorted_cols.extend((0..stmt.column_count()).map(|i| {
                             (i, ArcStr::from(stmt.column_name(i).unwrap_or("")))
                         }));
-                        // CR claude for claude: [bug/low] Two result columns with the
-                        // same name (SELECT a.id, b.id ... self-join) become duplicate
-                        // [name, value] pairs. Read as Array<Map<string, SqlVal>>, one
-                        // column is silently dropped. Read as a struct, the cast fails
-                        // with 'struct size mismatch' and never names the duplicated
-                        // column. After the sort, check adjacent names and return
-                        // SqliteError naming the column and saying to alias it with AS.
-                        // probe: design/review-2026-10-12/repro/http-sqlite-db1-12.gx
-                        // (http-sqlite-db1-12)
                         sorted_cols.sort_by(|a, b| a.1.cmp(&b.1));
+                        // a row reads as a struct or a map by column name
+                        if let Some(w) = sorted_cols.windows(2).find(|w| w[0].1 == w[1].1) {
+                            return errf!(
+                                "SqliteError",
+                                "two columns are named {}: give each its own name with AS",
+                                w[0].1
+                            );
+                        }
                     }
                     let mut vals: LPooled<Vec<Value>> = LPooled::take();
                     for (idx, name) in sorted_cols.iter() {

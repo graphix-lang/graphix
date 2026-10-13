@@ -113,3 +113,15 @@ run!(sqlite_empty_result, r#"{
 }"#, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::Jit);
+
+// Two result columns of one name are refused, naming it: a row reads by
+// column name, and one of them would be lost.
+run!(sqlite_duplicate_columns_refused, r#"{
+    let db = sqlite::open(":memory:")$;
+    let setup = sqlite::exec_batch(db, "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);")$;
+    let r: Result<Array<Map<string, sqlite::SqlVal>>, [`SqliteError(string), `InvalidCast(string)]> =
+        sqlite::query(setup ~ db, "SELECT a.id, b.id FROM t AS a, t AS b", []);
+    "[r]"
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.contains("two columns are named id"))
+}; FuseExpect::None);
