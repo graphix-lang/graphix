@@ -201,13 +201,6 @@ pub struct GenStats {
     pub ref_op: bool,
     /// A shape template was emitted (primitive union, option of a
     /// composite, nested variant, recursive typedef).
-    // CR claude for claude: [test-gap/low] This field and use_vocab below are written
-    // (gen_shape_template, the modules use-vocabulary emitters) but never read.
-    // audit_bug_shapes_reachable checks every other tracked shape at 1% or more and
-    // skips these two, although the GenStats doc says the gate asserts each stays
-    // reachable. A change that shadowed the p_shape branch, or stopped emitting `use
-    // super::{..}` headers, would pass every test. Fix: add both to the audit table.
-    // (fuzz-gen-a-09)
     pub shape: bool,
     /// A `use super::{…}` header, an inline `super::`/`package::`
     /// spelling, a main-scope item import, a rename, or a module glob.
@@ -752,6 +745,7 @@ mod test {
         let mut bounded_hof = 0;
         let mut collection_generic = 0;
         let (mut konst, mut unret, mut refop, mut abst_param) = (0, 0, 0, 0);
+        let (mut shape, mut use_vocab) = (0, 0);
         const N: usize = 500;
         for _ in 0..N {
             let (_, s) = gen_program_stats(&cfg, &mut rng);
@@ -774,6 +768,8 @@ mod test {
             konst += s.iface_const as usize;
             unret += s.unannotated_ret as usize;
             refop += s.ref_op as usize;
+            shape += s.shape as usize;
+            use_vocab += s.use_vocab as usize;
         }
         for (what, n) in [
             ("lambda rebind (bug 1)", rebind),
@@ -795,6 +791,8 @@ mod test {
             ("exported constant", konst),
             ("unannotated-return impl", unret),
             ("reference op", refop),
+            ("shape template", shape),
+            ("use vocabulary", use_vocab),
         ] {
             assert!(n * 100 >= N, "{what}: only {n}/{N} programs (<1%)");
         }
