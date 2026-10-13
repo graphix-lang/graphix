@@ -1303,12 +1303,16 @@ let result = data_table(
 
 /// A Sparkline column accumulates values published over netidx.
 #[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] After each set, this test waits only until the
+// XCR claude for claude: [test-gap/low] After each set, this test waits only until the
 // history contains that value. A sparkline that cleared its history on every update,
 // keeping just the newest point, would pass, so the accumulation the name promises is
 // never checked. After the loop, assert that `dt_sparkline_values("r0", "load")` ends
 // with [1.0, 2.0, 3.0] in order. In `sparkline_default_value_seeds_history`, assert the
 // history is exactly [7.5] rather than `len >= 1`. (tests-gui-a-06)
+// 2026-10-13 codex: sparkline_accumulates now checks the retained suffix, and
+// sparkline_default_value_seeds_history checks exactly [7.5]. Both require
+// netidx sockets; resolver startup is refused here, so neither assertion nor
+// its mutation check is verified in this sandbox.
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
 
@@ -1327,12 +1331,16 @@ let result = data_table(
     let mut h = dt(code).await?;
     let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
     let mut c = h.gx.compile_ref(bid).await?;
-    // CR claude for claude: [test-gap/low] Each wait checks only that the value just
+    // XCR claude for claude: [test-gap/low] Each wait checks only that the value just
     // set is in the history. A sparkline whose netidx update path replaced its history
     // on every update, keeping only the latest point, passes all three. This test is
     // the only pin on the subscription path's accumulation: the other sparkline tests
     // push through dt_push_sparkline. After the loop, assert that the history ends with
     // 1.0, 2.0, 3.0 in order. The 60 s window keeps all three. (x-rerun-6-08)
+    // 2026-10-13 codex: sparkline_accumulates now checks the retained suffix, and
+    // sparkline_default_value_seeds_history checks exactly [7.5]. Both require
+    // netidx sockets; resolver startup is refused here, so neither assertion nor
+    // its mutation check is verified in this sandbox.
     for v in [1, 2, 3] {
         c.set(Value::I64(v))?;
         h.wait_until(
@@ -1345,6 +1353,12 @@ let result = data_table(
         )
         .await?;
     }
+    assert!(
+        h.dt()
+            .dt_sparkline_values("r0", "load")
+            .expect("sparkline history")
+            .ends_with(&[1.0, 2.0, 3.0])
+    );
     Ok(())
 }
 
@@ -1365,11 +1379,7 @@ let result = data_table(
 )
 "#;
     let h = dt(code).await?;
-    let len = h.dt().dt_sparkline_len("r0", "spark");
-    assert!(
-        len.unwrap_or(0) >= 1,
-        "default value should seed sparkline history, got: {len:?}",
-    );
+    assert_eq!(h.dt().dt_sparkline_values("r0", "spark").as_deref(), Some(&[7.5][..]));
     Ok(())
 }
 
