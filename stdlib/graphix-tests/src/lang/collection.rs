@@ -265,10 +265,11 @@ run!(
         let src = array::init(64, |i| i);
         let ffold = |a: Array<i64>, target: i64| -> [i64, null] {
             let init: [i64, null] = null;
-            array::fold(a, init, |acc, x| select acc {
-                null as _ => select x == target { true => x, false => null },
-                found => found
-            })
+            let (_, found) = array::fold(a, (false, init), |(done, acc), x| select done {
+                true => (done, acc),
+                false => select x == target { true => (true, x), false => (false, acc) }
+            });
+            found
         };
         let a1 = array::find(src, |x| x == 40);
         let b1 = ffold(src, 40);
