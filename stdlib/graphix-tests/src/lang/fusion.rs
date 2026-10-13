@@ -1233,25 +1233,13 @@ run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
 // A tail call whose new value for one composite formal is another
 // formal's old value: the rebind owns every new value before an old one
 // drops.
-// CR claude for claude: [test-gap/low] `FuseExpect::Jit` holds when any region ran, so
-// it does not show that the emission path a fixture pins was taken. If this tail call
-// stopped fusing, the fixture would check only the node-walk's answer. The same applies
-// to TAIL_REBIND_SHADOWED_FORMAL, STRING_READ_INTO_VALUE_FORMAL,
-// DISTINCT_ZERO_CONSTANTS (whose `let k = 6` gets a kernel of its own, see
-// tests-fusion-traits-01), SHED_ACTIVATIONS_FREE_CHAINS, DROPPED_SLOTS_FREE_TREES,
-// CALL_FED_BY_NODE_WALKED_ARGS, FED_CALLBACK_REGIONS_FUSE_IN_SLOTS,
-// SCALAR_LET_CAPTURED_AT_A_NULLABLE, TAIL_SCALAR_TO_NULLABLE, KERNEL_BUILT_ABSTRACT_EQ,
-// OPTION_TYPE_TEST_TESTS_THE_TYPE and NULLABLE_DURATION_IS_A_VALUE. Put `#[native]` on
-// the expression each one is about, as `check_fuse_expectation`'s doc asks (e.g.
-// `#[native] f(3, [0], [1])`). Where a node-walked feeder makes that impossible, use a
-// `; shape:` matcher. (tests-fusion-traits-05)
 const TAIL_REBIND_SWAPPED_COMPOSITES: &str = r#"
 {
   let rec f = |n: i64, a: Array<i64>, b: Array<i64>| -> Array<i64> select n {
     0 => b,
     n => f(n - 1, [n, n, n, n], a)
   };
-  f(3, [0], [1])
+  #[native] f(3, [0], [1])
 }
 "#;
 
@@ -1270,7 +1258,7 @@ const TAIL_REBIND_SHADOWED_FORMAL: &str = r#"
     let a = [n, n, n];
     select n { 0 => a, n => f(n - 1, a) }
   };
-  f(3, [7])
+  #[native] f(3, [7])
 }
 "#;
 
@@ -1290,7 +1278,7 @@ const STRING_READ_INTO_VALUE_FORMAL: &str = r#"
     let s = "s[n]";
     select n { 0 => select acc { 5 => last, _ => null }, n => f(n - 1, acc + g(s), s) }
   };
-  f(5, 0, null)
+  #[native] f(5, 0, null)
 }
 "#;
 
@@ -1303,7 +1291,7 @@ run!(string_read_into_value_formal, STRING_READ_INTO_VALUE_FORMAL, |v: Result<&V
 const DISTINCT_ZERO_CONSTANTS: &str = r#"
 {
   let k = 6;
-  select k { 5 => {"a" => 0.0}, _ => {"a" => -0.0} }
+  #[native] select k { 5 => {"a" => 0.0}, _ => {"a" => -0.0} }
 }
 "#;
 
@@ -1366,7 +1354,7 @@ const SHED_ACTIVATIONS_FREE_CHAINS: &str = r#"
     _ => array::len(array::map(a, |r| array::map(r, |x| x + k))) + f(k - 1, a)
   };
   let d = array::iter([20, 1, 20, 1, 3]);
-  let r = f(d, [[1, 2], [3, 4]]);
+  let r = #[native] f(d, [[1, 2], [3, 4]]);
   select count(r) { 5 => r, _ => never() }
 }
 "#;
@@ -1381,7 +1369,7 @@ const DROPPED_SLOTS_FREE_TREES: &str = r#"
 {
   let rec f = |k: i64| -> i64 select k { 0 => 0, _ => k + f(k - 1) };
   let src = array::iter([[1, 2, 3, 4, 5, 6], [1], [4, 5, 6], [2]]);
-  let r = array::map(src, |x| f(x));
+  let r = #[native] array::map(src, |x| f(x));
   select count(r) { 4 => r, _ => never() }
 }
 "#;
@@ -1533,7 +1521,9 @@ const CALL_FED_BY_NODE_WALKED_ARGS: &str = r#"
 run!(call_fed_by_node_walked_args, CALL_FED_BY_NODE_WALKED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(56), Value::I64(57)]),
     _ => false,
-}; FuseExpect::Jit);
+}; FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
+    graphix_compiler::node_shape::KernelMatcher::new().params(&["arg"])
+));
 
 // A select nested in tail position reads its outer arm's binds on every
 // path: a tail jump in one inner arm drops them at run time only, and
@@ -1867,7 +1857,7 @@ const SCALAR_LET_CAPTURED_AT_A_NULLABLE: &str = r#"
 {
   let v0: [bool, null] = !false;
   let f = |x: i64| -> bool select v0 { null as _ => false, bool as n => n && (x > 0) };
-  f(3)
+  #[native] f(3)
 }
 "#;
 
@@ -1884,7 +1874,7 @@ const TAIL_SCALAR_TO_NULLABLE: &str = r#"
     [] => best,
     [h, t..] => last(h, t)
   };
-  last(null, [1.0, 2.0, 3.0])
+  #[native] last(null, [1.0, 2.0, 3.0])
 }
 "#;
 
@@ -1991,7 +1981,7 @@ const KERNEL_BUILT_ABSTRACT_EQ: &str = r#"
 {
   type Box<'a> = Abstract<('a, i64)>;
   impl<'a> Eq for Box<'a> { let eq = |a, b| a.0.1 == b.0.1 };
-  array::map([1, 2, 3], |i| Box(("x", i)) == Box(("y", 2)))
+  #[native] array::map([1, 2, 3], |i| Box(("x", i)) == Box(("y", 2)))
 }
 "#;
 
@@ -2011,7 +2001,7 @@ const OPTION_TYPE_TEST_TESTS_THE_TYPE: &str = r#"
   let a: [Array<i64>, null] = [1];
   let d: [datetime, null] = datetime:"2020-01-01T00:00:00Z";
   let c: [string, null] = "ab";
-  (f(a), f(d), f(c))
+  #[native] (f(a), f(d), f(c))
 }
 "#;
 
@@ -2090,7 +2080,7 @@ const NULLABLE_DURATION_IS_A_VALUE: &str = r#"
 {
   let rows: Array<{n: i64, t: [duration, null]}> = [{n: 1, t: duration:1.s}, {n: 2, t: null}];
   let a = #[native] array::map(rows, |r| r.n * 2);
-  let b = array::map(rows, |r| select r.t { null as _ => 0, _ => r.n });
+  let b = #[native] array::map(rows, |r| select r.t { null as _ => 0, _ => r.n });
   (a, b)
 }
 "#;
