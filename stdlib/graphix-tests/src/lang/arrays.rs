@@ -407,18 +407,9 @@ async fn fold_over_oversize_init_bottoms(mode: Mode) -> Result<()> {
 
 modes!(fold_over_oversize_init_bottoms);
 
-// Composite / string fold accumulators as native loops. `array::fold`
-// is in-language, so these are `Jit` without a `#[native]` pin.
-
-// CR claude for claude: [test-gap/low] The comment above says these cannot carry a
-// #[native] pin because array::fold is in-language. #[native] works on in-language
-// HOFs, as list_flat_map_native shows. With FuseExpect::Jit alone, these six
-// owned-accumulator fixtures (FOLD_TUPLE_ACC through FOLD_ACC_ELEM_BODY) stay green
-// when the fold loop stops fusing, as long as any other region fuses. Put `#[native]`
-// on each `array::fold(..)` and delete the comment: all six build that way today and
-// give their expected values. (tests-lang-rest-a-09)
+// Composite / string fold accumulators as native loops.
 const FOLD_TUPLE_ACC: &str = r#"
-array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
+#[native] array::fold([i64:1, i64:2, i64:3], (i64:0, i64:1), |(s, p), v| (s + v, p * v))
 "#;
 
 run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
@@ -428,7 +419,7 @@ run!(fold_tuple_acc, FOLD_TUPLE_ACC, |v: Result<&Value>| match v {
 
 const FOLD_STRUCT_ACC: &str = r#"
 {
-    let st = array::fold([i64:1, i64:2, i64:3], {n: i64:0, sum: i64:0}, |acc, v| {
+    let st = #[native] array::fold([i64:1, i64:2, i64:3], {n: i64:0, sum: i64:0}, |acc, v| {
         n: acc.n + i64:1,
         sum: acc.sum + v
     });
@@ -443,7 +434,7 @@ run!(fold_struct_acc, FOLD_STRUCT_ACC, |v: Result<&Value>| matches!(
 
 const FOLD_ARRAY_ACC: &str = r#"
 {
-    let evens: Array<i64> = array::fold(
+    let evens: Array<i64> = #[native] array::fold(
         [i64:1, i64:2, i64:3, i64:4],
         [],
         |acc, v| select v % i64:2 { i64:0 => array::push(acc, v), _ => acc }
@@ -458,7 +449,7 @@ run!(fold_array_acc, FOLD_ARRAY_ACC, |v: Result<&Value>| match v {
 }; FuseExpect::Jit);
 
 const FOLD_STRING_ACC: &str = r#"
-array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
+#[native] array::fold([i64:1, i64:2, i64:3], "", |acc, v| "[acc][v]")
 "#;
 
 run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
@@ -469,7 +460,7 @@ run!(fold_string_acc, FOLD_STRING_ACC, |v: Result<&Value>| match v {
 // Ownership edges of the owned-acc carry: a body that returns the acc
 // unchanged, and a body that returns the element.
 const FOLD_ACC_IDENTITY: &str = r#"
-array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| acc)
+#[native] array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| acc)
 "#;
 
 run!(fold_acc_identity, FOLD_ACC_IDENTITY, |v: Result<&Value>| match v {
@@ -478,7 +469,7 @@ run!(fold_acc_identity, FOLD_ACC_IDENTITY, |v: Result<&Value>| match v {
 }; FuseExpect::Jit);
 
 const FOLD_ACC_ELEM_BODY: &str = r#"
-array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
+#[native] array::fold([[i64:1], [i64:2]], [i64:9], |acc, v| v)
 "#;
 
 run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, |v: Result<&Value>| match v {
