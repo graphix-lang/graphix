@@ -217,7 +217,7 @@ Used with the chart `#projection` parameter for 3D charts:
 
 - **background** — Background color, a `Color` made with `gui::color`. Defaults to white when null.
 - **margin** — Margin in pixels around the plot area. Defaults to 10.
-- **title_size** — Font size for the chart title. Defaults to 16.
+- **title_size** — Font size for the chart title. Defaults to 16. Must be finite, positive and at most 4096 pixels.
 - **title_color** — Color of the chart title text. Defaults to black when null.
 - **palette** — Colors assigned, in order, to series that set no `#color` of their own, and to pie slices without `#colors`. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.
 - **legend_position** — Position of the series legend. Defaults to `` `UpperLeft `` when null.
@@ -232,7 +232,7 @@ Used with the chart `#projection` parameter for 3D charts:
 - **bold_line_color** — Color of the bold grid lines drawn at each labeled position.
 - **axis_color** — Color of axis lines. 2D charts only.
 - **label_color** — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.
-- **label_size** — Font size for axis labels.
+- **label_size** — Font size for axis labels. Must be finite, positive and at most 4096 pixels.
 - **x_label_area_size** — Height of the x-axis label area below the plot, in pixels. Increase to prevent label clipping.
 - **x_labels** — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
 - **x_light_lines** — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.
@@ -247,7 +247,7 @@ Used with the chart `#projection` parameter for 3D charts:
 - **background** — Legend background color. Defaults to white when null.
 - **border** — Legend border color. Defaults to black when null.
 - **label_color** — Color of legend text labels. Defaults to plotters default (black) when null.
-- **label_size** — Font size for legend labels. When null, plotters default is used.
+- **label_size** — Font size for legend labels. Must be finite, positive and at most 4096 pixels. When null, the axis label size is used.
 
 ## Interaction
 

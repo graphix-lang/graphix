@@ -197,7 +197,7 @@ fn draw_legend<'a, DB: DrawingBackend + 'a, CT: CoordTranslate, X: GXExt>(
         .background_style(bg.mix(0.8))
         .border_style(border)
         .label_font(text_style(
-            ls.and_then(|s| s.label_size).unwrap_or(label_sz),
+            ls.and_then(|s| s.label_size).map_or(label_sz, |s| s.0 as f64),
             ls.and_then(|s| s.label_color),
         ));
     if let Err(e) = labels.draw() {
@@ -287,7 +287,8 @@ where
             mesh_cfg.axis_style(c.to_plotters());
         }
         if ms.label_size.is_some() || ms.label_color.is_some() {
-            let style = text_style(ms.label_size.unwrap_or(12.0), ms.label_color);
+            let style =
+                text_style(ms.label_size.map_or(12.0, |s| s.0 as f64), ms.label_color);
             mesh_cfg.label_style(style.clone());
             mesh_cfg.axis_desc_style(style);
         }
@@ -517,7 +518,7 @@ where
         return false;
     }
     draw_xy(&mut chart, w, cs, view, to_x);
-    let label_size = mesh_style.and_then(|m| m.label_size).unwrap_or(12.0);
+    let label_size = mesh_style.and_then(|m| m.label_size).map_or(12.0, |s| s.0 as f64);
     draw_legend(&mut chart, w, cs, label_size);
     true
 }
@@ -579,9 +580,11 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
             let x_label = self.drawn.x_label.t.as_ref().and_then(|o| o.as_deref());
             let y_label = self.drawn.y_label.t.as_ref().and_then(|o| o.as_deref());
             let margin = chart_style.and_then(|s| s.margin).unwrap_or(10.0);
-            let title_size = chart_style.and_then(|s| s.title_size).unwrap_or(16.0);
+            let title_size =
+                chart_style.and_then(|s| s.title_size).map_or(16.0, |s| s.0 as f64);
             let mesh_style = chart_style.and_then(|s| s.mesh.as_ref());
-            let label_sz = mesh_style.and_then(|ms| ms.label_size).unwrap_or(12.0);
+            let label_sz =
+                mesh_style.and_then(|ms| ms.label_size).map_or(12.0, |s| s.0 as f64);
             let descs = (x_label.is_some(), y_label.is_some());
             let mut builder = ChartBuilder::on(&root);
             builder.margin(margin as u32);
@@ -796,7 +799,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                         if let Some(ms) = mesh_style {
                             if ms.label_size.is_some() || ms.label_color.is_some() {
                                 axes.label_style(text_style(
-                                    ms.label_size.unwrap_or(12.0),
+                                    ms.label_size.map_or(12.0, |s| s.0 as f64),
                                     ms.label_color,
                                 ));
                             }

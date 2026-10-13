@@ -1029,3 +1029,36 @@ async fn a_failed_dataset_recompile_is_retryable() -> Result<()> {
     assert_eq!(chart(&h).datasets().len(), 1);
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_text_sizes_are_validated_before_drawing() -> Result<()> {
+    for field in ["title", "mesh", "legend"] {
+        for size in ["0.0", "-1.0", "0.0 / 0.0", "1.0 / 0.0", "100000.0", "16.0"] {
+            let style = match field {
+                "title" => format_compact!("chart_style(#title_size: {size})"),
+                "mesh" => {
+                    format_compact!("chart_style(#mesh: mesh_style(#label_size: {size}))")
+                }
+                _ => format_compact!(
+                    "chart_style(#legend: legend_style(#label_size: {size}))"
+                ),
+            };
+            let result = chart_harness(&format_compact!(
+                "#width: &`Fill, #height: &`Fixed(200.0), #title: &\"chart\", #style: &{style}, &[line(#label: \"series\", &[(1.0, 1.0)])]"
+            )).await;
+            match result {
+                Ok(mut h) => {
+                    if size == "0.0" || size == "16.0" {
+                        screenshot(&mut h).await;
+                    }
+                    assert_eq!(size, "16.0", "accepted {field} size {size}");
+                }
+                Err(e) => {
+                    assert_ne!(size, "16.0");
+                    assert!(format_compact!("{e:#}").contains("text size"), "{e:#}");
+                }
+            }
+        }
+    }
+    Ok(())
+}

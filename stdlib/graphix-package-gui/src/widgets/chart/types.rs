@@ -1,4 +1,4 @@
-use crate::types::ColorV;
+use crate::types::{ColorV, TextSizeV};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use chrono::{DateTime, Utc};
@@ -299,7 +299,7 @@ pub struct MeshStyleV {
     pub bold_line_color: Option<ChartColor>,
     pub axis_color: Option<ChartColor>,
     pub label_color: Option<ChartColor>,
-    pub label_size: Option<f64>,
+    pub label_size: Option<TextSizeV>,
     pub x_label_area_size: Option<f64>,
     pub x_labels: Option<i64>,
     pub x_light_lines: Option<i64>,
@@ -315,7 +315,7 @@ pub struct LegendStyleV {
     pub background: Option<ChartColor>,
     pub border: Option<ChartColor>,
     pub label_color: Option<ChartColor>,
-    pub label_size: Option<f64>,
+    pub label_size: Option<TextSizeV>,
 }
 
 #[derive(Clone)]
@@ -341,15 +341,7 @@ impl FromValue for LegendPositionV {
 pub struct ChartStyleV {
     pub background: Option<ChartColor>,
     pub margin: Option<f64>,
-    // CR claude for claude: [bug/medium] title_size here, and label_size in MeshStyleV
-    // and LegendStyleV, are plain f64. text_style and the plotters backend's draw_text
-    // pass them straight to canvas::Text, so a size of 0 (from a literal or a slider
-    // dragged to 0) hits cosmic-text's "font size cannot be 0" assertion and the GUI
-    // dies on its first frame. Every other text size in the package is a TextSizeV,
-    // which refuses and logs a size that is not finite and positive. Fix: decode all
-    // three fields as Option<TextSizeV>. probe:
-    // design/review-2026-10-12/repro/x-rerun-4-03.rs (x-rerun-4-03)
-    pub title_size: Option<f64>,
+    pub title_size: Option<TextSizeV>,
     pub title_color: Option<ChartColor>,
     pub palette: Option<Vec<ChartColor>>,
     pub legend_position: Option<LegendPositionV>,

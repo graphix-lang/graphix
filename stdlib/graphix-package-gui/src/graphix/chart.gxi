@@ -183,6 +183,7 @@ val error_bar: fn(
   data: &[Array<ErrorBarPoint<f64>>, Array<ErrorBarPoint<datetime>>]
 ) -> Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val mesh_style: fn(
   ?#show_x_grid: [bool, null],
   ?#show_y_grid: [bool, null],
@@ -232,6 +233,7 @@ val surface: fn(
   data: &Array<Array<(f64, f64, f64)>>
 ) -> Dataset;
 
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val legend_style: fn(
   ?#background: [Color, null],
   ?#border: [Color, null],
@@ -241,6 +243,7 @@ val legend_style: fn(
 
 /// Every appearance knob of a chart in one record, so one style can be
 /// shared by every chart in a program and varied with `{ s with .. }`.
+/// Font sizes must be finite, positive and at most 4096 pixels.
 val chart_style: fn(
   ?#background: [Color, null],
   ?#margin: [f64, null],
