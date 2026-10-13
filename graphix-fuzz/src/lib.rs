@@ -954,6 +954,14 @@ impl Strength {
     }
 }
 
+/// Whether `code` names `marker` as a whole name: not as the tail of a
+/// longer identifier (`error(` does not name `or(`).
+fn mentions(code: &str, marker: &str) -> bool {
+    code.match_indices(marker).any(|(i, _)| {
+        !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 /// Classify a program. Markers are matched on code lines only. The
 /// Excluded list is empirical; selfcheck polices it — a marker missing
 /// from it shows up as a final-strength flake.
@@ -988,7 +996,7 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         "local_addr",
         "peer_addr",
     ];
-    if excluded.iter().any(|m| code.contains(m)) {
+    if excluded.iter().any(|m| mentions(code, m)) {
         return OracleTier::Excluded;
     }
     // An fs mutation racing an fs observation: nothing orders two async
@@ -1008,8 +1016,8 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         "sys::fs::is_dir",
         "sys::fs::watch",
     ];
-    if fs_mutators.iter().any(|m| code.contains(m))
-        && fs_observers.iter().any(|m| code.contains(m))
+    if fs_mutators.iter().any(|m| mentions(code, m))
+        && fs_observers.iter().any(|m| mentions(code, m))
     {
         return OracleTier::Excluded;
     }
@@ -1025,44 +1033,19 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         "db::",
         "sqlite::",
     ];
-    if async_markers.iter().any(|m| code.contains(m)) {
+    if async_markers.iter().any(|m| mentions(code, m)) {
         // FinalValues assumes the async values themselves settle
         // deterministically; a `<-` weaves arrival order into state, and
         // the fire-count/arrival-order-sensitive builtins leak it too.
         // `iter(` is a self-clocked sequence: one element per cycle,
         // so anything async landing beside it samples whichever element
         // that cycle held.
-        // CR claude for claude: [bug/medium] These markers are matched with
-        // `code.contains`, as raw substrings with no identifier boundary. So "all("
-        // matches `sys::fs::read_all(` and `write_all(`. "or(" matches `error(`,
-        // `xor(`, `floor(` and `ok_or(`. "any(" matches `get_many(`, "and(" matches
-        // `bit_and(`, and "sum(" matches `checksum(`. As a result, every sys:: program
-        // that reads or writes a file with read_all/write_all, or that builds an error
-        // value, is classified Excluded, and its values are never compared. That
-        // contradicts the one-sided fs rule above and the FinalValues tier in
-        // design/graphix_fuzz.md. The fix: match each marker as a whole name, meaning
-        // the character before it is not an identifier character or `::`. Add unit
-        // tests showing that a read_all-only sys program and an error()-using one both
-        // classify as FinalValues. probe:
-        // design/review-2026-10-12/repro/fuzz-lib-a-01.sh (fuzz-lib-a-01)
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
             "any(", "queue(", "take(", "skip(", "window(", "iterq", "iter(", "group(",
             "hold(",
         ];
-        // CR claude for claude: [bug/medium] The markers are matched as raw substrings
-        // with no identifier boundary. So `error(` matches `or(`, the generator's own
-        // `m0::tsum(` matches `sum(`, and a user name like `myor(` matches too. Any
-        // async program that contains one of these drops from FinalValues to Excluded
-        // and has none of its values compared (the reviewer counted 227 of 358 Excluded
-        // programs out of 3000 generated ones that matched only through `error(`). Text
-        // in comments and strings matches as well. Match on call names instead: either
-        // require that the character before the marker is not an identifier character
-        // or `:`, or better, walk the parsed Expr for applications whose function
-        // resolves to the core builtin. Apply the same fix to the `excluded` and
-        // `async_markers` tests above. probe:
-        // design/review-2026-10-12/repro/fuzz-gen-a-02.sh (fuzz-gen-a-02)
-        if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
+        if code.contains("<-") || fire_count_sensitive.iter().any(|m| mentions(code, m)) {
             return OracleTier::Excluded;
         }
         return OracleTier::FinalValues;
@@ -6356,6 +6339,19 @@ mod trace_probes {
         for s in i.iter().chain(j.iter()) {
             assert!(!s.capped_cycles && !s.capped_events, "no caps: {s:?}");
         }
+    }
+
+    /// A marker names a builtin, not the tail of a longer name.
+    #[test]
+    fn oracle_markers_are_whole_names() {
+        let read = "sys::fs::read_all(\"/x\")";
+        assert_eq!(oracle_tier(read), OracleTier::FinalValues);
+        let err = "{ let e = error(`X); sys::fs::read_all(\"/x\") }";
+        assert_eq!(oracle_tier(err), OracleTier::FinalValues);
+        let summed = "{ let t = m0::tsum(i64:1); sys::fs::read_all(\"/x\") }";
+        assert_eq!(oracle_tier(summed), OracleTier::FinalValues);
+        let counted = "{ let c = count(i64:1); sys::fs::read_all(\"/x\") }";
+        assert_eq!(oracle_tier(counted), OracleTier::Excluded);
     }
 
     /// A comment above the body is legal, the reject marker included: a
