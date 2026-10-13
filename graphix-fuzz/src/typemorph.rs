@@ -560,7 +560,7 @@ pub(crate) fn unparen(mut e: &Expr) -> &Expr {
 /// Whether a `let` over `e` is a cell its first reader decides: `e` is ⊥
 /// (through parens, a block's tail, a select whose every arm is) or an
 /// empty collection, whose element is open.
-fn open_value(e: &Expr) -> bool {
+pub(crate) fn open_value(e: &Expr) -> bool {
     match &unparen(e).kind {
         ExprKind::Never { .. } => true,
         ExprKind::Block { exprs } => exprs.last().is_some_and(open_value),

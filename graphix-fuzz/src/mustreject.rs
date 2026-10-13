@@ -405,19 +405,16 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             }));
             writes += 1;
         }
-        // CR claude for claude: [bug/medium] `pinned` checks only that the map shows x
-        // as a concrete primitive. When x is a `let` over ⊥ (`let x = never()`), the
-        // map shows what x's cell resolved to, and the mutant's `&mut Any` annotation
-        // decides that cell to Any instead. The mutant `{ let x = never(); let r: &mut
-        // Any = &mut x; *r <- 2; x }` is therefore rightly accepted, and the family
-        // reports a false `ref-widen LEAK: accepted at let`. Fix: skip a referent whose
-        // binding is open, the same way the other families skip use-decided leaves.
-        // That means testing `TypeMap::cell` on the referent or on its defining `let`,
-        // or applying `typemorph::open_value` to that let's initializer. probe:
-        // design/review-2026-10-12/repro/fuzz-mutate-04.sh (fuzz-mutate-04)
         let pinned =
             types.of(x).first().is_some_and(|t| concrete(t) && primitive(t).is_some());
-        if pinned && widens < cap {
+        // a referent whose uses decide its type: the annotation would decide it
+        let open = stmts[..si].iter().rev().find_map(|s| match &s.kind {
+            ExprKind::Bind(d) if matches!(&d.pattern, StructurePattern::Bind(n) if x.to_string() == *n.name) => {
+                Some(d.typ.is_none() && (typemorph::open_value(&d.value) || types.cell(&d.value)))
+            }
+            _ => None,
+        });
+        if pinned && open != Some(true) && widens < cap {
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
             let cand = rebind(Some(any), b.value.clone());
             out.extend(finish(Family::RefWiden, si, &cand, |back, _| {

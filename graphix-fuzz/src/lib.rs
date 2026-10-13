@@ -5234,6 +5234,8 @@ mod tests {
                 "{ let s: [string, i64] = \"a\"; let r = select s { string as x => 1, y => 2 }; r }",
                 "same-form#",
             ),
+            // the annotation would decide the open referent
+            ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
