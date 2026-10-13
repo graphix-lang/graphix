@@ -4,35 +4,46 @@
 
 use std::{fs, process::Command};
 
-// CR claude for claude: [test-gap/medium] Only the exit status comes back. For the
-// refused program, a warm `--check` that panics or aborts while decoding the image also
-// returns false and passes, and that decode is the path this pin guards. Neither half
-// asserts that the first run wrote the registration image and the second restored it,
-// so if the image stopped being written, both runs would be cold and the test would
-// still pass. Fix: return stderr too and require both refusals to carry the same
-// message. Also assert the restore, either with the cache entry existing after the
-// first run or with the "Registration image" INFO line in the second run's log
-// (`--log-dir`, RUST_LOG=info). (tests-shell-compiler-05)
-fn check_twice(name: &str, src: &str) -> [bool; 2] {
+/// One `--check` run: whether it passed, what it said, and its log.
+struct Ran {
+    passed: bool,
+    stderr: String,
+    log: String,
+}
+
+/// `src` checked twice under a private cache; the first run must write
+/// the registration image and the second restore it.
+fn check_twice(name: &str, src: &str) -> [Ran; 2] {
     let dir =
         std::env::temp_dir().join(format!("gx-warm-check-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("prog.gx");
     fs::write(&path, src).expect("write program");
-    let run = || {
-        Command::new(env!("CARGO_BIN_EXE_graphix"))
+    let run = |n: usize| {
+        let logs = dir.join(format!("log{n}"));
+        let out = Command::new(env!("CARGO_BIN_EXE_graphix"))
             .arg("--no-netidx")
+            .arg("--log-dir")
+            .arg(&logs)
             .arg("--check")
             .arg(&path)
             .env("XDG_CACHE_HOME", dir.join("cache"))
+            .env("RUST_LOG", "info")
             .output()
-            .expect("run graphix")
-            .status
-            .success()
+            .expect("run graphix");
+        let log = fs::read_to_string(logs.join("graphix.log")).unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        Ran { passed: out.status.success(), stderr, log }
     };
-    let r = [run(), run()];
+    let r = [run(0), run(1)];
     let _ = fs::remove_dir_all(&dir);
+    assert!(r[0].log.contains("Registration image written to"), "{}", r[0].log);
+    assert!(
+        r[1].log.contains("Registration image ") && !r[1].log.contains("written to"),
+        "the second check did not restore: {}",
+        r[1].log
+    );
     r
 }
 
@@ -41,9 +52,17 @@ fn check_twice(name: &str, src: &str) -> [bool; 2] {
 /// definition.
 #[test]
 fn interface_defaults_check_warm() {
-    let refused = check_twice("refused", "rand::rand(#clock: null) + 1\n");
-    assert_eq!(refused, [false, false], "a warm check accepted what a cold one refused");
-    let accepted =
+    let [cold, warm] = check_twice("refused", "rand::rand(#clock: null) + 1\n");
+    assert!(
+        !cold.passed && !warm.passed,
+        "a warm check accepted what a cold one refused"
+    );
+    let refusal = |r: &Ran| {
+        r.stderr.lines().find(|l| l.contains("cannot compute")).map(str::to_owned)
+    };
+    assert!(refusal(&cold).is_some(), "{}", cold.stderr);
+    assert_eq!(refusal(&cold), refusal(&warm), "{}", warm.stderr);
+    let [cold, warm] =
         check_twice("accepted", "let x = never();\nx <- rand::rand(#clock: null);\nx\n");
-    assert_eq!(accepted, [true, true]);
+    assert!(cold.passed && warm.passed, "{}\n{}", cold.stderr, warm.stderr);
 }
