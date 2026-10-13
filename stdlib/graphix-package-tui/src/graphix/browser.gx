@@ -165,15 +165,7 @@ let browser = |
             }
         });
     let cells = in_order(first_row, array::len(visible_rows), row_cells);
-    // CR claude for claude: [perf/low] The throttle sits on the fold's output, so the
-    // fold over every visible cell (an array::map and an array::zip per row, all
-    // allocating) runs in every cycle in which any cell delivers, and the throttle
-    // discards nearly all of the results. With a large live table that is O(rows x
-    // cols) work per cell update for a value used at most once a second. Throttle the
-    // input instead, so the fold runs at most once a second: fold over `throttle(#rate:
-    // duration:1.0s, cells)`. (gx-ui-09)
-    content_widths <- throttle(#rate:duration:1.0s,
-        array::fold(cells, [], |acc, row| {
+    content_widths <- array::fold(throttle(#rate:duration:1.0s, cells), [], |acc, row| {
             let row = array::map(row, |s| select s {
                 "#SUB" => 0,
                 s => str::char_len(s)
@@ -182,7 +174,7 @@ let browser = |
                 [] => row,
                 acc => array::map(array::zip(row, acc), |(l0, l1)| max(l0, l1))
             }
-        }));
+        });
     let rows = array::map(cells, |row|
         &tui::table::row(array::map(array::enumerate(row), |(i, s)| select i {
             0 => cell(#style:header_style, line(s)),
