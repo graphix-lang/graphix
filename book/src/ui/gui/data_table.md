@@ -269,10 +269,10 @@ selection echoed in the footer.
 
 ### Scrolling
 
-Enough rows and columns that both scrollbars appear at the default
-window size. The rows are real netidx paths, so scrolling also
-subscribes the rows that enter the viewport and drops the ones that
-leave it.
+Enough rows and columns that both scrollbars appear in the example's
+900x400 window. The rows are real netidx paths, and the table subscribes
+only the displayed rows plus 50 on each side, so scrolling subscribes
+the rows that enter that window and drops the ones that leave it.
 
 ```graphix
 {{#include ../../examples/gui/data_table_scrolling.gx}}
