@@ -2073,34 +2073,12 @@ pub(crate) unsafe fn value_bufs_finalize(bufs: impl Iterator<Item = u64>) -> u64
     let bufs: LPooled<Vec<*mut ValueBuf>> = bufs.map(|b| b as *mut ValueBuf).collect();
     let left = bufs.iter().map(|b| unsafe { (**b).len() }).sum();
     let values = bufs.iter().flat_map(|b| unsafe { (**b).drain(..) });
-    let bits = va_bits(ValArray::from_iter_exact(Counted { values, left }));
+    let bits = va_bits(crate::valarray_of(left, values));
     for b in bufs.iter() {
         unsafe { buf_give(*b) }
     }
     bits
 }
-
-/// An iterator that knows how many items it has left.
-struct Counted<I> {
-    values: I,
-    left: usize,
-}
-
-impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Value> {
-        let v = self.values.next()?;
-        self.left -= 1;
-        Some(v)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.left, Some(self.left))
-    }
-}
-
-impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
 
 /// Count a fused kernel run against the running runtime once a kernel
 /// commits to running.

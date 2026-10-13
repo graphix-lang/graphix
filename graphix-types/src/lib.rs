@@ -32,7 +32,7 @@ use ahash::AHashMap;
 use arcstr::ArcStr;
 use compact_str::CompactString;
 use enumflags2::{BitFlags, bitflags};
-use netidx_value::Abstract;
+use netidx_value::{Abstract, ValArray, Value};
 use parking_lot::Mutex;
 use std::{
     any::{Any, TypeId},
@@ -334,4 +334,26 @@ pub fn mod_root(mut scope: &str) -> &str {
         }
     }
     scope
+}
+
+/// The `ValArray` of the `len` values `it` yields, for an iterator that
+/// knows its length but cannot say so (a chain, a flat map).
+pub fn valarray_of(len: usize, it: impl Iterator<Item = Value>) -> ValArray {
+    struct Counted<I> {
+        it: I,
+        left: usize,
+    }
+    impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
+        type Item = Value;
+        fn next(&mut self) -> Option<Value> {
+            let v = self.it.next()?;
+            self.left -= 1;
+            Some(v)
+        }
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (self.left, Some(self.left))
+        }
+    }
+    impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
+    ValArray::from_iter_exact(Counted { it, left: len })
 }

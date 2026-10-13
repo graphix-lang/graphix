@@ -24,35 +24,9 @@ use std::{collections::VecDeque, fmt::Debug};
 
 /// An iterator that knows its length, so a result fills its array in
 /// place.
-// CR claude for claude: [structure/low] This Counted iterator is a verbatim copy of the
-// one in graphix-compiler's fusion emit_helpers: the same fields, Iterator and
-// ExactSizeIterator impls. Export one from graphix-compiler (or graphix-types beside
-// ValArray's users), together with an `array_of(len, it)` constructor, and delete this
-// copy. (x-dup-17)
-struct Counted<I> {
-    it: I,
-    left: usize,
-}
-
-impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Value> {
-        let v = self.it.next()?;
-        self.left -= 1;
-        Some(v)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.left, Some(self.left))
-    }
-}
-
-impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
-
 /// The array of `len` values `it` yields.
 fn array_of(len: usize, it: impl Iterator<Item = Value>) -> Value {
-    Value::Array(ValArray::from_iter_exact(Counted { it, left: len }))
+    Value::Array(graphix_compiler::valarray_of(len, it))
 }
 
 /// `vs` with every array spread into its elements, and how many that is.
