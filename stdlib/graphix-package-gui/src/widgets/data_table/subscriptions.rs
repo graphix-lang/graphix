@@ -18,6 +18,7 @@ use ahash::{AHashMap, AHashSet};
 
 use arcstr::ArcStr;
 use futures::channel::mpsc;
+use graphix_compiler::BindId;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use log::warn;
 use netidx::{
@@ -386,9 +387,9 @@ impl<X: GXExt> DataTableW<X> {
         }
         for (name, c) in self.columns.iter() {
             let needs = (c.callback.is_none() && c.spec.callback_value.is_some())
-                || (c.source.is_none() && c.spec.source_bid != 0)
-                || (c.width_ref.is_none() && c.spec.width_bid != 0)
-                || (c.on_resize_ref.is_none() && c.spec.on_resize_bid != 0);
+                || (c.source.is_none() && c.spec.source_bid.is_some())
+                || (c.width_ref.is_none() && c.spec.width_bid.is_some())
+                || (c.on_resize_ref.is_none() && c.spec.on_resize_bid.is_some());
             if needs {
                 pending.push(name.clone());
             }
@@ -434,7 +435,7 @@ impl<X: GXExt> DataTableW<X> {
         let Some(c) = self.columns.get(name) else { return };
         let spec = &c.spec;
         let callback = spec.callback_value.clone().filter(|_| c.callback.is_none());
-        let bid = |missing: bool, bid: u64| (missing && bid != 0).then_some(bid);
+        let bid = |missing: bool, bid: Option<BindId>| bid.filter(|_| missing);
         let source = bid(c.source.is_none(), spec.source_bid);
         let width = bid(c.width_ref.is_none(), spec.width_bid);
         let on_resize = bid(c.on_resize_ref.is_none(), spec.on_resize_bid);

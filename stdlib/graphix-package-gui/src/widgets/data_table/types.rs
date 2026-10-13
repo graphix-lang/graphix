@@ -7,6 +7,7 @@ use super::{
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
+use graphix_compiler::BindId;
 use graphix_rt::{Callable, GXExt, Ref};
 use log::warn;
 use netidx::{path::Path, publisher::Value};
@@ -133,20 +134,12 @@ pub(super) struct ColumnSpec {
     pub(super) name: ArcStr,
     pub(super) typ: ColumnType,
     pub(super) display_name: Option<ArcStr>,
-    /// `source` ref bind id; `0` for bare-string columns.
-    // CR claude for claude: [risk/low] source_bid, width_bid and on_resize_bid use 0 to
-    // mean 'bare string column, no ref'. BindId 0 is a real id after a warm start:
-    // image_id!'s reserved counter starts at 0, and ids::reserve_above places a
-    // restored image's lowest id there. A column whose ref got that id would be treated
-    // as having no source and would subscribe netidx instead. Fix: make the fields
-    // Option<BindId>, with None from the bare-string branch of parse_column_entry and
-    // Some from the struct fields. compile_column_refs and apply_table_sync then test
-    // for is_some instead of != 0. (gui-datatable-14)
-    pub(super) source_bid: u64,
+    /// `source` ref bind id, absent for bare-string columns.
+    pub(super) source_bid: Option<BindId>,
     /// Width ref bind id.
-    pub(super) width_bid: u64,
+    pub(super) width_bid: Option<BindId>,
     /// `on_resize` ref bind id.
-    pub(super) on_resize_bid: u64,
+    pub(super) on_resize_bid: Option<BindId>,
     pub(super) callback_value: Option<Value>,
 }
 
@@ -229,9 +222,9 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
             name: sanitize_col_name(name),
             typ: ColumnType::Text,
             display_name: None,
-            source_bid: 0,
-            width_bid: 0,
-            on_resize_bid: 0,
+            source_bid: None,
+            width_bid: None,
+            on_resize_bid: None,
             callback_value: None,
         });
     }
@@ -251,9 +244,9 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
         name: sanitize_col_name(name),
         typ,
         display_name,
-        source_bid: source,
-        width_bid: width,
-        on_resize_bid: on_resize,
+        source_bid: Some(source.into()),
+        width_bid: Some(width.into()),
+        on_resize_bid: Some(on_resize.into()),
         callback_value,
     })
 }
@@ -535,6 +528,24 @@ pub(super) fn value_to_f64(v: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_column_refs_differ_from_absent_refs() {
+        use arcstr::literal;
+        let bare = parse_column_entry(Value::from("k")).unwrap();
+        let structured = parse_column_entry(Value::from([
+            (literal!("name"), Value::from("k")),
+            (literal!("typ"), Value::Null),
+            (literal!("display_name"), Value::Null),
+            (literal!("source"), Value::U64(0)),
+            (literal!("width"), Value::U64(0)),
+            (literal!("on_resize"), Value::U64(0)),
+        ]))
+        .unwrap();
+        assert_ne!(bare.source_bid, structured.source_bid);
+        assert_ne!(bare.width_bid, structured.width_bid);
+        assert_ne!(bare.on_resize_bid, structured.on_resize_bid);
+    }
 
     #[test]
     fn sparkline_history_rejects_nonfinite_samples() {
