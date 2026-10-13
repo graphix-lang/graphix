@@ -971,6 +971,20 @@ fn mentions(code: &str, marker: &str) -> bool {
     })
 }
 
+/// `code`'s code lines, string literals blanked: a comment or a string
+/// that merely names an API is no use of it. Trailing comments on code
+/// lines stay (over-matching is the safe direction).
+fn code_only(code: &str) -> String {
+    let mut stripped = String::with_capacity(code.len());
+    for l in code.lines() {
+        if !l.trim_start().starts_with("//") {
+            stripped.push_str(l);
+            stripped.push('\n');
+        }
+    }
+    without_strings(&stripped)
+}
+
 /// `code` with every string literal's contents blanked, so a marker in
 /// text is not a call.
 fn without_strings(code: &str) -> String {
@@ -1007,17 +1021,7 @@ fn without_strings(code: &str) -> String {
 /// Excluded list is empirical; selfcheck polices it — a marker missing
 /// from it shows up as a final-strength flake.
 pub fn oracle_tier(code: &str) -> OracleTier {
-    // A comment that merely names an excluded API must not un-gate the
-    // program; trailing comments on code lines stay (over-exclusion is
-    // the safe direction).
-    let mut stripped = String::with_capacity(code.len());
-    for l in code.lines() {
-        if !l.trim_start().starts_with("//") {
-            stripped.push_str(l);
-            stripped.push('\n');
-        }
-    }
-    let code = without_strings(&stripped);
+    let code = code_only(code);
     let code = code.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
     // (`throttle` reads it outside sys::), a create-new open racing the
@@ -5075,22 +5079,16 @@ async fn derive_suspect(
         PoolResult::Agree => false,
         // a hang of a program on the clock, the network or a process is
         // the environment's
-        // CR claude for claude: [bug/low] This guard drops a whole-child HANG
-        // (check_isolated's outer deadline, past every in-child run deadline) for any
-        // program whose raw text contains `sys::`, `http::` or `rand::`, comment lines
-        // included, with no output, no crash record and no tally. The comment above
-        // names the clock, the network and processes, but `sys::` also covers sys::io,
-        // sys::fs and sys::exit, whose programs oracle_tier rates FinalValues, so a JIT
-        // wedge (fusion adding nontermination, the top-tier class in graphix_fuzz.md)
-        // in a mutant of one of those seeds vanishes. Match only the markers the
-        // comment names (rand::, sys::time, sys::net, sys::process, http::) on code
-        // lines, reusing oracle_tier's comment stripping, and print a one-line "HANG
-        // (environment) - not recorded" so the drop is visible in the campaign log.
-        // (fuzz-lib-b-03)
         PoolResult::Crash(status)
-            if status.contains("HANG")
-                && ["rand::", "sys::", "http::"].iter().any(|m| prog.contains(m)) =>
+            if status.contains("HANG") && {
+                let code = code_only(prog);
+                ["rand::", "sys::time", "sys::net", "sys::process", "http::"]
+                    .iter()
+                    .any(|m| mentions(&code, m))
+            } =>
         {
+            println!("HANG (environment) — not recorded");
+            println!("    program: {}", prog.replace('\n', "\\n"));
             false
         }
         PoolResult::Crash(status) => {
