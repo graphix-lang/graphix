@@ -1,14 +1,10 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{
-        Collect, FuseExpect, Mode, collect, compile_result, fixture_runtime, next_update,
-        result_source,
-    },
+    testing::{Collect, FuseExpect, Mode, collect},
 };
 use netidx::subscriber::Value;
 use std::time::Duration;
-use tokio::time::Instant;
 
 const NET_PUB_SUB: &str = r#"
 {
@@ -426,11 +422,12 @@ const NET_NO_STALE_VALUE: &str = r#"
   let r: R = sys::net::subscribe(path);
   let got = r$ ~ (str::basename(path)$, r$);
   let wrong = 0;
-  wrong <- select got {
-    (k, s) if str::starts_with(#pfx: "[k]:", s) => never(),
-    _ => got ~ wrong + 1
+  let good = 0;
+  select got {
+    (k, s) if str::starts_with(#pfx: "[k]:", s) => good <- got ~ good + 1,
+    _ => wrong <- got ~ wrong + 1
   };
-  sys::time::timer(duration:1.5s, false) ~ wrong
+  sys::time::timer(duration:1.5s, false) ~ (wrong, good)
 }
 "#;
 
@@ -438,27 +435,26 @@ const NET_NO_STALE_VALUE: &str = r#"
 /// single-threaded runtimes never do.
 #[tokio::test(flavor = "multi_thread")]
 async fn net_no_stale_value() -> Result<()> {
-    for mode in [Mode::Interp, Mode::Jit] {
-        let (ctx, mut rx) = fixture_runtime(
-            [("/test.gx", result_source(NET_NO_STALE_VALUE))],
+    for mode in Mode::ALL {
+        let first = Collect::First(1);
+        let v = collect(
+            NET_NO_STALE_VALUE,
             &crate::TEST_REGISTER,
             mode,
-            |_| {},
+            first,
+            Duration::from_secs(10),
         )
         .await?;
-        let res = compile_result(&ctx).await?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let wrong = next_update(&mut rx, res.exprs[0].id, deadline).await?;
-        ctx.shutdown().await;
-        // CR claude for claude: [test-gap/low] This assertion is also satisfied by a
-        // subscription that delivers nothing. `wrong` only grows on a stale value, so a
-        // Subscribe that drops every update after a path change (answering under an id
-        // nothing reads, say) leaves it at 0, and the test passes while the moving
-        // subscription is dead. Fix: count good deliveries too (a `good` counter bumped
-        // by the matching arm), return (wrong, good), and assert wrong == 0 with good
-        // above a floor, for example 20 over the 100 moves. Also run Mode::Par and
-        // Mode::JitPar, not only Interp and Jit. (tests-lib-b2-06)
-        assert_eq!(wrong, Value::I64(0), "values of the path left, {mode:?}");
+        match &v[..] {
+            [Value::Array(a)] => match &a[..] {
+                // hundreds of good deliveries over the 100 moves
+                [Value::I64(0), Value::I64(good)] if *good >= 20 => (),
+                _ => panic!(
+                    "values of the path left, or too few of the path taken, {mode:?}: {v:?}"
+                ),
+            },
+            _ => panic!("{mode:?}: {v:?}"),
+        }
     }
     Ok(())
 }
