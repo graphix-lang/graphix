@@ -331,20 +331,20 @@ run!(recursive_lambda0, RECURSIVE_LAMBDA0, |v: Result<&Value>| match v {
 }; FuseExpect::Jit);
 
 // A fully annotated arithmetic lambda.
-const KIR_FUSED_ARITH: &str = r#"
+const FUSED_ARITH: &str = r#"
 {
     let f = |a: i64, b: i64| -> i64 a * a + b * b;
     #[native] f(3, 4)
 }
 "#;
 
-run!(fused_arith, KIR_FUSED_ARITH, |v: Result<&Value>| match v {
+run!(fused_arith, FUSED_ARITH, |v: Result<&Value>| match v {
     Ok(Value::I64(25)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // A tail-recursive countdown: self-call in tail position loops.
-const KIR_FUSED_TAIL_LOOP: &str = r#"
+const FUSED_TAIL_LOOP: &str = r#"
 {
     let rec countdown = |n: i64, acc: i64| -> i64
         select n {
@@ -355,7 +355,7 @@ const KIR_FUSED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-run!(fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
+run!(fused_tail_loop, FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     Ok(Value::I64(5050)) => true,
     _ => false,
 }; FuseExpect::Jit);
@@ -414,7 +414,7 @@ run!(fact_value_position, FACT_VALUE_POSITION, |v: Result<&Value>| match v {
 }; FuseExpect::Jit);
 
 // A mandelbrot-shape kernel.
-const KIR_FUSED_MANDELBROT: &str = r#"
+const FUSED_MANDELBROT: &str = r#"
 {
     let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
         select i {
@@ -426,27 +426,26 @@ const KIR_FUSED_MANDELBROT: &str = r#"
 }
 "#;
 
-run!(fused_mandelbrot, KIR_FUSED_MANDELBROT, |v: Result<&Value>| match v {
+run!(fused_mandelbrot, FUSED_MANDELBROT, |v: Result<&Value>| match v {
     Ok(Value::I64(7)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // An unannotated callback passed to a HOF.
-const KIR_FUSED_DEFERRED_MAP: &str = r#"
+const FOLD_DEFERRED_CALLBACK: &str = r#"
 {
-    use array::*;
     let xs = array::init(100, |idx: i64| idx);
     array::fold(xs, 0, |acc, x| acc + x * 2)
 }
 "#;
 
-run!(fused_deferred_map, KIR_FUSED_DEFERRED_MAP, |v: Result<&Value>| match v {
+run!(fold_deferred_callback, FOLD_DEFERRED_CALLBACK, |v: Result<&Value>| match v {
     Ok(Value::I64(9900)) => true,
     _ => false,
 });
 
 // A recursive lambda with no annotations still computes correctly.
-const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
+const UNANNOTATED_RECURSION: &str = r#"
 {
     let rec sum_to = |n, acc|
         select n {
@@ -457,13 +456,13 @@ const KIR_LAZY_NO_ANNOTATIONS: &str = r#"
 }
 "#;
 
-run!(lazy_no_annotations, KIR_LAZY_NO_ANNOTATIONS, |v: Result<&Value>| match v {
+run!(unannotated_recursion, UNANNOTATED_RECURSION, |v: Result<&Value>| match v {
     Ok(Value::I64(5050)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // A three-level call chain with no annotations. outer(5) = 20.
-const KIR_LAZY_THREE_LEVEL: &str = r#"
+const UNANNOTATED_THREE_LEVEL: &str = r#"
 {
     let inner = |x| x * x + 1;
     let middle = |x| inner(x) + inner(x + 1);
@@ -473,13 +472,13 @@ const KIR_LAZY_THREE_LEVEL: &str = r#"
 "#;
 
 // The bare lambdas' operand cells settle to i64, so the chain fuses.
-run!(lazy_three_level, KIR_LAZY_THREE_LEVEL, |v: Result<&Value>| match v {
+run!(unannotated_three_level, UNANNOTATED_THREE_LEVEL, |v: Result<&Value>| match v {
     Ok(Value::I64(20)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // A higher-order function with a function-typed argument: 5*5 + 1 = 26.
-const KIR_DYNCALL_HOF: &str = r#"
+const FN_FORMAL_HOF: &str = r#"
 {
     let square = |x: i64| -> i64 x * x;
     let combine = |f: fn(x: i64) -> i64, x: i64| -> i64 f(x) + 1;
@@ -487,26 +486,15 @@ const KIR_DYNCALL_HOF: &str = r#"
 }
 "#;
 
-run!(dyncall_hof, KIR_DYNCALL_HOF, |v: Result<&Value>| match v {
+run!(fn_formal_hof, FN_FORMAL_HOF, |v: Result<&Value>| match v {
     Ok(Value::I64(26)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // A let-bound helper whose body is `array::fold` over a literal, called
 // transitively: helper(5) + 1 = 51.
-// CR claude for claude: [readability/low] The name says nonfusable dynamic call, but
-// this is a static chain that fuses whole (FuseExpect::Jit; `#[native] outer(5)` fuses
-// and gives 51). Nearby names have the same problem: the KIR_ prefix names a typed IR
-// that no longer exists, KIR_FUSED_DEFERRED_MAP / fused_deferred_map is a fold, the
-// lazy_*/ *_dyncall* names cover static calls over a cast, and FLAT_MAP_DECLARED_UNION
-// backs flat_map_bare_element_refused. Rename each fixture after what it pins (e.g.
-// static_fold_helper_fuses, fold_deferred_callback, call_through_cast_callee,
-// FLAT_MAP_BARE_ELEMENT). Also delete the two `use array::*;` lines: every call is
-// already qualified, and the glob is against the repo's import rule.
-// (tests-functions-07)
-const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
+const STATIC_FOLD_HELPER: &str = r#"
 {
-    use array::*;
     let helper = |x: i64| -> i64 array::fold([x, x], 0, |a, b| a + b * b);
     let outer = |x: i64| -> i64 helper(x) + 1;
     outer(5)
@@ -514,8 +502,8 @@ const KIR_DYNCALL_STATIC_NONFUSABLE: &str = r#"
 "#;
 
 run!(
-    dyncall_static_nonfusable,
-    KIR_DYNCALL_STATIC_NONFUSABLE,
+    static_fold_helper_fuses,
+    STATIC_FOLD_HELPER,
     |v: Result<&Value>| match v {
         Ok(Value::I64(51)) => true,
         _ => false,
@@ -537,20 +525,20 @@ run!(transitive_chain, TRANSITIVE_CHAIN, |v: Result<&Value>| match v {
 }; FuseExpect::Jit);
 
 // A transitively-called callee whose body contains a cast: g(true) = 1.
-const TRANSITIVE_CALLEE_DYNCALL: &str = r#"
+const CALL_THROUGH_CAST_CALLEE: &str = r#"
 {
     let g = |b: bool| cast<i64>(b)$;
     g(true) + g(false)
 }
 "#;
 
-run!(transitive_callee_dyncall, TRANSITIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
+run!(call_through_cast_callee, CALL_THROUGH_CAST_CALLEE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 }; FuseExpect::Jit);
 
 // The cast two callee levels deep: g(b) = h(b) + 10 = 21.
-const TRANSITIVE_DYNCALL_CHAIN: &str = r#"
+const CAST_TWO_CALLEES_DEEP: &str = r#"
 {
     let h = |b: bool| cast<i64>(b)$;
     let g = |b: bool| h(b) + 10;
@@ -558,7 +546,7 @@ const TRANSITIVE_DYNCALL_CHAIN: &str = r#"
 }
 "#;
 
-run!(transitive_dyncall_chain, TRANSITIVE_DYNCALL_CHAIN, |v: Result<&Value>| match v {
+run!(cast_two_callees_deep, CAST_TWO_CALLEES_DEEP, |v: Result<&Value>| match v {
     Ok(Value::I64(21)) => true,
     _ => false,
 }; FuseExpect::Jit);
@@ -580,14 +568,14 @@ run!(cross_region_callee_base, CROSS_REGION_CALLEE_BASE, |v: Result<&Value>| mat
 }; FuseExpect::Jit);
 
 // A recursive callee whose base case is a cast: g(3) = 1.
-const RECURSIVE_CALLEE_DYNCALL: &str = r#"
+const RECURSIVE_CALLEE_CAST_BASE: &str = r#"
 {
     let rec g = |n: i64| -> i64 select n { 0 => cast<i64>(true)$, _ => g(n - 1) };
     g(3)
 }
 "#;
 
-run!(recursive_callee_dyncall, RECURSIVE_CALLEE_DYNCALL, |v: Result<&Value>| match v {
+run!(recursive_callee_cast_base, RECURSIVE_CALLEE_CAST_BASE, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 }; FuseExpect::Jit);
@@ -1573,7 +1561,7 @@ run!(
     FuseExpect::None
 );
 
-const DYNCALL_SITE_IDENTITY_STATE: &str = r#"
+const SITE_IDENTITY_STATE: &str = r#"
 {
   let f0 = |v: f64| -> f64 once(v);
   f0(f0(10.0) + 10.0)
@@ -1582,14 +1570,14 @@ const DYNCALL_SITE_IDENTITY_STATE: &str = r#"
 
 // Two call sites of one callee own separate builtin instances: `once`
 // at the outer site passes 20, its own first value.
-run!(dyncall_site_identity_state, DYNCALL_SITE_IDENTITY_STATE, |v: Result<&Value>| {
+run!(site_identity_state, SITE_IDENTITY_STATE, |v: Result<&Value>| {
     match v {
         Ok(Value::F64(x)) => *x == 20.0,
         _ => false,
     }
 }; FuseExpect::None);
 
-const DYNCALL_SEED_BACKEDGE: &str = r#"
+const BUILTIN_SLOT_BACKEDGE: &str = r#"
 {
   let g = |s: string| -> i64 str::len(s);
   let rec f = |n: i64| -> i64 select n {
@@ -1602,7 +1590,7 @@ const DYNCALL_SEED_BACKEDGE: &str = r#"
 
 // A pre-bound builtin slot dispatched both from the root and from a
 // recursive activation.
-run!(dyncall_seed_backedge, DYNCALL_SEED_BACKEDGE, |v: Result<&Value>| {
+run!(builtin_slot_backedge, BUILTIN_SLOT_BACKEDGE, |v: Result<&Value>| {
     match v {
         Ok(Value::I64(6)) => true,
         _ => false,
@@ -2277,14 +2265,14 @@ run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
 
 // `flat_map`'s callback returns the collection, never a bare element:
 // whether to splice is never decided by a value's shape.
-const FLAT_MAP_DECLARED_UNION: &str = r#"
+const FLAT_MAP_BARE_ELEMENT: &str = r#"
 {
   let t: fn(a: Array<i64>, f: fn(x: i64) -> [i64, Array<i64>]) -> Array<i64> = array::flat_map;
   t([1, 2], |x| select x { 1 => x, n => [n, n] })
 }
 "#;
 
-run!(flat_map_bare_element_refused, FLAT_MAP_DECLARED_UNION, |v: Result<&Value>| {
+run!(flat_map_bare_element_refused, FLAT_MAP_BARE_ELEMENT, |v: Result<&Value>| {
     matches!(&v, Err(e) if format!("{e:#}").contains("does not contain"))
 }; FuseExpect::None);
 

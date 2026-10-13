@@ -1,5 +1,5 @@
 // FIXED — the forward-edge ordering hole (2026-08-20 audit,
-// design/activation_state.md; found via the dyncall_seed_backedge
+// design/activation_state.md; found via the builtin_slot_backedge
 // fixture regressing under the loud-degrade Err). Kernel definition
 // order was REVERSED DECLARATION ORDER as a callees-first
 // approximation, which breaks on SIBLING discovery: the root
@@ -19,5 +19,5 @@
 // because g's consulted guard channel is bottom, however sound the
 // scrutinee fire. The pin now guards the ORDERING (g defines first,
 // f carves real blocks — de-fuse would show as a FuseExpect drift in
-// dyncall_seed_backedge) and the consulted-bottom trace.
+// builtin_slot_backedge) and the consulted-bottom trace.
 {let x = array::iter([i64:1, i64:2, i64:0, i64:0]); let m = x / x / i64:3; let g = |k: i64| -> i64 select k - k {i64:0 if m == i64:0 => i64:1, _ => i64:2}; let rec f = |n: i64| -> i64 select n {i64:0 => g(n), _ => f(n - i64:1) + i64:0}; select x {i64:1 => g(i64:5), _ => i64:0} * i64:100 + f(x - x + i64:1)}

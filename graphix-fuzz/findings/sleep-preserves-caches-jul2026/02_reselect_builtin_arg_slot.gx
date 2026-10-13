@@ -4,7 +4,7 @@
 // arg slots, so on arm re-selection a bottoming arg (1/v0 at v0=0) left
 // its slot empty, eval saw a missing arg and produced nothing, and the
 // select emitted the arm wrapper cache (1). The kernel's DynCall site
-// instance persists across deselection (dyncall_site_identity_state):
+// instance persists across deselection (site_identity_state):
 // the bottomed arg masks, the cached slot rides (1), the fresh arg
 // delivers 10, and max(10, 1) fires 10.
 // Pre-fix: interp Trace([0:i64:1]; [0:i64:9]; [0:i64:1])
