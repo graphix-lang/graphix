@@ -350,17 +350,12 @@ fn tokio_main(p: Params, run_on_main: MainThreadHandle) -> Result<Option<i32>> {
     let res = rt.block_on(async move {
         // a program's failures reach stderr with or without a log
         let _logger = match &p.log_dir {
-            // CR claude for claude: [bug/medium] With RUST_LOG unset,
-            // Logger::try_with_env is LogSpecification::off(), so the FAILURE_TARGET
-            // error records are dropped before Duplicate::Error sees them: under
-            // --log-dir a program's unhandled `?` and hot-operator failures reach
-            // neither stderr nor the log file, contrary to the comment above this match
-            // and CLAUDE.md. Build the spec as RUST_LOG (or "off" when unset) plus
-            // `{FAILURE_TARGET}=error`, e.g. by parsing that combined string or through
-            // LogSpecBuilder, and keep duplicate_to_stderr(Duplicate::Error). probe:
-            // design/review-2026-10-12/repro/shell-03.sh (shell-03)
-            Some(dir) => Logger::try_with_env()
-                .context("initializing log")?
+            // RUST_LOG's spec, with the failure target always on
+            Some(dir) => Logger::try_with_str(format!(
+                "{}, {FAILURE_TARGET}=error",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "off".into())
+            ))
+            .context("initializing log")?
                 .log_to_file(
                     FileSpec::default()
                         .directory(dir)
