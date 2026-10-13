@@ -17,12 +17,14 @@ recursions, compiled to a native loop:
 {{#include ../examples/collection/native_array_ops.gx}}
 ```
 
-`fold` is the primitive, and the hand-written loop runs within ~6x of
-the intrinsic per element. `find` as a loop *stops at the match* — an
-early exit the fold-derived default cannot express, which is why it
-beats the intrinsic (an all-slots scan by rule) on an average hit.
-`map` by construction over the length is at parity with the
-intrinsic.
+`fold` is the primitive; the hand-written loop pays its own bounds
+check, `$` and select per element, so it runs several times slower
+than the intrinsic. `find` as a loop *stops at the match*, an early
+exit the fold-derived default cannot express. That is what a
+`Collection` implementation for your own type gains; against Array's
+intrinsic, which is faster per element and forks across cores, the
+loop wins only when the hit is near the front. `map` by construction
+over the length runs close to the intrinsic.
 
 ## flat_map without the quadratic
 
