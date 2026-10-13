@@ -3,6 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use arcstr::ArcStr;
+use clap::error::ErrorKind;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
@@ -306,7 +307,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
                 let command = ValArray::from_iter_exact(command_chain.drain(..));
                 Fields { command, values: Value::Map(values) }.into()
             }
-            Err(e) => errf!("ArgError", "{e}"),
+            Err(e) => match e.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    errf!("ArgHelp", "{e}")
+                }
+                _ => errf!("ArgError", "{e}"),
+            },
         };
         self.out.set(TagValue::fired(res))
     }

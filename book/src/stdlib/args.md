@@ -46,9 +46,16 @@ val flag: fn(#name: string, ?#short: [string, null], ?#help: [string, null]) -> 
 /// Create a command descriptor.
 val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null], ?#subcommands: Array<Command>, args: Array<Arg>) -> Command;
 
-/// Parse command-line arguments against the spec.
-val parse: fn(cmd: Command) -> [ParseResult, Error<`ArgError(string)>];
+/// Parse the program's arguments (sys::args) against the spec.
+val parse: fn(cmd: Command) -> [ParseResult, Error<[`ArgError(string), `ArgHelp(string)]>];
 ```
+
+`parse` reads the program's own arguments, the ones `sys::args` returns.
+In `values` an option's value is its string, and a flag's is `"true"` or
+`"false"`. `--help` and `--version` answer `` `ArgHelp `` with the text
+to print, and a usage error answers `` `ArgError `` with clap's message,
+so a script prints either and exits, 0 for help and non-zero for an
+error, as the example does.
 
 ## Example
 

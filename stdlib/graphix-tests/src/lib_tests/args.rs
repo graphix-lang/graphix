@@ -220,3 +220,54 @@ async fn parse_error_missing_required() -> Result<()> {
     ctx.shutdown().await;
     Ok(())
 }
+
+fn error_tag(v: &Value) -> Option<&str> {
+    match v {
+        Value::Error(e) => match &**e {
+            Value::Array(a) => match a.first() {
+                Some(Value::String(tag)) => Some(&**tag),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+const PARSE_VERSIONED: &str = r#"
+args::parse(
+    args::command(
+        #name: "test",
+        #version: "1.2.3",
+        [args::flag(#name: "verbose")]
+    )
+)
+"#;
+
+async fn parse_versioned(args: &[&str]) -> Result<Value> {
+    let argv: Vec<ArcStr> =
+        ["script.gx"].iter().chain(args).map(|a| ArcStr::from(*a)).collect();
+    let (v, ctx) =
+        testing::eval_with_setup(PARSE_VERSIONED, &crate::TEST_REGISTER, |ctx| {
+            ctx.libstate.set(ProgramArgs(argv));
+        })
+        .await?;
+    ctx.shutdown().await;
+    Ok(v)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parse_help_is_arg_help() -> Result<()> {
+    for flag in ["--help", "--version"] {
+        let v = parse_versioned(&[flag]).await?;
+        assert_eq!(error_tag(&v), Some("ArgHelp"), "{flag}: {v:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parse_usage_error() -> Result<()> {
+    let v = parse_versioned(&["--bogus"]).await?;
+    assert_eq!(error_tag(&v), Some("ArgError"), "{v:?}");
+    Ok(())
+}

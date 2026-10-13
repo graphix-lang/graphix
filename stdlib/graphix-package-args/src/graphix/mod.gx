@@ -39,4 +39,4 @@ let command = |#name: string, #version: [string, null] = null, #about: [string, 
         subcommands
     };
 
-let parse = |cmd: Command| -> [ParseResult, Error<`ArgError(string)>] 'args_parse
+let parse = |cmd: Command| -> [ParseResult, Error<[`ArgError(string), `ArgHelp(string)]>] 'args_parse
