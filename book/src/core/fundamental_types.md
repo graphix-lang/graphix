@@ -6,26 +6,17 @@ shell by invoking `graphix` with no arguments.
 
 ## Numbers
 
-<!-- CR claude for claude: [doc-drift/low] The language has things this book never
-mentions. This list omits i8, i16, u8 and u16, and the Number Sets paragraph omits
-`Float`. The Bool section does not say `&&` and `||` are strict (`false && ⊥` is ⊥, no
-short circuit), which surprises anyone guarding an expression that may be bottom.
-recursion.md documents the stack budget but not the activation budget
-(GRAPHIX_ACTIVATION_BUDGET, Control::set_activation_budget). Nothing in the book covers
-parallel evaluation: #[parallel], #[serial], GRAPHIX_PAR, GRAPHIX_EVAL_THREADS, and the
-fact that external effects in forked branches are unordered. Fix: add the missing types
-and set, a sentence on strict boolean operators and the activation budget, and the
-deferred parallel-evaluation chapter. (book-core-16) -->
-`i32`, `u32`, `i64`, `u64`, `f32`, `f64`, and `decimal` are the fundamental
-numeric types in Graphix. Literals are written with their type prefixed, except
+`i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `f32`, `f64`, and
+`decimal` are the fundamental numeric types in Graphix. Literals are written with their type prefixed, except
 for `i64` and `f64` which are written bare. for example, `u32:3` is a `u32`
 literal value.
 
 `decimal` is an exact decimal representation for performing financial
 calculations without rounding or floating point approximation errors.
 
-The basic arithmetic operations are implemented on all the number types with all
-the other number types.
+The basic arithmetic operations are implemented on every number type. Both
+operands of an operation are one type: an `f64` and an `i64` do not mix
+without a cast.
 
 | Operation | Unchecked | Checked |
 |-----------|-----------|---------|
@@ -46,36 +37,18 @@ Checked operators return a union type `[T, Error<`ArithError(string)>]`,
 allowing you to handle arithmetic errors explicitly using `?`, `$`, or
 `select`.
 
-<!-- CR claude for claude: [doc-drift/high] This section, and the sentence above the
-table ('implemented on all the number types with all the other number types'), describe
-the old arithmetic rule. Arithmetic is fn<'a: Number + Singleton>, so `1. + 1` is now
-refused ('cannot compute f64 + i64 ... cast one side explicitly'). The same old rule
-appears in functions/polymorphism.md 'Implicit Polymorphism' (`|x, y| x + y` as three
-independent Number variables, `f(1.0, 1)` returning Number) and in let_binds.md (`let x:
-Number = 1`, after which `x + 1` is refused). In polymorphism.md the one-argument
-OneNumber `f` is also called as `f(1.212, 2.0)`. Fix: say that both operands must be one
-numeric type and show the refusal and the cast. Replace the polymorphism walk-through
-with the Singleton reading that reading_types.md already gives, rename the OneNumber
-example's function, and choose a let_binds annotation example that still checks (e.g.
-`let x: [i64, null] = null`). (book-core-03) -->
-The compiler will let you do arithmetic on different types of numbers directly
-without casting, however the return type of the operation will be the set of all
-the types in the operation, representing that either type could be returned. If
-you try to pass this result to a function that wants a specific numeric type, it
-will fail at compile time.
+Mixing two numeric types is refused at compile time; cast one side:
 
 ```graphix
 〉1. + 1
--: [i64, f64]
-2
-〉let f = |x: i64| x * 10
-〉f(1. + 1)
 error: in expr
 
 Caused by:
-    0: at: line: 1, column: 3, in: (f64:1. + i64:1)
-    1: at: line: 1, column: 3, in: (f64:1. + i64:1)
-    2: type mismatch '_1046: i64 does not contain [i64, f64]
+    0: at: line: 1, column: 1, in: 1.0 + 1
+    1: cannot compute f64 + i64: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
+〉1. + cast<f64>(1)$
+-: f64
+2
 ```
 
 With unchecked operators, a division by zero logs an error and returns bottom -- the expression produces no value until the inputs change. This means downstream expressions simply stop updating until the arithmetic becomes valid again.
@@ -132,8 +105,11 @@ bytes. The type correspondence is,
 
 There are a few sets of number types that classify numbers into various kinds.
 `Number` being the most broad, it contains all the number types. `Int` contains
-only integers, `Real` contains only reals (decimal plus the two float types),
-`Sint` contains signed integers, `Uint` contains unsigned integers.
+only integers, `Float` the two float types, `Real` contains only reals
+(decimal plus the two float types), `Sint` contains signed integers, `Uint`
+contains unsigned integers. A set is a type for a variable to range over
+(`'a: Number`); a value of a set type is one of its members, and
+arithmetic takes one member type at a time.
 
 ## Bool
 
@@ -141,7 +117,9 @@ Boolean literals are written as `true` and `false`, and the name of the boolean
 type is `bool`.
 
 Boolean expressions using `&&`, `||`, and `!` are supported. These operators
-only operate on `bool`. They can be grouped with parenthesis. For example,
+only operate on `bool`. They can be grouped with parenthesis. `&&` and `||`
+are strict: they do not short circuit, and an operand that is bottom makes
+the result bottom (`false && never()` produces nothing). For example,
 
 ```graphix
 〉true && false
