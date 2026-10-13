@@ -44,29 +44,25 @@ fn gen_update(rng: &mut Rng, field: &str, arg: &str) -> String {
     }
 }
 
-/// The body of one inner update fn: a select over the dispatch arg with
-/// a quiet arm and a writing arm. `target` is this twin's connect target.
-fn gen_select_body(
-    rng: &mut Rng,
-    fields: &[Field],
-    read: &str,
-    target: &str,
-    arg: &str,
-) -> String {
+/// The body of one inner update fn: a select over the dispatch arg `x`
+/// whose writing arm runs `write`. The quiet arm decides the geometry: an
+/// arm matching the canonical default leaves the writing arm asleep
+/// through the driver's init call; a wildcard-only select updates on the
+/// init call too.
+fn select_body(quiet: bool, write: &str) -> String {
+    let quiet = if quiet { "\n  i64:0 => null," } else { "" };
+    format!("select x {{{quiet}\n  n => {{\n    {write}\n  }}\n}}")
+}
+
+/// A writing arm that reads the state at `read` and writes the whole
+/// updated struct to `target`.
+fn whole_write(fields: &[Field], read: &str, target: &str) -> String {
     let upd = fields
         .iter()
         .map(|f| format!("{}: {}", f.name, f.update))
         .collect::<Vec<_>>()
         .join(", ");
-    let write = format!("let s = n ~ {read};\n    {target} <- {{ {upd} }};\n    null");
-    // The quiet arm decides the geometry: an arm matching the canonical
-    // default leaves the writing arm asleep through the driver's init
-    // call; a wildcard-only select updates on the init call too.
-    if chance(rng, 0.7) {
-        format!("select {arg} {{\n  i64:0 => null,\n  n => {{\n    {write}\n  }}\n}}")
-    } else {
-        format!("select {arg} {{\n  n => {{\n    {write}\n  }}\n}}")
-    }
+    format!("let s = n ~ {read};\n    {target} <- {{ {upd} }};\n    null")
 }
 
 /// Generate one twin module + its dispatch plan. `nfields` state
@@ -98,12 +94,12 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
     for st in &states {
         m.push_str(&format!("let {st}: St = {{ {init} }};\n"));
     }
+    let quiet = chance(rng, 0.7);
     // route 1: write through a &mut parameter
-    let body_ref = gen_select_body(rng, &fields, "*st", "*st", "x");
+    let body_ref = select_body(quiet, &whole_write(&fields, "*st", "*st"));
     m.push_str(&format!("let inner_ref = |st: &mut St, x: i64| -> null {body_ref};\n"));
-    // route 2: write through a capture; reuse route 1's body with the
-    // targets swapped so the twins' select shapes stay identical
-    let body_cap = body_ref.replace("*st", "sb");
+    // route 2: write through a capture
+    let body_cap = select_body(quiet, &whole_write(&fields, "sb", "sb"));
     m.push_str(&format!("let inner_cap = |x: i64| -> null {body_cap};\n"));
     let mut calls = vec!["let ra = inner_ref(&mut sa, x)", "let rb = inner_cap(x)"];
     // route 3: the &mut parameter passed through a nested call
@@ -128,20 +124,7 @@ pub fn gen_twin_shape(rng: &mut Rng) -> TwinShape {
             .collect::<Vec<_>>()
             .join(";\n    ");
         let write = format!("let s = n ~ sd;\n    {writes};\n    null");
-        // CR claude for claude: [structure/low] The by-field route rediscovers
-        // gen_select_body's quiet-arm decision by searching its output text, and
-        // re-spells both select shapes. If gen_select_body's spelling changes (another
-        // literal, a guard), the contains misses. Route 4 then writes on epochs the
-        // other routes ignore, and every such twin reports a spurious TwinDiverged. A
-        // spelling change can also silently drop the geometry match. Fix: draw the
-        // quiet-arm choice once in gen_twin_shape. Pass it to one select renderer that
-        // takes the write block, and build every route, the capture route included
-        // (today a `replace("*st", "sb")`), from that renderer. (fuzz-gen-b-11)
-        let body = if body_ref.contains("i64:0 => null") {
-            format!("select x {{\n  i64:0 => null,\n  n => {{\n    {write}\n  }}\n}}")
-        } else {
-            format!("select x {{\n  n => {{\n    {write}\n  }}\n}}")
-        };
+        let body = select_body(quiet, &write);
         m.push_str(&format!("let inner_fields = |x: i64| -> null {body};\n"));
         calls.push("let rd = inner_fields(x)");
     }
