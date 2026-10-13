@@ -2,9 +2,10 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, refused},
+    testing::{Collect, FuseExpect, Mode, collect, refused},
 };
 use netidx::subscriber::Value;
+use std::time::Duration;
 
 const ARRAY_MAP0: &str = r#"
 {
@@ -1327,3 +1328,27 @@ run!(find_map_tuple_arm, FIND_MAP_TUPLE_ARM, |v: Result<&Value>| {
     matches!(v.map(|v| v.clone().cast_to::<(i64, ArcStr)>()),
         Ok(Ok((2, s))) if &*s == "s")
 }; FuseExpect::Jit);
+
+/// A predicate that answers late leaves elements queued behind the group
+/// it closes; each starts as soon as the group before it is out.
+#[tokio::test(flavor = "multi_thread")]
+async fn group_takes_what_queued_while_it_waited() -> Result<()> {
+    const CODE: &str = r#"{
+  let x = never();
+  x <- array::iter([1, 2, 3, 4, 5, 6]);
+  array::group(x, |n, x| sys::time::after_idle(duration:20.ms, n == 2))
+}"#;
+    let pair = |a, b| Value::Array([Value::I64(a), Value::I64(b)].into_iter().collect());
+    for mode in Mode::ALL {
+        let got = collect(
+            CODE,
+            crate::TEST_REGISTER,
+            mode,
+            Collect::First(3),
+            Duration::from_secs(10),
+        )
+        .await?;
+        assert_eq!(got, [pair(1, 2), pair(3, 4), pair(5, 6)], "{mode:?}");
+    }
+    Ok(())
+}

@@ -323,26 +323,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 Some(v) => {
                     self.ready = true;
                     match v {
-                        // CR claude for claude: [bug/high] A `true` answer emits the
-                        // buffer and pops nothing from the queue. The `false` arm pops
-                        // the next element, but this arm does not. Elements that queued
-                        // while f was answering late (an async f, or one that reads
-                        // something with no value yet) wait for the next fire of `v`,
-                        // which takes only one of them. Without another fire they are
-                        // never grouped: iter([1..6]) with f = after_idle(20ms, n == 2)
-                        // emits [1, 2] and nothing more, where [3, 4] and [5, 6] were
-                        // expected. Fix: when the queue is non-empty after a `true`,
-                        // start the next element in this cycle. Pop it, push it to buf,
-                        // and write n/x so that f sees them in the next cycle, since f
-                        // has already run in this one (`ctx.rt.set_var` rather than
-                        // `event.variables`). Keep `ready = false` until f answers. Pin
-                        // it with an async-predicate fixture. probe:
-                        // design/review-2026-10-12/repro/collections-str-03.sh
-                        // (collections-str-03)
                         Value::Bool(true) => {
-                            break Some(Value::Array(ValArray::from_iter_exact(
+                            let group = Value::Array(ValArray::from_iter_exact(
                                 self.buf.drain(..),
-                            )));
+                            ));
+                            // what queued while f answered starts now; f ran
+                            // this cycle, so it sees the element next cycle
+                            if let Some(v) = self.queue.pop_front() {
+                                self.ready = false;
+                                self.buf.push(v.clone());
+                                ctx.rt.set_var(self.nid, Value::I64(1));
+                                ctx.rt.set_var(self.xid, v);
+                            }
+                            break Some(group);
                         }
                         _ => match self.queue.pop_front() {
                             None => break None,
@@ -372,9 +365,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        ctx.rt.store_remove(&self.nid);
+        ctx.rt.store_release(&self.nid);
         ctx.rt.store_remove(&self.pid);
-        ctx.rt.store_remove(&self.xid);
+        ctx.rt.store_release(&self.xid);
         ctx.env.unbind_variable(self.nid);
         ctx.env.unbind_variable(self.xid);
         self.pred.delete(ctx);
