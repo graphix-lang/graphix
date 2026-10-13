@@ -920,29 +920,31 @@ proptest::proptest! {
         ..proptest::prelude::ProptestConfig::default()
     })]
     #[test]
-    // CR claude for claude: [test-gap/low] Both sides run with fusion on, and the
-    // impure slots run the sub-region kernel emitted from the same body by the same
-    // `emit_clif` as the pure loop. A miscompile of a generated body, such as the
-    // arm-binding select or a struct accessor, gives the same wrong array on both sides
-    // and the property holds. Add the canonical evaluator as a third leg: run
-    // `load_node_walked(&pure_map_program(&body))` and assert it equals `reference` as
-    // well. (tests-fusion-traits-09)
     fn impure_matches_pure(body in body_strategy()) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let (reference, cloned) = rt
+        let (walked, reference, cloned) = rt
             .block_on(async {
+                let w = load_node_walked(&pure_map_program(&body)).await?;
                 let r = pure_map(&body).await?;
                 let c = impure_map(&body).await?;
-                anyhow::Ok((r, c))
+                anyhow::Ok((w, r, c))
             })
             .map_err(|e| {
                 proptest::test_runner::TestCaseError::fail(format!(
                     "runtime error for body `{body}`: {e}"
                 ))
             })?;
+        proptest::prop_assert_eq!(
+            &walked,
+            &reference,
+            "body `{}`: node-walk {:?} != fused {:?}",
+            body,
+            walked,
+            reference
+        );
         proptest::prop_assert_eq!(
             &reference,
             &cloned,
