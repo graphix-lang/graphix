@@ -435,7 +435,12 @@ async fn a_view_belongs_to_its_chart() -> Result<()> {
         at,
     );
     let moved = Event::Mouse(ME::CursorMoved { position: Point::new(300.0, 150.0) });
-    let _ = state.handle_event(c, &moved, bounds, at);
+    let _ = state.handle_event(
+        c,
+        &moved,
+        bounds,
+        mouse::Cursor::Available(Point::new(300.0, 150.0)),
+    );
     assert!(state.x_view.is_some(), "the drag panned");
     assert_eq!(draw_in(&time, &state, size).await.map(|i| i.x_range), Some(base));
     Ok(())
@@ -795,7 +800,7 @@ async fn pie_tooltip_uses_the_drawn_dataset() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn chart_motion_redraws_only_changed_content() -> Result<()> {
-    let h = chart_harness("#x_range: &{min: 0.0, max: 10.0}, #y_range: &{min: 0.0, max: 10.0}, &[line(&[(5.0, 5.0)])]").await?;
+    let h = centered_point_chart().await?;
     let mut state = ChartState::default();
     let size = Size::new(400.0, 300.0);
     let center = draw_in(&h, &state, size).await.unwrap().rect.center();
@@ -867,4 +872,55 @@ async fn unchanged_chart_drag_does_not_redraw() -> Result<()> {
         assert_eq!(action.into_inner().1, redraw);
     }
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_hover_uses_translated_cursor() -> Result<()> {
+    let h = centered_point_chart().await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let p = draw_in(&h, &state, size).await.unwrap().rect.center();
+    let bounds = Rectangle::new(Point::new(30.0, 500.0), size);
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(p.x + 30.0, p.y),
+        }),
+        bounds,
+        mouse::Cursor::Available(Point::new(p.x + 30.0, p.y + 500.0)),
+    );
+    assert!(state.snap_point.unwrap().pixel.distance(p) < 1.0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_drag_uses_translated_cursor_outside_bounds() -> Result<()> {
+    let h = centered_point_chart().await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let info = draw_in(&h, &state, size).await.unwrap();
+    let bounds = Rectangle::new(Point::new(30.0, 500.0), size);
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        bounds,
+        mouse::Cursor::Available(Point::new(230.0, 650.0)),
+    );
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(480.0, 150.0),
+        }),
+        bounds,
+        mouse::Cursor::Levitating(Point::new(480.0, 650.0)),
+    );
+    assert_eq!(state.y_view, Some((0.0, 10.0)));
+    assert!(
+        (state.x_view.unwrap().0 + (250.0 / info.rect.width) as f64 * 10.0).abs() < 1e-6
+    );
+    Ok(())
+}
+
+async fn centered_point_chart() -> Result<GuiTestHarness> {
+    chart_harness("#x_range: &{min: 0.0, max: 10.0}, #y_range: &{min: 0.0, max: 10.0}, &[line(&[(5.0, 5.0)])]").await
 }

@@ -139,22 +139,10 @@ impl ChartState {
             self.last_click = None;
         }
         match event {
-            Event::Mouse(ME::CursorMoved { position }) => {
-                // CR claude for claude: [bug/medium] The local point comes from the
-                // event's window position, but `bounds` is in content coordinates.
-                // iced's Scrollable translates the cursor it hands its content by the
-                // scroll offset and leaves the event untouched. So inside a scrolled
-                // `scrollable`, hover snapping (find_nearest_point) looks one scroll
-                // offset away from the pointer. A drag, whose origin the press takes
-                // from `cursor.position_in`, also jumps by the whole offset on its
-                // first move. Take the point from the cursor instead:
-                // `cursor.land().position().map(|p| p - bounds.position())`. That stays
-                // defined outside the bounds, which a drag needs. Then make the
-                // chart_test.rs pins hand events whose cursor and position disagree by
-                // a translation. probe: design/review-2026-10-12/repro/gui-chart-01.rs
-                // (after a 500px scroll: position - bounds = (200,150),
-                // cursor.position_in = (200,650)). (gui-chart-01)
-                let local = Point::new(position.x - bounds.x, position.y - bounds.y);
+            Event::Mouse(ME::CursorMoved { .. }) => {
+                let Some(local) = cursor.land().position_from(bounds.position()) else {
+                    return self.snap_point.take().map(|_| Action::request_redraw());
+                };
                 if let Some(d) = &mut self.drag {
                     if local == d.position {
                         return Some(Action::capture());
