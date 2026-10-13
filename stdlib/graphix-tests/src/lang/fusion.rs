@@ -649,47 +649,11 @@ async fn fused_select_arith_wrapped() -> Result<()> {
     )
 }
 
-/// A non-idempotent scrutinee (`rand()`) is evaluated exactly once:
-/// `n == n` is true on the fused path.
-#[cfg(debug_assertions)]
-#[tokio::test(flavor = "current_thread")]
-// CR claude for claude: [test-gap/low] `rand::rand` is `Effect::Sync`, so the scrutinee
-// never enters a kernel. The `fused > 0` here comes from the arm body `n == n`, which
-// the node-walk feeds with `n`. Probe:
-// design/review-2026-10-12/repro/tests-fusion-traits-02.gx with GRAPHIX_DBG_REGION=1.
-// The duplicated-scrutinee emission this test names cannot happen, and the same is true
-// of fused_select_scrutinee_once_subtract. Under strict fusion only a pure scrutinee
-// fuses, and evaluating one twice changes no value. Delete both tests, or replace them
-// with a shape check that the scrutinee is emitted once, e.g. over `select (x + 1)
-// {..}`. (tests-fusion-traits-06)
-async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
-    let (v, (fused, _)) = load_and_count(
-        "select rand::rand(#start: 0, #end: 1000000, #clock: 1) \
-         { n => n == n }",
-    )
-    .await?;
-    assert_eq!(v, Value::Bool(true));
-    assert!(fused > 0, "rand-scrutinee select should fuse (the dup bug was fusion-only)");
-    Ok(())
-}
-
 /// A non-Local scrutinee `x + 1` bound to a temp and referenced three
 /// times: `[6,9,12,15]`, fused.
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_stabilize_multiref() -> Result<()> {
     assert_i64s(&native_map("select (x + 1) { m => m + m + m }").await?, &[6, 9, 12, 15])
-}
-
-/// Same with subtraction: `n - n` is 0.
-#[tokio::test(flavor = "current_thread")]
-async fn fused_select_scrutinee_once_subtract() -> Result<()> {
-    let v = load_and_await(
-        "select rand::rand(#start: 1, #end: 1000000, #clock: 1) \
-         { n => n - n }",
-    )
-    .await?;
-    assert_eq!(v, Value::I64(0));
-    Ok(())
 }
 
 /// A variant payload bind whose name shadows a kernel input reads the
