@@ -276,8 +276,8 @@ fn register_builtins(c: &Crate, builtins: &[BuiltinEntry]) -> Vec<TokenStream> {
                 if name.contains(|c: char| c != '_' && !c.is_ascii_alphanumeric()) {
                     #p::anyhow::bail!("invalid builtin name {}, must contain only ascii alphanumeric and _", name)
                 }
-                if !name.starts_with(#package_name) {
-                    #p::anyhow::bail!("invalid builtin {} name must start with package name {}", name, #package_name)
+                if !name.strip_prefix(#package_name).is_some_and(|rest| rest.is_empty() || rest.starts_with('_')) {
+                    #p::anyhow::bail!("invalid builtin {} name must be the package name {} or start with {}_", name, #package_name, #package_name)
                 }
                 ctx.register_builtin::<#reg_type>()?
             }
