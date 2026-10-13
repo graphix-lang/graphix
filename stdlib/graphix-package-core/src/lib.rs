@@ -3557,7 +3557,6 @@ graphix_derive::defpackage! {
         math::MathToRadians,
         opt::IsSome,
         opt::IsNone,
-        opt::Contains,
         opt::OrDefault,
         opt::Or,
         opt::And,

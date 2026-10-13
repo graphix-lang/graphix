@@ -31,16 +31,6 @@ fn fc_is_none(args: &[Value]) -> Option<Value> {
 
 crate::fast_builtin!(pub(crate) IsNone, IsNoneEv, "core_opt_is_none", fc_is_none);
 
-fn fc_contains(args: &[Value]) -> Option<Value> {
-    Some(Value::Bool(match &args[..] {
-        [Value::Null, _] => false,
-        [v, x] => v == x,
-        _ => return None,
-    }))
-}
-
-crate::fast_builtin!(pub(crate) Contains, ContainsEv, "core_opt_contains", fc_contains);
-
 /// `a`, or `b` when `a` is null: `or` and `or_default` alike.
 fn fc_or(args: &[Value]) -> Option<Value> {
     match &args[..] {

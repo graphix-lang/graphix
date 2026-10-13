@@ -7,7 +7,7 @@ val is_none: fn(v: ['a, null]) -> bool;
 
 /// true if v is not null and equals x. Produces false when v is null,
 /// whatever x is.
-val contains: fn(v: ['a, null], x: 'a) -> bool;
+val contains: fn<'a: Discernible>(v: ['a, null], x: 'a) -> bool;
 
 /// or_default(v, d): if v is null return d, otherwise return v
 val or_default: fn(v: ['a, null], d: 'a) -> 'a;

@@ -882,3 +882,18 @@ run!(all_compares_references_by_what_they_name, r#"{
     let r2 = &a;
     *all(r1, r2)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+// opt::contains compares as `==` does: a reference by what it names, and
+// a type `==` refuses is refused.
+run!(opt_contains_compares_references_by_what_they_name, r#"{
+    let a = 1;
+    let r1: [&i64, null] = &a;
+    (opt::contains(r1, &a), opt::contains(null, &a))
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[true, false]")
+}; FuseExpect::Jit);
+
+run!(opt_contains_refuses_the_indiscernible, r#"{
+    let x: [(i64, i64), Array<i64>, null] = (1, 2);
+    opt::contains(x, [1, 2])
+}"#, refused("'a must be Discernible"); FuseExpect::None);
