@@ -53,29 +53,31 @@ fn struct_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
     })
 }
 
-/// The test certificates, written once to a directory of their own so a
-/// test binary run away from its source tree has them; escaped for a
-/// Graphix string.
+/// The test certificates, in one fixed directory under the temp dir that
+/// every run reuses, so a test binary run away from its source tree has
+/// them; escaped for a Graphix string. Each file is written whole and
+/// renamed into place, so a concurrent binary never reads a partial one.
 fn cert_dir() -> String {
-    // CR claude for claude: [risk/low] A TempDir in a static is never dropped (Rust
-    // runs no destructors for statics), so every run of the test binary that touches
-    // tls leaves a directory holding ca.pem, server.pem and server.key in the temp dir,
-    // and they pile up across runs. Fix: write the certs to one fixed directory under
-    // std::env::temp_dir() (a name of this crate's own), created if missing with
-    // write-then-rename so concurrent binaries never read a partial file. That way runs
-    // reuse it instead of leaking a new one each time. (tests-lib-b2-13)
-    static DIR: std::sync::LazyLock<tempfile::TempDir> = std::sync::LazyLock::new(|| {
-        let dir = tempfile::tempdir().expect("a directory for the test certs");
-        for (name, pem) in [
-            ("ca.pem", &include_bytes!("../../certs/ca.pem")[..]),
-            ("server.pem", &include_bytes!("../../certs/server.pem")[..]),
-            ("server.key", &include_bytes!("../../certs/server.key")[..]),
-        ] {
-            std::fs::write(dir.path().join(name), pem).expect("write a test cert");
-        }
-        dir
-    });
-    let dir = DIR.path().display().to_string().replace('\\', "/");
+    static DIR: std::sync::LazyLock<std::path::PathBuf> =
+        std::sync::LazyLock::new(|| {
+            let dir = std::env::temp_dir().join("graphix-tests-certs");
+            std::fs::create_dir_all(&dir).expect("a directory for the test certs");
+            for (name, pem) in [
+                ("ca.pem", &include_bytes!("../../certs/ca.pem")[..]),
+                ("server.pem", &include_bytes!("../../certs/server.pem")[..]),
+                ("server.key", &include_bytes!("../../certs/server.key")[..]),
+            ] {
+                let path = dir.join(name);
+                if std::fs::read(&path).is_ok_and(|have| have == pem) {
+                    continue;
+                }
+                let tmp = dir.join(format!("{name}.{}", std::process::id()));
+                std::fs::write(&tmp, pem).expect("write a test cert");
+                std::fs::rename(&tmp, &path).expect("move a test cert into place");
+            }
+            dir
+        });
+    let dir = DIR.display().to_string().replace('\\', "/");
     graphix_package_core::testing::escape_path(std::path::Path::new(&dir).display())
         .to_string()
 }
