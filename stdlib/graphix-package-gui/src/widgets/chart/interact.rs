@@ -29,7 +29,7 @@ pub struct PlotInfo {
 }
 
 /// A snapped data point for tooltip display.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapPoint {
     pub pixel: Point,
     pub label: CompactString,
@@ -39,6 +39,7 @@ pub struct SnapPoint {
 /// A drag in progress: where it started and the view it started from.
 struct Drag {
     origin: Point,
+    position: Point,
     x_view: Option<(f64, f64)>,
     y_view: Option<(f64, f64)>,
     yaw: f64,
@@ -138,14 +139,6 @@ impl ChartState {
             self.last_click = None;
         }
         match event {
-            // CR claude for claude: [perf/low] This arm requests a redraw on every
-            // mouse move anywhere in the window, even when the cursor is outside the
-            // chart and the snap did not change. Each chart therefore redraws the
-            // window at mouse-event rate. While the button is held it also clears the
-            // plot cache on every move in Pie and Empty mode, where handle_drag changes
-            // nothing, so a pie is replotted per move. Request a redraw only when the
-            // snap point changes or the drag actually moved the view. Do not start a
-            // drag in Pie or Empty mode. (gui-chart-09)
             Event::Mouse(ME::CursorMoved { position }) => {
                 // CR claude for claude: [bug/medium] The local point comes from the
                 // event's window position, but `bounds` is in content coordinates.
@@ -162,18 +155,34 @@ impl ChartState {
                 // (after a 500px scroll: position - bounds = (200,150),
                 // cursor.position_in = (200,650)). (gui-chart-01)
                 let local = Point::new(position.x - bounds.x, position.y - bounds.y);
-                if let Some(d) = &self.drag {
+                if let Some(d) = &mut self.drag {
+                    if local == d.position {
+                        return Some(Action::capture());
+                    }
+                    d.position = local;
                     let (dx, dy) = (local.x - d.origin.x, local.y - d.origin.y);
+                    let before = self.view_for(chart);
                     self.handle_drag(mode, chart.plot_info.get(), dx, dy);
-                    chart.cache.clear();
-                    return Some(Action::request_redraw().and_capture());
+                    return Some(if self.view_for(chart) != before {
+                        chart.cache.clear();
+                        Action::request_redraw().and_capture()
+                    } else {
+                        Action::capture()
+                    });
                 }
-                if let Some(info) = chart.plot_info.get()
-                    && mode != ChartMode::ThreeD
-                {
-                    self.snap_point = find_nearest_point(chart, &info, local);
+                let snap = chart.plot_info.get().and_then(|info| {
+                    if mode == ChartMode::ThreeD {
+                        None
+                    } else {
+                        find_nearest_point(chart, &info, local)
+                    }
+                });
+                if snap != self.snap_point {
+                    self.snap_point = snap;
+                    Some(Action::request_redraw())
+                } else {
+                    None
                 }
-                Some(Action::request_redraw())
             }
             Event::Mouse(ME::WheelScrolled { delta }) => {
                 if matches!(mode, ChartMode::Pie | ChartMode::Empty) {
@@ -198,10 +207,14 @@ impl ChartState {
                 Some(Action::capture())
             }
             Event::Mouse(ME::ButtonPressed(mouse::Button::Left)) => {
+                if matches!(mode, ChartMode::Pie | ChartMode::Empty) {
+                    return None;
+                }
                 let pos = cursor.position_in(bounds)?;
                 self.press = Some(pos);
                 self.drag = Some(Drag {
                     origin: pos,
+                    position: pos,
                     x_view: self
                         .x_view
                         .or_else(|| chart.plot_info.get().map(|i| i.x_range)),
@@ -233,8 +246,7 @@ impl ChartState {
                 dragged.then(|| Action::request_redraw().and_capture())
             }
             Event::Mouse(ME::CursorLeft) => {
-                self.snap_point = None;
-                Some(Action::request_redraw())
+                self.snap_point.take().map(|_| Action::request_redraw())
             }
             _ => None,
         }

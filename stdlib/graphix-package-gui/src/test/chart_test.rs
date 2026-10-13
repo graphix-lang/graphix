@@ -792,3 +792,79 @@ async fn pie_tooltip_uses_the_drawn_dataset() -> Result<()> {
     assert_eq!(snap.value, "1.00 (100.0%)");
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn chart_motion_redraws_only_changed_content() -> Result<()> {
+    let h = chart_harness("#x_range: &{min: 0.0, max: 10.0}, #y_range: &{min: 0.0, max: 10.0}, &[line(&[(5.0, 5.0)])]").await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    let center = draw_in(&h, &state, size).await.unwrap().rect.center();
+    let away = Point::new(-10.0, -10.0);
+    for (p, redraw) in
+        [(away, false), (center, true), (center, false), (away, true), (away, false)]
+    {
+        let action = state.handle_event(
+            chart(&h),
+            &iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p }),
+            Rectangle::with_size(size),
+            mouse::Cursor::Available(p),
+        );
+        assert_eq!(action.is_some(), redraw);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pie_and_empty_charts_do_not_capture_drags() -> Result<()> {
+    for data in [r#"&[pie(&[("a", 1.0)])]"#, "&[]"] {
+        let h = chart_harness(data).await?;
+        let mut state = ChartState::default();
+        let size = Size::new(400.0, 300.0);
+        draw_in(&h, &state, size).await;
+        assert!(
+            state
+                .handle_event(
+                    chart(&h),
+                    &iced_core::Event::Mouse(mouse::Event::ButtonPressed(
+                        mouse::Button::Left
+                    )),
+                    Rectangle::with_size(size),
+                    mouse::Cursor::Available(Point::new(200.0, 150.0))
+                )
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unchanged_chart_drag_does_not_redraw() -> Result<()> {
+    let h = chart_harness("&[line(&[(1.0, 1.0), (2.0, 2.0)])]").await?;
+    let mut state = ChartState::default();
+    let size = Size::new(400.0, 300.0);
+    draw_in(&h, &state, size).await;
+    let at = Point::new(200.0, 150.0);
+    state.handle_event(
+        chart(&h),
+        &iced_core::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Rectangle::with_size(size),
+        mouse::Cursor::Available(at),
+    );
+    use iced_core::window::RedrawRequest::{NextFrame, Wait};
+    for (p, redraw) in [
+        (at, Wait),
+        (Point::new(220.0, 150.0), NextFrame),
+        (Point::new(220.0, 150.0), Wait),
+    ] {
+        let action = state
+            .handle_event(
+                chart(&h),
+                &iced_core::Event::Mouse(mouse::Event::CursorMoved { position: p }),
+                Rectangle::with_size(size),
+                mouse::Cursor::Available(p),
+            )
+            .unwrap();
+        assert_eq!(action.into_inner().1, redraw);
+    }
+    Ok(())
+}
