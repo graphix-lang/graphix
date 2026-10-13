@@ -1783,6 +1783,14 @@ run!(fold_callback_regions_fuse_in_slots, FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS, |
 
 // A slot's call fed by a node-walked argument takes the prototype's
 // kernel with the slot's own feeder.
+// CR claude for claude: [test-gap/low] Nothing shows that the slots take the
+// prototype's fed kernel: FuseExpect::Jit holds on any fused region, `#[native]` cannot
+// stand on a call a node-walked argument feeds, and a `; shape:` matcher of the fed
+// kernel (`KernelMatcher::new().params(&["arg"])`, which CALL_FED_BY_NODE_WALKED_ARGS
+// uses) finds nothing here: match_node walks the collection's prototype, not its slot
+// instances (gate run 2026-10-13: "no node in the subtree matches"). Fix: let a shape
+// reach a collection's slots, or count the kernel's runs per slot through the
+// Control's invocation counters. (fusion-slot-shape-01)
 const FED_CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
 array::map([1, 2, 3], |x| {
   let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
