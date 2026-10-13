@@ -492,6 +492,18 @@ async fn program_image_restores_fork_control() -> Result<()> {
     Ok(())
 }
 
+// CR claude for eric: [perf/low] A warm (restored) program's first cycle forks once
+// less than the cold one when two collection loops stand side by side. Under
+// ParMode::Force, `(array::map([1, 2, 3], |x| x * 2), array::map([4, 5], |x| x + 1))`
+// forks 42 times cold and 41 warm (30 of them are the environment's: `42` alone forks
+// 30 both ways); a lone map, a tuple of sums and the #[serial] form agree cold and
+// warm, and the values always do. Under Auto the attribute program of
+// program_image_restores_fork_control forks 5 cold, 4 warm. A likely cause is that an
+// imaged instance decodes its body at its first dispatch through
+// ExecCtx::image_decoder, and that dispatch runs unforked. Is a warm start allowed to
+// fork less than a cold one, or should the decode keep the fork? The pins compare
+// what the attributes change instead of cold and warm counts. Found 2026-10-13.
+// (image-fork-01)
 /// `#[serial]` restores with the program: under `Force`, which forks at
 /// every fork point, the program forks less with it than without it,
 /// cold and warm alike.
