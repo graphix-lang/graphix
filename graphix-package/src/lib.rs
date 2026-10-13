@@ -725,22 +725,37 @@ impl Saved {
             .unwrap_or_else(|| source_dir.join("Cargo.lock"));
         let mut files = Vec::new();
         for path in [source_dir.join("Cargo.toml"), lock] {
-            let content = fs::read(&path).await.ok();
+            let content = match fs::read(&path).await {
+                Ok(c) => Some(c),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("saving {}", path.display()));
+                }
+            };
             files.push((path, content));
         }
         Ok(Saved { files })
     }
 
+    /// Every file put back as it was; the first failure is reported once
+    /// all were tried.
     async fn put_back(self) -> Result<()> {
+        let mut res = Ok(());
         for (path, content) in self.files {
-            match content {
-                Some(c) => fs::write(&path, c).await?,
-                None => {
-                    let _ = fs::remove_file(&path).await;
-                }
+            let r = match content {
+                Some(c) => fs::write(&path, c).await,
+                None => match fs::remove_file(&path).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    r => r,
+                },
+            };
+            if let Err(e) = r
+                && res.is_ok()
+            {
+                res = Err(e).with_context(|| format!("restoring {}", path.display()));
             }
         }
-        Ok(())
+        res
     }
 }
 
@@ -1760,25 +1775,15 @@ impl GraphixPM {
         let shell_manifest = fs::read_to_string(source_dir.join("Cargo.toml")).await?;
         let features = standalone_features(&contents, &shell_manifest)?;
         // an override is the caller's own tree: its manifest and lockfile are
-        // put back however the build ends
-        // CR claude for claude: [risk/low] With --source-override, build_embedding
-        // rewrites the caller's own graphix-shell Cargo.toml, and cargo updates the
-        // workspace Cargo.lock. Saved puts them back only after the build returns. A
-        // Ctrl-C during the long release build kills the process first, so the
-        // workspace keeps the path dependency on the app package, and the next `cargo
-        // test` builds it into the shell. Saved::put_back also stops at the first
-        // failed write, leaving the lockfile un-restored. Saved::take turns any read
-        // error into 'absent', which put_back then deletes. Fix: build from a copy
-        // instead of editing the caller's tree, for example a scratch dir holding the
-        // override's workspace or a generated manifest. Failing that, restore on
-        // SIGINT, have put_back attempt every file before it reports an error, and
-        // propagate read errors other than NotFound from take. (package-07)
+        // put back however the build ends, an interrupt included
         let saved = match source_override {
             Some(_) => Some(Saved::take(&source_dir).await?),
             None => None,
         };
-        let built =
-            self.build_embedding(&source_dir, &external, &features, crate_name).await;
+        let built = tokio::select! {
+            built = self.build_embedding(&source_dir, &external, &features, crate_name) => built,
+            _ = tokio::signal::ctrl_c() => Err(anyhow!("interrupted")),
+        };
         if let Some(saved) = saved {
             saved.put_back().await?;
         }
