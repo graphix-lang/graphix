@@ -2460,7 +2460,8 @@ mod tree_sitter_compat {
 
     /// Zed builds the grammar at the commit its extension.toml pins and
     /// reads the queries from the checkout, so the pinned grammar must be
-    /// this one. Skipped outside a git checkout.
+    /// this one. Skipped outside a git checkout and in a shallow clone that
+    /// lacks the pinned commit.
     #[test]
     fn zed_grammar_rev_is_current() {
         let toml = include_str!("../../../ide/editors/zed/extension.toml");
@@ -2479,15 +2480,17 @@ mod tree_sitter_compat {
                 return;
             };
             if !out.status.success() {
-                // CR claude for claude: [readability/low] This holds 'we are in a git
-                // checkout', not 'this is a shallow clone', so `assert!(!shallow, ..)`
-                // reads backwards. In fact a depth-1 clone, which lacks the pinned rev,
-                // fails here. Rename it (`in_checkout`). Decide whether a shallow clone
-                // skips the test (`git rev-parse --is-shallow-repository`) or fails it,
-                // and say which in the doc comment. Also reported as (tests-expr-09),
-                // (tests-expr-11). (ide-tooling-15)
-                let shallow = std::path::Path::new(root).join(".git").exists();
-                assert!(!shallow, "the zed grammar rev {rev} has no {path}: {out:?}");
+                // outside a checkout, or in a shallow clone that lacks the
+                // rev, there is nothing to compare against
+                let shallow = std::process::Command::new("git")
+                    .args(["-C", root, "rev-parse", "--is-shallow-repository"])
+                    .output()
+                    .is_ok_and(|o| o.stdout.starts_with(b"true"));
+                let in_checkout = std::path::Path::new(root).join(".git").exists();
+                assert!(
+                    !in_checkout || shallow,
+                    "the zed grammar rev {rev} has no {path}: {out:?}"
+                );
                 return;
             }
             let now = std::fs::read(format!("{root}/{path}")).unwrap();
@@ -2522,9 +2525,17 @@ mod tree_sitter_compat {
                     let (b, n) = balanced(&rest[1..]);
                     (b.to_string(), n + 1)
                 }
+                // an elisp string: `\"` and `\\` are escapes
                 b'"' => {
-                    let n = rest[1..].find('"').unwrap();
-                    (rest[1..1 + n].to_string(), n + 2)
+                    let (mut body, mut chars) = (String::new(), rest[1..].char_indices());
+                    let n = loop {
+                        match chars.next().expect("an elisp string ends") {
+                            (_, '\\') => body.extend(chars.next().map(|(_, c)| c)),
+                            (i, '"') => break i,
+                            (_, c) => body.push(c),
+                        }
+                    };
+                    (body, n + 2)
                 }
                 c => panic!("{feature}: unexpected query form starting {:?}", c as char),
             };
@@ -2608,16 +2619,6 @@ mod tree_sitter_compat {
     /// The tree, not only its absence of errors: forms the grammar once
     /// read as another valid tree.
     #[test]
-    // CR claude for claude: [test-gap/medium] These shapes are the only check on what
-    // tree tree-sitter builds. Every other gate (ts_repo_sources_parse, the ts-compat
-    // proptests, check.sh) only looks for ERROR/MISSING nodes, and nothing here covers
-    // an annotation or a primitive type. At HEAD, `let x: Foo = 1` and `|e: Event| e`
-    // parse as type_ascription patterns with no pattern_bind, and `i64` in `Array<i64>`
-    // or `i64 as n` parses as ref_type, yet every gate passes. Add pins: `let x: Foo =
-    // 1` -> `(let_binding pattern: (structure_pattern (pattern_bind`, `|e: Event| e` ->
-    // `(lambda_param (structure_pattern (pattern_bind`, `let a: Array<i64> = []` ->
-    // `(array_type (primitive_type))`, `select x { i64 as n => n }` -> `(pattern
-    // (primitive_type)`. (ide-tooling-03)
     fn ts_tree_shapes() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&tree_sitter_graphix::LANGUAGE.into()).unwrap();
@@ -2641,6 +2642,12 @@ mod tree_sitter_compat {
                 "(binary_expression (type_ascription (primitive_type) (literal (number))) (type_ascription",
             ),
             ("bytes:AQID==", "(type_ascription (primitive_type))"),
+            // an annotation keeps the binding; a primitive is a primitive
+            ("let x: Foo = 1", "(let_binding pattern: (structure_pattern (pattern_bind"),
+            ("|e: Event| e", "(lambda_param (structure_pattern (pattern_bind"),
+            ("let a: Array<i64> = []", "(array_type (primitive_type))"),
+            ("select x { i64 as n => n }", "(primitive_type)"),
+            ("let f = |x: i64| -> string x", "(primitive_type))) (primitive_type)"),
         ] {
             let tree = parser.parse(src, None).unwrap();
             let sexp = tree.root_node().to_sexp();

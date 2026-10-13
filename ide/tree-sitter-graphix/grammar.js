@@ -411,28 +411,9 @@ module.exports = grammar({
 
     parenthesized_type: $ => seq('(', $._type, ')'),
 
-    // CR claude for claude: [bug/medium] Primitive types in type positions parse as
-    // ref_type(type_path), so @type.builtin never fires. `_type` offers
-    // `primitive_type` (via `_scalar_primitive`) and `ref_type -> type_path ->
-    // _binding_name`, and `_binding_name` aliases i64/string/bool/f64/... to
-    // `identifier`. The declared conflict [$._scalar_primitive, $._binding_name] has no
-    // dynamic precedence, and GLR settles on the type_path reading in almost every
-    // position. That covers `fn(x: i64) -> string`, `Map<string, i64>`, `[i64, null]`,
-    // `Array<f64>`, `cast<i64>`, `never<string>` and select `i64 as i`. The ones that
-    // came out as primitive_type are a trailing `val c: bool`, tuple types and
-    // labeled-param types. highlights.scm:88 `(primitive_type) @type.builtin` and
-    // graphix-mode.el:171 therefore almost never apply, while ide/README.md advertises
-    // primitive-type highlighting. This dates from making type keywords legal binding
-    // names (ac6007b9). Failure: In stdlib/graphix-package-str/src/graphix/mod.gxi, 128
-    // occurrences of string/i64/bool/null/bytes produce one `type.builtin` capture (it
-    // is `Any`). In helix, nvim, zed and emacs, every `string`/`i64` in a signature is
-    // left uncolored or colored as a plain identifier. Fix: `primitive_type: $ =>
-    // prec.dynamic(20, choice('bytes', $._scalar_primitive))`. I verified it in a
-    // scratch copy: all the shapes above become (primitive_type), and the corpus still
-    // has exactly the 35 ERROR files it had before. Add tree-shape pins (see the
-    // test-gap finding). Unverified: the reviewer's report, not checked by a verifier.
-    // (ide-tooling-01)
-    primitive_type: $ => choice('bytes', $._scalar_primitive),
+    // a primitive's name is also a legal binding name: in a type it is
+    // the primitive
+    primitive_type: $ => prec.dynamic(20, choice('bytes', $._scalar_primitive)),
 
     _scalar_primitive: $ => choice(
       'bool', 'string', 'null',

@@ -1658,17 +1658,21 @@
       ]
     },
     "primitive_type": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "bytes"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_scalar_primitive"
-        }
-      ]
+      "type": "PREC_DYNAMIC",
+      "value": 20,
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "bytes"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "_scalar_primitive"
+          }
+        ]
+      }
     },
     "_scalar_primitive": {
       "type": "CHOICE",
