@@ -278,14 +278,6 @@ impl Trace {
     /// (`OracleTier::FinalValues`): per-epoch settled values must agree;
     /// intra-epoch pacing may differ. Any cap on either side falls back
     /// to exact agreement, since a capped epoch never settled.
-    // CR claude for claude: [test-gap/low] Every dispatch-route pair (EngineDispatch,
-    // Route, Cold/Warm on Route::Dispatch) compares at Strength::Final, and this
-    // function ignores stdout unless an epoch is capped. drive_inner still captures the
-    // dispatch route's prints for Exact-tier programs, but nothing reads them, so a JIT
-    // dispatch instance that drops or duplicates a handler's print is never seen. When
-    // both traces captured output, also compare each epoch's printed texts as a
-    // multiset, ignoring offsets (they are not contractual on that route).
-    // (fuzz-lib-a-11)
     pub fn agrees_final(&self, other: &Trace) -> bool {
         if self.epochs.iter().chain(other.epochs.iter()).any(|e| e.capped) {
             return self.agrees_with(other);
@@ -298,6 +290,16 @@ impl Trace {
                 }
             })
             && self.exit == other.exit
+            && self.prints() == other.prints()
+    }
+
+    /// Each epoch's printed texts, as a multiset: offsets are not
+    /// contractual where values compare final.
+    fn prints(&self) -> Vec<(u32, &str)> {
+        let mut p: Vec<(u32, &str)> =
+            self.stdout.iter().map(|l| (l.epoch, l.text.as_str())).collect();
+        p.sort();
+        p
     }
 
     /// [`Self::first_difference`] at final strength: the bucket key for
@@ -318,6 +320,7 @@ impl Trace {
                 (a, b) => a.is_some() || b.is_some(),
             })
             .map(TraceDiff::FinalValue)
+            .or((self.prints() != other.prints()).then_some(TraceDiff::Stdout))
             .or((self.exit != other.exit).then_some(TraceDiff::Exit))
     }
 
