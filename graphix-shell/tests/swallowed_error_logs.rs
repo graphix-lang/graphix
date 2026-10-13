@@ -3,7 +3,8 @@
 //! same line through its helper. The logger's module path tells the
 //! two apart, so each engine is proven to have produced its own. A
 //! collection init count past the element limit bottoms, and says so,
-//! in both engines. A task the runtime cancels itself logs nothing.
+//! in both engines. A dropped write through a reference names its
+//! writer, and a task the runtime cancels itself logs nothing.
 
 use std::{
     fs,
@@ -116,4 +117,23 @@ d
 "#;
     let (_, log) = run(DEBOUNCE, false, "debounce");
     assert!(!log.contains("without replying"), "{log}");
+}
+
+/// A write through a reference past its root's end is dropped, and the
+/// log names where it was written.
+#[test]
+fn a_dropped_write_names_its_writer() {
+    const PROGRAM: &str = r#"
+let a = [1, 2, 3];
+let r = &mut a[7];
+*r <- 5;
+sys::exit(sys::time::after_idle(duration:200.ms, 0))
+"#;
+    for (no_fusion, label) in [(false, "dropped-jit"), (true, "dropped-interp")] {
+        let (_, log) = run(PROGRAM, no_fusion, label);
+        assert!(
+            log.contains("line: 4, column: 1 was dropped: index 7"),
+            "{label}: {log}"
+        );
+    }
 }

@@ -6,7 +6,7 @@ use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, ExecState, FAILURE_TARGET, Node, Rt, Saved, Scope,
-    View,
+    View, diagnostic_site,
     expr::{
         self, Expr, ExprId, ExprKind, ModPath, Origin, Probes, ResolverRef, Resolvers,
         RootFile, Sig, Source,
@@ -467,7 +467,7 @@ impl<X: GXExt> GX<X> {
             match w {
                 EmbedderWrite::Set(set) => self.write_set(set),
                 EmbedderWrite::Patch(root, path, v) => {
-                    self.write(root, VarUpdate::Patch(path, v), Via::Write)
+                    self.write(root, VarUpdate::Patch(path, v, None), Via::Write)
                 }
             }
         }
@@ -595,38 +595,27 @@ impl<X: GXExt> GX<X> {
         }
         let v = match u {
             VarUpdate::Set(v) => v,
-            // CR claude for claude: [bug/low] When a patch fails here (the path is out
-            // of range, or the root has no value), the log names neither the file nor
-            // the line of the `*r <- v` that wrote it. Every other runtime failure
-            // carries `diagnostic_site(spec)` (`report_failure`, `unhandled_msg`, the
-            // arith errors). In a program with many reference writes, the dropped one
-            // cannot be found. The site is only known at the writer:
-            // `ConnectDeref::update` holds its spec when it calls `Rt::patch_var`, but
-            // `VarUpdate::Patch` carries only a path and a value. Fix: carry an
-            // optional site (`ArcStr` from `diagnostic_site`) in `VarUpdate::Patch`
-            // through `Rt::patch_var` and the branch log's `RtOp::PatchVar`, and prefix
-            // both log lines with it. The embedder path `GX::set_deref` passes none.
-            // probe: design/review-2026-10-12/repro/x-errors-03.gx (x-errors-03)
-            VarUpdate::Patch(path, v) => {
-                let Some(cur) = self.ctx.rt.store_value(&id) else {
-                    error!(
+            VarUpdate::Patch(path, v, writer) => {
+                let dropped = |why: &dyn std::fmt::Display| match &writer {
+                    Some(w) => error!(
                         target: FAILURE_TARGET,
-                        "a write through a reference was dropped: its root has no value"
-                    );
-                    return;
+                        "a write through a reference {} was dropped: {why}",
+                        diagnostic_site(w)
+                    ),
+                    None => error!(
+                        target: FAILURE_TARGET,
+                        "a write through a reference was dropped: {why}"
+                    ),
+                };
+                let Some(cur) = self.ctx.rt.store_value(&id) else {
+                    return dropped(&"its root has no value");
                 };
                 let written = coretraits::with_hooks(&mut self.ctx.view(), || {
                     place::write_path(&cur, &path, v)
                 });
                 match written {
                     Ok(nv) => nv,
-                    Err(err) => {
-                        error!(
-                            target: FAILURE_TARGET,
-                            "a write through a reference was dropped: {err}"
-                        );
-                        return;
-                    }
+                    Err(err) => return dropped(&err),
                 }
             }
         };

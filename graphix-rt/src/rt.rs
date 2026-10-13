@@ -3,7 +3,7 @@ use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
     BindId, CustomBuiltinType, ExecState, Rt, TagValue,
-    expr::ExprId,
+    expr::{Expr, ExprId},
     node::place::{Path, VarUpdate},
 };
 use netidx_value::Value;
@@ -321,11 +321,11 @@ impl<X: GXExt> Rt for GXRt<X> {
         self.var_updates.push_level(id, VarUpdate::Set(value));
     }
 
-    fn patch_var(&mut self, id: BindId, path: Path, value: Value) {
+    fn patch_var(&mut self, id: BindId, path: Path, value: Value, w: Option<Arc<Expr>>) {
         if dbg_vars() {
             eprintln!("PATCH_VAR {id:?} {path:?} = {value}");
         }
-        self.var_updates.push(id, VarUpdate::Patch(path, value), Via::Write);
+        self.var_updates.push(id, VarUpdate::Patch(path, value, w), Via::Write);
     }
 
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: Path) {

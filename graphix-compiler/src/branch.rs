@@ -8,7 +8,7 @@
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Node, Rt, TagValue, UserEvent,
     cost::{ForkSite, Meter, Plan},
-    expr::ExprId,
+    expr::{Expr, ExprId},
     node::{callsite::CallNode, place::Path},
 };
 use futures::channel::mpsc;
@@ -30,6 +30,7 @@ use std::{
     },
     time::Duration,
 };
+use triomphe::Arc;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -47,7 +48,7 @@ enum RtOp {
     UnrefVar(BindId, ExprId),
     SetVar(BindId, Value),
     SetLevel(BindId, Value),
-    PatchVar(BindId, Path, Value),
+    PatchVar(BindId, Path, Value, Option<Arc<Expr>>),
     NotifySet(BindId),
     ForgetWrites(BindId),
     SetTimer(BindId, Duration),
@@ -164,8 +165,14 @@ impl<'a, R: Rt> RtView<'a, R> {
         logged!(self, set_level(id, value), RtOp::SetLevel(id, value))
     }
 
-    pub fn patch_var(&mut self, id: BindId, path: Path, value: Value) {
-        logged!(self, patch_var(id, path, value), RtOp::PatchVar(id, path, value))
+    pub fn patch_var(
+        &mut self,
+        id: BindId,
+        path: Path,
+        value: Value,
+        w: Option<Arc<Expr>>,
+    ) {
+        logged!(self, patch_var(id, path, value, w), RtOp::PatchVar(id, path, value, w))
     }
 
     #[inline]
@@ -337,7 +344,7 @@ impl<'a, R: Rt> RtView<'a, R> {
                         RtOp::UnrefVar(id, by) => r.unref_var(id, by),
                         RtOp::SetVar(id, v) => r.set_var(id, v),
                         RtOp::SetLevel(id, v) => r.set_level(id, v),
-                        RtOp::PatchVar(id, p, v) => r.patch_var(id, p, v),
+                        RtOp::PatchVar(id, p, v, w) => r.patch_var(id, p, v, w),
                         RtOp::NotifySet(id) => r.notify_set(id),
                         RtOp::ForgetWrites(id) => r.forget_writes(id),
                         RtOp::SetTimer(id, d) => r.set_timer(id, d),

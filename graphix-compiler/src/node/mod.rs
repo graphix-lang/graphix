@@ -1823,7 +1823,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             match target {
                 WriteTarget::Bind(id) => ctx.rt.set_var(*id, v),
                 WriteTarget::Place(root, path) => {
-                    ctx.rt.patch_var(*root, path.clone(), v)
+                    ctx.rt.patch_var(*root, path.clone(), v, Some(self.spec.clone()))
                 }
             }
             self.pending = false;

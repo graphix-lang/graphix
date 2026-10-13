@@ -3,7 +3,7 @@
 //! accessors; a read applies the path to the root's value, a write
 //! rebuilds the root's value along it.
 
-use crate::abstract_value;
+use crate::{abstract_value, expr::Expr};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -11,6 +11,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 use netidx_value::{ValArray, ValError, Value};
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
+use triomphe::Arc;
 
 /// One accessor of a path: an array or tuple index (negative from the
 /// end, as `a[-1]` reads; `0` is also an error's or an abstract
@@ -83,7 +84,9 @@ impl Pack for Path {
 #[derive(Debug, Clone)]
 pub enum VarUpdate {
     Set(Value),
-    Patch(Path, Value),
+    /// The path, the value, and the writer, which a dropped patch's log
+    /// names (an embedder's write has none).
+    Patch(Path, Value, Option<Arc<Expr>>),
 }
 
 fn index_of(len: usize, i: i64) -> Result<usize> {

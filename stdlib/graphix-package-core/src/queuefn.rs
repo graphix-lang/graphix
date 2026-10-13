@@ -86,7 +86,9 @@ fn write_count<R: Rt, E: UserEvent>(
             // (push_level with VarUpdate::Patch, replacing a waiting level patch), call
             // it here, and add a place variant of the queuefn_count_ref pin. probe:
             // design/review-2026-10-12/repro/core-aux-04.sh (core-aux-04)
-            crate::WriteTarget::Place(root, path) => ctx.rt.patch_var(root, path, v),
+            crate::WriteTarget::Place(root, path) => {
+                ctx.rt.patch_var(root, path, v, None)
+            }
             crate::WriteTarget::Var(target) => ctx.rt.set_level(target, v),
         }
     }

@@ -725,7 +725,7 @@ pub(crate) fn null_error(spec: &Expr) -> Value {
 
 /// Where a swallowed error or a failed operator reports itself, in both
 /// engines: the origin (`in file ..`), then the position.
-pub(crate) fn diagnostic_site(spec: &Expr) -> ArcStr {
+pub fn diagnostic_site(spec: &Expr) -> ArcStr {
     format_compact!("{} at {}", spec.ori, spec.pos).as_str().into()
 }
 

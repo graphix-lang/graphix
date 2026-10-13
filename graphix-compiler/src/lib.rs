@@ -27,7 +27,7 @@ pub mod node;
 pub mod node_shape;
 pub(crate) mod perfdbg;
 
-pub use node::module::check_script_sig;
+pub use node::{error::diagnostic_site, module::check_script_sig};
 pub use stack::{Budget, Control, CtlFlag, ParMode, with_control};
 pub use stack::{set_activation_budget, set_stack_budget};
 pub mod tval;
@@ -1053,7 +1053,13 @@ pub trait Rt: Debug + Any + Send + Sync {
     /// Queue a write through a path: at delivery the variable's value as
     /// it then stands is rebuilt along `path` with `value` at the end.
     /// Deferred exactly like `set_var`.
-    fn patch_var(&mut self, id: BindId, path: node::place::Path, value: Value);
+    fn patch_var(
+        &mut self,
+        id: BindId,
+        path: node::place::Path,
+        value: Value,
+        writer: Option<Arc<Expr>>,
+    );
     /// Register the place a reference cell stands for (`&root[i].f`), so
     /// `*r` reads through the root and `*r <- v` patches it.
     fn set_ref_path(&mut self, cell: BindId, root: BindId, path: node::place::Path);
