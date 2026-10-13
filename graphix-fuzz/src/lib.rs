@@ -847,6 +847,8 @@ async fn drive_inner(
         }
     }
     let mut trace = trace::Trace::from_segments(&segs, eid);
+    let typ = &compiled.exprs.last().expect("compile returned no exprs").typ;
+    trace.canonicalize_refs(&compiled.env, typ);
     // Exact tier only. The runtime runs on past a capped trace, so the
     // capture stops at the last segment's cycle.
     if tier == OracleTier::Exact {
@@ -962,7 +964,10 @@ impl Strength {
 fn mentions(code: &str, marker: &str) -> bool {
     code.match_indices(marker).any(|(i, _)| {
         marker.starts_with("::")
-            || !code[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            || !code[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
     })
 }
 
@@ -1955,21 +1960,6 @@ impl<'a> Oracle<'a> {
             }
         }
         // a reference that disagrees with itself is nondeterminism
-        // CR claude for claude: [bug/medium] A reference in the watched value reaches
-        // the trace as its raw bind id. The id is session-global and differs on every
-        // run, including two node-walk runs in one process and warm runs (which
-        // relocate ids). trace::normalize canonicalizes only function values, so this
-        // re-run of the reference always disagrees with `a`. settle then returns
-        // Settled::Drop without printing anything. Any program whose value holds a
-        // reference anywhere therefore gets no comparison at all: a JIT error in its
-        // other fields is dropped, and `check` answers UNSURE "(see above)" with
-        // nothing above. Fix: in trace::normalize, replace each reference by its
-        // first-seen ordinal in the trace (the result type says which positions hold
-        // one, via Type::holds_ref / map_refs), or, failing that, compare such programs
-        // at Strength::Kind under their own tier. Either way, eprintln a
-        // NONDETERMINISTIC line with the program on this Drop, as the other Drop arms
-        // do. probe: design/review-2026-10-12/repro/fuzz-main-aux-03.sh
-        // (fuzz-main-aux-03)
         let again = run_one(self.code, ra, budget).await;
         // CR claude for eric: [risk/medium] This is the only Drop exit in settle that
         // prints nothing. The CONTAINED, JIT ASSERTION and SLOW drops each eprintln a
@@ -1984,7 +1974,17 @@ impl<'a> Oracle<'a> {
         // reference and its rerun). Decide whether an Exact-tier self-disagreement
         // should become a finding class of its own (a Pair or Divergence kind) instead
         // of a drop. (fuzz-lib-a-06)
+        // 2026-10-12 claude: The NONDETERMINISTIC line with the program and both renders
+        // is in (fuzz-main-aux-03's fix, which also canonicalizes references and abstract
+        // payloads in traces). Left for Eric: whether an Exact-tier self-disagreement
+        // becomes a finding class of its own.
         if !again.agrees_at(&a, s) {
+            eprintln!(
+                "NONDETERMINISTIC — the reference disagreed with its rerun; not recorded"
+            );
+            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+            eprintln!("    first: {}", render(&a));
+            eprintln!("    rerun: {}", render(&again));
             return Settled::Drop;
         }
         Settled::Diverge(a, b)
@@ -3437,7 +3437,11 @@ pub const EXPECT_REJECT: &str = "// expect: reject";
 /// A pin whose verdict contradicts its `// expect: reject` marker: both
 /// engines reject a pin without it, or run one with it. A rejection
 /// agrees with itself, so the marker is what tells the two apart.
-async fn misdeclared(prog: &str, verdict: Verdict, timeout: Duration) -> Option<Divergence> {
+async fn misdeclared(
+    prog: &str,
+    verdict: Verdict,
+    timeout: Duration,
+) -> Option<Divergence> {
     let marked = prog.lines().any(|l| l.trim() == EXPECT_REJECT);
     let pair = match (marked, verdict) {
         (false, Verdict::Rejected) => Pair::Rejected,
@@ -6325,6 +6329,20 @@ mod trace_probes {
         for prog in [
             "// expect: reject\ni64:2 + i64:3",
             "// a note\n{ let x = i64:1; x + i64:1 }",
+        ] {
+            let (d, v) = check_verdict(prog, std::time::Duration::from_secs(60)).await;
+            assert!(d.is_none(), "{prog}: {d:?}");
+            assert!(matches!(v, Verdict::Ran), "{prog}: {v:?}");
+        }
+    }
+
+    /// A reference's bind id and a lambda's minted id differ between runs;
+    /// the trace shows neither, so such a program compares like any other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn references_and_abstract_fns_compare() {
+        for prog in [
+            "{ let x = i64:5; (&x, &x, &i64:1, x + i64:1) }",
+            "type F = Abstract<fn(x: i64) -> i64>;\n{ let f = F(|x: i64| x + i64:1); (f, i64:2) }",
         ] {
             let (d, v) = check_verdict(prog, std::time::Duration::from_secs(60)).await;
             assert!(d.is_none(), "{prog}: {d:?}");

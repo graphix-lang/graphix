@@ -10,7 +10,8 @@
 
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
-    NoUserEvent,
+    NoUserEvent, abstract_value,
+    env::Env,
     expr::ExprId,
     node::lambda::{DefOrigin, LambdaDef},
 };
@@ -36,8 +37,9 @@ pub struct Epoch {
 
 /// Fn values normalize to the lambda's printed source (`LambdaDef::src`)
 /// so traces of two compiles of one program compare equal; a
-/// `LambdaDef`'s own equality is its minted id. Iterative because value
-/// nesting depth is program-controlled.
+/// `LambdaDef`'s own equality is its minted id. An abstract value's
+/// payload normalizes too. Iterative because value nesting depth is
+/// program-controlled.
 // CR claude for claude: [perf/low] normalize rebuilds every Array, Map and Error it
 // visits with new allocations, plus a temporary `pairs` Vec per map and unpooled
 // `work`/`out` stacks. It does this even when the value holds no `LambdaDef`, which is
@@ -46,27 +48,13 @@ pub struct Epoch {
 // times per session. Fix: first scan read-only for an `Abstract` downcasting to
 // `LambdaDef` and return `v.clone()` (a refcount bump) when there is none, and rebuild
 // only the spine leading to one. Use pooled stacks for the walk. (fuzz-main-aux-12)
-// CR claude for claude: [bug/medium] Two value shapes here differ on every run of the
-// same program, so Oracle::settle's rerun of the reference disagrees with itself and
-// drops every comparison as nondeterminism. A program that traces one is never
-// compared: a real divergence in any other component of its value is dropped too, and
-// the program ends UNSURE. The first shape is a reference: it reaches the trace as
-// Value::U64 of its BindId, which keeps counting across the in-process runs, and a warm
-// start relocates it. The second is a lambda inside a nominal abstract: normalize does
-// not descend into a GxAbstract payload, so the lambda compares by its minted id.
-// `same` also stops at an Abstract and uses the payload's `==`, so -0.0 and 0.0 inside
-// an abstract compare equal. Fix: canonicalize references to their first-seen ordinal,
-// guided by the result type (Type::holds_ref / map_refs say where references sit), so
-// aliasing stays visible. In both normalize and same, downcast GxAbstract and recurse
-// into its payload. Pin both shapes in trace.rs tests. probe:
-// design/review-2026-10-12/repro/fuzz-lib-a-02.gx and fuzz-lib-a-01.gx (both UNSURE;
-// expected AGREE). (fuzz-lib-a-02)
 fn normalize(v: &Value) -> Value {
     enum Task<'a> {
         Visit(&'a Value),
         BuildArray(usize),
         BuildError,
         BuildMap(usize),
+        BuildAbstract(&'a abstract_value::GxAbstract),
     }
     let mut work: Vec<Task> = vec![Task::Visit(v)];
     let mut out: Vec<Value> = Vec::new();
@@ -81,6 +69,10 @@ fn normalize(v: &Value) -> Value {
             Task::Visit(Value::Error(e)) => {
                 work.push(Task::BuildError);
                 work.push(Task::Visit(e));
+            }
+            Task::Visit(v) if let Some(a) = abstract_value::get(v) => {
+                work.push(Task::BuildAbstract(a));
+                work.push(Task::Visit(&a.payload));
             }
             Task::Visit(Value::Map(m)) => {
                 work.push(Task::BuildMap(m.len()));
@@ -108,6 +100,10 @@ fn normalize(v: &Value) -> Value {
             Task::BuildError => {
                 let e = out.pop().expect("normalize: error payload missing");
                 out.push(Value::Error(e.into()));
+            }
+            Task::BuildAbstract(a) => {
+                let p = out.pop().expect("normalize: abstract payload missing");
+                out.push(abstract_value::wrap(a.id, a.name.clone(), a.params.clone(), p));
             }
             Task::BuildMap(n) => {
                 let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n);
@@ -154,6 +150,13 @@ pub fn same(a: &Value, b: &Value) -> bool {
             (Value::Error(x), Value::Error(y)) => {
                 work.push((&**x, &**y));
                 true
+            }
+            (a, b)
+                if let (Some(x), Some(y)) =
+                    (abstract_value::get(a), abstract_value::get(b)) =>
+            {
+                work.push((&x.payload, &y.payload));
+                x.id == y.id && x.params == y.params
             }
             (a, b) => a == b,
         };
@@ -226,6 +229,26 @@ impl Trace {
             epochs: segs.iter().map(|s| Epoch::from_segment(s, eid)).collect(),
             stdout: Vec::new(),
             exit: None,
+        }
+    }
+
+    /// Each reference a value of `typ` holds, as the order the trace
+    /// first shows it in (`&ref0`, `&ref1`, ..): a reference's value is
+    /// its session's bind id, which differs between runs, while which
+    /// values alias does not.
+    pub fn canonicalize_refs(&mut self, env: &Env, typ: &graphix_compiler::typ::Type) {
+        if !typ.holds_ref(env) {
+            return;
+        }
+        let mut seen: Vec<Value> = Vec::new();
+        for (_, v) in self.epochs.iter_mut().flat_map(|e| e.events.iter_mut()) {
+            *v = typ.map_refs(env, v, &mut |r| {
+                let i = seen.iter().position(|s| s == r).unwrap_or_else(|| {
+                    seen.push(r.clone());
+                    seen.len() - 1
+                });
+                Value::String(ArcStr::from(format!("&ref{i}")))
+            });
         }
     }
 
