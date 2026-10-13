@@ -55,15 +55,6 @@
     ;; reference ('array_map), and `\`` opens a variant (`Foo); making
     ;; either a string delimiter would swallow the rest of the buffer
     ;; up to the next one, and invites electric-pair to close it.
-    ;; CR claude for claude: [bug/low] `"` is the only string delimiter and `\` keeps
-    ;; escape syntax. Raw strings (`r"C:\"`, `r#".."#`) have no escapes, and a triple
-    ;; string may hold bare quotes, so syntax-ppss mis-pairs them. After `let r =
-    ;; r"C:\";` the rest of the buffer reads as a string in both modes. That breaks
-    ;; fontification in graphix-mode, and electric-pair, show-paren, comment-dwim and
-    ;; sexp motion in graphix-ts-mode. Fix: a `syntax-propertize-function` that gives
-    ;; raw and triple-string delimiters string-fence syntax and neutralizes their
-    ;; backslashes; in ts-mode it can take the ranges from the raw_string/triple_string
-    ;; nodes. probe: design/review-2026-10-12/repro/ide-tooling-09.gx (ide-tooling-09)
     (modify-syntax-entry ?\" "\"" table)
     (modify-syntax-entry ?\' "_" table)
     (modify-syntax-entry ?\` "_" table)
@@ -115,6 +106,30 @@
       ("<-\\|=>\\|::\\|->\\|==\\|!=\\|<=\\|>=\\|&&\\|||" . font-lock-builtin-face)))
   "Font lock keywords for `graphix-mode'.")
 
+;; Raw strings (`r"..."`, `r#"..."#`) have no escapes and a triple string
+;; ("""...""") may hold bare quotes, so the syntax table alone mis-pairs
+;; them: their delimiters are string fences and a backslash inside is
+;; punctuation.
+(defun graphix--syntax-propertize (start end)
+  "Mark the raw and triple-quoted strings between START and END."
+  (goto-char start)
+  (while (re-search-forward "\\_<r\\(#*\\)\"\\|\"\"\"" end t)
+    (let* ((beg (match-beginning 0))
+           (raw (match-beginning 1))
+           (close (if raw (concat "\"" (match-string 1)) "\"\"\"")))
+      (if (nth 8 (save-excursion (syntax-ppss beg)))
+          (goto-char (1+ beg))
+        (put-text-property beg (1+ beg) 'syntax-table (string-to-syntax "|"))
+        (let ((body (point)))
+          (when (search-forward close nil t)
+            (let ((cend (point)))
+              (put-text-property (1- cend) cend 'syntax-table (string-to-syntax "|"))
+              (save-excursion
+                (goto-char body)
+                (while (search-forward "\\" (- cend (length close)) t)
+                  (put-text-property (1- (point)) (point) 'syntax-table
+                                     (string-to-syntax ".")))))))))))
+
 ;;;###autoload
 (define-derived-mode graphix-mode prog-mode "Graphix"
   "Major mode for editing Graphix source files (regex-based).
@@ -127,6 +142,7 @@ Falls back to this mode when tree-sitter is not available.
   (setq-local comment-end "")
   (setq-local comment-start-skip "//+ *")
   (setq-local font-lock-defaults '(graphix-font-lock-keywords))
+  (setq-local syntax-propertize-function #'graphix--syntax-propertize)
   (setq-local indent-tabs-mode nil)
   (setq-local tab-width graphix-indent-offset))
 
@@ -335,6 +351,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
     ;; Indentation
     (setq-local indent-tabs-mode nil)
     (setq-local tab-width graphix-indent-offset)
+    (setq-local syntax-propertize-function #'graphix--syntax-propertize)
     (setq-local treesit-simple-indent-rules graphix--treesit-indent-rules)
 
     ;; Font-lock
