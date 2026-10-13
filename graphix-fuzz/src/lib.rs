@@ -3718,7 +3718,7 @@ impl Corpus {
         }
     }
 
-    /// Number of distinct divergences in the corpus.
+    /// Number of distinct findings in the corpus.
     pub fn len(&self) -> usize {
         self.seen.lock().unwrap().len()
     }
@@ -3727,19 +3727,8 @@ impl Corpus {
         self.len() == 0
     }
 
-    /// Record a divergence if its minimized form is new. Returns `true`
-    /// when newly written (caller prints it), `false` for a duplicate.
-    /// The dedup key is the minimized text, so distinct root causes get
-    /// distinct files while many raw mutants that reduce to the same
-    /// canonical repro collapse to one.
     /// Claim a minimization for `key`: false once [`MINIMIZE_PER_KEY`]
     /// findings have it.
-    // CR claude for claude: [readability/low] The doc block above, from 'Record a
-    // divergence if its minimized form is new' through 'collapse to one', belongs to
-    // record, but it is attached to claim along with claim's own two lines, and record
-    // has no doc. Move those lines above `pub fn record`. Also, len's doc says
-    // 'distinct divergences', but `seen` counts crash and typeflip findings too: say
-    // 'distinct findings'. (fuzz-lib-b-11)
     pub fn claim(&self, key: &str) -> bool {
         let mut keys = self.keys.lock().unwrap();
         let n = keys.entry(key.to_string()).or_default();
@@ -3747,6 +3736,11 @@ impl Corpus {
         *n <= MINIMIZE_PER_KEY
     }
 
+    /// Record a divergence if its minimized form is new. Returns `true`
+    /// when newly written (caller prints it), `false` for a duplicate.
+    /// The dedup key is the minimized text, so distinct root causes get
+    /// distinct files while many raw mutants that reduce to the same
+    /// canonical repro collapse to one.
     pub fn record(&self, f: &Finding, mutant: &str, minimized: &str) -> bool {
         let key = minimized.trim().to_string();
         {
@@ -4079,15 +4073,6 @@ async fn run_child(
     cmd.arg(sub)
         .arg(&verdict)
         .args(args)
-        // the pool provides the concurrency; small children keep the
-        // total thread count sane
-        // CR claude for claude: [dead/low] This env var has no effect. Tokio reads
-        // TOKIO_WORKER_THREADS only when a builder leaves `worker_threads` unset, and
-        // the child's `main` sets `worker_threads = 2` in its `#[tokio::main]`. Nothing
-        // else in the child builds a multi-thread runtime. The child's real thread caps
-        // are RAYON_NUM_THREADS and GRAPHIX_EVAL_THREADS in `child_command`. Delete
-        // this line and the comment above it. (fuzz-main-aux-11)
-        .env("TOKIO_WORKER_THREADS", "2")
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
