@@ -45,11 +45,29 @@ LANGUAGES_TOML="$CONFIG_DIR/languages.toml"
 # helix shows as no syntax coloring at all. `helix --health graphix`
 # does not catch it (it reports ✓ for a query that fails to compile),
 # so nothing would tell you but the colors going away.
+# A copy pins the grammar to this checkout's commit, so the commit must
+# be one the remote has and the queries must be the commit's, not the
+# working tree's.
+if [ "$link_queries" = 0 ]; then
+    rev="$(git -C "$GRAMMAR_DIR" rev-parse HEAD)"
+    if [ -n "$(git -C "$GRAMMAR_DIR" status --porcelain -- .)" ]; then
+        echo "✗ --copy: ide/tree-sitter-graphix has uncommitted changes" >&2
+        exit 1
+    fi
+    if [ -z "$(git -C "$GRAMMAR_DIR" branch -r --contains "$rev" 2>/dev/null)" ]; then
+        echo "✗ --copy: $rev is on no remote branch, so helix cannot fetch it" >&2
+        exit 1
+    fi
+fi
 mkdir -p "$QUERIES_DST"
 for src in "$QUERIES_SRC"/*.scm; do
     dst="$QUERIES_DST/$(basename "$src")"
     rm -f "$dst"
-    if [ "$link_queries" = 1 ]; then ln -s "$src" "$dst"; else cp "$src" "$dst"; fi
+    if [ "$link_queries" = 1 ]; then
+        ln -s "$src" "$dst"
+    else
+        git -C "$GRAMMAR_DIR" show "$rev:./queries/$(basename "$src")" > "$dst"
+    fi
 done
 if [ "$link_queries" = 1 ]; then
     echo "✓ queries linked → $QUERIES_DST"
@@ -64,16 +82,6 @@ else
     if [ "$link_queries" = 1 ]; then
         grammar_source="source = { path = \"$GRAMMAR_DIR\" }"
     else
-        # CR claude for claude: [risk/low] With --copy the grammar is pinned to the
-        # local HEAD, which the remote may not have, and the queries are copied from the
-        # working tree, which may be ahead of HEAD. An unpushed HEAD makes `--grammar
-        # fetch` fail, and `|| true` hides it; a dirty tree copies queries newer than
-        # the pinned grammar. Either way the user can end up with no colouring, the
-        # failure languages.toml says this pinning prevents. Fix: with --copy, refuse a
-        # dirty ide/tree-sitter-graphix or a HEAD the remote does not contain, and copy
-        # the queries from `git show $rev:` rather than the working tree.
-        # (ide-tooling-12)
-        rev="$(git -C "$GRAMMAR_DIR" rev-parse HEAD)"
         grammar_source="source = { git = \"https://github.com/graphix-lang/graphix\", rev = \"$rev\", subpath = \"ide/tree-sitter-graphix\" }"
     fi
     {
@@ -95,7 +103,7 @@ if ! command -v graphix >/dev/null 2>&1; then
 fi
 
 echo "→ $HX --grammar fetch"
-"$HX" --grammar fetch || true
+"$HX" --grammar fetch
 echo "→ $HX --grammar build"
 "$HX" --grammar build
 

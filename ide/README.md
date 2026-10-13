@@ -131,9 +131,10 @@ colors at all — the whole query is refused), the regex ones die quiet
    there is one copy to edit.
 3. `editors/emacs/graphix-mode.el` — its queries capture font-lock
    faces, so they're written separately in elisp.
-4. `editors/vim/syntax/graphix.vim` and
-   `editors/vscode/syntaxes/graphix.tmLanguage.json` — regex
-   highlighters, no grammar to check them against.
+4. `editors/vim/syntax/graphix.vim`,
+   `editors/vscode/syntaxes/graphix.tmLanguage.json` and
+   `book/theme/graphix-highlight.js` — regex highlighters, no grammar
+   to check them against.
 5. `skills/graphix-lang/SKILL.md` — the quietest of all: an agent
    reading a stale rule writes the old form, and `--check` is the only
    thing that tells it. Fix the rule, and when awkward code came from a

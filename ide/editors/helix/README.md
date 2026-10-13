@@ -40,8 +40,8 @@ The script:
 2. Appends the language and grammar blocks from `languages.toml` to your
    `~/.config/helix/languages.toml`. If a graphix entry is already
    present, it leaves the file alone.
-3. Runs `helix --grammar fetch && helix --grammar build` to compile the
-   tree-sitter parser.
+3. Runs `helix --grammar fetch` and `helix --grammar build` to compile
+   the tree-sitter parser.
 
 Re-running is safe — step 1 replaces the links, step 2 is idempotent.
 
@@ -54,26 +54,13 @@ the script (or at least `helix --grammar build`).
 
 ## Grammar source: local checkout vs git
 
-<!-- CR claude for claude: [doc-drift/low] This section is stale. languages.toml ships a
-path placeholder, and install.sh writes the checkout path by default (a git source
-pinned to HEAD only with --copy); the steps above also say `fetch && build`, while the
-script runs `fetch || true`. Rewrite the section to describe what install.sh writes.
-ide/editors/zed/README.md is stale too: on Linux, Zed's dev extensions live under
-~/.local/share/zed/extensions (or use 'zed: install dev extension', which also builds
-the Rust part), Zed does not read locals.scm, and there is no brackets.scm for bracket
-matching. Also add book/theme/graphix-highlight.js to the regex-highlighter item of the
-'Changing the language syntax' checklist in ide/README.md. (ide-tooling-11) -->
-`languages.toml` ships with the git source enabled by default. If you're
-hacking on the grammar in a local checkout, comment that out and use the
-local-path block instead:
-
-```toml
-[[grammar]]
-name = "graphix"
-source = { path = "/absolute/path/to/graphix/ide/tree-sitter-graphix" }
-```
-
-After grammar changes, rerun `helix --grammar build`.
+`install.sh` writes the `[[grammar]]` source for you. By default it is a
+path source at this checkout's `ide/tree-sitter-graphix`, the grammar
+the linked queries were written against. With `--copy` it is the
+published repository pinned to this checkout's commit, with the
+queries copied from that commit; the script refuses a grammar directory
+with uncommitted changes, or a commit no remote branch has, since Helix
+could not fetch it.
 
 ## Verifying
 
