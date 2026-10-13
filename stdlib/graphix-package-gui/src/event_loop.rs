@@ -480,8 +480,10 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ToGui) {
         match event {
             ToGui::Stop(tx) => {
-                let _ = tx.send(());
-                self.finish(event_loop, Ok(()));
+                if !tx.is_closed() {
+                    let _ = tx.send(());
+                    self.finish(event_loop, Ok(()));
+                }
             }
             ToGui::ResizeRenderTick(window_id) => {
                 if let Some(tw) = self.window_mut(window_id) {

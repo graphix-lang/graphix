@@ -69,7 +69,35 @@ pub(crate) static REDRAW_WAKER: std::sync::OnceLock<RedrawWaker> =
 
 struct Gui<X: GXExt> {
     proxy: EventLoopProxy<ToGui>,
+    done: oneshot::Receiver<()>,
     ph: PhantomData<X>,
+}
+
+async fn wait_for_stop(rx: oneshot::Receiver<()>, done: &mut oneshot::Receiver<()>) {
+    tokio::select! {
+        _ = rx => (),
+        _ = done => (),
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_stopped_event_loop_releases_a_queued_stop() {
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (done_tx, mut done_rx) = oneshot::channel();
+        done_tx.send(()).unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_stop(stop_rx, &mut done_rx),
+        )
+        .await
+        .expect("clear waited for a stopped event loop");
+        assert!(stop_tx.is_closed());
+    }
 }
 
 impl<X: GXExt> Gui<X> {
@@ -82,14 +110,16 @@ impl<X: GXExt> Gui<X> {
     ) -> Result<Self> {
         let gx = gx.clone();
         let (proxy_tx, proxy_rx) = oneshot::channel();
+        let (done_tx, done) = oneshot::channel();
         let rt_handle = tokio::runtime::Handle::current();
         run_on_main
             .run(Box::new(move || {
                 event_loop::run(gx, root, proxy_tx, stop, rt_handle);
+                let _ = done_tx.send(());
             }))
             .context("a gui needs the main thread")?;
         let proxy = proxy_rx.await.context("the event loop did not start")??;
-        Ok(Self { proxy, ph: PhantomData })
+        Ok(Self { proxy, done, ph: PhantomData })
     }
 
     fn update(&self, id: ExprId, v: Value) {
@@ -102,23 +132,12 @@ impl<X: GXExt> Gui<X> {
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for Gui<X> {
     async fn clear(&mut self) {
+        if !matches!(self.done.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+            return;
+        }
         let (tx, rx) = oneshot::channel::<()>();
-        // CR claude for claude: [bug/high] This waits for an answer from an event loop
-        // that may already have stopped. When the user closes the last window,
-        // GuiHandler::finish sends Ok on the Stop channel and exits the loop. The shell
-        // then calls clear. If this Stop arrives after the iteration's user-event
-        // drain, run_app_on_demand returns with it still queued. event_loop::run then
-        // stores the EventLoop, and its receiver with it, back in EVENT_LOOP, so tx is
-        // never dropped and rx.await never resolves. The window closes but graphix
-        // never exits, and Ctrl-C does not free it: about half of close-button exits
-        // hang. The run_app_on_demand error path always hangs, because stop is sent
-        // after the loop has returned. Fix: give Gui a way to see that the loop is
-        // gone. For example, run() could fire a `done` oneshot (or set a shared flag)
-        // once run_app_on_demand returns, and clear would select on rx vs done, or skip
-        // the send once done. user_event should also ignore a Stop whose tx is closed.
-        // probe: design/review-2026-10-12/repro/gui-core-01.sh (gui-core-01)
         let _ = self.proxy.send_event(ToGui::Stop(tx));
-        let _ = rx.await;
+        wait_for_stop(rx, &mut self.done).await;
     }
 
     async fn process_update(&mut self, _env: &Env, id: ExprId, v: Value) {
