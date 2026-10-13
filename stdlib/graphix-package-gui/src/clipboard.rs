@@ -66,6 +66,11 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 // take the Option and drop the instance when the session ends, in GuiHandler::finish
 // and on the shell's exit path before it exits (for example a package shutdown hook).
 // That keeps one instance while running and still does the handover. (gui-core-06)
+// 2026-10-13 codex: Needs a package shutdown hook in graphix-package/src/lib.rs
+// and invocation before graphix-shell/src/main.rs calls process::exit, including
+// clipboard-only programs with no Gui display. arboard's X11 Clipboard::drop is
+// the handover path; a static never runs it. Desktop handover needs an X11 socket
+// and clipboard manager and was not verified in this sandbox.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
 pub(crate) fn clipboard<T>(
