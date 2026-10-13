@@ -95,11 +95,6 @@ fn try_accessor(
                     if ft == ty {
                         cands.push(format!("{name}.{f}"));
                     }
-                    // field-projection deref is the one composite read
-                    // refs support
-                    if *ft == reffed {
-                        cands.push(format!("*({name}.{f})"));
-                    }
                 }
             }
             GenType::Tuple(elems) => {
@@ -826,18 +821,10 @@ fn try_format_round_trip(
             GenType::Array(t) | GenType::Map(t) | GenType::Nullable(t) => data(t),
             GenType::Struct(fs) => fs.iter().all(|(_, t)| data(t)),
             GenType::Variant(vs) => vs.iter().all(|(_, ts)| ts.iter().all(data)),
-            GenType::List(_) | GenType::Fn { .. } => false,
-            // CR claude for claude: [readability/low] This wildcard is reachable (Ref
-            // and Abstract land here), so the allow is wrong. It also classifies any
-            // future GenType variant as non-data without a compile error, so a new type
-            // would silently never get a round trip. Fix: replace it with an explicit
-            // `GenType::Ref(_) | GenType::Abstract { .. } => false` and drop the allow.
-            // Related: try_accessor's `*({name}.{f})` struct-field deref candidate is
-            // dead, because random_type never puts a Ref in a struct field and
-            // gen_ref_stmts stores refs only in tuples and arrays. Delete that
-            // candidate, or generate structs with ref fields. (fuzz-gen-a-10)
-            #[allow(unreachable_patterns)]
-            _ => false,
+            GenType::List(_)
+            | GenType::Fn { .. }
+            | GenType::Ref(_)
+            | GenType::Abstract { .. } => false,
         }
     }
     if !data(ty) {
