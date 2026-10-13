@@ -408,30 +408,21 @@ fn stored_type(t: &Type, env: &Env) -> ArcStr {
     ArcStr::from(format_compact!("{t}").as_str())
 }
 
-/// A builtin over a db, its work on a blocking thread.
-// CR claude for claude: [structure/low] db_op, tree_op, tree_arg_op and db_name_op
-// here, and txn_op in txn.rs, each repeat the same struct, EvalCachedAsync impl,
-// unit_image_state! and alias. They differ only in the Args type, the prepare_args
-// expression and the eval body. Write one base macro that takes those three, and make
-// each of the five a one-line delegation to it, the way tree_arg_op's short arm already
-// delegates, so the call sites stay as short as they are. Then a change to the shared
-// shape, such as moving encoding into the blocking closure (db2-08), is made once.
-// (db2-11)
-macro_rules! db_op {
-    ($ev:ident, $alias:ident, $name:literal, |$db:ident| $body:expr) => {
+macro_rules! blocking_op {
+    ($ev:ident, $alias:ident, $name:literal, $args:ty,
+     |$cached:ident| $prepare:expr, |$arg:pat_param| $body:expr) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
 
         impl EvalCachedAsync for $ev {
-            type Args = Db;
-
+            type Args = $args;
             const NAME: &str = $name;
 
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                get_db(cached, 0)
+            fn prepare_args(&mut self, $cached: &CachedVals) -> Option<Self::Args> {
+                $prepare
             }
 
-            fn eval($db: Self::Args) -> impl Future<Output = Value> + Send {
+            fn eval($arg: Self::Args) -> impl Future<Output = Value> + Send {
                 blocking(move || $body)
             }
         }
@@ -441,28 +432,26 @@ macro_rules! db_op {
     };
 }
 
+pub(crate) use blocking_op;
+
+/// A builtin over a db, its work on a blocking thread.
+macro_rules! db_op {
+    ($ev:ident, $alias:ident, $name:literal, |$db:ident| $body:expr) => {
+        blocking_op!($ev, $alias, $name, Db, |cached| get_db(cached, 0), |$db| $body);
+    };
+}
+
 /// A builtin over a tree, its work on a blocking thread.
 macro_rules! tree_op {
     ($ev:ident, $alias:ident, $name:literal, |$t:ident| $body:expr) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-
-        impl EvalCachedAsync for $ev {
-            type Args = Tree;
-
-            const NAME: &str = $name;
-
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                get_tree_inner(cached, 0)
-            }
-
-            fn eval($t: Self::Args) -> impl Future<Output = Value> + Send {
-                blocking(move || $body)
-            }
-        }
-
-        graphix_package_core::unit_image_state!($ev);
-        pub(crate) type $alias = CachedArgsAsync<$ev>;
+        blocking_op!(
+            $ev,
+            $alias,
+            $name,
+            Tree,
+            |cached| get_tree_inner(cached, 0),
+            |$t| $body
+        );
     };
 }
 
@@ -471,15 +460,12 @@ macro_rules! tree_op {
 macro_rules! tree_arg_op {
     ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
      |$t:ident, $k:pat_param| $body:expr) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-
-        impl EvalCachedAsync for $ev {
-            type Args = (Tree, Result<$arg>);
-
-            const NAME: &str = $name;
-
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        blocking_op!(
+            $ev,
+            $alias,
+            $name,
+            (Tree, Result<$arg>),
+            |cached| {
                 let tree = get_tree_inner(cached, 0)?;
                 // CR claude for claude: [perf/low] prepare_args runs on the runtime
                 // thread during the cycle, so $enc (encode_key, the batch and get_many
@@ -492,18 +478,12 @@ macro_rules! tree_arg_op {
                 // change. (db2-08)
                 let arg = $enc(&tree, cached)?;
                 Some((tree, arg))
+            },
+            |($t, arg)| {
+                let $k = arg?;
+                $body
             }
-
-            fn eval(($t, arg): Self::Args) -> impl Future<Output = Value> + Send {
-                blocking(move || {
-                    let $k = arg?;
-                    $body
-                })
-            }
-        }
-
-        graphix_package_core::unit_image_state!($ev);
-        pub(crate) type $alias = CachedArgsAsync<$ev>;
+        );
     };
     ($ev:ident, $alias:ident, $name:literal, |$t:ident, $k:pat_param| $body:expr) => {
         tree_arg_op!($ev, $alias, $name, key_arg, GPooled<Vec<u8>>, |$t, $k| $body);
@@ -669,25 +649,14 @@ tree_arg_op!(
 /// A builtin over a db and a name or path.
 macro_rules! db_name_op {
     ($ev:ident, $alias:ident, $name:literal, |$db:ident, $n:ident: $nt:ty| $body:expr) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-
-        impl EvalCachedAsync for $ev {
-            type Args = (Db, $nt);
-
-            const NAME: &str = $name;
-
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
-                Some((get_db(cached, 0)?, cached.get::<$nt>(1)?))
-            }
-
-            fn eval(($db, $n): Self::Args) -> impl Future<Output = Value> + Send {
-                blocking(move || $body)
-            }
-        }
-
-        graphix_package_core::unit_image_state!($ev);
-        pub(crate) type $alias = CachedArgsAsync<$ev>;
+        blocking_op!(
+            $ev,
+            $alias,
+            $name,
+            (Db, $nt),
+            |cached| Some((get_db(cached, 0)?, cached.get::<$nt>(1)?)),
+            |($db, $n)| $body
+        );
     };
 }
 

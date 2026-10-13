@@ -2,7 +2,7 @@ use crate::{
     encoding::for_batch_ops,
     tree::{
         Db, KeyTyp, META_TREE, MetaStore, OpenTreeEv, TreeOpener, TreeTypes, blocking,
-        get_db, insert_arg, key_arg, meta_key, value_or_null,
+        blocking_op, get_db, insert_arg, key_arg, meta_key, value_or_null,
     },
 };
 use ahash::AHashMap;
@@ -326,33 +326,24 @@ pub(crate) type DbTxnTree = CachedArgsAsync<OpenTreeEv<FromTxn>>;
 macro_rules! txn_op {
     ($ev:ident, $alias:ident, $name:literal, $enc:expr, $arg:ty,
      |$t:ident, $a:pat_param| $body:expr) => {
-        #[derive(Debug, Default)]
-        pub(crate) struct $ev;
-
-        impl EvalCachedAsync for $ev {
-            type Args = (Arc<TxnTreeInner>, Result<$arg>);
-
-            const NAME: &str = $name;
-
-            fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {
+        blocking_op!(
+            $ev,
+            $alias,
+            $name,
+            (Arc<TxnTreeInner>, Result<$arg>),
+            |cached| {
                 let tt = cached.abstract_arg::<TxnTreeValue>(0)?.inner.clone();
                 let arg = $enc(&tt, cached)?;
                 Some((tt, arg))
-            }
-
-            fn eval((tt, arg): Self::Args) -> impl Future<Output = Value> + Send {
-                blocking(move || {
-                    let $a = arg?;
-                    tt.txn.with_state(|s| {
-                        let $t = s.tree(tt.tree_idx)?;
-                        $body
-                    })
+            },
+            |(tt, arg)| {
+                let $a = arg?;
+                tt.txn.with_state(|s| {
+                    let $t = s.tree(tt.tree_idx)?;
+                    $body
                 })
             }
-        }
-
-        graphix_package_core::unit_image_state!($ev);
-        pub(crate) type $alias = CachedArgsAsync<$ev>;
+        );
     };
 }
 
