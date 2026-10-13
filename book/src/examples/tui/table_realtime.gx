@@ -3,16 +3,9 @@ use tui::{line, table::{cell, row, table}};
 let clock = sys::time::timer(duration:1.s, true);
 
 let cpu_val = 5;
-// CR claude for claude: [bug/low] rand's #end is exclusive, so each step is drawn from
-// -5..4 (mean -0.5), and nothing bounds the walk. Within a few minutes the CPU column
-// of this process table reads large negative percentages. probe:
-// design/review-2026-10-12/repro/examples-tui-04.gx (about -250 after 500 ticks). Fix:
-// draw a level instead, `let cpu_val = rand::rand(#clock, #start: 0, #end: 101)`. Or
-// keep the walk with `#end: 6` and clamp it with `max(0, min(100, ..))`.
-// (examples-tui-04)
 cpu_val <- {
     let v = clock ~ cpu_val;
-    v + rand::rand(#clock, #start: -5, #end: 5)
+    max(0, min(100, v + rand::rand(#clock, #start: -5, #end: 6)))
 };
 
 let row1 = row([
