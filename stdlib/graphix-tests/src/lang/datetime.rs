@@ -225,14 +225,6 @@ run!(datetime_arith19, DATETIME_ARITH19, |v: Result<&Value>| match v {
     _ => false,
 }; FuseExpect::Jit);
 
-// CR claude for claude: [test-gap/low] Only diff's saturation is pinned. time.gxi also
-// documents that add and sub saturate at the datetime range limits, sub_dur saturates
-// at zero, add_dur overflow is a DurationError, and scale by a negative or NaN factor
-// is one too. None of these edges has a test, so a change to TimeAdd, TimeSub or
-// TimeAddDur that panicked or wrapped would pass. Add one run! fixture over a lambda,
-// so it fuses, asserting these: add(t, 1e14 s) is +262142-12-31T23:59:59.999999999Z,
-// sub is -262143-01-01T00:00:00Z, sub_dur(1s, 2s) is 0s, scale(d, -1.0) and scale(d,
-// 0.0 / 0.0) are DurationError, plus a true add_dur overflow. (tests-lang-rest-a-11)
 const DATETIME_ARITH20: &str = r#"
 {
     let x: duration = sys::time::diff(datetime:"2024-11-05T00:00:00Z", datetime:"2024-11-05T01:00:00Z");
@@ -243,5 +235,44 @@ const DATETIME_ARITH20: &str = r#"
 // later before earlier saturates at zero: durations are unsigned.
 run!(datetime_arith20, DATETIME_ARITH20, |v: Result<&Value>| match v {
     Ok(Value::Duration(dt)) if **dt == Duration::ZERO => true,
+    _ => false,
+}; FuseExpect::Jit);
+
+// The range edges time.gxi documents, fused: add and sub saturate at
+// the datetime limits, sub_dur at zero, and a negative or NaN scale or
+// an add_dur overflow is a DurationError.
+const DATETIME_EDGES: &str = r#"
+{
+    let f = |t: datetime, d: duration, d2: duration, big: duration, k: f64| (
+        sys::time::add(t, big),
+        sys::time::sub(t, big),
+        sys::time::sub_dur(d, d2),
+        sys::time::scale(d, -k),
+        sys::time::scale(d, 0.0 / (k - k)),
+        sys::time::add_dur(big, big)
+    );
+    #[native] f(
+        datetime:"2024-11-05T00:00:00Z",
+        duration:1.s,
+        duration:2.s,
+        duration:10000000000000000000.s,
+        1.0
+    )
+}
+"#;
+
+run!(datetime_edges, DATETIME_EDGES, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => match &a[..] {
+        [Value::DateTime(hi), Value::DateTime(lo), Value::Duration(z), neg, nan, over] => {
+            let scale = r#"error:["DurationError", "invalid duration scale (negative, NaN, or overflow)"]"#;
+            **hi == DateTime::<Utc>::MAX_UTC
+                && **lo == DateTime::<Utc>::MIN_UTC
+                && **z == Duration::ZERO
+                && format!("{neg}") == scale
+                && format!("{nan}") == scale
+                && format!("{over}") == r#"error:["DurationError", "duration overflow"]"#
+        }
+        _ => false,
+    },
     _ => false,
 }; FuseExpect::Jit);
