@@ -91,3 +91,31 @@ fn modifiers_reach_the_widgets() {
         [Event::Keyboard(iced_core::keyboard::Event::ModifiersChanged(m))] if m.control()
     ));
 }
+
+#[test]
+fn touch_phases_reach_the_widgets_at_logical_positions() {
+    use iced_core::touch::{Event as TouchEvent, Finger};
+    use winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, Touch, TouchPhase, WindowEvent},
+        keyboard::ModifiersState,
+    };
+    let id = Finger(42);
+    let position = Point::new(25.0, 60.0);
+    for (phase, expected) in [
+        (TouchPhase::Started, TouchEvent::FingerPressed { id, position }),
+        (TouchPhase::Moved, TouchEvent::FingerMoved { id, position }),
+        (TouchPhase::Ended, TouchEvent::FingerLifted { id, position }),
+        (TouchPhase::Cancelled, TouchEvent::FingerLost { id, position }),
+    ] {
+        let event = WindowEvent::Touch(Touch {
+            device_id: DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(50.0, 120.0),
+            force: None,
+            id: id.0,
+        });
+        let events = crate::convert::window_event(&event, 2.0, ModifiersState::empty());
+        assert_eq!(&events[..], &[Event::Touch(expected)], "{phase:?}");
+    }
+}

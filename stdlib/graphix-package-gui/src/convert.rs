@@ -1,10 +1,10 @@
 //! Convert winit events to iced events (after iced_winit's conversion.rs).
 
-use iced_core::{Event, Point, Size, input_method, keyboard, mouse, window};
+use iced_core::{Event, Point, input_method, keyboard, mouse, touch, window};
 use keyboard::key::NativeCode;
 use poolshark::local::LPooled;
 use winit::{
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, MouseButton, TouchPhase, WindowEvent},
     keyboard::{Key, NamedKey, NativeKeyCode},
     platform::modifier_supplement::KeyEventExtModifierSupplement,
 };
@@ -17,13 +17,6 @@ pub fn window_event(
 ) -> LPooled<Vec<Event>> {
     let mut events: LPooled<Vec<Event>> = LPooled::take();
     match event {
-        WindowEvent::Resized(size) => {
-            let logical = size.to_logical::<f32>(scale_factor);
-            events.push(Event::Window(window::Event::Resized(Size::new(
-                logical.width,
-                logical.height,
-            ))));
-        }
         WindowEvent::CursorMoved { position, .. } => {
             let logical = position.to_logical::<f32>(scale_factor);
             events.push(Event::Mouse(mouse::Event::CursorMoved {
@@ -99,9 +92,6 @@ pub fn window_event(
                 window::Event::Unfocused
             }));
         }
-        WindowEvent::CloseRequested => {
-            events.push(Event::Window(window::Event::CloseRequested));
-        }
         WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
             events.push(Event::Window(window::Event::Rescaled(*scale_factor as f32)));
         }
@@ -121,14 +111,17 @@ pub fn window_event(
                 Ime::Disabled => input_method::Event::Closed,
             }));
         }
-        // CR claude for claude: [bug/low] WindowEvent::Touch falls into this catch-all,
-        // so on a touchscreen a tap or drag never reaches iced. winit delivers XInput2
-        // and Wayland touches as Touch, not as mouse events, and iced's button, slider
-        // and scrollable handle touch::Event. Convert it as iced_winit does:
-        // FingerPressed/Moved/Lifted/Lost with the finger id and the logical position.
-        // The Resized and CloseRequested arms above are unreachable, because
-        // GuiHandler::window_event handles both before calling here (render pushes its
-        // own Resized). Delete them. (gui-core-10)
+        WindowEvent::Touch(t) => {
+            let logical = t.location.to_logical::<f32>(scale_factor);
+            let position = Point::new(logical.x, logical.y);
+            let id = touch::Finger(t.id);
+            events.push(Event::Touch(match t.phase {
+                TouchPhase::Started => touch::Event::FingerPressed { id, position },
+                TouchPhase::Moved => touch::Event::FingerMoved { id, position },
+                TouchPhase::Ended => touch::Event::FingerLifted { id, position },
+                TouchPhase::Cancelled => touch::Event::FingerLost { id, position },
+            }));
+        }
         _ => {}
     }
     events
