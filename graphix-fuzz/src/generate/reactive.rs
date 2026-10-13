@@ -193,16 +193,9 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     }
     // tail: start from an input-driven result, mix in other visible
     // scalars
-    // CR claude for claude: [test-gap/medium] The reactive lane never calls observe(),
-    // which the plain lane uses so that a wrong value in a statement the tail never
-    // reads diverges on stdout. The tail reads one fires_per_injection result plus at
-    // most two random i64s. Most slept_arm selects, cross_cycle builtins
-    // (uniq/once/take/skip/filter), dyn_reload results and sync lets are therefore read
-    // by nothing. A JIT or node-walk bug in a slept arm's wake or a restart builtin's
-    // reset agrees with itself unless it crashes. Fix: push super::observe(&ctx, 0)'s
-    // printlns into stmts before the tail, skipping the in* inputs; printing per fire
-    // also gives the trace oracle a per-cycle view of each template. probe:
-    // design/review-2026-10-12/repro/fuzz-gen-b-03.sh (fuzz-gen-b-02)
+    // every value the program binds prints at each of its fires, so a
+    // wrong one diverges though the tail never reads it
+    stmts.extend(super::observe(&ctx, n_inputs));
     let tail = {
         let i64s: Vec<String> =
             ctx.vars_of(&I64).into_iter().map(|s| s.to_string()).collect();
