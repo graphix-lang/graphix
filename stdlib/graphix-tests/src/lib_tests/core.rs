@@ -897,3 +897,51 @@ run!(opt_contains_refuses_the_indiscernible, r#"{
     let x: [(i64, i64), Array<i64>, null] = (1, 2);
     opt::contains(x, [1, 2])
 }"#, refused("'a must be Discernible"); FuseExpect::None);
+
+// A release delivering one of a site's args and a new call of the other
+// in the same cycle are two invocations, as the unqueued call makes.
+run!(queuefn_release_beside_a_new_call, r#"{
+    let c = 0;
+    c <- select c { n if n < 8 => n + 1, _ => never() };
+    let trig: Any = select c { 3 => null, 4 => null, 5 => null, _ => never() };
+    let a = 0;
+    a <- select c { 0 => 1, 1 => 2, _ => never() };
+    let b = 0;
+    b <- select c { 0 => 1, 4 => 4, _ => never() };
+    let q = queuefn(#trigger: trig, |x: i64, y: i64| -> (i64, i64) (x, y));
+    let out = q(a, b);
+    let log: Array<(i64, i64)> = [];
+    log <- out ~ array::push(log, out);
+    select c { 8 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[[i64:0, i64:0], [i64:1, i64:1], [i64:2, i64:1], [i64:2, i64:4]]")
+}; FuseExpect::Jit);
+
+// A bottom argument bottoms the queued call as it does the direct one:
+// nothing runs over the other argument and a stale one.
+run!(queuefn_bottom_argument, r#"{
+    let c = 0;
+    c <- select c { n if n < 3 => n + 1, _ => never() };
+    let s: [i64, null] = select c { 2 => null, n => n };
+    let q = queuefn(#trigger: c, |x: i64, y: i64| -> i64 x * 100 + y);
+    let out = q(c, s$);
+    let log: Array<i64> = [];
+    log <- out ~ array::push(log, out);
+    select c { 3 => log, _ => never() }
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string() == "[i64:0, i64:101]")
+}; FuseExpect::Jit);
+
+// A sleeping site's queued calls go with its sleep: the first release
+// after it runs the live site's call.
+run!(queuefn_sleeping_site_drops_its_calls, r#"{
+    let c = 0;
+    c <- select c { n if n < 10 => n + 1, _ => never() };
+    let trig: Any = select c { 4 => null, 5 => null, 6 => null, _ => never() };
+    let q = queuefn(#trigger: trig, |x: i64| -> i64 x);
+    let mode = select c { n if n < 3 => `A, n if n < 8 => `B, _ => `A };
+    let xa = select c { 0 => 1, 1 => 2, 2 => 3, _ => never() };
+    let xb = select c { 3 => 10, _ => never() };
+    let r = select mode { `A => q(xa), `B => q(xb) };
+    select r { 10 => c, _ => never() }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::Jit);

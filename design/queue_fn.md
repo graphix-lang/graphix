@@ -115,8 +115,11 @@ user asked for.
 - `#count` resolves the outer ByRef through `byref_chain` to its target
   bind and writes through that.
 - `sleep` clears the queue and resets `pop_count` to 1 (the arm-rewake
-  restart). The wrapper's `sleep`
-  and `delete` forward to its `pred`; the node's `delete` unrefs `fid`.
+  restart). The wrapper's `sleep` and `delete` forward to its `pred`
+  and drop the site's queued entries, writing `#count` (a release to a
+  sleeping site would run nothing); the node's `delete` unrefs `fid`.
+- A bottom argument at a wrapper site bottoms that invocation: it is
+  neither queued nor dispatched.
 - Containers: `QueueEntry.updates` and the per-cycle delta are
   `LPooled<Vec<(BindId, Value)>>`; `arg_bids` is `Arc<[BindId]>`, set
   once at wrapper construction. `std::sync::Arc` remains only where the
