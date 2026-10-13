@@ -1,20 +1,15 @@
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
-// CR claude for claude: [style/low] The use statements are not grouped and some sit
-// mid-file. These two lines should be `use graphix_compiler::expr::{ExprId,
-// VfsResolver};`. The iced_core, iced_runtime, iced_wgpu and tokio OnceCell uses after
-// GuiTestHarness's impl belong up here. `use graphix_rt::CallableId;` near expect_call
-// should join the graphix_rt group above, which also lets the fully qualified
-// graphix_rt::CallableId in call_callback and compile_named_callable shorten.
-// (tests-gui-b-14)
-use graphix_compiler::expr::ExprId;
-use graphix_compiler::expr::VfsResolver;
+use graphix_compiler::expr::{ExprId, VfsResolver};
 use graphix_package_core::testing::{self, TestCtx};
-use graphix_rt::{Callable, CompRes, GXEvent, NoExt, Ref};
+use graphix_rt::{Callable, CallableId, CompRes, GXEvent, NoExt, Ref};
+use iced_core::{Event, Point, Size, clipboard, mouse};
+use iced_runtime::user_interface;
+use iced_wgpu::{graphics::Shell, wgpu};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use poolshark::global::GPooled;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{OnceCell, mpsc};
 
 use crate::widgets::{self, GuiW, Message, MessageShell};
 
@@ -258,11 +253,7 @@ impl GuiTestHarness {
 
     /// Call a callable through the runtime and drain, as the widget
     /// itself would.
-    async fn call_callback(
-        &mut self,
-        id: graphix_rt::CallableId,
-        args: ValArray,
-    ) -> Result<()> {
+    async fn call_callback(&mut self, id: CallableId, args: ValArray) -> Result<()> {
         self.gx.call(id, args)?;
         self.drain().await?;
         Ok(())
@@ -271,10 +262,7 @@ impl GuiTestHarness {
     /// Compile a graphix lambda by module-qualified name into a
     /// `CallableId`. The `Callable` is retained on the harness because
     /// dropping it invalidates the id.
-    async fn compile_named_callable(
-        &mut self,
-        name: &str,
-    ) -> Result<graphix_rt::CallableId> {
+    async fn compile_named_callable(&mut self, name: &str) -> Result<CallableId> {
         let (r, cb) = testing::compile_named_callable(&self.gx, &self.compiled.env, name)
             .await
             .with_context(|| format!("compile_named_callable {name}"))?;
@@ -284,11 +272,6 @@ impl GuiTestHarness {
         Ok(id)
     }
 }
-
-use iced_core::{Event, Point, Size, clipboard, mouse};
-use iced_runtime::user_interface;
-use iced_wgpu::{graphics::Shell, wgpu};
-use tokio::sync::OnceCell;
 
 /// Shared headless wgpu adapter and device, created once for all tests.
 struct HeadlessGpu {
@@ -677,8 +660,6 @@ impl InteractionHarness {
         all_msgs
     }
 }
-
-use graphix_rt::CallableId;
 
 fn expect_call(msgs: &[Message]) -> CallableId {
     let calls: Vec<_> = msgs
