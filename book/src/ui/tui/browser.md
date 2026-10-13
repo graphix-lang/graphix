@@ -5,25 +5,7 @@ The `browser` widget provides a specialized interface for browsing and interacti
 ## Interface
 
 ```graphix
-type MoveCursor = [
-    `Left(i64),
-    `Right(i64),
-    `Up(i64),
-    `Down(i64)
-];
-
-val browser: fn(
-    ?#selected_style: Style,
-    ?#header_style: Style,
-    ?#style: Style,
-    ?#cursor: MoveCursor,
-    ?#selected_row: &mut string,
-    ?#selected_path: &mut string,
-    ?#flex: Flex,
-    ?#rate: duration,
-    #size: Size,
-    path: string
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/browser.gxi}}
 ```
 
 ## Parameters

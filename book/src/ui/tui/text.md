@@ -5,11 +5,7 @@ The `text` widget renders styled text in the terminal. It's a fundamental buildi
 ## Interface
 
 ```graphix
-val text: fn(
-  ?#style: &Style,
-  ?#alignment: &[Alignment, null],
-  v: &[Array<Line>, string]
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/text.gxi}}
 ```
 
 The `text` widget uses types from the [style](style.md) module including `Style`, `Line`, `Span`, `Color`, `Modifier`, and `Alignment`.

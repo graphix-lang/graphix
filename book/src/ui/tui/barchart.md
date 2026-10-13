@@ -5,44 +5,7 @@ The `barchart` widget displays categorical data as vertical bars, supporting gro
 ## Interface
 
 ```graphix
-type Bar = {
-  label: &[Line, null],
-  style: &[Style, null],
-  text_value: &[string, null],
-  value: &i64,
-  value_style: &[Style, null]
-};
-
-val bar: fn(
-  ?#label: &[Line, null],
-  ?#style: &[Style, null],
-  ?#text_value: &[string, null],
-  ?#value_style: &[Style, null],
-  n: &i64
-) -> Bar;
-
-type BarGroup = {
-  bars: Array<Bar>,
-  label: [Line, null]
-};
-
-val bar_group: fn(
-  ?#label: [Line, null],
-  a: Array<Bar>
-) -> BarGroup;
-
-val bar_chart: fn(
-  ?#bar_gap: &[i64, null],
-  ?#bar_style: &[Style, null],
-  ?#bar_width: &[i64, null],
-  ?#direction: &[Direction, null],
-  ?#group_gap: &[i64, null],
-  ?#label_style: &[Style, null],
-  ?#max: &[i64, null],
-  ?#style: &[Style, null],
-  ?#value_style: &[Style, null],
-  a: &Array<BarGroup>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/barchart.gxi}}
 ```
 
 ## Parameters

@@ -14,16 +14,7 @@ book-ui-b-07), describe the positional as the radio's value `&'a`, and replace t
 with one sentence: every radio in a group and its `#selected` share one type.
 (book-ui-b-03) -->
 ```graphix
-val radio: fn(
-  #label: &string,
-  ?#selected: &'a,
-  ?#on_select: [fn(x: 'a) -> Any, null],
-  ?#width: &Length,
-  ?#size: &[f64, null],
-  ?#spacing: &[f64, null],
-  ?#disabled: &bool,
-  x: &'a
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/radio.gxi}}
 ```
 
 ## Parameters

@@ -5,16 +5,7 @@ The `text` widget displays a string with optional styling. It is the most basic 
 ## Interface
 
 ```graphix
-val text: fn(
-  ?#size: &[f64, null],
-  ?#color: &[Color, null],
-  ?#font: &[Font, null],
-  ?#width: &Length,
-  ?#height: &Length,
-  ?#halign: &HAlign,
-  ?#valign: &VAlign,
-  s: &string
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/text.gxi}}
 ```
 
 ## Parameters

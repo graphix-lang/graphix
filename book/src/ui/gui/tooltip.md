@@ -5,12 +5,7 @@ The `tooltip` widget displays a popup hint when the user hovers over a child wid
 ## Interface
 
 ```graphix
-val tooltip: fn(
-  #tip: &Widget,
-  ?#position: &TooltipPosition,
-  ?#gap: &[f64, null],
-  a: &Widget
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/tooltip.gxi}}
 ```
 
 ## Parameters

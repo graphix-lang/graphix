@@ -5,33 +5,7 @@ The `layout` widget arranges child widgets in horizontal or vertical layouts wit
 ## Interface
 
 ```graphix
-type Spacing = [
-  `Space(i64),
-  `Overlap(i64)
-];
-
-type Child = {
-  child: Tui,
-  constraint: Constraint,
-  size: &[Size, null]
-};
-
-val child: fn(
-  ?#size: &[Size, null],
-  #constraint: Constraint,
-  a: Tui
-) -> Child;
-
-val layout: fn(
-  ?#direction: &[Direction, null],
-  ?#flex: &[Flex, null],
-  ?#focused: &[i64, null],
-  ?#horizontal_margin: &[i64, null],
-  ?#margin: &[i64, null],
-  ?#spacing: &[Spacing, null],
-  ?#vertical_margin: &[i64, null],
-  a: &Array<Child>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/layout.gxi}}
 ```
 
 ## Parameters

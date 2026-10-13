@@ -5,49 +5,7 @@ The `table` widget displays structured data in rows and columns with support for
 ## Interface
 
 ```graphix
-type Cell = {
-  content: Line,
-  style: [Style, null]
-};
-
-val cell: fn(
-  ?#style: [Style, null],
-  a: Line
-) -> Cell;
-
-type Row = {
-  bottom_margin: [i64, null],
-  cells: Array<Cell>,
-  height: [i64, null],
-  style: [Style, null],
-  top_margin: [i64, null]
-};
-
-val row: fn(
-  ?#bottom_margin: [i64, null],
-  ?#height: [i64, null],
-  ?#style: [Style, null],
-  ?#top_margin: [i64, null],
-  a: Array<Cell>
-) -> Row;
-
-val table: fn(
-  ?#cell_highlight_style: &[Style, null],
-  ?#column_highlight_style: &[Style, null],
-  ?#column_spacing: &[i64, null],
-  ?#flex: &[Flex, null],
-  ?#footer: &[Row, null],
-  ?#header: &[Row, null],
-  ?#highlight_spacing: &[HighlightSpacing, null],
-  ?#highlight_symbol: &[string, null],
-  ?#row_highlight_style: &[Style, null],
-  ?#selected: &[i64, null],
-  ?#selected_cell: &[{x: i64, y: i64}, null],
-  ?#selected_column: &[i64, null],
-  ?#style: &[Style, null],
-  ?#widths: &[Array<Constraint>, null],
-  a: &Array<&Row>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/table.gxi}}
 ```
 
 ## Parameters

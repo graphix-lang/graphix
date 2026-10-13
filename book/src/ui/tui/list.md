@@ -5,16 +5,7 @@ The `list` widget displays a scrollable, selectable list of items with keyboard 
 ## Interface
 
 ```graphix
-val list: fn(
-  ?#highlight_spacing: &[HighlightSpacing, null],
-  ?#highlight_style: &[Style, null],
-  ?#highlight_symbol: &[string, null],
-  ?#repeat_highlight_symbol: &[bool, null],
-  ?#scroll: &[i64, null],
-  ?#selected: &[i64, null],
-  ?#style: &[Style, null],
-  a: &Array<Line>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/list.gxi}}
 ```
 
 ## Parameters

@@ -5,15 +5,7 @@ A dropdown menu that lets the user select one option from a list of strings. Cli
 ## Interface
 
 ```graphix
-val pick_list: fn(
-  ?#selected: &[string, null],
-  ?#on_select: [fn(s: string) -> Any, null],
-  ?#placeholder: &string,
-  ?#width: &Length,
-  ?#padding: &Padding,
-  ?#disabled: &bool,
-  a: &Array<string>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/pick_list.gxi}}
 ```
 
 ## Parameters

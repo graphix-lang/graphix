@@ -5,14 +5,7 @@ A searchable dropdown that combines a text input with a dropdown list. As the us
 ## Interface
 
 ```graphix
-val combo_box: fn(
-  ?#selected: &[string, null],
-  ?#on_select: [fn(s: string) -> Any, null],
-  ?#placeholder: &string,
-  ?#width: &Length,
-  ?#disabled: &bool,
-  a: &Array<string>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/combo_box.gxi}}
 ```
 
 ## Parameters

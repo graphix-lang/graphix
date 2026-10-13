@@ -5,55 +5,7 @@ The `canvas` widget provides a low-level drawing surface for custom graphics. Yo
 ## Interface
 
 ```graphix
-type CanvasLine = {
-  color: Color,
-  x1: f64,
-  x2: f64,
-  y1: f64,
-  y2: f64
-};
-
-type CanvasCircle = {
-  color: Color,
-  radius: f64,
-  x: f64,
-  y: f64
-};
-
-type CanvasRectangle = {
-  color: Color,
-  height: f64,
-  width: f64,
-  x: f64,
-  y: f64
-};
-
-type CanvasPoints = {
-  color: Color,
-  coords: Array<(f64, f64)>
-};
-
-type CanvasLabel = {
-  line: Line,
-  x: f64,
-  y: f64
-};
-
-type CanvasShape = [
-  `Line(CanvasLine),
-  `Circle(CanvasCircle),
-  `Rectangle(CanvasRectangle),
-  `Points(CanvasPoints),
-  `Label(CanvasLabel)
-];
-
-val canvas: fn(
-  ?#background_color: &[Color, null],
-  ?#marker: &[Marker, null],
-  #x_bounds: &{ max: f64, min: f64 },
-  #y_bounds: &{ max: f64, min: f64 },
-  a: &Array<&CanvasShape>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/canvas.gxi}}
 ```
 
 ## Parameters

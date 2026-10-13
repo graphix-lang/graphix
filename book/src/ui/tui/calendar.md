@@ -5,29 +5,7 @@ The `calendar` widget displays a monthly calendar view with support for highligh
 ## Interface
 
 ```graphix
-type Date = {
-  year: i64,
-  month: i64,
-  day: i64
-};
-
-val date: fn(year: i64, month: i64, day: i64) -> Date;
-
-type CalendarEvent = {
-  date: Date,
-  style: Style
-};
-
-val calendar_event: fn(style: Style, date: Date) -> CalendarEvent;
-
-val calendar: fn(
-  ?#default_style: &[Style, null],
-  ?#show_month: &[Style, null],
-  ?#show_surrounding: &[Style, null],
-  ?#show_weekday: &[Style, null],
-  ?#events: &[Array<CalendarEvent>, null],
-  display_date: &Date
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/calendar.gxi}}
 ```
 
 ## Parameters

@@ -5,13 +5,7 @@ Renders a markdown string as rich text with support for headings, bold, italic, 
 ## Interface
 
 ```graphix
-val markdown: fn(
-  ?#on_link: [fn(s: string) -> Any, null],
-  ?#spacing: &[f64, null],
-  ?#text_size: &[f64, null],
-  ?#width: &Length,
-  s: &string
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/markdown.gxi}}
 ```
 
 ## Parameters

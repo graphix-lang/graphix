@@ -5,30 +5,7 @@ The `scrollbar` widget adds a visual scrollbar indicator to scrollable content, 
 ## Interface
 
 ```graphix
-type ScrollbarOrientation = [
-  `VerticalRight,
-  `VerticalLeft,
-  `HorizontalBottom,
-  `HorizontalTop
-];
-
-val scrollbar: fn(
-  ?#begin_style: &[Style, null],
-  ?#begin_symbol: &[string, null],
-  ?#content_length: &[i64, null],
-  ?#end_style: &[Style, null],
-  ?#end_symbol: &[string, null],
-  ?#orientation: &[ScrollbarOrientation, null],
-  ?#position: &[i64, null],
-  ?#size: &[Size, null],
-  ?#style: &[Style, null],
-  ?#thumb_style: &[Style, null],
-  ?#thumb_symbol: &[string, null],
-  ?#track_style: &[Style, null],
-  ?#track_symbol: &[string, null],
-  ?#viewport_length: &[i64, null],
-  a: &Tui
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/scrollbar.gxi}}
 ```
 
 ## Parameters

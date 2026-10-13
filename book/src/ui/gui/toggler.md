@@ -5,15 +5,7 @@ A toggle switch with an optional text label. Functionally identical to a checkbo
 ## Interface
 
 ```graphix
-val toggler: fn(
-  ?#label: &string,
-  ?#on_toggle: [fn(flag: bool) -> Any, null],
-  ?#width: &Length,
-  ?#size: &[f64, null],
-  ?#spacing: &[f64, null],
-  ?#disabled: &bool,
-  flag: &bool
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/toggler.gxi}}
 ```
 
 ## Parameters

@@ -9,17 +9,7 @@ A horizontal slider that lets the user select a floating-point value by dragging
 ### Interface
 
 ```graphix
-val slider: fn(
-  ?#min: &f64,
-  ?#max: &f64,
-  ?#step: &[f64, null],
-  ?#on_change: [fn(x: f64) -> Any, null],
-  ?#on_release: [fn(a: null) -> Any, null],
-  ?#width: &Length,
-  ?#height: &[f64, null],
-  ?#disabled: &bool,
-  x: &f64
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/slider.gxi}}
 ```
 
 ### Parameters
@@ -41,17 +31,7 @@ A vertical slider -- identical to `slider` but oriented top-to-bottom. Note the 
 ### Interface
 
 ```graphix
-val vertical_slider: fn(
-  ?#min: &f64,
-  ?#max: &f64,
-  ?#step: &[f64, null],
-  ?#on_change: [fn(x: f64) -> Any, null],
-  ?#on_release: [fn(a: null) -> Any, null],
-  ?#width: &[f64, null],
-  ?#height: &Length,
-  ?#disabled: &bool,
-  x: &f64
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/vertical_slider.gxi}}
 ```
 
 ### Parameters
@@ -68,13 +48,7 @@ A non-interactive horizontal bar that fills proportionally to a value within a r
 ### Interface
 
 ```graphix
-val progress_bar: fn(
-  ?#min: &f64,
-  ?#max: &f64,
-  ?#width: &Length,
-  ?#height: &[f64, null],
-  x: &f64
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/progress_bar.gxi}}
 ```
 
 ### Parameters

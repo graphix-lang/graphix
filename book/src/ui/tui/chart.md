@@ -5,68 +5,7 @@ The `chart` widget renders line charts with multiple datasets, custom axes, labe
 ## Interface
 
 ```graphix
-type GraphType = [
-  `Scatter,
-  `Line,
-  `Bar
-];
-
-type LegendPosition = [
-  `Top,
-  `TopRight,
-  `TopLeft,
-  `Left,
-  `Right,
-  `Bottom,
-  `BottomRight,
-  `BottomLeft
-];
-
-type Axis = {
-  bounds: {min: f64, max: f64},
-  labels: [Array<Line>, null],
-  labels_alignment: [Alignment, null],
-  style: [Style, null],
-  title: [Line, null]
-};
-
-val axis: fn(
-  ?#labels: [Array<Line>, null],
-  ?#labels_alignment: [Alignment, null],
-  ?#style: [Style, null],
-  ?#title: [Line, null],
-  a: {min: f64, max: f64}
-) -> Axis;
-
-type Dataset = {
-  data: &Array<(f64, f64)>,
-  graph_type: &[GraphType, null],
-  marker: &[Marker, null],
-  name: &[Line, null],
-  style: &[Style, null]
-};
-
-val dataset: fn(
-  ?#marker: &[Marker, null],
-  ?#graph_type: &[GraphType, null],
-  ?#name: &[Line, null],
-  ?#style: &[Style, null],
-  a: &Array<(f64, f64)>
-) -> Dataset;
-
-type LegendConstraints = {
-  width: Constraint,
-  height: Constraint
-};
-
-val chart: fn(
-  ?#hidden_legend_constraints: &[LegendConstraints, null],
-  ?#legend_position: &[LegendPosition, null],
-  ?#style: &[Style, null],
-  ?#x_axis: &[Axis, null],
-  ?#y_axis: &[Axis, null],
-  a: &Array<Dataset>
-) -> Tui;
+{{#include ../../../../stdlib/graphix-package-tui/src/graphix/chart.gxi}}
 ```
 
 ## Parameters

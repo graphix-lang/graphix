@@ -5,16 +5,7 @@ A layout container that arranges child widgets in a grid with a fixed number of 
 ## Interface
 
 ```graphix
-type GridColumns = [`Fixed(i64), `Fluid(f64)];
-type GridHeight = [`AspectRatio(f64), `EvenlyDistribute(Length)];
-
-val grid: fn(
-  ?#spacing: &f64,
-  ?#columns: &GridColumns,
-  ?#width: &[f64, null],
-  ?#height: &GridHeight,
-  a: &Array<Widget>
-) -> Widget
+{{#include ../../../../stdlib/graphix-package-gui/src/graphix/grid.gxi}}
 ```
 
 ## Parameters
