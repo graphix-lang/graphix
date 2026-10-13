@@ -4,15 +4,6 @@ A radio button for single-select choices within a group. Each `radio` widget rep
 
 ## Interface
 
-<!-- CR claude for claude: [doc-drift/medium] This interface block and the prose below
-describe an older radio. radio.gxi takes `?#selected: &['a, null]` (it accepts null) and
-a typed positional `value: &'a`. The page shows `#selected: &'a`, the Parameters list
-calls the positional `&Any`, and the closing note says the selected variable is typed
-`Any` and holds strings. The example above it uses a typed variant `[`Small, `Medium,
-`Large]` and no strings. Replace the block with an include of radio.gxi (see
-book-ui-b-07), describe the positional as the radio's value `&'a`, and replace the note
-with one sentence: every radio in a group and its `#selected` share one type.
-(book-ui-b-03) -->
 ```graphix
 {{#include ../../../../stdlib/graphix-package-gui/src/graphix/radio.gxi}}
 ```
@@ -20,13 +11,13 @@ with one sentence: every radio in a group and its `#selected` share one type.
 ## Parameters
 
 - **`#label`** (required) -- Text displayed next to the radio button. Unlike most labeled arguments in GUI widgets, this one is **not optional** -- every radio button must have a label.
-- **`#selected`** -- Reference to the currently selected value. When this value equals the positional value, the radio button appears filled. Pass the same reference to every radio in the group so they stay in sync.
+- **`#selected`** -- Reference to the currently selected value, or `null` for none. When this value equals the positional value, the radio button appears filled. Pass the same reference to every radio in the group so they stay in sync.
 - **`#on_select`** -- Callback invoked when this radio is clicked. Receives this radio's value (the positional argument). Typically: `#on_select: |v| selection <- v`.
 - **`#width`** -- Width of the widget (radio button plus label). Accepts `Length` values.
 - **`#size`** -- Size of the radio circle in pixels, or `null` for the default size.
 - **`#spacing`** -- Gap in pixels between the radio circle and the label text, or `null` for the default spacing.
 - **`#disabled`** -- When `true`, the radio button is grayed out and cannot be selected. Defaults to `false`.
-- **positional `&Any`** -- The value this radio button represents. When the user clicks this radio, `#on_select` receives this value. The radio appears selected when `#selected` equals this value.
+- **positional `value: &'a`** -- The value this radio button represents. When the user clicks this radio, `#on_select` receives this value. The radio appears selected when `#selected` equals this value.
 
 ## Examples
 
@@ -38,7 +29,7 @@ with one sentence: every radio in a group and its `#selected` share one type.
 
 ![Radio](./media/radio.gif)
 
-Note: the `selected` variable is typed as `Any` so it can hold any value used for comparison. In the example above, string values are used as the radio values.
+Every radio in a group and its `#selected` share one type, here the variant `` [`Small, `Medium, `Large] ``.
 
 ## See Also
 
