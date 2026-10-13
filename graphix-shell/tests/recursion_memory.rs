@@ -1,6 +1,7 @@
 //! A recursion's dynamic scope must not grow with its depth: a deep
-//! interpreted recursion under `--no-fusion` runs in a child process
-//! with its peak RSS bounded.
+//! interpreted recursion under `--no-fusion` runs in a child process,
+//! and its peak RSS grows linearly with the depth, at a bounded cost per
+//! activation.
 
 #![cfg(target_os = "linux")]
 
@@ -9,33 +10,22 @@ use std::{
     process::{Command, Stdio},
 };
 
-// CR claude for claude: [test-gap/low] One depth against an absolute bound cannot show
-// linearity. Peak RSS is about 224MB at 20k, so a regression where each activation
-// copies about one byte per enclosing activation adds about 200MB, stays under
-// MAX_RSS_MB, and passes. Fix: run two depths (for example 5k and 20k, plus a depth-1
-// baseline), and require the RSS growth ratio to stay near the depth ratio, or bound
-// bytes per activation directly. (tests-shell-compiler-07)
-const DEPTH: i64 = 20_000;
-// CR claude for claude: [test-gap/medium] The bound only catches growth that is worse
-// than linear. At DEPTH 20000 the child peaks near 223 MB (about 8.7 KB per node-walk
-// activation over a 53 MB baseline), so an activation could grow 3-4x and still pass,
-// and the recent activation shrink is not pinned. Tighten the bound to the measured
-// value plus a margin (about 300 MB) so it pins bytes per activation. 9 KB per
-// activation of a three-arm function is itself the next thing to shrink: naive fib(26)
-// and fib(27) under --no-fusion pass a 6 GB cap, and the node-walk is the fallback for
-// every recursion that does not fuse. Probe:
-// design/review-2026-10-12/repro/x-unsafe-04.gx. (x-unsafe-04)
-const MAX_RSS_MB: i64 = 800;
+/// The depths measured: a baseline, and two that a linear cost puts 15k
+/// activations apart.
+const DEPTHS: [i64; 3] = [1, 5_000, 20_000];
+/// What an interpreted activation of a three-arm function may cost: about
+/// 8.7KB measured, with a margin.
+const MAX_BYTES_PER_ACTIVATION: i64 = 12 * 1024;
 
-#[test]
-fn deep_recursion_memory_is_linear() {
-    let expected = DEPTH * (DEPTH + 1) / 2;
+/// The peak RSS in KB of `f(depth)`, which must compute its sum.
+fn peak_rss_kb(depth: i64) -> i64 {
+    let expected = depth * (depth + 1) / 2;
     let program = format!(
         "let rec f = |n: i64| -> i64 select n {{\n  0 => 0,\n  _ => n + f(n - 1)\n}};\n\
-         sys::exit(select f({DEPTH}) {{ {expected} => 0, _ => 1 }})\n"
+         sys::exit(select f({depth}) {{ {expected} => 0, _ => 1 }})\n"
     );
-    let path =
-        env::temp_dir().join(format!("recursion_memory_{}.gx", std::process::id()));
+    let path = env::temp_dir()
+        .join(format!("recursion_memory_{}_{depth}.gx", std::process::id()));
     fs::write(&path, program).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_graphix"))
         .arg("--no-cache")
@@ -54,13 +44,26 @@ fn deep_recursion_memory_is_linear() {
     assert_eq!(reaped, pid, "wait4 failed");
     assert!(
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-        "the recursion did not compute f({DEPTH}) = {expected} (status {status:#x})"
+        "the recursion did not compute f({depth}) = {expected} (status {status:#x})"
     );
-    let rss_mb = usage.ru_maxrss / 1024;
-    eprintln!("{DEPTH} interpreted activations peaked at {rss_mb}MB");
+    usage.ru_maxrss
+}
+
+#[test]
+fn deep_recursion_memory_is_linear() {
+    let [base, mid, deep] = DEPTHS.map(peak_rss_kb);
+    eprintln!("peak RSS by depth {DEPTHS:?}: {base}KB {mid}KB {deep}KB");
+    // the cost of an activation, below the midpoint and above it
+    let low = (mid - base) * 1024 / (DEPTHS[1] - DEPTHS[0]);
+    let high = (deep - mid) * 1024 / (DEPTHS[2] - DEPTHS[1]);
     assert!(
-        rss_mb < MAX_RSS_MB,
-        "{DEPTH} interpreted activations peaked at {rss_mb}MB (bound {MAX_RSS_MB}MB): \
-         something per activation grows with the depth"
+        high <= MAX_BYTES_PER_ACTIVATION,
+        "an activation costs {high} bytes, over {MAX_BYTES_PER_ACTIVATION}"
+    );
+    // linear: a deeper activation costs what a shallow one does
+    assert!(
+        high <= 2 * low.max(1024) && low <= 2 * high.max(1024),
+        "activation cost {low} bytes below {} deep, {high} bytes above",
+        DEPTHS[1]
     );
 }
