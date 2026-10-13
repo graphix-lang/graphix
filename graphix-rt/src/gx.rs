@@ -1155,6 +1155,14 @@ impl<X: GXExt> GX<X> {
             args: ftype.args.iter().filter(|a| !a.has_default()).cloned().collect(),
             ..ftype
         };
+        // a call is the delivery of its arguments: with none it would run
+        // once, now, and never when called
+        if ftype.args.is_empty() {
+            bail!(
+                "a callable needs an argument without a default to call it with \
+                 (`|_: null| ..`)"
+            )
+        }
         let args: Box<[BindId]> = ftype.args.iter().map(|_| BindId::new()).collect();
         let argn = ftype.args.iter().zip(args.iter());
         let argn = argn
@@ -1185,19 +1193,6 @@ impl<X: GXExt> GX<X> {
             return Err(e);
         }
         // its init runs in the next cycle, as a compiled root's does
-        // CR claude for claude: [bug/medium] A callable with no argument to deliver
-        // runs here and never again. This covers `|| e` and also a lambda whose every
-        // label has a default, because those labels are filtered out above. Nothing
-        // stays bottom, so this birth update applies the lambda once at compile time.
-        // Later, call_callable writes an empty set, which schedules nothing, while
-        // calls_made counts the `arg: None` call as made. So Callable::call never runs
-        // it again and call_answered answers null. The fix is to give every call a
-        // delivery: the call site gets a hidden trigger (a BindId argument or
-        // reference) that call_callable always writes. Then a zero-argument call is a
-        // write like any other, and the birth update finds the trigger absent and does
-        // not apply the lambda. With that in place calls_made no longer needs its
-        // `None` case for live callables. probe:
-        // design/review-2026-10-12/repro/rt-03-zero-arg-callable.rs (rt-03)
         self.ctx.rt.updated.insert(eid, true);
         let cid = CallableId::new();
         let answer = ExprId::new();
@@ -1233,14 +1228,6 @@ impl<X: GXExt> GX<X> {
         let c =
             self.callables.get(&id).ok_or_else(|| anyhow!("unknown callable {id:?}"))?;
         crate::check_args(&c.typ, &self.ctx.env, &args)?;
-        // CR claude for claude: [bug/low] A callable with no arguments to deliver (a
-        // `||` lambda, or one whose arguments are all labeled defaults, which
-        // compile_callable drops) records `arg: None` and an empty set. calls_made
-        // counts the call as made at once, but nothing schedules c.expr, so its body
-        // never runs again after the init cycle and call_answered answers null. Either
-        // refuse such a lambda in compile_callable, or schedule the callable's
-        // expression here (`updated.insert(c.expr, ..)`) so the call's cycle runs it
-        // and the answer is what that update produced. (x-fix-tools-08)
         self.calls.push_back(CallInFlight {
             arg: c.args.first().copied(),
             expr: c.expr,

@@ -16,6 +16,8 @@ let h = 'a: Number |x: 'a| -> 'a x;
 let g = |x| x;
 let k = |x| x;
 let i = |x: i64| -> i64 x;
+let z = || 42;
+let d = |#k: i64 = 5| k + 1;
 let kref: &fn(x: i64) -> i64 = &k;
 let sx = 0;
 let sy = 0;
@@ -102,6 +104,30 @@ async fn a_dropped_callable_frees_its_arguments() -> Result<()> {
         }
     }
     drop(r);
+    drop(m);
+    ctx.shutdown().await;
+    drain.abort();
+    Ok(())
+}
+
+/// A lambda with no argument to deliver a call with is no callable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_callable_needs_an_argument() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    let ctx = runtime(tx).await?;
+    let gx = ctx.rt.clone();
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let m = gx.compile(literal!("mod test")).await?;
+    for name in ["test::z", "test::d"] {
+        let r = gx.compile_ref(find_bind_id(&m.env, name)?).await?;
+        let e = match gx.compile_callable(r.last.clone().context("no value")?).await {
+            Ok(_) => bail!("{name} compiled as a callable"),
+            Err(e) => e,
+        };
+        if !e.to_string().contains("needs an argument") {
+            bail!("{name}: {e}");
+        }
+    }
     drop(m);
     ctx.shutdown().await;
     drain.abort();
