@@ -146,13 +146,7 @@ let footer = row(
     #spacing: &10.0,
     &[
         text(&"Selected:"),
-        // CR claude for claude: [style/low] selection starts empty, so `selection[0]$`
-        // swallows an ArrayIndexError at startup and again whenever the selection is
-        // cleared. Every swallowed error is logged at warn, so a user running with
-        // RUST_LOG=warn sees an index error for the normal no-selection state, and the
-        // text stays bottom meanwhile. Select on the array instead: `text(&select
-        // selection { [p, ..] => p, [] => "" })`. (examples-gui-09)
-        text(&"[selection[0]$]"),
+        text(&select selection { [p, ..] => "[p]", [] => "" }),
         text(&"  Last action:"),
         text(&"[last_action]")
     ]
