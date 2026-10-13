@@ -214,6 +214,39 @@ pub struct GenStats {
     pub use_vocab: bool,
 }
 
+/// `src` as a raw string literal, verbatim: a generated body can hold
+/// both `\\` and `\[`, so its hashes outnumber any run in it.
+fn raw_string(src: &str) -> String {
+    let mut hashes = String::from("#");
+    while src.contains(&format!("\"{hashes}")) {
+        hashes.push('#');
+    }
+    format!("r{hashes}\"{src}\"{hashes}")
+}
+
+/// `let {status} = mod {name} dynamic {..}`, its source the expression
+/// `source`.
+fn dynamic_module(
+    status: &str,
+    name: &str,
+    whitelist: &str,
+    sig: &str,
+    source: &str,
+) -> String {
+    format!(
+        "let {status} = mod {name} dynamic {{ sandbox whitelist {whitelist}; \
+         sig {{ {sig} }}; source {source} }}"
+    )
+}
+
+/// `let {v} = ..`: `call` once the module behind `status` loaded, else
+/// `fallback`.
+fn dynamic_module_use(v: &str, status: &str, fallback: &str, call: &str) -> String {
+    format!(
+        "let {v} = select {status} {{ error as _ => {fallback}, null as _ => {call} }}"
+    )
+}
+
 pub(crate) fn chance(rng: &mut Rng, p: f64) -> bool {
     (rng.below(1000) as f64) < p * 1000.0
 }

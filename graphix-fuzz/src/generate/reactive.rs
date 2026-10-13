@@ -511,15 +511,15 @@ fn slept_arm(
 /// the implementation. `srcs[in % n]$` is total for any injected i64.
 /// Not pushed into `fires_per_injection`: two injections can select the same source,
 /// and an unchanged source need not re-fire downstream.
-// CR claude for claude: [structure/low] This builds the same `let s = mod X dynamic {
-// sandbox whitelist ..; sig {..}; source .. }` statement and `select s { error as _ =>
-// .., null as _ => X::f(..) }` consumer as modules::gen_dynamic_module. Only the
-// modules copy picks the raw-string hash count from the source; this one always writes
-// `r#".."#` and would emit an unparsable program if a body ever contained `"#`. The
-// burst clock `let k = input ~ i64:0; k <- select k { s if s < N => s + i64:1, _ =>
-// never() }` is also written twice in this file (the ceremony and the flush clock).
-// Fix: one raw_string(src) helper and one dynamic-module statement builder in
-// generate/mod.rs used by both lanes, and one burst-clock helper. (fuzz-gen-b-09)
+/// A clock `k` that `input` restarts at 0 and that then counts itself up
+/// to `n`, a cycle a step.
+fn burst_clock(k: &str, input: &str, n: i64) -> [String; 2] {
+    [
+        format!("let {k} = {input} ~ i64:0"),
+        format!("{k} <- select {k} {{ s if s < i64:{n} => s + i64:1, _ => never() }}"),
+    ]
+}
+
 fn dyn_reload(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -548,29 +548,34 @@ fn dyn_reload(
                 // internal block-level computation, so a reload swap
                 // tears down a loaded body with live statements
                 let k = 1 + rng.below(5) as i64;
-                format!(
-                    "r#\"let f = |{p}: i64| -> i64 {body}; \
+                super::raw_string(&format!(
+                    "let f = |{p}: i64| -> i64 {body}; \
                      let q = f(i64:{k}) * i64:5; \
                      let z = array::len([q, q + i64:1, f(i64:{k} + i64:2)]); \
-                     let w = q + z\"#"
-                )
+                     let w = q + z"
+                ))
             } else {
-                format!("r#\"let f = |{p}: i64| -> i64 {body}\"#")
+                super::raw_string(&format!("let f = |{p}: i64| -> i64 {body}"))
             }
         })
         .collect();
     let srcs_name = ctx.fresh();
     stmts.push(format!("let {srcs_name} = [{}]", srcs.join(", ")));
     let status = ctx.fresh();
-    stmts.push(format!(
-        "let {status} = mod {dname} dynamic {{ sandbox whitelist {}; \
-         sig {{ val f: fn(x: i64) -> i64 }}; source {srcs_name}[{iname} % i64:{n_srcs}]$ }}",
-        super::BODY_PACKAGES
+    stmts.push(super::dynamic_module(
+        &status,
+        &dname,
+        super::BODY_PACKAGES,
+        "val f: fn(x: i64) -> i64",
+        &format!("{srcs_name}[{iname} % i64:{n_srcs}]$"),
     ));
     let arg = exprs::gen_typed(ctx, rng, &I64, 1);
     let v = ctx.fresh();
-    stmts.push(format!(
-        "let {v} = select {status} {{ error as _ => i64:-1, null as _ => {dname}::f({arg}) }}"
+    stmts.push(super::dynamic_module_use(
+        &v,
+        &status,
+        "i64:-1",
+        &format!("{dname}::f({arg})"),
     ));
     ctx.push(v, I64);
 }
@@ -603,10 +608,7 @@ fn ceremony(
         st.burst_ceremonies += 1;
         let b = ctx.fresh();
         let req = ctx.fresh();
-        stmts.push(format!("let {b} = {input} ~ i64:0"));
-        stmts.push(format!(
-            "{b} <- select {b} {{ s if s < i64:3 => s + i64:1, _ => never() }}"
-        ));
+        stmts.extend(burst_clock(&b, input, 3));
         stmts.push(format!(
             "let {req} = select {b} {{ i64:1 | i64:2 => {b}, _ => never() }}"
         ));
@@ -784,10 +786,7 @@ fn ceremony(
         }
         let k = clock.get_or_insert_with(|| {
             let k = ctx.fresh();
-            stmts.push(format!("let {k} = {input} ~ i64:0"));
-            stmts.push(format!(
-                "{k} <- select {k} {{ s if s < i64:6 => s + i64:1, _ => never() }}"
-            ));
+            stmts.extend(burst_clock(&k, input, 6));
             k
         });
         let at = 1 + rng.below(5);

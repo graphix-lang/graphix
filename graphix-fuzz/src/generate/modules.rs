@@ -616,16 +616,10 @@ pub(super) fn gen_dynamic_module(
     // a narrow sandbox turns package reaches into deterministic
     // error-arm outcomes, so both whitelists are healthy to emit
     let whitelist = if chance(rng, 0.25) { "[core]" } else { super::BODY_PACKAGES };
-    // Counted-hash raw strings are verbatim (a generated body can contain
-    // both `\\` and `\[`); one hash suffices unless the source contains `"#`.
-    let src = src.trim_end().trim_end_matches(';');
-    let hashes = if src.contains("\"#") { "##" } else { "#" };
+    let src = super::raw_string(src.trim_end().trim_end_matches(';'));
     let status = ctx.fresh();
-    let mut stmts = vec![format!(
-        "let {status} = mod {dname} dynamic {{ sandbox whitelist {whitelist}; \
-         sig {{ {} }}; source r{hashes}\"{src}\"{hashes} }}",
-        sig.trim_end().trim_end_matches(';')
-    )];
+    let sig = sig.trim_end().trim_end_matches(';');
+    let mut stmts = vec![super::dynamic_module(&status, &dname, whitelist, sig, &src)];
     // consume one public fn through the status gate
     let (fname, fty) = &public[rng.below(public.len())];
     let GenType::Fn { params, ret, .. } = fty else { unreachable!() };
@@ -633,11 +627,8 @@ pub(super) fn gen_dynamic_module(
         params.iter().map(|t| exprs::gen_typed(ctx, rng, t, 1)).collect();
     let fallback = exprs::gen_typed(ctx, rng, ret, 1);
     let v = ctx.fresh();
-    stmts.push(format!(
-        "let {v} = select {status} {{ error as _ => {fallback}, null as _ => \
-         {dname}::{fname}({}) }}",
-        args.join(", ")
-    ));
+    let call = format!("{dname}::{fname}({})", args.join(", "));
+    stmts.push(super::dynamic_module_use(&v, &status, &fallback, &call));
     ctx.push(v, (**ret).clone());
     stmts
 }
