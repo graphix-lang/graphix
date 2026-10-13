@@ -160,14 +160,21 @@ impl<X: GXExt> DataTableW<X> {
         row_path: &Path,
         col_name: &ArcStr,
     ) -> Option<Value> {
-        if let Some(v) = self.cells.inner.lock().live_value(row_path, col_name) {
-            return Some(v.clone());
-        }
-        self.columns
-            .get(col_name.as_str())
-            .and_then(|c| c.source.as_ref())
-            .and_then(|e| e.parsed.lookup(row_basename(row_path)))
-            .cloned()
+        self.raw_cell_value(&self.cells.inner.lock(), row_path, col_name).cloned()
+    }
+
+    pub(super) fn raw_cell_value<'a>(
+        &'a self,
+        inner: &'a SharedCellsInner,
+        row_path: &Path,
+        col_name: &ArcStr,
+    ) -> Option<&'a Value> {
+        inner.live_value(row_path, col_name).or_else(|| {
+            self.columns
+                .get(col_name)
+                .and_then(|c| c.source.as_ref())
+                .and_then(|e| e.parsed.lookup(row_basename(row_path)))
+        })
     }
 
     /// The column's set width: its width ref's, which the program owns,

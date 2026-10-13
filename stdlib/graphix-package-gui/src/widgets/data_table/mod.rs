@@ -8,7 +8,7 @@
 use super::{
     GuiW, GuiWidget, Handler, IcedElement, Message, Renderer, TableId, TableMsg, WidgetOp,
 };
-use ahash::{AHashMap, AHasher};
+use ahash::{AHashMap, AHashSet, AHasher};
 use anyhow::{Context, Result};
 use arcstr::{ArcStr, literal};
 use compact_str::CompactString;
@@ -130,6 +130,8 @@ pub(crate) struct DataTableW<X: GXExt> {
     /// The rows in display order: `table_rows` sorted by `sort_by`.
     row_paths: Vec<Path>,
     row_indices: AHashMap<Path, usize>,
+    subscription_window: LPooled<AHashSet<Path>>,
+    subscriptions_changed: bool,
     cells: Arc<SharedCells<X>>,
     first_row: usize,
     first_col: usize,
@@ -250,6 +252,8 @@ impl<X: GXExt> DataTableW<X> {
             table_rows: vec![],
             row_paths: vec![],
             row_indices: AHashMap::default(),
+            subscription_window: LPooled::take(),
+            subscriptions_changed: true,
             cells,
             first_row: 0,
             first_col: 0,
@@ -317,6 +321,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         if id == self.sort_by_ref.id {
             self.sort_by_ref.last = Some(v.clone());
             self.sort_by = parse_sort_by(v);
+            self.subscriptions_changed = true;
             reconcile = true;
         }
         if id == self.selection_ref.id {
@@ -365,6 +370,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 // 2026-10-13 codex: changed_stored_sort_sources_reorder_rows covers stored and Netidx
                 // fallback maps without refiring the table. It compiles; before/after
                 // assertions require resolver sockets unavailable in this sandbox.
+                self.subscriptions_changed |= was_netidx != e.parsed.is_netidx();
                 reconcile |= was_netidx != e.parsed.is_netidx()
                     || self.sort_by.iter().any(|s| s.column == c.spec.name);
                 source_fired = true;

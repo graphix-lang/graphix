@@ -126,6 +126,28 @@ impl SharedCellsInner {
             .is_some_and(|roles| roles.iter().any(has))
     }
 
+    fn remove_grid(&mut self, row: &Path, col: &ArcStr) {
+        let key = (row.clone(), col.clone());
+        let Some(id) = self.cells.get(&key).copied() else { return };
+        let Some(roles) = self.routing.get_mut(&id) else { return };
+        roles.retain(|role| !matches!(role, SubRole::Grid { row_path, col_name, .. } if row_path == row && col_name == col));
+        let keeps_cell = roles.iter().any(|role| match role {
+            SubRole::Grid { row_path, col_name, .. }
+            | SubRole::SortMarker { row_path, col_name } => {
+                row_path == row && col_name == col
+            }
+        });
+        if !keeps_cell {
+            self.cells.remove(&key);
+        }
+        if roles.is_empty() {
+            self.routing.remove(&id);
+            self.dvals.remove(&id);
+            self.values.remove(&id);
+            self.formatted.remove(&id);
+        }
+    }
+
     /// The cell's live value, if it has one.
     pub(super) fn live_value(&self, row: &Path, col: &ArcStr) -> Option<&Value> {
         let id = self.cells.get(&(row.clone(), col.clone()))?;
@@ -314,6 +336,7 @@ impl<X: GXExt> DataTableW<X> {
     pub(super) fn apply_table_sync(&mut self) -> LPooled<Vec<ArcStr>> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
         self.table_rows.clear();
+        self.subscriptions_changed = true;
         // XCR claude for claude: [bug/medium] Every table value clears the measured
         // width of every column. Render then re-caches only the columns from first_col
         // onward, so column_canonical_width reads MIN_COL_WIDTH for every column left
@@ -505,7 +528,7 @@ impl<X: GXExt> DataTableW<X> {
     /// column gone or no longer from netidx, a sort column dropped),
     /// then subscribe what is missing. Sparkline histories of rows and
     /// columns gone are dropped.
-    // CR claude for claude: [perf/medium] Every scroll step that changes the first row
+    // XCR claude for claude: [perf/medium] Every scroll step that changes the first row
     // calls this (DataTableW::handle_scroll), and every batch that touches a sort
     // column calls it again after sort_rows (before_view). Each call is linear in the
     // whole table: it builds a set of every table row, retains six maps over every
@@ -517,16 +540,24 @@ impl<X: GXExt> DataTableW<X> {
     // window. Recompute SortMarker roles only when table_rows or sort_by change. In
     // sort_rows, lock once and build each SortKey from the raw value rather than from
     // its display text. (gui-datatable-08)
+    // 2026-10-13 codex: scroll now diffs the grid window; table/sort/source-kind changes request a full role reconciliation.
+    // remove_grid_keeps_sort_values_and_other_cells pins targeted removal. Sorting
+    // reads raw keys under one lock. Live viewport/resort tests need resolver
+    // sockets; frame cost and live behavior remain unverified here.
     pub(super) fn update_subscriptions(&mut self) {
         let (s, e) = self.subscription_row_range();
         let mut window: LPooled<AHashSet<Path>> = LPooled::take();
         window.extend(self.row_paths[s.min(e)..e].iter().cloned());
-        let mut rows: LPooled<AHashSet<Path>> = LPooled::take();
-        rows.extend(self.table_rows.iter().cloned());
+        let full = std::mem::take(&mut self.subscriptions_changed);
         let mut sort_cols: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        sort_cols.extend(
-            self.sort_by.iter().map(|s| s.column.clone()).filter(|c| self.subscribes(c)),
-        );
+        if full {
+            sort_cols.extend(
+                self.sort_by
+                    .iter()
+                    .map(|s| s.column.clone())
+                    .filter(|c| self.subscribes(c)),
+            );
+        }
         let mut shown: LPooled<AHashMap<ArcStr, Option<f64>>> = LPooled::take();
         match self.mode {
             DisplayMode::Table => {
@@ -546,54 +577,65 @@ impl<X: GXExt> DataTableW<X> {
         }
         let mut inner = self.cells.inner.lock();
         let inner = &mut *inner;
-        inner.routing.retain(|_, roles| {
-            roles.retain(|r| match &*r {
-                // XCR claude for claude: [bug/medium] This retain keeps a Grid role
-                // while its row is in the window and its column is shown. It never
-                // checks the role's sparkline_history_secs against the column's current
-                // `shown` entry, and SubRole::is_grid_of also ignores that field, so no
-                // replacement role is added. A column that keeps its name but changes
-                // typ from Text to Sparkline keeps `sparkline_history_secs: None` on
-                // every visible cell. The dispatch task then pushes no points, and
-                // those sparklines stay empty until the rows leave the window and come
-                // back. A changed history_seconds keeps pushing under the old window,
-                // and a change from Sparkline to Text keeps pushing histories that the
-                // next reconcile drops. Fix: keep a Grid role only when
-                // `shown.get(col_name) == Some(sparkline_history_secs)`, and test for
-                // the whole role (`roles.contains(&role)`) instead of is_grid_of, so a
-                // changed window replaces the role. Also add an in-crate
-                // data_table_test that flips a column's typ variable and asserts
-                // dt_sparkline_len grows. Not executed: the dt() harness is
-                // cfg(test)-only. (gui-datatable-06)
-                // 2026-10-13 codex: grid_roles_include_the_history_window fails with the old matcher
-                // and passes with full role matching. The live pin
-                // switching_a_live_column_to_sparkline_records_updates needs resolver
-                // sockets; its assertions remain unverified here.
-                SubRole::Grid { row_path, col_name, .. } => {
-                    window.contains(row_path)
-                        && shown
-                            .get(col_name)
-                            .is_some_and(|hs| r.is_grid(row_path, col_name, *hs))
-                }
-                SubRole::SortMarker { row_path, col_name } => {
-                    rows.contains(row_path) && sort_cols.contains(col_name)
-                }
+        if full {
+            inner.routing.retain(|_, roles| {
+                roles.retain(|r| match &*r {
+                    // XCR claude for claude: [bug/medium] This retain keeps a Grid role
+                    // while its row is in the window and its column is shown. It never
+                    // checks the role's sparkline_history_secs against the column's current
+                    // `shown` entry, and SubRole::is_grid_of also ignores that field, so no
+                    // replacement role is added. A column that keeps its name but changes
+                    // typ from Text to Sparkline keeps `sparkline_history_secs: None` on
+                    // every visible cell. The dispatch task then pushes no points, and
+                    // those sparklines stay empty until the rows leave the window and come
+                    // back. A changed history_seconds keeps pushing under the old window,
+                    // and a change from Sparkline to Text keeps pushing histories that the
+                    // next reconcile drops. Fix: keep a Grid role only when
+                    // `shown.get(col_name) == Some(sparkline_history_secs)`, and test for
+                    // the whole role (`roles.contains(&role)`) instead of is_grid_of, so a
+                    // changed window replaces the role. Also add an in-crate
+                    // data_table_test that flips a column's typ variable and asserts
+                    // dt_sparkline_len grows. Not executed: the dt() harness is
+                    // cfg(test)-only. (gui-datatable-06)
+                    // 2026-10-13 codex: grid_roles_include_the_history_window fails with the old matcher
+                    // and passes with full role matching. The live pin
+                    // switching_a_live_column_to_sparkline_records_updates needs resolver
+                    // sockets; its assertions remain unverified here.
+                    SubRole::Grid { row_path, col_name, .. } => {
+                        window.contains(row_path)
+                            && shown
+                                .get(col_name)
+                                .is_some_and(|hs| r.is_grid(row_path, col_name, *hs))
+                    }
+                    SubRole::SortMarker { row_path, col_name } => {
+                        self.row_indices.contains_key(row_path)
+                            && sort_cols.contains(col_name)
+                    }
+                });
+                !roles.is_empty()
             });
-            !roles.is_empty()
-        });
-        let routing = &inner.routing;
-        inner.dvals.retain(|id, _| routing.contains_key(id));
-        inner.values.retain(|id, _| routing.contains_key(id));
-        inner.formatted.retain(|id, _| routing.contains_key(id));
-        inner.cells.retain(|_, id| routing.contains_key(id));
-        let columns = &self.columns;
-        inner.sparklines.retain(|(row, col), _| {
-            rows.contains(row)
-                && columns
-                    .get(col)
-                    .is_some_and(|c| matches!(c.spec.typ, ColumnType::Sparkline { .. }))
-        });
-        for row in self.row_paths[s.min(e)..e].iter().filter(|p| Path::is_absolute(p)) {
+            let routing = &inner.routing;
+            inner.dvals.retain(|id, _| routing.contains_key(id));
+            inner.values.retain(|id, _| routing.contains_key(id));
+            inner.formatted.retain(|id, _| routing.contains_key(id));
+            inner.cells.retain(|_, id| routing.contains_key(id));
+            let columns = &self.columns;
+            inner.sparklines.retain(|(row, col), _| {
+                self.row_indices.contains_key(row)
+                    && columns.get(col).is_some_and(|c| {
+                        matches!(c.spec.typ, ColumnType::Sparkline { .. })
+                    })
+            });
+        } else {
+            for row in self.subscription_window.difference(&window) {
+                for col in shown.keys() {
+                    inner.remove_grid(row, col);
+                }
+            }
+        }
+        for row in window.iter().filter(|p| {
+            Path::is_absolute(p) && (full || !self.subscription_window.contains(*p))
+        }) {
             for (col, hs) in shown.iter() {
                 if !inner.has_role(row, col, |r| r.is_grid(row, col, *hs)) {
                     let path = Path::from(cell_path(row, col));
@@ -606,23 +648,26 @@ impl<X: GXExt> DataTableW<X> {
                 }
             }
         }
-        for row in self.table_rows.iter().filter(|p| Path::is_absolute(p)) {
-            for col in sort_cols.iter() {
-                if !inner.has_role(row, col, |r| r.is_sort_of(row, col)) {
-                    let role = SubRole::SortMarker {
-                        row_path: row.clone(),
-                        col_name: col.clone(),
-                    };
-                    self.subscribe_cell(
-                        inner,
-                        row,
-                        col,
-                        Path::from(cell_path(row, col)),
-                        role,
-                    );
+        if full {
+            for row in self.table_rows.iter().filter(|p| Path::is_absolute(p)) {
+                for col in sort_cols.iter() {
+                    if !inner.has_role(row, col, |r| r.is_sort_of(row, col)) {
+                        let role = SubRole::SortMarker {
+                            row_path: row.clone(),
+                            col_name: col.clone(),
+                        };
+                        self.subscribe_cell(
+                            inner,
+                            row,
+                            col,
+                            Path::from(cell_path(row, col)),
+                            role,
+                        );
+                    }
                 }
             }
         }
+        self.subscription_window = window;
     }
 
     /// Subscribe `path` for the cell `(row, col)` in `role`; a role the
@@ -725,6 +770,7 @@ impl<X: GXExt> DataTableW<X> {
         }
         let n_keys = self.sort_by.len();
         let mut keys: LPooled<Vec<SortKey>> = LPooled::take();
+        let inner = self.cells.inner.lock();
         for row in self.table_rows.iter() {
             for sb in self.sort_by.iter() {
                 // XCR claude for claude: [bug/medium] The sort key is the cell's
@@ -746,10 +792,12 @@ impl<X: GXExt> DataTableW<X> {
                 // pin exact raw keys without sockets. The sort_is_a_total_order fixture now
                 // treats string NaN as text; live sorting still needs netidx sockets and
                 // could not be verified here.
-                let value = self.raw_value_for(row, &sb.column).unwrap_or(Value::Null);
-                keys.push(SortKey::of_value(&value));
+                let value =
+                    self.raw_cell_value(&inner, row, &sb.column).unwrap_or(&Value::Null);
+                keys.push(SortKey::of_value(value));
             }
         }
+        drop(inner);
         let mut order: LPooled<Vec<usize>> = (0..self.table_rows.len()).collect();
         order.sort_by(|&a, &b| {
             for (k, sb) in self.sort_by.iter().enumerate() {
@@ -872,5 +920,52 @@ mod role_tests {
                 assert_eq!(role.is_grid(&row, "load", desired), history == desired);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    #[test]
+    fn remove_grid_keeps_sort_values_and_other_cells() {
+        let mut inner = SharedCellsInner::new();
+        let row = Path::from("/r");
+        let col = ArcStr::from("c");
+        let other = ArcStr::from("other");
+        let id = SubId::new();
+        let other_id = SubId::new();
+        let grid = SubRole::Grid {
+            row_path: row.clone(),
+            col_name: col.clone(),
+            sparkline_history_secs: None,
+        };
+        let sort = SubRole::SortMarker { row_path: row.clone(), col_name: col.clone() };
+        inner.routing.insert(id, SubRoles::from_iter([grid.clone(), sort.clone()]));
+        inner.cells.insert((row.clone(), col.clone()), id);
+        inner.values.insert(id, Value::I64(12));
+        inner.formatted.insert(id, ArcStr::from("12"));
+        inner.cells.insert((row.clone(), other.clone()), other_id);
+        inner.routing.insert(
+            other_id,
+            SubRoles::from_iter([SubRole::Grid {
+                row_path: row.clone(),
+                col_name: other.clone(),
+                sparkline_history_secs: None,
+            }]),
+        );
+        inner.values.insert(other_id, Value::I64(42));
+        inner.remove_grid(&row, &col);
+        assert_eq!(inner.live_value(&row, &col), Some(&Value::I64(12)));
+        assert!(inner.routing[&id].as_slice() == [sort]);
+        assert_eq!(inner.formatted_for(id).as_deref(), Some("12"));
+        assert_eq!(inner.live_value(&row, &other), Some(&Value::I64(42)));
+        inner.routing.insert(id, SubRoles::from_iter([grid]));
+        inner.remove_grid(&row, &col);
+        assert!(!inner.cells.contains_key(&(row.clone(), col)));
+        assert!(!inner.values.contains_key(&id));
+        assert!(!inner.formatted.contains_key(&id));
+        assert!(!inner.routing.contains_key(&id));
+        assert_eq!(inner.live_value(&row, &other), Some(&Value::I64(42)));
     }
 }
