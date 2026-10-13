@@ -93,15 +93,11 @@ macro_rules! reader_error {
                 ";\n  \"[errors]\"\n}"
             ),
             |v: Result<&Value>| match v {
-                // CR claude for claude: [test-gap/low] `s.contains($tag)` does not rule
-                // out the InvalidCast re-tag the macro's comment promises. An
-                // InvalidCast message embeds the value it failed to cast, so a reader
-                // error re-tagged as InvalidCast prints `["InvalidCast", "can't cast
-                // [\"JsonErr\", ...] ..."]`, which still contains "JsonErr". All six
-                // reader_error fixtures would stay green. Fix: match the tag in its
-                // error position, `s.contains(concat!("[\"error\", [\"", $tag))`, and
-                // also require `!s.contains("InvalidCast")`. (tests-lib-b2-08)
-                Ok(Value::String(s)) => s.contains($tag),
+                // the tag in its error position, never inside an InvalidCast
+                Ok(Value::String(s)) => {
+                    s.contains(concat!("[\"error\", [\"", $tag, "\""))
+                        && !s.contains("InvalidCast")
+                }
                 _ => false,
             };
             FuseExpect::None
