@@ -4254,38 +4254,6 @@
         {
           "type": "SYMBOL",
           "name": "unary_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "apply"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "select"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "seq_block"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "try_with"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "any"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "cast"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "never"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "block"
         }
       ]
     },
@@ -5925,6 +5893,34 @@
         },
         {
           "type": "SYMBOL",
+          "name": "select"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "seq_block"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "try_with"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "any"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "cast"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "never"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "block"
+        },
+        {
+          "type": "SYMBOL",
           "name": "qop"
         },
         {
@@ -5976,15 +5972,15 @@
             },
             {
               "type": "PATTERN",
-              "value": "0x[0-9a-fA-F]+"
+              "value": "-?0[xX][0-9a-fA-F]+"
             },
             {
               "type": "PATTERN",
-              "value": "0b[01]+"
+              "value": "-?0[bB][01]+"
             },
             {
               "type": "PATTERN",
-              "value": "0o[0-7]+"
+              "value": "-?0[oO][0-7]+"
             },
             {
               "type": "PATTERN",
@@ -7495,10 +7491,6 @@
     [
       "variant_type_args",
       "variant_pattern"
-    ],
-    [
-      "_arithmetic_expression",
-      "_primary_expression"
     ],
     [
       "_expression",

@@ -2648,6 +2648,9 @@ mod tree_sitter_compat {
             ("let a: Array<i64> = []", "(array_type (primitive_type))"),
             ("select x { i64 as n => n }", "(primitive_type)"),
             ("let f = |x: i64| -> string x", "(primitive_type))) (primitive_type)"),
+            // every primary takes a postfix
+            ("any(a, b).f", "(struct_ref (any"),
+            ("-0XFF", "(number)"),
         ] {
             let tree = parser.parse(src, None).unwrap();
             let sexp = tree.root_node().to_sexp();

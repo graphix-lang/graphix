@@ -71,7 +71,6 @@ module.exports = grammar({
     // `apply` is both a top-level arithmetic expression and a postfix-chain
     // base (in `_primary_expression`), so an apply followed by e.g. `;` is
     // ambiguous until the next token; let the GLR parser keep both.
-    [$._arithmetic_expression, $._primary_expression],
     [$._expression, $.or_never],
     [$._expression, $.qop],
     [$.type_path, $.pattern_bind],
@@ -724,14 +723,6 @@ module.exports = grammar({
     _arithmetic_expression: $ => choice(
       $.binary_expression,
       $.unary_expression,
-      $.apply,
-      $.select,
-      $.seq_block,
-      $.try_with,
-      $.any,
-      $.cast,
-      $.never,
-      $.block,
     ),
 
     // Type ascription: Type:literal (e.g., i8:0, duration:0.5s, bytes:AQID==)
@@ -952,16 +943,6 @@ module.exports = grammar({
     parenthesized_expression: $ => seq('(', $._expression, ')'),
 
     // Primary expressions
-    // CR claude for claude: [bug/low] The accessors (struct_ref, tuple_ref, array_ref,
-    // array_slice, map_ref, apply) take a `_primary_expression` base. cast, never, any,
-    // select, seq_block, try_with and block live only in `_arithmetic_expression`, but
-    // the combine parser's `primary` includes them and its postfix loop applies to
-    // every primary. As a result `any(a, b).f` and `seq { {a: 1} }.a` pass `graphix
-    // --check` and are ERROR here. The number token also rejects `0XFF`, and lexes
-    // `-0xFF` as `-0` followed by `xFF`, while netidx's integer parser accepts both.
-    // Fix: move those forms into `_primary_expression`, and give the radix regexes
-    // `0[xX]`/`0[bB]`/`0[oO]` plus an optional leading `-`. probe:
-    // design/review-2026-10-12/repro/ide-tooling-04.gx (ide-tooling-04)
     _primary_expression: $ => choice(
       $.literal,
       // Trailing-dot float (e.g., 50.) — token.immediate ensures the dot must be
@@ -988,8 +969,16 @@ module.exports = grammar({
       $.array_slice,
       $.map_ref,
       // Apply is a postfix-chain base too, so `f(x).field`, `f(x)[i]`,
-      // `f(x){k}`, and `f(x)(y)` chain like the combine parser folds them.
+      // `f(x){k}`, and `f(x)(y)` chain like the combine parser folds them,
+      // as do the other forms its primary holds.
       $.apply,
+      $.select,
+      $.seq_block,
+      $.try_with,
+      $.any,
+      $.cast,
+      $.never,
+      $.block,
       $.qop,
       $.or_never,
       $.parenthesized_expression,
@@ -1015,12 +1004,10 @@ module.exports = grammar({
       /-?\d+(\.\d+)?[eE][+-]?\d+/,
       // Floats (require at least one digit after decimal to avoid consuming '..' operator)
       /-?\d+\.\d+/,
-      // Hexadecimal
-      /0x[0-9a-fA-F]+/,
-      // Binary
-      /0b[01]+/,
-      // Octal
-      /0o[0-7]+/,
+      // Hexadecimal, binary, octal
+      /-?0[xX][0-9a-fA-F]+/,
+      /-?0[bB][01]+/,
+      /-?0[oO][0-7]+/,
       // Integers (last to avoid matching prefixes of above)
       /-?\d+/,
     ))),
