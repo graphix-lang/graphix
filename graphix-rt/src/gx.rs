@@ -52,6 +52,13 @@ static TRACE_EVENTS: std::sync::LazyLock<Pool<Vec<TraceEvent>>> =
 static SETS: std::sync::LazyLock<Pool<Vec<(BindId, Value)>>> =
     std::sync::LazyLock::new(|| Pool::new(64, 64));
 
+/// An embedder's write, landed in arrival order with the others of its
+/// cycle: a set of variables, or a patch through a place reference.
+enum EmbedderWrite {
+    Set(GPooled<Vec<(BindId, Value)>>),
+    Patch(BindId, place::Path, Value),
+}
+
 /// Runtime-side trace recording (see [`GXHandle::trace_start`]).
 /// What gets recorded is a function of the traced program's own event
 /// stream, never of when control messages arrived: both budgets are
@@ -433,7 +440,7 @@ impl<X: GXExt> GX<X> {
     async fn do_cycle(
         &mut self,
         tasks: &mut Vec<(BindId, Value)>,
-        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
+        sets: &mut Vec<EmbedderWrite>,
         custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
         to_rt: &mut UnboundedReceiver<ToGX<X>>,
         input: &mut Vec<ToGX<X>>,
@@ -456,8 +463,13 @@ impl<X: GXExt> GX<X> {
             self.ctx.rt.timers.remove(&id);
             self.write(id, VarUpdate::Set(v), Via::Reply);
         }
-        for set in sets.drain(..) {
-            self.write_set(set);
+        for w in sets.drain(..) {
+            match w {
+                EmbedderWrite::Set(set) => self.write_set(set),
+                EmbedderWrite::Patch(root, path, v) => {
+                    self.write(root, VarUpdate::Patch(path, v), Via::Write)
+                }
+            }
         }
         let mut answering: LPooled<Vec<(ExprId, ExprId)>> = LPooled::take();
         self.calls_made(&mut answering);
@@ -545,42 +557,22 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    /// A write through the reference `cell`: a place patches its root, a
-    /// chained reference sets its binding, a chainless one sets the cell.
-    // CR claude for claude: [structure/low] set_deref is the third copy of the rule for
-    // where a write through a reference lands: a registered place, else the end of the
-    // byref chain, else the cell itself. graphix_compiler's bind::ref_target and
-    // ConnectDeref::resolve are the other two. If that rule changes (a new place kind,
-    // a chain through a place), a change made in only one copy silently skips the
-    // embedder path or the in-language path. Make bind::ref_target public (or have it
-    // return the WriteTarget) and call it from here and from ConnectDeref::resolve.
-    // (rt-08)
-    fn set_deref(
-        &mut self,
-        cell: BindId,
-        v: Value,
-        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
-    ) {
-        match self.ctx.rt.ref_path(&cell).cloned() {
-            // CR claude for claude: [bug/medium] A write through a place goes straight
-            // into var_updates. do_cycle delivers var_updates before the cycle's
-            // `sets`, so an embedder's set of the same root that arrived earlier in the
-            // same input batch lands after the patch and overwrites it. Example: `let s
-            // = {a: 1, b: 2}; let r = &mut s.a`, then gx.set(s, {a: 10, b: 20})
-            // followed by gx.set_deref(r, 5). s ends at {a: 10, b: 20} instead of {a:
-            // 5, b: 20}, and the reversed send order gives the same result. The
-            // chainless branch below goes through `sets` and keeps its order. Fix: make
-            // `sets` carry VarUpdate (Set or Patch) and push the patch as a one-element
-            // set, so do_cycle writes every embedder write in arrival order through
-            // write(). probe: design/review-2026-10-12/repro/rt-04.rs (rt-04)
-            Some((root, path)) => self.ctx.rt.patch_var(root, path, v),
+    /// A write through the reference `cell` (`ExecCtx::ref_target`): a
+    /// place patches its root, else the referent or the cell is set.
+    fn set_deref(&mut self, cell: BindId, v: Value, sets: &mut Vec<EmbedderWrite>) {
+        let (id, path) = {
+            let ctx = self.ctx.view();
+            let (id, path) = ctx.ref_target(cell);
+            (id, (!path.is_empty()).then(|| place::Path::from(path)))
+        };
+        sets.push(match path {
+            Some(path) => EmbedderWrite::Patch(id, path, v),
             None => {
-                let id = self.ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell);
                 let mut one = SETS.take();
                 one.push((id, v));
-                sets.push(one)
+                EmbedderWrite::Set(one)
             }
-        }
+        })
     }
 
     /// Readers of `id` update this cycle.
@@ -737,7 +729,7 @@ impl<X: GXExt> GX<X> {
 
     async fn process_input_batch(
         &mut self,
-        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
+        sets: &mut Vec<EmbedderWrite>,
         input: &mut Vec<ToGX<X>>,
         batch: &mut GPooled<Vec<GXEvent>>,
     ) {
@@ -818,10 +810,10 @@ impl<X: GXExt> GX<X> {
                 ToGX::Set { id, v } => {
                     let mut one = SETS.take();
                     one.push((id, v));
-                    sets.push(one)
+                    sets.push(EmbedderWrite::Set(one))
                 }
                 // one message, one set, one cycle (GXHandle::set_many)
-                ToGX::SetMany { sets: set } => sets.push(set),
+                ToGX::SetMany { sets: set } => sets.push(EmbedderWrite::Set(set)),
                 ToGX::DeleteCallable { id } => self.delete_callable(id),
                 ToGX::Call { id, args, answered } => {
                     if let Err(e) = self.call_callable(id, args, answered, sets) {
@@ -1340,7 +1332,7 @@ impl<X: GXExt> GX<X> {
         id: CallableId,
         args: ValArray,
         answered: bool,
-        sets: &mut Vec<GPooled<Vec<(BindId, Value)>>>,
+        sets: &mut Vec<EmbedderWrite>,
     ) -> Result<()> {
         let c =
             self.callables.get(&id).ok_or_else(|| anyhow!("unknown callable {id:?}"))?;
@@ -1380,7 +1372,7 @@ impl<X: GXExt> GX<X> {
         });
         let mut set = SETS.take();
         set.extend(c.args.iter().zip(args.iter()).map(|(id, v)| (*id, v.clone())));
-        sets.push(set);
+        sets.push(EmbedderWrite::Set(set));
         Ok(())
     }
 
@@ -1426,7 +1418,7 @@ impl<X: GXExt> GX<X> {
         mut to_rt: tmpsc::UnboundedReceiver<ToGX<X>>,
     ) -> Result<()> {
         let mut tasks: Vec<(BindId, Value)> = vec![];
-        let mut sets: Vec<GPooled<Vec<(BindId, Value)>>> = vec![];
+        let mut sets: Vec<EmbedderWrite> = vec![];
         let mut custom_tasks: Vec<(BindId, Box<dyn CustomBuiltinType>)> = vec![];
         let mut input = vec![];
         // Consecutive apparently-idle passes; reset by any ready work.

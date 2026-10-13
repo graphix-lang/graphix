@@ -1836,6 +1836,13 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
         r
     }
 
+    /// What the reference `cell` names: its registered place (a root and
+    /// a path), else the binding at the end of its byref chain, else the
+    /// cell itself; the path is empty but for a place.
+    pub fn ref_target(&self, cell: BindId) -> (BindId, &[node::place::Step]) {
+        node::bind::ref_target(self, cell)
+    }
+
     /// `v`, a value of `t`, with each reference a comparison meets
     /// replaced by what it names, `[root, step..]` (a reference's value
     /// is its own cell): equal results mean equal values, references
