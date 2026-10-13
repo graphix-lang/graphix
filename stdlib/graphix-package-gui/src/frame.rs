@@ -62,25 +62,29 @@ pub fn frame<X: GXExt>(
 
 /// Apply what widgets published, in order: every message goes to
 /// `deliver`, which hands it to the widgets and queues what they publish
-/// in turn, and a call then goes to the runtime.
+/// in turn, and returns whether it sent the call itself. Otherwise a call
+/// goes to the runtime here.
 pub fn apply_messages<X: GXExt>(
     gx: &GXHandle<X>,
     messages: impl IntoIterator<Item = Message>,
-    mut deliver: impl FnMut(&Message, &mut VecDeque<Message>),
+    mut deliver: impl FnMut(&Message, &mut VecDeque<Message>) -> bool,
 ) {
     let mut pending: VecDeque<Message> = messages.into_iter().collect();
     while let Some(msg) = pending.pop_front() {
         match msg {
             Message::Nop => {}
             Message::Call(..) => {
-                deliver(&msg, &mut pending);
+                let handled = deliver(&msg, &mut pending);
                 if let Message::Call(id, args) = msg
+                    && !handled
                     && let Err(e) = gx.call(id, args)
                 {
                     log::error!("failed to call: {e:?}");
                 }
             }
-            other => deliver(&other, &mut pending),
+            other => {
+                deliver(&other, &mut pending);
+            }
         }
     }
 }

@@ -209,6 +209,7 @@ impl GuiTestHarness {
             let mut shell = MessageShell::default();
             widget.on_message(msg, &mut shell);
             pending.extend(shell.out.drain(..));
+            shell.call_handled
         });
     }
 

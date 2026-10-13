@@ -110,6 +110,7 @@ pub enum TableKeyAction {
 #[derive(Default)]
 pub struct MessageShell {
     pub out: LPooled<Vec<Message>>,
+    pub call_handled: bool,
 }
 
 impl MessageShell {
@@ -521,9 +522,9 @@ fn shape_width(text: &str, size: f32, font: iced_core::Font) -> f32 {
 /// What a control sent through its handler and the runtime has not echoed
 /// yet. The control shows its newest send, so input that comes before an
 /// echo builds on what the user did, not on the stale value.
-pub(crate) struct Echoes<T>(std::collections::VecDeque<T>);
+pub(crate) struct Echoes<T>(std::collections::VecDeque<(ExprId, Option<T>)>);
 
-// CR claude for claude: [bug/medium] Only `delivered` retires a send, and it runs only
+// XCR claude for claude: [bug/medium] Only `delivered` retires a send, and it runs only
 // when the value ref updates. A send the handler never writes back is shown forever and
 // is never freed. This happens when the handler rejects the change, as input validation
 // does, or writes another variable. A checkbox over `false` whose handler writes
@@ -535,27 +536,75 @@ pub(crate) struct Echoes<T>(std::collections::VecDeque<T>);
 // (`Callable::call_answered` reports that point), so the control falls back to the
 // program's value. Have text_editor use `Echoes<ArcStr>` instead of its own queue.
 // Probe: design/review-2026-10-12/repro/gui-widgets-b-02.rs. (gui-widgets-b-02)
+// 2026-10-13 codex: rejected_*_returns_to_the_program_value and
+// an_echo_keeps_its_answer_slot_until_the_cycle_ends pin retirement.
+// text_editor_keeps_its_cursor_through_echoes pins deferred frame preparation.
+// Review frame timing: a call answer can precede downstream ref updates;
+// real winit delivery is not exercised by the headless tests.
 impl<T: PartialEq> Echoes<T> {
     pub(crate) fn new() -> Self {
         Self(std::collections::VecDeque::new())
     }
 
-    pub(crate) fn sent(&mut self, v: T) {
-        self.0.push_back(v)
+    pub(crate) fn send<X: GXExt>(
+        &mut self,
+        value: T,
+        handler: &Handler<X>,
+        msg: &Message,
+        shell: &mut MessageShell,
+    ) -> bool {
+        let (Some(f), Message::Call(id, args)) = (handler.f.as_ref(), msg) else {
+            return false;
+        };
+        if f.id() != *id {
+            return false;
+        }
+        shell.call_handled = true;
+        match futures::executor::block_on(f.call_answered(args.clone())) {
+            Ok(()) => {
+                self.0.push_back((f.answer, Some(value)));
+                true
+            }
+            Err(e) => {
+                log::error!("failed to call: {e:?}");
+                false
+            }
+        }
     }
 
-    /// The runtime delivered `v`: an echo retires itself and every earlier
-    /// send; any other value is the program's own and drops them all.
-    pub(crate) fn delivered(&mut self, v: &T) {
-        match self.0.iter().position(|p| p == v) {
-            Some(i) => drop(self.0.drain(..=i)),
-            None => self.0.clear(),
+    /// A value echo retires itself and earlier values; a program value
+    /// retires them all. Answer slots stay ordered until their cycles end.
+    pub(crate) fn delivered(&mut self, v: &T) -> bool {
+        let at = self.0.iter().position(|(_, p)| p.as_ref() == Some(v));
+        let n = at.map_or(self.0.len(), |i| i + 1);
+        for (_, p) in self.0.iter_mut().take(n) {
+            *p = None;
         }
+        at.is_some()
+    }
+
+    pub(crate) fn answered(&mut self, id: ExprId) -> bool {
+        self.0
+            .iter()
+            .position(|(answer, _)| *answer == id)
+            .and_then(|i| self.0.remove(i))
+            .is_some_and(|(_, v)| v.is_some())
+    }
+
+    pub(crate) fn retain_handler<X: GXExt>(&mut self, handler: &Handler<X>) -> bool {
+        let answer = handler.f.as_ref().map(|f| f.answer);
+        let mut changed = false;
+        self.0.retain(|(id, v)| {
+            let keep = Some(*id) == answer;
+            changed |= !keep && v.is_some();
+            keep
+        });
+        changed
     }
 
     /// What the control shows: its newest send, else the runtime's value.
     pub(crate) fn shown<'a>(&'a self, runtime: Option<&'a T>) -> Option<&'a T> {
-        self.0.back().or(runtime)
+        self.0.iter().rev().find_map(|(_, p)| p.as_ref()).or(runtime)
     }
 }
 
@@ -800,4 +849,30 @@ pub async fn compile_children<X: GXExt>(
     let mut pairs: LPooled<Vec<(Value, GuiW<X>)>> = LPooled::take();
     reconcile(&mut pairs, items, |item| compile(gx.clone(), item)).await?;
     Ok(pairs.drain(..).map(|(_, w)| w).collect())
+}
+
+#[cfg(test)]
+mod echo_tests {
+    use super::*;
+
+    #[test]
+    fn an_echo_keeps_its_answer_slot_until_the_cycle_ends() {
+        let answer = ExprId::new();
+        let mut echoes = Echoes::new();
+        echoes.0.extend([(answer, Some(1)), (answer, Some(2))]);
+        assert!(echoes.delivered(&1));
+        assert!(!echoes.answered(answer));
+        assert_eq!(echoes.shown(Some(&0)), Some(&2));
+        assert!(echoes.answered(answer));
+        assert_eq!(echoes.shown(Some(&0)), Some(&0));
+        assert!(echoes.0.is_empty());
+        echoes.0.extend([(answer, Some(1)), (answer, Some(2))]);
+        assert!(!echoes.delivered(&3));
+        echoes.0.push_back((answer, Some(4)));
+        assert!(!echoes.answered(answer));
+        assert!(!echoes.answered(answer));
+        assert_eq!(echoes.shown(Some(&3)), Some(&4));
+        assert!(echoes.answered(answer));
+        assert!(echoes.0.is_empty());
+    }
 }

@@ -1235,3 +1235,45 @@ async fn text_editor_can_type_after_a_programmatic_clear() -> Result<()> {
     assert_eq!(h.get_watched("test::doc"), Some(&Value::from("")));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_toggles_return_to_the_program_value() -> Result<()> {
+    for kind in ["checkbox", "toggler"] {
+        let code = format_compact!(
+            "{IMPORTS}; let seen = false; let result = {kind}(#on_toggle: |v| seen <- v, &false)"
+        );
+        let mut h = InteractionHarness::new(&code).await?;
+        h.watch("test::seen").await?;
+        for _ in 0..2 {
+            let msgs = h.click(WIDGET_HIT);
+            expect_call_with_args(&msgs, |a| a.first() == Some(&Value::Bool(true)));
+            h.dispatch_calls(&msgs).await?;
+            assert_eq!(h.get_watched("test::seen"), Some(&Value::Bool(true)));
+        }
+    }
+    Ok(())
+}
+
+async fn rejected_text_edit(kind: &str, handler: &str) -> Result<()> {
+    let code = format_compact!(
+        "{IMPORTS}; let seen = \"\"; let result = {kind}(#{handler}: |s| seen <- s, &\"\")"
+    );
+    let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 100.0)).await?;
+    h.watch("test::seen").await?;
+    h.click(WIDGET_HIT);
+    for key in ["a", "b"] {
+        h.live(&[char_key(key)]).await?;
+        assert_eq!(h.get_watched("test::seen"), Some(&Value::from(key)));
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_text_input_returns_to_the_program_value() -> Result<()> {
+    rejected_text_edit("text_input", "on_input").await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_text_editor_returns_to_the_program_value() -> Result<()> {
+    rejected_text_edit("text_editor", "on_edit").await
+}

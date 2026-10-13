@@ -437,13 +437,16 @@ impl<X: GXExt> GuiHandler<X> {
     fn apply_messages(&mut self) {
         let windows = &mut self.windows;
         apply_messages(&self.gx, self.messages.drain(..), |msg, pending| {
+            let mut handled = false;
             for tw in windows.values_mut() {
                 let mut shell = MessageShell::default();
                 if tw.content.w.on_message(msg, &mut shell) {
                     tw.needs_redraw = true;
                 }
                 pending.extend(shell.out.drain(..));
+                handled |= shell.call_handled;
             }
+            handled
         });
     }
 }

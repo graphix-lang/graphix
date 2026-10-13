@@ -63,6 +63,8 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         self.on_submit
             .update(rt, &self.gx, id, v, &mut changed)
             .context("text_input on_submit recompile")?;
+        changed |= self.echoes.answered(id);
+        changed |= self.echoes.retain_handler(&self.on_input);
         Ok(changed)
     }
 
@@ -102,11 +104,10 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
         ti.into()
     }
 
-    fn on_message(&mut self, msg: &Message, _shell: &mut MessageShell) -> bool {
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
         match call_arg(msg, self.on_input.id()) {
             Some(Value::String(s)) => {
-                self.echoes.sent(s.clone());
-                true
+                self.echoes.send(s.clone(), &self.on_input, msg, shell)
             }
             _ => false,
         }

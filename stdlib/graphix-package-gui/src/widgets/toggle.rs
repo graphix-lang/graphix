@@ -70,6 +70,8 @@ macro_rules! toggle_widget {
                 self.on_toggle
                     .update(rt, &self.gx, id, v, &mut changed)
                     .context(concat!($label, " on_toggle"))?;
+                changed |= self.echoes.answered(id);
+                changed |= self.echoes.retain_handler(&self.on_toggle);
                 Ok(changed)
             }
 
@@ -79,11 +81,10 @@ macro_rules! toggle_widget {
                 *self.echoes.shown(self.$state.t.as_ref()).unwrap_or(&false)
             }
 
-            fn note_toggle(&mut self, msg: &Message) -> bool {
+            fn note_toggle(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
                 match call_arg(msg, self.on_toggle.id()) {
                     Some(Value::Bool(b)) => {
-                        self.echoes.sent(*b);
-                        true
+                        self.echoes.send(*b, &self.on_toggle, msg, shell)
                     }
                     _ => false,
                 }
@@ -104,8 +105,8 @@ impl<X: GXExt> GuiWidget<X> for CheckboxW<X> {
         self.do_update(rt, id, v)
     }
 
-    fn on_message(&mut self, msg: &Message, _shell: &mut MessageShell) -> bool {
-        self.note_toggle(msg)
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+        self.note_toggle(msg, shell)
     }
 
     fn view(&self) -> IcedElement<'_> {
@@ -145,8 +146,8 @@ impl<X: GXExt> GuiWidget<X> for TogglerW<X> {
         self.do_update(rt, id, v)
     }
 
-    fn on_message(&mut self, msg: &Message, _shell: &mut MessageShell) -> bool {
-        self.note_toggle(msg)
+    fn on_message(&mut self, msg: &Message, shell: &mut MessageShell) -> bool {
+        self.note_toggle(msg, shell)
     }
 
     fn view(&self) -> IcedElement<'_> {

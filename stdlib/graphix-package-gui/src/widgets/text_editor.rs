@@ -1,4 +1,6 @@
-use super::{GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell};
+use super::{
+    Echoes, GuiW, GuiWidget, Handler, IcedElement, Message, MessageShell, call_arg,
+};
 use crate::types::{FontV, PaddingV, TextSizeV};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
@@ -8,7 +10,6 @@ use graphix_rt::{GXExt, GXHandle};
 use iced_core::text::editor::{Cursor, Position};
 use iced_widget::{self as widget, text_editor};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
-use std::collections::VecDeque;
 
 graphix_rt::props! {
     struct Props {
@@ -30,9 +31,8 @@ pub(crate) struct TextEditorW<X: GXExt> {
     p: Props<X>,
     on_edit: Handler<X>,
     editor: text_editor::Content,
-    /// The texts sent through on_edit whose echoes have not come back, in
-    /// order: an echo is the editor's own text and rebuilds nothing.
-    pending: VecDeque<ArcStr>,
+    echoes: Echoes<ArcStr>,
+    sync_content: bool,
 }
 
 impl<X: GXExt> TextEditorW<X> {
@@ -44,7 +44,14 @@ impl<X: GXExt> TextEditorW<X> {
         .context("text_editor")?;
         let editor =
             text_editor::Content::with_text(p.content.t.as_deref().unwrap_or(""));
-        Ok(Box::new(Self { gx, p, on_edit, editor, pending: VecDeque::new() }))
+        Ok(Box::new(Self {
+            gx,
+            p,
+            on_edit,
+            editor,
+            echoes: Echoes::new(),
+            sync_content: false,
+        }))
     }
 }
 
@@ -56,34 +63,33 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("text_editor")?;
+        let mut sync = self.echoes.answered(id);
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t
         {
-            // CR claude for claude: [structure/low] This is Echoes::delivered written a
-            // second time: the `pending` queue, retiring an echo and every earlier
-            // send, and dropping them all on a foreign value. Every change to the echo
-            // rule has to be made in both places. The only extra thing text_editor
-            // needs is to know whether the delivery was an echo. Fix: make
-            // Echoes::delivered return whether `v` was an echo. Hold an
-            // `Echoes<ArcStr>` in TextEditorW, rebuild the editor only when delivered
-            // returns false and the text differs from the editor's, and call `sent`
-            // where on_edit fires. (gui-widgets-b-06)
-            match self.pending.iter().position(|p| p == text) {
-                // an echo: what it answered and every earlier send are done
-                Some(i) => drop(self.pending.drain(..=i)),
-                None if *text == *self.editor.text() => (),
-                None => {
-                    let cursor = self.editor.cursor();
-                    self.editor = text_editor::Content::with_text(text);
-                    self.editor.move_to(clamp_cursor(&self.editor, cursor));
-                    self.pending.clear();
-                }
-            }
+            sync |= !self.echoes.delivered(text);
         }
         self.on_edit
             .update(rt, &self.gx, id, v, &mut changed)
             .context("text_editor on_edit recompile")?;
-        Ok(changed)
+        sync |= self.echoes.retain_handler(&self.on_edit);
+        self.sync_content |= sync;
+        Ok(changed || sync)
+    }
+
+    fn before_view(&mut self) -> bool {
+        if !std::mem::take(&mut self.sync_content) {
+            return false;
+        }
+        let text =
+            self.echoes.shown(self.p.content.t.as_ref()).map_or("", |v| v.as_str());
+        if text == self.editor.text() {
+            return false;
+        }
+        let cursor = self.editor.cursor();
+        self.editor = text_editor::Content::with_text(text);
+        self.editor.move_to(clamp_cursor(&self.editor, cursor));
+        true
     }
 
     fn view(&self) -> IcedElement<'_> {
@@ -128,7 +134,6 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                     Some(cid) => {
                         self.editor.perform(action.clone());
                         let text = ArcStr::from(self.editor.text());
-                        self.pending.push_back(text.clone());
                         shell.publish(Message::Call(
                             cid,
                             ValArray::from_iter([Value::String(text)]),
@@ -137,7 +142,13 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
                     }
                 }
             }
-            Message::Nop | Message::Call(..) | Message::Table(..) => false,
+            Message::Call(..) => match call_arg(msg, self.on_edit.id()) {
+                Some(Value::String(text)) => {
+                    self.echoes.send(text.clone(), &self.on_edit, msg, shell)
+                }
+                _ => false,
+            },
+            Message::Nop | Message::Table(..) => false,
         }
     }
 }
