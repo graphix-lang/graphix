@@ -1,17 +1,9 @@
 //! Wake catch-up (design/wake_catchup.md): a reselected arm recomputes
-//! from the world as it stands and never re-raises events. This pins
-//! the ruled values themselves (findings/wake-catchup-sep2026/ pins
+//! from the world as it stands, reading standing values stale, and
+//! re-raises only the fires no selected reader saw. This pins the ruled
+//! values themselves (graphix-fuzz/findings/wake-catchup-sep2026/ pins
 //! engine agreement).
 
-// CR claude for claude: [doc-drift/low] The module doc above says a reselected arm
-// 'never re-raises events'. The rule (design/wake_catchup.md) is that a wake re-raises
-// the fires no selected reader saw, once, at their current value, and the code follows
-// the rule, so the doc is the stale side. Say instead: 'recomputes from the world as it
-// stands, reading standing values stale, and re-raises only fires no selected reader
-// saw'. The corpus path it cites is graphix-fuzz/findings/wake-catchup-sep2026/.
-// Separately, wake_recompute_table separates its epochs with three throwaway
-// `gx.compile("i64:0")` round trips each. `gx.wait_idle().await?` says what is meant.
-// (tests-lib-b2-11)
 use ahash::AHashMap;
 use anyhow::{Context, Result, bail};
 use graphix_compiler::expr::VfsResolver;
@@ -48,17 +40,11 @@ async fn wake_recompute_table() -> Result<()> {
     let cond = graphix_package_core::testing::find_bind_id(&compiled.env, "test::cond")?;
     let n = graphix_package_core::testing::find_bind_id(&compiled.env, "test::n")?;
     // settle init, then drive the table's three epochs
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
+    gx.wait_idle().await?;
     gx.set_many([(cond, Value::Bool(true))])?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
+    gx.wait_idle().await?;
     gx.set_many([(n, Value::I64(20))])?;
-    for _ in 0..3 {
-        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
-    }
+    gx.wait_idle().await?;
     gx.set_many([(cond, Value::Bool(false))])?;
     let deadline = tokio::time::sleep(Duration::from_secs(30));
     tokio::pin!(deadline);
