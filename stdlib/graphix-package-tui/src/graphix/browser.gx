@@ -98,6 +98,12 @@ let browser = |
                 // arrives, not when the path changes. Keep the stale-read guard so no row
                 // path is published while the listing is empty. Unverified: the reviewer's
                 // report, not checked by a verifier. (x-rerun-4-02)
+                // 2026-10-13 codex: Clearing an empty selection requires nullable output
+                // references and migration of ../netidx/netidx-tools/src/browser/browser.gx
+                // (selected_row/selected_path and their Enter/write handlers), outside this
+                // task scope. Keep listing replies keyed to their requested path and reset
+                // selection on a new path reply. The probe cannot run here: the sandbox
+                // refuses the netidx resolver socket with Operation not permitted.
                 x => { total: x - len - 4, cols, widths }
             }
         })
@@ -115,6 +121,12 @@ let browser = |
     // arrives (trigger it on `structure`, not on `path`). Also make both outputs `&mut
     // [string, null]` (the .gxi and the callers too), and write null when visible_rows
     // is empty. probe: design/review-2026-10-12/repro/gx-ui-03.gx (gx-ui-03)
+    // 2026-10-13 codex: Clearing an empty selection requires nullable output
+    // references and migration of ../netidx/netidx-tools/src/browser/browser.gx
+    // (selected_row/selected_path and their Enter/write handlers), outside this
+    // task scope. Keep listing replies keyed to their requested path and reset
+    // selection on a new path reply. The probe cannot run here: the sandbox
+    // refuses the netidx resolver socket with Operation not permitted.
     *selected_row <- row_path;
     *selected_path <- select mode {
         `List => row_path,
