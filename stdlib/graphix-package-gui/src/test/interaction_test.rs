@@ -1116,3 +1116,33 @@ async fn a_menu_bar_heading_toggles_its_menu_closed() -> Result<()> {
     assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(1)));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_menu_over_tooltip_can_choose_an_item() -> Result<()> {
+    for tooltip in [true, false] {
+        let child =
+            if tooltip { r#"tooltip(#tip: &text(&"tip"), &child)"# } else { "child" };
+        let code = format_compact!(
+            r#"
+            {IMPORTS};
+            let calls = 0;
+            let child = container(#width: &`Fill, #height: &`Fill, &text(&"target"));
+            let result = menu::context_menu(
+                &[menu::action(#on_click: |t| calls <- t ~ calls + 1, &"Choose")], &{child}
+            )
+        "#
+        );
+        let mut h =
+            InteractionHarness::with_viewport(&code, Size::new(400.0, 300.0)).await?;
+        h.watch("test::calls").await?;
+        right_click(&mut h, Point::new(50.0, 50.0));
+        let msgs = h.click(Point::new(80.0, 60.0));
+        h.dispatch_calls(&msgs).await?;
+        assert_eq!(
+            h.get_watched("test::calls"),
+            Some(&Value::I64(1)),
+            "tooltip={tooltip}"
+        );
+    }
+    Ok(())
+}

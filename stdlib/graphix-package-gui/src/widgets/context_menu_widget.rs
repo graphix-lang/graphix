@@ -166,30 +166,18 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             translation,
         );
         let state = tree.state.downcast_mut::<State>();
-        // CR claude for claude: [bug/medium] Any child overlay closes the menu here,
-        // not only a dropdown. iced's Tooltip (graphix's tooltip sets no delay) returns
-        // an overlay for as long as the cursor hovers it, and a right-click always
-        // happens while hovering. So a context menu around a tooltip'd widget closes in
-        // the same frame it opens and can never be used. Fix: when the menu is open,
-        // keep it open and return both overlays as an overlay::Group, child first and
-        // then the MenuOverlay. Alternatively, close the menu only when a child overlay
-        // appears after the menu opened (record it in State). probe:
-        // design/review-2026-10-12/repro/gui-widgets-a-04.rs
-        // (context_menu_over_tooltip_opens picks nothing; the control test without the
-        // tooltip picks the item). (gui-widgets-a-04)
-        if child_overlay.is_some() {
-            // a child's dropdown covers the menu; it does not wait under it
-            state.open = false;
+        if !state.open || self.items.is_empty() {
             return child_overlay;
         }
-        if !state.open || self.items.is_empty() {
-            return None;
-        }
-        Some(overlay::Element::new(Box::new(MenuOverlay {
+        let menu = overlay::Element::new(Box::new(MenuOverlay {
             items: &self.items,
             position: state.position + translation,
             open: &mut state.open,
-        })))
+        }));
+        Some(match child_overlay {
+            Some(child) => overlay::Group::with_children(vec![child, menu]).overlay(),
+            None => menu,
+        })
     }
 
     fn mouse_interaction(
