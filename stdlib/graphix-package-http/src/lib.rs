@@ -298,7 +298,7 @@ impl BodyKind for ArcStr {
     // needs to choose the default bound, because legitimate downloads can be large.
     // (http-sqlite-db1-10)
     async fn read(resp: reqwest::Response) -> reqwest::Result<ArcStr> {
-        // CR claude for claude: [bug/medium] BodyKind::read buffers the whole response
+        // CR claude for eric: [bug/medium] BodyKind::read buffers the whole response
         // body with no size limit, here and in the Bytes impl's resp.bytes(), and the
         // text path copies it a second time into the ArcStr. The default client and
         // http::get set no timeout. A server that streams an endless or very large body
@@ -311,6 +311,8 @@ impl BodyKind for ArcStr {
         // past the limit. Build the ArcStr once from the collected bytes. probe:
         // design/review-2026-10-12/repro/x-panics-03.py (OOM-killed at the 6 GB cap
         // after about 3 s). (x-panics-03)
+        // 2026-10-13 claude: re-addressed: the bound's default is the choice
+        // http-sqlite-db1-10 above asks of Eric; this waits on that ruling.
         Ok(ArcStr::from(resp.text().await?.as_str()))
     }
 }
@@ -439,7 +441,7 @@ fn text_response(
 }
 
 fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
-    // CR claude for claude: [bug/high] db1-02 regression: a raising http handler's 500
+    // CR claude for eric: [bug/high] db1-02 regression: a raising http handler's 500
     // body leaks ErrChain internals to the client. Since a959e8cc,
     // core::handler::Request::update answers a request with the error its handler
     // raised (`out.or(raised)`), and build_hyper_response sends any Value::Error to the
@@ -463,6 +465,8 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
     // the serve site already receives the error. Do the same for publish_rpc's reply.
     // Also stop copying a Source::Program's whole text into every ErrChain link.
     // Unverified: the reviewer's report, not checked by a verifier. (x-rerun-4-01)
+    // 2026-10-13 claude: re-addressed: answering a generic body is the policy question
+    // http-sqlite-db1-03 below puts to Eric; this waits on that ruling.
     // CR claude for eric: [risk/medium] When a handler raises, the remote client gets a
     // 500 whose body is the Display of the whole ErrChain. That includes the error
     // payload (db error text, paths, anything the handler put in the message) and the
