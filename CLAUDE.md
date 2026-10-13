@@ -994,7 +994,8 @@ test is a result.
   the book when docs or examples change.
 - Examples in `book/src/examples/` are documentation and test corpus at
   once: each is included by a book page, and `graphix-shell/tests/
-  examples_compile.rs` typechecks every one in the plain gate; TUI/GUI
+  examples_compile.rs` builds every one (check, elaboration, fusion, as
+  `graphix --expand` does) in the plain gate; TUI/GUI
   examples are run by hand
   (`cargo run --bin graphix -- examples/tui/barchart_basic.gx`).
 - A new compiler walk must name the loss without it before it is added;
