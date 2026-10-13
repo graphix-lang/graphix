@@ -214,3 +214,37 @@ run_with_tempdir! {
     },
     expect_error
 }
+
+// A sheet reads as its grid from A1, a cell not given null.
+run_with_tempdir! {
+    name: xls_read_pads_to_a1,
+    code: "{{ let data = sys::fs::read_all_bin(\"{}\")$; xls::read(data, \"Sheet1\")$ }}",
+    setup: |td| {
+        let path = td.path().join("offset.xlsx");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        wb.add_worksheet().write(2, 2, 1).unwrap();
+        wb.save(&path).unwrap();
+        path
+    },
+    expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
+        assert_eq!(v.to_string(), "[[null, null, null], [null, null, null], [null, null, f64:1.]]");
+        Ok(())
+    }
+}
+
+// One far cell in a tiny file is a grid past the cap: refused, never built.
+run_with_tempdir! {
+    name: xls_read_refuses_a_far_cell,
+    code: "{{ let data = sys::fs::read_all_bin(\"{}\")$; xls::read(data, \"Sheet1\") }}",
+    setup: |td| {
+        let path = td.path().join("far.xlsx");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        wb.add_worksheet().write(99_999, 16_383, 1).unwrap();
+        wb.save(&path).unwrap();
+        path
+    },
+    expect: |v: ::netidx::subscriber::Value| -> ::anyhow::Result<()> {
+        assert!(v.to_string().contains("XlsErr") && v.to_string().contains("cells"), "{v}");
+        Ok(())
+    }
+}
