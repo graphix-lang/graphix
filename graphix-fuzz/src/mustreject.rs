@@ -408,13 +408,7 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
         let pinned =
             types.of(x).first().is_some_and(|t| concrete(t) && primitive(t).is_some());
         // a referent whose uses decide its type: the annotation would decide it
-        let open = stmts[..si].iter().rev().find_map(|s| match &s.kind {
-            ExprKind::Bind(d) if matches!(&d.pattern, StructurePattern::Bind(n) if x.to_string() == *n.name) => {
-                Some(d.typ.is_none() && (typemorph::open_value(&d.value) || types.cell(&d.value)))
-            }
-            _ => None,
-        });
-        if pinned && open != Some(true) && widens < cap {
+        if pinned && !open_init(types, stmts, si, x) && widens < cap {
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
             let cand = rebind(Some(any), b.value.clone());
             out.extend(finish(Family::RefWiden, si, &cand, |back, _| {
@@ -568,6 +562,37 @@ fn opaque(t: &Type) -> bool {
         Some(Type::Map { key, value }) => opaque(key) || opaque(value),
         Some(_) => false,
     })
+}
+
+/// Whether `value`, the initializer of a statement at `si` in `block`, is
+/// over ⊥: its type a cell its uses decide, so a writer or an annotation
+/// decides it rather than being refused. A call's return is decided by
+/// its callee and its arguments, open only through an open argument; an
+/// unannotated let read by name shares its initializer's cell.
+fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
+    if typemorph::open_value(value) {
+        return true;
+    }
+    match &typemorph::unparen(value).kind {
+        ExprKind::Apply(ap) => {
+            ap.args.iter().any(|(_, a)| open_init(types, block, si, a))
+        }
+        ExprKind::Ref { name } => {
+            let name = name.to_string();
+            block[..si.min(block.len())]
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(j, s)| match &s.kind {
+                    ExprKind::Bind(d) if matches!(&d.pattern, StructurePattern::Bind(n) if *n.name == name) => {
+                        Some(d.typ.is_none() && open_init(types, block, j, &d.value))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| types.cell(value))
+        }
+        _ => types.cell(value),
+    }
 }
 
 /// A structure that matches any value: a bind, `_`, or an or-pattern
@@ -1104,22 +1129,9 @@ fn retype(
         };
         // a let over ⊥ (its type a cell the first use decides) takes a
         // writer's type rather than refusing it
-        // CR claude for claude: [test-gap/medium] `types.cell(stmt)` is meant to skip a
-        // let over ⊥, but `record_expr_types` marks any node whose type is a
-        // `Type::TVar`, and `Bind::compile` keeps the initializer's type as the let's
-        // type. So every `let v = f(..)` (a call's return cell), and every let over a
-        // reference to such a binding, is skipped here and in `widen_through_let`.
-        // These are the most common lets in generated code, and their writer mutant is
-        // refused (`v <- "tm"`: 'v is i64 and cannot hold string'). The fix is to
-        // decide "over ⊥" from the initializer rather than the let. A ⊥ initializer's
-        // own type is Bottom (`disjoint_literal` already turns it down), and a call is
-        // never open, as the `open` closure in this file already rules. Mark the let as
-        // `cell` only when Bind seeds a fresh cell (its Bottom branch), so a reference
-        // to such a let still counts, and add a call-let case to the lib test's retype
-        // sites. probe:
-        // design/review-2026-10-12/repro/fuzz-mutate-retype-skips-call-lets.gx
-        // (fuzz-mutate-05)
-        if matches!(b.value.kind, ExprKind::Lambda(_)) || types.cell(stmt) {
+        if matches!(b.value.kind, ExprKind::Lambda(_))
+            || open_init(types, block, si, &b.value)
+        {
             continue;
         }
         let Some(t) = types.of(&b.value).first() else { continue };
@@ -1216,7 +1228,9 @@ fn widen_through_let(
         let (StructurePattern::Bind(w), None, false) = (&b.pattern, &b.typ, b.rec) else {
             continue;
         };
-        if matches!(b.value.kind, ExprKind::Lambda(_)) || types.cell(stmt) {
+        if matches!(b.value.kind, ExprKind::Lambda(_))
+            || open_init(types, block, si, &b.value)
+        {
             continue;
         }
         let Some(t) = types.of(&b.value).first() else { continue };

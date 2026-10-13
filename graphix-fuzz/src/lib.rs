@@ -5135,6 +5135,8 @@ mod tests {
             ("{ let s = {x: 1}; s.x }", "widen-consumer#"),
             ("{ let f = |x: i64| -> i64 x; f(3) }", "widen-consumer#"),
             ("{ let v = 1; let w = v + 1; w }", "retype#"),
+            // a call's return is no cell its uses decide
+            ("{ let f = |x: i64| -> i64 x; let v = f(1); let w = v + 1; w }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-consumer#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
