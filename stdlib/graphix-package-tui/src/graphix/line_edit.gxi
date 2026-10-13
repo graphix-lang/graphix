@@ -11,7 +11,7 @@ val state: fn(initial: string) -> State;
 /// (line breaks become spaces) inserts at the cursor; Backspace and
 /// Delete remove; Left, Right, Home, and End move — or null for an
 /// event the editor does not consume, a Ctrl or Alt chord included. `handle` is this applied
-/// through a reference (a place reference such as `&editors[i]`
+/// through a reference (a place reference such as `&mut editors[i]`
 /// reaches an editor held in a collection).
 val step: fn(st: State, e: input_handler::Event) -> [State, null];
 
