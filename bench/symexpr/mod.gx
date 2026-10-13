@@ -1,0 +1,64 @@
+// The symbolic workload `symbolic` and `par_symbolic` share: a balanced
+// product tree of (x + c_i) terms built from a seed (the constants derive
+// from it, defeating constant folding), differentiated (the product rule
+// roughly doubles the tree), simplified (constant folding and 0/1
+// identities, a nested select on the simplified child pair) and
+// evaluated at a point.
+//
+// Recursive ADTs ride the opaque two-word kernel ABI: build, deriv and
+// eval_at fuse; simplify, whose tuple-of-variant patterns do not lower,
+// node-walks.
+type Expr = [`Num(f64), `Var, `Add(Expr, Expr), `Mul(Expr, Expr)];
+
+let rec build = |width: i64, idx: i64, s: i64| -> Expr
+  select width {
+    1 => `Add(`Var, `Num(cast<f64>((s + idx * 37) % 19 - 9)$ / 10.0)),
+    _ => {
+      let half = width / 2;
+      `Mul(build(half, idx, s), build(width - half, idx + half, s))
+    }
+  };
+
+let rec deriv = |e: Expr| -> Expr
+  select e {
+    `Num(_) => `Num(0.0),
+    `Var => `Num(1.0),
+    `Add(a, b) => `Add(deriv(a), deriv(b)),
+    `Mul(a, b) => `Add(`Mul(deriv(a), b), `Mul(a, deriv(b)))
+  };
+
+let rec simplify = |e: Expr| -> Expr
+  select e {
+    `Num(x) => `Num(x),
+    `Var => `Var,
+    `Add(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x + y),
+      (`Num(x), sb) if x == 0.0 => sb,
+      (sa, `Num(y)) if y == 0.0 => sa,
+      (sa, sb) => `Add(sa, sb)
+    },
+    `Mul(a, b) => select (simplify(a), simplify(b)) {
+      (`Num(x), `Num(y)) => `Num(x * y),
+      (`Num(x), _) if x == 0.0 => `Num(0.0),
+      (_, `Num(y)) if y == 0.0 => `Num(0.0),
+      (`Num(x), sb) if x == 1.0 => sb,
+      (sa, `Num(y)) if y == 1.0 => sa,
+      (sa, sb) => `Mul(sa, sb)
+    }
+  };
+
+let rec eval_at = |e: Expr, x: f64| -> f64
+  select e {
+    `Num(c) => c,
+    `Var => x,
+    `Add(a, b) => eval_at(a, x) + eval_at(b, x),
+    `Mul(a, b) => eval_at(a, x) * eval_at(b, x)
+  };
+
+// one seed's tree, n terms wide: build -> deriv -> simplify -> eval
+let run_one = |n: i64, s: i64| -> f64 {
+  let e = build(n, 0, s);
+  let d = simplify(deriv(e));
+  let x = 0.3 + cast<f64>(s % 5)$ * 0.1;
+  eval_at(d, x) + eval_at(e, x)
+}

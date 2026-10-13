@@ -4,6 +4,8 @@
 // boundaries (iter, ~, connect scheduling) can never fuse — the bench
 // measures how much the PER-EVENT sync compute (the window folds) gains
 // from fusion, reported as events/sec.
+mod winstats;
+
 let n = 5000;
 let wsize = 64;
 let t0 = sys::time::now(0);
@@ -13,21 +15,7 @@ let prices = array::init(n, |i| {
   100.0 + cast<f64>(x)$ / 10.0
 });
 let tick = array::iter(prices);
-let win: Array<f64> = [];
-win <- array::window(#n: wsize, tick ~ win, tick);
-let w = select array::len(win) {
-  0 => never(),
-  _ => win
-};
-let len = cast<f64>(array::len(w))$;
-let sum = array::fold(w, 0.0, |a, x| a + x);
-let mean = sum / len;
-let variance = array::fold(w, 0.0, |a, x| a + (x - mean) * (x - mean)) / len;
-let lo = array::fold(w, 1.0e9, |a, x| select x < a { true => x, false => a });
-let ema = 100.0;
-ema <- tick ~ (ema * 0.9 + tick * 0.1);
-let chk = 0.0;
-chk <- variance ~ (chk + mean + variance + ema + lo);
+let (variance, chk) = winstats::stats(wsize, tick);
 let processed = count(chk) - 1;
 let done = select processed {
   p if p < n => never(),

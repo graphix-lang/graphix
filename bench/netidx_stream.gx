@@ -5,6 +5,8 @@
 // drop a tick). The round trip is expected to dominate per-event cost;
 // the bench measures how much end-to-end throughput the fused per-event
 // compute buys on top of it.
+mod winstats;
+
 let n = 2000;
 let wsize = 64;
 let path = "/local/bench/stream/price";
@@ -17,21 +19,7 @@ let tick_out = {
 };
 sys::net::publish(path, tick_out)$;
 let tick: f64 = sys::net::subscribe(path)$;
-let win: Array<f64> = [];
-win <- array::window(#n: wsize, tick ~ win, tick);
-let w = select array::len(win) {
-  0 => never(),
-  _ => win
-};
-let len = cast<f64>(array::len(w))$;
-let sum = array::fold(w, 0.0, |a, x| a + x);
-let mean = sum / len;
-let variance = array::fold(w, 0.0, |a, x| a + (x - mean) * (x - mean)) / len;
-let lo = array::fold(w, 1.0e9, |a, x| select x < a { true => x, false => a });
-let ema = 100.0;
-ema <- tick ~ (ema * 0.9 + tick * 0.1);
-let chk = 0.0;
-chk <- variance ~ (chk + mean + variance + ema + lo);
+let (variance, chk) = winstats::stats(wsize, tick);
 idx <- select variance ~ idx {
   i if i < n - 1 => i + 1,
   _ => never()

@@ -1,0 +1,23 @@
+// The per-tick pipeline `stream_stats` and `netidx_stream` share: a
+// sliding window of the last `wsize` ticks, its mean, variance and
+// minimum, and an EMA of the ticks. `variance` fires once per tick
+// after the first window fills; `chk` folds every statistic so the
+// result depends on each.
+let stats = |wsize: i64, tick: f64| -> (f64, f64) {
+  let win: Array<f64> = [];
+  win <- array::window(#n: wsize, tick ~ win, tick);
+  let w = select array::len(win) {
+    0 => never(),
+    _ => win
+  };
+  let len = cast<f64>(array::len(w))$;
+  let sum = array::fold(w, 0.0, |a, x| a + x);
+  let mean = sum / len;
+  let variance = array::fold(w, 0.0, |a, x| a + (x - mean) * (x - mean)) / len;
+  let lo = array::fold(w, 1.0e9, |a, x| select x < a { true => x, false => a });
+  let ema = 100.0;
+  ema <- tick ~ (ema * 0.9 + tick * 0.1);
+  let chk = 0.0;
+  chk <- variance ~ (chk + mean + variance + ema + lo);
+  (variance, chk)
+}
