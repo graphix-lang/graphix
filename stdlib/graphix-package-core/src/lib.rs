@@ -1318,33 +1318,38 @@ pub fn sort_values(
     numeric: bool,
     vals: impl Iterator<Item = Value>,
 ) -> Option<LPooled<Vec<Value>>> {
-    // CR claude for claude: [perf/medium] With #numeric, sort_values casts both
-    // operands to f64 inside every comparison through cn. For a String that cast runs
-    // the full Value parser, so array::sort and list::sort do 2·n·log n parses where n
-    // would do: 30k numeric strings sort in ~5.6 s against ~20 ms without #numeric
-    // (probe: design/review-2026-10-12/repro/collections-str-04.gx). Cast each element
-    // once: decorate into an LPooled<Vec<(Value, Value)>> of (key, value), stable-sort
-    // by key (reversed for Descending), then strip the keys. Avoid sort_by_cached_key,
-    // which allocates its index vector on every call. Also reported as (x-alloc-02).
-    // (collections-str-04)
-    fn cn(v: &Value) -> Value {
-        v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
-    }
-    let mut buf: LPooled<Vec<Value>> = vals.collect();
-    let sort = |buf: &mut LPooled<Vec<Value>>| match (dir, numeric) {
-        ("Ascending", true) => Some(buf.sort_by(|a, b| cn(a).cmp(&cn(b)))),
-        ("Ascending", false) => Some(buf.sort()),
-        ("Descending", true) => Some(buf.sort_by(|a, b| cn(b).cmp(&cn(a)))),
-        ("Descending", false) => Some(buf.sort_by(|a, b| b.cmp(a))),
-        _ => None,
+    let descending = match dir {
+        "Ascending" => false,
+        "Descending" => true,
+        _ => return None,
     };
+    let mut buf: LPooled<Vec<Value>> = vals.collect();
     // an Ord that is no total order (a user impl) may panic the sort,
     // which leaves every element in the buffer: its order is wrong, and
     // the runtime goes on
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sort(&mut buf))) {
-        Ok(None) => None,
-        Ok(Some(())) | Err(_) => Some(buf),
-    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if numeric {
+            // each element cast once, beside it
+            let mut keyed: LPooled<Vec<(Value, Value)>> = buf
+                .iter()
+                .map(|v| {
+                    (v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone()), v.clone())
+                })
+                .collect();
+            if descending {
+                keyed.sort_by(|a, b| b.0.cmp(&a.0))
+            } else {
+                keyed.sort_by(|a, b| a.0.cmp(&b.0))
+            }
+            buf.clear();
+            buf.extend(keyed.drain(..).map(|(_, v)| v));
+        } else if descending {
+            buf.sort_by(|a, b| b.cmp(a))
+        } else {
+            buf.sort()
+        }
+    }));
+    Some(buf)
 }
 
 /// A builtin over cached arguments. `eval` runs unarmed: a fast fn is
