@@ -91,6 +91,10 @@ mod overlay;
 mod paragraph;
 mod scrollbar;
 mod sparkline;
+#[cfg(unix)]
+mod stderr;
+#[cfg(unix)]
+use stderr::StderrHeld;
 mod table;
 mod tabs;
 mod text;
@@ -1011,69 +1015,6 @@ impl<X: GXExt> Screen<X> {
 
     pub(crate) fn draw(&mut self, frame: &mut Frame) -> Result<()> {
         self.root.draw(frame, frame.area())
-    }
-}
-
-/// While the display holds the terminal, stderr goes to a file, written
-/// out once the terminal is given back: a diagnostic written into the
-/// alternate screen garbles it and is lost with it.
-#[cfg(unix)]
-struct StderrHeld {
-    saved: std::os::fd::OwnedFd,
-    file: std::fs::File,
-}
-
-#[cfg(unix)]
-impl StderrHeld {
-    fn hold() -> Result<Self> {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        // CR claude for claude: [risk/low] Everything written to stderr while the
-        // display holds the terminal goes to this unlinked file with no bound, and drop
-        // replays all of it. A long-running TUI whose program logs a failure every
-        // cycle (a `$` over an erroring source logs under FAILURE_TARGET) fills the
-        // temp filesystem out of sight, then floods the terminal on exit. A kill loses
-        // all of it. Bound what is kept, for example the first and last N KB plus a
-        // count of the bytes dropped, and say what was dropped when it is replayed.
-        // (x-fix-tools-09)
-        // CR claude for claude: [bug/medium] The held stderr has no bound: every byte
-        // written to fd 2 while the display holds the terminal lands in this unlinked
-        // tempfile (RAM when /tmp is tmpfs), and Drop copies all of it to the terminal.
-        // The shell logs every unhandled `?` failure to stderr, so a long-running
-        // dashboard with a recurring failure grows the file at the failure rate (one
-        // per 100 ms is about 130 MB a day) and ends with that whole dump into the
-        // user's terminal. Bound it: keep the first and last N KB (e.g. a pipe drained
-        // by a reader thread into a head buffer plus a ring, or a length check that
-        // truncates past a cap) and write a "... K bytes dropped" line between them at
-        // give-back. probe: design/review-2026-10-12/repro/tui-core-05.sh (2000
-        // failures held, ~257 KB all written after leaving the alternate screen).
-        // (tui-core-05)
-        let file = tempfile::tempfile().context("a file for stderr")?;
-        // SAFETY: dup and dup2 over fds this process owns; `saved` takes the
-        // new descriptor dup returns.
-        let saved = unsafe { libc::dup(2) };
-        if saved < 0 {
-            bail!("saving stderr: {}", std::io::Error::last_os_error())
-        }
-        let saved = unsafe { OwnedFd::from_raw_fd(saved) };
-        if unsafe { libc::dup2(file.as_raw_fd(), 2) } < 0 {
-            bail!("redirecting stderr: {}", std::io::Error::last_os_error())
-        }
-        Ok(Self { saved, file })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for StderrHeld {
-    fn drop(&mut self) {
-        use std::{
-            io::{Seek, SeekFrom},
-            os::fd::AsRawFd,
-        };
-        // SAFETY: restores fd 2 from the descriptor `hold` saved.
-        unsafe { libc::dup2(self.saved.as_raw_fd(), 2) };
-        if self.file.seek(SeekFrom::Start(0)).is_ok() {
-            let _ = std::io::copy(&mut self.file, &mut std::io::stderr());
-        }
     }
 }
 
