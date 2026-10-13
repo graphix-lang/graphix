@@ -30,23 +30,35 @@ async fn abort_ends_run(mode: Mode) -> Result<()> {
 
 // A fire between runs belongs to no run, and neither does the value it
 // leaves standing.
-// CR claude for claude: [test-gap/medium] This fixture cannot fail. `cancel` is bottom
-// from step 21, so no value stands at run 2's entry, and wake catch-up re-raises the
-// step-20 fire at its current value, which is bottom. A seq aborted while idle is
-// unobservable. So the test passes with the `armed` filter removed from `run_event`,
-// and also with the abort event awake between runs. No fixture fires an abort event in
-// its run's entry cycle, so the rule 'only fires after the entry cycle count' is
-// unpinned. Make `cancel` a standing level (`let cancel = never(); cancel <- select
-// step { 20 => step, _ => never() }`, expected [1, 30]). Add a case whose event fires
-// at entry: `seq let c = go; abort(c) { until step > c + 3; c }` with go at 1 and 10
-// must give [1, 10]. Add a seqq variant too. All of these give the right answer at
-// HEAD. (tests-seq-02)
 async fn idle_fire_is_dropped(mode: Mode) -> Result<()> {
-    let body = r#"
-        let cancel = select step { 20 => step, _ => never() };
-        seq go; abort(cancel) { until step > go + 5; go }
-    "#;
-    assert_eq!(values(body, mode).await?, [1, 30]);
+    for kw in ["seq", "seqq"] {
+        let body = format!(
+            r#"
+            let cancel = never();
+            cancel <- select step {{ 20 => step, _ => never() }};
+            {kw} go; abort(cancel) {{ until step > go + 5; go }}
+        "#
+        );
+        assert_eq!(values(&body, mode).await?, [1, 30], "{kw}");
+    }
+    Ok(())
+}
+
+// An event firing in its run's entry cycle does not count: `c` fires as
+// each run enters, and both runs finish.
+async fn entry_fire_is_not_an_abort(mode: Mode) -> Result<()> {
+    for kw in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+            let step = 0;
+            step <- select step {{ n if n < 60 => n + 1, _ => never() }};
+            let go = select step {{ 1 | 10 => step, _ => never() }};
+            {kw} let c = go; abort(c) {{ until step > c + 3; c }}
+        }}"#
+        );
+        let (values, _) = run_delta(&code, mode).await?;
+        assert_eq!(as_i64s(&values), [1, 10], "{kw}");
+    }
     Ok(())
 }
 
@@ -227,6 +239,7 @@ async fn nested_abort_reads_live(mode: Mode) -> Result<()> {
 
 modes!(abort_ends_run);
 modes!(idle_fire_is_dropped);
+modes!(entry_fire_is_not_an_abort);
 modes!(abort_beats_completion);
 modes!(abort_bypasses_try);
 modes!(abort_timer_starts_with_the_run);
