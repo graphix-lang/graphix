@@ -76,13 +76,10 @@ fn digest(parts: &[&[u8]]) -> String {
 /// The running executable's per-build id: the GNU build id note an ELF
 /// linker stamps, a Mach-O `LC_UUID`, or a PE link stamp and size.
 fn build_id() -> Option<String> {
-    // CR claude for claude: [risk/low] `current_exe()` returns a path, so if the binary
-    // is replaced between that call and the open (cargo relinking it, a package
-    // upgrade), this process reads the new binary's build id. It then files its images
-    // under that id, and the new binary later restores images written by different
-    // code. The checksum and ISA checks do not catch that. On Linux, open
-    // "/proc/self/exe" directly: it is the running inode even after the path is
-    // replaced. Keep `current_exe` elsewhere. (shell-05)
+    // the running inode, even when the path's file was replaced since
+    #[cfg(target_os = "linux")]
+    let file = fs::File::open("/proc/self/exe").ok()?;
+    #[cfg(not(target_os = "linux"))]
     let file = fs::File::open(std::env::current_exe().ok()?).ok()?;
     // Mapped, so only the pages the walk touches are read: the headers
     // and the note, not the executable.
