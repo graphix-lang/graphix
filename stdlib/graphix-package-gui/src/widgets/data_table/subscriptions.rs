@@ -337,23 +337,6 @@ impl<X: GXExt> DataTableW<X> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
         self.table_rows.clear();
         self.subscriptions_changed = true;
-        // XCR claude for claude: [bug/medium] Every table value clears the measured
-        // width of every column. Render then re-caches only the columns from first_col
-        // onward, so column_canonical_width reads MIN_COL_WIDTH for every column left
-        // of the view. That breaks col_at_offset, offset_at_col, min_first_col_for_fit
-        // and virtual_content_width, and nothing moves the overlay to match. The
-        // content width shrinks, so on the next redraw iced's scrollable publishes
-        // on_scroll by itself. handle_scroll then maps the unchanged offset to a column
-        // further right. Example: 30 columns of 200px scrolled to first_col 10 (x =
-        // 2000) land on first_col 16 after one update, and each later update walks the
-        // view further right. Fix: keep the cache and drop only the columns that are
-        // gone, after the columns are rebuilt. The test sketch is in
-        // design/review-2026-10-12/repro/gui-datatable-02.rs
-        // (review_table_update_keeps_column_widths); it must be appended to
-        // src/test/data_table_test.rs to run. (gui-datatable-05)
-        // 2026-10-13 codex: table_updates_preserve_surviving_column_widths pins retained offsets
-        // and removal of stale widths. It compiles but cannot reach its assertions
-        // here because netidx resolver sockets are denied; review with sockets.
         self.selection =
             self.selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         #[derive(FromValue)]
@@ -528,22 +511,6 @@ impl<X: GXExt> DataTableW<X> {
     /// column gone or no longer from netidx, a sort column dropped),
     /// then subscribe what is missing. Sparkline histories of rows and
     /// columns gone are dropped.
-    // XCR claude for claude: [perf/medium] Every scroll step that changes the first row
-    // calls this (DataTableW::handle_scroll), and every batch that touches a sort
-    // column calls it again after sort_rows (before_view). Each call is linear in the
-    // whole table: it builds a set of every table row, retains six maps over every
-    // subscription, and probes has_role for every table row × sort column, cloning the
-    // (Path, ArcStr) key for each probe. sort_rows adds one lock and one freshly
-    // formatted key text per (row, sort key) through sort_value_for. On a large sorted
-    // live table this costs milliseconds per wheel tick and per frame on the UI thread.
-    // Fix: on scroll, reconcile only the Grid roles of rows that enter or leave the
-    // window. Recompute SortMarker roles only when table_rows or sort_by change. In
-    // sort_rows, lock once and build each SortKey from the raw value rather than from
-    // its display text. (gui-datatable-08)
-    // 2026-10-13 codex: scroll now diffs the grid window; table/sort/source-kind changes request a full role reconciliation.
-    // remove_grid_keeps_sort_values_and_other_cells pins targeted removal. Sorting
-    // reads raw keys under one lock. Live viewport/resort tests need resolver
-    // sockets; frame cost and live behavior remain unverified here.
     pub(super) fn update_subscriptions(&mut self) {
         let (s, e) = self.subscription_row_range();
         let mut window: LPooled<AHashSet<Path>> = LPooled::take();
@@ -580,27 +547,6 @@ impl<X: GXExt> DataTableW<X> {
         if full {
             inner.routing.retain(|_, roles| {
                 roles.retain(|r| match &*r {
-                    // XCR claude for claude: [bug/medium] This retain keeps a Grid role
-                    // while its row is in the window and its column is shown. It never
-                    // checks the role's sparkline_history_secs against the column's current
-                    // `shown` entry, and SubRole::is_grid_of also ignores that field, so no
-                    // replacement role is added. A column that keeps its name but changes
-                    // typ from Text to Sparkline keeps `sparkline_history_secs: None` on
-                    // every visible cell. The dispatch task then pushes no points, and
-                    // those sparklines stay empty until the rows leave the window and come
-                    // back. A changed history_seconds keeps pushing under the old window,
-                    // and a change from Sparkline to Text keeps pushing histories that the
-                    // next reconcile drops. Fix: keep a Grid role only when
-                    // `shown.get(col_name) == Some(sparkline_history_secs)`, and test for
-                    // the whole role (`roles.contains(&role)`) instead of is_grid_of, so a
-                    // changed window replaces the role. Also add an in-crate
-                    // data_table_test that flips a column's typ variable and asserts
-                    // dt_sparkline_len grows. Not executed: the dt() harness is
-                    // cfg(test)-only. (gui-datatable-06)
-                    // 2026-10-13 codex: grid_roles_include_the_history_window fails with the old matcher
-                    // and passes with full role matching. The live pin
-                    // switching_a_live_column_to_sparkline_records_updates needs resolver
-                    // sockets; its assertions remain unverified here.
                     SubRole::Grid { row_path, col_name, .. } => {
                         window.contains(row_path)
                             && shown
@@ -735,23 +681,6 @@ impl<X: GXExt> DataTableW<X> {
         }
     }
 
-    // XCR claude for claude: [structure/low] The cell text rule ('the live value
-    // formatted, else the column's fallback') is written out again in render_with_size,
-    // auto_fit_all_columns, handle_cell_edit and data_table_snapshot. This helper takes
-    // the lock itself, so those callers copied the rule instead of calling it. Replace
-    // them all with one `cell_text(&self, inner: &mut SharedCellsInner, row, col) ->
-    // ArcStr` that takes the held lock. In the same file set, give ViewportMetrics one
-    // constructor shared by render_with_size and handle_scroll, and add a
-    // show_row_name() accessor for the seven spellings of
-    // `show_row_name.t.unwrap_or(true)`. ViewportMetrics::cols_in_view decides nothing
-    // (only dt_viewport_metrics reads it, and viewport_width already covers its change
-    // test): delete it and DEFAULT_VISIBLE_COLS. (gui-datatable-12)
-    // 2026-10-13 codex: cell_text now owns the displayed-value rule; raw values own sorting.
-    // ViewportMetrics::new is shared by layout and scroll; unused cols_in_view
-    // is gone. Existing default/value-mode, edit, auto-fit and resize tests need
-    // resolver sockets, so their runtime assertions remain unverified.
-    /// The rows in display order: the table's own order sorted, stably,
-    /// by the sort columns, or the table's order when there are none.
     fn index_rows(&mut self) {
         self.row_indices.clear();
         for (i, row) in self.row_paths.iter().enumerate() {
@@ -760,6 +689,8 @@ impl<X: GXExt> DataTableW<X> {
         self.selection.reindex(&self.row_indices, self.mode, &self.columns);
     }
 
+    /// The rows in display order: the table's own order sorted, stably,
+    /// by the sort columns, or the table's order when there are none.
     pub(super) fn sort_rows(&mut self) {
         self.row_paths.clear();
         if self.sort_by.is_empty() {
@@ -773,25 +704,6 @@ impl<X: GXExt> DataTableW<X> {
         let inner = self.cells.inner.lock();
         for row in self.table_rows.iter() {
             for sb in self.sort_by.iter() {
-                // XCR claude for claude: [bug/medium] The sort key is the cell's
-                // formatted text re-parsed as f64. The format and parse round trip
-                // loses the value, and the order comes out wrong in three ways. A
-                // Duration prints as "1.m", "2.s" or "500.ms", which does not parse, so
-                // ascending gives 1m, 2s, 500ms. u64/i64 values above 2^53 round to one
-                // f64 and tie. The text "nan" and "inf" parse as numbers, so they sort
-                // among the numbers, which breaks the data_table.gxi rule "text by its
-                // bytes". Build SortKey from the raw value instead (live value, else
-                // the source fallback, as raw_value_for does): integers get an exact
-                // integer key, floats keep the NaN-lowest order, durations become
-                // nanoseconds, datetimes their timestamp, a String keeps the current
-                // numeric-text rule but takes only finite numbers, and everything else
-                // becomes text. That also stops formatting every sort cell of every row
-                // on each sort. probe:
-                // design/review-2026-10-12/repro/gui-datatable-03.rs (gui-datatable-03)
-                // 2026-10-13 codex: raw_numeric_sort_keys_preserve_precision_and_units and numeric_words_stay_text
-                // pin exact raw keys without sockets. The sort_is_a_total_order fixture now
-                // treats string NaN as text; live sorting still needs netidx sockets and
-                // could not be verified here.
                 let value =
                     self.raw_cell_value(&inner, row, &sb.column).unwrap_or(&Value::Null);
                 keys.push(SortKey::of_value(value));

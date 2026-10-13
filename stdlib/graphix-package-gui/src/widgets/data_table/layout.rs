@@ -250,19 +250,6 @@ impl<X: GXExt> DataTableW<X> {
     }
 
     /// Scroll to a selected cell unless one is already drawn whole.
-    // XCR claude for claude: [perf/low] This scans every row for every selected path on
-    // each selection update. is_selected scans the whole selection for every drawn cell
-    // on every frame, and handle_table_key scans selection × rows on every key. A
-    // select-all over a 20k-row table makes each update about 4e8 checks and each frame
-    // 20k checks per cell. The selection is an AHashSet, whose iteration order is
-    // randomly seeded, so with several selected cells both this scroll target and the
-    // keyboard's current cell are arbitrary. Fix: index the selection by row path (row
-    // → selected columns) in parse_selection, find rows through a path → index map
-    // built in sort_rows, and choose the lowest (row, column) deterministically.
-    // (gui-datatable-10)
-    // 2026-10-13 codex: selection_indexes_exact_cells pins indexed membership and row reordering; selection_keeps_program_order pins the chosen order.
-    // Program order follows tests-gui-a-01 rather than lowest display index. The
-    // multiple_selections_use_program_order live pin needs resolver sockets.
     pub(super) fn ensure_selection_visible(&mut self) {
         let rows = self.first_row..self.first_row + self.whole_rows_in_view();
         let mut target: Option<(usize, ArcStr)> = None;

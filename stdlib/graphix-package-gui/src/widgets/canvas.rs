@@ -222,22 +222,6 @@ impl<X: GXExt> iced_canvas::Program<super::Message, crate::theme::GraphixTheme>
     }
 }
 
-// XCR claude for claude: [bug/high] `Finite` checks only the numbers a shape is read
-// from. The geometry built from them can still be NaN or infinite, and lyon then
-// asserts (debug), or iced_wgpu's tessellate `.expect` panics on PositionIsNaN
-// (release), which kills the GUI process. Two cases: an `ArcTo` whose path doubles back
-// (start (0,0), a (100,0), b (0,1e-5)) makes iced's `Builder::arc_to` compute radius /
-// tan(acos(1.0)/2) = inf and then a NaN point, and a `Circle` with center.x 3e38 and
-// radius 3e38 reaches x = inf. Fix: check the built geometry, not only the inputs. Walk
-// `path.raw()` and skip (and log once) any shape with a non-finite point, which also
-// covers the `fill_rectangle` corner. In `PathSegment::ArcTo`, fall back to
-// `line_to(a)` when the turn is degenerate. probe:
-// design/review-2026-10-12/repro/gui-widgets-a-01.sh (gui-widgets-a-01)
-// 2026-10-13 codex: canvas_arc_to_reversal_draws and canvas_overflowing_circle_is_skipped
-// reproduce the lyon builder panic. CheckedPath validates generated coordinates before
-// emission as well as the completed path, and computes arcs in f64; the original
-// suggestion to check only the finished path cannot prevent the debug builder panic.
-// Review the geometry conversion and the degenerate-turn fallback.
 fn draw_shape(
     frame: &mut iced_widget::canvas::Frame<Renderer>,
     shape: &CanvasShape,

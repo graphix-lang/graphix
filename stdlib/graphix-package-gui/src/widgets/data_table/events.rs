@@ -90,56 +90,6 @@ impl<X: GXExt> DataTableW<X> {
             }
             TableKeyAction::Space => {
                 let col = &cols[cur_col];
-                // XCR claude for claude: [bug/medium] data_table: Space on a non-Text
-                // editable cell opens an invisible editor and kills table keys.
-                // `TableKeyAction::Space` opens the editor on any column whose
-                // `callback` is set: `self.columns.get(col).is_some_and(|c|
-                // c.callback.is_some())`. `parse_column_type` sets `callback` for Text,
-                // Toggle, Combo and Spin (`on_edit`) and for Button (`on_click`),
-                // types.rs. Only `ColumnType::Text` renders the editor's TextInput
-                // (render.rs). For every other kind `self.editing` becomes `Some` and
-                // nothing is drawn. `wrap_keyboard` (render.rs) then sends every key
-                // except Escape on with `_ if editing => return None`.
-                // book/src/ui/gui/data_table.md promises that 'Space on an editable
-                // cell opens its editor, which takes the typed keys'. Failure: A table
-                // with `toggle_column(#name: "on", #on_edit: f)` or
-                // `button_column(#on_click: g)`: select one of its cells with the arrow
-                // keys and press Space. Nothing visible happens, the toggle does not
-                // flip and the button is not pressed. After that, Arrow keys and Enter
-                // (on_activate) no longer reach the table; they go to an enclosing
-                // keyboard_area. Navigation stays dead until the user happens to press
-                // Escape. If a submit were ever reached, `handle_cell_edit_submit`
-                // would pass a parsed string to a Toggle's `#value: bool` callback.
-                // Fix: Make Space act by column type. Text opens the editor. Toggle
-                // calls on_edit with the negated current value. Button calls on_click
-                // with path and value. Combo and Spin do nothing, or open their own
-                // control. A simpler alternative: make `handle_cell_edit` refuse
-                // anything that is not `ColumnType::Text`. Add a pin beside
-                // `table_keys_and_the_cell_editor` (test/data_table_test.rs) that
-                // presses Space on a toggle cell and then an arrow key. Unverified: the
-                // reviewer's report, not checked by a verifier. (book-ui-b-02)
-                // 2026-10-13 codex: space_on_toggle_keeps_table_navigation exercises Space then Down.
-                // The Graphix fixture compiles but resolver sockets block its assertions.
-                // Space now delegates to the Text-only edit admission check.
-                // XCR claude for claude: [bug/medium] Space opens an edit on any column
-                // with a callback, but only a ColumnType::Text cell renders an editor
-                // (render_cell). On a Toggle, Combo, Spin or Button column
-                // (toggle_column with an #on_edit, for example), Space sets `editing`,
-                // focuses an editor_id that is not in the tree, and from then on
-                // wrap_keyboard drops every key except Escape. The arrows, Enter and
-                // Space stop working, and nothing on screen says why. Open an edit only
-                // for a Text column that has a callback; on the other types Space
-                // should do nothing, or act on the widget, e.g. flip the toggle. The
-                // same dead state follows a click on another cell while a Text editor
-                // is open, because handle_cell_click does not cancel the edit: cancel
-                // it there, or make the key filter depend on the editor holding focus.
-                // Test sketch, not yet run:
-                // review_space_on_toggle_does_not_open_a_hidden_edit in
-                // design/review-2026-10-12/repro/gui-datatable-02.rs.
-                // (gui-datatable-04)
-                // 2026-10-13 codex: space_on_toggle_keeps_table_navigation and
-                // clicking_another_cell_cancels_text_edit cover both paths. They compile
-                // but require resolver sockets; before/after assertions are unverified.
                 self.handle_cell_edit(cur_row, col.clone());
                 true
             }

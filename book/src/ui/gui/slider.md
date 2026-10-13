@@ -71,7 +71,7 @@ A non-interactive horizontal bar that fills proportionally to a value within a r
 
 ![Slider](./media/slider.gif)
 
-## Vertical Slider
+### Vertical Slider
 
 ```graphix
 {{#include ../../examples/gui/vertical_slider.gx}}

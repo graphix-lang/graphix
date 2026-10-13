@@ -9,19 +9,6 @@ use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use std::{fmt::Write, time::Duration};
 
-// XCR claude for claude: [style/low] Almost every fixture opens with `use gui::*; use
-// gui::data_table::{self, *}; use sys::*;`, and most never use `sys`; the few that do
-// write `sys::net::publish` in full anyway. The column record `{ name: .., typ: ..,
-// display_name: null, source: .., on_resize: &null, width: &null }` is written by hand
-// about 37 times, beside `stored_column_table`, which builds the same thing. A new
-// required column field means editing about 40 literals. Have `dt` prepend the one
-// shared import line (without `sys`), and build columns through a single
-// `text_col(name, source)` helper that `stored_column_table` also uses.
-// (tests-gui-a-12)
-// 2026-10-13 codex: Centralized imports and replaced the copied Text records with
-// the existing text_column constructor, including stored_column_table. Pins:
-// default_value_uniform, default_value_per_row, on_edit_text_column. Runtime
-// assertions are unverified here because netidx resolver sockets are refused.
 fn table_code(code: &str) -> CompactString {
     format_compact!(
         "use gui::data_table::{{SortBy, SortDirection, data_table, text_column}};\n{code}"
@@ -1301,16 +1288,6 @@ let result = data_table(
 
 /// A Sparkline column accumulates values published over netidx.
 #[tokio::test(flavor = "current_thread")]
-// XCR claude for claude: [test-gap/low] After each set, this test waits only until the
-// history contains that value. A sparkline that cleared its history on every update,
-// keeping just the newest point, would pass, so the accumulation the name promises is
-// never checked. After the loop, assert that `dt_sparkline_values("r0", "load")` ends
-// with [1.0, 2.0, 3.0] in order. In `sparkline_default_value_seeds_history`, assert the
-// history is exactly [7.5] rather than `len >= 1`. (tests-gui-a-06)
-// 2026-10-13 codex: sparkline_accumulates now checks the retained suffix, and
-// sparkline_default_value_seeds_history checks exactly [7.5]. Both require
-// netidx sockets; resolver startup is refused here, so neither assertion nor
-// its mutation check is verified in this sandbox.
 async fn sparkline_accumulates() -> Result<()> {
     let code = r#"
 
@@ -1329,16 +1306,6 @@ let result = data_table(
     let mut h = dt(code).await?;
     let bid = testing::find_bind_id(&h.compiled.env, "test::c")?;
     let mut c = h.gx.compile_ref(bid).await?;
-    // XCR claude for claude: [test-gap/low] Each wait checks only that the value just
-    // set is in the history. A sparkline whose netidx update path replaced its history
-    // on every update, keeping only the latest point, passes all three. This test is
-    // the only pin on the subscription path's accumulation: the other sparkline tests
-    // push through dt_push_sparkline. After the loop, assert that the history ends with
-    // 1.0, 2.0, 3.0 in order. The 60 s window keeps all three. (x-rerun-6-08)
-    // 2026-10-13 codex: sparkline_accumulates now checks the retained suffix, and
-    // sparkline_default_value_seeds_history checks exactly [7.5]. Both require
-    // netidx sockets; resolver startup is refused here, so neither assertion nor
-    // its mutation check is verified in this sandbox.
     for v in [1, 2, 3] {
         c.set(Value::I64(v))?;
         h.wait_until(
@@ -1383,19 +1350,6 @@ let result = data_table(
 
 /// Decimation caps stored sparkline points at `MAX_SPARKLINE_POINTS`.
 #[tokio::test(flavor = "current_thread")]
-// XCR claude for claude: [test-gap/low] This test checks only `len <= 512`, read through
-// `unwrap_or(0)`. `dt_push_sparkline` returns silently when the row or column does not
-// resolve. So a push that stores nothing, or aging that drops everything, still passes.
-// Make `dt_push_sparkline` panic on an unknown cell, and assert `len >=
-// MAX_SPARKLINE_POINTS / 2` after each burst. `sparkline_decimation_preserves_extremes`
-// is vacuous too: its input is monotone, the seeded 0.0 already meets the min check,
-// and stride-2 decimation keeps 1023. Delete it in favour of
-// `sparkline_decimation_keeps_spikes`, and drop the range loop in
-// `sparkline_decimation`, which `sin * 100` satisfies for any input. (tests-gui-a-07)
-// 2026-10-13 codex: sparkline_bursts_retain_a_bounded_history fails when each
-// push clears history; restored code passes. Kept sparkline_decimation_keeps_spikes
-// and strengthened sparkline_decimation_caps_length. The latter and the accessor
-// panic paths still need netidx sockets, which this sandbox refuses.
 async fn sparkline_decimation_caps_length() -> Result<()> {
     use crate::widgets::data_table::MAX_SPARKLINE_POINTS;
     use std::time::{Duration, Instant};

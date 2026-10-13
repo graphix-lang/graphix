@@ -206,21 +206,6 @@ impl<X: GXExt> DataTableW<X> {
         };
         let (vis_row_start, vis_row_end) = self.display_row_range();
         let (vis_col_start, vis_col_end) = self.display_col_range();
-        // XCR claude for claude: [perf/medium] The snapshot covers every column for each
-        // visible row, but only vis_col_start..vis_col_end is read. Each hidden cell
-        // costs a key clone and a hash lookup on every frame, and a cell with no live
-        // value also re-runs default_for, which allocates a new ArcStr for any
-        // non-string fallback. Build the snapshot over the visible column range only
-        // and index it by data_col - vis_col_start, both here and in the col_meta width
-        // loop. auto_fit_all_columns has the same shape but costs far more: it runs
-        // measure_text on every row × column at once on a double-click. That thrashes
-        // measure_text's 8192-entry cache, and a table of tens of thousands of rows
-        // freezes the UI. Bound it, for example by measuring each distinct text once.
-        // (gui-datatable-09)
-        // 2026-10-13 codex: auto_fit_measures_each_distinct_text_once rejects 90,000 measurements of two texts and passes with two.
-        // visible_grid_contains_only_drawn_columns pins a horizontally scrolled
-        // snapshot but needs resolver sockets. Width and render indices are relative
-        // to the visible slice; live rendering remains unverified here.
         let grid_snapshot = self.visible_grid();
         let name_col_offset = if show_row_name { 1 } else { 0 };
         let sort_indicators: LPooled<AHashMap<ArcStr, CompactString>> =
@@ -300,24 +285,6 @@ impl<X: GXExt> DataTableW<X> {
         }
         let mut header_row = Row::new().spacing(0);
         for (ci, (name, w)) in col_meta.iter().enumerate() {
-            // XCR claude for claude: [bug/medium] In DisplayMode::Value the only data
-            // column is the synthesized VALUE_COL_KEY ("\0value"). A click on its
-            // header calls on_header_click with that internal key, which program code
-            // should never see. A stock sort handler (cycle_sort in
-            // data_table_filter_sort.gx) puts "\0value" into sort_by. Three things
-            // follow. The header shows "value ▲". update_subscriptions opens a durable
-            // subscription to the nonexistent path "<row>/\0value" for every absolute
-            // row. The SortMarker subscription overwrites the grid's entry for (row,
-            // VALUE_COL_KEY) in `cells`, so the value column renders blank, and the
-            // sort orders nothing. Fix: attach no header click to the value column, or
-            // report a public name such as "value" and have a sort on it read the row's
-            // own value (VALUE_COL_KEY). Separately, the grid and sort roles of one
-            // (row, col) must not share a single `cells` entry when their paths differ.
-            // Not executed: the click harness is test-only inside the crate.
-            // (gui-datatable-07)
-            // 2026-10-13 codex: only_declared_column_headers_call_the_program covers the real
-            // header and synthesized value header. Resolver sockets block its assertions.
-            // Grid and sort subscriptions now both use cell_path (gui-datatable-11).
             let is_data_col = self.mode == DisplayMode::Table && ci >= name_col_offset;
             let entry = self.columns.get(name);
             let base = match entry {

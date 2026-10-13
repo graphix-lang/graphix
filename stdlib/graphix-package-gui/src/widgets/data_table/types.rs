@@ -166,6 +166,7 @@ pub(super) struct Selection {
 }
 
 impl Selection {
+    #[cfg(test)]
     pub(super) fn iter(&self) -> impl Iterator<Item = &ArcStr> {
         self.paths.iter()
     }
