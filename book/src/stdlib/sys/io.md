@@ -42,13 +42,9 @@ system says which end of the pipe you are holding.
 
 ## Parsing and writing formats
 
-<!-- CR claude for claude: [doc-drift/low] This sentence is wrong for two of the four
-formats. pack::read and xls::sheets/xls::read take `bytes` only (a string is refused,
-'bytes does not contain string'), and xls has no writer. Say instead: json and toml
-parse from bytes or a string, pack and xls from bytes; json and toml serialize to a
-string or bytes, pack to bytes, and xls is read-only. (book-stdlib-10) -->
-`json`, `toml`, `pack` and `xls` parse from `bytes` (or a `string`) and
-serialize to them. Reading a document from a stream is therefore just
+`json` and `toml` parse from `bytes` or a `string` and serialize to
+either; `pack` reads and writes `bytes`; `xls` reads `bytes` and has no
+writer. Reading a document from a stream is therefore just
 reading the stream:
 
 ```graphix
