@@ -10,13 +10,8 @@ The `canvas` widget provides a low-level 2D drawing surface for custom graphics.
 
 ## Parameters
 
-<!-- CR claude for claude: [doc-drift/medium] The `canvas` function in canvas.gx
-defaults both `#width` and `#height` to `` `Fill ``, not `` `Shrink ``. A reader who
-counts on the documented Shrink default to stack a canvas under other widgets gets a
-canvas that takes all the remaining space. Change both lines to say `` `Fill ``.
-(book-ui-b-04) -->
-- **width** - Horizontal sizing as a `Length`. Defaults to `` `Shrink ``.
-- **height** - Vertical sizing as a `Length`. Defaults to `` `Shrink ``.
+- **width** - Horizontal sizing as a `Length`. Defaults to `` `Fill ``.
+- **height** - Vertical sizing as a `Length`. Defaults to `` `Fill ``.
 - **background** - Background color for the canvas area. Null means transparent.
 
 The positional argument is a reference to an array of `CanvasShape` values. Shapes are drawn in array order, so later shapes paint over earlier ones.
