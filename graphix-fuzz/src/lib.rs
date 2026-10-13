@@ -2989,19 +2989,9 @@ pub const TM_CAP: usize = 3;
 
 /// The most checks one typemorph subject runs: its base, every
 /// transform kind's probes, the typed base, and every must-reject
-/// family's (retype takes two per site).
-// CR claude for claude: [doc-drift/low] The budget counts one extra cap for retype's
-// second probe, but two more families also exceed one probe per site per cap.
-// `function_bound` pushes two probes per site (a literal and a defaulted lambda), and
-// `widen_through_let` adds its own cap of `Family::WidenConsumer` probes beside
-// `widen_consumer`'s. A subject can run 2 * cap more checks than the child's deadline
-// allows, and design/must_reject.md's 'the cap per family per subject is TM_CAP' is not
-// true. The two function-bound mutants also share the id `function-bound#i`, so the
-// scan's confirmation by id can match the wrong one. Count from the families' real
-// per-site probes, or cap `mustreject::probes` per Family. Give the defaulted-lambda
-// mutant an id of its own. (fuzz-mutate-10)
+/// family's.
 pub fn tm_checks(cap: usize) -> u32 {
-    (2 + (typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len() + 1) * cap) as u32
+    (2 + (typemorph::TmKind::ALL.len() + mustreject::Family::ALL.len()) * cap) as u32
 }
 
 /// One check of a subject's full text.

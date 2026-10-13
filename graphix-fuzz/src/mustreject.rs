@@ -95,11 +95,16 @@ pub struct RejectProbe {
     /// The expected sites' shapes ([`shape`]): what an accepted mutant
     /// slipped past, so one family's leaks split by what they reached.
     pub reached: String,
+    /// The mutant's ordinal among its family's at its site.
+    pub nth: usize,
 }
 
 impl RejectProbe {
     pub fn id(&self) -> String {
-        format!("{}#{}", self.family, self.site)
+        match self.nth {
+            0 => format!("{}#{}", self.family, self.site),
+            n => format!("{}#{}.{n}", self.family, self.site),
+        }
     }
 
     /// Whether a refusal at `pos` (body coordinates) is where the
@@ -201,7 +206,7 @@ fn finish(
         .collect();
     shapes.dedup();
     let reached = shapes.join(", ");
-    Some(RejectProbe { family, site, body, expect, reached })
+    Some(RejectProbe { family, site, body, expect, reached, nth: 0 })
 }
 
 /// An expected site by its kind: the operator, or what it is.
@@ -252,7 +257,16 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     references(&root, types, cap, &mut out);
     same_form(&root, &pre, cap, &mut out);
     abstract_widen(&root, &pre, types, cap, &mut out);
-    out
+    // at most `cap` of each family's, each id its own
+    let mut kept: Vec<RejectProbe> = Vec::with_capacity(out.len());
+    for mut p in out {
+        let family = kept.iter().filter(|k| k.family == p.family);
+        if family.clone().count() < cap {
+            p.nth = family.filter(|k| k.site == p.site).count();
+            kept.push(p);
+        }
+    }
+    kept
 }
 
 /// Family 10. A select with an arm `string as x` gets its scrutinee
