@@ -763,15 +763,11 @@ it through its own `CURRENT`.
 
 ## 10. Fused kernels
 
-<!-- CR claude for claude: [doc-drift/low] Two parts of §10 are stale. Kernel feeders
-are not polled in order: FusedKernel::update gathers them through node::gather over its
-own ForkSite, so they form a fork point, as a call's arguments do. And the outlined
-loop's helper is graphix_par_loop(chunk, frame, len, site, kind, out), where kind
-carries the FIND and ROOT bits that par_loop::run reads. Fix both sentences.
-(f-kernel-07) -->
 A kernel invocation is a leaf. Its state is node-owned (`state`/`site`
-blocks), its loans are per call, and its feeders are polled in order,
-not forked. So kernels need nothing for the node-level design.
+blocks) and its loans are per call; its feeders are gathered through
+`node::gather` over the kernel's own `ForkSite`, a fork point as a
+call's arguments are. So kernels need nothing more for the node-level
+design.
 
 Parallel loops inside kernels (§11 phase 6) are the second half.
 
@@ -789,7 +785,9 @@ CHUNK, `chunk(frame, lo, hi, out)`, which runs slots `lo..hi`: the
 element binds, the callback body and the push, exactly the serial
 loop's iteration. The kernel keeps the loop's preheader (the source,
 its length, the slot-table frame, the firing flags) and replaces the
-loop with a call to `graphix_par_loop(chunk, frame, len, site, out)`.
+loop with a call to `graphix_par_loop(chunk, frame, len, site, kind,
+out)`, where `kind` carries the FIND and ROOT bits `par_loop::run`
+reads.
 `frame` is a stack record the kernel fills: its context word, state and
 site pointers, the source and its disc, the slot tables' bases, and
 every local in scope as a `(disc, payload)` pair. A chunk borrows those
